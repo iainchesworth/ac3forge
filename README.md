@@ -11,10 +11,15 @@ compliant AC-3 elementary stream that any decoder or AV receiver accepts.
 
 ## Status
 
-**Milestone 0 — scaffold.** Core bit I/O (`BitWriter`), the AC-3 CRC-16, and base syntax
-tables, all with tests. See [docs/RESEARCH.md](docs/RESEARCH.md) for the full research
-summary, architecture, and roadmap (next up: frame skeleton → a valid silent stereo frame
-that `ffprobe` recognizes).
+**Milestones 0–2 complete.** The encoder emits fully valid AC-3 syncframes (2/0 digital
+silence, any legal bitrate × sample rate): `ac3cli silence out.ac3` produces a stream that
+FFmpeg strict-decodes (`-err_detect crccheck+bitstream+buffer+explode`) with zero errors to
+bit-perfect silence, and that an independent from-spec bitstream parser rates CONFORMANT —
+including the A/52 §5.5 layout constraints (padding via in-block skip fields) and both CRC
+words (crc1 solved via GF(2) polynomial inverse, since it precedes its coverage region).
+
+See [docs/RESEARCH.md](docs/RESEARCH.md) for the research summary, architecture, and
+roadmap (next up: the MDCT + KBD window against numpy golden vectors, then real audio).
 
 ## Ground rules
 

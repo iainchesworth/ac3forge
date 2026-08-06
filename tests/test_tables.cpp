@@ -44,8 +44,12 @@ TEST_CASE("exact frame sizes at 48 and 32 kHz", "[tables]") {
     STATIC_CHECK(ac3::frame_size_bytes(SampleRate::k48000, 192) == 768u);
     STATIC_CHECK(ac3::frame_size_bytes(SampleRate::k32000, 640) == 3840u);
 
-    // 44.1 kHz needs the verbatim Table 5.18 column (padding alternation).
-    STATIC_CHECK(ac3::frame_size_bytes(SampleRate::k44100, 448) == std::nullopt);
+    // 44.1 kHz comes verbatim from Table 5.18; the odd frmsizecod pads one word.
+    STATIC_CHECK(ac3::frame_size_bytes(SampleRate::k44100, 448) == 1950u);
+    STATIC_CHECK(ac3::frame_size_bytes(SampleRate::k44100, 448, true) == 1952u);
+    STATIC_CHECK(ac3::frame_size_bytes(SampleRate::k44100, 32) == 138u);
+    // The pad flag only changes 44.1 kHz sizes.
+    STATIC_CHECK(ac3::frame_size_bytes(SampleRate::k48000, 448, true) == 1792u);
 
     // Illegal bit rates are rejected at any sample rate.
     STATIC_CHECK(ac3::frame_size_bytes(SampleRate::k48000, 100) == std::nullopt);

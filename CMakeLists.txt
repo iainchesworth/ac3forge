@@ -29,6 +29,7 @@ if(AC3FORGE_BUILD_TESTS)
   add_executable(ac3tests
     tests/test_bitwriter.cpp
     tests/test_crc16.cpp
+    tests/test_frame.cpp
     tests/test_tables.cpp
   )
   target_link_libraries(ac3tests PRIVATE ac3::core Catch2::Catch2WithMain)
