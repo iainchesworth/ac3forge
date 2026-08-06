@@ -25,15 +25,19 @@ matches independent numpy goldens ≤1e-10, and a 50%-overlap TDAC round-trip th
 *normative* §7.9.4.1 decoder inverse reconstructs input ≤1e-10 — locking window, both
 transforms, and the −2/N ↔ ×2 level convention together.
 
-**Milestone 4 (exponent pipeline) complete.** Raw exponent extraction from 25-bit
-fixed-point coefficients, D15/D25/D45 encoding (minimum-sharing, decrease-only ±2 slew
-limiting, canonical padding) and the normative §7.1.3 decode — with the decoder-mirror
-invariants property-tested: decoded exponents never exceed raw ones, pairs/quads share,
-and re-encoding the decoder's view reproduces the bitstream fields exactly.
+**Milestone 5 (the hard middle) complete — the encoder encodes real audio.**
+`ac3cli sine out.ac3` produces AC-3 that FFmpeg strict-decodes with zero errors to a
+999.93 Hz sine at exactly the target amplitude (+0.000 dB) with **88.3 dB SNR**. The full
+pipeline: windowed MDCT → 25-bit fixed coefficients → D15 exponents (decoder-mirrored) →
+the bit-exact §7.2.2 integer bit-allocation engine (validated against an independent
+Python transcription of the spec pseudocode, zero tolerance) → binary SNR-offset search →
+§7.3 mantissa quantization with cross-channel grouping → packing + CRCs. The
+bit-allocation tables (7.6–7.16) are script-extracted from the spec text with
+self-verification, like every table before them.
 
 See [docs/RESEARCH.md](docs/RESEARCH.md) for the research summary, architecture, and
-roadmap (next up: milestone 5, the hard middle — the §7.2.2 bit-allocation engine, SNR
-search, mantissa quantization, and the packer — after which real audio flows end-to-end).
+roadmap (next: 5.1 + LFE and the in-repo decoder, then the quality layer and the spatial
+scene → VBAP → bed renderer).
 
 ## Ground rules
 

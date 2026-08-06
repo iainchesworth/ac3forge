@@ -14,8 +14,11 @@ if(MSVC)
 endif()
 
 add_library(ac3core STATIC
+  src/ac3/core/bitalloc.cpp
   src/ac3/core/exponents.cpp
+  src/ac3/core/mantissas.cpp
   src/ac3/core/mdct.cpp
+  src/ac3/encoder/encoder.cpp
 )
 add_library(ac3::core ALIAS ac3core)
 target_include_directories(ac3core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -29,10 +32,13 @@ if(AC3FORGE_BUILD_TESTS)
   find_package(Catch2 3 CONFIG REQUIRED)
   add_executable(ac3tests
     tests/msvc_crt_report.cpp
+    tests/test_bitalloc.cpp
     tests/test_bitwriter.cpp
     tests/test_crc16.cpp
+    tests/test_encoder.cpp
     tests/test_exponents.cpp
     tests/test_frame.cpp
+    tests/test_mantissas.cpp
     tests/test_mdct.cpp
     tests/test_tables.cpp
   )
