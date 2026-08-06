@@ -14,6 +14,7 @@ if(MSVC)
 endif()
 
 add_library(ac3core STATIC
+  src/ac3/core/exponents.cpp
   src/ac3/core/mdct.cpp
 )
 add_library(ac3::core ALIAS ac3core)
@@ -27,8 +28,10 @@ if(AC3FORGE_BUILD_TESTS)
   enable_testing()
   find_package(Catch2 3 CONFIG REQUIRED)
   add_executable(ac3tests
+    tests/msvc_crt_report.cpp
     tests/test_bitwriter.cpp
     tests/test_crc16.cpp
+    tests/test_exponents.cpp
     tests/test_frame.cpp
     tests/test_mdct.cpp
     tests/test_tables.cpp

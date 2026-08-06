@@ -25,9 +25,15 @@ matches independent numpy goldens ≤1e-10, and a 50%-overlap TDAC round-trip th
 *normative* §7.9.4.1 decoder inverse reconstructs input ≤1e-10 — locking window, both
 transforms, and the −2/N ↔ ×2 level convention together.
 
+**Milestone 4 (exponent pipeline) complete.** Raw exponent extraction from 25-bit
+fixed-point coefficients, D15/D25/D45 encoding (minimum-sharing, decrease-only ±2 slew
+limiting, canonical padding) and the normative §7.1.3 decode — with the decoder-mirror
+invariants property-tested: decoded exponents never exceed raw ones, pairs/quads share,
+and re-encoding the decoder's view reproduces the bitstream fields exactly.
+
 See [docs/RESEARCH.md](docs/RESEARCH.md) for the research summary, architecture, and
-roadmap (next up: exponent extraction and coding, then the bit-allocation engine — the
-hard middle — after which real audio flows end-to-end).
+roadmap (next up: milestone 5, the hard middle — the §7.2.2 bit-allocation engine, SNR
+search, mantissa quantization, and the packer — after which real audio flows end-to-end).
 
 ## Ground rules
 
