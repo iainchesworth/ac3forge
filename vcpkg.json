@@ -1,0 +1,8 @@
+{
+  "name": "ac3forge",
+  "version": "0.1.0",
+  "description": "Clean-room AC-3 (ATSC A/52) encoder library and tools in C++23. Codec code has no third-party dependencies; vcpkg supplies test/tooling packages only.",
+  "dependencies": [
+    "catch2"
+  ]
+}

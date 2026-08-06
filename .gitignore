@@ -1,0 +1,17 @@
+# Build output
+build/
+vcpkg_installed/
+
+# Machine-local CMake presets (carry local VCPKG_ROOT)
+CMakeUserPresets.json
+
+# IDE / tooling
+.vs/
+.cache/
+*.user
+
+# Python tooling for golden-vector generation
+__pycache__/
+
+# Downloaded standards documents (free from ATSC/ETSI; not redistributed here)
+docs/spec/
