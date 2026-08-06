@@ -35,9 +35,17 @@ Python transcription of the spec pseudocode, zero tolerance) → binary SNR-offs
 bit-allocation tables (7.6–7.16) are script-extracted from the spec text with
 self-verification, like every table before them.
 
+**Milestone 6 (5.1 + LFE + the in-repo decoder) complete.** The encoder handles every
+audio coding mode (mono through 3/2) plus LFE at all three sample rates, with exact
+44.1 kHz CBR via Bresenham frame-size alternation. The new in-repo decoder — built on the
+same normative core — reaches **float32-precision PCM parity with FFmpeg's decoder**
+(max diff 7.9e-6 ≈ −102 dBFS) on identical streams, and a 5.1 encode with per-channel
+tones decodes through FFmpeg with every channel carrying exactly its own tone
+(channel-order verified end-to-end). `ac3cli decode` exercises the decoder from the CLI.
+
 See [docs/RESEARCH.md](docs/RESEARCH.md) for the research summary, architecture, and
-roadmap (next: 5.1 + LFE and the in-repo decoder, then the quality layer and the spatial
-scene → VBAP → bed renderer).
+roadmap (next: the quality layer — exponent-strategy search, rematrixing, dialnorm
+policy — then the spatial scene → VBAP → bed renderer).
 
 ## Ground rules
 

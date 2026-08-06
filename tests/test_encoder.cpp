@@ -21,6 +21,13 @@ std::vector<float> sine_frame(std::uint64_t& n, double freq, double amplitude) {
     return samples;
 }
 
+std::expected<std::vector<std::byte>, ac3::FrameError> encode_same(
+    ac3::FrameEncoder& encoder, const std::vector<float>& samples) {
+    std::vector<std::span<const float>> views(
+        static_cast<std::size_t>(encoder.channel_count()), samples);
+    return encoder.encode_frame(views);
+}
+
 void check_frame_invariants(const std::vector<std::byte>& frame, ac3::SampleRate sr,
                             std::uint32_t kbps) {
     CHECK(frame.size() == ac3::frame_size_bytes(sr, kbps).value());
@@ -38,37 +45,61 @@ void check_frame_invariants(const std::vector<std::byte>& frame, ac3::SampleRate
 TEST_CASE("encoded sine frames satisfy the frame invariants at every bitrate", "[encoder]") {
     for (const std::uint32_t kbps : {96u, 192u, 448u, 640u}) {
         CAPTURE(kbps);
-        ac3::StereoEncoder encoder{{.bitrate_kbps = kbps}};
+        ac3::FrameEncoder encoder{{.bitrate_kbps = kbps}};
         std::uint64_t n = 0;
         for (int f = 0; f < 3; ++f) {
-            const auto samples = sine_frame(n, 1000.0, 0.5);
-            const auto frame = encoder.encode_frame(samples, samples);
+            const auto frame = encode_same(encoder, sine_frame(n, 1000.0, 0.5));
             REQUIRE(frame.has_value());
             check_frame_invariants(*frame, ac3::SampleRate::k48000, kbps);
         }
     }
 }
 
-TEST_CASE("silence through the real encoder produces valid frames", "[encoder]") {
-    ac3::StereoEncoder encoder{{.bitrate_kbps = 192}};
-    const std::vector<float> silence(ac3::kSamplesPerFrame, 0.0f);
-    for (int f = 0; f < 2; ++f) {
-        const auto frame = encoder.encode_frame(silence, silence);
-        REQUIRE(frame.has_value());
-        check_frame_invariants(*frame, ac3::SampleRate::k48000, 192);
+TEST_CASE("every acmod with and without LFE produces valid frames", "[encoder]") {
+    using ac3::Acmod;
+    for (const auto acmod : {Acmod::k1_0, Acmod::k2_0, Acmod::k3_0, Acmod::k2_1, Acmod::k3_1,
+                             Acmod::k2_2, Acmod::k3_2}) {
+        for (const bool lfe : {false, true}) {
+            CAPTURE(static_cast<int>(acmod), lfe);
+            ac3::FrameEncoder encoder{{.bitrate_kbps = 448, .acmod = acmod, .lfe = lfe}};
+            std::uint64_t n = 0;
+            const auto frame = encode_same(encoder, sine_frame(n, 500.0, 0.4));
+            REQUIRE(frame.has_value());
+            check_frame_invariants(*frame, ac3::SampleRate::k48000, 448);
+        }
     }
 }
 
+TEST_CASE("44.1 kHz CBR alternates frame sizes to the exact long-run rate", "[encoder]") {
+    // 448 kbps @ 44.1 kHz: ideal 975.238 words/frame -> mix of 975 and 976.
+    ac3::FrameEncoder encoder{
+        {.sample_rate = ac3::SampleRate::k44100, .bitrate_kbps = 448}};
+    const std::vector<float> silence(ac3::kSamplesPerFrame, 0.0f);
+    std::uint64_t total_bytes = 0;
+    int padded = 0;
+    constexpr int kFrames = 84;  // one full alternation cycle (975.238... has period 21)
+    for (int f = 0; f < kFrames; ++f) {
+        const auto frame = encode_same(encoder, silence);
+        REQUIRE(frame.has_value());
+        REQUIRE((frame->size() == 1950 || frame->size() == 1952));
+        padded += frame->size() == 1952 ? 1 : 0;
+        total_bytes += frame->size();
+    }
+    CHECK(padded > 0);  // alternation actually happens
+    // Exact CBR: total ideal bits = frames * kbps*1000*1536/44100; the
+    // accumulator keeps the emitted total within one word of ideal.
+    const double ideal_bytes = kFrames * 448000.0 * 1536.0 / 44100.0 / 8.0;
+    CHECK(std::abs(static_cast<double>(total_bytes) - ideal_bytes) <= 2.0);
+}
+
 TEST_CASE("encoding is deterministic", "[encoder]") {
-    ac3::StereoEncoder a{{.bitrate_kbps = 256}};
-    ac3::StereoEncoder b{{.bitrate_kbps = 256}};
+    ac3::FrameEncoder a{{.bitrate_kbps = 256}};
+    ac3::FrameEncoder b{{.bitrate_kbps = 256}};
     std::uint64_t n1 = 0;
     std::uint64_t n2 = 0;
     for (int f = 0; f < 2; ++f) {
-        const auto samples1 = sine_frame(n1, 3000.0, 0.8);
-        const auto samples2 = sine_frame(n2, 3000.0, 0.8);
-        const auto frame1 = a.encode_frame(samples1, samples1);
-        const auto frame2 = b.encode_frame(samples2, samples2);
+        const auto frame1 = encode_same(a, sine_frame(n1, 3000.0, 0.8));
+        const auto frame2 = encode_same(b, sine_frame(n2, 3000.0, 0.8));
         REQUIRE(frame1.has_value());
         REQUIRE(frame2.has_value());
         CHECK(*frame1 == *frame2);
@@ -77,9 +108,8 @@ TEST_CASE("encoding is deterministic", "[encoder]") {
 
 TEST_CASE("invalid encoder configs are rejected", "[encoder]") {
     const std::vector<float> silence(ac3::kSamplesPerFrame, 0.0f);
-    ac3::StereoEncoder bad_rate{{.bitrate_kbps = 100}};
-    CHECK(bad_rate.encode_frame(silence, silence).error() == ac3::FrameError::kInvalidBitrate);
-    ac3::StereoEncoder bad_dialnorm{{.bitrate_kbps = 192, .dialnorm = 0}};
-    CHECK(bad_dialnorm.encode_frame(silence, silence).error() ==
-          ac3::FrameError::kInvalidDialnorm);
+    ac3::FrameEncoder bad_rate{{.bitrate_kbps = 100}};
+    CHECK(encode_same(bad_rate, silence).error() == ac3::FrameError::kInvalidBitrate);
+    ac3::FrameEncoder bad_dialnorm{{.bitrate_kbps = 192, .dialnorm = 0}};
+    CHECK(encode_same(bad_dialnorm, silence).error() == ac3::FrameError::kInvalidDialnorm);
 }

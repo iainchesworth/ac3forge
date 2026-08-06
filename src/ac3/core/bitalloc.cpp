@@ -105,25 +105,34 @@ void compute_bit_allocation(std::span<const std::uint8_t> exps, SampleRate sampl
     int fastleak = 0;
     int slowleak = 0;
     {
+        // §7.2.2.4: for the LFE channel (bndend == 7), calc_lowcomp and the
+        // monotone-rise break check are skipped for the last band (bin 6) —
+        // bndpsd[7] does not exist there.
+        const auto not_lfe_last = [bndend](int bin) { return bndend != 7 || bin != 6; };
         lowcomp = calc_lowcomp(lowcomp, bndpsd[0], bndpsd[1], 0);
         excite[0] = bndpsd[0] - fgain - lowcomp;
         lowcomp = calc_lowcomp(lowcomp, bndpsd[1], bndpsd[2], 1);
         excite[1] = bndpsd[1] - fgain - lowcomp;
         int begin = 7;
         for (int bin = 2; bin < 7; ++bin) {
-            lowcomp = calc_lowcomp(lowcomp, bndpsd[static_cast<std::size_t>(bin)],
-                                   bndpsd[static_cast<std::size_t>(bin) + 1], bin);
+            if (not_lfe_last(bin)) {
+                lowcomp = calc_lowcomp(lowcomp, bndpsd[static_cast<std::size_t>(bin)],
+                                       bndpsd[static_cast<std::size_t>(bin) + 1], bin);
+            }
             fastleak = bndpsd[static_cast<std::size_t>(bin)] - fgain;
             slowleak = bndpsd[static_cast<std::size_t>(bin)] - sgain;
             excite[static_cast<std::size_t>(bin)] = fastleak - lowcomp;
-            if (bndpsd[static_cast<std::size_t>(bin)] <= bndpsd[static_cast<std::size_t>(bin) + 1]) {
+            if (not_lfe_last(bin) &&
+                bndpsd[static_cast<std::size_t>(bin)] <= bndpsd[static_cast<std::size_t>(bin) + 1]) {
                 begin = bin + 1;
                 break;
             }
         }
         for (int bin = begin; bin < std::min(bndend, 22); ++bin) {
-            lowcomp = calc_lowcomp(lowcomp, bndpsd[static_cast<std::size_t>(bin)],
-                                   bndpsd[static_cast<std::size_t>(bin) + 1], bin);
+            if (not_lfe_last(bin)) {
+                lowcomp = calc_lowcomp(lowcomp, bndpsd[static_cast<std::size_t>(bin)],
+                                       bndpsd[static_cast<std::size_t>(bin) + 1], bin);
+            }
             fastleak -= fdecay;
             fastleak = std::max(fastleak, bndpsd[static_cast<std::size_t>(bin)] - fgain);
             slowleak -= sdecay;
