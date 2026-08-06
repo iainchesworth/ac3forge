@@ -18,8 +18,16 @@ bit-perfect silence, and that an independent from-spec bitstream parser rates CO
 including the A/52 §5.5 layout constraints (padding via in-block skip fields) and both CRC
 words (crc1 solved via GF(2) polynomial inverse, since it precedes its coverage region).
 
+**Milestone 3 (MDCT + KBD window) complete.** The analysis filterbank is in: the 512-point
+KBD window is generated at compile time from the Kaiser-Bessel formula and reproduces every
+value of the spec's published Table 7.33 exactly (5-decimal rounding), the forward MDCT
+matches independent numpy goldens ≤1e-10, and a 50%-overlap TDAC round-trip through the
+*normative* §7.9.4.1 decoder inverse reconstructs input ≤1e-10 — locking window, both
+transforms, and the −2/N ↔ ×2 level convention together.
+
 See [docs/RESEARCH.md](docs/RESEARCH.md) for the research summary, architecture, and
-roadmap (next up: the MDCT + KBD window against numpy golden vectors, then real audio).
+roadmap (next up: exponent extraction and coding, then the bit-allocation engine — the
+hard middle — after which real audio flows end-to-end).
 
 ## Ground rules
 
