@@ -14,6 +14,8 @@
 #include "ac3/decoder/decoder.hpp"
 #include "ac3/encoder/encoder.hpp"
 #include "ac3/encoder/silent_frame.hpp"
+#include "sinks/iec61937.hpp"
+#include "spatial/spatial.hpp"
 
 namespace {
 
@@ -25,6 +27,8 @@ void print_usage() {
     std::println("  ac3cli sine    <out.ac3> [seconds] [bitrate_kbps] [freq_hz] [amp_pct] [layout]");
     std::println("  ac3cli encode  <in.wav> <out.ac3> [bitrate_kbps]");
     std::println("  ac3cli decode  <in.ac3> <out.wav>");
+    std::println("  ac3cli orbit   <out.ac3> [seconds] [bitrate_kbps] [orbit_seconds]");
+    std::println("  ac3cli spdif   <in.ac3> <out.wav>   (IEC 61937 wrap as playable PCM16 WAV)");
     std::println("");
     std::println("layout: stereo (default) | 51 — 5.1 uses per-channel tones");
     std::println("        (L 1000, C 800, R 1200, SL 600, SR 1400, LFE 60 Hz)");
@@ -147,6 +151,72 @@ void write_wav_f32(std::ofstream& out, const std::vector<std::vector<float>>& in
             out.write(reinterpret_cast<const char*>(&v), 4);
         }
     }
+}
+
+// A 440 Hz tone orbiting the listener once per orbit_seconds, rendered
+// through the spatial layer into 5.1 — the "move sound in space and hear it
+// in the stream" demo.
+int run_orbit(std::string_view out_path, std::uint32_t seconds, std::uint32_t bitrate,
+              std::uint32_t orbit_seconds) {
+    ac3::spatial::BedRenderer renderer;
+    const auto object =
+        renderer.add_object({.azimuth_deg = 0.0, .gain = 0.7, .lfe_send = 0.15});
+    ac3::FrameEncoder encoder{
+        {.bitrate_kbps = bitrate, .acmod = ac3::Acmod::k3_2, .lfe = true}};
+
+    std::ofstream out{std::string{out_path}, std::ios::binary};
+    if (!out) {
+        std::println(stderr, "error: cannot open {} for writing", out_path);
+        return 1;
+    }
+    const std::uint64_t frames = (static_cast<std::uint64_t>(seconds) * 48000 + 1535) / 1536;
+    std::vector<float> mono(ac3::spatial::kBlockSamples);
+    std::vector<std::vector<float>> frame_channels(6);
+    std::vector<std::vector<float>> bed_block(
+        6, std::vector<float>(ac3::spatial::kBlockSamples));
+    std::vector<std::span<const float>> views(6);
+    std::uint64_t n0 = 0;
+    for (std::uint64_t f = 0; f < frames; ++f) {
+        for (auto& channel : frame_channels) {
+            channel.clear();
+        }
+        for (int block = 0; block < ac3::kBlocksPerFrame; ++block) {
+            const double seconds_now = static_cast<double>(n0) / 48000.0;
+            renderer.set_target(
+                object, {.azimuth_deg = 360.0 * seconds_now /
+                                        std::max<std::uint32_t>(orbit_seconds, 1),
+                         .gain = 0.7,
+                         .lfe_send = 0.15});
+            for (std::size_t n = 0; n < mono.size(); ++n) {
+                mono[n] = static_cast<float>(
+                    0.6 * std::sin(2.0 * std::numbers::pi * 440.0 *
+                                   static_cast<double>(n0 + n) / 48000.0));
+            }
+            n0 += mono.size();
+            const std::array<std::span<const float>, 1> audio = {mono};
+            const std::array<std::span<float>, 6> bed_views = {
+                bed_block[0], bed_block[1], bed_block[2],
+                bed_block[3], bed_block[4], bed_block[5]};
+            renderer.render_block(audio, bed_views);
+            for (std::size_t ch = 0; ch < 6; ++ch) {
+                frame_channels[ch].insert(frame_channels[ch].end(), bed_block[ch].begin(),
+                                          bed_block[ch].end());
+            }
+        }
+        for (std::size_t ch = 0; ch < 6; ++ch) {
+            views[ch] = frame_channels[ch];
+        }
+        const auto frame = encoder.encode_frame(views);
+        if (!frame) {
+            std::println(stderr, "error: bitrate must be a legal AC-3 rate");
+            return 1;
+        }
+        out.write(reinterpret_cast<const char*>(frame->data()),
+                  static_cast<std::streamsize>(frame->size()));
+    }
+    std::println("wrote {} 5.1 frames: 440 Hz tone orbiting every {} s -> {}", frames,
+                 orbit_seconds, out_path);
+    return 0;
 }
 
 // Minimal WAV reader: PCM16 or float32, any channel count.
@@ -305,6 +375,62 @@ int run_decode(std::string_view in_path, std::string_view out_path) {
 
 }  // namespace
 
+// Wrap a raw AC-3 stream into IEC 61937 bursts inside a PCM16 stereo WAV:
+// played BIT-EXACTLY (volume 100%, no mixing) into an S/PDIF or HDMI output,
+// a receiver locks onto the bursts and lights up "Dolby Digital".
+int run_spdif(std::string_view in_path, std::string_view out_path) {
+    std::ifstream in{std::string{in_path}, std::ios::binary};
+    if (!in) {
+        std::println(stderr, "error: cannot open {}", in_path);
+        return 1;
+    }
+    std::vector<char> raw{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    const auto frames = ac3::split_frames(std::as_bytes(std::span{raw}));
+    if (!frames || frames->empty()) {
+        std::println(stderr, "error: not a valid AC-3 stream");
+        return 1;
+    }
+    const auto fscod = std::to_integer<std::uint32_t>((*frames)[0][4]) >> 6;
+    const auto rate = sample_rate_hz(static_cast<ac3::SampleRate>(fscod));
+
+    std::ofstream out{std::string{out_path}, std::ios::binary};
+    if (!out) {
+        std::println(stderr, "error: cannot open {} for writing", out_path);
+        return 1;
+    }
+    const auto data_bytes =
+        static_cast<std::uint32_t>(frames->size() * ac3::iec61937::kBurstBytes);
+    const auto put_u32 = [&](std::uint32_t v) { out.write(reinterpret_cast<const char*>(&v), 4); };
+    const auto put_u16 = [&](std::uint16_t v) { out.write(reinterpret_cast<const char*>(&v), 2); };
+    out.write("RIFF", 4);
+    put_u32(36 + data_bytes);
+    out.write("WAVE", 4);
+    out.write("fmt ", 4);
+    put_u32(16);
+    put_u16(1);  // PCM
+    put_u16(2);  // stereo carrier
+    put_u32(rate);
+    put_u32(rate * 4);
+    put_u16(4);
+    put_u16(16);
+    out.write("data", 4);
+    put_u32(data_bytes);
+    for (const auto& frame : *frames) {
+        const auto burst = ac3::iec61937::wrap_frame(frame);
+        if (!burst) {
+            std::println(stderr, "error: burst wrap failed");
+            return 1;
+        }
+        out.write(reinterpret_cast<const char*>(burst->data()),
+                  static_cast<std::streamsize>(burst->size()));
+    }
+    std::println("wrapped {} frames into IEC 61937 bursts -> {} ({} Hz carrier)",
+                 frames->size(), out_path, rate);
+    std::println("play bit-exactly (100% volume, exclusive/passthrough output) to light up");
+    std::println("a receiver's Dolby Digital indicator.");
+    return 0;
+}
+
 int main(int argc, char** argv) {
     const std::span<char*> args{argv, static_cast<std::size_t>(argc)};
     if (args.size() < 3) {
@@ -323,11 +449,19 @@ int main(int argc, char** argv) {
                         args.size() > 6 ? parse_u32_or(args[6], 50) : 50,
                         args.size() > 7 ? std::string_view{args[7]} : "stereo");
     }
+    if (command == "orbit") {
+        return run_orbit(args[2], args.size() > 3 ? parse_u32_or(args[3], 8) : 8,
+                         args.size() > 4 ? parse_u32_or(args[4], 448) : 448,
+                         args.size() > 5 ? parse_u32_or(args[5], 4) : 4);
+    }
     if (command == "encode" && args.size() > 3) {
         return run_encode(args[2], args[3], args.size() > 4 ? parse_u32_or(args[4], 192) : 192);
     }
     if (command == "decode" && args.size() > 3) {
         return run_decode(args[2], args[3]);
+    }
+    if (command == "spdif" && args.size() > 3) {
+        return run_spdif(args[2], args[3]);
     }
     print_usage();
     return 1;

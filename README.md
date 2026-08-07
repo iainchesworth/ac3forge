@@ -52,9 +52,17 @@ program material, FFmpeg as neutral referee): **ours 41.2/44.0/45.1/51.1 dB vs F
 `ac3cli encode` now takes arbitrary stereo WAV input). Decoder parity vs FFmpeg holds on
 rematrix-active program material (max diff 1.1e-5).
 
+**Milestones 8–9 complete: sounds move in space, and the stream is receiver-ready.**
+The spatial layer (`src/spatial/`) places mono objects on the ITU 5.1 ring via
+energy-normalized 2D VBAP with per-block gain ramps and explicit LFE sends; `ac3cli orbit`
+renders a tone circling the listener straight into 5.1 AC-3 (an end-to-end test parks the
+object at each speaker and proves the decoded energy follows it: C → L → SL → SR → R).
+The IEC 61937 packer (`src/sinks/`) wraps frames into S/PDIF bursts **byte-exact against
+FFmpeg's spdif muxer**, and `ac3cli spdif` emits them as a PCM16 WAV — played bit-exactly
+through a passthrough output, a receiver locks on and lights its Dolby Digital indicator.
+
 See [docs/RESEARCH.md](docs/RESEARCH.md) for the research summary, architecture, and
-roadmap (next: the spatial layer — scene model, VBAP renderer, bed mixer — or coupling /
-IEC 61937 passthrough as appetite dictates).
+roadmap (remaining rungs: channel coupling, live WASAPI capture/passthrough, E-AC-3).
 
 ## Ground rules
 

@@ -20,6 +20,8 @@ add_library(ac3core STATIC
   src/ac3/core/mdct.cpp
   src/ac3/decoder/decoder.cpp
   src/ac3/encoder/encoder.cpp
+  src/sinks/iec61937.cpp
+  src/spatial/spatial.cpp
 )
 add_library(ac3::core ALIAS ac3core)
 target_include_directories(ac3core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -42,6 +44,7 @@ if(AC3FORGE_BUILD_TESTS)
     tests/test_frame.cpp
     tests/test_mantissas.cpp
     tests/test_mdct.cpp
+    tests/test_spatial.cpp
     tests/test_tables.cpp
   )
   target_link_libraries(ac3tests PRIVATE ac3::core Catch2::Catch2WithMain)
