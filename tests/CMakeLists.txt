@@ -15,6 +15,7 @@ add_executable(ac3tests
     test_frame.cpp
     test_mantissas.cpp
     test_mdct.cpp
+    test_ring_buffer.cpp
     test_spatial.cpp
     test_tables.cpp)
 

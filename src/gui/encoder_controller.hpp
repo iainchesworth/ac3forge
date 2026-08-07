@@ -2,15 +2,19 @@
 
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QUrl>
 #include <QtQmlIntegration>
 
 #include <atomic>
 #include <memory>
+#include <vector>
 
-// The QObject facade the QML layer talks to. All codec work happens in
-// ac3::forge; this type owns nothing but the presentation state and the
-// worker that drives an encode off the GUI thread.
+#include "ac3/capture/capture.hpp"
+
+// The QObject facade the QML layer talks to. All codec and capture work
+// happens in ac3::forge; this type owns nothing but the presentation state
+// and the workers that keep encoding off the GUI thread.
 
 class EncoderController : public QObject {
     Q_OBJECT
@@ -26,7 +30,10 @@ class EncoderController : public QObject {
     Q_PROPERTY(double progress READ progress NOTIFY progressChanged)
     Q_PROPERTY(int bitrateKbps READ bitrateKbps WRITE setBitrateKbps NOTIFY bitrateChanged)
     Q_PROPERTY(QStringList captureDevices READ captureDevices NOTIFY captureDevicesChanged)
-    Q_PROPERTY(bool captureSupported READ captureSupported CONSTANT)
+    Q_PROPERTY(bool captureSupported READ captureSupported NOTIFY captureDevicesChanged)
+    Q_PROPERTY(bool recording READ recording NOTIFY recordingChanged)
+    Q_PROPERTY(double recordedSeconds READ recordedSeconds NOTIFY recordedSecondsChanged)
+    Q_PROPERTY(double captureLevel READ captureLevel NOTIFY recordedSecondsChanged)
 
 public:
     explicit EncoderController(QObject* parent = nullptr);
@@ -41,7 +48,10 @@ public:
     [[nodiscard]] double progress() const { return progress_; }
     [[nodiscard]] int bitrateKbps() const { return bitrate_kbps_; }
     [[nodiscard]] QStringList captureDevices() const { return capture_devices_; }
-    [[nodiscard]] bool captureSupported() const;
+    [[nodiscard]] bool captureSupported() const { return !capture_devices_.isEmpty(); }
+    [[nodiscard]] bool recording() const { return recording_; }
+    [[nodiscard]] double recordedSeconds() const { return recorded_seconds_; }
+    [[nodiscard]] double captureLevel() const { return capture_level_; }
 
     void setBitrateKbps(int kbps);
 
@@ -50,6 +60,8 @@ public:
     Q_INVOKABLE void cancel();
     Q_INVOKABLE [[nodiscard]] QString suggestedOutputName() const;
     Q_INVOKABLE void refreshCaptureDevices();
+    Q_INVOKABLE void startRecording(int deviceIndex, const QUrl& url);
+    Q_INVOKABLE void stopRecording();
 
 signals:
     void sourceChanged();
@@ -59,6 +71,8 @@ signals:
     void progressChanged();
     void bitrateChanged();
     void captureDevicesChanged();
+    void recordingChanged();
+    void recordedSecondsChanged();
     void encodeFinished(bool ok, const QString& message);
 
 private:
@@ -67,17 +81,24 @@ private:
     void setStatus(const QString& text);
     void setBusy(bool busy);
     void setProgress(double value);
+    void setRecording(bool recording);
 
     QString source_path_;
     QString source_info_;
     QString output_path_;
-    QString status_ = QStringLiteral("Choose a WAV file to encode.");
+    QString status_ = QStringLiteral("Choose a WAV file, or record from a capture device.");
     bool source_ready_ = false;
     bool busy_ = false;
+    bool recording_ = false;
     double progress_ = 0.0;
+    double recorded_seconds_ = 0.0;
+    double capture_level_ = 0.0;
     int bitrate_kbps_ = 192;
     QStringList capture_devices_;
+    std::vector<ac3::capture::DeviceInfo> devices_;
 
     std::unique_ptr<Source> source_;
+    std::unique_ptr<ac3::capture::Capture> capture_;
     std::atomic_bool cancel_requested_{false};
+    std::atomic_bool stop_recording_{false};
 };

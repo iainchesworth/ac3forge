@@ -4,9 +4,12 @@
 #include <QtConcurrent/QtConcurrentRun>
 
 #include <algorithm>
+#include <chrono>
+#include <cmath>
 #include <fstream>
 #include <optional>
 #include <span>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -37,19 +40,18 @@ EncoderController::EncoderController(QObject* parent) : QObject(parent) {
 
 EncoderController::~EncoderController() = default;
 
-bool EncoderController::captureSupported() const {
-    // Live capture arrives with the WASAPI backend; the UI stays honest about
-    // that rather than offering a control that cannot work yet.
-    return false;
-}
-
 void EncoderController::refreshCaptureDevices() {
-    QStringList devices;
-    if (captureSupported()) {
-        // Populated by the capture backend once it lands.
+    QStringList names;
+    devices_.clear();
+    if (auto found = ac3::capture::enumerate_devices()) {
+        devices_ = std::move(*found);
+        for (const auto& device : devices_) {
+            names.append(QString::fromStdString(device.name) +
+                         (device.is_default ? QStringLiteral("  [default]") : QString()));
+        }
     }
-    if (devices != capture_devices_) {
-        capture_devices_ = devices;
+    if (names != capture_devices_) {
+        capture_devices_ = names;
         emit captureDevicesChanged();
     }
 }
@@ -84,6 +86,149 @@ void EncoderController::setProgress(double value) {
     }
     progress_ = value;
     emit progressChanged();
+}
+
+void EncoderController::setRecording(bool recording) {
+    if (recording == recording_) {
+        return;
+    }
+    recording_ = recording;
+    emit recordingChanged();
+}
+
+void EncoderController::stopRecording() {
+    stop_recording_.store(true, std::memory_order_relaxed);
+}
+
+void EncoderController::startRecording(int deviceIndex, const QUrl& url) {
+    if (busy_ || recording_) {
+        return;
+    }
+    if (deviceIndex < 0 || static_cast<std::size_t>(deviceIndex) >= devices_.size()) {
+        setStatus(QStringLiteral("Choose a capture device first."));
+        return;
+    }
+    const auto device = devices_[static_cast<std::size_t>(deviceIndex)];
+    const auto rate = to_sample_rate(device.sample_rate);
+    if (!rate) {
+        setStatus(QStringLiteral("\"%1\" runs at %2 Hz; AC-3 needs 32, 44.1 or 48 kHz. "
+                                 "Change the endpoint's shared-mode format in Windows sound "
+                                 "settings.")
+                      .arg(QString::fromStdString(device.name))
+                      .arg(device.sample_rate));
+        return;
+    }
+
+    capture_ = std::make_unique<ac3::capture::Capture>();
+    const auto started = capture_->start(device.id, device.kind);
+    if (!started) {
+        const auto why = ac3::capture::describe(started.error());
+        capture_.reset();
+        setStatus(QStringLiteral("Could not open \"%1\": %2")
+                      .arg(QString::fromStdString(device.name),
+                           QString::fromUtf8(why.data(), static_cast<qsizetype>(why.size()))));
+        return;
+    }
+
+    const QString path = url.isLocalFile() ? url.toLocalFile() : url.toString();
+    output_path_ = path;
+    emit outputChanged();
+
+    stop_recording_.store(false, std::memory_order_relaxed);
+    setRecording(true);
+    setBusy(true);
+    recorded_seconds_ = 0.0;
+    capture_level_ = 0.0;
+    emit recordedSecondsChanged();
+    setStatus(QStringLiteral("Recording from %1…").arg(QString::fromStdString(device.name)));
+
+    const int bitrate = bitrate_kbps_;
+    const auto channels = capture_->channels();
+    const auto sample_rate = capture_->sample_rate();
+
+    std::ignore = QtConcurrent::run([this, path, rate = *rate, bitrate, channels,
+                                     sample_rate]() {
+        ac3::FrameEncoder encoder{
+            {.sample_rate = rate, .bitrate_kbps = static_cast<std::uint32_t>(bitrate)}};
+        std::ofstream out{path.toStdString(), std::ios::binary};
+        if (!out) {
+            QMetaObject::invokeMethod(this, [this] {
+                capture_->stop();
+                capture_.reset();
+                setRecording(false);
+                setBusy(false);
+                setStatus(QStringLiteral("Could not open the output file for writing."));
+                emit encodeFinished(false, status());
+            });
+            return;
+        }
+
+        std::vector<float> interleaved(static_cast<std::size_t>(ac3::kSamplesPerFrame) *
+                                       channels);
+        std::vector<std::vector<float>> planar(2,
+                                               std::vector<float>(ac3::kSamplesPerFrame, 0.0f));
+        std::vector<std::span<const float>> views{planar[0], planar[1]};
+        std::size_t frames = 0;
+
+        while (!stop_recording_.load(std::memory_order_relaxed)) {
+            std::size_t filled = 0;
+            while (filled < interleaved.size() &&
+                   !stop_recording_.load(std::memory_order_relaxed)) {
+                const auto got = capture_->buffer()->read(
+                    std::span{interleaved}.subspan(filled, interleaved.size() - filled));
+                filled += got;
+                if (got == 0) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                }
+            }
+            if (filled < interleaved.size()) {
+                break;  // stopped mid-frame; drop the partial frame
+            }
+
+            float peak = 0.0f;
+            for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+                const std::size_t base = static_cast<std::size_t>(i) * channels;
+                const float left = interleaved[base];
+                const float right = channels > 1 ? interleaved[base + 1] : left;
+                planar[0][static_cast<std::size_t>(i)] = left;
+                planar[1][static_cast<std::size_t>(i)] = right;
+                peak = std::max({peak, std::abs(left), std::abs(right)});
+            }
+
+            const auto frame = encoder.encode_frame(views);
+            if (!frame) {
+                break;
+            }
+            out.write(reinterpret_cast<const char*>(frame->data()),
+                      static_cast<std::streamsize>(frame->size()));
+            ++frames;
+
+            const double seconds = static_cast<double>(frames * ac3::kSamplesPerFrame) /
+                                   static_cast<double>(sample_rate);
+            QMetaObject::invokeMethod(this, [this, seconds, peak] {
+                recorded_seconds_ = seconds;
+                capture_level_ = static_cast<double>(peak);
+                emit recordedSecondsChanged();
+            });
+        }
+        out.close();
+
+        QMetaObject::invokeMethod(this, [this, frames] {
+            const auto stats = capture_->stats();
+            capture_->stop();
+            capture_.reset();
+            setRecording(false);
+            setBusy(false);
+            capture_level_ = 0.0;
+            setStatus(QStringLiteral("Recorded %1 frames to %2 (%3 dropped, %4 silence-filled)")
+                          .arg(frames)
+                          .arg(QFileInfo(output_path_).fileName())
+                          .arg(stats.frames_dropped)
+                          .arg(stats.frames_silence_filled));
+            emit recordedSecondsChanged();
+            emit encodeFinished(true, status());
+        });
+    });
 }
 
 void EncoderController::loadSourceFile(const QUrl& url) {

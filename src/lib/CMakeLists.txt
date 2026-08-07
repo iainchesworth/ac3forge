@@ -6,8 +6,17 @@
 add_library(ac3forge)
 add_library(ac3::forge ALIAS ac3forge)
 
+# Select the single capture implementation for the target OS. No #ifdefs:
+# CMake decides which translation unit is compiled.
+if(WIN32)
+    set(AC3_CAPTURE_SOURCE src/capture/capture_wasapi.cpp)
+else()
+    set(AC3_CAPTURE_SOURCE src/capture/capture_stub.cpp)
+endif()
+
 target_sources(ac3forge
     PRIVATE
+        ${AC3_CAPTURE_SOURCE}
         src/core/bitalloc.cpp
         src/core/exponents.cpp
         src/core/mantissas.cpp
@@ -26,3 +35,8 @@ target_include_directories(ac3forge
 target_compile_features(ac3forge PUBLIC cxx_std_23)
 
 target_link_libraries(ac3forge PRIVATE ac3::warnings)
+
+# WASAPI: COM for the device enumerator, MMCSS for capture-thread priority.
+if(WIN32)
+    target_link_libraries(ac3forge PRIVATE ole32 avrt)
+endif()

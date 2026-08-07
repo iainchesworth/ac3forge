@@ -61,8 +61,17 @@ The IEC 61937 packer (`src/sinks/`) wraps frames into S/PDIF bursts **byte-exact
 FFmpeg's spdif muxer**, and `ac3cli spdif` emits them as a PCM16 WAV — played bit-exactly
 through a passthrough output, a receiver locks on and lights its Dolby Digital indicator.
 
+**Live WASAPI capture works.** `ac3::capture` enumerates every active input endpoint plus
+every render endpoint as a loopback source, and streams interleaved float samples through a
+lock-free SPSC ring into the encoder. Verified end to end on real hardware: a 1 kHz tone
+played through the speakers was captured via loopback, encoded, and decoded back at exactly
+1000.0 Hz with zero ring overruns. Loopback gaps (a render endpoint delivers nothing while
+the machine is silent) are filled against a QPC timeline so the stream stays continuous.
+`ac3cli devices` lists endpoints, `ac3cli record` captures straight to AC-3, and the GUI's
+capture card is live with a peak-level meter.
+
 See [docs/RESEARCH.md](docs/RESEARCH.md) for the research summary, architecture, and
-roadmap (remaining rungs: channel coupling, live WASAPI capture/passthrough, E-AC-3).
+roadmap (remaining rungs: channel coupling, exclusive-mode passthrough, E-AC-3).
 
 ## Ground rules
 

@@ -32,6 +32,15 @@ ApplicationWindow {
         onAccepted: EncoderController.encodeTo(selectedFile)
     }
 
+    FileDialog {
+        id: recordDialog
+        title: qsTr("Record to AC-3")
+        fileMode: FileDialog.SaveFile
+        defaultSuffix: "ac3"
+        nameFilters: [qsTr("AC-3 elementary stream (*.ac3)")]
+        onAccepted: EncoderController.startRecording(deviceBox.currentIndex, selectedFile)
+    }
+
     ScrollView {
         anchors.fill: parent
         contentWidth: availableWidth
@@ -102,7 +111,7 @@ ApplicationWindow {
                     }
                 }
 
-                // ---- capture (pending the WASAPI backend) ------------------
+                // ---- live capture -------------------------------------------
                 Card {
                     title: qsTr("Live capture")
 
@@ -111,23 +120,69 @@ ApplicationWindow {
                         spacing: Theme.gap
 
                         ComboBox {
+                            id: deviceBox
                             Layout.fillWidth: true
-                            enabled: EncoderController.captureSupported
+                            enabled: EncoderController.captureSupported && !EncoderController.busy
                             model: EncoderController.captureSupported
                                    ? EncoderController.captureDevices
-                                   : [qsTr("No capture backend yet")]
+                                   : [qsTr("No capture devices found")]
                         }
 
                         Button {
-                            text: qsTr("Record")
+                            text: qsTr("Refresh")
+                            enabled: !EncoderController.busy
+                            onClicked: EncoderController.refreshCaptureDevices()
+                        }
+
+                        Button {
+                            text: EncoderController.recording ? qsTr("Stop") : qsTr("Record…")
+                            highlighted: EncoderController.recording
                             enabled: EncoderController.captureSupported
+                                     && (EncoderController.recording || !EncoderController.busy)
+                            onClicked: {
+                                if (EncoderController.recording) {
+                                    EncoderController.stopRecording();
+                                } else {
+                                    recordDialog.selectedFile = "capture.ac3";
+                                    recordDialog.open();
+                                }
+                            }
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        visible: EncoderController.recording
+                        spacing: Theme.gap
+
+                        Text {
+                            text: qsTr("%1 s").arg(EncoderController.recordedSeconds.toFixed(1))
+                            color: Theme.text
+                            font.pixelSize: Theme.fontNormal
+                            font.family: "monospace"
+                        }
+
+                        // Peak level of the frame just encoded — enough to see
+                        // at a glance that real audio is arriving.
+                        Rectangle {
+                            Layout.fillWidth: true
+                            height: 8
+                            radius: 4
+                            color: Theme.surfaceAlt
+
+                            Rectangle {
+                                width: parent.width * Math.min(1.0, EncoderController.captureLevel)
+                                height: parent.height
+                                radius: parent.radius
+                                color: EncoderController.captureLevel > 0.98 ? Theme.bad : Theme.good
+                            }
                         }
                     }
 
                     Text {
                         Layout.fillWidth: true
                         visible: !EncoderController.captureSupported
-                        text: qsTr("Microphone and system-loopback capture arrive with the WASAPI backend — the next item on the roadmap.")
+                        text: qsTr("No active capture endpoints were found. Plug in a microphone, or use a playback device's loopback entry to capture what the machine is playing.")
                         color: Theme.textMuted
                         font.pixelSize: Theme.fontSmall
                         wrapMode: Text.WordWrap

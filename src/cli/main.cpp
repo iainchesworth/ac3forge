@@ -1,5 +1,6 @@
 #include <array>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <fstream>
@@ -9,8 +10,10 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
+#include "ac3/capture/capture.hpp"
 #include "ac3/decoder/decoder.hpp"
 #include "ac3/encoder/encoder.hpp"
 #include "ac3/encoder/silent_frame.hpp"
@@ -27,6 +30,8 @@ void print_usage() {
     std::println("  ac3cli silence <out.ac3> [seconds] [bitrate_kbps]");
     std::println("  ac3cli sine    <out.ac3> [seconds] [bitrate_kbps] [freq_hz] [amp_pct] [layout]");
     std::println("  ac3cli orbit   <out.ac3> [seconds] [bitrate_kbps] [orbit_seconds]");
+    std::println("  ac3cli devices");
+    std::println("  ac3cli record  <out.ac3> [seconds] [bitrate_kbps] [device_index]");
     std::println("  ac3cli encode  <in.wav> <out.ac3> [bitrate_kbps]");
     std::println("  ac3cli decode  <in.ac3> <out.wav>");
     std::println("  ac3cli spdif   <in.ac3> <out.wav>   (IEC 61937 wrap as playable PCM16 WAV)");
@@ -194,6 +199,119 @@ int run_orbit(std::string_view out_path, std::uint32_t seconds, std::uint32_t bi
     return 0;
 }
 
+int run_devices() {
+    const auto devices = ac3::capture::enumerate_devices();
+    if (!devices) {
+        std::println(stderr, "error: {}", ac3::capture::describe(devices.error()));
+        return 1;
+    }
+    if (devices->empty()) {
+        std::println("no active capture endpoints found");
+        return 0;
+    }
+    std::println("{:>3}  {:<9} {:>7}  {:>3}  {}", "idx", "kind", "rate", "ch", "name");
+    for (std::size_t i = 0; i < devices->size(); ++i) {
+        const auto& d = (*devices)[i];
+        std::println("{:>3}  {:<9} {:>7}  {:>3}  {}{}", i,
+                     d.kind == ac3::capture::DeviceKind::kInput ? "input" : "loopback",
+                     d.sample_rate, d.channels, d.name, d.is_default ? "  [default]" : "");
+    }
+    return 0;
+}
+
+// Capture live audio and encode it straight to AC-3. The capture thread fills
+// a lock-free ring; this thread drains it a frame at a time.
+int run_record(std::string_view out_path, std::uint32_t seconds, std::uint32_t bitrate,
+               int device_index) {
+    const auto devices = ac3::capture::enumerate_devices();
+    if (!devices) {
+        std::println(stderr, "error: {}", ac3::capture::describe(devices.error()));
+        return 1;
+    }
+    if (devices->empty()) {
+        std::println(stderr, "error: no capture endpoints available");
+        return 1;
+    }
+    if (device_index < 0 || static_cast<std::size_t>(device_index) >= devices->size()) {
+        std::println(stderr, "error: device index {} out of range (see 'ac3cli devices')",
+                     device_index);
+        return 1;
+    }
+    const auto& device = (*devices)[static_cast<std::size_t>(device_index)];
+
+    ac3::SampleRate sr{};
+    switch (device.sample_rate) {
+        case 48000: sr = ac3::SampleRate::k48000; break;
+        case 44100: sr = ac3::SampleRate::k44100; break;
+        case 32000: sr = ac3::SampleRate::k32000; break;
+        default:
+            std::println(stderr,
+                         "error: device runs at {} Hz; AC-3 needs 32, 44.1 or 48 kHz "
+                         "(change the endpoint's shared-mode format in Windows sound settings)",
+                         device.sample_rate);
+            return 1;
+    }
+
+    ac3::capture::Capture capture;
+    const auto started = capture.start(device.id, device.kind);
+    if (!started) {
+        std::println(stderr, "error: {}", ac3::capture::describe(started.error()));
+        return 1;
+    }
+    const auto channels = capture.channels();
+    std::println("recording from \"{}\" ({} Hz, {} ch) for {} s…", device.name,
+                 capture.sample_rate(), channels, seconds);
+
+    ac3::FrameEncoder encoder{{.sample_rate = sr, .bitrate_kbps = bitrate}};
+    const std::uint64_t target_frames =
+        (static_cast<std::uint64_t>(seconds) * capture.sample_rate() + ac3::kSamplesPerFrame - 1) /
+        ac3::kSamplesPerFrame;
+
+    std::vector<float> interleaved(static_cast<std::size_t>(ac3::kSamplesPerFrame) * channels);
+    std::vector<std::vector<float>> planar(2,
+                                           std::vector<float>(ac3::kSamplesPerFrame, 0.0f));
+    std::vector<std::span<const float>> views{planar[0], planar[1]};
+    std::vector<std::vector<std::byte>> frames;
+    frames.reserve(static_cast<std::size_t>(target_frames));
+
+    while (frames.size() < target_frames) {
+        // Block until a whole AC-3 frame of interleaved samples is available.
+        std::size_t filled = 0;
+        while (filled < interleaved.size()) {
+            const auto got = capture.buffer()->read(
+                std::span{interleaved}.subspan(filled, interleaved.size() - filled));
+            filled += got;
+            if (got == 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+        }
+        // Deinterleave to stereo: take the first two channels, or duplicate a
+        // mono source across both.
+        for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+            const std::size_t base = static_cast<std::size_t>(i) * channels;
+            planar[0][static_cast<std::size_t>(i)] = interleaved[base];
+            planar[1][static_cast<std::size_t>(i)] =
+                channels > 1 ? interleaved[base + 1] : interleaved[base];
+        }
+        auto frame = encoder.encode_frame(views);
+        if (!frame) {
+            std::println(stderr, "error: bitrate must be a legal AC-3 rate");
+            return 1;
+        }
+        frames.push_back(std::move(*frame));
+    }
+
+    capture.stop();
+    const auto stats = capture.stats();
+    if (!write_frames(out_path, frames)) {
+        return 1;
+    }
+    std::println("wrote {} frames ({} kbps) to {}", frames.size(), bitrate, out_path);
+    std::println("captured {} frames, {} silence-filled, {} dropped", stats.frames_captured,
+                 stats.frames_silence_filled, stats.frames_dropped);
+    return 0;
+}
+
 int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_t bitrate) {
     const auto wav = ac3::io::read_wav(std::string{in_path});
     if (!wav) {
@@ -350,11 +468,19 @@ int run_spdif(std::string_view in_path, std::string_view out_path) {
 
 int main(int argc, char** argv) {
     const std::span<char*> args{argv, static_cast<std::size_t>(argc)};
+    if (args.size() >= 2 && std::string_view{args[1]} == "devices") {
+        return run_devices();
+    }
     if (args.size() < 3) {
         print_usage();
         return args.size() < 2 ? 0 : 1;
     }
     const std::string_view command{args[1]};
+    if (command == "record") {
+        return run_record(args[2], args.size() > 3 ? parse_u32_or(args[3], 5) : 5,
+                          args.size() > 4 ? parse_u32_or(args[4], 192) : 192,
+                          args.size() > 5 ? static_cast<int>(parse_u32_or(args[5], 0)) : 0);
+    }
     if (command == "silence") {
         return run_silence(args[2], args.size() > 3 ? parse_u32_or(args[3], 5) : 5,
                            args.size() > 4 ? parse_u32_or(args[4], 192) : 192);
