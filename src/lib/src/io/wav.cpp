@@ -1,0 +1,184 @@
+#include "ac3/io/wav.hpp"
+
+#include <algorithm>
+#include <cstring>
+#include <fstream>
+#include <iterator>
+
+namespace ac3::io {
+
+namespace {
+
+std::uint16_t read_u16(std::span<const char> data, std::size_t at) {
+    return static_cast<std::uint16_t>(static_cast<std::uint8_t>(data[at]) |
+                                      (static_cast<std::uint8_t>(data[at + 1]) << 8));
+}
+
+std::uint32_t read_u32(std::span<const char> data, std::size_t at) {
+    return static_cast<std::uint32_t>(read_u16(data, at)) |
+           (static_cast<std::uint32_t>(read_u16(data, at + 2)) << 16);
+}
+
+void put_u16(std::ofstream& out, std::uint16_t value) {
+    out.write(reinterpret_cast<const char*>(&value), 2);
+}
+
+void put_u32(std::ofstream& out, std::uint32_t value) {
+    out.write(reinterpret_cast<const char*>(&value), 4);
+}
+
+std::size_t find_chunk(std::string_view view, std::string_view tag) {
+    return view.find(tag);
+}
+
+}  // namespace
+
+std::string_view describe(WavError error) {
+    switch (error) {
+        case WavError::kCannotOpen: return "cannot open file";
+        case WavError::kNotRiffWave: return "not a RIFF/WAVE file";
+        case WavError::kUnsupportedFormat: return "unsupported WAV format (need PCM16 or float32)";
+        case WavError::kTruncated: return "truncated WAV data";
+    }
+    return "unknown error";
+}
+
+std::expected<WavData, WavError> read_wav(const std::string& path) {
+    std::ifstream in{path, std::ios::binary};
+    if (!in) {
+        return std::unexpected(WavError::kCannotOpen);
+    }
+    const std::vector<char> raw{std::istreambuf_iterator<char>(in),
+                                std::istreambuf_iterator<char>()};
+    const std::string_view view{raw.data(), raw.size()};
+    if (raw.size() < 44 || view.substr(0, 4) != "RIFF" || view.substr(8, 4) != "WAVE") {
+        return std::unexpected(WavError::kNotRiffWave);
+    }
+    const auto fmt_at = find_chunk(view, "fmt ");
+    const auto data_at = find_chunk(view, "data");
+    if (fmt_at == std::string_view::npos || data_at == std::string_view::npos) {
+        return std::unexpected(WavError::kNotRiffWave);
+    }
+
+    const std::span<const char> bytes{raw};
+    auto format = read_u16(bytes, fmt_at + 8);
+    const auto channel_count = read_u16(bytes, fmt_at + 10);
+    const auto sample_rate = read_u32(bytes, fmt_at + 12);
+    const auto bits = read_u16(bytes, fmt_at + 22);
+    if (format == 0xFFFE) {
+        // WAVE_FORMAT_EXTENSIBLE: the real tag is the first two bytes of the
+        // SubFormat GUID in the extension.
+        format = read_u16(bytes, fmt_at + 32);
+    }
+    const bool is_float = format == 3 && bits == 32;
+    const bool is_pcm16 = format == 1 && bits == 16;
+    if (channel_count == 0 || (!is_float && !is_pcm16)) {
+        return std::unexpected(WavError::kUnsupportedFormat);
+    }
+
+    const auto declared = read_u32(bytes, data_at + 4);
+    const std::size_t payload_at = data_at + 8;
+    const std::size_t available = raw.size() > payload_at ? raw.size() - payload_at : 0;
+    const std::size_t payload = std::min<std::size_t>(declared, available);
+    const std::size_t stride = static_cast<std::size_t>(channel_count) * bits / 8;
+    if (stride == 0) {
+        return std::unexpected(WavError::kUnsupportedFormat);
+    }
+
+    WavData result;
+    result.sample_rate = sample_rate;
+    const std::size_t frames = payload / stride;
+    result.channels.assign(channel_count, std::vector<float>(frames));
+    for (std::size_t frame = 0; frame < frames; ++frame) {
+        for (std::uint16_t ch = 0; ch < channel_count; ++ch) {
+            const std::size_t at = payload_at + frame * stride + ch * bits / 8;
+            if (is_float) {
+                float value = 0.0f;
+                std::memcpy(&value, raw.data() + at, sizeof(value));
+                result.channels[ch][frame] = value;
+            } else {
+                const auto sample = static_cast<std::int16_t>(read_u16(bytes, at));
+                result.channels[ch][frame] = static_cast<float>(sample) / 32768.0f;
+            }
+        }
+    }
+    return result;
+}
+
+std::expected<void, WavError> write_wav_f32(const std::string& path,
+                                            std::span<const std::vector<float>> channels,
+                                            std::uint32_t sample_rate,
+                                            std::span<const std::size_t> channel_order) {
+    if (channels.empty()) {
+        return std::unexpected(WavError::kTruncated);
+    }
+    std::vector<std::size_t> order;
+    if (channel_order.empty()) {
+        order.resize(channels.size());
+        for (std::size_t i = 0; i < order.size(); ++i) {
+            order[i] = i;
+        }
+    } else {
+        order.assign(channel_order.begin(), channel_order.end());
+    }
+
+    std::ofstream out{path, std::ios::binary};
+    if (!out) {
+        return std::unexpected(WavError::kCannotOpen);
+    }
+    const auto count = static_cast<std::uint16_t>(order.size());
+    const auto frames = static_cast<std::uint32_t>(channels.front().size());
+    const std::uint32_t data_bytes = frames * count * 4;
+
+    out.write("RIFF", 4);
+    put_u32(out, 36 + data_bytes);
+    out.write("WAVE", 4);
+    out.write("fmt ", 4);
+    put_u32(out, 16);
+    put_u16(out, 3);  // IEEE float
+    put_u16(out, count);
+    put_u32(out, sample_rate);
+    put_u32(out, sample_rate * count * 4);
+    put_u16(out, static_cast<std::uint16_t>(count * 4));
+    put_u16(out, 32);
+    out.write("data", 4);
+    put_u32(out, data_bytes);
+    for (std::uint32_t frame = 0; frame < frames; ++frame) {
+        for (const auto source : order) {
+            const float value = channels[source][frame];
+            out.write(reinterpret_cast<const char*>(&value), 4);
+        }
+    }
+    return {};
+}
+
+std::expected<void, WavError> write_wav_pcm16_raw(const std::string& path,
+                                                  std::span<const std::byte> payload,
+                                                  std::uint32_t sample_rate,
+                                                  std::uint16_t channels) {
+    std::ofstream out{path, std::ios::binary};
+    if (!out) {
+        return std::unexpected(WavError::kCannotOpen);
+    }
+    const auto data_bytes = static_cast<std::uint32_t>(payload.size());
+    const std::uint32_t block_align = static_cast<std::uint32_t>(channels) * 2;
+
+    out.write("RIFF", 4);
+    put_u32(out, 36 + data_bytes);
+    out.write("WAVE", 4);
+    out.write("fmt ", 4);
+    put_u32(out, 16);
+    put_u16(out, 1);  // PCM
+    put_u16(out, channels);
+    put_u32(out, sample_rate);
+    put_u32(out, sample_rate * block_align);
+    put_u16(out, static_cast<std::uint16_t>(block_align));
+    put_u16(out, 16);
+    out.write("data", 4);
+    put_u32(out, data_bytes);
+    out.write(reinterpret_cast<const char*>(payload.data()),
+              static_cast<std::streamsize>(payload.size()));
+    return {};
+}
+
+}  // namespace ac3::io

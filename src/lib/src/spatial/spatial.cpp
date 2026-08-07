@@ -1,4 +1,4 @@
-#include "spatial/spatial.hpp"
+#include "ac3/spatial/spatial.hpp"
 
 #include <algorithm>
 #include <cassert>

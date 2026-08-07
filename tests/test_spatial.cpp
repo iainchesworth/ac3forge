@@ -8,7 +8,7 @@
 
 #include "ac3/decoder/decoder.hpp"
 #include "ac3/encoder/encoder.hpp"
-#include "spatial/spatial.hpp"
+#include "ac3/spatial/spatial.hpp"
 
 namespace {
 

@@ -1,54 +1,58 @@
-cmake_minimum_required(VERSION 3.28)
+cmake_minimum_required(VERSION 3.28...4.3)
 
-project(ac3forge VERSION 0.1.0 LANGUAGES CXX)
+project(ac3forge
+    VERSION 0.2.0
+    DESCRIPTION "Clean-room AC-3 (ATSC A/52) encoder and decoder with a spatial object layer"
+    LANGUAGES CXX)
 
-# On MSVC this selects /std:c++latest — there is no /std:c++23 switch yet.
+# ---------------------------------------------------------------------------
+# Global language settings: C++23 only, no compiler extensions.
+# ---------------------------------------------------------------------------
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-option(AC3FORGE_BUILD_TESTS "Build unit tests" ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-if(MSVC)
-  add_compile_options(/W4 /permissive- /utf-8)
+# One place for runtime artefacts so the Qt app finds its plugins and the CLI
+# and tests sit beside it.
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+include(CompilerWarnings)
+
+# Sources carry spec citations with non-ASCII glyphs (section marks, degrees,
+# arrows). Tell MSVC both the source and execution charsets are UTF-8 so it
+# neither mis-decodes them nor warns; harmless everywhere else.
+add_compile_options("$<$<CXX_COMPILER_ID:MSVC>:/utf-8>")
+
+# ---------------------------------------------------------------------------
+# Options
+# ---------------------------------------------------------------------------
+option(AC3FORGE_BUILD_CLI "Build the ac3cli command-line application" ON)
+option(AC3FORGE_BUILD_GUI "Build the Qt6 Quick GUI application" ON)
+option(AC3FORGE_BUILD_TESTS "Build the unit test suite" ON)
+
+# ---------------------------------------------------------------------------
+# Targets
+# ---------------------------------------------------------------------------
+# The library holds the entire codec and spatial engine and is GUI-free.
+add_subdirectory(src/lib)
+
+if(AC3FORGE_BUILD_CLI)
+    add_subdirectory(src/cli)
 endif()
 
-add_library(ac3core STATIC
-  src/ac3/core/bitalloc.cpp
-  src/ac3/core/exponents.cpp
-  src/ac3/core/mantissas.cpp
-  src/ac3/core/mdct.cpp
-  src/ac3/decoder/decoder.cpp
-  src/ac3/encoder/encoder.cpp
-  src/sinks/iec61937.cpp
-  src/spatial/spatial.cpp
-)
-add_library(ac3::core ALIAS ac3core)
-target_include_directories(ac3core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_compile_features(ac3core PUBLIC cxx_std_23)
-
-add_executable(ac3cli apps/ac3cli/main.cpp)
-target_link_libraries(ac3cli PRIVATE ac3::core)
+if(AC3FORGE_BUILD_GUI)
+    add_subdirectory(src/gui)
+endif()
 
 if(AC3FORGE_BUILD_TESTS)
-  enable_testing()
-  find_package(Catch2 3 CONFIG REQUIRED)
-  add_executable(ac3tests
-    tests/msvc_crt_report.cpp
-    tests/test_bitalloc.cpp
-    tests/test_bitwriter.cpp
-    tests/test_crc16.cpp
-    tests/test_decoder.cpp
-    tests/test_encoder.cpp
-    tests/test_exponents.cpp
-    tests/test_frame.cpp
-    tests/test_mantissas.cpp
-    tests/test_mdct.cpp
-    tests/test_spatial.cpp
-    tests/test_tables.cpp
-  )
-  target_link_libraries(ac3tests PRIVATE ac3::core Catch2::Catch2WithMain)
-  target_include_directories(ac3tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-  include(Catch)
-  catch_discover_tests(ac3tests)
+    enable_testing()
+    add_subdirectory(tests)
 endif()
+
+message(STATUS "ac3forge ${PROJECT_VERSION}")
+message(STATUS "  Build CLI   : ${AC3FORGE_BUILD_CLI}")
+message(STATUS "  Build GUI   : ${AC3FORGE_BUILD_GUI}")
+message(STATUS "  Build tests : ${AC3FORGE_BUILD_TESTS}")

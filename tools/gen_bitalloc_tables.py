@@ -1,6 +1,7 @@
 """Extract the A/52 bit-allocation tables (7.6-7.16) from the spec text.
 
-Emits src/ac3/core/bitalloc_tables.hpp (constexpr arrays, citations included)
+Emits libs/ac3forge/include/ac3/core/bitalloc_tables.hpp (constexpr arrays,
+citations included)
 after self-verifying the parse: element counts, masktab identity against the
 banding structure, latab monotonicity, and spot values. Import parse_tables()
 from other tools (bitalloc_ref.py) so every consumer shares one source of

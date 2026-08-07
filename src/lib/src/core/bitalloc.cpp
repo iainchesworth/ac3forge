@@ -53,7 +53,7 @@ void compute_bit_allocation(std::span<const std::uint8_t> exps, SampleRate sampl
 
     // §7.2.2.1.1 special case: all-zero SNR offsets -> all-zero bap.
     if (csnroffst == 0 && fsnroffst == 0) {
-        std::ranges::fill(bap, 0);
+        std::ranges::fill(bap, std::uint8_t{0});
         return;
     }
 
