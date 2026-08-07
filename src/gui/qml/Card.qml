@@ -1,6 +1,8 @@
 import QtQuick
 import QtQuick.Layouts
 
+import Ac3Forge
+
 // A titled panel. Children are laid out vertically inside `content`.
 Rectangle {
     id: root

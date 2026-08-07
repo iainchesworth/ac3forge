@@ -7,43 +7,48 @@
 #include <span>
 #include <vector>
 
-// Lock-free single-producer / single-consumer ring buffer for interleaved
-// float samples: the WASAPI capture thread writes, the encoder thread reads.
-// No locks, no allocation and no system calls once constructed, so the audio
-// thread never blocks (see docs/RESEARCH.md §6 on real-time discipline).
+// Lock-free single-producer / single-consumer ring buffer: one thread writes,
+// one reads, with no locks, no allocation and no system calls once
+// constructed, so an audio thread never blocks (see docs/RESEARCH.md §6 on
+// real-time discipline).
+//
+// Used in both directions: the WASAPI capture thread writes float samples for
+// the encoder to drain, and the encoder writes IEC 61937 burst bytes for the
+// exclusive-mode render thread to drain.
 //
 // Exactly one thread may write and one may read. Capacity is rounded up to a
 // power of two so the index wrap is a mask rather than a modulo.
 
 namespace ac3::capture {
 
-class RingBuffer {
+template <typename T>
+class BasicRingBuffer {
 public:
-    explicit RingBuffer(std::size_t capacity_samples)
-        : buffer_(std::bit_ceil(capacity_samples < 2 ? std::size_t{2} : capacity_samples)),
+    explicit BasicRingBuffer(std::size_t capacity)
+        : buffer_(std::bit_ceil(capacity < 2 ? std::size_t{2} : capacity)),
           mask_(buffer_.size() - 1) {}
 
     [[nodiscard]] std::size_t capacity() const { return buffer_.size(); }
 
-    // Producer side. Returns the number of samples actually written; a short
-    // return means the consumer is behind and the remainder was dropped.
-    std::size_t write(std::span<const float> samples) {
+    // Producer side. Returns the number of items actually written; a short
+    // return means the consumer is behind and the remainder was refused.
+    std::size_t write(std::span<const T> items) {
         const auto write_at = write_.load(std::memory_order_relaxed);
         const auto read_at = read_.load(std::memory_order_acquire);
         const std::size_t free_space = buffer_.size() - (write_at - read_at) - 1;
-        const std::size_t count = std::min(samples.size(), free_space);
+        const std::size_t count = std::min(items.size(), free_space);
         for (std::size_t i = 0; i < count; ++i) {
-            buffer_[(write_at + i) & mask_] = samples[i];
+            buffer_[(write_at + i) & mask_] = items[i];
         }
         write_.store(write_at + count, std::memory_order_release);
-        if (count < samples.size()) {
-            dropped_.fetch_add(samples.size() - count, std::memory_order_relaxed);
+        if (count < items.size()) {
+            dropped_.fetch_add(items.size() - count, std::memory_order_relaxed);
         }
         return count;
     }
 
-    // Consumer side. Returns the number of samples actually read.
-    std::size_t read(std::span<float> out) {
+    // Consumer side. Returns the number of items actually read.
+    std::size_t read(std::span<T> out) {
         const auto read_at = read_.load(std::memory_order_relaxed);
         const auto write_at = write_.load(std::memory_order_acquire);
         const std::size_t count = std::min(out.size(), write_at - read_at);
@@ -58,7 +63,7 @@ public:
         return write_.load(std::memory_order_acquire) - read_.load(std::memory_order_acquire);
     }
 
-    // Samples refused because the buffer was full when write() was called.
+    // Items refused because the buffer was full when write() was called.
     // The capture thread cannot retry - it has to return to the device loop -
     // so for the real producer a refusal is a permanent loss, which is what
     // makes this a useful overrun signal. A producer that DOES retry (tests,
@@ -74,7 +79,7 @@ public:
     }
 
 private:
-    std::vector<float> buffer_;
+    std::vector<T> buffer_;
     std::size_t mask_;
     // Monotonic counters; the mask turns them into indices, so a full buffer
     // is distinguishable from an empty one without a spare flag.
@@ -82,5 +87,8 @@ private:
     std::atomic<std::size_t> write_{0};
     std::atomic<std::size_t> dropped_{0};
 };
+
+using RingBuffer = BasicRingBuffer<float>;
+using ByteRingBuffer = BasicRingBuffer<std::byte>;
 
 }  // namespace ac3::capture

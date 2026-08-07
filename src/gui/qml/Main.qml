@@ -3,6 +3,11 @@ import QtQuick.Controls
 import QtQuick.Dialogs
 import QtQuick.Layouts
 
+// Our own module: brings in the Theme singleton and the EncoderController
+// singleton registered from C++ (QML_ELEMENT + QML_SINGLETON). The implicit
+// same-directory import covers the QML-defined types but not the C++ ones.
+import Ac3Forge
+
 ApplicationWindow {
     id: window
 
@@ -220,6 +225,47 @@ ApplicationWindow {
                             color: Theme.textMuted
                             font.pixelSize: Theme.fontSmall
                         }
+                    }
+                }
+
+                // ---- passthrough --------------------------------------------
+                Card {
+                    title: qsTr("Passthrough to a receiver")
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.gap
+
+                        ComboBox {
+                            id: outputBox
+                            Layout.fillWidth: true
+                            enabled: EncoderController.outputDevices.length > 0
+                                     && !EncoderController.playing
+                            model: EncoderController.outputDevices.length > 0
+                                   ? EncoderController.outputDevices
+                                   : [qsTr("No render endpoints found")]
+                        }
+
+                        Button {
+                            text: qsTr("Refresh")
+                            enabled: !EncoderController.playing
+                            onClicked: EncoderController.refreshOutputDevices()
+                        }
+
+                        Button {
+                            text: EncoderController.playing ? qsTr("Streaming…") : qsTr("Play")
+                            enabled: EncoderController.canPlay && !EncoderController.playing
+                                     && !EncoderController.busy
+                            onClicked: EncoderController.playToReceiver(outputBox.currentIndex)
+                        }
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: qsTr("Sends the encoded stream as IEC 61937 bursts in exclusive mode, so the receiver decodes the AC-3 itself. Only S/PDIF and HDMI endpoints can bitstream; an endpoint marked \"cannot bitstream\" takes exclusive PCM but not AC-3, while \"no exclusive access\" means exclusive mode is off or the device is in use.")
+                        color: Theme.textMuted
+                        font.pixelSize: Theme.fontSmall
+                        wrapMode: Text.WordWrap
                     }
                 }
 

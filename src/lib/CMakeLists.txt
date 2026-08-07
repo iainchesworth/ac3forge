@@ -6,17 +6,20 @@
 add_library(ac3forge)
 add_library(ac3::forge ALIAS ac3forge)
 
-# Select the single capture implementation for the target OS. No #ifdefs:
-# CMake decides which translation unit is compiled.
+# Select the single platform implementation of capture and passthrough for
+# the target OS. No #ifdefs: CMake decides which translation unit is compiled.
 if(WIN32)
     set(AC3_CAPTURE_SOURCE src/capture/capture_wasapi.cpp)
+    set(AC3_PASSTHROUGH_SOURCE src/sinks/passthrough_wasapi.cpp)
 else()
     set(AC3_CAPTURE_SOURCE src/capture/capture_stub.cpp)
+    set(AC3_PASSTHROUGH_SOURCE src/sinks/passthrough_stub.cpp)
 endif()
 
 target_sources(ac3forge
     PRIVATE
         ${AC3_CAPTURE_SOURCE}
+        ${AC3_PASSTHROUGH_SOURCE}
         src/core/bitalloc.cpp
         src/core/exponents.cpp
         src/core/mantissas.cpp

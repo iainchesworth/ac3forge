@@ -70,8 +70,22 @@ the machine is silent) are filled against a QPC timeline so the stream stays con
 `ac3cli devices` lists endpoints, `ac3cli record` captures straight to AC-3, and the GUI's
 capture card is live with a peak-level meter.
 
+**Exclusive-mode passthrough is implemented.** `ac3::sinks::PassthroughSink` opens a render
+endpoint in WASAPI exclusive mode with a `KSDATAFORMAT_SUBTYPE_IEC61937_DOLBY_DIGITAL`
+format (including the documented buffer-alignment retry) and streams bursts from a
+lock-free queue on an MMCSS "Pro Audio" thread — exclusive mode being mandatory, since the
+shared-mode engine would mix, resample or volume-scale the bursts and destroy the bit
+pattern. `ac3cli outputs` probes every endpoint twice, for AC-3 *and* for plain exclusive
+PCM, so an unavailable device tells you **why**: "cannot bitstream" (analog output) versus
+"no exclusive access" (disabled or in use). `ac3cli play` streams a file to a receiver.
+
+> Not yet confirmed against real bitstreaming hardware: this machine has no S/PDIF or HDMI
+> audio endpoint, so `IsFormatSupported` correctly answers "no" everywhere. The exclusive-mode
+> path itself is proven — the Realtek endpoint accepts our exclusive PCM format — but the
+> IEC 61937 descriptor awaits a receiver to confirm positively.
+
 See [docs/RESEARCH.md](docs/RESEARCH.md) for the research summary, architecture, and
-roadmap (remaining rungs: channel coupling, exclusive-mode passthrough, E-AC-3).
+roadmap (remaining rungs: channel coupling, E-AC-3).
 
 ## Ground rules
 

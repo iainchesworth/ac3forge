@@ -3,6 +3,8 @@
 #include <QFileInfo>
 #include <QtConcurrent/QtConcurrentRun>
 
+#include <iterator>
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -13,8 +15,10 @@
 #include <utility>
 #include <vector>
 
+#include "ac3/decoder/decoder.hpp"
 #include "ac3/encoder/encoder.hpp"
 #include "ac3/io/wav.hpp"
+#include "ac3/sinks/iec61937.hpp"
 
 namespace {
 
@@ -36,6 +40,7 @@ struct EncoderController::Source {
 
 EncoderController::EncoderController(QObject* parent) : QObject(parent) {
     refreshCaptureDevices();
+    refreshOutputDevices();
 }
 
 EncoderController::~EncoderController() = default;
@@ -86,6 +91,101 @@ void EncoderController::setProgress(double value) {
     }
     progress_ = value;
     emit progressChanged();
+}
+
+void EncoderController::refreshOutputDevices() {
+    QStringList names;
+    outputs_.clear();
+    if (auto found = ac3::sinks::enumerate_render_devices()) {
+        outputs_ = std::move(*found);
+        for (const auto& device : outputs_) {
+            // The capability is part of the label: a user staring at a greyed
+            // out device deserves to know which of the two reasons applies.
+            const QString capability =
+                device.supports_ac3_passthrough
+                    ? QStringLiteral("AC-3 ready")
+                    : (device.supports_exclusive_pcm ? QStringLiteral("cannot bitstream")
+                                                     : QStringLiteral("no exclusive access"));
+            names.append(QStringLiteral("%1  —  %2")
+                             .arg(QString::fromStdString(device.name), capability));
+        }
+    }
+    if (names != output_devices_) {
+        output_devices_ = names;
+        emit outputDevicesChanged();
+    }
+}
+
+void EncoderController::playToReceiver(int deviceIndex) {
+    if (playing_ || busy_ || output_path_.isEmpty()) {
+        return;
+    }
+    if (deviceIndex < 0 || static_cast<std::size_t>(deviceIndex) >= outputs_.size()) {
+        setStatus(QStringLiteral("Choose an output device first."));
+        return;
+    }
+    const auto device = outputs_[static_cast<std::size_t>(deviceIndex)];
+    if (!device.supports_ac3_passthrough) {
+        setStatus(QStringLiteral("\"%1\" will not accept AC-3 over IEC 61937. Only S/PDIF and "
+                                 "HDMI outputs can bitstream, and Dolby Digital must be enabled "
+                                 "for the device in Sound settings.")
+                      .arg(QString::fromStdString(device.name)));
+        return;
+    }
+
+    playing_ = true;
+    emit playingChanged();
+    setStatus(QStringLiteral("Streaming to %1…").arg(QString::fromStdString(device.name)));
+
+    const QString path = output_path_;
+    std::ignore = QtConcurrent::run([this, path, device] {
+        std::ifstream in{path.toStdString(), std::ios::binary};
+        const std::vector<char> raw{std::istreambuf_iterator<char>(in),
+                                    std::istreambuf_iterator<char>()};
+        std::vector<std::byte> stream(raw.size());
+        for (std::size_t i = 0; i < raw.size(); ++i) {
+            stream[i] = static_cast<std::byte>(static_cast<unsigned char>(raw[i]));
+        }
+
+        QString message;
+        const auto frames = ac3::split_frames(stream);
+        if (!frames || frames->empty()) {
+            message = QStringLiteral("That file is not a valid AC-3 stream.");
+        } else {
+            const auto fscod = std::to_integer<std::uint32_t>((*frames)[0][4]) >> 6;
+            const auto rate = sample_rate_hz(static_cast<ac3::SampleRate>(fscod));
+            ac3::sinks::PassthroughSink sink;
+            const auto started = sink.start(device.id, rate);
+            if (!started) {
+                const auto why = ac3::sinks::describe(started.error());
+                message = QString::fromUtf8(why.data(), static_cast<qsizetype>(why.size()));
+            } else {
+                for (const auto& frame : *frames) {
+                    const auto burst = ac3::iec61937::wrap_frame(frame);
+                    if (!burst) {
+                        break;
+                    }
+                    while (!sink.submit(*burst)) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(4));
+                    }
+                }
+                while (sink.stats().bursts_rendered < sink.stats().bursts_submitted) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+                const auto stats = sink.stats();
+                sink.stop();
+                message = QStringLiteral("Streamed %1 bursts (%2 underruns).")
+                              .arg(stats.bursts_rendered)
+                              .arg(stats.underruns);
+            }
+        }
+
+        QMetaObject::invokeMethod(this, [this, message] {
+            playing_ = false;
+            emit playingChanged();
+            setStatus(message);
+        });
+    });
 }
 
 void EncoderController::setRecording(bool recording) {

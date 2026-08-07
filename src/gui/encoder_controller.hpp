@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "ac3/capture/capture.hpp"
+#include "ac3/sinks/passthrough.hpp"
 
 // The QObject facade the QML layer talks to. All codec and capture work
 // happens in ac3::forge; this type owns nothing but the presentation state
@@ -31,6 +32,9 @@ class EncoderController : public QObject {
     Q_PROPERTY(int bitrateKbps READ bitrateKbps WRITE setBitrateKbps NOTIFY bitrateChanged)
     Q_PROPERTY(QStringList captureDevices READ captureDevices NOTIFY captureDevicesChanged)
     Q_PROPERTY(bool captureSupported READ captureSupported NOTIFY captureDevicesChanged)
+    Q_PROPERTY(QStringList outputDevices READ outputDevices NOTIFY outputDevicesChanged)
+    Q_PROPERTY(bool playing READ playing NOTIFY playingChanged)
+    Q_PROPERTY(bool canPlay READ canPlay NOTIFY outputChanged)
     Q_PROPERTY(bool recording READ recording NOTIFY recordingChanged)
     Q_PROPERTY(double recordedSeconds READ recordedSeconds NOTIFY recordedSecondsChanged)
     Q_PROPERTY(double captureLevel READ captureLevel NOTIFY recordedSecondsChanged)
@@ -49,6 +53,9 @@ public:
     [[nodiscard]] int bitrateKbps() const { return bitrate_kbps_; }
     [[nodiscard]] QStringList captureDevices() const { return capture_devices_; }
     [[nodiscard]] bool captureSupported() const { return !capture_devices_.isEmpty(); }
+    [[nodiscard]] QStringList outputDevices() const { return output_devices_; }
+    [[nodiscard]] bool playing() const { return playing_; }
+    [[nodiscard]] bool canPlay() const { return !output_path_.isEmpty(); }
     [[nodiscard]] bool recording() const { return recording_; }
     [[nodiscard]] double recordedSeconds() const { return recorded_seconds_; }
     [[nodiscard]] double captureLevel() const { return capture_level_; }
@@ -62,6 +69,8 @@ public:
     Q_INVOKABLE void refreshCaptureDevices();
     Q_INVOKABLE void startRecording(int deviceIndex, const QUrl& url);
     Q_INVOKABLE void stopRecording();
+    Q_INVOKABLE void refreshOutputDevices();
+    Q_INVOKABLE void playToReceiver(int deviceIndex);
 
 signals:
     void sourceChanged();
@@ -71,6 +80,8 @@ signals:
     void progressChanged();
     void bitrateChanged();
     void captureDevicesChanged();
+    void outputDevicesChanged();
+    void playingChanged();
     void recordingChanged();
     void recordedSecondsChanged();
     void encodeFinished(bool ok, const QString& message);
@@ -94,8 +105,11 @@ private:
     double recorded_seconds_ = 0.0;
     double capture_level_ = 0.0;
     int bitrate_kbps_ = 192;
+    bool playing_ = false;
     QStringList capture_devices_;
+    QStringList output_devices_;
     std::vector<ac3::capture::DeviceInfo> devices_;
+    std::vector<ac3::sinks::RenderDeviceInfo> outputs_;
 
     std::unique_ptr<Source> source_;
     std::unique_ptr<ac3::capture::Capture> capture_;

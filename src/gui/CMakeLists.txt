@@ -18,6 +18,13 @@ qt_add_executable(ac3gui
 # embeds the QML and the generated type registrations directly into it - no
 # separate plugin, and none of the WHOLE_ARCHIVE gymnastics a standalone
 # backing library would need to keep its resource initialisers alive.
+# Theme is a QML singleton. This MUST run before qt_add_qml_module below:
+# that call reads QT_QML_SINGLETON_TYPE off each QML_FILES entry to decide
+# whether to emit a `singleton` line in the generated qmldir. Set it
+# afterwards and Theme registers as a plain type instead, so every Theme.*
+# binding silently resolves to undefined at runtime.
+set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
+
 qt_add_qml_module(ac3gui
     URI Ac3Forge
     VERSION 1.0
@@ -25,8 +32,6 @@ qt_add_qml_module(ac3gui
         qml/Main.qml
         qml/Theme.qml
         qml/Card.qml)
-
-set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 
 target_link_libraries(ac3gui
     PRIVATE
@@ -52,11 +57,20 @@ if(WIN32)
         HINTS "${AC3_QT_BIN_DIR}")
 
     if(AC3_WINDEPLOYQT_EXECUTABLE)
+        # --plugindir platforms is implicit, but windeployqt only ships the
+        # platform plugin the app will actually use (qwindows). The offscreen
+        # plugin is added deliberately so the app can be smoke-tested headless
+        # in CI and from a script - without it, QT_QPA_PLATFORM=offscreen
+        # aborts before any QML is parsed and a "did it start?" check silently
+        # proves nothing.
         add_custom_command(TARGET ac3gui POST_BUILD
             COMMAND "${AC3_WINDEPLOYQT_EXECUTABLE}"
                 --qmldir "${CMAKE_CURRENT_SOURCE_DIR}/qml"
                 --compiler-runtime
                 "$<TARGET_FILE:ac3gui>"
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "${AC3_QT_BIN_DIR}/../plugins/platforms/qoffscreen$<$<CONFIG:Debug>:d>.dll"
+                "$<TARGET_FILE_DIR:ac3gui>/platforms/"
             COMMENT "Deploying Qt runtime dependencies for ac3gui")
     else()
         message(WARNING

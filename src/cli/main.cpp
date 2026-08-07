@@ -19,6 +19,7 @@
 #include "ac3/encoder/silent_frame.hpp"
 #include "ac3/io/wav.hpp"
 #include "ac3/sinks/iec61937.hpp"
+#include "ac3/sinks/passthrough.hpp"
 #include "ac3/spatial/spatial.hpp"
 
 namespace {
@@ -35,6 +36,8 @@ void print_usage() {
     std::println("  ac3cli encode  <in.wav> <out.ac3> [bitrate_kbps]");
     std::println("  ac3cli decode  <in.ac3> <out.wav>");
     std::println("  ac3cli spdif   <in.ac3> <out.wav>   (IEC 61937 wrap as playable PCM16 WAV)");
+    std::println("  ac3cli outputs                      (render endpoints + AC-3 passthrough support)");
+    std::println("  ac3cli play    <in.ac3> [device_index]  (exclusive-mode IEC 61937 passthrough)");
     std::println("");
     std::println("layout: stereo (default) | 51 — 5.1 uses per-channel tones");
     std::println("        (L 1000, C 800, R 1200, SL 600, SR 1400, LFE 60 Hz)");
@@ -464,12 +467,116 @@ int run_spdif(std::string_view in_path, std::string_view out_path) {
     return 0;
 }
 
+int run_outputs() {
+    const auto devices = ac3::sinks::enumerate_render_devices();
+    if (!devices) {
+        std::println(stderr, "error: {}", ac3::sinks::describe(devices.error()));
+        return 1;
+    }
+    if (devices->empty()) {
+        std::println("no active render endpoints found");
+        return 0;
+    }
+    std::println("{:>3}  {:<9}  {:<9}  {}", "idx", "AC-3", "excl PCM", "name");
+    for (std::size_t i = 0; i < devices->size(); ++i) {
+        const auto& d = (*devices)[i];
+        std::println("{:>3}  {:<9}  {:<9}  {}{}", i, d.supports_ac3_passthrough ? "yes" : "no",
+                     d.supports_exclusive_pcm ? "yes" : "no", d.name,
+                     d.is_default ? "  [default]" : "");
+    }
+    std::println("");
+    std::println("AC-3     the endpoint accepted an IEC 61937 AC-3 format in exclusive mode.");
+    std::println("excl PCM the same endpoint accepted ordinary 16-bit stereo PCM exclusively.");
+    std::println("");
+    std::println("PCM yes + AC-3 no means the device simply cannot bitstream - analog outputs");
+    std::println("cannot; only S/PDIF (TOSLINK/coax) and HDMI can. Enable Dolby Digital under");
+    std::println("Sound > Playback > Properties > Supported Formats for such a device.");
+    std::println("Both no means exclusive mode itself is unavailable (disabled for the device,");
+    std::println("or another application currently holds it).");
+    return 0;
+}
+
+// Stream an AC-3 file to a receiver in real time via exclusive-mode
+// IEC 61937. The sink's render thread pulls bursts; this loop keeps it fed.
+int run_play(std::string_view in_path, int device_index) {
+    const auto stream = read_all(in_path);
+    if (stream.empty()) {
+        std::println(stderr, "error: cannot read {}", in_path);
+        return 1;
+    }
+    const auto frames = ac3::split_frames(stream);
+    if (!frames || frames->empty()) {
+        std::println(stderr, "error: not a valid AC-3 stream");
+        return 1;
+    }
+    const auto fscod = std::to_integer<std::uint32_t>((*frames)[0][4]) >> 6;
+    const auto rate = sample_rate_hz(static_cast<ac3::SampleRate>(fscod));
+
+    const auto devices = ac3::sinks::enumerate_render_devices(rate);
+    if (!devices || devices->empty()) {
+        std::println(stderr, "error: no render endpoints available");
+        return 1;
+    }
+    std::string device_id;
+    std::string device_name = "default endpoint";
+    if (device_index >= 0) {
+        if (static_cast<std::size_t>(device_index) >= devices->size()) {
+            std::println(stderr, "error: device index {} out of range (see 'ac3cli outputs')",
+                         device_index);
+            return 1;
+        }
+        const auto& chosen = (*devices)[static_cast<std::size_t>(device_index)];
+        device_id = chosen.id;
+        device_name = chosen.name;
+        if (!chosen.supports_ac3_passthrough) {
+            std::println(stderr,
+                         "error: \"{}\" does not accept AC-3 over IEC 61937 (see 'ac3cli outputs')",
+                         chosen.name);
+            return 1;
+        }
+    }
+
+    ac3::sinks::PassthroughSink sink;
+    const auto started = sink.start(device_id, rate);
+    if (!started) {
+        std::println(stderr, "error: {}", ac3::sinks::describe(started.error()));
+        return 1;
+    }
+    std::println("streaming {} frames to \"{}\" ({} Hz carrier)…", frames->size(), device_name,
+                 rate);
+
+    for (const auto& frame : *frames) {
+        const auto burst = ac3::iec61937::wrap_frame(frame);
+        if (!burst) {
+            std::println(stderr, "error: burst wrap failed");
+            return 1;
+        }
+        // Wait for room rather than racing ahead: the render thread consumes
+        // in real time, one burst per AC-3 frame duration.
+        while (!sink.submit(*burst)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(4));
+        }
+    }
+    // Let the queue drain before tearing the endpoint down.
+    while (sink.stats().bursts_rendered < sink.stats().bursts_submitted) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    const auto stats = sink.stats();
+    sink.stop();
+    std::println("submitted {} bursts, rendered {}, {} underruns", stats.bursts_submitted,
+                 stats.bursts_rendered, stats.underruns);
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     const std::span<char*> args{argv, static_cast<std::size_t>(argc)};
     if (args.size() >= 2 && std::string_view{args[1]} == "devices") {
         return run_devices();
+    }
+    if (args.size() >= 2 && std::string_view{args[1]} == "outputs") {
+        return run_outputs();
     }
     if (args.size() < 3) {
         print_usage();
@@ -505,6 +612,10 @@ int main(int argc, char** argv) {
     }
     if (command == "spdif" && args.size() > 3) {
         return run_spdif(args[2], args[3]);
+    }
+    if (command == "play") {
+        return run_play(args[2],
+                        args.size() > 3 ? static_cast<int>(parse_u32_or(args[3], 0)) : -1);
     }
     print_usage();
     return 1;
