@@ -173,6 +173,7 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
     std::vector<int> fgaincod(static_cast<std::size_t>(nchans), base_codes.fgaincod);
     int csnroffst = 0;
     std::vector<int> fsnroffst(static_cast<std::size_t>(nchans), 0);
+    std::array<bool, 4> rematflg{};
 
     for (int block = 0; block < kBlocksPerFrame; ++block) {
         for (int ch = 0; ch < nfchans; ++ch) {
@@ -190,11 +191,9 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
             }
         }
         if (acmod == Acmod::k2_0) {
-            if (r.read(1) != 0) {  // rematstr
-                for (int band = 0; band < 4; ++band) {
-                    if (r.read(1) != 0) {  // rematflg: rematrixing not supported
-                        return std::unexpected(DecodeError::kUnsupported);
-                    }
+            if (r.read(1) != 0) {  // rematstr: new flags; else prior flags persist
+                for (auto& flag : rematflg) {
+                    flag = r.read(1) != 0;
                 }
             }
         }
@@ -284,10 +283,11 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
                                    bap[static_cast<std::size_t>(ch)]);
         }
 
-        // Mantissas -> coefficients -> inverse transform -> overlap-add.
+        // Mantissas -> coefficients (all channels first: rematrix undo needs
+        // both), then rematrix undo, inverse transform, overlap-add.
         GroupReadState groups_state;
+        std::vector<std::array<double, 256>> coeffs(static_cast<std::size_t>(nchans));
         for (int ch = 0; ch < nchans; ++ch) {
-            std::array<double, 256> coeffs{};
             const int end = endmant[static_cast<std::size_t>(ch)];
             for (int bin = 0; bin < end; ++bin) {
                 const int bap_value =
@@ -298,11 +298,33 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
                 const auto code = groups_state.read_code(r, bap_value);
                 const int exp =
                     exps[static_cast<std::size_t>(ch)][static_cast<std::size_t>(bin)];
-                coeffs[static_cast<std::size_t>(bin)] =
+                coeffs[static_cast<std::size_t>(ch)][static_cast<std::size_t>(bin)] =
                     dequantize_mantissa(code, bap_value) / static_cast<double>(1u << exp);
             }
+        }
+        if (acmod == Acmod::k2_0) {
+            // §7.5.4: L = L' + R', R = L' - R' in flagged bands, applied up
+            // to the lower bandwidth of the two channels.
+            static constexpr std::array<std::array<int, 2>, 4> kBands = {{
+                {13, 24}, {25, 36}, {37, 60}, {61, 252},
+            }};
+            const int cap = std::min(endmant[0], endmant[1]) - 1;
+            for (std::size_t band = 0; band < kBands.size(); ++band) {
+                if (!rematflg[band]) {
+                    continue;
+                }
+                const int high = std::min(kBands[band][1], cap);
+                for (int bin = kBands[band][0]; bin <= high; ++bin) {
+                    const double l = coeffs[0][static_cast<std::size_t>(bin)];
+                    const double rr = coeffs[1][static_cast<std::size_t>(bin)];
+                    coeffs[0][static_cast<std::size_t>(bin)] = l + rr;
+                    coeffs[1][static_cast<std::size_t>(bin)] = l - rr;
+                }
+            }
+        }
+        for (int ch = 0; ch < nchans; ++ch) {
             std::array<double, 512> x{};
-            imdct512_windowed(coeffs, x);
+            imdct512_windowed(coeffs[static_cast<std::size_t>(ch)], x);
             auto& delay = delay_[static_cast<std::size_t>(ch)];
             auto& pcm = out.channels[static_cast<std::size_t>(ch)];
             for (int n = 0; n < 256; ++n) {

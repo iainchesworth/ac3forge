@@ -159,6 +159,50 @@ TEST_CASE("every acmod round-trips at every sample rate", "[decoder]") {
     }
 }
 
+TEST_CASE("dynamic and correlated material exercises strategies and rematrixing", "[decoder]") {
+    // A spectrum jump mid-frame forces multi-run exponent plans (D45/D25
+    // per §8.2.8); near-mono content drives the rematrix decision. Both
+    // must round-trip cleanly through the in-repo decoder's undo paths.
+    ac3::FrameEncoder encoder{{.bitrate_kbps = 192}};
+    ac3::FrameDecoder decoder;
+    std::vector<std::vector<float>> input(2);
+    std::vector<std::vector<float>> decoded(2);
+    std::vector<std::vector<float>> block(2, std::vector<float>(ac3::kSamplesPerFrame));
+    std::vector<std::span<const float>> views(2);
+    std::uint64_t n0 = 0;
+    for (int f = 0; f < 4; ++f) {
+        for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+            const auto n = static_cast<double>(n0 + static_cast<std::uint64_t>(i));
+            // Tone hops every half frame; channels nearly identical (mono-ish).
+            const double freq = (static_cast<int>(n) / 768) % 2 == 0 ? 400.0 : 2600.0;
+            const auto mono =
+                static_cast<float>(0.4 * std::sin(2.0 * std::numbers::pi * freq * n / 48000.0));
+            block[0][static_cast<std::size_t>(i)] = mono;
+            block[1][static_cast<std::size_t>(i)] = 0.97f * mono;
+        }
+        n0 += ac3::kSamplesPerFrame;
+        views[0] = block[0];
+        views[1] = block[1];
+        for (std::size_t ch = 0; ch < 2; ++ch) {
+            input[ch].insert(input[ch].end(), block[ch].begin(), block[ch].end());
+        }
+        const auto frame = encoder.encode_frame(views);
+        REQUIRE(frame.has_value());
+        const auto result = decoder.decode_frame(*frame);
+        REQUIRE(result.has_value());
+        for (std::size_t ch = 0; ch < 2; ++ch) {
+            decoded[ch].insert(decoded[ch].end(), result->channels[ch].begin(),
+                               result->channels[ch].end());
+        }
+    }
+    for (std::size_t ch = 0; ch < 2; ++ch) {
+        CAPTURE(ch);
+        // Tone hops smear across block boundaries (long blocks only), so the
+        // bar is lower than for the steady tones above.
+        CHECK(snr_db(input[ch], decoded[ch]) > 22.0);
+    }
+}
+
 TEST_CASE("decoder rejects corrupted streams", "[decoder]") {
     ac3::FrameEncoder encoder{{.bitrate_kbps = 192}};
     const std::vector<float> silence(ac3::kSamplesPerFrame, 0.0f);

@@ -43,9 +43,18 @@ same normative core — reaches **float32-precision PCM parity with FFmpeg's dec
 tones decodes through FFmpeg with every channel carrying exactly its own tone
 (channel-order verified end-to-end). `ac3cli decode` exercises the decoder from the CLI.
 
+**Milestone 7 (quality layer) complete — and the encoder now beats FFmpeg's.** Per-block
+exponent-strategy selection (§8.2.8: D45/D25/D15 by reuse span, variation-triggered),
+stereo rematrixing (§7.5.3 minimum-power rule, with the decoder-side undo), and
+bitrate-aware bandwidth defaults. The quality race (`tools/quality_race.py`, synthesized
+program material, FFmpeg as neutral referee): **ours 41.2/44.0/45.1/51.1 dB vs FFmpeg's
+41.0/42.9/44.2/47.6 dB at 192/256/320/448 kbps** — ahead at every rate (SNR metric;
+`ac3cli encode` now takes arbitrary stereo WAV input). Decoder parity vs FFmpeg holds on
+rematrix-active program material (max diff 1.1e-5).
+
 See [docs/RESEARCH.md](docs/RESEARCH.md) for the research summary, architecture, and
-roadmap (next: the quality layer — exponent-strategy search, rematrixing, dialnorm
-policy — then the spatial scene → VBAP → bed renderer).
+roadmap (next: the spatial layer — scene model, VBAP renderer, bed mixer — or coupling /
+IEC 61937 passthrough as appetite dictates).
 
 ## Ground rules
 

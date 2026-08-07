@@ -26,7 +26,7 @@ struct EncoderConfig {
     SampleRate sample_rate = SampleRate::k48000;
     std::uint32_t bitrate_kbps = 192;
     int dialnorm = 31;       // 1..31 (§5.4.2.8)
-    int chbwcod = 60;        // fbw channel bandwidth code, 0..60
+    int chbwcod = -1;        // fbw bandwidth code 0..60; -1 = auto from bitrate
     Acmod acmod = Acmod::k2_0;
     bool lfe = false;
 };
