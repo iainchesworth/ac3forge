@@ -29,6 +29,9 @@ target_sources(ac3forge
         src/encoder/eac3_frame.cpp
         src/encoder/encoder.cpp
         src/io/wav.cpp
+        src/meta/drc.cpp
+        src/meta/loudness.cpp
+        src/meta/mixing.cpp
         src/sinks/iec61937.cpp
         src/spatial/spatial.cpp)
 

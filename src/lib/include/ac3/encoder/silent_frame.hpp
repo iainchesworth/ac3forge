@@ -48,6 +48,9 @@ enum class FrameError {
     // The channel locations a chanmap names do not add up to the channels the
     // substream's acmod and lfeon actually code (A/52 §E2.3.1.8).
     kInvalidChannelMap,
+    // A mixing-metadata field would go out as a reserved code (Tables D2.4 and
+    // D2.6 reserve three of the eight surround levels) or out of range.
+    kInvalidMixLevel,
 };
 
 namespace detail {

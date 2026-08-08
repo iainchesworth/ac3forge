@@ -78,6 +78,12 @@ struct Payload {
     int fsnroffst = 0;
     std::vector<ChannelPlan> chans;
     std::array<std::vector<MantissaToken>, kBlocksPerFrame> mantissas;
+    // §7.7.1 words per block. All unity when the config carries no profile,
+    // and then nothing is transmitted at all.
+    std::array<std::uint8_t, kBlocksPerFrame> dynrng{};
+    // §7.7.2. std::nullopt means "no heavy-compression word", which is a
+    // different statement from "a word saying unity".
+    std::optional<std::uint8_t> compr = std::nullopt;
 };
 
 // Everything from the sync word to the end of the last block: the whole
@@ -103,13 +109,13 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
     // §E3.8.5: in a dependent substream compre is not really "a compression
     // word follows" - it marks the LAST dependent of the program, which is how
     // a decoder knows every channel has arrived. The last one must set it and
-    // the others must clear it. The compr word it drags in is 0x00, which
-    // §7.7.1 defines as unity gain and directs an encoder applying no
-    // compression to send.
-    const bool compre = dependent && config.last_dependent;
+    // the others must clear it. That leaves no way to signal real heavy
+    // compression from a dependent, so the word it drags in stays 0x00 (unity,
+    // §7.7.2.2) and only the independent substream carries a live compr.
+    const bool compre = dependent ? config.last_dependent : payload.compr.has_value();
     w.put(compre ? 1 : 0, 1);
     if (compre) {
-        w.put(0, 8);  // compr: 0 dB
+        w.put(dependent ? meta::kComprUnity : *payload.compr, 8);
     }
     // acmod == 0x0 (1+1) is rejected in validate(), so the dialnorm2 /
     // compr2e block never applies.
@@ -119,7 +125,47 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
             w.put(*config.chanmap, 16);
         }
     }
-    w.put(0, 1);  // mixmdate
+    // --- mixmdate (Table E1.2) ---
+    // Every field inside is conditional on THIS substream's acmod and lfeon,
+    // not the programme's: a dependent coding 2/2 has no centre channel, so it
+    // writes no centre mix level even though the programme has one.
+    const auto acmod_value = static_cast<std::uint8_t>(config.acmod);
+    w.put(config.mixing ? 1 : 0, 1);  // mixmdate
+    if (config.mixing) {
+        const auto& mix = *config.mixing;
+        if (acmod_value > 0x2) {
+            w.put(static_cast<std::uint32_t>(mix.dmixmod), 2);
+        }
+        if ((acmod_value & 0x1) != 0 && acmod_value > 0x2) {
+            w.put(static_cast<std::uint32_t>(mix.ltrtcmixlev), 3);
+            w.put(static_cast<std::uint32_t>(mix.lorocmixlev), 3);
+        }
+        if ((acmod_value & 0x4) != 0) {
+            w.put(static_cast<std::uint32_t>(mix.ltrtsurmixlev), 3);
+            w.put(static_cast<std::uint32_t>(mix.lorosurmixlev), 3);
+        }
+        if (config.lfe) {
+            w.put(mix.lfemixlevcod ? 1 : 0, 1);  // lfemixlevcode
+            if (mix.lfemixlevcod) {
+                w.put(static_cast<std::uint32_t>(*mix.lfemixlevcod), 5);
+            }
+        }
+        // The rest of the group is gated on strmtyp == 0x0: programme scale,
+        // the mixing-parameter block, pan information and the per-block mixing
+        // configuration all describe how to combine this programme with
+        // ANOTHER one, which is an independent substream's business. A
+        // dependent therefore stops after the levels above.
+        if (!dependent) {
+            w.put(0, 1);  // pgmscle:    §E2.3.1.12, absent means 0 dB
+            w.put(0, 1);  // extpgmscle: §E2.3.1.16, absent means 0 dB
+            w.put(0, 2);  // mixdef:     no mixing-parameter data
+            // acmod == 0x0 is rejected in validate(), so only 1/0 reaches here.
+            if (acmod_value < 0x2) {
+                w.put(0, 1);  // paninfoe
+            }
+            w.put(0, 1);  // frmmixcfginfoe
+        }
+    }
     w.put(0, 1);  // infomdate
     // convsync is absent because numblkscod == 0x3; strmtyp != 0x2.
     w.put(0, 1);  // addbsie
@@ -182,7 +228,18 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
         for (int ch = 0; ch < nfchans; ++ch) {
             w.put(0, 1);  // dithflag: off, so zero-bit bins stay silent
         }
-        w.put(0, 1);  // dynrnge
+        // Same persistence rule as AC-3 (§7.7.1.2): resend only on a change,
+        // always send in block 0. Unlike almost everything else in Annex E,
+        // dynrnge is NOT hoisted to a frame-level flag - block resolution is
+        // the whole point of dynrng, so it stays per block.
+        const bool send_dynrng =
+            config.drc.has_value() &&
+            (first || payload.dynrng[static_cast<std::size_t>(blk)] !=
+                          payload.dynrng[static_cast<std::size_t>(blk) - 1]);
+        w.put(send_dynrng ? 1 : 0, 1);  // dynrnge
+        if (send_dynrng) {
+            w.put(payload.dynrng[static_cast<std::size_t>(blk)], 8);
+        }
 
         // Spectral extension: block 0 has spxstre implied, later blocks
         // send it explicitly.
@@ -311,6 +368,24 @@ std::expected<void, FrameError> validate(const FrameConfig& config) {
             return std::unexpected(FrameError::kInvalidChannelMap);
         }
     }
+    // §E3.8.5 owns a dependent substream's compre, so heavy compression there
+    // would either be ignored or break the end-of-programme marker.
+    if (config.heavy && config.strmtyp != StreamType::kIndependent) {
+        return std::unexpected(FrameError::kInvalidSubstream);
+    }
+    if (config.mixing) {
+        const auto& mix = *config.mixing;
+        // Tables D2.4 / D2.6 reserve the three loudest surround codes, and a
+        // decoder that receives one substitutes 0.841 - so writing one means
+        // the level applied is not the level asked for.
+        if (!meta::valid_surround_mix_level(mix.ltrtsurmixlev) ||
+            !meta::valid_surround_mix_level(mix.lorosurmixlev)) {
+            return std::unexpected(FrameError::kInvalidMixLevel);
+        }
+        if (mix.lfemixlevcod && (*mix.lfemixlevcod < 0 || *mix.lfemixlevcod > 31)) {
+            return std::unexpected(FrameError::kInvalidMixLevel);
+        }
+    }
     return {};
 }
 
@@ -346,8 +421,72 @@ std::expected<std::vector<std::byte>, FrameError> build_silent_frame(
                         payload);
 }
 
+FrameEncoder::FrameEncoder(const FrameConfig& config) : config_(config) {
+    if (config_.drc) {
+        range_.emplace(*config_.drc, config_.sample_rate);
+    }
+    if (config_.heavy) {
+        heavy_.emplace(*config_.heavy, config_.sample_rate);
+    }
+}
+
+namespace {
+
+// The §7.7 words a substream would choose for itself, from its own channels.
+// Also the access-unit measurement, since an access unit measures the
+// independent substream.
+FrameMetadata derive_metadata(const FrameConfig& config,
+                              std::span<const std::array<double, 256>> history,
+                              std::span<const std::span<const float>> channels,
+                              std::optional<meta::RangeController>& range,
+                              std::optional<meta::HeavyCompressor>& heavy) {
+    const int nfchans = fullbw_channel_count(config.acmod);
+    FrameMetadata out;
+    out.dynrng.fill(meta::kDynrngUnity);
+    if (range) {
+        std::array<std::span<const float>, 5> block_view{};
+        for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
+            for (int ch = 0; ch < nfchans; ++ch) {
+                block_view[static_cast<std::size_t>(ch)] =
+                    channels[static_cast<std::size_t>(ch)].subspan(
+                        static_cast<std::size_t>(blk) * kSamplesPerBlock, kSamplesPerBlock);
+            }
+            const double level = meta::level_dbfs(
+                std::span{block_view}.first(static_cast<std::size_t>(nfchans)));
+            out.dynrng[static_cast<std::size_t>(blk)] = range->next(level, config.dialnorm);
+        }
+    }
+    if (heavy) {
+        // With no mixmdate the §7.8 fallbacks stand in - the same intermediate
+        // levels §5.4.2.4 and §5.4.2.5 tell a decoder to substitute.
+        const double clev = config.mixing ? meta::coefficient(config.mixing->lorocmixlev)
+                                          : meta::level::kMinus4_5dB;
+        const double slev = config.mixing ? meta::coefficient(config.mixing->lorosurmixlev)
+                                          : meta::level::kMinus6dB;
+        const double peak = meta::mono_downmix_peak_dbfs(
+            history, channels.first(static_cast<std::size_t>(nfchans)), config.acmod, clev,
+            slev);
+        out.compr = heavy->next(peak, config.dialnorm);
+    }
+    return out;
+}
+
+}  // namespace
+
 std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     std::span<const std::span<const float>> channels) {
+    if (const auto ok = validate(config_); !ok) {
+        return std::unexpected(ok.error());
+    }
+    const int nfchans = fullbw_channel_count(config_.acmod);
+    return encode_frame(
+        channels,
+        derive_metadata(config_, std::span{history_}.first(static_cast<std::size_t>(nfchans)),
+                        channels, range_, heavy_));
+}
+
+std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
+    std::span<const std::span<const float>> channels, const FrameMetadata& metadata) {
     if (const auto ok = validate(config_); !ok) {
         return std::unexpected(ok.error());
     }
@@ -397,12 +536,22 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         }
     }
 
+    // --- 1b. Dynamic range metadata (§7.7) ---------------------------------
+    // Carried in before the side information is sized: a transmitted dynrng
+    // costs nine bits, and the SNR search below spends whatever is left.
+    Payload payload;
+    payload.dynrng = metadata.dynrng;
+    // §E3.8.5 gives a dependent's compre to the end-of-programme marker, so a
+    // heavy-compression word cannot travel there whatever the caller passed.
+    if (config_.strmtyp == StreamType::kIndependent) {
+        payload.compr = metadata.compr;
+    }
+
     // --- 2. One frame-constant exponent set per channel --------------------
     // Table E2.10 code 0 sends D15 in block 0 and reuses it for the other
     // five, so a bin's exponent has to accommodate its LOUDEST block. The
     // smallest exponent across the frame is that bin's worst case; anything
     // larger would overflow the mantissa in the block that peaks.
-    Payload payload;
     payload.chans.resize(static_cast<std::size_t>(nchans));
     for (int ch = 0; ch < nchans; ++ch) {
         auto& plan = payload.chans[static_cast<std::size_t>(ch)];
@@ -530,6 +679,16 @@ std::expected<std::vector<FrameConfig>, FrameError> substream_configs(
         dep.strmtyp = StreamType::kDependent;
         dep.substreamid = static_cast<int>(i);
         dep.last_dependent = i + 1 == config.dependents.size();
+        // DRC is a property of the programme, not of a substream, so a
+        // dependent carries the same profile whether or not the caller said
+        // so - otherwise its channels would sit outside the compression its
+        // siblings are inside. The words themselves come from one measurement;
+        // this only settles whether the FIELDS are written.
+        dep.drc = config.independent.drc;
+        // Heavy compression never travels on a dependent (§E3.8.5), so clear
+        // it rather than let validate() reject a config the caller could not
+        // reasonably have known was illegal.
+        dep.heavy = std::nullopt;
         out.push_back(dep);
     }
     for (const auto& sub : out) {
@@ -585,6 +744,15 @@ AccessUnitEncoder::AccessUnitEncoder(const AccessUnitConfig& config) : config_(c
             substreams_.emplace_back(sub);
         }
     }
+    // The substreams have controllers of their own, but this class always
+    // supplies the words explicitly, so those never advance. These are the
+    // ones that run.
+    if (config_.independent.drc) {
+        range_.emplace(*config_.independent.drc, config_.independent.sample_rate);
+    }
+    if (config_.independent.heavy) {
+        heavy_.emplace(*config_.independent.heavy, config_.independent.sample_rate);
+    }
 }
 
 int AccessUnitEncoder::channel_count() const {
@@ -604,11 +772,28 @@ std::expected<AccessUnit, FrameError> AccessUnitEncoder::encode_access_unit(
     }
     assert(static_cast<int>(channels.size()) == channel_count());
 
+    // One measurement for the whole access unit, taken on the independent
+    // substream's channels - they come first, and they are a self-sufficient
+    // rendering of the programme.
+    const auto independent_count =
+        static_cast<std::size_t>(substreams_.front().channel_count());
+    const auto independent_fbw =
+        static_cast<std::size_t>(fullbw_channel_count(config_.independent.acmod));
+    const FrameMetadata metadata =
+        derive_metadata(config_.independent, std::span{tail_}.first(independent_fbw),
+                        channels.first(independent_count), range_, heavy_);
+    for (std::size_t ch = 0; ch < independent_fbw; ++ch) {
+        for (int n = 0; n < kSamplesPerBlock; ++n) {
+            tail_[ch][static_cast<std::size_t>(n)] = static_cast<double>(
+                channels[ch][static_cast<std::size_t>(kSamplesPerFrame - kSamplesPerBlock + n)]);
+        }
+    }
+
     AccessUnit unit;
     std::size_t taken = 0;
     for (auto& sub : substreams_) {
         const auto count = static_cast<std::size_t>(sub.channel_count());
-        const auto frame = sub.encode_frame(channels.subspan(taken, count));
+        const auto frame = sub.encode_frame(channels.subspan(taken, count), metadata);
         if (!frame) {
             return std::unexpected(frame.error());
         }

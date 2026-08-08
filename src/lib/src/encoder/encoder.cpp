@@ -16,9 +16,6 @@ namespace ac3 {
 
 namespace {
 
-constexpr int kCmixlev = 1;    // -4.5 dB center downmix (Table 5.9)
-constexpr int kSurmixlev = 1;  // -6 dB surround downmix (Table 5.10)
-
 // Rematrixing bands, coupling not in use (Table 7.25): [low, high] inclusive.
 constexpr std::array<std::array<int, 2>, 4> kRematrixBands = {{
     {13, 24}, {25, 36}, {37, 60}, {61, 252},
@@ -82,6 +79,15 @@ struct StreamPlan {
 
 }  // namespace
 
+FrameEncoder::FrameEncoder(const EncoderConfig& config) : config_(config) {
+    if (config_.drc) {
+        range_.emplace(*config_.drc, config_.sample_rate);
+    }
+    if (config_.heavy) {
+        heavy_.emplace(*config_.heavy, config_.sample_rate);
+    }
+}
+
 std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     std::span<const std::span<const float>> channels) {
     const auto index = bitrate_index(config_.bitrate_kbps);
@@ -98,6 +104,41 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     for (const auto& channel : channels) {
         assert(channel.size() == kSamplesPerFrame);
         (void)channel;
+    }
+
+    // --- 0. Dynamic range metadata (§7.7) ----------------------------------
+    // Both words come from the INPUT PCM, before any coding: they describe the
+    // programme, not this encoder's output, and a decoder applies them after
+    // reconstruction. Doing it here also settles the words before the side
+    // information is measured, since a transmitted dynrng costs nine bits.
+    std::array<std::uint8_t, kBlocksPerFrame> dynrng{};
+    dynrng.fill(meta::kDynrngUnity);
+    if (range_) {
+        std::array<std::span<const float>, 5> block_view{};
+        for (int block = 0; block < kBlocksPerFrame; ++block) {
+            for (int ch = 0; ch < nfchans; ++ch) {
+                block_view[static_cast<std::size_t>(ch)] =
+                    channels[static_cast<std::size_t>(ch)].subspan(
+                        static_cast<std::size_t>(block) * kSamplesPerBlock,
+                        kSamplesPerBlock);
+            }
+            const double level = meta::level_dbfs(
+                std::span{block_view}.first(static_cast<std::size_t>(nfchans)));
+            dynrng[static_cast<std::size_t>(block)] =
+                range_->next(level, config_.dialnorm);
+        }
+    }
+    std::uint8_t compr = meta::kComprUnity;
+    if (heavy_) {
+        // §7.7.2 bounds the MONO DOWNMIX, so that is what gets measured - the
+        // loudest single channel is not the constraint, the sum is. history_
+        // still holds the previous frame's tail at this point, which is exactly
+        // the extra 256 samples this frame's block 0 codes.
+        const double peak = meta::mono_downmix_peak_dbfs(
+            std::span{history_}.first(static_cast<std::size_t>(nfchans)),
+            channels.first(static_cast<std::size_t>(nfchans)), config_.acmod,
+            meta::coefficient(config_.cmixlev), meta::coefficient(config_.surmixlev));
+        compr = heavy_->next(peak, config_.dialnorm);
     }
 
     // --- Coupling decision -------------------------------------------------
@@ -471,7 +512,22 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         for (int ch = 0; ch < nfchans; ++ch) {
             w.put(0, 1);  // dithflag
         }
-        w.put(0, 1);  // dynrnge
+        // §7.7.1.2: an absent word means "keep the previous BLOCK's", so only a
+        // change needs sending. Block 0 inherits nothing - absence there is
+        // defined as unity, not as the previous frame's value, which is what
+        // lets a decoder join a stream mid-programme without applying a gain it
+        // never received. Block 0 is sent unconditionally even when it happens
+        // to be unity: skipping it would be legal and one byte smaller, but a
+        // frame that states its own starting gain is easier to reason about
+        // from a capture.
+        const bool send_dynrng =
+            config_.drc.has_value() &&
+            (first || dynrng[static_cast<std::size_t>(block)] !=
+                          dynrng[static_cast<std::size_t>(block) - 1]);
+        w.put(send_dynrng ? 1 : 0, 1);  // dynrnge
+        if (send_dynrng) {
+            w.put(dynrng[static_cast<std::size_t>(block)], 8);
+        }
 
         w.put(first ? 1 : 0, 1);  // cplstre
         if (first) {
@@ -623,9 +679,10 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     std::uint32_t side_bits = 16 + 16 + 2 + 6;  // syncinfo
     {
         std::uint32_t bsi = 25;
-        if (has_three_front(config_.acmod)) bsi += 2;
-        if (has_surround(config_.acmod)) bsi += 2;
-        if (config_.acmod == Acmod::k2_0) bsi += 2;
+        if (has_three_front(config_.acmod)) bsi += 2;  // cmixlev
+        if (has_surround(config_.acmod)) bsi += 2;     // surmixlev
+        if (config_.acmod == Acmod::k2_0) bsi += 2;    // dsurmod
+        if (config_.heavy) bsi += 8;                   // compr (§5.4.2.10)
         side_bits += bsi;
     }
     {
@@ -751,17 +808,20 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     w.put(0, 3);  // bsmod
     w.put(static_cast<std::uint32_t>(config_.acmod), 3);
     if (has_three_front(config_.acmod)) {
-        w.put(kCmixlev, 2);
+        w.put(static_cast<std::uint32_t>(config_.cmixlev), 2);
     }
     if (has_surround(config_.acmod)) {
-        w.put(kSurmixlev, 2);
+        w.put(static_cast<std::uint32_t>(config_.surmixlev), 2);
     }
     if (config_.acmod == Acmod::k2_0) {
         w.put(0, 2);  // dsurmod
     }
     w.put(config_.lfe ? 1 : 0, 1);
     w.put(static_cast<std::uint32_t>(config_.dialnorm), 5);
-    w.put(0, 1);  // compre
+    w.put(config_.heavy ? 1 : 0, 1);  // compre
+    if (config_.heavy) {
+        w.put(compr, 8);
+    }
     w.put(0, 1);  // langcode
     w.put(0, 1);  // audprodie
     w.put(0, 1);  // copyrightb

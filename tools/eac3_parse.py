@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import drc_ref  # noqa: E402  (independent section 7.7 word formats)
 from bitalloc_ref import bit_alloc  # noqa: E402  (shares the spec's tables)
 
 BLOCKS = 6
@@ -53,6 +54,14 @@ def fullbw_channels(acmod):
     return (2, 1, 2, 3, 3, 4, 4, 5)[acmod]
 
 
+def dynrng_db(word):
+    return drc_ref.to_db(drc_ref.dynrng_gain(word))
+
+
+def compr_db(word):
+    return drc_ref.to_db(drc_ref.compr_gain(word))
+
+
 def parse_frame(data, verbose=True):
     r = Reader(data)
     log = (lambda *a: print(*a)) if verbose else (lambda *a: None)
@@ -75,8 +84,9 @@ def parse_frame(data, verbose=True):
     bsid = r.bits(5)
     assert bsid == 16, f'not E-AC-3 (bsid {bsid})'
     dialnorm = r.bits(5)
+    compr = None
     if r.bits(1):                    # compre
-        r.bits(8)
+        compr = r.bits(8)
     if acmod == 0:
         r.bits(5)
         if r.bits(1):
@@ -88,24 +98,29 @@ def parse_frame(data, verbose=True):
     nfchans = fullbw_channels(acmod)
     nblks = (1, 2, 3, 6)[numblkscod]
 
+    mix = {}
     if r.bits(1):                    # mixmdate
         if acmod > 2:
-            r.bits(2)                # dmixmod
+            mix['dmixmod'] = r.bits(2)
         if (acmod & 1) and acmod > 2:
-            r.bits(3); r.bits(3)     # ltrtcmixlev, lorocmixlev
+            mix['ltrtcmixlev'] = r.bits(3)
+            mix['lorocmixlev'] = r.bits(3)
         if acmod & 4:
-            r.bits(3); r.bits(3)     # ltrtsurmixlev, lorosurmixlev
+            mix['ltrtsurmixlev'] = r.bits(3)
+            mix['lorosurmixlev'] = r.bits(3)
         if lfeon:
-            if r.bits(1):
-                r.bits(5)            # lfemixlevcod
+            if r.bits(1):            # lfemixlevcode
+                mix['lfemixlevcod'] = r.bits(5)
+        # The rest is gated on strmtyp == 0: a dependent substream carries only
+        # the downmix/mix-level group above.
         if strmtyp == 0:
             if r.bits(1):
-                r.bits(6)            # pgmscl
+                mix['pgmscl'] = r.bits(6)
             if acmod == 0:
                 if r.bits(1):
                     r.bits(6)        # pgmscl2
             if r.bits(1):
-                r.bits(6)            # extpgmscl
+                mix['extpgmscl'] = r.bits(6)
             mixdef = r.bits(2)
             if mixdef == 1:
                 r.bits(1); r.bits(1); r.bits(3)
@@ -115,18 +130,23 @@ def parse_frame(data, verbose=True):
                 mixdeflen = r.bits(5)
                 r.bits((mixdeflen + 2) * 8)
             if acmod < 2:
-                if r.bits(1):
-                    r.bits(6)        # panmean
-                    r.bits(8)        # paninfo
+                if r.bits(1):        # paninfoe
+                    r.bits(8)        # panmean
+                    r.bits(6)        # paninfo (reserved, E2.3.1.55)
                 if acmod == 0:
                     if r.bits(1):
-                        r.bits(6); r.bits(8)
-            if numblkscod == 0:
-                r.bits(5)            # blkmixcfginfo[0]
-            else:
-                for _ in range(nblks):
-                    if r.bits(1):
-                        r.bits(5)
+                        r.bits(8); r.bits(6)
+            # frmmixcfginfoe gates the whole per-block mixing configuration.
+            # Reading the blkmixcfginfoe loop unconditionally consumes five bits
+            # too many at numblkscod 3, which lands mid-audfrm and shows up as a
+            # bogus ahte - the failure that first exposed this.
+            if r.bits(1):            # frmmixcfginfoe
+                if numblkscod == 0:
+                    r.bits(5)        # blkmixcfginfo[0]
+                else:
+                    for _ in range(nblks):
+                        if r.bits(1):
+                            r.bits(5)
     if r.bits(1):                    # infomdate
         r.bits(3)                    # bsmod
         r.bits(1); r.bits(1)         # copyrightb, origbs
@@ -154,6 +174,13 @@ def parse_frame(data, verbose=True):
     log(f'bsi: strmtyp={strmtyp} substreamid={substreamid} frmsiz={frmsiz} '
         f'fscod={fscod} numblkscod={numblkscod} acmod={acmod} lfeon={lfeon} '
         f'dialnorm={dialnorm}  -> {r.pos} bits')
+    if compr is not None:
+        # In a DEPENDENT substream compre is the end-of-programme marker
+        # (E3.8.5), not a gain, so the word it carries means nothing there.
+        role = 'last-dependent marker' if strmtyp == 1 else f'{compr_db(compr):+.2f} dB'
+        log(f'  compr: 0x{compr:02X}  {role}')
+    if mix:
+        log('  mixmdate: ' + '  '.join(f'{k}={v}' for k, v in mix.items()))
 
     # --- audfrm (Table E1.3) ---
     if numblkscod == 3:
@@ -240,6 +267,10 @@ def parse_frame(data, verbose=True):
     csnroffst = 0
     fsnroffst = [0] * (nfchans + 1)
     spxinu = 0
+    # Section 7.7.1.2: an absent word inherits the previous BLOCK's, and block 0
+    # without one is unity - never the previous frame's value.
+    dynrng = 0x00
+    dynrng_blocks = []
 
     for blk in range(nblks):
         start = r.pos
@@ -250,7 +281,8 @@ def parse_frame(data, verbose=True):
             for _ in range(nfchans):
                 r.bits(1)
         if r.bits(1):                # dynrnge
-            r.bits(8)
+            dynrng = r.bits(8)
+        dynrng_blocks.append(dynrng)
         if acmod == 0:
             if r.bits(1):
                 r.bits(8)
@@ -348,12 +380,17 @@ def parse_frame(data, verbose=True):
                 f'independent allocation disagree.')
         r.bits(total_mant_bits)
 
+    if any(w != 0x00 for w in dynrng_blocks):
+        log('  dynrng: ' + ' '.join(f'{dynrng_db(w):+.2f}' for w in dynrng_blocks) + ' dB')
+
     total_bits = (frmsiz + 1) * 16
     log(f'consumed {r.pos} of {total_bits} bits; {total_bits - r.pos} left for '
         f'aux + errorcheck (needs >= 18)')
     return r.pos, total_bits, {'strmtyp': strmtyp, 'substreamid': substreamid,
                                'fscod': fscod, 'numblkscod': numblkscod,
-                               'acmod': acmod, 'lfeon': lfeon, 'chanmap': chanmap}
+                               'acmod': acmod, 'lfeon': lfeon, 'chanmap': chanmap,
+                               'dialnorm': dialnorm, 'compr': compr,
+                               'mixmdate': mix or None, 'dynrng': dynrng_blocks}
 
 
 def expand(absexp, groups, grpsize, end):
