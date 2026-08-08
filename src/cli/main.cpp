@@ -42,51 +42,7 @@ constexpr std::string_view kEac3Layouts = "stereo | 51 | 71 | 512 | 514 | 714";
 
 void print_meta_usage();
 
-void print_usage() {
-    std::println("ac3forge — clean-room AC-3 (ATSC A/52) encoder/decoder");
-    std::println("");
-    std::println("Usage:");
-    std::println("  ac3cli silence <out.ac3> [seconds] [bitrate_kbps]");
-    std::println("  ac3cli sine    <out.ac3> [seconds] [bitrate_kbps] [freq_hz] [amp_pct] [layout]");
-    std::println("  ac3cli orbit   <out.ac3> [seconds] [bitrate_kbps] [orbit_seconds]");
-    std::println("  ac3cli atmos   <out.ec3> [seconds] [bitrate_kbps] [objects] [orbit_seconds]");
-    std::println("  ac3cli devices");
-    std::println("  ac3cli record  <out.ac3> [seconds] [bitrate_kbps] [device_index]");
-    std::println("  ac3cli encode  <in.wav> <out.ac3> [bitrate_kbps] [couple]");
-    std::println("  ac3cli eac3-encode <in.wav> <out.ec3> [bitrate_kbps] [tools]");
-    std::println("  ac3cli decode  <in.ac3|in.ec3> <out.wav>   (AC-3 or E-AC-3; bsid decides)");
-    std::println("  ac3cli levels  <in.wav|in.ac3>     (per-channel peak/RMS report)");
-    std::println("  ac3cli loudness <in.wav>             (BS.1770-4 loudness -> dialnorm)");
-    std::println("  ac3cli spdif   <in.ac3> <out.wav>   (IEC 61937 wrap as playable PCM16 WAV)");
-    std::println("  ac3cli mkv     <in.ac3|in.ec3> <out.mkv>  (wrap as a playable Matroska file)");
-    std::println("  ac3cli outputs                      (render endpoints + AC-3 passthrough support)");
-    std::println("  ac3cli play    <in.ac3> [device_index]  (exclusive-mode IEC 61937 passthrough)");
-    std::println("");
-    std::println("tools:  Annex E coding tools, '+'-joined — none | cpl | spx | aht | all;");
-    std::println("        cpl:N / spx:N pin that tool's band edge (e.g. cpl:4+spx:5);");
-    std::println("        aht:N pins the GAQ mode — aht:0 is AHT with GAQ switched off;");
-    std::println("        atten:N pins the SPX notch depth, noatten removes it");
-    std::println("atmos: objects orbit the room at different heights and rates,");
-    std::println("       encoded as a 5.1 E-AC-3 bed with JOC + OAMD side data");
-    std::println("       (TS 103 420). FFmpeg reports \"Dolby Digital Plus + Dolby Atmos\".");
-    std::println("");
-    std::println("layout: stereo (default) | 51 — 5.1 uses per-channel tones;");
-    std::println("        append 'c' (stereoc, 51c) to enable channel coupling");
-    std::println("        (L 1000, C 800, R 1200, SL 600, SR 1400, LFE 60 Hz)");
-    std::println("");
-    std::println("mkv wraps an AC-3 or E-AC-3 elementary stream in Matroska, taking the");
-    std::println("format, packet boundaries, sample rate and channel count from the bitstream");
-    std::println("itself — so it cannot be told the wrong ones. E-AC-3 dependent substreams");
-    std::println("are grouped into their access unit and counted as the channels they render.");
-    std::println("");
-    std::println("encode takes 1 to 6 channel WAVs and picks the acmod to match: 1 -> 1/0,");
-    std::println("2 -> 2/0, 3 -> 3/0, 4 -> 2/2, 5 -> 3/2, 6 -> 3/2 + LFE. Commands that");
-    std::println("carry PCM report per-channel levels when they finish; 'record' meters live.");
-    print_meta_usage();
-    std::println("");
-    std::println("For decode, drc=<scale> applies §7.7.1 partial compression (0 = ignore,");
-    std::println("1 = as encoded) and 'heavy' prefers compr where the stream carries it.");
-}
+void print_usage();
 
 std::uint32_t parse_u32_or(std::string_view text, std::uint32_t fallback) {
     std::uint32_t value = 0;
@@ -1704,6 +1660,170 @@ int run_play(std::string_view in_path, int device_index) {
     return 0;
 }
 
+
+int run_eac3_silence(std::string_view out_path, std::uint32_t seconds, std::uint32_t bitrate,
+                     std::string_view layout, const MetaOptions& meta) {
+    const auto chosen = eac3_layout(layout, bitrate, meta);
+    if (!chosen) {
+        std::println(stderr, "error: unknown layout '{}' ({})", layout, kEac3Layouts);
+        return 1;
+    }
+    const auto unit = ac3::eac3::build_silent_access_unit(chosen->config);
+    if (!unit) {
+        std::println(stderr, "error: invalid E-AC-3 configuration");
+        return 1;
+    }
+    const std::uint64_t count = (static_cast<std::uint64_t>(seconds) * 48000 + 1535) / 1536;
+    const std::vector<std::vector<std::byte>> frames(static_cast<std::size_t>(count),
+                                                     unit->bytes);
+    if (!write_frames(out_path, frames)) {
+        return 1;
+    }
+    std::println("wrote {} silent E-AC-3 {} access units ({} substreams, "
+                 "{} bytes each, bsid 16) to {}",
+                 count, layout, unit->substream_count(), unit->bytes.size(), out_path);
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// The command table. Every command is one row: its name, how many positional
+// arguments it needs, the argument spec the usage text prints, and the code
+// that runs it.
+//
+// It replaces a chain of `if (command == ...)` comparisons, each of which
+// repeated `args.size() > N ? parse(args[N]) : default` for every parameter.
+// That repetition is where this file kept going wrong: consolidating six
+// parallel branches turned up SIX argv faults of exactly one shape - an entry
+// counting from the wrong base, or reading a slot it had not checked. Two
+// would have written output to a file named after the duration. None was
+// visible in a build or a unit test, because the indices are only wrong
+// relative to a convention nothing states in one place.
+//
+// Here the convention is stated once: args[0] is the command, so args[1] is
+// the first parameter, and min_args is checked before any handler runs.
+// print_usage() is generated from the same rows, so the help cannot drift
+// from what dispatch accepts - it already had, with eac3-silence and
+// eac3-sine missing from it entirely.
+// ---------------------------------------------------------------------------
+
+struct Args {
+    std::span<char* const> a;
+    const MetaOptions& meta;
+    bool couple;
+
+    [[nodiscard]] std::string_view str(std::size_t i, std::string_view fallback = {}) const {
+        return i < a.size() ? std::string_view{a[i]} : fallback;
+    }
+    [[nodiscard]] std::uint32_t u32(std::size_t i, std::uint32_t fallback) const {
+        return i < a.size() ? parse_u32_or(a[i], fallback) : fallback;
+    }
+    [[nodiscard]] int i32(std::size_t i, int fallback) const {
+        return i < a.size() ? static_cast<int>(parse_u32_or(a[i], 0)) : fallback;
+    }
+};
+
+struct Command {
+    std::string_view name;
+    std::size_t min_args;  // positional count INCLUDING the command itself
+    std::string_view spec;
+    std::string_view note;
+    int (*run)(const Args&);
+};
+
+constexpr std::array<Command, 16> kCommands{{
+    {"silence", 2, "<out.ac3> [seconds] [bitrate_kbps]", "",
+     [](const Args& x) { return run_silence(x.str(1), x.u32(2, 5), x.u32(3, 192)); }},
+    {"sine", 2, "<out.ac3> [seconds] [bitrate_kbps] [freq_hz] [amp_pct] [layout]", "",
+     [](const Args& x) {
+         return run_sine(x.str(1), x.u32(2, 5), x.u32(3, 192), x.u32(4, 1000), x.u32(5, 50),
+                         x.str(6, "stereo"), x.couple, x.meta);
+     }},
+    {"orbit", 2, "<out.ac3> [seconds] [bitrate_kbps] [orbit_seconds]", "",
+     [](const Args& x) {
+         return run_orbit(x.str(1), x.u32(2, 8), x.u32(3, 448), x.u32(4, 4), x.meta);
+     }},
+    {"atmos", 2, "<out.ec3> [seconds] [bitrate_kbps] [objects] [orbit_seconds]", "",
+     [](const Args& x) {
+         return run_atmos(x.str(1), x.u32(2, 8), x.u32(3, 448), x.u32(4, 4), x.u32(5, 6));
+     }},
+    {"record", 2, "<out.ac3> [seconds] [bitrate_kbps] [device_index]", "",
+     [](const Args& x) {
+         return run_record(x.str(1), x.u32(2, 5), x.u32(3, 192), x.i32(4, 0));
+     }},
+    {"encode", 3, "<in.wav> <out.ac3> [bitrate_kbps] [couple]", "",
+     [](const Args& x) {
+         return run_encode(x.str(1), x.str(2), x.u32(3, 192), x.couple, x.meta);
+     }},
+    {"eac3-silence", 2, "<out.ec3> [seconds] [bitrate_kbps] [layout]", "",
+     [](const Args& x) {
+         return run_eac3_silence(x.str(1), x.u32(2, 5), x.u32(3, 192), x.str(4, "stereo"),
+                                 x.meta);
+     }},
+    {"eac3-sine", 2,
+     "<out.ec3> [seconds] [bitrate_kbps] [freq_hz] [amp_pct] [layout]", "",
+     [](const Args& x) {
+         return run_eac3_sine(x.str(1), x.u32(2, 5), x.u32(3, 192), x.u32(4, 1000),
+                              x.u32(5, 50), x.str(6, "stereo"), x.meta);
+     }},
+    {"eac3-encode", 3, "<in.wav> <out.ec3> [bitrate_kbps] [tools]", "",
+     [](const Args& x) {
+         return run_eac3_encode(x.str(1), x.str(2), x.u32(3, 192), x.str(4, "none"));
+     }},
+    {"decode", 3, "<in.ac3|in.ec3> <out.wav>", "AC-3 or E-AC-3; bsid decides",
+     [](const Args& x) { return run_decode(x.str(1), x.str(2), x.meta); }},
+    {"levels", 2, "<in.wav|in.ac3>", "per-channel peak/RMS report",
+     [](const Args& x) { return run_levels(x.str(1)); }},
+    {"loudness", 2, "<in.wav>", "BS.1770-4 loudness -> dialnorm",
+     [](const Args& x) { return run_loudness(x.str(1)); }},
+    {"spdif", 3, "<in.ac3> <out.wav>", "IEC 61937 wrap as playable PCM16 WAV",
+     [](const Args& x) { return run_spdif(x.str(1), x.str(2)); }},
+    {"mkv", 3, "<in.ac3|in.ec3> <out.mkv>", "wrap as a playable Matroska file",
+     [](const Args& x) { return run_mkv(x.str(1), x.str(2)); }},
+    {"devices", 1, "", "input and loopback capture endpoints",
+     [](const Args&) { return run_devices(); }},
+    {"outputs", 1, "", "render endpoints + AC-3 passthrough support",
+     [](const Args&) { return run_outputs(); }},
+}};
+
+void print_usage() {
+    std::println("ac3forge — clean-room AC-3 / E-AC-3 (ATSC A/52) encoder/decoder");
+    std::println("");
+    std::println("Usage:");
+    for (const auto& c : kCommands) {
+        std::string line = std::format("  ac3cli {:<13}{}", c.name, c.spec);
+        if (!c.note.empty()) {
+            line = std::format("{:<62}({})", line, c.note);
+        }
+        std::println("{}", line);
+    }
+    std::println("");
+    std::println("");
+    std::println("tools:  Annex E coding tools, '+'-joined — none | cpl | spx | aht | all;");
+    std::println("        cpl:N / spx:N pin that tool's band edge (e.g. cpl:4+spx:5);");
+    std::println("        aht:N pins the GAQ mode — aht:0 is AHT with GAQ switched off;");
+    std::println("        atten:N pins the SPX notch depth, noatten removes it");
+    std::println("atmos: objects orbit the room at different heights and rates,");
+    std::println("       encoded as a 5.1 E-AC-3 bed with JOC + OAMD side data");
+    std::println("       (TS 103 420). FFmpeg reports \"Dolby Digital Plus + Dolby Atmos\".");
+    std::println("");
+    std::println("layout: stereo (default) | 51 — 5.1 uses per-channel tones;");
+    std::println("        append 'c' (stereoc, 51c) to enable channel coupling");
+    std::println("        (L 1000, C 800, R 1200, SL 600, SR 1400, LFE 60 Hz)");
+    std::println("");
+    std::println("mkv wraps an AC-3 or E-AC-3 elementary stream in Matroska, taking the");
+    std::println("format, packet boundaries, sample rate and channel count from the bitstream");
+    std::println("itself — so it cannot be told the wrong ones. E-AC-3 dependent substreams");
+    std::println("are grouped into their access unit and counted as the channels they render.");
+    std::println("");
+    std::println("encode takes 1 to 6 channel WAVs and picks the acmod to match: 1 -> 1/0,");
+    std::println("2 -> 2/0, 3 -> 3/0, 4 -> 2/2, 5 -> 3/2, 6 -> 3/2 + LFE. Commands that");
+    std::println("carry PCM report per-channel levels when they finish; 'record' meters live.");
+    print_meta_usage();
+    std::println("");
+    std::println("For decode, drc=<scale> applies §7.7.1 partial compression (0 = ignore,");
+    std::println("1 = as encoded) and 'heavy' prefers compr where the stream carries it.");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1728,106 +1848,23 @@ int main(int argc, char** argv) {
     if (!parse_meta_options(options, meta)) {
         return 1;
     }
-
-    if (!args.empty() && std::string_view{args[0]} == "devices") {
-        return run_devices();
-    }
-    if (!args.empty() && std::string_view{args[0]} == "outputs") {
-        return run_outputs();
-    }
-    if (args.size() < 2) {
+    if (args.empty()) {
         print_usage();
-        return args.empty() ? 0 : 1;
-    }
-    const std::string_view command{args[0]};
-    if (command == "record") {
-        return run_record(args[1], args.size() > 2 ? parse_u32_or(args[2], 5) : 5,
-                          args.size() > 3 ? parse_u32_or(args[3], 192) : 192,
-                          args.size() > 4 ? static_cast<int>(parse_u32_or(args[4], 0)) : 0);
-    }
-    if (command == "silence") {
-        return run_silence(args[1], args.size() > 2 ? parse_u32_or(args[2], 5) : 5,
-                           args.size() > 3 ? parse_u32_or(args[3], 192) : 192);
-    }
-    if (command == "eac3-silence") {
-        const auto seconds = args.size() > 2 ? parse_u32_or(args[2], 5) : 5;
-        const auto bitrate = args.size() > 3 ? parse_u32_or(args[3], 192) : 192;
-        const std::string_view layout = args.size() > 4 ? args[4] : "stereo";
-        const auto chosen = eac3_layout(layout, bitrate, meta);
-        if (!chosen) {
-            std::println(stderr, "error: unknown layout '{}' ({})", layout, kEac3Layouts);
-            return 1;
-        }
-        const auto unit = ac3::eac3::build_silent_access_unit(chosen->config);
-        if (!unit) {
-            std::println(stderr, "error: invalid E-AC-3 configuration");
-            return 1;
-        }
-        const std::uint64_t count = (static_cast<std::uint64_t>(seconds) * 48000 + 1535) / 1536;
-        const std::vector<std::vector<std::byte>> frames(static_cast<std::size_t>(count),
-                                                         unit->bytes);
-        if (!write_frames(args[2], frames)) {
-            return 1;
-        }
-        std::println("wrote {} silent E-AC-3 {} access units ({} substreams, "
-                     "{} bytes each, bsid 16) to {}",
-                     count, layout, unit->substream_count(), unit->bytes.size(), args[1]);
         return 0;
     }
-    if (command == "mkv" && args.size() > 2) {
-        return run_mkv(args[1], args[2]);
+
+    const std::string_view command{args[0]};
+    for (const auto& c : kCommands) {
+        if (c.name != command) {
+            continue;
+        }
+        if (args.size() < c.min_args) {
+            std::println(stderr, "error: {} needs {}", c.name, c.spec);
+            return 1;
+        }
+        return c.run(Args{args, meta, couple_flag});
     }
-    if (command == "eac3-encode" && args.size() > 2) {
-        return run_eac3_encode(args[1], args[2],
-                               args.size() > 3 ? parse_u32_or(args[3], 192) : 192,
-                               args.size() > 4 ? std::string_view{args[4]} : "none");
-    }
-    if (command == "eac3-sine") {
-        return run_eac3_sine(args[1], args.size() > 2 ? parse_u32_or(args[2], 5) : 5,
-                             args.size() > 3 ? parse_u32_or(args[3], 192) : 192,
-                             args.size() > 4 ? parse_u32_or(args[4], 1000) : 1000,
-                             args.size() > 5 ? parse_u32_or(args[5], 50) : 50,
-                             args.size() > 6 ? std::string_view{args[6]} : "stereo", meta);
-    }
-    if (command == "sine") {
-        return run_sine(args[1], args.size() > 2 ? parse_u32_or(args[2], 5) : 5,
-                        args.size() > 3 ? parse_u32_or(args[3], 192) : 192,
-                        args.size() > 4 ? parse_u32_or(args[4], 1000) : 1000,
-                        args.size() > 5 ? parse_u32_or(args[5], 50) : 50,
-                        args.size() > 6 ? std::string_view{args[6]} : "stereo", couple_flag,
-                        meta);
-    }
-    if (command == "atmos" && args.size() > 1) {
-        return run_atmos(args[1], args.size() > 2 ? parse_u32_or(args[2], 8) : 8,
-                         args.size() > 3 ? parse_u32_or(args[3], 448) : 448,
-                         args.size() > 4 ? parse_u32_or(args[4], 4) : 4,
-                         args.size() > 5 ? parse_u32_or(args[5], 6) : 6);
-    }
-    if (command == "orbit") {
-        return run_orbit(args[1], args.size() > 2 ? parse_u32_or(args[2], 8) : 8,
-                         args.size() > 3 ? parse_u32_or(args[3], 448) : 448,
-                         args.size() > 4 ? parse_u32_or(args[4], 4) : 4, meta);
-    }
-    if (command == "encode" && args.size() > 2) {
-        return run_encode(args[1], args[2], args.size() > 3 ? parse_u32_or(args[3], 192) : 192,
-                          couple_flag, meta);
-    }
-    if (command == "decode" && args.size() > 2) {
-        return run_decode(args[1], args[2], meta);
-    }
-    if (command == "levels" && args.size() > 1) {
-        return run_levels(args[1]);
-    }
-    if (command == "loudness" && args.size() > 1) {
-        return run_loudness(args[1]);
-    }
-    if (command == "spdif" && args.size() > 2) {
-        return run_spdif(args[1], args[2]);
-    }
-    if (command == "play") {
-        return run_play(args[1],
-                        args.size() > 2 ? static_cast<int>(parse_u32_or(args[2], 0)) : -1);
-    }
+    std::println(stderr, "error: unknown command '{}'", command);
     print_usage();
     return 1;
 }
