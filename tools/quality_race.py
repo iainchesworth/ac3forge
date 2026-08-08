@@ -5,14 +5,22 @@ noise, correlated near-mono content for rematrixing, tone bursts), encodes it
 with both encoders, decodes both with FFmpeg (the neutral referee), aligns by
 cross-correlation, and reports SNR vs the original.
 
-Two races:
-  ac3   - our AC-3 encoder vs FFmpeg's, at 192-448 kbps
-  eac3  - our E-AC-3 encoder, one column per Annex E tool set, vs FFmpeg's
-          E-AC-3 encoder, at the low rates the tools exist to serve
+Modes:
+  ac3        - our AC-3 encoder vs FFmpeg's, at 192-448 kbps
+  eac3       - our E-AC-3 encoder, one row per Annex E tool set, vs FFmpeg's
+               E-AC-3 encoder, at the low rates the tools exist to serve
+  eac3-51    - the same for 5.1, with genuinely decorrelated channels
+  seam       - where the spectral extension notch lands, and how deep
+  crosscheck - every tool set through BOTH decoders: FFmpeg and Dolby's own,
+               via the reference player's GStreamer elements. Agreeing with
+               one decoder says a stream is readable; agreeing with the
+               reference implementation says it is right. Skips gracefully
+               when the reference player is not installed.
 
-Usage (repo root, after building):  python tools/quality_race.py [ac3|eac3]
+Usage (repo root, after building):  python tools/quality_race.py [mode]
 """
 
+import os
 import struct
 import subprocess
 import sys
@@ -264,6 +272,86 @@ def race_eac3(original, source, seconds, rates=(96, 128, 192)):
         print()
 
 
+DRP = Path(r"C:\Program Files\Dolby\Dolby Reference Player")
+
+
+def dolby_decode(coded, wav):
+    """Decode with Dolby's own decoder, through the reference player's
+    GStreamer elements. Returns False when the player is not installed.
+
+    This is a better oracle than FFmpeg for the Annex E tools, because it is
+    the implementation the standard is written to describe rather than one
+    more reading of it. It is also the only one that can settle a question
+    FFmpeg cannot: whether a tool it does not implement is being emitted
+    correctly.
+    """
+    launch = DRP / "gst-launch-1.0.exe"
+    if not launch.exists():
+        return False
+    env = dict(os.environ)
+    env["GST_PLUGIN_PATH"] = str(DRP / "gst-plugins")
+    env["PATH"] = f"{DRP};{env.get('PATH', '')}"
+    # gst-launch parses one pipeline token per argv entry, so "filesrc" and
+    # its property have to arrive separately.
+    result = subprocess.run(
+        [str(launch), "-q", "filesrc", f"location={Path(coded).as_posix()}",
+         "!", "dlbac3parse", "!", "dlbac3dec", "!", "audioconvert",
+         "!", "audio/x-raw,format=F32LE", "!", "wavenc",
+         "!", "filesink", f"location={Path(wav).as_posix()}"],
+        capture_output=True, text=True, env=env)
+    if result.returncode != 0:
+        print(f"  (dolby decode failed: {result.stderr.strip().splitlines()[:1]})")
+        return False
+    return Path(wav).exists()
+
+
+def agreement_db(a, b):
+    """How closely two decodings of the same bits match, in dB."""
+    a, b = a[:, 0].astype(np.float64), b[:, 0].astype(np.float64)
+    probe = b[200000:232768]
+    corr = np.correlate(a[199000:234000], probe, mode="valid")
+    lag = int(np.argmax(np.abs(corr))) - 1000
+    n = min(len(b), len(a) - lag) - 300000
+    if n < RATE:
+        return float("nan"), lag
+    diff = a[200000 + lag:200000 + lag + n] - b[200000:200000 + n]
+    return 10 * np.log10(np.sum(b[200000:200000 + n] ** 2)
+                         / max(np.sum(diff ** 2), 1e-30)), lag
+
+
+def crosscheck(original, source):
+    """Put every tool set through both decoders and compare them.
+
+    Agreeing with one decoder proves the stream is readable. Agreeing with
+    two independent ones - where the second is the reference implementation -
+    is the difference between "FFmpeg accepts this" and "this is right".
+    """
+    print(f"{'tools':<10} | {'ffmpeg dB':>9} | {'dolby dB':>8} | {'agree dB':>8}")
+    print("-" * 46)
+    for tools in ("none", "cpl", "spx", "aht", "all"):
+        coded = BUILD / f"x_{tools}.ec3"
+        cmd = [CLI, "eac3-encode", source, coded, "128"]
+        if tools != "none":
+            cmd.append(tools)
+        run(cmd)
+        ff_wav = BUILD / f"x_{tools}_ff.wav"
+        run(["ffmpeg", "-v", "error", "-y", "-err_detect",
+             "crccheck+bitstream+buffer+explode", "-i", coded,
+             "-c:a", "pcm_f32le", ff_wav])
+        ff = read_wav_f32(ff_wav)
+        o, d, _ = align(original, ff)
+        ff_snr = 10 * np.log10(np.sum(o**2) / max(np.sum((d - o) ** 2), 1e-30))
+        dlb_wav = BUILD / f"x_{tools}_dlb.wav"
+        if not dolby_decode(coded, dlb_wav):
+            print(f"{tools:<10} | {ff_snr:>9.2f} | {'n/a':>8} | {'n/a':>8}")
+            continue
+        dlb = read_wav_f32(dlb_wav)
+        o, d, _ = align(original, dlb)
+        dlb_snr = 10 * np.log10(np.sum(o**2) / max(np.sum((d - o) ** 2), 1e-30))
+        agree, _ = agreement_db(dlb, ff)
+        print(f"{tools:<10} | {ff_snr:>9.2f} | {dlb_snr:>8.2f} | {agree:>8.1f}")
+
+
 def seam_check(source, spxbegf=4):
     """Is the spectral extension notch where the standard says, and how deep?
 
@@ -326,10 +414,12 @@ def main():
         race_eac3(read_wav_f32(source), source, seconds, rates=(192, 256, 384))
     elif which == "seam":
         seam_check(source)
+    elif which == "crosscheck":
+        crosscheck(original, source)
     elif which == "ac3":
         race_ac3(original, source, seconds)
     else:
-        raise SystemExit(f"unknown race '{which}' (ac3 | eac3 | eac3-51 | seam)")
+        raise SystemExit(f"unknown race '{which}' (ac3 | eac3 | eac3-51 | seam | crosscheck)")
 
 
 if __name__ == "__main__":
