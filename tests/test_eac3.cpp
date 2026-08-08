@@ -452,6 +452,124 @@ TEST_CASE("the AHT synthesis basis is orthogonal with equal norms",
     }
 }
 
+TEST_CASE("the GAQ quantizers match Table E3.5's shape", "[eac3][aht][gaq]") {
+    using ac3::eac3::aht_mantissa_bits;
+    using ac3::eac3::aht_quantize_mantissa;
+    for (int hebap = 8; hebap <= 19; ++hebap) {
+        const int m = aht_mantissa_bits(hebap);
+        for (const int gain : {1, 2, 4}) {
+            CAPTURE(hebap, m, gain);
+            const int small_bits = gain == 1 ? m : (gain == 2 ? m - 1 : m - 2);
+            const int large_bits = gain == 1 ? 0 : (gain == 2 ? m - 1 : m);
+            const std::uint32_t tag =
+                std::uint32_t{1} << static_cast<unsigned>(small_bits - 1);
+            // Table E3.5's codeword lengths, and the reconstruction never
+            // straying further than half a step of whichever quantizer it
+            // landed in.
+            const double large_step = gain == 2 ? 1.0 / ((1 << (m - 1)) - 1)
+                                                : 3.0 / ((1 << (m + 1)) - 2);
+            const double step = gain == 1 ? 2.0 / ((1 << m) - 1)
+                                          : std::max(1.0 / (1 << (m - 1)), large_step);
+            for (int i = -200; i <= 200; ++i) {
+                const double value = i / 201.0;
+                const auto code = aht_quantize_mantissa(value, m, gain);
+                CHECK(code.bits == small_bits);
+                CHECK(code.escape_bits == (code.escape_bits > 0 ? large_bits : 0));
+                // A small codeword may never collide with the escape tag, or
+                // the decoder reads a value as an escape and every bit after
+                // it in the channel is misaligned.
+                if (gain != 1 && code.escape_bits == 0) {
+                    CHECK(code.code != tag);
+                }
+                if (code.escape_bits > 0) {
+                    CHECK(code.code == tag);
+                }
+                CAPTURE(value, code.recon);
+                CHECK(std::abs(code.recon - value) <= step);
+                CHECK(std::abs(code.recon) < 1.0);
+            }
+        }
+    }
+}
+
+TEST_CASE("GAQ reconstruction agrees with Table E3.6", "[eac3][aht][gaq]") {
+    using ac3::eac3::aht_quantize_mantissa;
+    // The encoder derives its quantizers rather than transcribing the
+    // standard's remapping constants, so the derivation has to be anchored to
+    // them somewhere. tools/gen_aht_tables.py checks all 120; these are the
+    // two rows that pin the shape - the dead zone's edge and its step - at
+    // the narrowest quantizer, where the constants are least forgiving.
+    //
+    // hebap 8, m = 3. Gk = 2 large: a = 0xd555, b = 0x4000 -> y = (2/3)x + 1/2,
+    // so the four points are +-{1/2, 5/6}. Gk = 4 large: a = 0xedb7,
+    // b = 0x2000 -> y = (6/7)x + 1/4, points +-{1/4, ...} stepping by 3/14.
+    const auto near = [](double a, double b) { return std::abs(a - b) < 1e-9; };
+    const auto two = aht_quantize_mantissa(0.9, 3, 2);
+    CHECK(two.escape_bits == 2);
+    CHECK(near(two.recon, 0.5 + 1.0 / 3.0));
+    CHECK(near(aht_quantize_mantissa(0.5, 3, 2).recon, 0.5));
+    CHECK(near(aht_quantize_mantissa(-0.5, 3, 2).recon, -0.5));
+    CHECK(near(aht_quantize_mantissa(0.26, 3, 4).recon, 0.25));
+    CHECK(near(aht_quantize_mantissa(0.9, 3, 4).recon, 0.25 + 3.0 * (3.0 / 14.0)));
+    // Unity gain is AC-3's symmetric quantizer: 2^m - 1 levels of 2/(2^m - 1).
+    CHECK(near(aht_quantize_mantissa(1.0, 3, 1).recon, 6.0 / 7.0));
+    CHECK(near(aht_quantize_mantissa(0.3, 3, 1).recon, 2.0 / 7.0));
+}
+
+TEST_CASE("GAQ bit accounting matches what it emits", "[eac3][aht][gaq]") {
+    using ac3::eac3::aht_bin_gaq_bits;
+    using ac3::eac3::aht_mantissa_bits;
+    using ac3::eac3::aht_quantize_mantissa;
+    // The rate search sizes the frame from aht_bin_gaq_bits and the packer
+    // emits from aht_quantize_mantissa. If those two ever disagree the frame
+    // is the wrong size, so they are checked against each other directly.
+    const std::array<std::array<double, 6>, 4> cases{{
+        {0.9, 0.1, -0.05, 0.02, -0.3, 0.6},   // one large, mostly small
+        {0.02, -0.01, 0.03, 0.0, -0.02, 0.01},  // all small
+        {0.9, -0.8, 0.7, -0.95, 0.85, -0.75},   // all large
+        {0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+    }};
+    for (int hebap = 8; hebap <= 19; ++hebap) {
+        const int m = aht_mantissa_bits(hebap);
+        for (const int gain : {1, 2, 4}) {
+            for (const auto& values : cases) {
+                CAPTURE(hebap, gain);
+                int emitted = 0;
+                for (const double value : values) {
+                    const auto code = aht_quantize_mantissa(value, m, gain);
+                    emitted += code.bits + code.escape_bits;
+                }
+                CHECK(emitted == aht_bin_gaq_bits(values, m, gain));
+            }
+        }
+    }
+}
+
+TEST_CASE("GAQ gain words are counted the way they are packed",
+          "[eac3][aht][gaq]") {
+    using ac3::eac3::aht_gaq_sections;
+    // Modes 1 and 2 send a bit each; mode 3 packs three to a 5-bit word, so a
+    // short final triplet still costs a whole one. Counting that wrong is a
+    // frame-sizing error, not a rounding one.
+    CHECK(aht_gaq_sections(7, 0) == 0);
+    CHECK(aht_gaq_sections(7, 1) == 7);
+    CHECK(aht_gaq_sections(7, 2) == 7);
+    CHECK(aht_gaq_sections(7, 3) == 3);   // 3 + 3 + 1 padded
+    CHECK(aht_gaq_sections(6, 3) == 2);
+    CHECK(aht_gaq_sections(0, 3) == 0);
+    // Table E3.4's three-state mapping, and that a triplet fits five bits.
+    CHECK(ac3::eac3::aht_gaq_mapped(1) == 0);
+    CHECK(ac3::eac3::aht_gaq_mapped(2) == 1);
+    CHECK(ac3::eac3::aht_gaq_mapped(4) == 2);
+    CHECK(2 * 9 + 2 * 3 + 2 < 32);
+    // §E3.4.2: gain words stop at hebap 12 for mode 1 and 17 for modes 2 and 3.
+    CHECK(ac3::eac3::aht_gaq_has_gain(11, 1));
+    CHECK_FALSE(ac3::eac3::aht_gaq_has_gain(12, 1));
+    CHECK(ac3::eac3::aht_gaq_has_gain(16, 3));
+    CHECK_FALSE(ac3::eac3::aht_gaq_has_gain(17, 3));
+    CHECK_FALSE(ac3::eac3::aht_gaq_has_gain(7, 3));  // that is the VQ range
+}
+
 TEST_CASE("AHT hands whole frames to block 0 and fills the frame", "[eac3][aht]") {
     using ac3::Acmod;
     // 5.1 below 192 kbit/s cannot fit its own exponent sets, whatever the

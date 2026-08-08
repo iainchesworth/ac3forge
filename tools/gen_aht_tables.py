@@ -27,6 +27,77 @@ VQ_INDEX_BITS = {1: 2, 2: 3, 3: 4, 4: 5, 5: 7, 6: 8, 7: 9}
 
 ROW = re.compile(r"^\s*(\d+)\s+((?:0x[0-9a-fA-F]{4}\s+){5}0x[0-9a-fA-F]{4})\s*$")
 PAIR = re.compile(r"(\d+)\s+(\d+)")
+REMAP = re.compile(
+    r"^\s*(\d+)?\s*x\s*[><≥]=?\s*0\s+"
+    r"((?:0x[0-9a-fA-F]{4}|N/A)(?:\s+(?:0x[0-9a-fA-F]{4}|N/A)){5})")
+
+# Table E3.2 again, this time as the scalar mantissa width per hebap.
+MANTISSA_BITS = {8: 3, 9: 4, 10: 5, 11: 6, 12: 7, 13: 8,
+                 14: 9, 15: 10, 16: 11, 17: 12, 18: 14, 19: 16}
+
+
+def gaq_reconstruction(hebap, gain, positive):
+    """(a, b) of Table E3.6's y = x + a*x + b, from the quantizer's shape.
+
+    The table is a restatement of three uniform quantizers, and deriving them
+    rather than transcribing them is what makes the encoder's own arithmetic
+    checkable: every constant below has to come back out.
+
+      Gk = 1  symmetric, 2^m - 1 levels, step 2/(2^m - 1), m-bit codeword
+      Gk = 2  dead zone at 1/2, (m-1)-bit codeword, step 1/(2^(m-1) - 1)
+      Gk = 4  dead zone at 1/4, m-bit codeword,     step 3/(2^(m+1) - 2)
+
+    x is the codeword read as a fractional two's complement value, so scaling
+    a step into the (1 + a) slope means multiplying by 2^(codeword bits - 1).
+    """
+    m = MANTISSA_BITS[hebap]
+    if gain == 1:
+        return 1.0 / ((1 << m) - 1), 0.0
+    dead = 1.0 / gain
+    if gain == 2:
+        step = 1.0 / ((1 << (m - 1)) - 1)
+        half = 1 << (m - 2)          # codeword is m-1 bits
+    else:
+        step = 3.0 / ((1 << (m + 1)) - 2)
+        half = 1 << (m - 1)          # codeword is m bits
+    slope = half * step
+    return slope - 1.0, (dead if positive else step - dead)
+
+
+def verify_gaq_remap(text):
+    """Check the derived quantizers against every entry of Table E3.6."""
+    start = find_last(text, "Table E3.6 Large Mantissa Inverse Quantization")
+    hebap = None
+    checked = 0
+    for line in text[start:start + 40]:
+        match = REMAP.match(line)
+        if not match:
+            continue
+        if match.group(1):
+            hebap = int(match.group(1))
+        positive = "≥" in line or ">" in line.split("x", 1)[1][:3]
+        values = match.group(2).split()
+        for index, gain in enumerate((1, 2, 4)):
+            a_hex, b_hex = values[2 * index], values[2 * index + 1]
+            if a_hex == "N/A":
+                # Gains above 1 are only defined where GAQ reaches (hebap 16).
+                if hebap <= 16:
+                    raise SystemExit(f"E3.6: hebap {hebap} gain {gain} unexpectedly N/A")
+                continue
+            want = [(int(h, 16) - 0x10000 if int(h, 16) >= 0x8000 else int(h, 16)) / 32768.0
+                    for h in (a_hex, b_hex)]
+            got = gaq_reconstruction(hebap, gain, positive)
+            # The table is 16-bit rounded, so one ulp of that is the tolerance.
+            for name, w, g in zip("ab", want, got):
+                if abs(w - g) > 1.0 / 32768.0:
+                    raise SystemExit(
+                        f"E3.6 mismatch hebap {hebap} Gk={gain} "
+                        f"{'x>=0' if positive else 'x<0'} {name}: "
+                        f"table {w:+.6f} derived {g:+.6f}")
+            checked += 2
+    if checked < 100:
+        raise SystemExit(f"E3.6: only {checked} constants checked; the parse is wrong")
+    return checked
 
 
 def lines():
@@ -97,6 +168,7 @@ def main():
     text = lines()
     hebaptab = parse_hebaptab(text)
     books = {hebap: parse_vq(text, hebap) for hebap in VQ_INDEX_BITS}
+    remaps = verify_gaq_remap(text)
 
     out = ['#pragma once', '', '#include <array>', '#include <cstdint>', '#include <span>', '']
     out += [
@@ -152,6 +224,7 @@ def main():
     OUT.write_text('\n'.join(out), encoding='utf-8')
     total = sum(len(v) for v in books.values())
     print(f'wrote {OUT.relative_to(REPO)}: hebaptab (64) + {total} VQ vectors')
+    print(f'verified {remaps} Table E3.6 constants against the derived quantizers')
 
 
 if __name__ == '__main__':

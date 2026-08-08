@@ -174,6 +174,11 @@ struct FrameConfig {
     // It is not free for material that moves between blocks, so it is decided
     // per channel per frame; setting this permits it rather than forces it.
     bool aht = false;
+    // Gain-adaptive quantization mode (§E3.4.4.2, Table E3.3), 0-3. Negative
+    // lets the encoder pick the cheapest per channel, which is the useful
+    // behaviour; pinning it to 0 turns GAQ off while leaving the rest of AHT
+    // alone, which is how the tool's contribution gets measured on its own.
+    int gaqmod = -1;
 };
 
 // Words per syncframe at a given rate. E-AC-3 signals the size directly, so

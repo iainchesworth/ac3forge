@@ -496,20 +496,42 @@ def parse_frame(data, verbose=True):
         # Mantissas, using the same allocation the decoder computes.
         total_mant_bits = 0
         counts = {1: 0, 2: 0, 4: 0}
-        regions = [(exps[ch], 0, endmant[ch], fgaincod[ch], fsnroffst[ch], False,
-                    chahtinu[ch]) for ch in range(nfchans)]
-        if cplinu[blk]:
-            # cplfsnroffst and cplfgaincod follow frmfsnroffst / 0x4 exactly as
-            # the fbw channels do under snroffststr 0 and frmfgaincode 0.
-            regions.append((cplexps, cplstrtmant, cplendmant, 4, fsnroffst[0], True,
-                            cplahtinu))
+        # §E2.2.4's got_cplchan: the coupling channel's mantissas sit right
+        # after the FIRST coupled channel's, not after all of them. While only
+        # the block's bit TOTAL was being checked this made no difference,
+        # which is exactly how it went unnoticed - reading AHT regions in
+        # place is what makes the order matter.
+        regions = []
+        got_cplchan = False
+        for ch in range(nfchans):
+            regions.append((exps[ch], 0, endmant[ch], fgaincod[ch], fsnroffst[ch],
+                            False, chahtinu[ch]))
+            if cplinu[blk] and chincpl[ch] and not got_cplchan:
+                # cplfsnroffst and cplfgaincod follow frmfsnroffst / 0x4 exactly
+                # as the fbw channels do under snroffststr 0 and frmfgaincode 0.
+                regions.append((cplexps, cplstrtmant, cplendmant, 4, fsnroffst[0],
+                                True, cplahtinu))
+                got_cplchan = True
         if lfeon:
             regions.append((lfeexps, 0, LFE_ENDMANT, fgaincod[nfchans],
                             fsnroffst[nfchans], False, lfeahtinu))
-        # Per-region subtotals: the grouped baps are only exact frame-wide, so
-        # these are the ungrouped cost and are for apportioning blame, not for
-        # checking the budget.
+        # The mantissa element is walked strictly in bitstream order, region by
+        # region, because AHT regions have to be READ rather than counted:
+        # gain-adaptive quantization makes a mantissa's length depend on the
+        # mantissa, so the only independent check of the encoder's arithmetic
+        # is to follow the tags.
+        #
+        # Grouped baps (1, 2 and 4) are counted across the whole block rather
+        # than per region, and their codeword lands at the position of the
+        # group's FIRST member - so a region's own cost is how much the
+        # running grouped total moves while it is being walked. That is exact
+        # even when a group straddles two channels.
+        def grouped_bits():
+            return (5 * ((counts[1] + 2) // 3) + 7 * ((counts[2] + 2) // 3)
+                    + 7 * ((counts[4] + 1) // 2))
+
         per_region = []
+        mant_start = r.pos
         for e, begin, end, fgain, fsnr, is_cpl, aht in regions:
             bap = bit_alloc(e[:end], fscod, codes['sdcycod'], codes['fdcycod'],
                             codes['sgaincod'], codes['dbpbcod'], codes['floorcod'],
@@ -517,37 +539,33 @@ def parse_frame(data, verbose=True):
                             cplfleak=cplfleak, cplsleak=cplsleak, high_efficiency=aht)
             if aht:
                 # §E2.2.4: an AHT region's whole frame of mantissas is read in
-                # block 0 and nothing is read for it afterwards. gaqmod is
-                # 2 bits at the head of it.
+                # block 0, and nothing is read for it in blocks 1 to 5.
                 if blk != 0:
                     per_region.append(('aht-', 0))
                     continue
-                share = 2 + sum(aht_bin_bits(b) for b in bap[begin:])
-                total_mant_bits += share
-                per_region.append((f'aht{end - begin}', share))
+                before = r.pos
+                read_aht_region(r, bap, begin, end)
+                per_region.append((f'aht{end - begin}', r.pos - before))
                 continue
-            share = 0
+            before = grouped_bits()
+            direct = 0
             for b in bap[begin:]:
                 if b in counts:
                     counts[b] += 1
-                    share += {1: 5 / 3, 2: 7 / 3, 4: 3.5}[b]
                 elif b:
-                    bits = (0, 0, 0, 3, 0, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 16)[b]
-                    total_mant_bits += bits
-                    share += bits
-            per_region.append(('cpl' if is_cpl else f'{end - begin}bin', round(share)))
-        total_mant_bits += 5 * ((counts[1] + 2) // 3)
-        total_mant_bits += 7 * ((counts[2] + 2) // 3)
-        total_mant_bits += 7 * ((counts[4] + 1) // 2)
+                    direct += (0, 0, 0, 3, 0, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 16)[b]
+            share = direct + grouped_bits() - before
+            if r.pos + share > len(r.data) * 8:
+                raise SystemExit(
+                    f'  OVERRUN: block {blk} wants {share} more mantissa bits but only '
+                    f'{len(r.data) * 8 - r.pos} remain in the frame. The encoder and an '
+                    f'independent allocation disagree.')
+            r.bits(share)
+            per_region.append(('cpl' if is_cpl else f'{end - begin}bin', share))
+        total_mant_bits = r.pos - mant_start
         log(f'  blk {blk}: side {side} bits, csnroffst={csnroffst} '
             f'fsnroffst={fsnroffst[0]}, mantissas {total_mant_bits} bits '
-            f'{per_region} -> ends at {r.pos + total_mant_bits}')
-        if r.pos + total_mant_bits > len(r.data) * 8:
-            raise SystemExit(
-                f'  OVERRUN: block {blk} wants {total_mant_bits} mantissa bits but only '
-                f'{len(r.data) * 8 - r.pos} remain in the frame. The encoder and an '
-                f'independent allocation disagree.')
-        r.bits(total_mant_bits)
+            f'{per_region} -> ends at {r.pos}')
 
     total_bits = (frmsiz + 1) * 16
     log(f'consumed {r.pos} of {total_bits} bits; {total_bits - r.pos} left for '
@@ -576,6 +594,60 @@ def expand_cpl(absexp, groups, grpsize, count):
             prev += d - 2
             out.extend([prev] * grpsize)
     return out[:count] + [24] * max(0, count - len(out))
+
+
+# Table E3.2: scalar mantissa width per hebap, and the VQ index width below it.
+AHT_MANTISSA_BITS = {8: 3, 9: 4, 10: 5, 11: 6, 12: 7, 13: 8,
+                     14: 9, 15: 10, 16: 11, 17: 12, 18: 14, 19: 16}
+AHT_VQ_BITS = [0, 2, 3, 4, 5, 7, 8, 9]
+
+
+def read_aht_region(r, bap, begin, end):
+    """Consume one AHT region: gaqmod, the gain words, then the mantissas.
+
+    Nothing here is computed from a table of lengths, because under
+    gain-adaptive quantization there is no such table - a mantissa that will
+    not fit the small quantizer is sent as that quantizer's unused
+    full-scale-negative symbol followed by a longer codeword, so the reader
+    has to follow the tags exactly as a decoder does.
+    """
+    gaqmod = r.bits(2)
+    endbap = 12 if gaqmod < 2 else 17
+    active = [b for b in range(begin, end) if 7 < bap[b] < endbap]
+
+    gains = {}
+    if gaqmod == 3:
+        # Table E3.4: three three-state gains packed into a 5-bit word.
+        mapped = []
+        for _ in range((len(active) + 2) // 3):
+            word = r.bits(5)
+            mapped += [word // 9, (word % 9) // 3, (word % 9) % 3]
+        for i, b in enumerate(active):
+            gains[b] = (1, 2, 4)[mapped[i]]
+    elif gaqmod in (1, 2):
+        other = 2 if gaqmod == 1 else 4
+        for b in active:
+            gains[b] = other if r.bits(1) else 1
+
+    for b in range(begin, end):
+        hebap = bap[b]
+        if hebap == 0:
+            continue
+        if hebap <= 7:
+            r.bits(AHT_VQ_BITS[hebap])     # one VQ index for all six blocks
+            continue
+        m = AHT_MANTISSA_BITS[hebap]
+        gain = gains.get(b, 1)
+        if gain == 1:
+            for _ in range(6):
+                r.bits(m)
+            continue
+        small = m - 1 if gain == 2 else m - 2
+        large = m - 1 if gain == 2 else m
+        tag = 1 << (small - 1)             # the full-scale-negative symbol
+        for _ in range(6):
+            if r.bits(small) == tag:
+                r.bits(large)
 
 
 def nrematbd(cplinu, cplbegf, spxinu=0, spxbegf=0):

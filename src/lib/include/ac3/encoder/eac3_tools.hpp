@@ -148,4 +148,75 @@ void aht_inverse(std::span<const double, kBlocksPerFrameSize> coefficients,
 [[nodiscard]] int aht_vector_quantize(std::span<double, kBlocksPerFrameSize> values,
                                       int hebap);
 
+// --- gain-adaptive quantization (§E3.4.4.2) --------------------------------
+// A variable-length layer over the scalar range. The encoder may amplify a
+// bin's six mantissas by a gain Gk before coding them, which lets the small
+// ones - the common case, since the DCT concentrates energy - be sent in
+// fewer bits. The ones that no longer fit are flagged with a tag (the small
+// quantizer's unused full-scale-negative symbol) and followed by a longer
+// codeword. One gain per bin goes out as side information.
+//
+// Table E3.6's remapping constants are not transcribed here. They restate
+// three uniform quantizers, and deriving those instead means the arithmetic
+// below is checkable rather than trusted: tools/gen_aht_tables.py reproduces
+// all 120 of the standard's constants from it and fails if any disagrees.
+
+// Table E3.3: which gains a mode permits. Mode 0 permits only unity, which is
+// GAQ switched off.
+[[nodiscard]] std::span<const int> aht_gaq_gains(int gaqmod);
+
+// §E3.4.2: at and above this hebap a bin carries no gain word and falls back
+// to the unity-gain quantizer, whatever the mode.
+[[nodiscard]] constexpr int aht_gaq_endbap(int gaqmod) { return gaqmod < 2 ? 12 : 17; }
+
+// Whether a bin carries a gain word. Note the standard's gaqbin is tri-state:
+// this is the "1" case, and hebap >= endbap is the "-1" case, which differs
+// only in that no gain is transmitted - both still code six mantissas.
+[[nodiscard]] constexpr bool aht_gaq_has_gain(int hebap, int gaqmod) {
+    return hebap > 7 && hebap < aht_gaq_endbap(gaqmod);
+}
+
+// One quantized mantissa. `escape_bits` is zero when the small quantizer
+// sufficed; otherwise `code` is the tag and `escape` the longer codeword that
+// immediately follows it.
+struct AhtMantissaCode {
+    std::uint32_t code = 0;
+    std::uint32_t escape = 0;
+    int bits = 0;
+    int escape_bits = 0;
+    double recon = 0.0;
+};
+
+[[nodiscard]] AhtMantissaCode aht_quantize_mantissa(double value, int mantissa_bits,
+                                                    int gain);
+
+// What one bin's six mantissas cost at a given gain, tags and escapes
+// included. This is why an AHT frame's size cannot be known without
+// quantizing it.
+[[nodiscard]] int aht_bin_gaq_bits(std::span<const double, kBlocksPerFrameSize> values,
+                                   int mantissa_bits, int gain);
+
+// The cheapest gain a mode allows for this bin. Distortion barely moves
+// between gains - each is about 2^m - 1 reconstruction points either way, just
+// spaced differently - so bits are the whole objective.
+[[nodiscard]] int aht_choose_gain(std::span<const double, kBlocksPerFrameSize> values,
+                                  int mantissa_bits, int gaqmod);
+
+// §E3.4.2: gain words transmitted for `active` gain-carrying bins. Modes 1
+// and 2 send one bit each; mode 3 packs three bins' three-state gains into a
+// 5-bit word, so a partial final triplet still costs a whole one.
+[[nodiscard]] constexpr int aht_gaq_sections(int active, int gaqmod) {
+    if (gaqmod == 0) {
+        return 0;
+    }
+    return gaqmod == 3 ? (active + 2) / 3 : active;
+}
+
+[[nodiscard]] constexpr int aht_gaq_gain_bits(int gaqmod) { return gaqmod == 3 ? 5 : 1; }
+
+// Table E3.4: the three-state gain as it is packed, 1 -> 0, 2 -> 1, 4 -> 2.
+[[nodiscard]] constexpr int aht_gaq_mapped(int gain) {
+    return gain == 4 ? 2 : (gain == 2 ? 1 : 0);
+}
+
 }  // namespace ac3::eac3

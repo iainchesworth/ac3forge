@@ -2,7 +2,6 @@
 
 #include <array>
 #include <cstdint>
-
 #include <span>
 
 // Adaptive hybrid transform tables, ATSC A/52:2018 Annex E.

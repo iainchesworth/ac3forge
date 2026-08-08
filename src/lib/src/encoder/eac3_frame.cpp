@@ -89,9 +89,49 @@ struct ChannelPlan {
     // output IS the mantissa, so the exponents are derived from it rather
     // than from the MDCT coefficients - see the note where they are built.
     bool aht = false;
+    int gaqmod = 0;
     std::vector<std::array<std::int32_t, kBlocksPerFrameSize>> aht_fixed;  // [bin][j]
-    std::vector<std::array<double, kBlocksPerFrameSize>> aht_coeffs;  // reconstruction
+    // The normalised mantissas through the rate search; overwritten with the
+    // decoder's reconstruction once they are packed.
+    std::vector<std::array<double, kBlocksPerFrameSize>> aht_coeffs;
+    std::vector<std::uint8_t> aht_gain;  // per bin: 1, 2 or 4
 };
+
+// The whole-frame mantissa cost of one AHT stream under a given gain mode,
+// leaving behind the per-bin gains that produce it.
+//
+// Gain-adaptive quantization is what makes this a function rather than a sum
+// over a table: whether a mantissa needs its escape codeword depends on the
+// mantissa, so the only way to know a frame's size is to quantize it. The
+// rate search therefore does exactly that on every iteration, and the packer
+// reuses the gains left here so the two cannot disagree.
+[[nodiscard]] std::uint32_t aht_stream_bits(ChannelPlan& plan, int gaqmod) {
+    std::uint32_t bits = 2;  // chgaqmod itself, which is part of the element
+    int active = 0;
+    for (int bin = plan.start; bin < plan.endmant; ++bin) {
+        const auto at = static_cast<std::size_t>(bin);
+        const int hebap = plan.bap[at];
+        plan.aht_gain[at] = 1;
+        if (hebap == 0) {
+            continue;
+        }
+        if (hebap <= 7) {
+            bits += static_cast<std::uint32_t>(aht_bin_bits(hebap));  // one VQ index
+            continue;
+        }
+        const int mantissa_bits = aht_mantissa_bits(hebap);
+        if (aht_gaq_has_gain(hebap, gaqmod)) {
+            plan.aht_gain[at] = static_cast<std::uint8_t>(
+                aht_choose_gain(plan.aht_coeffs[at], mantissa_bits, gaqmod));
+            ++active;
+        }
+        bits += static_cast<std::uint32_t>(
+            aht_bin_gaq_bits(plan.aht_coeffs[at], mantissa_bits, plan.aht_gain[at]));
+    }
+    bits += static_cast<std::uint32_t>(aht_gaq_sections(active, gaqmod) *
+                                       aht_gaq_gain_bits(gaqmod));
+    return bits;
+}
 
 // Everything the coupling tool contributes to a frame. Annex E hoists
 // cplstre/cplinu out of the blocks and into audfrm, so whether a block
@@ -147,23 +187,6 @@ struct Payload {
     std::vector<ChannelPlan> chans;
     std::array<std::vector<MantissaToken>, kBlocksPerFrame> mantissas;
 };
-
-// §E3.4.4.2's Gk = 1 quantizer, which is what a gaqmod of 0 leaves in place
-// for every scalar hebap. Table E3.6's remapping constants are a restatement
-// of AC-3's symmetric quantizer: m transmitted bits, 2^m - 1 levels, and a
-// reconstruction of code * 2 / (2^m - 1). Spot-checked against the table at
-// hebap 8 (a = 0x1249 = 1/7, giving the 7-level quantizer's 2/7 step),
-// hebap 18 and hebap 19 (a = 0, where the two steps coincide).
-[[nodiscard]] int aht_quantize(double value, int mantissa_bits) {
-    const int levels = (1 << mantissa_bits) - 1;
-    const int limit = (1 << (mantissa_bits - 1)) - 1;
-    const auto code = static_cast<int>(std::lround(value * levels / 2.0));
-    return std::clamp(code, -limit, limit);
-}
-
-[[nodiscard]] double aht_dequantize(int code, int mantissa_bits) {
-    return 2.0 * code / static_cast<double>((1 << mantissa_bits) - 1);
-}
 
 // §E3.3.2: the rematrixing bands cannot reach above whichever tool takes over
 // the spectrum first, so both their count and where the last one stops depend
@@ -1022,6 +1045,20 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                              plan.decoded);
         }
         plan.bap.assign(static_cast<std::size_t>(plan.endmant), 0);
+        if (plan.aht) {
+            // The mantissas the quantizers see, normalised by each bin's own
+            // exponent. They have to exist before the rate search, because
+            // under GAQ the search cannot size the frame without quantizing.
+            plan.aht_gain.assign(static_cast<std::size_t>(plan.endmant), 1);
+            for (int bin = plan.start; bin < plan.endmant; ++bin) {
+                const auto at = static_cast<std::size_t>(bin);
+                const int exp = plan.decoded[at];
+                for (std::size_t j = 0; j < kBlocksPerFrameSize; ++j) {
+                    plan.aht_coeffs[at][j] =
+                        std::ldexp(static_cast<double>(plan.aht_fixed[at][j]), exp - 24);
+                }
+            }
+        }
     }
 
     // --- 6. Coupling leak seeds ---------------------------------------------
@@ -1072,13 +1109,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                 // An AHT stream's cost is a whole-frame figure: six blocks of
                 // one bin become one VQ index or six scalar mantissas, all
                 // emitted in block 0. It never enters the per-block grouping.
-                // The 2-bit gaqmod that opens the section is part of the
-                // mantissa element, so it is part of this budget.
-                aht_bits += 2;
-                for (int bin = plan.start; bin < plan.endmant; ++bin) {
-                    aht_bits += static_cast<std::uint32_t>(
-                        aht_bin_bits(plan.bap[static_cast<std::size_t>(bin)]));
-                }
+                aht_bits += aht_stream_bits(plan, plan.gaqmod);
                 continue;
             }
             // Only the stream's own region carries mantissas.
@@ -1091,15 +1122,48 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                aht_bits;
     };
 
-    int lo = 0;
-    int hi = 1023;
-    while (lo < hi) {
-        const int mid = (lo + hi + 1) / 2;
-        if (bits_at(mid) <= budget) {
-            lo = mid;
-        } else {
-            hi = mid - 1;
+    const auto search = [&] {
+        int lo = 0;
+        int hi = 1023;
+        while (lo < hi) {
+            const int mid = (lo + hi + 1) / 2;
+            if (bits_at(mid) <= budget) {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
         }
+        return lo;
+    };
+    int lo = search();
+
+    // Choosing the gain mode needs an allocation to choose against, and the
+    // allocation needs a rate that depends on the mode - so the search runs
+    // twice, picking each AHT stream's cheapest mode at the provisional
+    // offset in between. A third pass buys nothing measurable: the modes
+    // differ by a few per cent of the mantissa budget, which never moves the
+    // offset far enough to change which mode wins.
+    if (payload.ahte && config_.gaqmod != 0) {
+        bits_at(lo);  // leaves every stream's allocation at the provisional offset
+        for (int s = 0; s < streams; ++s) {
+            auto& plan = payload.chans[static_cast<std::size_t>(s)];
+            if (!plan.aht) {
+                continue;
+            }
+            if (config_.gaqmod > 0) {
+                plan.gaqmod = std::min(config_.gaqmod, 3);
+                continue;
+            }
+            std::uint32_t best = aht_stream_bits(plan, 0);
+            for (const int mode : {1, 2, 3}) {
+                const std::uint32_t bits = aht_stream_bits(plan, mode);
+                if (bits < best) {
+                    best = bits;
+                    plan.gaqmod = mode;
+                }
+            }
+        }
+        lo = search();
     }
     const std::uint32_t mantissa_bits = bits_at(lo);  // leaves payload.bap at lo
     assert(mantissa_bits <= budget);
@@ -1121,19 +1185,45 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                 if (blk != 0) {
                     return;
                 }
-                writer.add_raw(0, 2);  // chgaqmod 0: gain-adaptive quantization off
-                for (int bin = plan.start; bin < plan.endmant; ++bin) {
-                    const int hebap = plan.bap[static_cast<std::size_t>(bin)];
-                    const int exp = plan.decoded[static_cast<std::size_t>(bin)];
-                    auto& values = plan.aht_coeffs[static_cast<std::size_t>(bin)];
-                    // The mantissa the quantizers see: the transform output,
-                    // normalised by this bin's own exponent.
-                    for (std::size_t j = 0; j < kBlocksPerFrameSize; ++j) {
-                        values[j] = std::ldexp(
-                            static_cast<double>(
-                                plan.aht_fixed[static_cast<std::size_t>(bin)][j]),
-                            exp - 24);
+                writer.add_raw(static_cast<std::uint32_t>(plan.gaqmod), 2);
+                // The gain words come first, all of them, before any
+                // mantissa - the decoder needs them to know how long the
+                // mantissas that follow are.
+                if (plan.gaqmod != 0) {
+                    std::vector<int> gains;
+                    for (int bin = plan.start; bin < plan.endmant; ++bin) {
+                        const auto at = static_cast<std::size_t>(bin);
+                        if (aht_gaq_has_gain(plan.bap[at], plan.gaqmod)) {
+                            gains.push_back(plan.aht_gain[at]);
+                        }
                     }
+                    if (plan.gaqmod == 3) {
+                        // Table E3.4: three three-state gains to a 5-bit word,
+                        // most significant first. A short final triplet is
+                        // padded with unity, which costs a whole word either
+                        // way - aht_gaq_sections counts it that way too.
+                        for (std::size_t i = 0; i < gains.size(); i += 3) {
+                            std::uint32_t packed = 0;
+                            for (std::size_t t = 0; t < 3; ++t) {
+                                const int gain = i + t < gains.size() ? gains[i + t] : 1;
+                                packed = packed * 3 +
+                                         static_cast<std::uint32_t>(aht_gaq_mapped(gain));
+                            }
+                            writer.add_raw(packed, 5);
+                        }
+                    } else {
+                        // Modes 1 and 2 have only two gains to distinguish, so
+                        // the bit is a plain flag rather than Table E3.4's
+                        // mapping - 1 means "this mode's other gain".
+                        for (const int gain : gains) {
+                            writer.add_raw(gain == 1 ? 0u : 1u, 1);
+                        }
+                    }
+                }
+                for (int bin = plan.start; bin < plan.endmant; ++bin) {
+                    const auto at = static_cast<std::size_t>(bin);
+                    const int hebap = plan.bap[at];
+                    auto& values = plan.aht_coeffs[at];
                     if (hebap == 0) {
                         values.fill(0.0);  // what the decoder will hold here
                         continue;
@@ -1145,14 +1235,16 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                                        aht_bin_bits(hebap));
                         continue;
                     }
-                    const int bits = aht_mantissa_bits(hebap);
+                    const int mantissa_bits = aht_mantissa_bits(hebap);
                     for (std::size_t j = 0; j < kBlocksPerFrameSize; ++j) {
-                        const int code = aht_quantize(values[j], bits);
-                        values[j] = aht_dequantize(code, bits);
-                        writer.add_raw(
-                            static_cast<std::uint32_t>(code) &
-                                ((1u << static_cast<unsigned>(bits)) - 1u),
-                            bits);
+                        const auto code =
+                            aht_quantize_mantissa(values[j], mantissa_bits,
+                                                  plan.aht_gain[at]);
+                        writer.add_raw(code.code, code.bits);
+                        if (code.escape_bits > 0) {
+                            writer.add_raw(code.escape, code.escape_bits);
+                        }
+                        values[j] = code.recon;
                     }
                 }
                 return;

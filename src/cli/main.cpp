@@ -43,7 +43,8 @@ void print_usage() {
     std::println("  ac3cli play    <in.ac3> [device_index]  (exclusive-mode IEC 61937 passthrough)");
     std::println("");
     std::println("tools:  Annex E coding tools, '+'-joined — none | cpl | spx | aht | all;");
-    std::println("        cpl:N / spx:N pin that tool's band edge (e.g. cpl:4+spx:5)");
+    std::println("        cpl:N / spx:N pin that tool's band edge (e.g. cpl:4+spx:5);");
+    std::println("        aht:N pins the GAQ mode — aht:0 is AHT with GAQ switched off");
     std::println("");
     std::println("layout: stereo (default) | 51 — 5.1 uses per-channel tones;");
     std::println("        append 'c' (stereoc, 51c) to enable channel coupling");
@@ -380,7 +381,7 @@ int run_eac3_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_
 // selected rather than assumed - and being able to encode the same material
 // with and without one is the only way to say whether it earned its place.
 constexpr std::string_view kEac3Tools =
-    "none | cpl | spx | aht | all (cpl:N / spx:N pin the band edge)";
+    "none | cpl | spx | aht | all (cpl:N / spx:N pin a band edge, aht:N the gain mode)";
 
 bool parse_eac3_tools(std::string_view text, ac3::eac3::FrameConfig& config) {
     if (text.empty() || text == "none") {
@@ -407,6 +408,14 @@ bool parse_eac3_tools(std::string_view text, ac3::eac3::FrameConfig& config) {
             config.coupling = true;
         } else if (token == "spx") {
             config.spx = true;
+        } else if (token.starts_with("aht:")) {
+            // "aht:0" is AHT with gain-adaptive quantization switched off,
+            // which is how GAQ's own contribution gets measured.
+            config.aht = true;
+            config.gaqmod = static_cast<int>(parse_u32_or(token.substr(4), 99));
+            if (config.gaqmod > 3) {
+                return false;
+            }
         } else if (token == "aht") {
             config.aht = true;
         } else if (token == "all") {
