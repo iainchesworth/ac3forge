@@ -99,6 +99,14 @@ std::vector<std::byte> read_all(std::string_view path) {
     return bytes;
 }
 
+// Why an AC-3 path turns a wider syntax away. Two different walls, each named
+// once: the commands that share a wall must not describe it differently, and
+// whichever one falls first should only have to be rewritten here.
+constexpr std::string_view kDecoderLimit =
+    "the in-repo decoder reads only the bsid<=8 syntax";
+constexpr std::string_view kPackerLimit =
+    "the IEC 61937 packer emits AC-3 bursts only (data type 1, one 6144-byte burst per frame)";
+
 // Reports (and returns true) when a stream is a syncframe format nothing here
 // can handle. E-AC-3 shares AC-3's 0x0B77 sync word, so a command that sniffs
 // only the sync word ends up blaming the file for the reader's limits. bsid
@@ -763,9 +771,12 @@ int run_decode(std::string_view in_path, std::string_view out_path) {
         std::println(stderr, "error: cannot read {}", in_path);
         return 1;
     }
+    if (reject_non_ac3_syntax(stream, in_path, kDecoderLimit)) {
+        return 1;
+    }
     const auto frames = ac3::split_frames(stream);
     if (!frames) {
-        std::println(stderr, "error: stream framing failed (code {})",
+        std::println(stderr, "error: {}: stream framing failed (code {})", in_path,
                      static_cast<int>(frames.error()));
         return 1;
     }
@@ -828,8 +839,7 @@ int run_levels(std::string_view in_path) {
                           std::to_integer<int>(bytes[1]) == 0x77;
 
     if (syncword) {
-        if (reject_non_ac3_syntax(bytes, in_path,
-                                  "the in-repo decoder reads only the bsid<=8 syntax")) {
+        if (reject_non_ac3_syntax(bytes, in_path, kDecoderLimit)) {
             return 1;
         }
         const auto frames = ac3::split_frames(bytes);
@@ -900,9 +910,7 @@ int run_spdif(std::string_view in_path, std::string_view out_path) {
         std::println(stderr, "error: cannot read {}", in_path);
         return 1;
     }
-    if (reject_non_ac3_syntax(stream, in_path,
-                              "the IEC 61937 packer emits AC-3 bursts only (data type 1, one "
-                              "6144-byte burst per frame)")) {
+    if (reject_non_ac3_syntax(stream, in_path, kPackerLimit)) {
         return 1;
     }
     const auto frames = ac3::split_frames(stream);
@@ -972,9 +980,7 @@ int run_play(std::string_view in_path, int device_index) {
         std::println(stderr, "error: cannot read {}", in_path);
         return 1;
     }
-    if (reject_non_ac3_syntax(stream, in_path,
-                              "the IEC 61937 packer emits AC-3 bursts only (data type 1, one "
-                              "6144-byte burst per frame)")) {
+    if (reject_non_ac3_syntax(stream, in_path, kPackerLimit)) {
         return 1;
     }
     const auto frames = ac3::split_frames(stream);
