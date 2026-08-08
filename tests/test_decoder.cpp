@@ -1,8 +1,11 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <cmath>
 #include <numbers>
+#include <set>
 #include <span>
+#include <string_view>
 #include <vector>
 
 #include "ac3/decoder/decoder.hpp"
@@ -252,5 +255,27 @@ TEST_CASE("decoder rejects corrupted streams", "[decoder]") {
     SECTION("truncated") {
         CHECK(decoder.decode_frame(std::span{frame}.first(frame.size() - 2)).error() ==
               ac3::DecodeError::kTruncated);
+    }
+}
+
+TEST_CASE("every decode error describes itself", "[decoder]") {
+    // A switch that has fallen behind its enum still compiles — no warning
+    // level here flags a missing case — and quietly answers "unknown decode
+    // error" for whichever value was added last. Only enumerating them
+    // catches that.
+    constexpr std::array<ac3::DecodeError, 6> all = {
+        ac3::DecodeError::kTruncated,   ac3::DecodeError::kBadSyncWord,
+        ac3::DecodeError::kBadCrc,      ac3::DecodeError::kReservedValue,
+        ac3::DecodeError::kUnsupported, ac3::DecodeError::kInvalidStream,
+    };
+    std::set<std::string_view> seen;
+    for (const auto error : all) {
+        CAPTURE(static_cast<int>(error));
+        const auto text = ac3::describe(error);
+        CHECK_FALSE(text.empty());
+        CHECK(text != "unknown decode error");
+        // Distinct: two errors sharing a sentence would send a reader looking
+        // in the wrong place.
+        CHECK(seen.insert(text).second);
     }
 }

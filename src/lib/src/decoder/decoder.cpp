@@ -13,6 +13,25 @@
 
 namespace ac3 {
 
+// Each case says what is wrong with the stream, except kUnsupported, which
+// says what is wrong with this decoder — the difference decides whether the
+// caller should reach for another file or another tool.
+std::string_view describe(DecodeError error) {
+    switch (error) {
+        case DecodeError::kTruncated: return "the stream ends part-way through a frame";
+        case DecodeError::kBadSyncWord:
+            return "no 0x0B77 sync word where a frame should begin";
+        case DecodeError::kBadCrc: return "the frame's CRC does not check out";
+        case DecodeError::kReservedValue: return "a header field holds a value A/52 reserves";
+        case DecodeError::kUnsupported:
+            return "valid AC-3 this decoder does not implement (bsid > 8, dual mono, block "
+                   "switching or delta bit allocation)";
+        case DecodeError::kInvalidStream:
+            return "the frame contradicts a constraint A/52 requires of it";
+    }
+    return "unknown decode error";
+}
+
 namespace {
 
 

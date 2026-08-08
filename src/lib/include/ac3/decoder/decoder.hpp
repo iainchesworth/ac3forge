@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <expected>
 #include <span>
+#include <string_view>
 #include <vector>
 
 #include "ac3/core/tables.hpp"
@@ -30,9 +31,11 @@ enum class DecodeError {
     kBadSyncWord,
     kBadCrc,
     kReservedValue,
-    kUnsupported,
+    kUnsupported,  // legal AC-3, but syntax this decoder declines to read
     kInvalidStream,
 };
+
+[[nodiscard]] std::string_view describe(DecodeError error);
 
 struct DecodedFrame {
     SampleRate sample_rate = SampleRate::k48000;
