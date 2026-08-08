@@ -728,19 +728,6 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
     return 0;
 }
 
-// AC-3 channel order -> standard WAV order for the supported layouts.
-std::vector<std::size_t> wav_channel_map(ac3::Acmod acmod, bool lfe) {
-    if (acmod == ac3::Acmod::k3_2 && lfe) {
-        return {0, 2, 1, 5, 3, 4};  // FL FR FC LFE BL BR <- L C R SL SR LFE
-    }
-    std::vector<std::size_t> identity(
-        static_cast<std::size_t>(ac3::fullbw_channel_count(acmod)) + (lfe ? 1 : 0));
-    for (std::size_t i = 0; i < identity.size(); ++i) {
-        identity[i] = i;
-    }
-    return identity;
-}
-
 // Standard WAVEFORMATEXTENSIBLE speaker order, as far as Table E2.5 and it
 // overlap. Three of E-AC-3's locations (Lw/Rw, Lsd/Rsd, LFE2) have no slot in
 // that order at all; they follow in bitstream order rather than being dropped.
@@ -765,7 +752,9 @@ constexpr std::array<ac3::eac3::chanmap::Location, 17> kWavSpeakerOrder = {
 };
 
 // Rendered layout -> WAV order, as source indices per output position. A 5.1
-// bed comes out {0, 2, 1, 5, 3, 4}, the same permutation the AC-3 path uses.
+// bed comes out {0, 2, 1, 5, 3, 4}, which is what ac3::io::wav_channel_order
+// returns for the same layout - the AC-3 path uses that directly, and this
+// exists only because a chanmap layout cannot be named by acmod and lfeon.
 std::vector<std::size_t> wav_channel_map(const ac3::eac3::chanmap::Layout& layout) {
     std::vector<std::size_t> map;
     std::vector<bool> placed(static_cast<std::size_t>(layout.count), false);
