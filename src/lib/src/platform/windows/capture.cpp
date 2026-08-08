@@ -39,6 +39,28 @@ constexpr DWORD kPollIntervalMs = 5;
 constexpr PROPERTYKEY kPkeyDeviceFriendlyName = {
     {0xa45c254e, 0xdf1c, 0x4efd, {0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0}}, 14};
 
+// The class and interface identifiers, spelled out for a related reason: the
+// SDK declares CLSID_MMDeviceEnumerator and the IAudio* IIDs but ships no
+// import library that defines them, so the only header-only way to name them
+// is __uuidof - an MSVC extension that clang rejects under -Wpedantic. The
+// values are the DECLSPEC_UUID / MIDL_INTERFACE strings in mmdeviceapi.h and
+// audioclient.h.
+constexpr CLSID kClsidMmDeviceEnumerator = {  // {bcde0395-e52f-467c-8e3d-c4579291692e}
+    0xbcde0395, 0xe52f, 0x467c, {0x8e, 0x3d, 0xc4, 0x57, 0x92, 0x91, 0x69, 0x2e}};
+constexpr IID kIidMmDeviceEnumerator = {  // {a95664d2-9614-4f35-a746-de8db63617e6}
+    0xa95664d2, 0x9614, 0x4f35, {0xa7, 0x46, 0xde, 0x8d, 0xb6, 0x36, 0x17, 0xe6}};
+constexpr IID kIidAudioClient = {  // {1cb9ad4c-dbfa-4c32-b178-c2f568a703b2}
+    0x1cb9ad4c, 0xdbfa, 0x4c32, {0xb1, 0x78, 0xc2, 0xf5, 0x68, 0xa7, 0x03, 0xb2}};
+constexpr IID kIidAudioCaptureClient = {  // {c8adbd64-e71e-48a0-a4de-185c395cd317}
+    0xc8adbd64, 0xe71e, 0x48a0, {0xa4, 0xde, 0x18, 0x5c, 0x39, 0x5c, 0xd3, 0x17}};
+
+// KSDATAFORMAT_SUBTYPE_PCM and _IEEE_FLOAT from mmreg.h, which spells them as
+// __uuidof for the same reason. The low 16 bits of Data1 are the wFormatTag.
+constexpr GUID kSubtypePcm = {  // {00000001-0000-0010-8000-00aa00389b71}
+    0x00000001, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
+constexpr GUID kSubtypeIeeeFloat = {  // {00000003-0000-0010-8000-00aa00389b71}
+    0x00000003, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
+
 std::string to_utf8(const wchar_t* wide) {
     if (wide == nullptr) {
         return {};
@@ -82,17 +104,17 @@ SampleFormat classify(const WAVEFORMATEX* format) {
         const auto* ext = reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(format);
         subformat = ext->SubFormat;
     } else if (format->wFormatTag == WAVE_FORMAT_IEEE_FLOAT) {
-        subformat = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
+        subformat = kSubtypeIeeeFloat;
     } else if (format->wFormatTag == WAVE_FORMAT_PCM) {
-        subformat = KSDATAFORMAT_SUBTYPE_PCM;
+        subformat = kSubtypePcm;
     } else {
         return SampleFormat::kUnsupported;
     }
 
-    if (IsEqualGUID(subformat, KSDATAFORMAT_SUBTYPE_IEEE_FLOAT) && bits == 32) {
+    if (IsEqualGUID(subformat, kSubtypeIeeeFloat) && bits == 32) {
         return SampleFormat::kFloat32;
     }
-    if (IsEqualGUID(subformat, KSDATAFORMAT_SUBTYPE_PCM)) {
+    if (IsEqualGUID(subformat, kSubtypePcm)) {
         switch (bits) {
             case 16: return SampleFormat::kPcm16;
             case 24: return SampleFormat::kPcm24;
@@ -145,8 +167,8 @@ void convert(const BYTE* data, std::size_t sample_count, SampleFormat format,
 
 std::expected<ComPtr<IMMDeviceEnumerator>, CaptureError> make_enumerator() {
     ComPtr<IMMDeviceEnumerator> enumerator;
-    const HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
-                                        IID_PPV_ARGS(&enumerator));
+    const HRESULT hr = CoCreateInstance(kClsidMmDeviceEnumerator, nullptr, CLSCTX_ALL,
+                                        kIidMmDeviceEnumerator, &enumerator);
     if (FAILED(hr)) {
         return std::unexpected(CaptureError::kComFailure);
     }
@@ -203,7 +225,7 @@ void append_devices(IMMDeviceEnumerator* enumerator, EDataFlow flow, DeviceKind 
         // The mixer format tells the caller the rate and channel count it
         // will actually receive, before committing to a capture.
         ComPtr<IAudioClient> client;
-        if (SUCCEEDED(device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, &client))) {
+        if (SUCCEEDED(device->Activate(kIidAudioClient, CLSCTX_ALL, nullptr, &client))) {
             WAVEFORMATEX* mix = nullptr;
             if (SUCCEEDED(client->GetMixFormat(&mix)) && mix != nullptr) {
                 info.sample_rate = mix->nSamplesPerSec;
@@ -329,7 +351,7 @@ std::expected<void, CaptureError> Capture::start(const std::string& device_id, D
     }
 
     ComPtr<IAudioClient> client;
-    if (FAILED(device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, &client))) {
+    if (FAILED(device->Activate(kIidAudioClient, CLSCTX_ALL, nullptr, &client))) {
         return std::unexpected(CaptureError::kComFailure);
     }
     WAVEFORMATEX* mix = nullptr;
@@ -368,7 +390,7 @@ std::expected<void, CaptureError> Capture::start(const std::string& device_id, D
     }
 
     ComPtr<IAudioCaptureClient> capture;
-    if (FAILED(client->GetService(IID_PPV_ARGS(&capture)))) {
+    if (FAILED(client->GetService(kIidAudioCaptureClient, &capture))) {
         if (sample_ready != nullptr) {
             CloseHandle(sample_ready);
         }

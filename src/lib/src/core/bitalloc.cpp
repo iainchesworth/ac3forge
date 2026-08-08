@@ -91,7 +91,7 @@ void compute_bit_allocation(std::span<const std::uint8_t> exps, SampleRate sampl
     std::array<int, 50> bndpsd{};
     {
         int j = kStart;
-        int k = kMaskTab[kStart];
+        int k = kMaskTab[static_cast<std::size_t>(kStart)];
         int lastbin = 0;
         do {
             lastbin = std::min(kBandStart[static_cast<std::size_t>(k)] +
@@ -111,7 +111,7 @@ void compute_bit_allocation(std::span<const std::uint8_t> exps, SampleRate sampl
     // §7.2.2.4: excitation function. Two shapes: fbw/LFE channels start at
     // band 0 and run the lowcomp low-frequency compensation, the coupling
     // channel starts higher and seeds its leaks instead.
-    const int bndstrt = kMaskTab[kStart];
+    const int bndstrt = kMaskTab[static_cast<std::size_t>(kStart)];
     const int bndend = kMaskTab[static_cast<std::size_t>(end - 1)] + 1;
     std::array<int, 50> excite{};
     int lowcomp = 0;
@@ -195,7 +195,7 @@ void compute_bit_allocation(std::span<const std::uint8_t> exps, SampleRate sampl
     // with & 0x1fe0, re-add floor.
     {
         int i = kStart;
-        int j = kMaskTab[kStart];
+        int j = kMaskTab[static_cast<std::size_t>(kStart)];
         int lastbin = 0;
         do {
             lastbin = std::min(kBandStart[static_cast<std::size_t>(j)] +

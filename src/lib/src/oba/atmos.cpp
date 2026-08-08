@@ -205,7 +205,7 @@ std::expected<eac3::AccessUnit, FrameError> AtmosEncoder::encode_frame(
             for (int n = 0; n < kSamplesPerFrame; ++n) {
                 const double g = from + (to - from) * (n + 1) / kSamplesPerFrame;
                 out[static_cast<std::size_t>(n)] += static_cast<float>(
-                    g * source[static_cast<std::size_t>(n)]);
+                    g * static_cast<double>(source[static_cast<std::size_t>(n)]));
             }
         }
         if (lfe_gains_[object] != 0.0 || target_lfe[object] != 0.0) {
@@ -215,7 +215,7 @@ std::expected<eac3::AccessUnit, FrameError> AtmosEncoder::encode_frame(
                                  (target_lfe[object] - lfe_gains_[object]) *
                                      (n + 1) / kSamplesPerFrame;
                 lfe[static_cast<std::size_t>(n)] += static_cast<float>(
-                    g * source[static_cast<std::size_t>(n)]);
+                    g * static_cast<double>(source[static_cast<std::size_t>(n)]));
             }
         }
     }

@@ -69,8 +69,8 @@ double snr_db(const std::vector<float>& input, const std::vector<float>& decoded
     double signal = 0.0;
     double noise = 0.0;
     for (std::size_t i = kSkip; i + kSkip < input.size(); ++i) {
-        const double x = input[i - kDelay];
-        const double d = decoded[i] - x;
+        const double x = static_cast<double>(input[i - kDelay]);
+        const double d = static_cast<double>(decoded[i]) - x;
         signal += x * x;
         noise += d * d;
     }
@@ -91,8 +91,8 @@ double dominant_freq_hz(const std::vector<float>& x, double rate) {
         double im = 0.0;
         for (std::size_t i = 0; i < len; ++i) {
             const double phase = 2.0 * std::numbers::pi * f * static_cast<double>(i) / rate;
-            re += x[n0 + i] * std::cos(phase);
-            im += x[n0 + i] * std::sin(phase);
+            re += static_cast<double>(x[n0 + i]) * std::cos(phase);
+            im += static_cast<double>(x[n0 + i]) * std::sin(phase);
         }
         const double mag = re * re + im * im;
         if (mag > best_m) {
@@ -247,8 +247,8 @@ double tone_energy(const std::vector<float>& x, double hz, double rate) {
     double im = 0.0;
     for (std::size_t i = 0; i < len; ++i) {
         const double phase = 2.0 * std::numbers::pi * hz * static_cast<double>(i) / rate;
-        re += x[kSkip + i] * std::cos(phase);
-        im += x[kSkip + i] * std::sin(phase);
+        re += static_cast<double>(x[kSkip + i]) * std::cos(phase);
+        im += static_cast<double>(x[kSkip + i]) * std::sin(phase);
     }
     return (re * re + im * im) / static_cast<double>(len * len);
 }

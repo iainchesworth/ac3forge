@@ -203,8 +203,8 @@ double dominant_freq_hz(const std::vector<float>& x) {
         double im = 0.0;
         for (std::size_t i = 0; i < len; ++i) {
             const double phase = 2.0 * std::numbers::pi * f * static_cast<double>(i) / 48000.0;
-            re += x[n0 + i] * std::cos(phase);
-            im += x[n0 + i] * std::sin(phase);
+            re += static_cast<double>(x[n0 + i]) * std::cos(phase);
+            im += static_cast<double>(x[n0 + i]) * std::sin(phase);
         }
         const double mag = re * re + im * im;
         if (mag > best_m) {
@@ -223,8 +223,8 @@ double snr_db(const std::vector<float>& input, const std::vector<float>& decoded
     double signal = 0.0;
     double noise = 0.0;
     for (std::size_t i = kSkip; i + kSkip < input.size(); ++i) {
-        const double x = input[i - kDelay];
-        const double d = decoded[i] - x;
+        const double x = static_cast<double>(input[i - kDelay]);
+        const double d = static_cast<double>(decoded[i]) - x;
         signal += x * x;
         noise += d * d;
     }

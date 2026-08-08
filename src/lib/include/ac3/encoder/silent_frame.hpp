@@ -81,8 +81,8 @@ consteval std::array<std::uint8_t, kSilentNchgrps> silent_d15_groups() {
         m = diff + 2;
     }
     std::array<std::uint8_t, kSilentNchgrps> groups{};
-    for (int g = 0; g < kSilentNchgrps; ++g) {
-        groups[static_cast<std::size_t>(g)] =
+    for (std::size_t g = 0; g < groups.size(); ++g) {
+        groups[g] =
             static_cast<std::uint8_t>(25 * mapped[3 * g] + 5 * mapped[3 * g + 1] + mapped[3 * g + 2]);
     }
     return groups;

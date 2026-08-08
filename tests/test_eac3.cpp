@@ -761,7 +761,7 @@ TEST_CASE("E-AC-3 spectral extension places its fields where Annex E puts them",
     // Block 0's spxcoe is implied by firstspxcos, so the coordinates follow
     // with no flag: spxblnd, mstrspxco, then 6 bits a band.
     for (int ch = 0; ch < 2; ++ch) {
-        reader.skip(5 + 2 + 6 * bands);
+        reader.skip(static_cast<std::size_t>(5 + 2 + 6 * bands));
     }
     // Coupling is off, so nothing follows before rematrixing - and with only
     // spectral extension in use spxbegf 4 leaves all four bands (§E3.3.2).

@@ -54,7 +54,7 @@ struct FrameParameters {
     // the decoder knows joc_mix_mtx_prev is meaningless and must not
     // interpolate from it.
     int seq_count = 0;
-    std::vector<double> matrix;
+    std::vector<double> matrix{};
 
     [[nodiscard]] int bands() const { return kNumBands[static_cast<std::size_t>(num_bands_idx)]; }
     [[nodiscard]] std::size_t coefficient_count() const {

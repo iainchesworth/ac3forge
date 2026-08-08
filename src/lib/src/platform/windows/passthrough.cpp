@@ -42,6 +42,21 @@ constexpr PROPERTYKEY kPkeyDeviceFriendlyName = {
 constexpr GUID kSubtypeIec61937DolbyDigital = {
     0x00000092, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
 
+// The class and interface identifiers, spelled out for a related reason: the
+// SDK declares CLSID_MMDeviceEnumerator and the IAudio* IIDs but ships no
+// import library that defines them, so the only header-only way to name them
+// is __uuidof - an MSVC extension that clang rejects under -Wpedantic. The
+// values are the DECLSPEC_UUID / MIDL_INTERFACE strings in mmdeviceapi.h and
+// audioclient.h.
+constexpr CLSID kClsidMmDeviceEnumerator = {  // {bcde0395-e52f-467c-8e3d-c4579291692e}
+    0xbcde0395, 0xe52f, 0x467c, {0x8e, 0x3d, 0xc4, 0x57, 0x92, 0x91, 0x69, 0x2e}};
+constexpr IID kIidMmDeviceEnumerator = {  // {a95664d2-9614-4f35-a746-de8db63617e6}
+    0xa95664d2, 0x9614, 0x4f35, {0xa7, 0x46, 0xde, 0x8d, 0xb6, 0x36, 0x17, 0xe6}};
+constexpr IID kIidAudioClient = {  // {1cb9ad4c-dbfa-4c32-b178-c2f568a703b2}
+    0x1cb9ad4c, 0xdbfa, 0x4c32, {0xb1, 0x78, 0xc2, 0xf5, 0x68, 0xa7, 0x03, 0xb2}};
+constexpr IID kIidAudioRenderClient = {  // {f294acfc-3146-4483-a7bf-addca7c260e2}
+    0xf294acfc, 0x3146, 0x4483, {0xa7, 0xbf, 0xad, 0xdc, 0xa7, 0xc2, 0x60, 0xe2}};
+
 // The IEC 61937 carrier is a 2-channel 16-bit stream; one AC-3 frame occupies
 // one 6144-byte burst = 1536 stereo frames, matching the AC-3 frame duration.
 constexpr WORD kCarrierChannels = 2;
@@ -111,8 +126,8 @@ private:
 
 std::expected<ComPtr<IMMDeviceEnumerator>, PassthroughError> make_enumerator() {
     ComPtr<IMMDeviceEnumerator> enumerator;
-    if (FAILED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
-                                IID_PPV_ARGS(&enumerator)))) {
+    if (FAILED(CoCreateInstance(kClsidMmDeviceEnumerator, nullptr, CLSCTX_ALL,
+                                kIidMmDeviceEnumerator, &enumerator))) {
         return std::unexpected(PassthroughError::kComFailure);
     }
     return enumerator;
@@ -194,7 +209,7 @@ std::expected<std::vector<RenderDeviceInfo>, PassthroughError> enumerate_render_
         }
 
         ComPtr<IAudioClient> client;
-        if (SUCCEEDED(device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, &client))) {
+        if (SUCCEEDED(device->Activate(kIidAudioClient, CLSCTX_ALL, nullptr, &client))) {
             // IsFormatSupported is the only honest way to ask "can this
             // endpoint bitstream AC-3?" - the answer depends on the driver,
             // the physical connector and the user's per-device settings.
@@ -306,7 +321,7 @@ std::expected<void, PassthroughError> PassthroughSink::start(const std::string& 
     }
 
     ComPtr<IAudioClient> client;
-    if (FAILED(device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, &client))) {
+    if (FAILED(device->Activate(kIidAudioClient, CLSCTX_ALL, nullptr, &client))) {
         return std::unexpected(PassthroughError::kComFailure);
     }
 
@@ -337,7 +352,7 @@ std::expected<void, PassthroughError> PassthroughSink::start(const std::string& 
         period = static_cast<REFERENCE_TIME>(
             10000.0 * 1000 * aligned_frames / sample_rate + 0.5);
         client.Reset();
-        if (FAILED(device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, &client))) {
+        if (FAILED(device->Activate(kIidAudioClient, CLSCTX_ALL, nullptr, &client))) {
             return std::unexpected(PassthroughError::kComFailure);
         }
         hr = client->Initialize(AUDCLNT_SHAREMODE_EXCLUSIVE, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
@@ -364,7 +379,7 @@ std::expected<void, PassthroughError> PassthroughSink::start(const std::string& 
     }
 
     ComPtr<IAudioRenderClient> render;
-    if (FAILED(client->GetService(IID_PPV_ARGS(&render)))) {
+    if (FAILED(client->GetService(kIidAudioRenderClient, &render))) {
         CloseHandle(ready);
         return std::unexpected(PassthroughError::kComFailure);
     }

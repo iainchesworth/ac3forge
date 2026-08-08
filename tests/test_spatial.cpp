@@ -161,7 +161,8 @@ TEST_CASE("orbiting object lands in the right channels end to end", "[spatial]")
         for (int ch = 0; ch < 5; ++ch) {  // fullbw channels only
             double energy = 0.0;
             for (const auto v : decoded->channels[static_cast<std::size_t>(ch)]) {
-                energy += static_cast<double>(v) * v;
+                const double sd = static_cast<double>(v);
+                energy += sd * sd;
             }
             if (energy > best) {
                 best = energy;

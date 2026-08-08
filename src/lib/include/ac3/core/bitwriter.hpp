@@ -36,7 +36,9 @@ public:
         }
     }
 
-    [[nodiscard]] std::size_t bit_count() const { return bytes_.size() * 8 + pending_; }
+    [[nodiscard]] std::size_t bit_count() const {
+        return bytes_.size() * 8 + static_cast<std::size_t>(pending_);
+    }
 
     // Overwrite a 16-bit big-endian field at a byte offset in already-emitted
     // output. Used to patch the two CRC words after the frame body is packed

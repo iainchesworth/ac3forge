@@ -20,7 +20,7 @@ std::vector<float> sine_frame(std::uint64_t& n, double freq, double amplitude) {
     std::vector<float> samples(ac3::kSamplesPerFrame);
     for (auto& s : samples) {
         s = static_cast<float>(amplitude *
-                               std::sin(2.0 * std::numbers::pi * freq * n / 48000.0));
+                               std::sin(2.0 * std::numbers::pi * freq * static_cast<double>(n) / 48000.0));
         ++n;
     }
     return samples;

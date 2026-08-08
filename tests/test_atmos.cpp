@@ -271,7 +271,8 @@ TEST_CASE("an Atmos frame is a plain 5.1 frame with metadata bolted on", "[atmos
     // and not just in acmod.
     double lfe_energy = 0.0;
     for (const float sample : encoder.bed()[5]) {
-        lfe_energy += static_cast<double>(sample) * sample;
+        const double sd = static_cast<double>(sample);
+        lfe_energy += sd * sd;
     }
     CHECK(lfe_energy > 0.0);
 

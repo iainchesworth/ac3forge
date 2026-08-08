@@ -70,9 +70,9 @@ inline constexpr std::array<std::uint16_t, 19> kBitratesKbps = {
 };
 
 [[nodiscard]] constexpr std::optional<int> bitrate_index(std::uint32_t kbps) {
-    for (int i = 0; i < static_cast<int>(kBitratesKbps.size()); ++i) {
+    for (std::size_t i = 0; i < kBitratesKbps.size(); ++i) {
         if (kBitratesKbps[i] == kbps) {
-            return i;
+            return static_cast<int>(i);
         }
     }
     return std::nullopt;

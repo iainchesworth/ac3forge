@@ -50,7 +50,7 @@ struct ScannedStream {
     // One entry per access unit: an AC-3 syncframe, or an E-AC-3 independent
     // substream together with the dependents that follow it. Spans point into
     // the caller's buffer.
-    std::vector<std::span<const std::byte>> access_units;
+    std::vector<std::span<const std::byte>> access_units{};
     // Substreams in the first access unit; always 1 for AC-3.
     std::size_t substreams_per_unit = 0;
 };

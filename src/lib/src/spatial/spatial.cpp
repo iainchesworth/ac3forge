@@ -126,8 +126,8 @@ void BedRenderer::render_block(std::span<const std::span<const float>> audio,
             auto& out = bed[static_cast<std::size_t>(ch)];
             for (int n = 0; n < kBlockSamples; ++n) {
                 const double g = from + (to - from) * (n + 1) / kBlockSamples;
-                out[static_cast<std::size_t>(n)] +=
-                    static_cast<float>(g * source[static_cast<std::size_t>(n)]);
+                out[static_cast<std::size_t>(n)] += static_cast<float>(
+                    g * static_cast<double>(source[static_cast<std::size_t>(n)]));
             }
         }
         if (slot.current_lfe != 0.0 || target_lfe != 0.0) {
@@ -135,8 +135,8 @@ void BedRenderer::render_block(std::span<const std::span<const float>> audio,
             for (int n = 0; n < kBlockSamples; ++n) {
                 const double g =
                     slot.current_lfe + (target_lfe - slot.current_lfe) * (n + 1) / kBlockSamples;
-                lfe[static_cast<std::size_t>(n)] +=
-                    static_cast<float>(g * source[static_cast<std::size_t>(n)]);
+                lfe[static_cast<std::size_t>(n)] += static_cast<float>(
+                    g * static_cast<double>(source[static_cast<std::size_t>(n)]));
             }
         }
         slot.current_gains = target_gains;
