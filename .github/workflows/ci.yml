@@ -32,14 +32,14 @@
 # Promote a leg by deleting its `experimental: true` line in _build.yml.
 name: CI
 
-# NOTE: master, not main - that is this repository's default branch.
 on:
-  # Only the default branch builds on push; the work happens on branches whose
-  # pull_request run covers them, so a WIP push does not also run the matrix.
+  # Only the long-lived branches build on push; the work happens on topic
+  # branches whose pull_request run covers them, so a WIP push does not also run
+  # the matrix.
   push:
-    branches: [ master ]
+    branches: [ main, develop ]
   pull_request:
-    branches: [ master ]
+    branches: [ main, develop ]
   workflow_dispatch:
 
 concurrency:
@@ -50,6 +50,58 @@ permissions:
   contents: read
 
 jobs:
+  # Enforce the GitFlow branch naming on every PR. A topic branch is
+  # <type>/<name> where type is one of feature/release/hotfix/bugfix/support;
+  # main and develop are accepted as PR heads so a release-promotion PR
+  # (develop -> main) is never blocked, and dependabot/** is accepted because
+  # Dependabot's branch names are not configurable. Required on main/develop, so
+  # a misnamed branch cannot merge.
+  branch-name:
+    name: Branch Name
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate head branch name
+        shell: bash
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          if [[ "$HEAD_REF" == "develop" || "$HEAD_REF" == "main" ]]; then
+            echo "Core branch '$HEAD_REF' - allowed (release promotion)."
+            exit 0
+          fi
+          if [[ "$HEAD_REF" == dependabot/* ]]; then
+            echo "Dependabot branch '$HEAD_REF' - allowed (names are not configurable)."
+            exit 0
+          fi
+          pattern='^(feature|release|hotfix|bugfix|support)/[a-z0-9._-]+$'
+          if [[ "$HEAD_REF" =~ $pattern ]]; then
+            echo "Branch '$HEAD_REF' conforms to <type>/<name>."
+            exit 0
+          fi
+          echo "::error title=Invalid branch name::'$HEAD_REF' must be <type>/<name> where <type> is one of: feature, release, hotfix, bugfix, support (for example feature/eac3-decoder). See CONTRIBUTING.md."
+          exit 1
+
+  # The RE-derived EMDF signer is quarantined to a local branch and must never
+  # reach a public remote (it embeds a key extracted from Dolby's binary). The
+  # .gitignore keeps it from being staged; this makes doubly sure by failing if
+  # the directory ever appears in a tracked tree on main/develop.
+  no-quarantine:
+    name: No Quarantine On Main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assert src/quarantine is absent
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git ls-files --error-unmatch src/quarantine >/dev/null 2>&1; then
+            echo "::error::src/quarantine is tracked here; it must never leave its local branch."
+            exit 1
+          fi
+          echo "No quarantined signer in the tree."
+
   # Classify the change so a docs-only edit skips a five-platform matrix. This
   # is a job rather than a workflow-level paths-ignore on purpose: a filtered-out
   # workflow never runs, so the required "CI Status" check below would sit
@@ -127,12 +179,15 @@ jobs:
   ci-status:
     name: CI Status
     if: always()
-    needs: [ changes, platform-macros, build-and-test ]
+    needs: [ branch-name, no-quarantine, changes, platform-macros, build-and-test ]
     runs-on: ubuntu-latest
     steps:
       - name: Gate on required job results
         shell: bash
         env:
+          # 'skipped' on a push (no PR head to name), which is a pass.
+          R_BRANCH: ${{ needs.branch-name.result }}
+          R_QUARANTINE: ${{ needs.no-quarantine.result }}
           R_CHANGES: ${{ needs.changes.result }}
           R_MACROS: ${{ needs.platform-macros.result }}
           # 'skipped' on a docs-only change, which is a pass, not a failure.
@@ -140,7 +195,9 @@ jobs:
         run: |
           set -euo pipefail
           fail=0
-          for pair in "changes:$R_CHANGES" "platform-macros:$R_MACROS" "build-and-test:$R_BUILD"; do
+          for pair in "branch-name:$R_BRANCH" "no-quarantine:$R_QUARANTINE" \
+                      "changes:$R_CHANGES" "platform-macros:$R_MACROS" \
+                      "build-and-test:$R_BUILD"; do
             job="${pair%%:*}"; result="${pair#*:}"
             echo "  $job: $result"
             if [ "$result" = "failure" ] || [ "$result" = "cancelled" ]; then
