@@ -35,6 +35,26 @@ void put_variable_bits_max(BitWriter& w, std::uint32_t value, int group_bits,
     }
 }
 
+// The flag arrays in §5.6 are transmitted with array index 0 FIRST, so element
+// n lands at bit (width - 1 - n) of the field, not at bit n.
+//
+// The tables read the other way round - Table 11a numbers the bed flag 3 and
+// Table 12 numbers L/R 9 - which is what made the opposite reading look
+// natural. Dolby's own encoder settles it: for a 7.1.4 input it writes
+// bed_channel_assignment 0b0010111111, and only index-0-first turns that into
+// L/R, C, LFE, Ls/Rs, Lb/Rb, Tfl/Tfr, Tbl/Tbr - twelve channels, which is
+// exactly the object_count of 12 it declares in the same payload. Under the
+// other reading the same bits name a bed with no left, right or centre.
+[[nodiscard]] std::uint32_t flags_msb_first(std::uint32_t flags, int width) {
+    std::uint32_t out = 0;
+    for (int index = 0; index < width; ++index) {
+        if (flags & (1u << index)) {
+            out |= 1u << (width - 1 - index);
+        }
+    }
+    return out;
+}
+
 // §5.6.1.1.8 and §5.6.1.1.9: x and y are the 6-bit field over 62, so 62 - not
 // 63 - is the far wall and the two codes above it also mean "at the wall".
 // Sending 63 would be legal and would still decode to 1 through the min(), but
@@ -170,12 +190,12 @@ std::vector<std::byte> build_payload(const Program& program,
         w.put(program.lfe ? 1 : 0, 1);  // b_lfe_present
     } else {
         w.put(0, 1);
-        // content_description[], index 3 as the most significant bit (Table
-        // 11a): bit 3 a bed instance, bit 2 ISF, bit 1 dynamic objects, bit 0
-        // reserved.
-        const std::uint32_t content = (program.bed != 0 ? 0b1000u : 0u) |
-                                      (program.dynamic_objects > 0 ? 0b0010u : 0u);
-        w.put(content, 4);
+        // content_description[] (Table 11a): element 3 a bed instance, 2 ISF,
+        // 1 dynamic objects, 0 reserved - written index 0 first, so the bed
+        // flag is the LAST bit of the four.
+        const std::uint32_t content = (program.bed != 0 ? 1u << 3 : 0u) |
+                                      (program.dynamic_objects > 0 ? 1u << 1 : 0u);
+        w.put(flags_msb_first(content, 4), 4);
         if (program.bed != 0) {
             w.put(0, 1);  // b_bed_chan_distribute
             w.put(0, 1);  // b_multiple_bed_instances_present => one instance
@@ -184,8 +204,8 @@ std::vector<std::byte> build_payload(const Program& program,
             const bool lfe_only = program.bed == bed::kLfe;
             w.put(lfe_only ? 1 : 0, 1);  // b_lfe_only
             if (!lfe_only) {
-                w.put(1, 1);             // b_standard_chan_assign
-                w.put(program.bed, 10);  // bed_channel_assignment[]
+                w.put(1, 1);  // b_standard_chan_assign
+                w.put(flags_msb_first(program.bed, 10), 10);
             }
         }
         if (program.dynamic_objects > 0) {

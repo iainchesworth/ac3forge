@@ -311,12 +311,16 @@ TEST_CASE("OAMD carries a full 5.1 bed when asked", "[oba][oamd]") {
     ac3::BitReader r{payload};
     CHECK(r.read(2) == 0);       // oa_md_version_bits
     CHECK(r.read(5) == 5);       // object_count_bits
-    CHECK(r.read(1) == 0);       // b_dyn_object_only_program
-    CHECK(r.read(4) == 0b1000);  // a bed, no dynamic objects
+    CHECK(r.read(1) == 0);  // b_dyn_object_only_program
+    // content_description written index 0 first, so the bed flag (element 3)
+    // is the LAST of the four bits, not the first.
+    CHECK(r.read(4) == 0b0001);  // a bed, no dynamic objects
     CHECK(r.read(1) == 0);       // b_bed_chan_distribute
     CHECK(r.read(1) == 0);       // b_multiple_bed_instances_present
     CHECK(r.read(1) == 0);       // b_lfe_only
     CHECK(r.read(1) == 1);       // b_standard_chan_assign
-    // Table 12, index 9 as the most significant bit: L/R, C, LFE, Ls/Rs.
-    CHECK(r.read(10) == 0b1111000000);
+    // Table 12 with index 0 first: L/R (9), C (8), LFE (7), Ls/Rs (6) become
+    // the four LEAST significant bits of the 10. Same order Dolby's own
+    // encoder writes for a 7.1.4 bed.
+    CHECK(r.read(10) == 0b0000001111);
 }
