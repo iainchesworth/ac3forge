@@ -38,6 +38,9 @@ qt_add_qml_module(ac3gui
 target_link_libraries(ac3gui
     PRIVATE
         ac3::forge
+        # The GUI can save straight to .mkv, so it needs the muxer the CLI's
+        # 'mkv' command uses. It links nothing from ac3::forge itself.
+        matroska::matroska
         ac3::warnings
         Qt6::Core
         Qt6::Gui

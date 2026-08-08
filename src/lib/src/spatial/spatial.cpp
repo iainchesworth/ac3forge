@@ -29,44 +29,126 @@ constexpr double kDegToRad = std::numbers::pi / 180.0;
 
 }  // namespace
 
-PanGains pan_azimuth(double azimuth_deg) {
-    double azimuth = std::fmod(azimuth_deg, 360.0);
-    if (azimuth < 0.0) {
-        azimuth += 360.0;
-    }
+namespace {
 
-    // Find the adjacent ring pair enclosing the azimuth (wrapping 330° -> 0°).
-    std::size_t first = kRing.size() - 1;
-    for (std::size_t i = 0; i + 1 < kRing.size(); ++i) {
-        if (azimuth >= kRing[i].azimuth_deg && azimuth < kRing[i + 1].azimuth_deg) {
-            first = i;
+// Azimuth folded into [0, 360).
+[[nodiscard]] double wrap360(double degrees) {
+    double value = std::fmod(degrees, 360.0);
+    if (value < 0.0) {
+        value += 360.0;
+    }
+    return value;
+}
+
+// The pair of ring positions enclosing `azimuth`, and the two gains that place
+// it between them. Shared by pan_azimuth and pan_ring so the 5.1 ring cannot
+// end up panned differently from any other.
+struct Pair {
+    std::size_t a = 0;
+    std::size_t b = 0;
+    double ga = 0.0;
+    double gb = 0.0;
+};
+
+// `sorted` holds ring azimuths in ascending [0, 360) order.
+[[nodiscard]] Pair pan_sorted_ring(double azimuth, std::span<const double> sorted) {
+    Pair out;
+    if (sorted.empty()) {
+        return out;
+    }
+    if (sorted.size() == 1) {
+        return {.a = 0, .b = 0, .ga = 1.0, .gb = 0.0};
+    }
+    // Wrapping past the last speaker lands back on the first.
+    out.a = sorted.size() - 1;
+    for (std::size_t i = 0; i + 1 < sorted.size(); ++i) {
+        if (azimuth >= sorted[i] && azimuth < sorted[i + 1]) {
+            out.a = i;
             break;
         }
     }
-    const RingSpeaker& a = kRing[first];
-    const RingSpeaker& b = kRing[(first + 1) % kRing.size()];
+    out.b = (out.a + 1) % sorted.size();
+
+    const double a_deg = sorted[out.a];
+    // Unwrapped, so the arc from a to b is positive whether or not it crosses
+    // the 360° seam.
+    const double b_deg = out.b > out.a ? sorted[out.b] : sorted[out.b] + 360.0;
+    const double u_deg = azimuth >= a_deg ? azimuth : azimuth + 360.0;
+    const double arc = b_deg - a_deg;
+
+    if (arc >= 180.0) {
+        // No pair encloses this direction: the VBAP system is singular at
+        // exactly 180° and solves negative beyond it. Crossfade at constant
+        // power across the gap instead - unity at each edge, so it joins the
+        // pairwise solution continuously.
+        const double t = arc > 0.0 ? (u_deg - a_deg) / arc : 0.0;
+        out.ga = std::cos(t * std::numbers::pi / 2.0);
+        out.gb = std::sin(t * std::numbers::pi / 2.0);
+        return out;
+    }
 
     // 2D VBAP: solve [pa pb] g = u for the unit vectors, clamp, normalize.
-    const double ax = std::cos(a.azimuth_deg * kDegToRad);
-    const double ay = std::sin(a.azimuth_deg * kDegToRad);
-    const double bx = std::cos(b.azimuth_deg * kDegToRad);
-    const double by = std::sin(b.azimuth_deg * kDegToRad);
-    const double ux = std::cos(azimuth * kDegToRad);
-    const double uy = std::sin(azimuth * kDegToRad);
+    const double ax = std::cos(a_deg * kDegToRad);
+    const double ay = std::sin(a_deg * kDegToRad);
+    const double bx = std::cos(b_deg * kDegToRad);
+    const double by = std::sin(b_deg * kDegToRad);
+    const double ux = std::cos(u_deg * kDegToRad);
+    const double uy = std::sin(u_deg * kDegToRad);
     const double det = ax * by - ay * bx;
     assert(std::abs(det) > 1e-9);
-    double ga = (ux * by - uy * bx) / det;
-    double gb = (ax * uy - ay * ux) / det;
-    ga = std::max(ga, 0.0);
-    gb = std::max(gb, 0.0);
+    double ga = std::max((ux * by - uy * bx) / det, 0.0);
+    double gb = std::max((ax * uy - ay * ux) / det, 0.0);
     const double norm = std::sqrt(ga * ga + gb * gb);
+    if (norm > 0.0) {
+        out.ga = ga / norm;  // Σg² == 1
+        out.gb = gb / norm;
+    }
+    return out;
+}
+
+}  // namespace
+
+PanGains pan_azimuth(double azimuth_deg) {
+    constexpr std::array<double, kRing.size()> sorted = {
+        kRing[0].azimuth_deg, kRing[1].azimuth_deg, kRing[2].azimuth_deg,
+        kRing[3].azimuth_deg, kRing[4].azimuth_deg};
+    const auto pair = pan_sorted_ring(wrap360(azimuth_deg), sorted);
 
     PanGains gains{};
-    if (norm > 0.0) {
-        gains[static_cast<std::size_t>(a.bed_index)] = ga / norm;  // Σg² == 1
-        gains[static_cast<std::size_t>(b.bed_index)] = gb / norm;
-    }
+    gains[static_cast<std::size_t>(kRing[pair.a].bed_index)] = pair.ga;
+    gains[static_cast<std::size_t>(kRing[pair.b].bed_index)] = pair.gb;
     return gains;
+}
+
+void pan_ring(double azimuth_deg, std::span<const double> ring_azimuth_deg,
+              std::span<double> gains) {
+    assert(gains.size() == ring_azimuth_deg.size());
+    std::ranges::fill(gains, 0.0);
+    if (ring_azimuth_deg.empty()) {
+        return;
+    }
+    // Sort a copy by wrapped azimuth, keeping each speaker's caller-side index
+    // so the gains land back where the caller expects them.
+    std::vector<std::size_t> order(ring_azimuth_deg.size());
+    std::vector<double> sorted(ring_azimuth_deg.size());
+    for (std::size_t i = 0; i < order.size(); ++i) {
+        order[i] = i;
+    }
+    std::ranges::sort(order, [&](std::size_t l, std::size_t r) {
+        return wrap360(ring_azimuth_deg[l]) < wrap360(ring_azimuth_deg[r]);
+    });
+    for (std::size_t i = 0; i < order.size(); ++i) {
+        sorted[i] = wrap360(ring_azimuth_deg[order[i]]);
+    }
+
+    const auto pair = pan_sorted_ring(wrap360(azimuth_deg), sorted);
+    gains[order[pair.a]] += pair.ga;
+    // A one-speaker ring reports the same index twice; adding rather than
+    // assigning would then give it 1 + 0 either way, but a two-speaker ring
+    // whose pair wraps onto itself must not have its first gain overwritten.
+    if (pair.b != pair.a) {
+        gains[order[pair.b]] += pair.gb;
+    }
 }
 
 PanGains pan_room(double x, double y) {

@@ -19,12 +19,21 @@
 // report what the meters did: a clean build proves the app links, and only
 // this proves the display is wired to the audio.
 //
-//   ac3gui --smoke        <in.wav> <out.ac3>              [shot.png]
-//   ac3gui --smoke-record <deviceIndex> <seconds> <out.ac3> [shot.png]
+//   ac3gui --smoke        <in.wav> <out.ac3>              [shot.png] [prop=value ...]
+//   ac3gui --smoke-record <deviceIndex> <seconds> <out.ac3> [shot.png] [prop=value ...]
 //
-// Both fail unless every channel's needle actually left the floor, so
-// --smoke-record against a silent endpoint fails by design: it is the check
-// that would otherwise pass on a meter wired to nothing.
+// The trailing prop=value tokens are set through Qt's property system, which
+// is the same path a QML binding writes through - so a smoke run exercises the
+// real controls rather than a parallel API kept alongside them. Anything
+// declared Q_PROPERTY works: codecIndex=1, layoutIndex=5, coupling=true,
+// drcIndex=2, atmosEnabled=true, containerIndex=1.
+//
+// Both fail unless every channel the routing FEEDS has its needle leave the
+// floor, so --smoke-record against a silent endpoint fails by design: it is
+// the check that would otherwise pass on a meter wired to nothing. A channel
+// the source cannot fill is excluded, because reading -inf is the correct
+// answer there and demanding otherwise would only reward an encoder that
+// invented a signal.
 
 namespace {
 
@@ -86,40 +95,79 @@ std::shared_ptr<MeterTrace> watch_meters(EncoderController* controller) {
 
 // The live range beside the figures the display settled on. Passing means the
 // QML drew one meter per channel, enough publishes arrived to call it live,
-// and every channel's needle left the floor at some point.
+// and every channel the routing feeds had its needle leave the floor.
 bool report_meters(EncoderController* controller, const MeterTrace& trace, int drawn,
                    int min_publishes) {
     const auto names = controller->channelNames();
     const auto levels = controller->channelLevels();
     const double floor_db = controller->meterFloorDb();
     std::println("smoke: {} level publishes while live", trace.publishes);
-    std::println("smoke: {:<5} {:>10} {:>10} {:>10} {:>10}", "ch", "live min", "live max",
-                 "peak", "rms");
+    std::println("smoke: {:<10} {:>6} {:>10} {:>10} {:>10} {:>10}", "ch", "fed", "live min",
+                 "live max", "peak", "rms");
 
-    bool every_channel_moved = true;
+    bool every_fed_channel_moved = true;
     for (qsizetype ch = 0; ch < names.size(); ++ch) {
         const auto at = static_cast<std::size_t>(ch);
         const bool traced = at < trace.highest.size();
         const double low = traced ? trace.lowest[at] : floor_db;
         const double high = traced ? trace.highest[at] : floor_db;
         const auto entry = levels.value(ch).toMap();
-        std::println("smoke: {:<5} {:>10.2f} {:>10.2f} {:>10.2f} {:>10.2f}",
-                     names[ch].toStdString(), low, high,
+        // A channel the routing puts nothing into reads -inf correctly: the
+        // source has nothing that belongs there. Requiring it to move would
+        // only be satisfied by inventing a signal.
+        const bool fed = entry.value(QStringLiteral("fed"), true).toBool();
+        std::println("smoke: {:<10} {:>6} {:>10.2f} {:>10.2f} {:>10.2f} {:>10.2f}",
+                     names[ch].toStdString(), fed ? "yes" : "no", low, high,
                      entry.value(QStringLiteral("peakDb")).toDouble(),
                      entry.value(QStringLiteral("rmsDb")).toDouble());
-        every_channel_moved = every_channel_moved && high > floor_db;
+        if (fed) {
+            every_fed_channel_moved = every_fed_channel_moved && high > floor_db;
+        }
     }
 
     const bool passed =
-        drawn == names.size() && every_channel_moved && trace.publishes >= min_publishes;
+        drawn == names.size() && every_fed_channel_moved && trace.publishes >= min_publishes;
     if (!passed) {
         std::println(stderr,
                      "smoke: FAILED ({} meters for {} channels, {} publishes of at least {}, "
-                     "all channels moved {})",
+                     "all fed channels moved {})",
                      drawn, names.size(), trace.publishes, min_publishes,
-                     every_channel_moved);
+                     every_fed_channel_moved);
     }
     return passed;
+}
+
+// Applies the trailing prop=value tokens through Qt's property system - the
+// same path a QML binding writes through, so this drives the real controls
+// rather than a parallel API kept beside them. A name that is not a property,
+// or a value the property will not take, is a failure rather than a shrug:
+// silently ignoring it would have the run report on settings it never used.
+bool apply_properties(EncoderController* controller, const QStringList& tokens) {
+    for (const auto& token : tokens) {
+        const auto eq = token.indexOf(QLatin1Char('='));
+        if (eq <= 0) {
+            std::println(stderr, "smoke: '{}' is not prop=value", token.toStdString());
+            return false;
+        }
+        const QString name = token.left(eq);
+        const QString text = token.mid(eq + 1);
+        const auto index = controller->metaObject()->indexOfProperty(name.toUtf8().constData());
+        if (index < 0) {
+            std::println(stderr, "smoke: no property named '{}'", name.toStdString());
+            return false;
+        }
+        const auto property = controller->metaObject()->property(index);
+        QVariant value{text};
+        if (!value.convert(property.metaType()) ||
+            !property.write(controller, value)) {
+            std::println(stderr, "smoke: could not set {} to '{}'", name.toStdString(),
+                         text.toStdString());
+            return false;
+        }
+        std::println("smoke: {} = {}", name.toStdString(),
+                     property.read(controller).toString().toStdString());
+    }
+    return true;
 }
 
 // The Repeater that draws the meters. Its count is the QML side of every
@@ -147,7 +195,7 @@ EncoderController* smoke_controller(QQmlApplicationEngine& engine) {
 
 // Encode a file and watch the meters follow it.
 int run_smoke(QQmlApplicationEngine& engine, const QString& in_path, const QString& out_path,
-              const QString& shot_path) {
+              const QString& shot_path, const QStringList& properties) {
     auto* controller = smoke_controller(engine);
     if (controller == nullptr) {
         return 1;
@@ -159,21 +207,18 @@ int run_smoke(QQmlApplicationEngine& engine, const QString& in_path, const QStri
                      controller->status().toStdString());
         return 1;
     }
-    std::println("smoke: layout {} ({} channels)", controller->layoutName().toStdString(),
-                 controller->channelNames().size());
-
-    const int drawn = meters_drawn(engine);
-    if (drawn < 0) {
-        std::println(stderr, "smoke: the channelMeters repeater is not in the scene");
+    // After the load, not before: opening a file settles the layout on the one
+    // that matches it, which would overwrite anything set here.
+    if (!apply_properties(controller, properties)) {
         return 1;
     }
-    std::println("smoke: QML instantiated {} channel meters", drawn);
+    std::println("smoke: {}", controller->routingSummary().toStdString());
+    std::println("smoke: writing .{}", controller->outputSuffix().toStdString());
 
     const auto trace = watch_meters(controller);
 
     QObject::connect(controller, &EncoderController::encodeFinished, controller,
-                     [&engine, controller, drawn, shot_path, trace](bool ok,
-                                                                    const QString& message) {
+                     [&engine, controller, shot_path, trace](bool ok, const QString& message) {
                          std::println("smoke: {}", message.toStdString());
                          if (!shot_path.isEmpty()) {
                              std::println("smoke: window grab -> {}",
@@ -181,6 +226,12 @@ int run_smoke(QQmlApplicationEngine& engine, const QString& in_path, const QStri
                                               ? shot_path.toStdString()
                                               : std::string{"FAILED"});
                          }
+                         // Counted here rather than before the encode: the
+                         // meters follow the CODED channels, and which those
+                         // are is only settled once the plan has been applied.
+                         const int drawn = meters_drawn(engine);
+                         std::println("smoke: layout {} · QML instantiated {} channel meters",
+                                      controller->layoutName().toStdString(), drawn);
                          // A short file encodes inside a single 30 Hz publish
                          // window, so one update is all this mode can demand.
                          // The table prints either way — a failed encode is
@@ -200,9 +251,13 @@ int run_smoke(QQmlApplicationEngine& engine, const QString& in_path, const QStri
 // chosen from the device rather than from a header, and levels that arrive in
 // real time instead of as fast as the encoder can run.
 int run_smoke_record(QQmlApplicationEngine& engine, int device, double seconds,
-                     const QString& out_path, const QString& shot_path) {
+                     const QString& out_path, const QString& shot_path,
+                     const QStringList& properties) {
     auto* controller = smoke_controller(engine);
     if (controller == nullptr) {
+        return 1;
+    }
+    if (!apply_properties(controller, properties)) {
         return 1;
     }
     const auto devices = controller->captureDevices();
@@ -291,12 +346,30 @@ int main(int argc, char* argv[]) {
     engine.loadFromModule("Ac3Forge", "Main");
 
     const auto args = QGuiApplication::arguments();
-    if (args.size() >= 4 && args.size() <= 5 && args[1] == QLatin1String("--smoke")) {
-        return run_smoke(engine, args[2], args[3], args.size() == 5 ? args[4] : QString());
+    // Everything after the fixed arguments is prop=value; a screenshot path is
+    // the one optional positional, told apart by not containing an '='.
+    const auto trailing = [&args](qsizetype from, QString& shot) {
+        QStringList properties;
+        for (qsizetype i = from; i < args.size(); ++i) {
+            if (properties.isEmpty() && shot.isEmpty() && !args[i].contains(QLatin1Char('='))) {
+                shot = args[i];
+            } else {
+                properties.append(args[i]);
+            }
+        }
+        return properties;
+    };
+
+    if (args.size() >= 4 && args[1] == QLatin1String("--smoke")) {
+        QString shot;
+        const auto properties = trailing(4, shot);
+        return run_smoke(engine, args[2], args[3], shot, properties);
     }
-    if (args.size() >= 5 && args.size() <= 6 && args[1] == QLatin1String("--smoke-record")) {
-        return run_smoke_record(engine, args[2].toInt(), args[3].toDouble(), args[4],
-                                args.size() == 6 ? args[5] : QString());
+    if (args.size() >= 5 && args[1] == QLatin1String("--smoke-record")) {
+        QString shot;
+        const auto properties = trailing(5, shot);
+        return run_smoke_record(engine, args[2].toInt(), args[3].toDouble(), args[4], shot,
+                                properties);
     }
     if (args.size() == 2 && !args[1].startsWith(QLatin1Char('-'))) {
         // Opening the app on a file is the same gesture as dropping one on

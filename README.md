@@ -133,8 +133,12 @@ the minimum mean-square estimate `M = P Dᵀ (P D Dᵀ + εI)⁻¹`; because the
 the downmix it knows `D` exactly instead of estimating it, which makes the solve near-exact
 for well-separated objects. Objects that share a direction — two at one azimuth and
 different heights, say — cannot be separated by any linear combination of the bed, and the
-solve splits their energy by power instead. `ac3gui` exposes the same thing: a switch, a
-plan view of the room to drag the objects around, and a height slider.
+solve splits their energy by power instead. `ac3cli atmos-encode in.wav out.ec3` makes every
+channel of a real file an object; `ac3gui` exposes the same thing as a switch, a plan view of
+the room to drag the objects around, and sliders for height, spread and LFE send. Spread is
+not decoration: objects that reach the bed by the same route are exactly the ones JOC cannot
+pull apart again. The LFE send is the only route to that channel, because no direction points
+at it.
 
 The syntax was checked field-for-field against Dolby's own tooling — the Reference Player
 and the Dolby Media Encoder — used as oracles. That diffing fixed several real bugs (the
@@ -157,16 +161,35 @@ frame headers and container matching Dolby's byte-for-byte on the fields that ma
 console does — peak with an instant attack and a 20 dB/s fallback, a 1.2 s hold marker, RMS
 over a 300 ms integration — plus exact whole-signal statistics and the Gerzon energy vector
 over the BS.775 ring. Both front ends draw from it, including where a level sits on the bar,
-so a printed figure and a moving needle can never disagree. `ac3cli levels` reports any WAV
-or AC-3 file channel by channel; `encode`, `decode`, `sine` and `orbit` print the same table
-when they finish, and `record` meters live in the terminal. The GUI grows a Channel levels
-card that relabels itself for the active layout (1/0 through 3/2, with or without LFE, named
-per A/52 Table 5.8) beside a soundfield view showing the speaker ring and where the energy
-sits. Feeding those meters meant widening both front ends to 1–6 channel WAV input, with the
-WAV↔A/52 channel permutation now in the library rather than copied into each caller.
-`ac3gui --smoke` and `--smoke-record` drive the file and live-capture paths headlessly and
-report what the meters did, so "the display is wired to the audio" is a checkable claim
-rather than a screenshot.
+so a printed figure and a moving needle can never disagree. `ac3cli levels` reports any WAV,
+AC-3 or E-AC-3 file channel by channel; `encode`, `decode`, `sine` and `orbit` print the same
+table when they finish, and `record` meters live in the terminal. The GUI grows a Channel
+levels card that relabels itself for the active layout beside a soundfield view showing the
+speaker ring and where the energy sits. Feeding those meters meant widening both front ends
+to 1–6 channel WAV input, with the WAV↔A/52 channel permutation now in the library rather
+than copied into each caller. `ac3gui --smoke` and `--smoke-record` drive the file and
+live-capture paths headlessly and report what the meters did, so "the display is wired to the
+audio" is a checkable claim rather than a screenshot.
+
+**Both front ends reach the whole codec.** Everything above — AC-3 or E-AC-3, any of the
+seven layouts, the Annex E tools, the metadata group, objects, `.ac3`/`.ec3`/`.mkv` — is
+selectable from `ac3cli` *and* from `ac3gui`, from a file or from a microphone. The two agree
+because they are not two implementations: `ac3::plan` holds the layout table, the `'+'`-joined
+tool token and the metadata mapping, and each front end only collects and displays. A GUI that
+re-derived any of it would be free to mean something different by "5.1.4" or by "all", and
+nothing would catch it. `ac3cli`'s usage text and `ac3gui`'s combo boxes are both generated
+from the same table, so neither can offer a layout the parser rejects or hide one it takes.
+
+A source need not already *be* the layout it is encoded into. `plan::route` places each source
+channel onto the target's speakers by direction — pairwise VBAP over the target ring, with a
+constant-power crossfade to the height layer — and where the target is narrower it uses §7.8's
+own coefficients instead, because fold-down is specified and up-mix is not. Nothing is
+invented: a stereo source encoded as 7.1.4 leaves ten speakers silent, and both front ends say
+so by name rather than leaving it to be discovered on the meters. Two rules earn their keep
+there: a bed channel a dependent *replaces* is fed a full 5.1 fold (a 7.1 source's sides and
+rears both land in it), while one a dependent merely *extends* is not, or a 5.1.4 decoder
+would hear the ceiling twice. And per-substream §7.8.1 normalisation keeps a fold from
+clipping — a 5.1.4 source rendered into 7.1.4 measured +1.5 dBFS in the bed without it.
 
 **The metadata layer is real.** Everything above decodes; this is what makes it *play*
 right. An AV receiver reads exactly these bits to set level, compress dynamics and fold
@@ -251,10 +274,9 @@ Configure with `-DAC3FORGE_BUILD_GUI=OFF` to build without Qt.
 cmake/          FindQt6.cmake (prebuilt-Qt discovery), CompilerWarnings.cmake
 src/lib/        ac3::forge — the whole codec, GUI-free
   include/ac3/  public headers: core/ encoder/ decoder/ meta/ spatial/ analysis/
-                sinks/ io/ capture/
-  include/ac3/  public headers: core/ encoder/ decoder/ spatial/ analysis/
-                oba/ emdf/ sinks/ io/  (oba/ = object-based audio: OAMD, JOC,
-                the Atmos encoder; emdf/ = the TS 102 366 Annex H container)
+                oba/ emdf/ sinks/ io/ capture/  (oba/ = object-based audio:
+                OAMD, JOC, the Atmos encoder; emdf/ = the TS 102 366 Annex H
+                container; encoder/plan.hpp = what both front ends encode from)
   src/          implementation
 src/cli/        ac3cli — command-line front end
 src/gui/        ac3gui — Qt6 Quick front end (QML module "Ac3Forge")

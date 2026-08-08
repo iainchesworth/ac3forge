@@ -22,6 +22,7 @@
 #include "ac3/decoder/decoder.hpp"
 #include "ac3/encoder/eac3_frame.hpp"
 #include "ac3/encoder/encoder.hpp"
+#include "ac3/encoder/plan.hpp"
 #include "ac3/encoder/silent_frame.hpp"
 #include "ac3/io/elementary.hpp"
 #include "ac3/io/wav.hpp"
@@ -36,9 +37,11 @@
 
 namespace {
 
-// Named here rather than beside eac3_layout so the usage text and the error
-// message that rejects a bad layout can never list different sets.
-constexpr std::string_view kEac3Layouts = "stereo | 51 | 71 | 512 | 514 | 714";
+namespace plan = ac3::plan;
+
+// Everything about layouts, coding tools and metadata now lives in
+// ac3::plan, so the GUI cannot mean something different by "514" or by "all"
+// than this does. What is left here is argument shape and printing.
 
 void print_meta_usage();
 
@@ -73,19 +76,13 @@ void print_meta_usage() {
     std::println("  dmixmod=ltrt|loro|none  preferred stereo downmix (Table D2.2)");
 }
 
+// The encode-side group is ac3::plan::Metadata verbatim; only the decode-side
+// scale is local, because nothing an encoder is configured with corresponds
+// to it.
 struct MetaOptions {
-    std::optional<ac3::meta::Profile> drc;
-    std::optional<ac3::meta::HeavyConfig> heavy;
-    ac3::meta::CentreMixLevel cmixlev = ac3::meta::CentreMixLevel::kMinus4_5dB;
-    ac3::meta::SurroundMixLevel surmixlev = ac3::meta::SurroundMixLevel::kMinus6dB;
-    int dialnorm = 31;
-    bool measure_dialnorm = false;
-    bool mixmeta = false;
-    std::optional<int> lfemix = ac3::meta::kLfeMixLevelIdeal;
-    ac3::meta::DownmixMode dmixmod = ac3::meta::DownmixMode::kLoRo;
+    plan::Metadata p{};
     // Decoder side, for 'decode'.
     double drc_scale = 0.0;
-    bool apply_heavy = false;
 };
 
 bool parse_double(std::string_view text, double& out) {
@@ -107,9 +104,9 @@ bool parse_meta_options(std::span<char*> tokens, MetaOptions& out) {
 
         if (token == "couple" || token == "heavy" || token == "mixmeta") {
             if (token == "heavy") {
-                out.heavy.emplace();
+                out.p.heavy.emplace();
             } else if (token == "mixmeta") {
-                out.mixmeta = true;
+                out.p.mixmeta = true;
             }
             continue;
         }
@@ -128,7 +125,7 @@ bool parse_meta_options(std::span<char*> tokens, MetaOptions& out) {
                              ac3::meta::kProfileNames);
                 return false;
             }
-            out.drc = ac3::meta::profile(id);
+            out.p.drc = ac3::meta::profile(id);
             continue;
         }
         if (key == "ceiling" || key == "dialogue") {
@@ -137,19 +134,19 @@ bool parse_meta_options(std::span<char*> tokens, MetaOptions& out) {
                 std::println(stderr, "error: {} needs a level in dBFS", key);
                 return false;
             }
-            if (!out.heavy) {
-                out.heavy.emplace();
+            if (!out.p.heavy) {
+                out.p.heavy.emplace();
             }
             if (key == "ceiling") {
-                out.heavy->peak_ceiling_dbfs = db;
+                out.p.heavy->peak_ceiling_dbfs = db;
             } else {
-                out.heavy->dialogue_target_dbfs = db;
+                out.p.heavy->dialogue_target_dbfs = db;
             }
             continue;
         }
         if (key == "dialnorm") {
             if (value == "auto") {
-                out.measure_dialnorm = true;
+                out.p.measure_dialnorm = true;
                 continue;
             }
             const auto n = parse_u32_or(value, 0);
@@ -157,16 +154,16 @@ bool parse_meta_options(std::span<char*> tokens, MetaOptions& out) {
                 std::println(stderr, "error: dialnorm must be auto or 1..31 (§5.4.2.8)");
                 return false;
             }
-            out.dialnorm = static_cast<int>(n);
+            out.p.dialnorm = static_cast<int>(n);
             continue;
         }
         if (key == "cmixlev") {
             if (value == "-3") {
-                out.cmixlev = ac3::meta::CentreMixLevel::kMinus3dB;
+                out.p.cmixlev = ac3::meta::CentreMixLevel::kMinus3dB;
             } else if (value == "-4.5") {
-                out.cmixlev = ac3::meta::CentreMixLevel::kMinus4_5dB;
+                out.p.cmixlev = ac3::meta::CentreMixLevel::kMinus4_5dB;
             } else if (value == "-6") {
-                out.cmixlev = ac3::meta::CentreMixLevel::kMinus6dB;
+                out.p.cmixlev = ac3::meta::CentreMixLevel::kMinus6dB;
             } else {
                 std::println(stderr, "error: cmixlev must be -3, -4.5 or -6 (Table 5.9)");
                 return false;
@@ -175,11 +172,11 @@ bool parse_meta_options(std::span<char*> tokens, MetaOptions& out) {
         }
         if (key == "surmixlev") {
             if (value == "-3") {
-                out.surmixlev = ac3::meta::SurroundMixLevel::kMinus3dB;
+                out.p.surmixlev = ac3::meta::SurroundMixLevel::kMinus3dB;
             } else if (value == "-6") {
-                out.surmixlev = ac3::meta::SurroundMixLevel::kMinus6dB;
+                out.p.surmixlev = ac3::meta::SurroundMixLevel::kMinus6dB;
             } else if (value == "off") {
-                out.surmixlev = ac3::meta::SurroundMixLevel::kSilent;
+                out.p.surmixlev = ac3::meta::SurroundMixLevel::kSilent;
             } else {
                 std::println(stderr, "error: surmixlev must be -3, -6 or off (Table 5.10)");
                 return false;
@@ -187,9 +184,9 @@ bool parse_meta_options(std::span<char*> tokens, MetaOptions& out) {
             continue;
         }
         if (key == "lfemix") {
-            out.mixmeta = true;
+            out.p.mixmeta = true;
             if (value == "off") {
-                out.lfemix = std::nullopt;
+                out.p.lfemix = std::nullopt;
                 continue;
             }
             const auto n = parse_u32_or(value, 99);
@@ -197,17 +194,17 @@ bool parse_meta_options(std::span<char*> tokens, MetaOptions& out) {
                 std::println(stderr, "error: lfemix must be off or 0..31 (§E2.3.1.11)");
                 return false;
             }
-            out.lfemix = static_cast<int>(n);
+            out.p.lfemix = static_cast<int>(n);
             continue;
         }
         if (key == "dmixmod") {
-            out.mixmeta = true;
+            out.p.mixmeta = true;
             if (value == "ltrt") {
-                out.dmixmod = ac3::meta::DownmixMode::kLtRt;
+                out.p.dmixmod = ac3::meta::DownmixMode::kLtRt;
             } else if (value == "loro") {
-                out.dmixmod = ac3::meta::DownmixMode::kLoRo;
+                out.p.dmixmod = ac3::meta::DownmixMode::kLoRo;
             } else if (value == "none") {
-                out.dmixmod = ac3::meta::DownmixMode::kNotIndicated;
+                out.p.dmixmod = ac3::meta::DownmixMode::kNotIndicated;
             } else {
                 std::println(stderr, "error: dmixmod must be ltrt, loro or none (Table D2.2)");
                 return false;
@@ -219,38 +216,6 @@ bool parse_meta_options(std::span<char*> tokens, MetaOptions& out) {
         return false;
     }
     return true;
-}
-
-// The two coarse AC-3 levels have no exact 3-bit twins for every value, but
-// each one they do have is the same coefficient, so an E-AC-3 stream asked for
-// "-4.5 dB centre" gets the level a listener would measure either way.
-ac3::meta::MixLevel widen(ac3::meta::CentreMixLevel value) {
-    switch (value) {
-        case ac3::meta::CentreMixLevel::kMinus3dB: return ac3::meta::MixLevel::kMinus3dB;
-        case ac3::meta::CentreMixLevel::kMinus4_5dB: return ac3::meta::MixLevel::kMinus4_5dB;
-        case ac3::meta::CentreMixLevel::kMinus6dB: return ac3::meta::MixLevel::kMinus6dB;
-    }
-    return ac3::meta::MixLevel::kMinus4_5dB;
-}
-
-ac3::meta::MixLevel widen(ac3::meta::SurroundMixLevel value) {
-    switch (value) {
-        case ac3::meta::SurroundMixLevel::kMinus3dB: return ac3::meta::MixLevel::kMinus3dB;
-        case ac3::meta::SurroundMixLevel::kMinus6dB: return ac3::meta::MixLevel::kMinus6dB;
-        case ac3::meta::SurroundMixLevel::kSilent: return ac3::meta::MixLevel::kSilent;
-    }
-    return ac3::meta::MixLevel::kMinus6dB;
-}
-
-ac3::meta::MixMetadata mix_metadata(const MetaOptions& options) {
-    return {.dmixmod = options.dmixmod,
-            // Lt/Rt folds down into a matrix that will be re-decoded, so the
-            // centre traditionally sits 1.5 dB hotter there than in Lo/Ro.
-            .ltrtcmixlev = ac3::meta::MixLevel::kMinus3dB,
-            .lorocmixlev = widen(options.cmixlev),
-            .ltrtsurmixlev = ac3::meta::MixLevel::kMinus3dB,
-            .lorosurmixlev = widen(options.surmixlev),
-            .lfemixlevcod = options.lfemix};
 }
 
 // BS.1770 integrated loudness of a whole WAV, and the dialnorm it implies.
@@ -298,11 +263,11 @@ std::vector<std::byte> read_all(std::string_view path) {
     return bytes;
 }
 
-// Why an AC-3 path turns a wider syntax away. Two different walls, each named
-// once: the commands that share a wall must not describe it differently, and
-// whichever one falls first should only have to be rewritten here.
-constexpr std::string_view kDecoderLimit =
-    "the in-repo decoder reads only the bsid<=8 syntax";
+// Why an AC-3 path turns a wider syntax away. There used to be two of these
+// walls; the decoder's fell when the in-repo E-AC-3 decoder landed, and
+// 'levels' and 'decode' now pick a reader by bsid instead of refusing. This
+// one is real: the packer emits one burst type and that is all IEC 61937
+// data type 1 is.
 constexpr std::string_view kPackerLimit =
     "the IEC 61937 packer emits AC-3 bursts only (data type 1, one 6144-byte burst per frame)";
 
@@ -424,36 +389,116 @@ int run_silence(std::string_view out_path, std::uint32_t seconds, std::uint32_t 
     return 0;
 }
 
+// One tone per CODED channel, for the synthetic generators. The frequencies
+// are deliberately spread and deliberately not harmonics of one another, so a
+// channel that lands in the wrong speaker is measurable rather than merely
+// suspected. The bed's values are mirrored in tests/test_eac3_decoder.cpp and
+// must not drift from them; a dependent's are chosen apart from the bed's for
+// the same reason - identical ones could not tell §E3.8.2's overwrite
+// happening apart from the dependent being ignored altogether.
+std::vector<double> layout_tones(plan::LayoutId id) {
+    const std::vector<double> bed = {1000.0, 800.0, 1200.0, 600.0, 1400.0, 60.0};
+    const std::vector<double> rear = {500.0, 1600.0, 400.0, 1800.0};
+    const std::vector<double> top = {2000.0, 2400.0, 2800.0, 3200.0};
+    std::vector<double> out;
+    switch (id) {
+        case plan::LayoutId::kMono: return {1000.0};
+        case plan::LayoutId::kStereo: return {1000.0, 1000.0};
+        case plan::LayoutId::k51: return bed;
+        case plan::LayoutId::k71:
+            out = bed;
+            out.insert(out.end(), rear.begin(), rear.end());
+            return out;
+        case plan::LayoutId::k512:
+            out = bed;
+            out.insert(out.end(), top.begin(), top.begin() + 2);
+            return out;
+        case plan::LayoutId::k514:
+            out = bed;
+            out.insert(out.end(), top.begin(), top.end());
+            return out;
+        case plan::LayoutId::k714:
+            out = bed;
+            out.insert(out.end(), rear.begin(), rear.end());
+            out.insert(out.end(), top.begin(), top.end());
+            return out;
+    }
+    return out;
+}
+
+// Fills one frame of tones and hands back views onto it.
+void fill_tones(std::vector<std::vector<float>>& samples,
+                std::vector<std::span<const float>>& views,
+                std::span<const double> tone_hz, double amplitude, std::uint64_t n0) {
+    for (std::size_t ch = 0; ch < samples.size(); ++ch) {
+        for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+            samples[ch][static_cast<std::size_t>(i)] = static_cast<float>(
+                amplitude * std::sin(2.0 * std::numbers::pi * tone_hz[ch] *
+                                     static_cast<double>(n0 + static_cast<std::uint64_t>(i)) /
+                                     48000.0));
+        }
+        views[ch] = samples[ch];
+    }
+}
+
+// Frames that cover `seconds` of audio, rounded up.
+std::uint64_t frame_count(std::uint32_t seconds) {
+    return (static_cast<std::uint64_t>(seconds) * 48000 + ac3::kSamplesPerFrame - 1) /
+           ac3::kSamplesPerFrame;
+}
+
+// Reports a bad layout token against the set the codec can actually carry, so
+// asking AC-3 for 7.1.4 says which of the two things is wrong.
+std::optional<plan::LayoutId> layout_or_error(std::string_view name, plan::Codec codec) {
+    const auto id = plan::parse_layout(name);
+    if (!id) {
+        std::println(stderr, "error: unknown layout '{}' ({})", name,
+                     plan::layout_names(codec));
+        return std::nullopt;
+    }
+    if (!plan::carries(codec, *id)) {
+        std::println(stderr, "error: {} cannot carry {} - {}", plan::codec_label(codec),
+                     plan::layout(*id).label,
+                     plan::describe(plan::PlanError::kLayoutNeedsEac3));
+        return std::nullopt;
+    }
+    return id;
+}
+
 int run_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_t bitrate,
              std::uint32_t freq_hz, std::uint32_t amplitude_pct, std::string_view layout,
              bool couple_flag, const MetaOptions& meta) {
-    // Layouts: stereo | 51, each optionally suffixed with "c" to turn channel
-    // coupling on (e.g. 51c). A bare 'couple' token does the same, so the flag
-    // that works for 'encode' is not silently ignored here.
+    // A layout may be suffixed with "c" to turn channel coupling on (51c). A
+    // bare 'couple' token does the same, so the flag that works for 'encode'
+    // is not silently ignored here.
     const bool couple = couple_flag || (!layout.empty() && layout.back() == 'c');
     const std::string_view base = couple ? layout.substr(0, layout.size() - 1) : layout;
-    const bool surround = base == "51";
-    ac3::EncoderConfig config{.bitrate_kbps = bitrate,
-                              .dialnorm = meta.dialnorm,
-                              .coupling = couple,
-                              .drc = meta.drc,
-                              .heavy = meta.heavy,
-                              .cmixlev = meta.cmixlev,
-                              .surmixlev = meta.surmixlev};
-    std::vector<double> tone_hz;
-    if (surround) {
-        config.acmod = ac3::Acmod::k3_2;
-        config.lfe = true;
-        tone_hz = {1000.0, 800.0, 1200.0, 600.0, 1400.0, 60.0};  // L C R SL SR LFE
-    } else {
-        tone_hz = {static_cast<double>(freq_hz), static_cast<double>(freq_hz)};
+    const auto id = layout_or_error(base, plan::Codec::kAc3);
+    if (!id) {
+        return 1;
     }
+
+    plan::Plan p{.codec = plan::Codec::kAc3,
+                 .layout = *id,
+                 .bitrate_kbps = bitrate,
+                 .meta = meta.p};
+    p.tools.coupling = couple;
+    const auto config = plan::ac3_config(p);
+
+    // A one- or two-channel layout is the frequency-sweep case the freq_hz
+    // argument exists for; anything wider gets a tone per speaker instead,
+    // because one frequency in six channels cannot show where it ended up.
+    auto tone_hz = layout_tones(*id);
+    if (plan::layout(*id).rendered <= 2) {
+        std::ranges::fill(tone_hz, static_cast<double>(freq_hz));
+    }
+
     ac3::FrameEncoder encoder{config};
     const auto nchans = static_cast<std::size_t>(encoder.channel_count());
     const double amplitude = amplitude_pct / 100.0;
     ac3::analysis::LevelMeter meter{config.acmod, config.lfe, 48000};
 
-    const std::uint64_t count = (static_cast<std::uint64_t>(seconds) * 48000 + 1535) / 1536;
+    const std::uint64_t count = frame_count(seconds);
     std::vector<std::vector<float>> samples(nchans,
                                             std::vector<float>(ac3::kSamplesPerFrame));
     std::vector<std::span<const float>> views(nchans);
@@ -461,15 +506,7 @@ int run_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_t bit
     frames.reserve(static_cast<std::size_t>(count));
     std::uint64_t n0 = 0;
     for (std::uint64_t f = 0; f < count; ++f) {
-        for (std::size_t ch = 0; ch < nchans; ++ch) {
-            for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
-                samples[ch][static_cast<std::size_t>(i)] = static_cast<float>(
-                    amplitude * std::sin(2.0 * std::numbers::pi * tone_hz[ch] *
-                                         static_cast<double>(n0 + static_cast<std::uint64_t>(i)) /
-                                         48000.0));
-            }
-            views[ch] = samples[ch];
-        }
+        fill_tones(samples, views, tone_hz, amplitude, n0);
         n0 += ac3::kSamplesPerFrame;
         meter.process(views);
         auto frame = encoder.encode_frame(views);
@@ -482,7 +519,7 @@ int run_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_t bit
     if (!write_frames(out_path, frames)) {
         return 1;
     }
-    std::println("wrote {} {} frames ({} kbps) to {}", count, surround ? "5.1" : "stereo",
+    std::println("wrote {} {} frames ({} kbps) to {}", count, plan::layout(*id).label,
                  bitrate, out_path);
     print_channel_summary(meter);
     return 0;
@@ -495,80 +532,14 @@ int run_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_t bit
 // Layouts wider than 5.1 need a dependent substream: the independent one
 // always carries a self-sufficient 5.1 bed, and the extra channels ride along
 // beside it with a chanmap saying where they belong.
-struct Eac3Layout {
-    ac3::eac3::AccessUnitConfig config;
-    std::vector<double> tones;  // one per encoder input channel, in coded order
-};
-
-std::optional<Eac3Layout> eac3_layout(std::string_view name, std::uint32_t bitrate,
-                                      const MetaOptions& meta = {}) {
-    Eac3Layout out;
-    out.config.independent.bitrate_kbps = bitrate;
-    out.config.independent.dialnorm = meta.dialnorm;
-    out.config.independent.drc = meta.drc;
-    out.config.independent.heavy = meta.heavy;
-    if (meta.mixmeta) {
-        out.config.independent.mixing = mix_metadata(meta);
-    }
-    if (name == "stereo") {
-        out.tones = {1000.0, 1000.0};
-        return out;
-    }
-    out.config.independent.acmod = ac3::Acmod::k3_2;
-    out.config.independent.lfe = true;
-    out.tones = {1000.0, 800.0, 1200.0, 600.0, 1400.0, 60.0};  // L C R Ls Rs LFE
-    if (name == "51") {
-        return out;
-    }
-    // A dependent gets its own slice of the rate rather than a share of the
-    // independent's - substreams occupy one frame period, not one frame.
-    const std::uint32_t dep_kbps = bitrate / 2;
-    // The spec's own worked example: acmod 2/2 with bits 3, 4 and 6, so Ls and
-    // Rs REPLACE the bed's surrounds and Lrs/Rrs are new. The replacement
-    // tones are deliberately not the bed's 600/1400 - identical ones could not
-    // tell the overwrite happening apart from the dependent being ignored.
-    const ac3::eac3::FrameConfig rear{.bitrate_kbps = dep_kbps,
-                                      .acmod = ac3::Acmod::k2_2,
-                                      .chanmap = ac3::eac3::chanmap::k71Rear};
-    if (name == "71") {
-        out.config.dependents.push_back(rear);
-        out.tones.insert(out.tones.end(), {500.0, 1600.0, 400.0, 1800.0});
-        return out;
-    }
-    if (name == "512") {  // a 5.1 bed with two height channels above it
-        out.config.dependents.push_back({.bitrate_kbps = dep_kbps,
-                                         .acmod = ac3::Acmod::k2_0,
-                                         .chanmap = ac3::eac3::chanmap::k512Height});
-        out.tones.insert(out.tones.end(), {2000.0, 2400.0});
-        return out;
-    }
-    const ac3::eac3::FrameConfig top{.bitrate_kbps = dep_kbps,
-                                     .acmod = ac3::Acmod::k2_2,
-                                     .chanmap = ac3::eac3::chanmap::kTopQuad};
-    if (name == "514") {
-        // Four new channels, so this is the widest immersive layout a SINGLE
-        // dependent can carry - see the channel-budget note beside kTopQuad.
-        out.config.dependents.push_back(top);
-        out.tones.insert(out.tones.end(), {2000.0, 2400.0, 2800.0, 3200.0});
-        return out;
-    }
-    if (name == "714") {
-        // Six new channels, one more than a dependent can hold, so this needs
-        // two: the 7.1 rear pair, then the ceiling quad.
-        //
-        // Spec-correct and rejected by FFmpeg, which refuses any frame with
-        // substreamid != 0 in ff_ac3_parse_header - it implements the TS 102
-        // 366 Annex J profile, where a stream "shall" hold at most one
-        // dependent, numbered 0. Every real delivery path caps it there and
-        // ships 7.1.4 as Atmos objects instead, so this layout has no oracle.
-        out.config.dependents.push_back(rear);
-        out.config.dependents.push_back(top);
-        out.tones.insert(out.tones.end(),
-                         {500.0, 1600.0, 400.0, 1800.0, 2000.0, 2400.0, 2800.0, 3200.0});
-        return out;
-    }
-    return std::nullopt;
-}
+// The layout table itself is ac3::plan's; what survives here is the note about
+// which of its entries can be checked against anything.
+//
+// 7.1.4 is spec-correct and rejected by FFmpeg, which refuses any frame with
+// substreamid != 0 in ff_ac3_parse_header - it implements the TS 102 366
+// Annex J profile, where a stream "shall" hold at most one dependent, numbered
+// 0. Every real delivery path caps it there and ships 7.1.4 as Atmos objects
+// instead, so that layout's only oracle is the in-repo decoder.
 
 int run_mkv(std::string_view in_path, std::string_view out_path) {
     const auto raw = read_all(in_path);
@@ -631,22 +602,26 @@ int run_mkv(std::string_view in_path, std::string_view out_path) {
 int run_eac3_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_t bitrate,
                   std::uint32_t freq_hz, std::uint32_t amplitude_pct, std::string_view layout,
                   const MetaOptions& meta) {
-    auto chosen = eac3_layout(layout, bitrate, meta);
-    if (!chosen) {
-        std::println(stderr, "error: unknown layout '{}' ({})", layout, kEac3Layouts);
+    const auto id = layout_or_error(layout, plan::Codec::kEac3);
+    if (!id) {
         return 1;
     }
-    const auto& config = chosen->config;
-    auto tone_hz = chosen->tones;
-    if (layout == "stereo") {
-        tone_hz = {static_cast<double>(freq_hz), static_cast<double>(freq_hz)};
+    const plan::Plan p{.codec = plan::Codec::kEac3,
+                       .layout = *id,
+                       .bitrate_kbps = bitrate,
+                       .meta = meta.p};
+    const auto config = plan::eac3_config(p);
+
+    auto tone_hz = layout_tones(*id);
+    if (plan::layout(*id).rendered <= 2) {
+        std::ranges::fill(tone_hz, static_cast<double>(freq_hz));
     }
     ac3::eac3::AccessUnitEncoder encoder{config};
     const auto nchans = static_cast<std::size_t>(encoder.channel_count());
     assert(nchans == tone_hz.size());
     const double amplitude = amplitude_pct / 100.0;
 
-    const std::uint64_t count = (static_cast<std::uint64_t>(seconds) * 48000 + 1535) / 1536;
+    const std::uint64_t count = frame_count(seconds);
     std::vector<std::vector<float>> samples(nchans,
                                             std::vector<float>(ac3::kSamplesPerFrame));
     std::vector<std::span<const float>> views(nchans);
@@ -654,15 +629,7 @@ int run_eac3_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_
     frames.reserve(static_cast<std::size_t>(count));
     std::uint64_t n0 = 0;
     for (std::uint64_t f = 0; f < count; ++f) {
-        for (std::size_t ch = 0; ch < nchans; ++ch) {
-            for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
-                samples[ch][static_cast<std::size_t>(i)] = static_cast<float>(
-                    amplitude * std::sin(2.0 * std::numbers::pi * tone_hz[ch] *
-                                         static_cast<double>(n0 + static_cast<std::uint64_t>(i)) /
-                                         48000.0));
-            }
-            views[ch] = samples[ch];
-        }
+        fill_tones(samples, views, tone_hz, amplitude, n0);
         n0 += ac3::kSamplesPerFrame;
         auto unit = encoder.encode_access_unit(views);
         if (!unit) {
@@ -674,153 +641,170 @@ int run_eac3_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_
     if (!write_frames(out_path, frames)) {
         return 1;
     }
-    std::println("wrote {} E-AC-3 {} access units ({} channels, {} substreams, bsid 16) to {}",
-                 count, layout, nchans, config.dependents.size() + 1, out_path);
+    std::println("wrote {} E-AC-3 {} access units ({} coded channels, {} substreams, "
+                 "bsid 16) to {}",
+                 count, plan::layout(*id).label, nchans, config.dependents.size() + 1,
+                 out_path);
     return 0;
 }
 
-// Which Annex E tools to switch on, as a '+'-joined list ("cpl", "cpl+spx",
-// "all", "none"). Every tool is a trade rather than a free win, so they are
-// selected rather than assumed - and being able to encode the same material
-// with and without one is the only way to say whether it earned its place.
-constexpr std::string_view kEac3Tools =
-    "none | cpl | spx | aht | all (cpl:N / spx:N pin a band edge, aht:N the gain mode)";
-
-bool parse_eac3_tools(std::string_view text, ac3::eac3::FrameConfig& config) {
-    if (text.empty() || text == "none") {
+// Reports a bad tool token against the syntax, the same way a bad layout is
+// reported against the layout list.
+bool tools_or_error(std::string_view text, plan::Tools& out) {
+    if (plan::parse_tools(text, out)) {
         return true;
     }
-    while (!text.empty()) {
-        const auto split = text.find('+');
-        const auto token = text.substr(0, split);
-        // "cpl:N" pins the coupling begin frequency code, which is how a
-        // band-edge question gets answered by experiment rather than argument.
-        if (token.starts_with("cpl:")) {
-            config.coupling = true;
-            config.cplbegf = static_cast<int>(parse_u32_or(token.substr(4), 99));
-            if (config.cplbegf > 15) {
-                return false;
-            }
-        } else if (token.starts_with("spx:")) {
-            config.spx = true;
-            config.spxbegf = static_cast<int>(parse_u32_or(token.substr(4), 99));
-            if (config.spxbegf > 7) {
-                return false;
-            }
-        } else if (token == "cpl") {
-            config.coupling = true;
-        } else if (token == "spx") {
-            config.spx = true;
-        } else if (token == "noatten") {
-            // Spectral extension without its band-border notch, for the A/B.
-            config.spx_atten = false;
-        } else if (token.starts_with("atten:")) {
-            config.spxattencod = static_cast<int>(parse_u32_or(token.substr(6), 99));
-            if (config.spxattencod > 31) {
-                return false;
-            }
-        } else if (token.starts_with("aht:")) {
-            // "aht:0" is AHT with gain-adaptive quantization switched off,
-            // which is how GAQ's own contribution gets measured.
-            config.aht = true;
-            config.gaqmod = static_cast<int>(parse_u32_or(token.substr(4), 99));
-            if (config.gaqmod > 3) {
-                return false;
-            }
-        } else if (token == "aht") {
-            config.aht = true;
-        } else if (token == "all") {
-            config.coupling = true;
-            config.spx = true;
-            config.aht = true;
-        } else {
-            return false;
-        }
-        text = split == std::string_view::npos ? std::string_view{} : text.substr(split + 1);
+    std::println(stderr, "error: unknown tool set '{}' ({})", text, plan::kToolsSyntax);
+    return false;
+}
+
+// A WAV's rate as an fscod, or a diagnosis. Shared because every encode path
+// asks the same question and A/52 Table 5.6 has the same three answers for
+// all of them.
+std::optional<ac3::SampleRate> wav_sample_rate(std::uint32_t hz, std::string_view codec) {
+    switch (hz) {
+        case 48000: return ac3::SampleRate::k48000;
+        case 44100: return ac3::SampleRate::k44100;
+        case 32000: return ac3::SampleRate::k32000;
+        default:
+            std::println(stderr,
+                         "error: sample rate {} is not legal for {} (need 32/44.1/48 kHz)", hz,
+                         codec);
+            return std::nullopt;
     }
-    return true;
+}
+
+// A source's channels routed onto a plan's coded channels, or a diagnosis.
+std::optional<plan::Routing> routing_or_error(const plan::Plan& p, std::size_t channels) {
+    auto routing = plan::route(p.layout, channels, p.meta.cmixlev, p.meta.surmixlev);
+    if (!routing) {
+        std::println(stderr, "error: {} channels - {}", channels,
+                     plan::describe(plan::PlanError::kNoSourceLayout));
+        return std::nullopt;
+    }
+    return routing;
+}
+
+// Says what the routing did, so a run that quietly left half a layout silent
+// is visible rather than something to be discovered later on the meters.
+void print_routing(const plan::Plan& p, const plan::Routing& routing) {
+    if (routing.is_permutation()) {
+        std::println("  source carried directly into {}", plan::layout(p.layout).label);
+        return;
+    }
+    const auto names = plan::coded_channel_names(p.layout);
+    std::string silent;
+    for (int c = 0; c < routing.coded_channels; ++c) {
+        bool fed = false;
+        for (int s = 0; s < routing.source_channels && !fed; ++s) {
+            fed = routing.at(c, s) != 0.0;
+        }
+        if (!fed) {
+            silent += silent.empty() ? "" : " ";
+            silent += names[static_cast<std::size_t>(c)];
+        }
+    }
+    std::println("  {} source channels rendered onto {}", routing.source_channels,
+                 plan::layout(p.layout).label);
+    if (!silent.empty()) {
+        std::println("  silent (the source carries nothing that belongs there): {}", silent);
+    }
 }
 
 // Real program material through the E-AC-3 path. The tone generators above
 // exercise field placement; only recorded-style material exercises the coding
 // decisions, which is what the Annex E tools are judged on.
 int run_eac3_encode(std::string_view in_path, std::string_view out_path,
-                    std::uint32_t bitrate, std::string_view tools) {
+                    std::uint32_t bitrate, std::string_view tools, std::string_view layout,
+                    const MetaOptions& meta) {
     const auto wav = ac3::io::read_wav(std::string{in_path});
     if (!wav) {
         std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(wav.error()));
         return 1;
     }
-    ac3::SampleRate sr{};
-    switch (wav->sample_rate) {
-        case 48000: sr = ac3::SampleRate::k48000; break;
-        case 44100: sr = ac3::SampleRate::k44100; break;
-        case 32000: sr = ac3::SampleRate::k32000; break;
-        default:
-            std::println(stderr,
-                         "error: sample rate {} is not legal for E-AC-3 (need 32/44.1/48 kHz)",
-                         wav->sample_rate);
-            return 1;
+    const auto sr = wav_sample_rate(wav->sample_rate, "E-AC-3");
+    if (!sr) {
+        return 1;
     }
-
-    // WAV channel order is not AC-3 channel order, so a 5.1 file has to be
-    // permuted on the way in - the inverse of wav_channel_map below.
-    ac3::eac3::FrameConfig config{.sample_rate = sr, .bitrate_kbps = bitrate};
-    std::vector<std::size_t> source;  // coded channel -> wav channel
-    switch (wav->channels.size()) {
-        case 1:
-            config.acmod = ac3::Acmod::k1_0;
-            source = {0};
-            break;
-        case 2:
-            config.acmod = ac3::Acmod::k2_0;
-            source = {0, 1};
-            break;
-        case 6:
-            config.acmod = ac3::Acmod::k3_2;
-            config.lfe = true;
-            source = {0, 2, 1, 4, 5, 3};  // L C R Ls Rs LFE <- FL FR FC LFE BL BR
-            break;
-        default:
-            std::println(stderr, "error: {} channels; expected 1, 2 or 6",
-                         wav->channels.size());
+    // An unnamed layout follows the source, which is what this command did
+    // before it could be told otherwise.
+    std::optional<plan::LayoutId> id;
+    if (layout.empty()) {
+        id = plan::layout_for_source(wav->channels.size());
+        if (!id) {
+            std::println(stderr, "error: {} channels - {}", wav->channels.size(),
+                         plan::describe(plan::PlanError::kNoSourceLayout));
             return 1;
-    }
-
-    if (!parse_eac3_tools(tools, config)) {
-        std::println(stderr, "error: unknown tool set '{}' ({})", tools, kEac3Tools);
+        }
+    } else if (id = layout_or_error(layout, plan::Codec::kEac3); !id) {
         return 1;
     }
 
-    ac3::eac3::FrameEncoder encoder{config};
-    const auto nchans = source.size();
+    plan::Plan p{.codec = plan::Codec::kEac3,
+                 .layout = *id,
+                 .sample_rate = *sr,
+                 .bitrate_kbps = bitrate,
+                 .meta = meta.p};
+    if (!tools_or_error(tools, p.tools)) {
+        return 1;
+    }
+    if (p.meta.measure_dialnorm) {
+        const auto measured = measured_dialnorm(*wav, *sr, plan::bed_acmod(*id),
+                                                plan::bed_lfe(*id));
+        if (!measured) {
+            std::println(stderr, "error: no audio above the -70 LKFS absolute gate; "
+                                 "pass dialnorm=<1..31> explicitly");
+            return 1;
+        }
+        p.meta.dialnorm = *measured;
+    }
+
+    const auto routing = routing_or_error(p, wav->channels.size());
+    if (!routing) {
+        return 1;
+    }
+
+    ac3::eac3::AccessUnitEncoder encoder{plan::eac3_config(p)};
+    const auto nchans = static_cast<std::size_t>(routing->coded_channels);
+    assert(static_cast<int>(nchans) == encoder.channel_count());
     const std::size_t total = wav->frame_count();
-    std::vector<std::vector<float>> block(nchans,
-                                          std::vector<float>(ac3::kSamplesPerFrame));
+
+    std::vector<std::vector<float>> source(wav->channels.size(),
+                                           std::vector<float>(ac3::kSamplesPerFrame));
+    std::vector<std::vector<float>> block(nchans, std::vector<float>(ac3::kSamplesPerFrame));
+    std::vector<std::span<const float>> in(source.size());
+    std::vector<std::span<float>> out(nchans);
     std::vector<std::span<const float>> views(nchans);
+    for (std::size_t c = 0; c < nchans; ++c) {
+        out[c] = block[c];
+        views[c] = block[c];
+    }
     std::vector<std::vector<std::byte>> frames;
     for (std::size_t start = 0; start < total; start += ac3::kSamplesPerFrame) {
-        for (std::size_t c = 0; c < nchans; ++c) {
-            const auto& channel = wav->channels[source[c]];
+        for (std::size_t c = 0; c < source.size(); ++c) {
             for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
                 const std::size_t at = start + static_cast<std::size_t>(i);
-                block[c][static_cast<std::size_t>(i)] = at < total ? channel[at] : 0.0f;
+                source[c][static_cast<std::size_t>(i)] =
+                    at < total ? wav->channels[c][at] : 0.0f;
             }
-            views[c] = block[c];
+            in[c] = source[c];
         }
-        auto frame = encoder.encode_frame(views);
-        if (!frame) {
+        plan::render(*routing, in, out, ac3::kSamplesPerFrame);
+        auto unit = encoder.encode_access_unit(views);
+        if (!unit) {
             std::println(stderr, "error: the encoder cannot express this configuration");
             return 1;
         }
-        frames.push_back(std::move(*frame));
+        frames.push_back(std::move(unit->bytes));
     }
     if (!write_frames(out_path, frames)) {
         return 1;
     }
-    std::println("encoded {} E-AC-3 frames ({} kbps, {} Hz, {} channels, tools: {}) to {}",
-                 frames.size(), bitrate, wav->sample_rate, nchans,
-                 tools.empty() ? "none" : tools, out_path);
+    std::println("encoded {} E-AC-3 access units ({} kbps, {} Hz, {}, {} coded channels, "
+                 "tools: {}) to {}",
+                 frames.size(), bitrate, wav->sample_rate, plan::layout(*id).label, nchans,
+                 plan::format_tools(p.tools), out_path);
+    print_routing(p, *routing);
     return 0;
 }
 
@@ -830,15 +814,17 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
 // which JOC can actually pull them apart again. Heights are what makes this
 // worth doing at all: a 5.1 bed cannot carry them, and the object metadata can.
 int run_atmos(std::string_view out_path, std::uint32_t seconds, std::uint32_t bitrate,
-              std::uint32_t objects, std::uint32_t orbit_seconds) {
+              std::uint32_t objects, std::uint32_t orbit_seconds, const MetaOptions& meta) {
     if (objects < 1 || objects > 15) {
         std::println(stderr, "error: 1 to 15 objects (the bed's LFE is the 16th, "
                              "and TS 103 420 §8.3.2.2 caps the total at 16)");
         return 1;
     }
     const auto count = static_cast<std::size_t>(objects);
-    ac3::oba::AtmosEncoder encoder{
-        {.bitrate_kbps = bitrate, .num_bands_idx = 4}, static_cast<int>(objects)};
+    ac3::oba::AtmosEncoder encoder{{.bitrate_kbps = bitrate,
+                                    .dialnorm = meta.p.dialnorm,
+                                    .num_bands_idx = 4},
+                                   static_cast<int>(objects)};
 
     // Distinct tones so the objects are separable in the first place, and a
     // reader with an object renderer can tell which one ended up where.
@@ -912,22 +898,145 @@ int run_atmos(std::string_view out_path, std::uint32_t seconds, std::uint32_t bi
     return 0;
 }
 
+// Every channel of a real file as its own object, over a 5.1 bed with JOC and
+// OAMD beside it. The synthetic 'atmos' above shows what the object layer can
+// express; this is the one that answers what it does to material somebody
+// actually recorded - and it is what the GUI's object mode runs, so the two
+// front ends can be compared on the same file.
+int run_atmos_encode(std::string_view in_path, std::string_view out_path,
+                     std::uint32_t bitrate, std::uint32_t objects,
+                     const MetaOptions& meta) {
+    const auto wav = ac3::io::read_wav(std::string{in_path});
+    if (!wav) {
+        std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(wav.error()));
+        return 1;
+    }
+    const auto sr = wav_sample_rate(wav->sample_rate, "E-AC-3");
+    if (!sr) {
+        return 1;
+    }
+    // One object per source channel unless told otherwise; more objects than
+    // the file has channels would leave some carrying nothing.
+    const auto count = objects == 0 ? wav->channels.size()
+                                    : std::min<std::size_t>(objects, wav->channels.size());
+    if (count < 1 || count > 15) {
+        std::println(stderr,
+                     "error: 1 to 15 objects (the bed's LFE is the 16th, and TS 103 420 "
+                     "§8.3.2.2 caps the total at 16); this file has {} channels",
+                     wav->channels.size());
+        return 1;
+    }
+
+    int dialnorm = meta.p.dialnorm;
+    if (meta.p.measure_dialnorm) {
+        const auto layout = ac3::io::ac3_layout_for(wav->channels.size());
+        const auto measured =
+            layout ? measured_dialnorm(*wav, *sr, layout->acmod, layout->lfe) : std::nullopt;
+        if (!measured) {
+            std::println(stderr, "error: cannot measure loudness for this file; "
+                                 "pass dialnorm=<1..31> explicitly");
+            return 1;
+        }
+        dialnorm = *measured;
+    }
+
+    ac3::oba::AtmosEncoder encoder{
+        {.sample_rate = *sr, .bitrate_kbps = bitrate, .dialnorm = dialnorm, .num_bands_idx = 4},
+        static_cast<int>(count)};
+
+    // Objects that reach the bed by the same route are exactly the ones JOC
+    // cannot pull apart again, so the source's channels are spread across the
+    // room rather than stacked at one point. A channel that already has a
+    // direction keeps it; the rest fan out evenly.
+    std::vector<ac3::oba::ObjectPlacement> placement(count);
+    const auto layout = ac3::io::ac3_layout_for(wav->channels.size());
+    for (std::size_t i = 0; i < count; ++i) {
+        double azimuth = 0.0;
+        if (layout) {
+            // wav_index maps a coded channel to a WAV one; this needs the
+            // inverse, so the channel is found rather than indexed.
+            for (std::size_t k = 0; k < layout->wav_index.size(); ++k) {
+                if (layout->wav_index[k] != i) {
+                    continue;
+                }
+                azimuth = ac3::analysis::channel_azimuth_deg(layout->acmod, layout->lfe,
+                                                             static_cast<int>(k))
+                              .value_or(0.0);
+            }
+        } else {
+            azimuth = 360.0 * static_cast<double>(i) / static_cast<double>(count);
+        }
+        const double radians = azimuth * std::numbers::pi / 180.0;
+        placement[i] = {.position = {.x = 0.5 - 0.5 * std::sin(radians),
+                                     .y = 0.5 - 0.5 * std::cos(radians),
+                                     .z = 0.0},
+                        // Every object is panned into the same five channels,
+                        // so their contributions add there. The same
+                        // inverse-root law 'atmos' and the GUI use, so a file
+                        // encoded either way comes out at the same level.
+                        .gain = 0.7 / std::sqrt(static_cast<double>(count)),
+                        .lfe_send = 0.0};
+    }
+
+    ac3::analysis::LevelMeter meter{ac3::Acmod::k3_2, true, wav->sample_rate};
+    const std::size_t total = wav->frame_count();
+    std::vector<std::vector<float>> block(count, std::vector<float>(ac3::kSamplesPerFrame));
+    std::vector<std::span<const float>> views(count);
+    std::vector<std::span<const float>> metered(6);
+    std::vector<std::vector<std::byte>> out;
+
+    for (std::size_t start = 0; start < total; start += ac3::kSamplesPerFrame) {
+        const auto valid = std::min<std::size_t>(ac3::kSamplesPerFrame, total - start);
+        for (std::size_t ch = 0; ch < count; ++ch) {
+            for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+                const std::size_t at = start + static_cast<std::size_t>(i);
+                block[ch][static_cast<std::size_t>(i)] =
+                    at < total ? wav->channels[ch][at] : 0.0f;
+            }
+            views[ch] = block[ch];
+        }
+        const auto unit = encoder.encode_frame(views, placement);
+        if (!unit) {
+            std::println(stderr,
+                         "error: cannot encode {} objects at {} kbps — the metadata and the "
+                         "mantissas share one frame, so try a higher bit rate",
+                         count, bitrate);
+            return 1;
+        }
+        // The bed exists only once the frame is encoded, so it is metered
+        // afterwards - and it is the bed, not the source, that a legacy
+        // decoder plays.
+        for (std::size_t ch = 0; ch < metered.size(); ++ch) {
+            metered[ch] = std::span{encoder.bed()[ch]}.first(valid);
+        }
+        meter.process(metered);
+        out.push_back(std::move(unit->bytes));
+    }
+    if (!write_frames(out_path, out)) {
+        return 1;
+    }
+    std::println("encoded {} E-AC-3 access units ({} kbps, {} Hz) to {}", out.size(), bitrate,
+                 wav->sample_rate, out_path);
+    std::println("  {} objects from {} source channels + the bed's LFE = {} objects, "
+                 "JOC over a 5.1 downmix",
+                 count, wav->channels.size(), ac3::oba::object_count(encoder.program()));
+    print_channel_summary(meter);
+    return 0;
+}
+
 int run_orbit(std::string_view out_path, std::uint32_t seconds, std::uint32_t bitrate,
               std::uint32_t orbit_seconds, const MetaOptions& meta) {
     ac3::spatial::BedRenderer renderer;
     const auto object =
         renderer.add_object({.azimuth_deg = 0.0, .gain = 0.7, .lfe_send = 0.15});
-    ac3::FrameEncoder encoder{{.bitrate_kbps = bitrate,
-                               .dialnorm = meta.dialnorm,
-                               .acmod = ac3::Acmod::k3_2,
-                               .lfe = true,
-                               .drc = meta.drc,
-                               .heavy = meta.heavy,
-                               .cmixlev = meta.cmixlev,
-                               .surmixlev = meta.surmixlev}};
+    const plan::Plan p{.codec = plan::Codec::kAc3,
+                       .layout = plan::LayoutId::k51,
+                       .bitrate_kbps = bitrate,
+                       .meta = meta.p};
+    ac3::FrameEncoder encoder{plan::ac3_config(p)};
     ac3::analysis::LevelMeter meter{ac3::Acmod::k3_2, true, 48000};
 
-    const std::uint64_t count = (static_cast<std::uint64_t>(seconds) * 48000 + 1535) / 1536;
+    const std::uint64_t count = frame_count(seconds);
     std::vector<float> mono(ac3::spatial::kBlockSamples);
     std::vector<std::vector<float>> frame_channels(6);
     std::vector<std::vector<float>> bed_block(
@@ -1109,29 +1218,42 @@ int run_record(std::string_view out_path, std::uint32_t seconds, std::uint32_t b
 }
 
 int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_t bitrate,
-               bool couple, const MetaOptions& meta) {
+               bool couple, std::string_view layout, const MetaOptions& meta) {
     const auto wav = ac3::io::read_wav(std::string{in_path});
     if (!wav) {
         std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(wav.error()));
         return 1;
     }
-    const auto layout = ac3::io::ac3_layout_for(wav->channels.size());
-    if (!layout) {
-        std::println(stderr,
-                     "error: encode handles 1 to 6 channels ({} given); no AC-3 coding mode is "
-                     "wider than 3/2 + LFE",
-                     wav->channels.size());
+    const auto sr = wav_sample_rate(wav->sample_rate, "AC-3");
+    if (!sr) {
         return 1;
     }
-    ac3::SampleRate sr{};
-    switch (wav->sample_rate) {
-        case 48000: sr = ac3::SampleRate::k48000; break;
-        case 44100: sr = ac3::SampleRate::k44100; break;
-        case 32000: sr = ac3::SampleRate::k32000; break;
-        default:
-            std::println(stderr, "error: sample rate {} is not legal for AC-3 (need 32/44.1/48 kHz)",
-                         wav->sample_rate);
+    // An unnamed layout follows the source, which is what this command did
+    // before it could be told otherwise. Naming one is how a stereo file
+    // reaches a 5.1 stream, or a 5.1 file gets folded down per §7.8.
+    std::optional<plan::LayoutId> id;
+    if (layout.empty()) {
+        id = plan::layout_for_source(wav->channels.size());
+        if (!id || !plan::carries(plan::Codec::kAc3, *id)) {
+            std::println(stderr,
+                         "error: encode handles 1 to 6 channels ({} given); no AC-3 coding "
+                         "mode is wider than 3/2 + LFE",
+                         wav->channels.size());
             return 1;
+        }
+    } else if (id = layout_or_error(layout, plan::Codec::kAc3); !id) {
+        return 1;
+    }
+
+    plan::Plan p{.codec = plan::Codec::kAc3,
+                 .layout = *id,
+                 .sample_rate = *sr,
+                 .bitrate_kbps = bitrate,
+                 .meta = meta.p};
+    p.tools.coupling = couple;
+    if (const auto bad = plan::validate(p)) {
+        std::println(stderr, "error: {}", plan::describe(*bad));
+        return 1;
     }
 
     // §5.4.2.8 says dialnorm "shall affect the sound reproduction level", so
@@ -1139,51 +1261,57 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
     // dialogue is really at -18 plays 13 dB too loud on a levelled system.
     // Measuring needs the whole programme (the BS.1770 relative gate does),
     // which is why it happens here rather than inside the frame encoder. It
-    // gets the real layout rather than an assumed stereo one, because the
-    // BS.1770 channel weighting depends on which coded positions are surrounds.
-    int dialnorm = meta.dialnorm;
-    if (meta.measure_dialnorm) {
-        const auto measured = measured_dialnorm(*wav, sr, layout->acmod, layout->lfe);
+    // gets the OUTPUT layout, because the BS.1770 channel weighting depends on
+    // which coded positions are surrounds.
+    if (p.meta.measure_dialnorm) {
+        const auto measured =
+            measured_dialnorm(*wav, *sr, plan::bed_acmod(*id), plan::bed_lfe(*id));
         if (!measured) {
             std::println(stderr,
                          "error: no audio above the -70 LKFS absolute gate; "
                          "pass dialnorm=<1..31> explicitly");
             return 1;
         }
-        dialnorm = *measured;
+        p.meta.dialnorm = *measured;
     }
 
-    // Coupling shares coefficients between full-bandwidth channels (§7.4), so
-    // a mono program has nothing to share it with.
-    const bool coupling = couple && ac3::fullbw_channel_count(layout->acmod) >= 2;
-    ac3::FrameEncoder encoder{{.sample_rate = sr,
-                               .bitrate_kbps = bitrate,
-                               .dialnorm = dialnorm,
-                               .acmod = layout->acmod,
-                               .lfe = layout->lfe,
-                               .coupling = coupling,
-                               .drc = meta.drc,
-                               .heavy = meta.heavy,
-                               .cmixlev = meta.cmixlev,
-                               .surmixlev = meta.surmixlev}};
-    ac3::analysis::LevelMeter meter{layout->acmod, layout->lfe, wav->sample_rate};
-    const auto nchans = static_cast<std::size_t>(encoder.channel_count());
+    const auto routing = routing_or_error(p, wav->channels.size());
+    if (!routing) {
+        return 1;
+    }
+
+    const auto config = plan::ac3_config(p);
+    ac3::FrameEncoder encoder{config};
+    ac3::analysis::LevelMeter meter{config.acmod, config.lfe, wav->sample_rate};
+    const auto nchans = static_cast<std::size_t>(routing->coded_channels);
     const std::size_t total = wav->frame_count();
+
+    std::vector<std::vector<float>> source(wav->channels.size(),
+                                           std::vector<float>(ac3::kSamplesPerFrame));
     std::vector<std::vector<float>> block(nchans, std::vector<float>(ac3::kSamplesPerFrame));
+    std::vector<std::span<const float>> in(source.size());
+    std::vector<std::span<float>> out(nchans);
     std::vector<std::span<const float>> views(nchans);
     std::vector<std::span<const float>> metered(nchans);
+    for (std::size_t c = 0; c < nchans; ++c) {
+        out[c] = block[c];
+        views[c] = block[c];
+    }
     std::vector<std::vector<std::byte>> frames;
     for (std::size_t start = 0; start < total; start += ac3::kSamplesPerFrame) {
         // The tail frame is zero-padded to a full 1536 samples; the meter sees
         // only the real ones, so the padding cannot pull the RMS down.
         const auto valid = std::min<std::size_t>(ac3::kSamplesPerFrame, total - start);
-        for (std::size_t c = 0; c < nchans; ++c) {
-            const auto& source = wav->channels[layout->wav_index[c]];
+        for (std::size_t c = 0; c < source.size(); ++c) {
             for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
                 const std::size_t at = start + static_cast<std::size_t>(i);
-                block[c][static_cast<std::size_t>(i)] = at < total ? source[at] : 0.0f;
+                source[c][static_cast<std::size_t>(i)] =
+                    at < total ? wav->channels[c][at] : 0.0f;
             }
-            views[c] = block[c];
+            in[c] = source[c];
+        }
+        plan::render(*routing, in, out, ac3::kSamplesPerFrame);
+        for (std::size_t c = 0; c < nchans; ++c) {
             metered[c] = std::span{block[c]}.first(valid);
         }
         meter.process(metered);
@@ -1198,55 +1326,11 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
         return 1;
     }
     std::println("encoded {} frames ({} kbps, {} Hz, {}) to {}", frames.size(), bitrate,
-                 wav->sample_rate, ac3::analysis::layout_name(layout->acmod, layout->lfe),
+                 wav->sample_rate, ac3::analysis::layout_name(config.acmod, config.lfe),
                  out_path);
+    print_routing(p, *routing);
     print_channel_summary(meter);
     return 0;
-}
-
-// Standard WAVEFORMATEXTENSIBLE speaker order, as far as Table E2.5 and it
-// overlap. Three of E-AC-3's locations (Lw/Rw, Lsd/Rsd, LFE2) have no slot in
-// that order at all; they follow in bitstream order rather than being dropped.
-constexpr std::array<ac3::eac3::chanmap::Location, 17> kWavSpeakerOrder = {
-    ac3::eac3::chanmap::Location::kLeft,           // FL
-    ac3::eac3::chanmap::Location::kRight,          // FR
-    ac3::eac3::chanmap::Location::kCentre,         // FC
-    ac3::eac3::chanmap::Location::kLfe,            // LFE
-    ac3::eac3::chanmap::Location::kLrs,            // BL
-    ac3::eac3::chanmap::Location::kRrs,            // BR
-    ac3::eac3::chanmap::Location::kLc,             // FLC
-    ac3::eac3::chanmap::Location::kRc,             // FRC
-    ac3::eac3::chanmap::Location::kCs,             // BC
-    ac3::eac3::chanmap::Location::kLeftSurround,   // SL
-    ac3::eac3::chanmap::Location::kRightSurround,  // SR
-    ac3::eac3::chanmap::Location::kTs,             // TC
-    ac3::eac3::chanmap::Location::kVhl,            // TFL
-    ac3::eac3::chanmap::Location::kVhc,            // TFC
-    ac3::eac3::chanmap::Location::kVhr,            // TFR
-    ac3::eac3::chanmap::Location::kLts,            // TBL
-    ac3::eac3::chanmap::Location::kRts,            // TBR
-};
-
-// Rendered layout -> WAV order, as source indices per output position. A 5.1
-// bed comes out {0, 2, 1, 5, 3, 4}, which is what ac3::io::wav_channel_order
-// returns for the same layout - the AC-3 path uses that directly, and this
-// exists only because a chanmap layout cannot be named by acmod and lfeon.
-std::vector<std::size_t> wav_channel_map(const ac3::eac3::chanmap::Layout& layout) {
-    std::vector<std::size_t> map;
-    std::vector<bool> placed(static_cast<std::size_t>(layout.count), false);
-    for (const auto speaker : kWavSpeakerOrder) {
-        const int index = layout.index_of(speaker);
-        if (index >= 0) {
-            map.push_back(static_cast<std::size_t>(index));
-            placed[static_cast<std::size_t>(index)] = true;
-        }
-    }
-    for (int i = 0; i < layout.count; ++i) {
-        if (!placed[static_cast<std::size_t>(i)]) {
-            map.push_back(static_cast<std::size_t>(i));
-        }
-    }
-    return map;
 }
 
 int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path) {
@@ -1282,7 +1366,10 @@ int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path
         std::println(stderr, "error: no access units");
         return 1;
     }
-    const auto map = wav_channel_map(first.layout);
+    // The same WAV speaker order the encode side reads a file in, so a stream
+    // decoded here and re-encoded lands every channel back where it started.
+    const auto map = plan::wav_order(
+        std::span{first.layout.items}.first(static_cast<std::size_t>(first.layout.count)));
     const auto written = ac3::io::write_wav_f32(std::string{out_path}, pcm,
                                                 sample_rate_hz(first.sample_rate), map);
     if (!written) {
@@ -1309,8 +1396,8 @@ int run_decode(std::string_view in_path, std::string_view out_path,
         return 1;
     }
     // bsid at bit 40 says which syntax this is, before either is assumed.
-    // decode no longer has an AC-3-only wall to turn E-AC-3 away at; spdif and
-    // play still do, which is why kDecoderLimit's counterpart survives.
+    // decode has no AC-3-only wall to turn E-AC-3 away at; spdif and play
+    // still do, which is why kPackerLimit survives.
     const auto bsid = ac3::stream_bsid(stream);
     if (!bsid) {
         std::println(stderr, "error: {} is too short to hold a syncframe", in_path);
@@ -1325,7 +1412,7 @@ int run_decode(std::string_view in_path, std::string_view out_path,
         return 1;
     }
     ac3::FrameDecoder decoder{
-        {.drc_scale = meta.drc_scale, .heavy_compression = meta.heavy.has_value()}};
+        {.drc_scale = meta.drc_scale, .heavy_compression = meta.p.heavy.has_value()}};
     std::vector<std::vector<float>> pcm;
     std::optional<ac3::analysis::LevelMeter> meter;
     ac3::DecodedFrame first{};
@@ -1390,11 +1477,64 @@ int run_decode(std::string_view in_path, std::string_view out_path,
     if (compr_frames > 0) {
         std::println("          compr  {:+.2f} .. {:+.2f} dB over {} frames{}", compr_min_db,
                      compr_max_db, compr_frames,
-                     meta.heavy ? ", applied" : ", not applied");
+                     meta.p.heavy ? ", applied" : ", not applied");
     } else {
         std::println("          compr  absent");
     }
     print_channel_summary(*meter);
+    return 0;
+}
+
+// E-AC-3's own level report. The rendered layout is a chanmap rather than an
+// acmod, so it cannot go through LevelMeter's Table 5.8 naming; the figures
+// still come from ac3::analysis, so a level reads the same here as anywhere.
+int run_levels_eac3(std::span<const std::byte> stream, std::string_view in_path) {
+    const auto units = ac3::split_access_units(stream);
+    if (!units || units->empty()) {
+        std::println(stderr, "error: {} is not a valid E-AC-3 stream", in_path);
+        return 1;
+    }
+    ac3::Eac3Decoder decoder;
+    std::vector<ac3::analysis::ChannelSummary> totals;
+    ac3::DecodedAccessUnit first{};
+    for (const auto& unit : *units) {
+        const auto decoded = decoder.decode_access_unit(unit);
+        if (!decoded) {
+            std::println(stderr, "error: {}: decode failed (code {})", in_path,
+                         static_cast<int>(decoded.error()));
+            return 1;
+        }
+        if (totals.empty()) {
+            first = *decoded;
+            totals.resize(decoded->channels.size());
+            std::println("{}: {} access units, {} substreams each, {} channels, {} Hz",
+                         in_path, units->size(), decoded->substream_count,
+                         decoded->channels.size(), sample_rate_hz(decoded->sample_rate));
+        }
+        for (std::size_t ch = 0; ch < decoded->channels.size(); ++ch) {
+            auto& stats = totals[ch];
+            for (const float sample : decoded->channels[ch]) {
+                const double magnitude = std::abs(static_cast<double>(sample));
+                stats.peak = std::max(stats.peak, magnitude);
+                stats.sum_squares += magnitude * magnitude;
+                ++stats.samples;
+                if (magnitude >= ac3::analysis::kFullScale) {
+                    ++stats.clipped_samples;
+                }
+            }
+        }
+    }
+    std::println("");
+    std::println("per-channel levels:");
+    std::println("  {:<6} {:>8} {:>8}  {:<20} {}", "ch", "peak", "rms", "peak (-60..0 dBFS)",
+                 "clipped");
+    for (std::size_t ch = 0; ch < totals.size(); ++ch) {
+        const auto& stats = totals[ch];
+        std::println("  {:<6} {:>8.2f} {:>8.2f}  [{}] {}",
+                     ac3::eac3::chanmap::name(first.layout[static_cast<int>(ch)]),
+                     stats.peak_db(), stats.rms_db(), meter_bar(stats.peak_db(), 18),
+                     stats.clipped_samples > 0 ? std::to_string(stats.clipped_samples) : "-");
+    }
     return 0;
 }
 
@@ -1412,8 +1552,11 @@ int run_levels(std::string_view in_path) {
                           std::to_integer<int>(bytes[1]) == 0x77;
 
     if (syncword) {
-        if (reject_non_ac3_syntax(bytes, in_path, kDecoderLimit)) {
-            return 1;
+        // E-AC-3 has its own decoder here now, so this is no longer a wall to
+        // turn a wider syntax away at - bsid only decides which reader runs.
+        const auto bsid = ac3::stream_bsid(bytes);
+        if (bsid && *bsid > 8) {
+            return run_levels_eac3(bytes, in_path);
         }
         const auto frames = ac3::split_frames(bytes);
         if (!frames || frames->empty()) {
@@ -1663,17 +1806,20 @@ int run_play(std::string_view in_path, int device_index) {
 
 int run_eac3_silence(std::string_view out_path, std::uint32_t seconds, std::uint32_t bitrate,
                      std::string_view layout, const MetaOptions& meta) {
-    const auto chosen = eac3_layout(layout, bitrate, meta);
-    if (!chosen) {
-        std::println(stderr, "error: unknown layout '{}' ({})", layout, kEac3Layouts);
+    const auto id = layout_or_error(layout, plan::Codec::kEac3);
+    if (!id) {
         return 1;
     }
-    const auto unit = ac3::eac3::build_silent_access_unit(chosen->config);
+    const plan::Plan p{.codec = plan::Codec::kEac3,
+                       .layout = *id,
+                       .bitrate_kbps = bitrate,
+                       .meta = meta.p};
+    const auto unit = ac3::eac3::build_silent_access_unit(plan::eac3_config(p));
     if (!unit) {
         std::println(stderr, "error: invalid E-AC-3 configuration");
         return 1;
     }
-    const std::uint64_t count = (static_cast<std::uint64_t>(seconds) * 48000 + 1535) / 1536;
+    const std::uint64_t count = frame_count(seconds);
     const std::vector<std::vector<std::byte>> frames(static_cast<std::size_t>(count),
                                                      unit->bytes);
     if (!write_frames(out_path, frames)) {
@@ -1681,7 +1827,8 @@ int run_eac3_silence(std::string_view out_path, std::uint32_t seconds, std::uint
     }
     std::println("wrote {} silent E-AC-3 {} access units ({} substreams, "
                  "{} bytes each, bsid 16) to {}",
-                 count, layout, unit->substream_count(), unit->bytes.size(), out_path);
+                 count, plan::layout(*id).label, unit->substream_count(), unit->bytes.size(),
+                 out_path);
     return 0;
 }
 
@@ -1730,7 +1877,7 @@ struct Command {
     int (*run)(const Args&);
 };
 
-constexpr std::array<Command, 16> kCommands{{
+constexpr std::array<Command, 18> kCommands{{
     {"silence", 2, "<out.ac3> [seconds] [bitrate_kbps]", "",
      [](const Args& x) { return run_silence(x.str(1), x.u32(2, 5), x.u32(3, 192)); }},
     {"sine", 2, "<out.ac3> [seconds] [bitrate_kbps] [freq_hz] [amp_pct] [layout]", "",
@@ -1744,15 +1891,21 @@ constexpr std::array<Command, 16> kCommands{{
      }},
     {"atmos", 2, "<out.ec3> [seconds] [bitrate_kbps] [objects] [orbit_seconds]", "",
      [](const Args& x) {
-         return run_atmos(x.str(1), x.u32(2, 8), x.u32(3, 448), x.u32(4, 4), x.u32(5, 6));
+         return run_atmos(x.str(1), x.u32(2, 8), x.u32(3, 448), x.u32(4, 4), x.u32(5, 6),
+                          x.meta);
+     }},
+    {"atmos-encode", 3, "<in.wav> <out.ec3> [bitrate_kbps] [objects]",
+     "every source channel as an object",
+     [](const Args& x) {
+         return run_atmos_encode(x.str(1), x.str(2), x.u32(3, 448), x.u32(4, 0), x.meta);
      }},
     {"record", 2, "<out.ac3> [seconds] [bitrate_kbps] [device_index]", "",
      [](const Args& x) {
          return run_record(x.str(1), x.u32(2, 5), x.u32(3, 192), x.i32(4, 0));
      }},
-    {"encode", 3, "<in.wav> <out.ac3> [bitrate_kbps] [couple]", "",
+    {"encode", 3, "<in.wav> <out.ac3> [bitrate_kbps] [layout]", "",
      [](const Args& x) {
-         return run_encode(x.str(1), x.str(2), x.u32(3, 192), x.couple, x.meta);
+         return run_encode(x.str(1), x.str(2), x.u32(3, 192), x.couple, x.str(4), x.meta);
      }},
     {"eac3-silence", 2, "<out.ec3> [seconds] [bitrate_kbps] [layout]", "",
      [](const Args& x) {
@@ -1765,13 +1918,14 @@ constexpr std::array<Command, 16> kCommands{{
          return run_eac3_sine(x.str(1), x.u32(2, 5), x.u32(3, 192), x.u32(4, 1000),
                               x.u32(5, 50), x.str(6, "stereo"), x.meta);
      }},
-    {"eac3-encode", 3, "<in.wav> <out.ec3> [bitrate_kbps] [tools]", "",
+    {"eac3-encode", 3, "<in.wav> <out.ec3> [bitrate_kbps] [tools] [layout]", "",
      [](const Args& x) {
-         return run_eac3_encode(x.str(1), x.str(2), x.u32(3, 192), x.str(4, "none"));
+         return run_eac3_encode(x.str(1), x.str(2), x.u32(3, 192), x.str(4, "none"), x.str(5),
+                                x.meta);
      }},
     {"decode", 3, "<in.ac3|in.ec3> <out.wav>", "AC-3 or E-AC-3; bsid decides",
      [](const Args& x) { return run_decode(x.str(1), x.str(2), x.meta); }},
-    {"levels", 2, "<in.wav|in.ac3>", "per-channel peak/RMS report",
+    {"levels", 2, "<in.wav|in.ac3|in.ec3>", "per-channel peak/RMS report",
      [](const Args& x) { return run_levels(x.str(1)); }},
     {"loudness", 2, "<in.wav>", "BS.1770-4 loudness -> dialnorm",
      [](const Args& x) { return run_loudness(x.str(1)); }},
@@ -1783,6 +1937,14 @@ constexpr std::array<Command, 16> kCommands{{
      [](const Args&) { return run_devices(); }},
     {"outputs", 1, "", "render endpoints + AC-3 passthrough support",
      [](const Args&) { return run_outputs(); }},
+    // Lost when this table replaced the if-chain: run_play survived, its row
+    // did not, so a documented command answered "unknown command" and the
+    // compiler saw only an unused function. Exactly the drift the table exists
+    // to stop, which is why it is one row here rather than a branch anywhere.
+    // A negative index means the default endpoint, which is what 'outputs'
+    // marks and what a caller who has not chosen one wants.
+    {"play", 2, "<in.ac3> [device_index]", "stream to a receiver over IEC 61937",
+     [](const Args& x) { return run_play(x.str(1), x.i32(2, -1)); }},
 }};
 
 void print_usage() {
@@ -1792,32 +1954,53 @@ void print_usage() {
     for (const auto& c : kCommands) {
         std::string line = std::format("  ac3cli {:<13}{}", c.name, c.spec);
         if (!c.note.empty()) {
-            line = std::format("{:<62}({})", line, c.note);
+            // Wide enough for the longest spec above, so a note never runs
+            // straight into the arguments it belongs to.
+            line = std::format("{:<66}({})", line, c.note);
         }
         std::println("{}", line);
     }
     std::println("");
     std::println("");
-    std::println("tools:  Annex E coding tools, '+'-joined — none | cpl | spx | aht | all;");
+    std::println("tools:  Annex E coding tools, '+'-joined — {}", plan::kToolsSyntax);
     std::println("        cpl:N / spx:N pin that tool's band edge (e.g. cpl:4+spx:5);");
     std::println("        aht:N pins the GAQ mode — aht:0 is AHT with GAQ switched off;");
     std::println("        atten:N pins the SPX notch depth, noatten removes it");
-    std::println("atmos: objects orbit the room at different heights and rates,");
-    std::println("       encoded as a 5.1 E-AC-3 bed with JOC + OAMD side data");
-    std::println("       (TS 103 420). FFmpeg reports \"Dolby Digital Plus + Dolby Atmos\".");
     std::println("");
-    std::println("layout: stereo (default) | 51 — 5.1 uses per-channel tones;");
-    std::println("        append 'c' (stereoc, 51c) to enable channel coupling");
-    std::println("        (L 1000, C 800, R 1200, SL 600, SR 1400, LFE 60 Hz)");
+    std::println("layout: {}", plan::layout_names(plan::Codec::kEac3));
+    std::println("        AC-3 carries only {} — everything wider needs the dependent",
+                 plan::layout_names(plan::Codec::kAc3));
+    std::println("        substreams that only E-AC-3 has.");
+    for (const auto& info : plan::kLayouts) {
+        if (info.transmitted == info.rendered) {
+            continue;
+        }
+        // Where the two differ, say so: a dependent that REPLACES a bed
+        // channel spends coded channels a listener never counts.
+        std::println("        {} renders {} speakers from {} coded channels", info.name,
+                     info.rendered, info.transmitted);
+    }
+    std::println("        For 'sine' and 'eac3-sine' each speaker gets its own tone");
+    std::println("        (L 1000, C 800, R 1200, Ls 600, Rs 1400, LFE 60 Hz); append 'c'");
+    std::println("        to a 'sine' layout (stereoc, 51c) to enable channel coupling.");
+    std::println("        For 'encode' and 'eac3-encode' it names the OUTPUT layout: a");
+    std::println("        source narrower than it leaves the channels it lacks silent, and");
+    std::println("        a wider one folds down per §7.8 using cmixlev/surmixlev.");
+    std::println("");
+    std::println("atmos: objects orbit the room at different heights and rates;");
+    std::println("       atmos-encode makes each channel of a real file an object instead.");
+    std::println("       Both emit a 5.1 E-AC-3 bed with JOC + OAMD side data (TS 103 420).");
+    std::println("       FFmpeg reports \"Dolby Digital Plus + Dolby Atmos\".");
     std::println("");
     std::println("mkv wraps an AC-3 or E-AC-3 elementary stream in Matroska, taking the");
     std::println("format, packet boundaries, sample rate and channel count from the bitstream");
     std::println("itself — so it cannot be told the wrong ones. E-AC-3 dependent substreams");
     std::println("are grouped into their access unit and counted as the channels they render.");
     std::println("");
-    std::println("encode takes 1 to 6 channel WAVs and picks the acmod to match: 1 -> 1/0,");
-    std::println("2 -> 2/0, 3 -> 3/0, 4 -> 2/2, 5 -> 3/2, 6 -> 3/2 + LFE. Commands that");
-    std::println("carry PCM report per-channel levels when they finish; 'record' meters live.");
+    std::println("Without a layout, encode and eac3-encode follow the source: 1 -> mono,");
+    std::println("2 -> stereo, 3 to 6 -> 5.1, 8 -> 7.1, 10 -> 5.1.4, 12 -> 7.1.4. Commands");
+    std::println("that carry PCM report per-channel levels when they finish; 'record' meters");
+    std::println("live. 'couple' turns on channel coupling wherever a command encodes.");
     print_meta_usage();
     std::println("");
     std::println("For decode, drc=<scale> applies §7.7.1 partial compression (0 = ignore,");

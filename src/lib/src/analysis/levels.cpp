@@ -112,11 +112,16 @@ double ChannelSummary::rms_db() const { return to_dbfs(rms()); }
 
 LevelMeter::LevelMeter(Acmod acmod, bool lfe, std::uint32_t sample_rate,
                        const MeterBallistics& ballistics)
+    : LevelMeter(acmod, lfe, sample_rate, analysis::channel_count(acmod, lfe), ballistics) {}
+
+LevelMeter::LevelMeter(Acmod acmod, bool lfe, std::uint32_t sample_rate, int channels,
+                       const MeterBallistics& ballistics)
     : acmod_(acmod),
       lfe_(lfe),
       sample_rate_(sample_rate == 0 ? 48000u : sample_rate),
       ballistics_(ballistics),
-      levels_(static_cast<std::size_t>(analysis::channel_count(acmod, lfe))),
+      levels_(static_cast<std::size_t>(
+          std::max(channels, analysis::channel_count(acmod, lfe)))),
       summary_(levels_.size()),
       mean_square_(levels_.size(), 0.0),
       hold_elapsed_(levels_.size(), 0.0) {}

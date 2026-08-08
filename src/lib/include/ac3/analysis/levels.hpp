@@ -99,6 +99,20 @@ public:
     LevelMeter(Acmod acmod, bool lfe, std::uint32_t sample_rate,
                const MeterBallistics& ballistics = {});
 
+    // Meters `channels` channels instead of the acmod's own count, for a
+    // layout no acmod can name: E-AC-3's dependent substreams add speakers the
+    // coding mode has no word for, and a 7.1.4 access unit carries fourteen
+    // coded channels against a coding mode that tops out at six.
+    //
+    // The acmod still names and places the first channel_count(acmod, lfe) of
+    // them - those are the bed, in Table 5.8 order, and they are what the
+    // soundfield ring is computed from. The rest are metered but contribute no
+    // direction, which is also what channel_azimuth_deg says about them.
+    // `channels` below the acmod's own count is raised to it rather than
+    // truncating a layout the caller has already committed to.
+    LevelMeter(Acmod acmod, bool lfe, std::uint32_t sample_rate, int channels,
+               const MeterBallistics& ballistics = {});
+
     // Planar, one span per channel in A/52 order. The shortest span sets the
     // length; channels beyond the ones supplied are metered as silence, so a
     // caller that hands over fewer spans sees the rest fall away rather than

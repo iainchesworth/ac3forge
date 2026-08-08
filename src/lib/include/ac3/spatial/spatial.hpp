@@ -45,6 +45,21 @@ using PanGains = std::array<double, kBedChannels>;
 // any value; normalized internally) onto the 5.1 ring.
 [[nodiscard]] PanGains pan_azimuth(double azimuth_deg);
 
+// The same pan onto an ARBITRARY horizontal ring, which is what any layout
+// wider than 5.1 needs: 7.1 puts its side surrounds at 90° and its rears at
+// 150°, so a source at 110° belongs to a different pair there than it does on
+// the 5.1 ring. `ring_azimuth_deg` may be in any order and any range; `gains`
+// takes one entry per ring member and is OVERWRITTEN, with Sum(g^2) == 1 for a
+// non-empty ring.
+//
+// Two speakers more than 180° apart leave an arc no pair can enclose - the
+// hole behind a front-only pair being the obvious case, where the VBAP system
+// is singular and both gains solve negative. Across such an arc this
+// crossfades at constant power instead, which agrees with the pairwise
+// solution at both edges and never drops the source into silence.
+void pan_ring(double azimuth_deg, std::span<const double> ring_azimuth_deg,
+              std::span<double> gains);
+
 // The same pan, addressed by a room-anchored position instead of an angle:
 // x runs 0 at the left wall to 1 at the right and y 0 at the front wall to 1
 // at the back, which is TS 103 420 §4.2.1's system. A source at the exact

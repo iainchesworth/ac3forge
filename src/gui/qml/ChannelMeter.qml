@@ -18,6 +18,10 @@ RowLayout {
     readonly property bool directional: level.directional === true
     readonly property real peakDb: level.peakDb !== undefined ? level.peakDb : -120
     readonly property bool clipped: level.clipped === true
+    // A channel the routing puts nothing into. It reads -inf for a legitimate
+    // reason — the source has nothing that belongs there — which is worth
+    // telling apart from a channel that should be carrying audio and is not.
+    readonly property bool fed: level.fed !== false
 
     // Green until the last few decibels, where a mastering engineer starts
     // paying attention, then amber, then red once a sample has actually hit
@@ -29,11 +33,17 @@ RowLayout {
     spacing: 8
 
     Text {
-        Layout.preferredWidth: 30
+        // Wide enough for the longest coded-channel name: a bed channel a
+        // dependent substream replaces is marked "Ls (bed)", because a 7.1
+        // display would otherwise show "Ls" twice with different levels and
+        // no way to tell which reading belonged to which.
+        Layout.preferredWidth: 58
         text: root.channelName
         color: root.directional ? Theme.text : Theme.textMuted
+        opacity: root.fed ? 1.0 : 0.45
         font.pixelSize: Theme.fontSmall
         font.bold: true
+        elide: Text.ElideLeft
         horizontalAlignment: Text.AlignRight
     }
 
@@ -45,6 +55,7 @@ RowLayout {
         color: Theme.surfaceAlt
         border.color: Theme.border
         border.width: 1
+        opacity: root.fed ? 1.0 : 0.45
         clip: true
 
         readonly property real inner: width - 2
