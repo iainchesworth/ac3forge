@@ -107,9 +107,10 @@ orbiting the room at different heights and rates, and ffprobe reports
 `eac3 (Dolby Digital Plus + Dolby Atmos), 48000 Hz, 5.1(side)` — the same shape real DD+
 Atmos files probe as. There are no extra coded channels: the objects are panned into a 5.1
 bed that any decoder plays unchanged, and beside it ride two payloads in an EMDF container
-(ETSI TS 102 366 Annex H) tucked into the frame's aux field — **OAMD** saying where each
+(ETSI TS 102 366 Annex H) tucked into a block skip field — **OAMD** saying where each
 object is, and **JOC** saying how to pull them back out as a per-band matrix over the five
-downmix channels. This is also why discrete 7.1.4 was a dead end: real 7.1.4 is JOC over a
+downmix channels. (Dolby's own DD+ JOC streams carry the container in a skip field with
+`auxdatae` clear, not in the aux field; ours match, checked against their reference content.) This is also why discrete 7.1.4 was a dead end: real 7.1.4 is JOC over a
 5.1 bed, not twelve channels, and no shipping profile allows the two dependent substreams
 the discrete layout would need.
 
@@ -124,12 +125,22 @@ different heights, say — cannot be separated by any linear combination of the 
 solve splits their energy by power instead. `ac3gui` exposes the same thing: a switch, a
 plan view of the room to drag the objects around, and a height slider.
 
-> **What is not verified:** object *reconstruction* has no local oracle. FFmpeg detects
-> Atmos (it reads `flag_ec3_extension_type_a` in `addbsi`) but does not implement JOC, so
-> nothing here decodes the objects back. What is checked is the maths — §6.6.6 applied per
-> band recovers each object to better than −20 dB, and the same for leakage between them —
-> the bitstream syntax against an independent from-spec parser, and the bed itself decoding
-> correctly through FFmpeg.
+The syntax was checked field-for-field against Dolby's own tooling — the Reference Player
+and the Dolby Media Encoder — used as oracles. That diffing fixed several real bugs (the
+skip-field carriage above; `codecdatae=0`; a dynamic-object-only program with the LFE as an
+object but not a JOC output; metadata flag arrays transmitted index-0-first) and left our
+frame headers and container matching Dolby's byte-for-byte on the fields that matter.
+
+> **The one thing our objects will *not* do:** decode as objects in Dolby's decoder.
+> Reverse-engineering established why, and it is not a bug in this encoder. DD+ JOC gates
+> object decoding on a keyed, sequence-bound MAC (HMAC-SHA-256) in the EMDF `protection`
+> field — which the standard leaves "implementation dependent and not defined" — whose key
+> is a secret embedded in every decoder binary. Our stream is spec-correct (FFmpeg validates
+> it, the bed decodes bit-exactly, Dolby's own parser flags `atmos=true`); it simply isn't
+> *signed* with Dolby's key, so the decoder falls back to the 5.1 bed. The gate is
+> authenticity, not conformance. What *is* verified about reconstruction is the maths —
+> §6.6.6 applied per band recovers each object to better than −20 dB, and the same for
+> leakage between them.
 
 **You can see what every channel is carrying.** `ac3/analysis/` meters audio the way a
 console does — peak with an instant attack and a 20 dB/s fallback, a 1.2 s hold marker, RMS
