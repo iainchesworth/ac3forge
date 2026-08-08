@@ -1730,7 +1730,7 @@ struct Command {
     int (*run)(const Args&);
 };
 
-constexpr std::array<Command, 16> kCommands{{
+constexpr std::array<Command, 17> kCommands{{
     {"silence", 2, "<out.ac3> [seconds] [bitrate_kbps]", "",
      [](const Args& x) { return run_silence(x.str(1), x.u32(2, 5), x.u32(3, 192)); }},
     {"sine", 2, "<out.ac3> [seconds] [bitrate_kbps] [freq_hz] [amp_pct] [layout]", "",
@@ -1783,6 +1783,10 @@ constexpr std::array<Command, 16> kCommands{{
      [](const Args&) { return run_devices(); }},
     {"outputs", 1, "", "render endpoints + AC-3 passthrough support",
      [](const Args&) { return run_outputs(); }},
+    {"play", 2, "<in.ac3> [device_index]", "exclusive-mode IEC 61937 passthrough",
+     // -1, not 0: run_play reads a negative index as "the default endpoint",
+     // where 0 names the first one 'outputs' lists and demands passthrough of it.
+     [](const Args& x) { return run_play(x.str(1), x.i32(2, -1)); }},
 }};
 
 void print_usage() {
