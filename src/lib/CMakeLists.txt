@@ -28,6 +28,7 @@ target_sources(ac3forge
         src/encoder/coupling.cpp
         src/encoder/eac3_frame.cpp
         src/encoder/encoder.cpp
+        src/io/elementary.cpp
         src/io/wav.cpp
         src/sinks/iec61937.cpp
         src/spatial/spatial.cpp)
