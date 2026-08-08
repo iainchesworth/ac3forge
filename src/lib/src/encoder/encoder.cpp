@@ -815,7 +815,8 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     // §5.3.3 ordering: each fbw channel's mantissas, with the coupling
     // channel's inserted right after the FIRST coupled channel, then the LFE.
     std::array<std::vector<MantissaToken>, kBlocksPerFrame> block_tokens;
-    std::size_t token_bits_total = 0;
+    // maybe_unused: only the assert below reads this, and NDEBUG removes it.
+    [[maybe_unused]] std::size_t token_bits_total = 0;
     for (int block = 0; block < kBlocksPerFrame; ++block) {
         MantissaBlockWriter writer;
         const auto emit_stream = [&](int s) {
