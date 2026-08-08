@@ -21,7 +21,7 @@
 // run the normative decode (§7.1.3) and use THOSE exponents — not its raw
 // ones — for mantissa normalization and bit allocation, or the decoder's
 // independently computed allocation silently diverges. decode_exponents here
-// is that normative §7.1.3 algorithm, shared with the future in-repo decoder.
+// is that normative §7.1.3 algorithm, shared with the in-repo decoder.
 
 namespace ac3 {
 

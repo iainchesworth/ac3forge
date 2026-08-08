@@ -53,11 +53,11 @@ program material, FFmpeg as neutral referee): **ours 41.2/44.0/45.1/51.1 dB vs F
 rematrix-active program material (max diff 1.1e-5).
 
 **Milestones 8–9 complete: sounds move in space, and the stream is receiver-ready.**
-The spatial layer (`src/spatial/`) places mono objects on the ITU 5.1 ring via
+The spatial layer (`src/lib/src/spatial/`) places mono objects on the ITU 5.1 ring via
 energy-normalized 2D VBAP with per-block gain ramps and explicit LFE sends; `ac3cli orbit`
 renders a tone circling the listener straight into 5.1 AC-3 (an end-to-end test parks the
 object at each speaker and proves the decoded energy follows it: C → L → SL → SR → R).
-The IEC 61937 packer (`src/sinks/`) wraps frames into S/PDIF bursts **byte-exact against
+The IEC 61937 packer (`src/lib/src/sinks/`) wraps frames into S/PDIF bursts **byte-exact against
 FFmpeg's spdif muxer**, and `ac3cli spdif` emits them as a PCM16 WAV — played bit-exactly
 through a passthrough output, a receiver locks on and lights its Dolby Digital indicator.
 
@@ -84,14 +84,15 @@ PCM, so an unavailable device tells you **why**: "cannot bitstream" (analog outp
 > path itself is proven — the Realtek endpoint accepts our exclusive PCM format — but the
 > IEC 61937 descriptor awaits a receiver to confirm positively.
 
-**Channel coupling encodes.** Above the coupling frequency the full-bandwidth channels stop
+**Channel coupling encodes and decodes.** Above the coupling frequency the full-bandwidth channels stop
 carrying their own coefficients and share one coupling channel plus per-band coordinates —
 the tool that makes 5.1 viable well below 448 kbit/s. `ac3cli sine … 51c` or
 `ac3cli encode … couple` turns it on. FFmpeg strict-decodes coupled 5.1, and a targeted
 probe confirms the envelope really is preserved: a channel carrying a 12 kHz tone stays
 113 dB above a silent one in that band, while the region below the coupling frequency is
-bit-for-bit untouched. The in-repo decoder does not read coupling yet and refuses such
-streams cleanly rather than producing wrong audio.
+bit-for-bit untouched. The in-repo decoder reads coupling too — strategy, banded
+coordinates, phase flags and leak parameters — so coupled streams round-trip in process
+without FFmpeg in the loop.
 
 **E-AC-3 framing works.** `ac3cli eac3-silence` emits bsid-16 (Dolby Digital Plus) frames
 that FFmpeg identifies as `eac3` and strict-decodes with zero errors, in stereo and 5.1
@@ -156,6 +157,7 @@ Configure with `-DAC3FORGE_BUILD_GUI=OFF` to build without Qt.
 cmake/          FindQt6.cmake (prebuilt-Qt discovery), CompilerWarnings.cmake
 src/lib/        ac3::forge — the whole codec, GUI-free
   include/ac3/  public headers: core/ encoder/ decoder/ spatial/ analysis/ sinks/ io/
+                capture/
   src/          implementation
 src/cli/        ac3cli — command-line front end
 src/gui/        ac3gui — Qt6 Quick front end (QML module "Ac3Forge")

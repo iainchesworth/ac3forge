@@ -11,9 +11,11 @@
 // it is validated against an independent Python transcription of the spec
 // pseudocode (tools/bitalloc_ref.py) with zero tolerance.
 //
-// Scope: the fbw-channel path (start = 0, no coupling, no LFE, no delta bit
-// allocation) — what the current encoder emits. Coupling/LFE paths extend
-// this same engine later.
+// Scope: fbw, LFE and coupling channels — the coupling channel enters higher
+// up the spectrum and seeds its leak state from cplfleak/cplsleak instead of
+// running lowcomp (§7.2.2.4), which BitAllocRegion below selects. Delta bit
+// allocation (§7.2.2.6) is the one path not implemented; neither the encoder
+// emits it nor the decoder accepts it.
 
 namespace ac3 {
 
