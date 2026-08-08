@@ -11,8 +11,10 @@
 #include "ac3/encoder/silent_frame.hpp"  // FrameError, SkipPlan/plan_padding
 
 // The AC-3 encoder: any audio coding mode (mono through 3/2) plus optional
-// LFE, long blocks, no coupling, D15 exponents in block 0 reused across the
-// frame, static bit-allocation parameters (A/52 §8.2.12 basic-encoder
+// LFE, long blocks, optional channel coupling, 2/0 rematrixing, adaptive
+// D15/D25/D45 exponents re-sent mid-frame when a channel's exponents drift
+// (§8.2.8; the coupling channel is always D15, the LFE one D15 set per
+// frame), static bit-allocation parameters (A/52 §8.2.12 basic-encoder
 // defaults), global SNR-offset search to fill the frame.
 //
 // CBR at 44.1 kHz needs non-integral frame sizes: a Bresenham accumulator
