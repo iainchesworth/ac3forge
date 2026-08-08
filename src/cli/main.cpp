@@ -153,55 +153,92 @@ int run_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_t bit
 // Layouts wider than 5.1 need a dependent substream: the independent one
 // always carries a self-sufficient 5.1 bed, and the extra channels ride along
 // beside it with a chanmap saying where they belong.
-ac3::eac3::AccessUnitConfig eac3_layout(std::string_view layout, std::uint32_t bitrate,
-                                        std::vector<double>& tone_hz) {
+struct Eac3Layout {
     ac3::eac3::AccessUnitConfig config;
-    config.independent.bitrate_kbps = bitrate;
-    if (layout == "stereo") {
-        tone_hz = {1000.0, 1000.0};
-        return config;
+    std::vector<double> tones;  // one per encoder input channel, in coded order
+};
+
+constexpr std::string_view kEac3Layouts = "stereo | 51 | 71 | 512 | 514 | 714";
+
+std::optional<Eac3Layout> eac3_layout(std::string_view name, std::uint32_t bitrate) {
+    Eac3Layout out;
+    out.config.independent.bitrate_kbps = bitrate;
+    if (name == "stereo") {
+        out.tones = {1000.0, 1000.0};
+        return out;
     }
-    config.independent.acmod = ac3::Acmod::k3_2;
-    config.independent.lfe = true;
-    tone_hz = {1000.0, 800.0, 1200.0, 600.0, 1400.0, 60.0};  // L C R Ls Rs LFE
-    if (layout == "51") {
-        return config;
+    out.config.independent.acmod = ac3::Acmod::k3_2;
+    out.config.independent.lfe = true;
+    out.tones = {1000.0, 800.0, 1200.0, 600.0, 1400.0, 60.0};  // L C R Ls Rs LFE
+    if (name == "51") {
+        return out;
     }
-    // A dependent substream gets its own slice of the rate, not a share of the
-    // independent's - they occupy one frame period, not one frame.
-    ac3::eac3::FrameConfig dep{.bitrate_kbps = bitrate / 2};
-    if (layout == "71") {
-        // The spec's own worked example: acmod 2/2 with bits 3, 4 and 6 set,
-        // so Ls and Rs REPLACE the bed's surrounds and Lrs/Rrs are new.
-        dep.acmod = ac3::Acmod::k2_2;
-        dep.chanmap = ac3::eac3::chanmap::k71Rear;
-        // Deliberately NOT the bed's 600/1400 for the two surrounds. The
-        // dependent's Ls/Rs are supposed to overwrite the bed's, and identical
-        // tones could not tell that happening apart from it being ignored.
-        tone_hz.insert(tone_hz.end(), {500.0, 1600.0, 400.0, 1800.0});
-    } else {  // "512" - a 5.1 bed with two height channels above it
-        dep.acmod = ac3::Acmod::k2_0;
-        dep.chanmap = ac3::eac3::chanmap::k512Height;
-        tone_hz.insert(tone_hz.end(), {2000.0, 2400.0});
+    // A dependent gets its own slice of the rate rather than a share of the
+    // independent's - substreams occupy one frame period, not one frame.
+    const std::uint32_t dep_kbps = bitrate / 2;
+    // The spec's own worked example: acmod 2/2 with bits 3, 4 and 6, so Ls and
+    // Rs REPLACE the bed's surrounds and Lrs/Rrs are new. The replacement
+    // tones are deliberately not the bed's 600/1400 - identical ones could not
+    // tell the overwrite happening apart from the dependent being ignored.
+    const ac3::eac3::FrameConfig rear{.bitrate_kbps = dep_kbps,
+                                      .acmod = ac3::Acmod::k2_2,
+                                      .chanmap = ac3::eac3::chanmap::k71Rear};
+    if (name == "71") {
+        out.config.dependents.push_back(rear);
+        out.tones.insert(out.tones.end(), {500.0, 1600.0, 400.0, 1800.0});
+        return out;
     }
-    config.dependents.push_back(dep);
-    return config;
+    if (name == "512") {  // a 5.1 bed with two height channels above it
+        out.config.dependents.push_back({.bitrate_kbps = dep_kbps,
+                                         .acmod = ac3::Acmod::k2_0,
+                                         .chanmap = ac3::eac3::chanmap::k512Height});
+        out.tones.insert(out.tones.end(), {2000.0, 2400.0});
+        return out;
+    }
+    const ac3::eac3::FrameConfig top{.bitrate_kbps = dep_kbps,
+                                     .acmod = ac3::Acmod::k2_2,
+                                     .chanmap = ac3::eac3::chanmap::kTopQuad};
+    if (name == "514") {
+        // Four new channels, so this is the widest immersive layout a SINGLE
+        // dependent can carry - see the channel-budget note beside kTopQuad.
+        out.config.dependents.push_back(top);
+        out.tones.insert(out.tones.end(), {2000.0, 2400.0, 2800.0, 3200.0});
+        return out;
+    }
+    if (name == "714") {
+        // Six new channels, one more than a dependent can hold, so this needs
+        // two: the 7.1 rear pair, then the ceiling quad.
+        //
+        // Spec-correct and rejected by FFmpeg, which refuses any frame with
+        // substreamid != 0 in ff_ac3_parse_header - it implements the TS 102
+        // 366 Annex J profile, where a stream "shall" hold at most one
+        // dependent, numbered 0. Every real delivery path caps it there and
+        // ships 7.1.4 as Atmos objects instead, so this layout has no oracle.
+        out.config.dependents.push_back(rear);
+        out.config.dependents.push_back(top);
+        out.tones.insert(out.tones.end(),
+                         {500.0, 1600.0, 400.0, 1800.0, 2000.0, 2400.0, 2800.0, 3200.0});
+        return out;
+    }
+    return std::nullopt;
 }
 
 int run_eac3_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_t bitrate,
                   std::uint32_t freq_hz, std::uint32_t amplitude_pct,
                   std::string_view layout) {
-    std::vector<double> tone_hz;
-    const auto config = eac3_layout(layout, bitrate, tone_hz);
+    auto chosen = eac3_layout(layout, bitrate);
+    if (!chosen) {
+        std::println(stderr, "error: unknown layout '{}' ({})", layout, kEac3Layouts);
+        return 1;
+    }
+    const auto& config = chosen->config;
+    auto tone_hz = chosen->tones;
     if (layout == "stereo") {
         tone_hz = {static_cast<double>(freq_hz), static_cast<double>(freq_hz)};
     }
     ac3::eac3::AccessUnitEncoder encoder{config};
     const auto nchans = static_cast<std::size_t>(encoder.channel_count());
-    if (nchans != tone_hz.size()) {
-        std::println(stderr, "error: unknown layout '{}' (stereo | 51 | 71 | 512)", layout);
-        return 1;
-    }
+    assert(nchans == tone_hz.size());
     const double amplitude = amplitude_pct / 100.0;
 
     const std::uint64_t count = (static_cast<std::uint64_t>(seconds) * 48000 + 1535) / 1536;
@@ -694,25 +731,26 @@ int main(int argc, char** argv) {
     if (command == "eac3-silence") {
         const auto seconds = args.size() > 3 ? parse_u32_or(args[3], 5) : 5;
         const auto bitrate = args.size() > 4 ? parse_u32_or(args[4], 192) : 192;
-        const bool surround = args.size() > 5 && std::string_view{args[5]} == "51";
-        ac3::eac3::FrameConfig config{.bitrate_kbps = bitrate};
-        if (surround) {
-            config.acmod = ac3::Acmod::k3_2;
-            config.lfe = true;
+        const std::string_view layout = args.size() > 5 ? args[5] : "stereo";
+        const auto chosen = eac3_layout(layout, bitrate);
+        if (!chosen) {
+            std::println(stderr, "error: unknown layout '{}' ({})", layout, kEac3Layouts);
+            return 1;
         }
-        const auto frame = ac3::eac3::build_silent_frame(config);
-        if (!frame) {
+        const auto unit = ac3::eac3::build_silent_access_unit(chosen->config);
+        if (!unit) {
             std::println(stderr, "error: invalid E-AC-3 configuration");
             return 1;
         }
         const std::uint64_t count = (static_cast<std::uint64_t>(seconds) * 48000 + 1535) / 1536;
         const std::vector<std::vector<std::byte>> frames(static_cast<std::size_t>(count),
-                                                         *frame);
+                                                         unit->bytes);
         if (!write_frames(args[2], frames)) {
             return 1;
         }
-        std::println("wrote {} E-AC-3 frames ({} bytes each, bsid 16) to {}", count,
-                     frame->size(), args[2]);
+        std::println("wrote {} silent E-AC-3 {} access units ({} substreams, "
+                     "{} bytes each, bsid 16) to {}",
+                     count, layout, unit->substream_count(), unit->bytes.size(), args[2]);
         return 0;
     }
     if (command == "eac3-sine") {

@@ -86,10 +86,22 @@ inline constexpr std::uint16_t kPairs =
 inline constexpr std::uint16_t k71Rear = kLeftSurround | kRightSurround | kLrsRrs;
 // 5.1.2: two height channels supplementing an untouched 5.1 bed.
 inline constexpr std::uint16_t k512Height = kVhlVhr;
+// Four ceiling channels - front and rear height. Both are PAIR locations, so
+// two bits account for four channels.
+inline constexpr std::uint16_t kTopQuad = kVhlVhr | kLtsRts;
 
 static_assert(k71Rear == 0x1A00, "Table E2.5 bit 0 must be the MSB");
 static_assert(channel_count(k71Rear) == 4);
 static_assert(channel_count(k512Height) == 2);
+static_assert(channel_count(kTopQuad) == 4);
+
+// A substream codes at most 3/2 plus LFE (Table 5.8), so ONE dependent adds at
+// most five full-bandwidth channels. chanmap does not lift that: §E2.3.1.8
+// requires the locations it names to equal the coded channel count, so a pair
+// bit spends two coded channels rather than conjuring one. Hence 5.1.4 needs
+// four new channels and fits a single dependent, while 7.1.4 needs six and
+// cannot - it is the reason kTopQuad rides beside k71Rear in a second
+// dependent rather than merging into one.
 
 }  // namespace chanmap
 
