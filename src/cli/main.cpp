@@ -23,6 +23,7 @@
 #include "ac3/encoder/eac3_frame.hpp"
 #include "ac3/encoder/encoder.hpp"
 #include "ac3/encoder/silent_frame.hpp"
+#include "ac3/io/elementary.hpp"
 #include "ac3/io/wav.hpp"
 #include "ac3/sinks/iec61937.hpp"
 #include "ac3/sinks/passthrough.hpp"
@@ -48,7 +49,7 @@ void print_usage() {
     std::println("  ac3cli decode  <in.ac3> <out.wav>");
     std::println("  ac3cli levels  <in.wav|in.ac3>     (per-channel peak/RMS report)");
     std::println("  ac3cli spdif   <in.ac3> <out.wav>   (IEC 61937 wrap as playable PCM16 WAV)");
-    std::println("  ac3cli eac3-mkv <in.ec3> <out.mkv> [bitrate_kbps] [layout]");
+    std::println("  ac3cli mkv     <in.ac3|in.ec3> <out.mkv>  (wrap as a playable Matroska file)");
     std::println("  ac3cli outputs                      (render endpoints + AC-3 passthrough support)");
     std::println("  ac3cli play    <in.ac3> [device_index]  (exclusive-mode IEC 61937 passthrough)");
     std::println("");
@@ -56,10 +57,10 @@ void print_usage() {
     std::println("        append 'c' (stereoc, 51c) to enable channel coupling");
     std::println("        (L 1000, C 800, R 1200, SL 600, SR 1400, LFE 60 Hz)");
     std::println("");
-    std::println("eac3-mkv wraps an E-AC-3 elementary stream in Matroska. Packet boundaries");
-    std::println("come from the bitstream, but the track header's rate and channel count come");
-    std::println("from [layout] ({}) and [bitrate_kbps], so those", kEac3Layouts);
-    std::println("must match the stream being wrapped.");
+    std::println("mkv wraps an AC-3 or E-AC-3 elementary stream in Matroska, taking the");
+    std::println("format, packet boundaries, sample rate and channel count from the bitstream");
+    std::println("itself — so it cannot be told the wrong ones. E-AC-3 dependent substreams");
+    std::println("are grouped into their access unit and counted as the channels they render.");
     std::println("");
     std::println("encode takes 1 to 6 channel WAVs and picks the acmod to match: 1 -> 1/0,");
     std::println("2 -> 2/0, 3 -> 3/0, 4 -> 2/2, 5 -> 3/2, 6 -> 3/2 + LFE. Commands that");
@@ -321,80 +322,34 @@ std::optional<Eac3Layout> eac3_layout(std::string_view name, std::uint32_t bitra
     return std::nullopt;
 }
 
-// Channels a layout RENDERS, which is not the channel count the encoder is
-// fed: a dependent substream's channels may overwrite the bed's rather than
-// add to it, so 7.1 codes ten and renders eight.
-int rendered_channels(const ac3::eac3::AccessUnitConfig& config) {
-    // Start from the bed's own locations, then union in each dependent's map.
-    const int bed = ac3::fullbw_channel_count(config.independent.acmod) +
-                    (config.independent.lfe ? 1 : 0);
-    std::uint16_t extra = 0;
-    for (const auto& dep : config.dependents) {
-        if (dep.chanmap) {
-            extra = static_cast<std::uint16_t>(extra | *dep.chanmap);
-        }
-    }
-    // The bed already covers L/C/R/Ls/Rs/LFE, so only locations outside it add
-    // to the count.
-    constexpr std::uint16_t kBedLocations =
-        ac3::eac3::chanmap::kLeft | ac3::eac3::chanmap::kCentre |
-        ac3::eac3::chanmap::kRight | ac3::eac3::chanmap::kLeftSurround |
-        ac3::eac3::chanmap::kRightSurround | ac3::eac3::chanmap::kLfe;
-    return bed + ac3::eac3::chanmap::channel_count(
-                     static_cast<std::uint16_t>(extra & ~kBedLocations));
-}
-
-int run_eac3_mkv(std::string_view ec3_path, std::string_view out_path,
-                 std::uint32_t bitrate, std::string_view layout) {
-    const auto chosen = eac3_layout(layout, bitrate);
-    if (!chosen) {
-        std::println(stderr, "error: unknown layout '{}' ({})", layout, kEac3Layouts);
+int run_mkv(std::string_view in_path, std::string_view out_path) {
+    const auto raw = read_all(in_path);
+    if (raw.empty()) {
+        std::println(stderr, "error: cannot open {}", in_path);
         return 1;
     }
-    std::ifstream in{std::string{ec3_path}, std::ios::binary};
-    if (!in) {
-        std::println(stderr, "error: cannot open {}", ec3_path);
+    // Everything the container needs to declare comes out of the bitstream:
+    // the format, the access-unit boundaries, the sample rate and the channel
+    // count. This used to take a layout argument to learn the channel count,
+    // which meant a wrong one silently produced a file that misdescribed
+    // itself - and nothing could catch it.
+    const auto scanned = ac3::io::scan(raw);
+    if (!scanned) {
+        std::println(stderr, "error: {}", ac3::io::describe(scanned.error()));
         return 1;
     }
-    const std::vector<char> raw{std::istreambuf_iterator<char>{in},
-                                std::istreambuf_iterator<char>{}};
+    const bool eac3 = scanned->kind == ac3::io::StreamKind::kEac3;
 
-    // Split the elementary stream back into access units. A new one begins at
-    // each independent substream (strmtyp 0), and every syncframe declares its
-    // own length in frmsiz - so the container's packet boundaries come from
-    // the bitstream itself rather than from anything we remembered.
     std::vector<std::vector<std::byte>> units;
-    std::size_t offset = 0;
-    while (offset + 4 <= raw.size()) {
-        const auto byte = [&](std::size_t i) {
-            return static_cast<std::uint8_t>(raw[offset + i]);
-        };
-        if (byte(0) != 0x0B || byte(1) != 0x77) {
-            std::println(stderr, "error: lost sync at byte {}", offset);
-            return 1;
-        }
-        const int strmtyp = byte(2) >> 6;
-        const std::size_t size =
-            ((static_cast<std::size_t>(byte(2) & 0x07) << 8 | byte(3)) + 1) * 2;
-        if (offset + size > raw.size()) {
-            break;  // a truncated tail frame is not an access unit
-        }
-        if (strmtyp == 0 || units.empty()) {
-            units.emplace_back();
-        }
-        const auto* start = reinterpret_cast<const std::byte*>(raw.data() + offset);
-        units.back().insert(units.back().end(), start, start + size);
-        offset += size;
-    }
-    if (units.empty()) {
-        std::println(stderr, "error: no access units in {}", ec3_path);
-        return 1;
+    units.reserve(scanned->access_units.size());
+    for (const auto unit : scanned->access_units) {
+        units.emplace_back(unit.begin(), unit.end());
     }
 
     const matroska::AudioTrack track{
-        .codec_id = std::string{matroska::kCodecEac3},
-        .sample_rate = ac3::sample_rate_hz(chosen->config.independent.sample_rate),
-        .channels = rendered_channels(chosen->config),
+        .codec_id = std::string{eac3 ? matroska::kCodecEac3 : matroska::kCodecAc3},
+        .sample_rate = ac3::sample_rate_hz(scanned->sample_rate),
+        .channels = scanned->channels,
         .samples_per_frame = ac3::kSamplesPerFrame};
     const auto file = matroska::mux(track, units);
     if (!file) {
@@ -412,8 +367,16 @@ int run_eac3_mkv(std::string_view ec3_path, std::string_view out_path,
         std::println(stderr, "error: write failed");
         return 1;
     }
-    std::println("wrote {} access units ({} channels, {} bytes) to {}", units.size(),
-                 track.channels, file->size(), out_path);
+    // Name the layout only when one substream carries the whole thing. With
+    // dependents the acmod describes the BED, so printing it beside a wider
+    // rendered channel count would just contradict itself.
+    const std::string shape =
+        scanned->substreams_per_unit > 1
+            ? std::format("{} substreams", scanned->substreams_per_unit)
+            : std::string{ac3::analysis::layout_name(scanned->acmod, scanned->lfe)};
+    std::println("wrote {} {} access units ({}, {} channels, {} bytes) to {}",
+                 units.size(), eac3 ? "E-AC-3" : "AC-3", shape, track.channels,
+                 file->size(), out_path);
     return 0;
 }
 
@@ -1062,10 +1025,8 @@ int main(int argc, char** argv) {
                      count, layout, unit->substream_count(), unit->bytes.size(), args[2]);
         return 0;
     }
-    if (command == "eac3-mkv" && args.size() > 3) {
-        return run_eac3_mkv(args[2], args[3],
-                            args.size() > 4 ? parse_u32_or(args[4], 448) : 448,
-                            args.size() > 5 ? std::string_view{args[5]} : "51");
+    if (command == "mkv" && args.size() > 3) {
+        return run_mkv(args[2], args[3]);
     }
     if (command == "eac3-sine") {
         return run_eac3_sine(args[2], args.size() > 3 ? parse_u32_or(args[3], 5) : 5,
