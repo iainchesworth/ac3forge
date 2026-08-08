@@ -32,6 +32,9 @@ add_compile_options("$<$<CXX_COMPILER_ID:MSVC>:/utf-8>")
 option(AC3FORGE_BUILD_CLI "Build the ac3cli command-line application" ON)
 option(AC3FORGE_BUILD_GUI "Build the Qt6 Quick GUI application" ON)
 option(AC3FORGE_BUILD_TESTS "Build the unit test suite" ON)
+# Catch2 is the only build-time dependency. Turn this off to insist it comes
+# from a package manager instead of the network (see tests/CMakeLists.txt).
+option(AC3FORGE_FETCH_CATCH2 "Download Catch2 when no local copy is found" ON)
 
 # ---------------------------------------------------------------------------
 # Targets
