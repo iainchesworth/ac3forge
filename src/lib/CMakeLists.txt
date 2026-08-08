@@ -32,6 +32,7 @@ target_sources(ac3forge
         src/encoder/encoder.cpp
         src/io/elementary.cpp
         src/io/wav.cpp
+        src/oba/atmos.cpp
         src/oba/joc.cpp
         src/oba/oamd.cpp
         src/sinks/iec61937.cpp

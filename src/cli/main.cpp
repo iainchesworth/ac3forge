@@ -25,6 +25,7 @@
 #include "ac3/encoder/silent_frame.hpp"
 #include "ac3/io/elementary.hpp"
 #include "ac3/io/wav.hpp"
+#include "ac3/oba/atmos.hpp"
 #include "ac3/sinks/iec61937.hpp"
 #include "ac3/sinks/passthrough.hpp"
 #include "ac3/spatial/spatial.hpp"
@@ -43,6 +44,7 @@ void print_usage() {
     std::println("  ac3cli silence <out.ac3> [seconds] [bitrate_kbps]");
     std::println("  ac3cli sine    <out.ac3> [seconds] [bitrate_kbps] [freq_hz] [amp_pct] [layout]");
     std::println("  ac3cli orbit   <out.ac3> [seconds] [bitrate_kbps] [orbit_seconds]");
+    std::println("  ac3cli atmos   <out.ec3> [seconds] [bitrate_kbps] [objects] [orbit_seconds]");
     std::println("  ac3cli devices");
     std::println("  ac3cli record  <out.ac3> [seconds] [bitrate_kbps] [device_index]");
     std::println("  ac3cli encode  <in.wav> <out.ac3> [bitrate_kbps] [couple]");
@@ -52,6 +54,10 @@ void print_usage() {
     std::println("  ac3cli mkv     <in.ac3|in.ec3> <out.mkv>  (wrap as a playable Matroska file)");
     std::println("  ac3cli outputs                      (render endpoints + AC-3 passthrough support)");
     std::println("  ac3cli play    <in.ac3> [device_index]  (exclusive-mode IEC 61937 passthrough)");
+    std::println("");
+    std::println("atmos: objects orbit the room at different heights and rates,");
+    std::println("       encoded as a 5.1 E-AC-3 bed with JOC + OAMD side data");
+    std::println("       (TS 103 420). FFmpeg reports \"Dolby Digital Plus + Dolby Atmos\".");
     std::println("");
     std::println("layout: stereo (default) | 51 — 5.1 uses per-channel tones;");
     std::println("        append 'c' (stereoc, 51c) to enable channel coupling");
@@ -428,6 +434,94 @@ int run_eac3_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_
     }
     std::println("wrote {} E-AC-3 {} access units ({} channels, {} substreams, bsid 16) to {}",
                  count, layout, nchans, config.dependents.size() + 1, out_path);
+    return 0;
+}
+
+// Objects moving in three dimensions, out as one 5.1 E-AC-3 stream carrying
+// JOC and OAMD. Each object orbits at its own rate and sits at its own height,
+// so no two of them share a direction for long - which is the condition under
+// which JOC can actually pull them apart again. Heights are what makes this
+// worth doing at all: a 5.1 bed cannot carry them, and the object metadata can.
+int run_atmos(std::string_view out_path, std::uint32_t seconds, std::uint32_t bitrate,
+              std::uint32_t objects, std::uint32_t orbit_seconds) {
+    if (objects < 1 || objects > 15) {
+        std::println(stderr, "error: 1 to 15 objects (the bed's LFE is the 16th, "
+                             "and TS 103 420 §8.3.2.2 caps the total at 16)");
+        return 1;
+    }
+    const auto count = static_cast<std::size_t>(objects);
+    ac3::oba::AtmosEncoder encoder{
+        {.bitrate_kbps = bitrate, .num_bands_idx = 4}, static_cast<int>(objects)};
+
+    // Distinct tones so the objects are separable in the first place, and a
+    // reader with an object renderer can tell which one ended up where.
+    std::vector<double> tone_hz(count);
+    std::vector<double> rate(count);
+    std::vector<double> phase(count);
+    std::vector<double> height(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        tone_hz[i] = 220.0 * std::pow(2.0, static_cast<double>(i) * 0.45);
+        // Rates that are not simple ratios of each other, so the objects do
+        // not lock into formation and stay separable.
+        rate[i] = 1.0 / (static_cast<double>(orbit_seconds) * (1.0 + 0.31 * static_cast<double>(i)));
+        // Spread around the ring to begin with, or a short clip would show
+        // them all bunched in the same quadrant - and objects that share a
+        // direction are exactly the ones JOC cannot separate.
+        phase[i] = 2.0 * std::numbers::pi * static_cast<double>(i) /
+                   static_cast<double>(count);
+        height[i] = count == 1 ? 0.5
+                               : -1.0 + 2.0 * static_cast<double>(i) /
+                                            static_cast<double>(count - 1);
+    }
+
+    const std::uint64_t frames = (static_cast<std::uint64_t>(seconds) * 48000 + 1535) / 1536;
+    std::vector<std::vector<float>> essences(count,
+                                             std::vector<float>(ac3::kSamplesPerFrame));
+    std::vector<std::span<const float>> views(count);
+    std::vector<ac3::oba::ObjectPlacement> placement(count);
+    std::vector<std::vector<std::byte>> out;
+    out.reserve(static_cast<std::size_t>(frames));
+
+    std::uint64_t n0 = 0;
+    for (std::uint64_t f = 0; f < frames; ++f) {
+        // The placement is the object's position at the END of the frame,
+        // because that is where both metadata layers interpolate to: OAMD's
+        // ramp and the JOC matrix both finish there.
+        const double t = static_cast<double>(n0 + ac3::kSamplesPerFrame) / 48000.0;
+        for (std::size_t i = 0; i < count; ++i) {
+            const double angle = 2.0 * std::numbers::pi * rate[i] * t + phase[i];
+            placement[i] = {.position = {.x = 0.5 + 0.5 * std::sin(angle),
+                                         .y = 0.5 - 0.5 * std::cos(angle),
+                                         .z = height[i]},
+                            .gain = 0.7 / std::sqrt(static_cast<double>(count)),
+                            // Only the lowest object feeds the LFE, and only a
+                            // little: it is the one channel JOC never touches.
+                            .lfe_send = i == 0 ? 0.2 : 0.0};
+            for (int n = 0; n < ac3::kSamplesPerFrame; ++n) {
+                essences[i][static_cast<std::size_t>(n)] = static_cast<float>(
+                    std::sin(2.0 * std::numbers::pi * tone_hz[i] *
+                             static_cast<double>(n0 + static_cast<std::uint64_t>(n)) / 48000.0));
+            }
+            views[i] = essences[i];
+        }
+        n0 += ac3::kSamplesPerFrame;
+
+        auto unit = encoder.encode_frame(views, placement);
+        if (!unit) {
+            std::println(stderr,
+                         "error: cannot encode {} objects at {} kbps — the metadata and "
+                         "the mantissas share one frame, so try a higher bit rate",
+                         objects, bitrate);
+            return 1;
+        }
+        out.push_back(std::move(unit->bytes));
+    }
+    if (!write_frames(out_path, out)) {
+        return 1;
+    }
+    std::println("wrote {} E-AC-3 access units to {}", frames, out_path);
+    std::println("  {} dynamic objects + the bed's LFE = {} objects, JOC over a 5.1 downmix",
+                 objects, ac3::oba::object_count(encoder.program()));
     return 0;
 }
 
@@ -1041,6 +1135,12 @@ int main(int argc, char** argv) {
                         args.size() > 5 ? parse_u32_or(args[5], 1000) : 1000,
                         args.size() > 6 ? parse_u32_or(args[6], 50) : 50,
                         args.size() > 7 ? std::string_view{args[7]} : "stereo");
+    }
+    if (command == "atmos") {
+        return run_atmos(args[2], args.size() > 3 ? parse_u32_or(args[3], 8) : 8,
+                         args.size() > 4 ? parse_u32_or(args[4], 448) : 448,
+                         args.size() > 5 ? parse_u32_or(args[5], 4) : 4,
+                         args.size() > 6 ? parse_u32_or(args[6], 6) : 6);
     }
     if (command == "orbit") {
         return run_orbit(args[2], args.size() > 3 ? parse_u32_or(args[3], 8) : 8,
