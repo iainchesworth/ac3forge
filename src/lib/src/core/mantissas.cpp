@@ -125,4 +125,35 @@ std::size_t mantissa_bits_per_block(
     return direct + 5 * ((count1 + 2) / 3) + 7 * ((count2 + 2) / 3) + 7 * ((count4 + 1) / 2);
 }
 
+std::uint32_t MantissaBlockReader::read_group(Cache& cache, BitReader& reader, int bits,
+                                              std::uint32_t radix, int members) {
+    if (cache.remaining == 0) {
+        const std::uint32_t group = reader.read(bits);
+        if (members == 3) {
+            cache.values = {(group % (radix * radix)) / radix, group % radix};
+            cache.remaining = 2;
+            return group / (radix * radix);
+        }
+        cache.values = {group % radix, 0};
+        cache.remaining = 1;
+        return group / radix;
+    }
+    // values holds the members after the first, oldest first.
+    const std::uint32_t next = cache.values[static_cast<std::size_t>(
+        members == 3 ? 2 - cache.remaining : 1 - cache.remaining)];
+    --cache.remaining;
+    return next;
+}
+
+std::uint32_t MantissaBlockReader::read(BitReader& reader, int bap) {
+    // §7.3.5: 3-level codes pack three to a 5-bit word, 5-level three to a
+    // 7-bit word, 11-level two to a 7-bit word. Everything else is direct.
+    switch (bap) {
+        case 1: return read_group(bap1_, reader, 5, 3, 3);
+        case 2: return read_group(bap2_, reader, 7, 5, 3);
+        case 4: return read_group(bap4_, reader, 7, 11, 2);
+        default: return reader.read(kBapBits[static_cast<std::size_t>(bap)]);
+    }
+}
+
 }  // namespace ac3

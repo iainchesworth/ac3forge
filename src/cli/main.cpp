@@ -46,7 +46,7 @@ void print_usage() {
     std::println("  ac3cli devices");
     std::println("  ac3cli record  <out.ac3> [seconds] [bitrate_kbps] [device_index]");
     std::println("  ac3cli encode  <in.wav> <out.ac3> [bitrate_kbps] [couple]");
-    std::println("  ac3cli decode  <in.ac3> <out.wav>");
+    std::println("  ac3cli decode  <in.ac3|in.ec3> <out.wav>   (AC-3 or E-AC-3; bsid decides)");
     std::println("  ac3cli levels  <in.wav|in.ac3>     (per-channel peak/RMS report)");
     std::println("  ac3cli spdif   <in.ac3> <out.wav>   (IEC 61937 wrap as playable PCM16 WAV)");
     std::println("  ac3cli mkv     <in.ac3|in.ec3> <out.mkv>  (wrap as a playable Matroska file)");
@@ -728,14 +728,130 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
     return 0;
 }
 
+// AC-3 channel order -> standard WAV order for the supported layouts.
+std::vector<std::size_t> wav_channel_map(ac3::Acmod acmod, bool lfe) {
+    if (acmod == ac3::Acmod::k3_2 && lfe) {
+        return {0, 2, 1, 5, 3, 4};  // FL FR FC LFE BL BR <- L C R SL SR LFE
+    }
+    std::vector<std::size_t> identity(
+        static_cast<std::size_t>(ac3::fullbw_channel_count(acmod)) + (lfe ? 1 : 0));
+    for (std::size_t i = 0; i < identity.size(); ++i) {
+        identity[i] = i;
+    }
+    return identity;
+}
+
+// Standard WAVEFORMATEXTENSIBLE speaker order, as far as Table E2.5 and it
+// overlap. Three of E-AC-3's locations (Lw/Rw, Lsd/Rsd, LFE2) have no slot in
+// that order at all; they follow in bitstream order rather than being dropped.
+constexpr std::array<ac3::eac3::chanmap::Location, 17> kWavSpeakerOrder = {
+    ac3::eac3::chanmap::Location::kLeft,           // FL
+    ac3::eac3::chanmap::Location::kRight,          // FR
+    ac3::eac3::chanmap::Location::kCentre,         // FC
+    ac3::eac3::chanmap::Location::kLfe,            // LFE
+    ac3::eac3::chanmap::Location::kLrs,            // BL
+    ac3::eac3::chanmap::Location::kRrs,            // BR
+    ac3::eac3::chanmap::Location::kLc,             // FLC
+    ac3::eac3::chanmap::Location::kRc,             // FRC
+    ac3::eac3::chanmap::Location::kCs,             // BC
+    ac3::eac3::chanmap::Location::kLeftSurround,   // SL
+    ac3::eac3::chanmap::Location::kRightSurround,  // SR
+    ac3::eac3::chanmap::Location::kTs,             // TC
+    ac3::eac3::chanmap::Location::kVhl,            // TFL
+    ac3::eac3::chanmap::Location::kVhc,            // TFC
+    ac3::eac3::chanmap::Location::kVhr,            // TFR
+    ac3::eac3::chanmap::Location::kLts,            // TBL
+    ac3::eac3::chanmap::Location::kRts,            // TBR
+};
+
+// Rendered layout -> WAV order, as source indices per output position. A 5.1
+// bed comes out {0, 2, 1, 5, 3, 4}, the same permutation the AC-3 path uses.
+std::vector<std::size_t> wav_channel_map(const ac3::eac3::chanmap::Layout& layout) {
+    std::vector<std::size_t> map;
+    std::vector<bool> placed(static_cast<std::size_t>(layout.count), false);
+    for (const auto speaker : kWavSpeakerOrder) {
+        const int index = layout.index_of(speaker);
+        if (index >= 0) {
+            map.push_back(static_cast<std::size_t>(index));
+            placed[static_cast<std::size_t>(index)] = true;
+        }
+    }
+    for (int i = 0; i < layout.count; ++i) {
+        if (!placed[static_cast<std::size_t>(i)]) {
+            map.push_back(static_cast<std::size_t>(i));
+        }
+    }
+    return map;
+}
+
+int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path) {
+    // Access units, not syncframes: a dependent substream is only meaningful
+    // alongside the independent one it extends, and the two are rendered
+    // together into one set of speaker feeds.
+    const auto units = ac3::split_access_units(stream);
+    if (!units) {
+        std::println(stderr, "error: stream framing failed (code {})",
+                     static_cast<int>(units.error()));
+        return 1;
+    }
+    ac3::Eac3Decoder decoder;
+    std::vector<std::vector<float>> pcm;
+    ac3::DecodedAccessUnit first{};
+    for (const auto& unit : *units) {
+        const auto decoded = decoder.decode_access_unit(unit);
+        if (!decoded) {
+            std::println(stderr, "error: decode failed (code {})",
+                         static_cast<int>(decoded.error()));
+            return 1;
+        }
+        if (pcm.empty()) {
+            first = *decoded;
+            pcm.resize(decoded->channels.size());
+        }
+        for (std::size_t ch = 0; ch < decoded->channels.size(); ++ch) {
+            pcm[ch].insert(pcm[ch].end(), decoded->channels[ch].begin(),
+                           decoded->channels[ch].end());
+        }
+    }
+    if (pcm.empty()) {
+        std::println(stderr, "error: no access units");
+        return 1;
+    }
+    const auto map = wav_channel_map(first.layout);
+    const auto written = ac3::io::write_wav_f32(std::string{out_path}, pcm,
+                                                sample_rate_hz(first.sample_rate), map);
+    if (!written) {
+        std::println(stderr, "error: {}", ac3::io::describe(written.error()));
+        return 1;
+    }
+    std::string speakers;
+    for (const auto index : map) {
+        speakers += ac3::eac3::chanmap::name(first.layout[static_cast<int>(index)]);
+        speakers += ' ';
+    }
+    std::println("decoded {} E-AC-3 access units ({} substreams each) -> {}", units->size(),
+                 first.substream_count, out_path);
+    std::println("  {} channels, {} Hz: {}", map.size(), sample_rate_hz(first.sample_rate),
+                 speakers);
+    return 0;
+}
+
 int run_decode(std::string_view in_path, std::string_view out_path) {
     const auto stream = read_all(in_path);
     if (stream.empty()) {
         std::println(stderr, "error: cannot read {}", in_path);
         return 1;
     }
-    if (reject_non_ac3_syntax(stream, in_path, kDecoderLimit)) {
+    // bsid at bit 40 says which syntax this is, before either is assumed.
+    // decode no longer has an AC-3-only wall to turn E-AC-3 away at; spdif and
+    // play still do, which is why kDecoderLimit's counterpart survives.
+    const auto bsid = ac3::stream_bsid(stream);
+    if (!bsid) {
+        std::println(stderr, "error: {} is too short to hold a syncframe", in_path);
         return 1;
+    }
+    if (*bsid > 8) {
+        return run_decode_eac3(stream, out_path);
     }
     const auto frames = ac3::split_frames(stream);
     if (!frames) {

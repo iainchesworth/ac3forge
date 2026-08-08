@@ -298,6 +298,13 @@ std::expected<void, FrameError> validate(const FrameConfig& config) {
     if (config.substreamid < 0 || config.substreamid > 7) {
         return std::unexpected(FrameError::kInvalidSubstream);
     }
+    // strmtyp 0x2 needs the blkid/frmsizecod branch of Table E1.2 that emit_frame
+    // does not write, and 0x3 is reserved. Both would produce a frame whose
+    // header promises fields the payload does not contain.
+    if (config.strmtyp != StreamType::kIndependent &&
+        config.strmtyp != StreamType::kDependent) {
+        return std::unexpected(FrameError::kInvalidSubstream);
+    }
     // Only a dependent substream carries a channel map, and §E2.3.1.8 requires
     // the locations it names to add up to exactly the channels acmod and lfeon
     // code. Disagreement is not a parse failure - the decoder simply puts
