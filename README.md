@@ -93,8 +93,16 @@ probe confirms the envelope really is preserved: a channel carrying a 12 kHz ton
 bit-for-bit untouched. The in-repo decoder does not read coupling yet and refuses such
 streams cleanly rather than producing wrong audio.
 
+**E-AC-3 framing works.** `ac3cli eac3-silence` emits bsid-16 (Dolby Digital Plus) frames
+that FFmpeg identifies as `eac3` and strict-decodes with zero errors, in stereo and 5.1
+across every tested bit rate. E-AC-3 is a different container, not an AC-3 variant: no
+crc1, an arbitrary 11-bit `frmsiz` instead of a size table (so the 44.1 kHz padding
+alternation disappears), and exponent strategies for all six blocks hoisted into a
+frame-level `audfrm`. Currently silence-only — carrying real audio means routing the
+existing encoder's coefficients through this container.
+
 See [docs/RESEARCH.md](docs/RESEARCH.md) for the research summary, architecture, and
-roadmap (remaining: decoder-side coupling, E-AC-3).
+roadmap.
 
 ## Ground rules
 

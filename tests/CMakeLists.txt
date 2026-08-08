@@ -11,6 +11,7 @@ add_executable(ac3tests
     test_coupling.cpp
     test_crc16.cpp
     test_decoder.cpp
+    test_eac3.cpp
     test_encoder.cpp
     test_exponents.cpp
     test_frame.cpp

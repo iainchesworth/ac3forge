@@ -26,6 +26,7 @@ target_sources(ac3forge
         src/core/mdct.cpp
         src/decoder/decoder.cpp
         src/encoder/coupling.cpp
+        src/encoder/eac3_frame.cpp
         src/encoder/encoder.cpp
         src/io/wav.cpp
         src/sinks/iec61937.cpp

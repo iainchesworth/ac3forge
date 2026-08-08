@@ -15,6 +15,7 @@
 
 #include "ac3/capture/capture.hpp"
 #include "ac3/decoder/decoder.hpp"
+#include "ac3/encoder/eac3_frame.hpp"
 #include "ac3/encoder/encoder.hpp"
 #include "ac3/encoder/silent_frame.hpp"
 #include "ac3/io/wav.hpp"
@@ -598,6 +599,30 @@ int main(int argc, char** argv) {
     if (command == "silence") {
         return run_silence(args[2], args.size() > 3 ? parse_u32_or(args[3], 5) : 5,
                            args.size() > 4 ? parse_u32_or(args[4], 192) : 192);
+    }
+    if (command == "eac3-silence") {
+        const auto seconds = args.size() > 3 ? parse_u32_or(args[3], 5) : 5;
+        const auto bitrate = args.size() > 4 ? parse_u32_or(args[4], 192) : 192;
+        const bool surround = args.size() > 5 && std::string_view{args[5]} == "51";
+        ac3::eac3::FrameConfig config{.bitrate_kbps = bitrate};
+        if (surround) {
+            config.acmod = ac3::Acmod::k3_2;
+            config.lfe = true;
+        }
+        const auto frame = ac3::eac3::build_silent_frame(config);
+        if (!frame) {
+            std::println(stderr, "error: invalid E-AC-3 configuration");
+            return 1;
+        }
+        const std::uint64_t count = (static_cast<std::uint64_t>(seconds) * 48000 + 1535) / 1536;
+        const std::vector<std::vector<std::byte>> frames(static_cast<std::size_t>(count),
+                                                         *frame);
+        if (!write_frames(args[2], frames)) {
+            return 1;
+        }
+        std::println("wrote {} E-AC-3 frames ({} bytes each, bsid 16) to {}", count,
+                     frame->size(), args[2]);
+        return 0;
     }
     if (command == "sine") {
         return run_sine(args[2], args.size() > 3 ? parse_u32_or(args[3], 5) : 5,
