@@ -6,7 +6,6 @@
 find_package(Catch2 3 CONFIG REQUIRED)
 
 add_executable(ac3tests
-    msvc_crt_report.cpp
     test_analysis.cpp
     test_atmos.cpp
     test_bitalloc.cpp
@@ -29,6 +28,20 @@ add_executable(ac3tests
     test_ring_buffer.cpp
     test_spatial.cpp
     test_tables.cpp)
+
+# ---------------------------------------------------------------------------
+# Toolchain hook: keep a failing assert from opening a modal dialog that hangs
+# a headless CTest run. Each directory holds the same filenames; CMake selects
+# the one for the target, which is why no source file here needs an #ifdef.
+# The axis is the CRT, not the OS - <crtdbg.h> ships with the MSVC runtime, so
+# clang-cl needs the hook and MinGW does not - so this branches on MSVC (true
+# for clang-cl too) rather than on WIN32.
+# ---------------------------------------------------------------------------
+if(MSVC)
+    target_sources(ac3tests PRIVATE platform/msvc/crt_report.cpp)
+else()
+    target_sources(ac3tests PRIVATE platform/stub/crt_report.cpp)
+endif()
 
 target_include_directories(ac3tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 

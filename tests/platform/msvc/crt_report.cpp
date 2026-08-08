@@ -2,7 +2,12 @@
 // which hangs headless test runs until the CTest timeout (observed: a failed
 // assert cost 6 minutes of wall clock instead of failing instantly). Route
 // all CRT reports to stderr and make abort() terminate immediately.
-#ifdef _MSC_VER
+//
+// Every toolchain ships the same filename under platform/<toolchain>/; CMake
+// compiles the directory that matches the target, so there is no #ifdef here.
+// The axis is the CRT rather than the OS: <crtdbg.h> and the _Crt* reporting
+// controls come with the MSVC runtime, so clang-cl gets this file too and a
+// MinGW build gets the no-op in platform/stub/.
 
 #include <crtdbg.h>
 #include <cstdlib>
@@ -25,5 +30,3 @@ struct CrtReportToStderr {
 const CrtReportToStderr kInstall;
 
 }  // namespace
-
-#endif
