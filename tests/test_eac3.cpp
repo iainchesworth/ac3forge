@@ -1,9 +1,13 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <numbers>
 #include <span>
+#include <vector>
 
+#include "ac3/core/bitreader.hpp"
 #include "ac3/core/crc16.hpp"
 #include "ac3/encoder/eac3_frame.hpp"
 
@@ -78,6 +82,112 @@ TEST_CASE("E-AC-3 layouts and rates produce correctly sized frames", "[eac3]") {
             }
         }
     }
+}
+
+namespace {
+
+// The frame SNR offsets, read straight out of a stereo frame: sync(16) +
+// bsi(38) + the eleven audfrm flags(12) + cplinu/cplstre(6, acmod > 1) +
+// frmchexpstr(2x5) + convexpstr(2x5) lands exactly on frmcsnroffst.
+int frame_snr_offset(std::span<const std::byte> frame) {
+    ac3::BitReader reader{frame};
+    reader.skip(16 + 38 + 12 + 6 + 10 + 10);
+    const auto csnroffst = reader.read(6);
+    const auto fsnroffst = reader.read(4);
+    return static_cast<int>((csnroffst << 4) | fsnroffst);
+}
+
+// A frame of 1 kHz at half scale in both channels.
+std::vector<std::vector<float>> tone_frame(int channels, std::uint64_t start) {
+    std::vector<std::vector<float>> pcm(
+        static_cast<std::size_t>(channels),
+        std::vector<float>(static_cast<std::size_t>(ac3::kSamplesPerFrame)));
+    for (auto& channel : pcm) {
+        for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+            const auto n = static_cast<double>(start + static_cast<std::uint64_t>(i));
+            channel[static_cast<std::size_t>(i)] =
+                static_cast<float>(0.5 * std::sin(2.0 * std::numbers::pi * 1000.0 * n / 48000.0));
+        }
+    }
+    return pcm;
+}
+
+}  // namespace
+
+TEST_CASE("E-AC-3 bamode 0 takes the Annex E allocation defaults", "[eac3]") {
+    // Table E1.4's else-branch fixes floorcod at 0x7. The §8.2.12 basic
+    // -encoder recommendation - what BitAllocCodes defaults to, and what the
+    // AC-3 encoder rightly uses - is 4. floorcod sets the masking floor, so
+    // the wrong one makes the encoder believe almost nothing costs bits: the
+    // SNR search then saturates at the maximum offset and sizes the frame for
+    // an allocation the decoder will not reproduce, leaving every block after
+    // the first at the wrong bit offset.
+    //
+    // Silence cannot catch this. Zero SNR offsets trip §7.2.2.1.1, which
+    // zeroes the allocation before floorcod is ever consulted, so the frame
+    // decodes perfectly either way. Only real audio exercises it.
+    //
+    // Nor can the FIRST frame. Its analysis window is half MDCT history that
+    // does not exist yet, so it is a fade-in rather than the steady-state
+    // signal, and it happens not to saturate even with the wrong floorcod.
+    // The frame under test has to be one the encoder reaches in flight.
+    ac3::eac3::FrameEncoder encoder{{.bitrate_kbps = 192}};
+    std::uint64_t n = 0;
+    for (int f = 0; f < 3; ++f) {
+        auto pcm = tone_frame(2, n);
+        n += ac3::kSamplesPerFrame;
+        const std::vector<std::span<const float>> views{pcm[0], pcm[1]};
+        const auto frame = encoder.encode_frame(views);
+        REQUIRE(frame.has_value());
+        CHECK(frame->size() == 768);
+        CHECK(ac3::crc16(std::span{*frame}.subspan(2)) == 0x0000);
+        if (f == 0) {
+            continue;  // the fade-in frame proves nothing
+        }
+        // Saturating at 63/15 is the signature of an allocator that believes
+        // everything is free: the search ran out of offsets before it ran out
+        // of budget, so the frame is sized for an allocation no decoder will
+        // reproduce.
+        CHECK(frame_snr_offset(*frame) < 1023);
+    }
+}
+
+TEST_CASE("E-AC-3 real audio fills the frame it claims", "[eac3]") {
+    // The same check across the rate range, plus 5.1, since the allocation
+    // scales with both the budget and the channel count.
+    for (const int kbps : {192, 384, 640}) {
+        ac3::eac3::FrameEncoder encoder{{.bitrate_kbps = static_cast<std::uint32_t>(kbps)}};
+        std::uint64_t n = 0;
+        for (int f = 0; f < 3; ++f) {
+            auto pcm = tone_frame(2, n);
+            n += ac3::kSamplesPerFrame;
+            const std::vector<std::span<const float>> views{pcm[0], pcm[1]};
+            const auto frame = encoder.encode_frame(views);
+            REQUIRE(frame.has_value());
+            CHECK(frame->size() ==
+                  ac3::eac3::frame_words(ac3::SampleRate::k48000,
+                                         static_cast<std::uint32_t>(kbps)) *
+                      2);
+            CHECK(ac3::crc16(std::span{*frame}.subspan(2)) == 0x0000);
+            if (f > 0) {
+                CHECK(frame_snr_offset(*frame) < 1023);
+            }
+        }
+    }
+}
+
+TEST_CASE("E-AC-3 encodes every supported layout", "[eac3]") {
+    ac3::eac3::FrameEncoder encoder{
+        {.bitrate_kbps = 448, .acmod = ac3::Acmod::k3_2, .lfe = true}};
+    auto pcm = tone_frame(6, 0);
+    std::vector<std::span<const float>> views;
+    for (const auto& channel : pcm) {
+        views.emplace_back(channel);
+    }
+    const auto frame = encoder.encode_frame(views);
+    REQUIRE(frame.has_value());
+    CHECK(frame->size() == ac3::eac3::frame_words(ac3::SampleRate::k48000, 448) * 2);
+    CHECK(ac3::crc16(std::span{*frame}.subspan(2)) == 0x0000);
 }
 
 TEST_CASE("E-AC-3 rejects configurations it cannot express", "[eac3]") {

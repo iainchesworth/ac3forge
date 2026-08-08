@@ -15,6 +15,8 @@ inline constexpr std::uint16_t kSyncWord = 0x0B77;
 
 // A/52 §4.1: a syncframe carries 6 audio blocks of 256 samples per channel.
 inline constexpr int kBlocksPerFrame = 6;
+// §7.3.1: the LFE channel always codes exactly 7 mantissas.
+inline constexpr int kLfeEndmant = 7;
 inline constexpr int kSamplesPerBlock = 256;
 inline constexpr int kSamplesPerFrame = kBlocksPerFrame * kSamplesPerBlock;  // 1536
 

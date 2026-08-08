@@ -337,9 +337,15 @@ def parse_frame(data, verbose=True):
         total_mant_bits += 5 * ((counts[1] + 2) // 3)
         total_mant_bits += 7 * ((counts[2] + 2) // 3)
         total_mant_bits += 7 * ((counts[4] + 1) // 2)
+        log(f'  blk {blk}: side {side} bits, csnroffst={csnroffst} '
+            f'fsnroffst={fsnroffst[0]}, mantissas {total_mant_bits} bits '
+            f'-> ends at {r.pos + total_mant_bits}')
+        if r.pos + total_mant_bits > len(r.data) * 8:
+            raise SystemExit(
+                f'  OVERRUN: block {blk} wants {total_mant_bits} mantissa bits but only '
+                f'{len(r.data) * 8 - r.pos} remain in the frame. The encoder and an '
+                f'independent allocation disagree.')
         r.bits(total_mant_bits)
-        log(f'  blk {blk}: side {side} bits, mantissas {total_mant_bits} bits '
-            f'-> ends at {r.pos}')
 
     total_bits = (frmsiz + 1) * 16
     log(f'consumed {r.pos} of {total_bits} bits; {total_bits - r.pos} left for '

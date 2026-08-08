@@ -146,6 +146,60 @@ int run_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_t bit
     return 0;
 }
 
+// The same tone generator as run_sine, but through the E-AC-3 container.
+// Real audio is the only input that can detect a frame-layout error at all:
+// with silence every bap is zero, so a stray bit lands in zero-filled aux
+// data and the frame still "decodes".
+int run_eac3_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_t bitrate,
+                  std::uint32_t freq_hz, std::uint32_t amplitude_pct,
+                  std::string_view layout) {
+    const bool surround = layout == "51";
+    ac3::eac3::FrameConfig config{.bitrate_kbps = bitrate};
+    std::vector<double> tone_hz;
+    if (surround) {
+        config.acmod = ac3::Acmod::k3_2;
+        config.lfe = true;
+        tone_hz = {1000.0, 800.0, 1200.0, 600.0, 1400.0, 60.0};  // L C R SL SR LFE
+    } else {
+        tone_hz = {static_cast<double>(freq_hz), static_cast<double>(freq_hz)};
+    }
+    ac3::eac3::FrameEncoder encoder{config};
+    const auto nchans = static_cast<std::size_t>(encoder.channel_count());
+    const double amplitude = amplitude_pct / 100.0;
+
+    const std::uint64_t count = (static_cast<std::uint64_t>(seconds) * 48000 + 1535) / 1536;
+    std::vector<std::vector<float>> samples(nchans,
+                                            std::vector<float>(ac3::kSamplesPerFrame));
+    std::vector<std::span<const float>> views(nchans);
+    std::vector<std::vector<std::byte>> frames;
+    frames.reserve(static_cast<std::size_t>(count));
+    std::uint64_t n0 = 0;
+    for (std::uint64_t f = 0; f < count; ++f) {
+        for (std::size_t ch = 0; ch < nchans; ++ch) {
+            for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+                samples[ch][static_cast<std::size_t>(i)] = static_cast<float>(
+                    amplitude * std::sin(2.0 * std::numbers::pi * tone_hz[ch] *
+                                         static_cast<double>(n0 + static_cast<std::uint64_t>(i)) /
+                                         48000.0));
+            }
+            views[ch] = samples[ch];
+        }
+        n0 += ac3::kSamplesPerFrame;
+        auto frame = encoder.encode_frame(views);
+        if (!frame) {
+            std::println(stderr, "error: invalid E-AC-3 configuration");
+            return 1;
+        }
+        frames.push_back(std::move(*frame));
+    }
+    if (!write_frames(out_path, frames)) {
+        return 1;
+    }
+    std::println("wrote {} E-AC-3 {} frames ({} kbps, bsid 16) to {}", count,
+                 surround ? "5.1" : "stereo", bitrate, out_path);
+    return 0;
+}
+
 int run_orbit(std::string_view out_path, std::uint32_t seconds, std::uint32_t bitrate,
               std::uint32_t orbit_seconds) {
     ac3::spatial::BedRenderer renderer;
@@ -623,6 +677,13 @@ int main(int argc, char** argv) {
         std::println("wrote {} E-AC-3 frames ({} bytes each, bsid 16) to {}", count,
                      frame->size(), args[2]);
         return 0;
+    }
+    if (command == "eac3-sine") {
+        return run_eac3_sine(args[2], args.size() > 3 ? parse_u32_or(args[3], 5) : 5,
+                             args.size() > 4 ? parse_u32_or(args[4], 192) : 192,
+                             args.size() > 5 ? parse_u32_or(args[5], 1000) : 1000,
+                             args.size() > 6 ? parse_u32_or(args[6], 50) : 50,
+                             args.size() > 7 ? std::string_view{args[7]} : "stereo");
     }
     if (command == "sine") {
         return run_sine(args[2], args.size() > 3 ? parse_u32_or(args[3], 5) : 5,

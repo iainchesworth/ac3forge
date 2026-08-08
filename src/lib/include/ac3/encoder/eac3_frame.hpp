@@ -1,8 +1,10 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <span>
 #include <vector>
 
 #include "ac3/core/tables.hpp"
@@ -50,5 +52,30 @@ struct FrameConfig {
 
 [[nodiscard]] std::expected<std::vector<std::byte>, FrameError> build_silent_frame(
     const FrameConfig& config);
+
+// Real audio through the same container. The coding profile is deliberately
+// the one reference encoders use, because those are the paths reference
+// decoders are exercised on: frame-level exponent strategies (Table E2.10
+// code 0 - D15 in block 0, reused for the other five) and frame-level SNR
+// offsets. No coupling, no spectral extension, long blocks only.
+class FrameEncoder {
+public:
+    explicit FrameEncoder(const FrameConfig& config) : config_(config) {}
+
+    // channels: the full-bandwidth channels in AC-3 order (Table 5.8),
+    // followed by LFE last when config.lfe is set. Each span holds exactly
+    // kSamplesPerFrame samples, nominally in [-1, 1).
+    [[nodiscard]] std::expected<std::vector<std::byte>, FrameError> encode_frame(
+        std::span<const std::span<const float>> channels);
+
+    [[nodiscard]] const FrameConfig& config() const { return config_; }
+    [[nodiscard]] int channel_count() const {
+        return fullbw_channel_count(config_.acmod) + (config_.lfe ? 1 : 0);
+    }
+
+private:
+    FrameConfig config_;
+    std::array<std::array<double, 256>, 6> history_{};  // MDCT overlap per channel
+};
 
 }  // namespace ac3::eac3

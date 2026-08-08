@@ -16,7 +16,6 @@ namespace ac3 {
 
 namespace {
 
-constexpr int kLfeEndmant = 7;
 constexpr int kCmixlev = 1;    // -4.5 dB center downmix (Table 5.9)
 constexpr int kSurmixlev = 1;  // -6 dB surround downmix (Table 5.10)
 

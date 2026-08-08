@@ -15,7 +15,6 @@ namespace ac3 {
 
 namespace {
 
-constexpr int kLfeEndmant = 7;
 
 // Read-side §7.3.5 grouping state: the codeword arrives at the position of
 // the group's first member; later members consume nothing. State is shared
