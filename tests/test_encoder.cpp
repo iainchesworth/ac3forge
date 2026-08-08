@@ -39,7 +39,7 @@ std::expected<std::vector<std::byte>, ac3::FrameError> encode_same(
 // when those defaults move.
 constexpr int kProbeCplBegf = 6;
 constexpr int kProbeCplEndf = 12;
-constexpr int kProbeCplBands = ac3::coupling::sub_band_count(kProbeCplBegf, kProbeCplEndf);
+constexpr int kProbeCplSubBands = ac3::coupling::sub_band_count(kProbeCplBegf, kProbeCplEndf);
 // The bandwidth code whose last mantissa is the last coupled bin, so an
 // uncoupled frame can be compared with a coupled one over the same spectrum.
 constexpr int kProbeChbwcod = 48;
@@ -66,7 +66,7 @@ std::vector<std::vector<float>> wideband_frame(int channels, std::uint64_t start
     constexpr double kBinHz = 48000.0 / 512.0;
     std::vector<double> tones = {310.0, 1450.0, 5200.0, 8100.0};  // the baseband's share
     std::vector<double> tilt(tones.size(), 1.0);
-    for (int b = 0; b < kProbeCplBands; ++b) {
+    for (int b = 0; b < kProbeCplSubBands; ++b) {
         tones.push_back((ac3::coupling::start_mant(kProbeCplBegf) + 12 * b + 6) * kBinHz);
         // Real program rolls off across the coupled region, and a flat one
         // would hide the very thing coupling is judged on: what an encoder
@@ -129,6 +129,7 @@ struct BlockZero {
     int cplstrtmant = 0;                            // 0 when not coupling
     int cplendmant = 0;                             // 0 when not coupling
     int chbw_endmant = 0;                           // 0 when coupling
+    ac3::coupling::BandLayout bands{};              // as cplbndstrc describes it
     std::vector<int> master;                        // one per fbw channel
     std::vector<ac3::coupling::Coordinate> coords;  // [ch][bnd]
     int snroffst = 0;                               // (csnroffst << 4) | fsnroffst
@@ -159,11 +160,17 @@ BlockZero parse_block_zero(std::span<const std::byte> frame) {
         out.cplstrtmant = cplstrtmant;
         out.cplendmant = cplendmant;
         out.ncplsubnd = (cplendmant - cplstrtmant) / ac3::coupling::kBinsPerSubBand;
-        r.skip(static_cast<std::size_t>(out.ncplsubnd - 1));  // cplbndstrc
+        // cplbndstrc: a set bit joins that sub-band to the band before it, so
+        // the coordinate count is the number of CLEAR bits plus one.
+        std::array<bool, ac3::coupling::kSubBands> structure{};
+        for (int bnd = 1; bnd < out.ncplsubnd; ++bnd) {
+            structure[static_cast<std::size_t>(bnd)] = r.read(1) != 0;
+        }
+        out.bands = ac3::coupling::group_bands(cplbegf, out.ncplsubnd, structure);
         for (int ch = 0; ch < kNfchans; ++ch) {
             REQUIRE(r.read(1) == 1);  // cplcoe: block 0 always sends coordinates
             out.master.push_back(static_cast<int>(r.read(2)));
-            for (int bnd = 0; bnd < out.ncplsubnd; ++bnd) {
+            for (int bnd = 0; bnd < out.bands.count; ++bnd) {
                 const auto exp = static_cast<std::uint8_t>(r.read(4));
                 const auto mant = static_cast<std::uint8_t>(r.read(4));
                 out.coords.push_back({.exp = exp, .mant = mant});
@@ -376,6 +383,14 @@ TEST_CASE("the coupling band follows the bit rate", "[encoder][coupling]") {
         CHECK(coupled.ncplsubnd >= 1);
         previous_start = coupled.cplstrtmant;
 
+        // Every default region reaches above 11 kHz, so cplbndstrc always has
+        // something to join: a coordinate per sub-band up there is finer than
+        // the ear and costs 8 bits a band, three times a frame per channel.
+        CAPTURE(coupled.ncplsubnd, coupled.bands.count);
+        CHECK(coupled.bands.count < coupled.ncplsubnd);
+        CHECK(coupled.coords.size() ==
+              static_cast<std::size_t>(coupled.bands.count) * 2);
+
         // What the defaults are for: switching coupling on must never leave
         // the frame worse off than not coupling at all. The old fixed pair
         // failed this at 96 kbit/s, where it spent 9 sub-bands of coordinates
@@ -439,9 +454,9 @@ TEST_CASE("a coupling coordinate carries a ratio, not a level", "[encoder][coupl
         // than bit patterns only to leave room for that third of a bin.
         const auto steady = parse_block_zero(steady_state_frame(config, 2, 1.0));
         const auto pulsing = parse_block_zero(steady_state_frame(config, 2, 1.0, 0.6));
-        REQUIRE(steady.ncplsubnd > 0);
+        REQUIRE(steady.bands.count > 0);
         REQUIRE(steady.coords.size() == pulsing.coords.size());
-        const int bands = steady.ncplsubnd;
+        const int bands = steady.bands.count;
         for (std::size_t i = 0; i < steady.coords.size(); ++i) {
             const int ch = static_cast<int>(i) / bands;
             const double a = ac3::coupling::decode_coordinate(

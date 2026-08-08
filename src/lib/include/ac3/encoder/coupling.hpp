@@ -31,6 +31,28 @@ inline constexpr int kSubBands = 18;
     return 3 + cplendf - cplbegf;
 }
 
+// §5.4.3.13: consecutive sub-bands can be joined into one coupling BAND, and
+// a coordinate is sent per band rather than per sub-band. The join pattern is
+// cplbndstrc, one bit per sub-band after the first, and AC-3 always transmits
+// it - unlike Annex E, which also offers a default table.
+struct BandLayout {
+    int count = 0;                          // ncplbnd
+    std::array<int, kSubBands> start{};     // first bin of each band, absolute
+    std::array<int, kSubBands> size{};      // bins in each band
+};
+
+// structure[i] set merges sub-band i into the band before it; structure[0] is
+// never consulted, because the first sub-band always opens a band. Indices
+// count from the FIRST COUPLED sub-band, which is how cplbndstrc is numbered.
+[[nodiscard]] BandLayout group_bands(int cplbegf, int subbands, std::span<const bool> structure);
+
+// The structure this encoder asks for. A coordinate restores a band's level,
+// so a band wants to be about as wide as the ear's own resolution up there:
+// critical bandwidth is roughly 2 kHz at 10 kHz and 4 kHz at 15, against a
+// sub-band's 1125 Hz. The bands therefore widen with frequency, and how many
+// there are depends on where coupling starts as well as how far it runs.
+[[nodiscard]] std::array<bool, kSubBands> band_structure(int cplbegf, int subbands);
+
 // The transmitted form of one coupling coordinate (§7.4.3). The master is
 // per channel, shared by all of that channel's bands; exponent and mantissa
 // are per band.

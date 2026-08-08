@@ -150,6 +150,8 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     int cplstrtmant = 0;
     int cplendmant = 0;
     int ncplsubnd = 0;
+    std::array<bool, coupling::kSubBands> cplbndstrc{};
+    coupling::BandLayout cplbands{};
     if (cplinu) {
         cplendf = config_.cplendf >= 0 ? config_.cplendf
                                        : default_cplendf(chbw_endmant);
@@ -169,6 +171,8 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         cplstrtmant = coupling::start_mant(cplbegf);
         cplendmant = std::min(coupling::end_mant(cplendf), 253);
         ncplsubnd = (cplendmant - cplstrtmant) / coupling::kBinsPerSubBand;
+        cplbndstrc = coupling::band_structure(cplbegf, ncplsubnd);
+        cplbands = coupling::group_bands(cplbegf, ncplsubnd, cplbndstrc);
     }
 
     // Coupled channels stop at the coupling frequency instead.
@@ -238,17 +242,18 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     // Coordinates are sent in blocks 0, 2 and 4 and reused in between
     // (§8.2.4.1); the coupling channel itself is the plain average of the
     // coupled channels the spec's basic encoder describes (§7.4.1), with the
-    // decoder's x8 living entirely in the coordinates.
+    // decoder's x8 living entirely in the coordinates. One coordinate per
+    // BAND, which is one or more sub-bands joined by cplbndstrc.
     std::array<bool, kBlocksPerFrame> send_coords{};
     std::vector<int> master(static_cast<std::size_t>(kBlocksPerFrame) *
                             static_cast<std::size_t>(std::max(nfchans, 1)));
     std::vector<coupling::Coordinate> coords(
         static_cast<std::size_t>(kBlocksPerFrame) * static_cast<std::size_t>(std::max(nfchans, 1)) *
-        static_cast<std::size_t>(std::max(ncplsubnd, 1)));
+        static_cast<std::size_t>(std::max(cplbands.count, 1)));
     const auto coord_at = [&](int block, int ch, int bnd) -> coupling::Coordinate& {
         return coords[(static_cast<std::size_t>(block) * static_cast<std::size_t>(nfchans) +
                        static_cast<std::size_t>(ch)) *
-                          static_cast<std::size_t>(ncplsubnd) +
+                          static_cast<std::size_t>(cplbands.count) +
                       static_cast<std::size_t>(bnd)];
     };
     const auto master_at = [&](int block, int ch) -> int& {
@@ -257,7 +262,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     };
 
     if (cplinu) {
-        std::vector<double> values(static_cast<std::size_t>(ncplsubnd));
+        std::vector<double> values(static_cast<std::size_t>(cplbands.count));
 
         // The decoder computes
         //     channel = coupling * coordinate * 8,
@@ -308,9 +313,10 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
             }
 
             for (int ch = 0; ch < nfchans; ++ch) {
-                for (int bnd = 0; bnd < ncplsubnd; ++bnd) {
-                    const int low = cplstrtmant + bnd * coupling::kBinsPerSubBand;
-                    const int high = std::min(low + coupling::kBinsPerSubBand, cplendmant);
+                for (int bnd = 0; bnd < cplbands.count; ++bnd) {
+                    const int low = cplbands.start[static_cast<std::size_t>(bnd)];
+                    const int high =
+                        std::min(low + cplbands.size[static_cast<std::size_t>(bnd)], cplendmant);
                     double power_ch = 0.0;
                     double power_sum = 0.0;
                     for (int bin = low; bin < high; ++bin) {
@@ -326,7 +332,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                 }
                 const int chosen = coupling::choose_master(values);
                 master_at(block, ch) = chosen;
-                for (int bnd = 0; bnd < ncplsubnd; ++bnd) {
+                for (int bnd = 0; bnd < cplbands.count; ++bnd) {
                     coord_at(block, ch, bnd) = coupling::quantize_coordinate(
                         values[static_cast<std::size_t>(bnd)], chosen);
                 }
@@ -341,7 +347,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
             if (!send_coords[static_cast<std::size_t>(block)]) {
                 for (int ch = 0; ch < nfchans; ++ch) {
                     master_at(block, ch) = master_at(block - 1, ch);
-                    for (int bnd = 0; bnd < ncplsubnd; ++bnd) {
+                    for (int bnd = 0; bnd < cplbands.count; ++bnd) {
                         coord_at(block, ch, bnd) = coord_at(block - 1, ch, bnd);
                     }
                 }
@@ -530,8 +536,12 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                 }
                 w.put(static_cast<std::uint32_t>(cplbegf), 4);
                 w.put(static_cast<std::uint32_t>(cplendf), 4);
+                // cplbndstrc, one bit per sub-band after the first. AC-3
+                // always sends it, so the ncplsubnd - 1 bits are spent
+                // whatever the structure - what the structure buys back is
+                // 8 bits per band it removes, three times a frame per channel.
                 for (int bnd = 1; bnd < ncplsubnd; ++bnd) {
-                    w.put(0, 1);  // cplbndstrc: one band per sub-band
+                    w.put(cplbndstrc[static_cast<std::size_t>(bnd)] ? 1 : 0, 1);
                 }
             }
         }
@@ -541,7 +551,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                 w.put(send ? 1 : 0, 1);  // cplcoe
                 if (send) {
                     w.put(static_cast<std::uint32_t>(master_at(block, ch)), 2);
-                    for (int bnd = 0; bnd < ncplsubnd; ++bnd) {
+                    for (int bnd = 0; bnd < cplbands.count; ++bnd) {
                         const auto coordinate = coord_at(block, ch, bnd);
                         w.put(coordinate.exp, 4);
                         w.put(coordinate.mant, 4);

@@ -107,6 +107,82 @@ TEST_CASE("coupling exponent set round-trips through the normative decode", "[co
     }
 }
 
+TEST_CASE("coupling bands tile the coupled region exactly once", "[coupling]") {
+    // A coordinate is applied to every bin of its band, so the bands must
+    // partition the region: no gap gets no coordinate, no overlap gets two.
+    // The decoder rebuilds this partition from cplbndstrc alone, and a band
+    // count the two sides disagree about does not misplace one coordinate -
+    // it shifts every field after it in the block.
+    for (int begf = 0; begf <= 15; ++begf) {
+        for (int endf = 0; endf <= 15; ++endf) {
+            const int subbands = ac3::coupling::sub_band_count(begf, endf);
+            if (subbands < 1 || subbands > ac3::coupling::kSubBands) {
+                continue;
+            }
+            CAPTURE(begf, endf, subbands);
+            const auto structure = ac3::coupling::band_structure(begf, subbands);
+            const auto bands = ac3::coupling::group_bands(begf, subbands, structure);
+
+            // §5.4.3.13 numbers cplbndstrc from the first coupled sub-band,
+            // and its first entry is never sent because sub-band 0 always
+            // opens a band.
+            CHECK_FALSE(structure[0]);
+            // The count a decoder derives from the transmitted bits.
+            int clear = 1;
+            for (int sbnd = 1; sbnd < subbands; ++sbnd) {
+                clear += structure[static_cast<std::size_t>(sbnd)] ? 0 : 1;
+            }
+            REQUIRE(bands.count == clear);
+            REQUIRE(bands.count >= 1);
+            REQUIRE(bands.count <= subbands);
+
+            int bin = ac3::coupling::start_mant(begf);
+            for (int bnd = 0; bnd < bands.count; ++bnd) {
+                CAPTURE(bnd);
+                CHECK(bands.start[static_cast<std::size_t>(bnd)] == bin);
+                CHECK(bands.size[static_cast<std::size_t>(bnd)] %
+                          ac3::coupling::kBinsPerSubBand ==
+                      0);
+                CHECK(bands.size[static_cast<std::size_t>(bnd)] >=
+                      ac3::coupling::kBinsPerSubBand);
+                bin += bands.size[static_cast<std::size_t>(bnd)];
+            }
+            // And they finish exactly where the sub-bands do.
+            CHECK(bin == ac3::coupling::start_mant(begf) +
+                             subbands * ac3::coupling::kBinsPerSubBand);
+        }
+    }
+}
+
+TEST_CASE("coupling bands widen with frequency", "[coupling]") {
+    // A coordinate restores a band's level, so a band that is much narrower
+    // than the ear's own resolution up there is detail nobody hears, paid for
+    // three times a frame per channel. Bands therefore grow towards the top
+    // of the spectrum - and never shrink going up, or the shape is not
+    // tracking anything.
+    const int subbands = ac3::coupling::sub_band_count(0, 15);  // the whole range
+    const auto structure = ac3::coupling::band_structure(0, subbands);
+    const auto bands = ac3::coupling::group_bands(0, subbands, structure);
+    CAPTURE(subbands, bands.count);
+    CHECK(bands.count < subbands);  // something was actually joined
+
+    // The last band is whatever sub-bands are left over when the region runs
+    // out, so it is the one band that may be narrower than the one below it.
+    int previous = 0;
+    for (int bnd = 0; bnd + 1 < bands.count; ++bnd) {
+        const int size = bands.size[static_cast<std::size_t>(bnd)];
+        CAPTURE(bnd, bands.start[static_cast<std::size_t>(bnd)], size);
+        CHECK(size >= previous);
+        previous = size;
+    }
+    CHECK(bands.size[static_cast<std::size_t>(bands.count - 1)] <= previous);
+
+    // Below ~11 kHz a sub-band is already coarser than a critical band, so
+    // nothing is joined down there; by the top of the spectrum three are.
+    CHECK(bands.size[0] == ac3::coupling::kBinsPerSubBand);
+    CHECK(previous == 3 * ac3::coupling::kBinsPerSubBand);
+}
+
 TEST_CASE("the mean coupling divisor keeps coordinates representable",
           "[coupling]") {
     // §7.4.1's coupling channel is the mean of the coupled channels, so the

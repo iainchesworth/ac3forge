@@ -234,6 +234,60 @@ TEST_CASE("coupled streams round-trip through the in-repo decoder", "[decoder][c
     }
 }
 
+namespace {
+
+// Energy at one frequency, over the steady middle of the signal.
+double tone_energy(const std::vector<float>& x, double hz, double rate) {
+    constexpr std::size_t kSkip = 2048;
+    const std::size_t len = x.size() - 2 * kSkip;
+    double re = 0.0;
+    double im = 0.0;
+    for (std::size_t i = 0; i < len; ++i) {
+        const double phase = 2.0 * std::numbers::pi * hz * static_cast<double>(i) / rate;
+        re += x[kSkip + i] * std::cos(phase);
+        im += x[kSkip + i] * std::sin(phase);
+    }
+    return (re * re + im * im) / static_cast<double>(len * len);
+}
+
+}  // namespace
+
+TEST_CASE("grouped coupling bands land on the bins they were measured from",
+          "[decoder][coupling]") {
+    // The encoder joins sub-bands into wider bands towards the top of the
+    // spectrum and transmits the join pattern as cplbndstrc; the decoder
+    // rebuilds the same partition from those bits alone. Agreeing on the
+    // COUNT is not enough - the two sides also have to agree on which bins
+    // each coordinate covers, and a stream whose bands are offset by one
+    // still decodes, still passes CRC, and puts each channel's energy in the
+    // wrong place.
+    //
+    // Each channel gets a tone in a different part of the coupled region, so
+    // a coordinate applied to the wrong bins shows up as one channel
+    // inheriting the other's tone.
+    constexpr double kRate = 48000.0;
+    constexpr double kLow = 12000.0;   // sub-band 6 of the coupled region
+    constexpr double kHigh = 20000.0;  // near the top, where bands are widest
+    const auto rt = round_trip(
+        {.bitrate_kbps = 192, .acmod = ac3::Acmod::k2_0, .coupling = true}, {kLow, kHigh}, 4);
+
+    const double left_own = tone_energy(rt.decoded[0], kLow, kRate);
+    const double left_other = tone_energy(rt.decoded[0], kHigh, kRate);
+    const double right_own = tone_energy(rt.decoded[1], kHigh, kRate);
+    const double right_other = tone_energy(rt.decoded[1], kLow, kRate);
+    CAPTURE(left_own, left_other, right_own, right_other);
+    // Each channel keeps its own tone and does not acquire the other's. The
+    // margin is deliberately loose - coupling shares a single channel, so
+    // some leakage is the tool working as designed, not a fault.
+    CHECK(10.0 * std::log10(left_own / std::max(left_other, 1e-30)) > 20.0);
+    CHECK(10.0 * std::log10(right_own / std::max(right_other, 1e-30)) > 20.0);
+    // And the level survives: the tone is still there at roughly its input
+    // amplitude, not scaled by a neighbouring band's coordinate.
+    const double reference = tone_energy(rt.input[0], kLow, kRate);
+    CHECK(10.0 * std::log10(left_own / std::max(reference, 1e-30)) > -3.0);
+    CHECK(10.0 * std::log10(left_own / std::max(reference, 1e-30)) < 3.0);
+}
+
 TEST_CASE("decoder rejects corrupted streams", "[decoder]") {
     ac3::FrameEncoder encoder{{.bitrate_kbps = 192}};
     const std::vector<float> silence(ac3::kSamplesPerFrame, 0.0f);
