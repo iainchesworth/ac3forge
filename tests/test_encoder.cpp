@@ -92,6 +92,42 @@ TEST_CASE("44.1 kHz CBR alternates frame sizes to the exact long-run rate", "[en
     CHECK(std::abs(static_cast<double>(total_bytes) - ideal_bytes) <= 2.0);
 }
 
+TEST_CASE("coupling produces valid frames across configurations", "[encoder][coupling]") {
+    using ac3::Acmod;
+    // Coupling needs >= 2 fbw channels; sweep the sub-band range including
+    // the extremes, where the coded region is widest and narrowest.
+    for (const auto acmod : {Acmod::k2_0, Acmod::k3_2}) {
+        for (const auto [begf, endf] : {std::pair{6, 12}, std::pair{0, 15}, std::pair{12, 2}}) {
+            for (const std::uint32_t kbps : {192u, 384u}) {
+                CAPTURE(static_cast<int>(acmod), begf, endf, kbps);
+                ac3::FrameEncoder encoder{{.bitrate_kbps = kbps,
+                                           .acmod = acmod,
+                                           .lfe = acmod == Acmod::k3_2,
+                                           .coupling = true,
+                                           .cplbegf = begf,
+                                           .cplendf = endf}};
+                std::uint64_t n = 0;
+                for (int f = 0; f < 2; ++f) {
+                    const auto frame = encode_same(encoder, sine_frame(n, 2200.0, 0.5));
+                    REQUIRE(frame.has_value());
+                    check_frame_invariants(*frame, ac3::SampleRate::k48000, kbps);
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("coupling below two channels is silently inactive", "[encoder][coupling]") {
+    // 1/0 has nothing to couple; the encoder must fall back rather than emit
+    // a coupling strategy no decoder could use.
+    ac3::FrameEncoder encoder{
+        {.bitrate_kbps = 192, .acmod = ac3::Acmod::k1_0, .coupling = true}};
+    std::uint64_t n = 0;
+    const auto frame = encode_same(encoder, sine_frame(n, 1000.0, 0.5));
+    REQUIRE(frame.has_value());
+    check_frame_invariants(*frame, ac3::SampleRate::k48000, 192);
+}
+
 TEST_CASE("encoding is deterministic", "[encoder]") {
     ac3::FrameEncoder a{{.bitrate_kbps = 256}};
     ac3::FrameEncoder b{{.bitrate_kbps = 256}};

@@ -44,6 +44,14 @@ int calc_lowcomp(int a, int b0, int b1, int bin) {
 
 }  // namespace
 
+int fast_gain(int fgaincod) {
+    return kFastGain[static_cast<std::size_t>(std::clamp(fgaincod, 0, 7))];
+}
+
+int slow_gain(int sgaincod) {
+    return kSlowGain[static_cast<std::size_t>(std::clamp(sgaincod, 0, 3))];
+}
+
 void compute_bit_allocation(std::span<const std::uint8_t> exps, SampleRate sample_rate,
                             const BitAllocCodes& codes, int csnroffst, int fsnroffst,
                             std::span<std::uint8_t> bap, const BitAllocRegion& region) {

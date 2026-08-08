@@ -84,8 +84,17 @@ PCM, so an unavailable device tells you **why**: "cannot bitstream" (analog outp
 > path itself is proven — the Realtek endpoint accepts our exclusive PCM format — but the
 > IEC 61937 descriptor awaits a receiver to confirm positively.
 
+**Channel coupling encodes.** Above the coupling frequency the full-bandwidth channels stop
+carrying their own coefficients and share one coupling channel plus per-band coordinates —
+the tool that makes 5.1 viable well below 448 kbit/s. `ac3cli sine … 51c` or
+`ac3cli encode … couple` turns it on. FFmpeg strict-decodes coupled 5.1, and a targeted
+probe confirms the envelope really is preserved: a channel carrying a 12 kHz tone stays
+113 dB above a silent one in that band, while the region below the coupling frequency is
+bit-for-bit untouched. The in-repo decoder does not read coupling yet and refuses such
+streams cleanly rather than producing wrong audio.
+
 See [docs/RESEARCH.md](docs/RESEARCH.md) for the research summary, architecture, and
-roadmap (remaining rungs: channel coupling, E-AC-3).
+roadmap (remaining: decoder-side coupling, E-AC-3).
 
 ## Ground rules
 

@@ -17,7 +17,7 @@ import numpy as np
 
 REPO = Path(__file__).resolve().parent.parent
 BUILD = REPO / "build"
-CLI = BUILD / "dev" / "ac3cli.exe"
+CLI = BUILD / "dev" / "bin" / "ac3cli.exe"
 RATE = 48000
 SEG = 2 * RATE  # 2 s per segment
 

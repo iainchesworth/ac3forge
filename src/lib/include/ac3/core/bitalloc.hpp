@@ -28,6 +28,11 @@ struct BitAllocCodes {
     int fgaincod = 4;
 };
 
+// Tables 7.11 and 7.8. Exposed because an encoder picking the coupling
+// channel's leak seeds needs the same gains the allocator will apply.
+[[nodiscard]] int fast_gain(int fgaincod);
+[[nodiscard]] int slow_gain(int sgaincod);
+
 // §7.2.2.1: the composite SNR offset.
 [[nodiscard]] constexpr int snr_offset(int csnroffst, int fsnroffst) {
     return (((csnroffst - 15) << 4) + fsnroffst) << 2;

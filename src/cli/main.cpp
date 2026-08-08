@@ -33,13 +33,14 @@ void print_usage() {
     std::println("  ac3cli orbit   <out.ac3> [seconds] [bitrate_kbps] [orbit_seconds]");
     std::println("  ac3cli devices");
     std::println("  ac3cli record  <out.ac3> [seconds] [bitrate_kbps] [device_index]");
-    std::println("  ac3cli encode  <in.wav> <out.ac3> [bitrate_kbps]");
+    std::println("  ac3cli encode  <in.wav> <out.ac3> [bitrate_kbps] [couple]");
     std::println("  ac3cli decode  <in.ac3> <out.wav>");
     std::println("  ac3cli spdif   <in.ac3> <out.wav>   (IEC 61937 wrap as playable PCM16 WAV)");
     std::println("  ac3cli outputs                      (render endpoints + AC-3 passthrough support)");
     std::println("  ac3cli play    <in.ac3> [device_index]  (exclusive-mode IEC 61937 passthrough)");
     std::println("");
-    std::println("layout: stereo (default) | 51 — 5.1 uses per-channel tones");
+    std::println("layout: stereo (default) | 51 — 5.1 uses per-channel tones;");
+    std::println("        append 'c' (stereoc, 51c) to enable channel coupling");
     std::println("        (L 1000, C 800, R 1200, SL 600, SR 1400, LFE 60 Hz)");
 }
 
@@ -93,8 +94,12 @@ int run_silence(std::string_view out_path, std::uint32_t seconds, std::uint32_t 
 
 int run_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_t bitrate,
              std::uint32_t freq_hz, std::uint32_t amplitude_pct, std::string_view layout) {
-    const bool surround = layout == "51";
-    ac3::EncoderConfig config{.bitrate_kbps = bitrate};
+    // Layouts: stereo | 51, each optionally suffixed with "c" to turn
+    // channel coupling on (e.g. 51c).
+    const bool couple = !layout.empty() && layout.back() == 'c';
+    const std::string_view base = couple ? layout.substr(0, layout.size() - 1) : layout;
+    const bool surround = base == "51";
+    ac3::EncoderConfig config{.bitrate_kbps = bitrate, .coupling = couple};
     std::vector<double> tone_hz;
     if (surround) {
         config.acmod = ac3::Acmod::k3_2;
@@ -315,7 +320,8 @@ int run_record(std::string_view out_path, std::uint32_t seconds, std::uint32_t b
     return 0;
 }
 
-int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_t bitrate) {
+int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_t bitrate,
+               bool couple) {
     const auto wav = ac3::io::read_wav(std::string{in_path});
     if (!wav) {
         std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(wav.error()));
@@ -337,7 +343,8 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
             return 1;
     }
 
-    ac3::FrameEncoder encoder{{.sample_rate = sr, .bitrate_kbps = bitrate}};
+    ac3::FrameEncoder encoder{
+        {.sample_rate = sr, .bitrate_kbps = bitrate, .coupling = couple}};
     const std::size_t total = wav->frame_count();
     std::vector<std::vector<float>> block(2, std::vector<float>(ac3::kSamplesPerFrame));
     std::vector<std::span<const float>> views(2);
@@ -605,7 +612,8 @@ int main(int argc, char** argv) {
                          args.size() > 5 ? parse_u32_or(args[5], 4) : 4);
     }
     if (command == "encode" && args.size() > 3) {
-        return run_encode(args[2], args[3], args.size() > 4 ? parse_u32_or(args[4], 192) : 192);
+        return run_encode(args[2], args[3], args.size() > 4 ? parse_u32_or(args[4], 192) : 192,
+                          args.size() > 5 && std::string_view{args[5]} == "couple");
     }
     if (command == "decode" && args.size() > 3) {
         return run_decode(args[2], args[3]);

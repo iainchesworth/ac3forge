@@ -10,6 +10,7 @@
 #include "ac3/core/exponents.hpp"
 #include "ac3/core/mantissas.hpp"
 #include "ac3/core/mdct.hpp"
+#include "ac3/encoder/coupling.hpp"
 
 namespace ac3 {
 
@@ -45,8 +46,7 @@ constexpr ExpStrategy strategy_for_span(int span) {
 }
 
 // Exponent-set change detection (§8.2.8: "when the variation exceeds a
-// threshold, new exponents will be sent"). Sum of absolute exponent
-// differences against the set currently in force, scaled per bin.
+// threshold, new exponents will be sent").
 bool needs_new_exponents(std::span<const std::uint8_t> current,
                          std::span<const std::uint8_t> reference) {
     long long diff = 0;
@@ -56,14 +56,29 @@ bool needs_new_exponents(std::span<const std::uint8_t> current,
     return diff > 2 * static_cast<long long>(current.size());
 }
 
-struct ChannelPlan {
-    // For each block: the index of the exponent run it belongs to.
+// §7.5.2: how many rematrixing bands exist, and where the last one stops.
+// With coupling active the bands cannot reach above where coupling begins.
+int rematrix_band_count(bool cplinu, int cplbegf) {
+    if (!cplinu) {
+        return 4;
+    }
+    if (cplbegf > 2) {
+        return 4;
+    }
+    return cplbegf > 0 ? 3 : 2;
+}
+
+struct ExponentRun {
+    int start_block = 0;
+    ExpStrategy strategy = ExpStrategy::kD15;
+    EncodedExponents fbw;                  // fbw and LFE channels
+    EncodedCouplingExponents cpl;          // the coupling channel
+    std::vector<std::uint8_t> decoded;     // the decoder-mirror exponents
+};
+
+struct StreamPlan {
     std::array<int, kBlocksPerFrame> run_of_block{};
-    // Per run: first block, strategy, encoded + decoded exponents.
-    std::vector<int> run_start;
-    std::vector<ExpStrategy> run_strategy;
-    std::vector<EncodedExponents> run_encoded;
-    std::vector<std::vector<std::uint8_t>> run_decoded;
+    std::vector<ExponentRun> runs;
 };
 
 }  // namespace
@@ -86,8 +101,31 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         (void)channel;
     }
 
-    // Bandwidth: explicit config, or a bitrate-aware default (roughly two
-    // thirds of the per-channel kilobit rate, clamped to the legal range).
+    // --- Coupling decision -------------------------------------------------
+    // Coupling needs at least two full-bandwidth channels to share anything.
+    const bool cplinu = config_.coupling && nfchans >= 2;
+    int cplbegf = 0;
+    int cplendf = 0;
+    int cplstrtmant = 0;
+    int cplendmant = 0;
+    int ncplsubnd = 0;
+    if (cplinu) {
+        cplbegf = config_.cplbegf >= 0 ? config_.cplbegf : 6;
+        cplendf = config_.cplendf >= 0 ? config_.cplendf : 12;
+        cplbegf = std::clamp(cplbegf, 0, 15);
+        cplendf = std::clamp(cplendf, 0, 15);
+        // cplendf is read by adding 3, so the coded region must extend past
+        // where coupling starts.
+        if (coupling::sub_band_count(cplbegf, cplendf) < 1) {
+            cplendf = std::min(15, cplbegf);
+        }
+        cplstrtmant = coupling::start_mant(cplbegf);
+        cplendmant = std::min(coupling::end_mant(cplendf), 253);
+        ncplsubnd = (cplendmant - cplstrtmant) / coupling::kBinsPerSubBand;
+    }
+
+    // Bandwidth: explicit config, or a bitrate-aware default. Coupled
+    // channels stop at the coupling frequency instead.
     int chbwcod = config_.chbwcod;
     if (chbwcod < 0) {
         const int per_channel_kbps =
@@ -95,9 +133,21 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         chbwcod = std::clamp(per_channel_kbps * 2 / 3, 24, 60);
     }
     assert(chbwcod >= 0 && chbwcod <= 60);
-    const int endmant = ((chbwcod + 12) * 3) + 37;
+    const int fbw_endmant = cplinu ? cplstrtmant : ((chbwcod + 12) * 3) + 37;
 
-    // --- Frame size via the CBR accumulator ---
+    // Stream layout: the fbw channels, the LFE, then the coupling channel as
+    // one more stream carrying the shared high band.
+    const int cpl_stream = cplinu ? nchans : -1;
+    const int streams = nchans + (cplinu ? 1 : 0);
+    const auto stream_start = [&](int s) { return s == cpl_stream ? cplstrtmant : 0; };
+    const auto stream_end = [&](int s) {
+        if (s == cpl_stream) {
+            return cplendmant;
+        }
+        return s < nfchans ? fbw_endmant : kLfeEndmant;
+    };
+
+    // --- Frame size via the CBR accumulator --------------------------------
     const std::uint64_t ideal_bits_num =
         static_cast<std::uint64_t>(config_.bitrate_kbps) * 1000 * kSamplesPerFrame;
     const std::uint64_t denom =
@@ -115,12 +165,11 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     const std::uint32_t words58 = frame_size_58_words(words);
     const BitAllocCodes codes{};  // §8.2.12 basic-encoder defaults
 
-    // --- 1. MDCT per channel per block (double coefficients) ---
-    const auto channel_endmant = [&](int ch) { return ch < nfchans ? endmant : kLfeEndmant; };
+    // --- 1. MDCT per channel per block -------------------------------------
     std::vector<std::array<double, 256>> coeffs(
-        static_cast<std::size_t>(nchans) * kBlocksPerFrame);
-    const auto coeffs_at = [&](int ch, int block) -> std::array<double, 256>& {
-        return coeffs[static_cast<std::size_t>(ch) * kBlocksPerFrame +
+        static_cast<std::size_t>(streams) * kBlocksPerFrame);
+    const auto coeffs_at = [&](int s, int block) -> std::array<double, 256>& {
+        return coeffs[static_cast<std::size_t>(s) * kBlocksPerFrame +
                       static_cast<std::size_t>(block)];
     };
     for (int ch = 0; ch < nchans; ++ch) {
@@ -146,17 +195,103 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         }
     }
 
-    // --- 2. Rematrixing (2/0 only, §7.5.3): per block, per band, code the
-    // half-sum/half-difference when their power is smaller. ---
+    // --- 2. Coupling: form the shared channel and its coordinates ----------
+    // Coordinates are sent in blocks 0, 2 and 4 and reused in between
+    // (§8.2.4.1); the coupling channel itself is the plain average the spec's
+    // basic encoder describes, scaled by 1/8 so it cannot overflow, which the
+    // decoder undoes with its matching x8.
+    std::array<bool, kBlocksPerFrame> send_coords{};
+    std::vector<int> master(static_cast<std::size_t>(kBlocksPerFrame) *
+                            static_cast<std::size_t>(std::max(nfchans, 1)));
+    std::vector<coupling::Coordinate> coords(
+        static_cast<std::size_t>(kBlocksPerFrame) * static_cast<std::size_t>(std::max(nfchans, 1)) *
+        static_cast<std::size_t>(std::max(ncplsubnd, 1)));
+    const auto coord_at = [&](int block, int ch, int bnd) -> coupling::Coordinate& {
+        return coords[(static_cast<std::size_t>(block) * static_cast<std::size_t>(nfchans) +
+                       static_cast<std::size_t>(ch)) *
+                          static_cast<std::size_t>(ncplsubnd) +
+                      static_cast<std::size_t>(bnd)];
+    };
+    const auto master_at = [&](int block, int ch) -> int& {
+        return master[static_cast<std::size_t>(block) * static_cast<std::size_t>(nfchans) +
+                      static_cast<std::size_t>(ch)];
+    };
+
+    if (cplinu) {
+        std::vector<double> values(static_cast<std::size_t>(ncplsubnd));
+        for (int block = 0; block < kBlocksPerFrame; ++block) {
+            send_coords[static_cast<std::size_t>(block)] = block % 2 == 0;
+
+            auto& cpl = coeffs_at(cpl_stream, block);
+            cpl.fill(0.0);
+            for (int bin = cplstrtmant; bin < cplendmant; ++bin) {
+                double sum = 0.0;
+                for (int ch = 0; ch < nfchans; ++ch) {
+                    sum += coeffs_at(ch, block)[static_cast<std::size_t>(bin)];
+                }
+                cpl[static_cast<std::size_t>(bin)] = sum / 8.0;
+            }
+
+            for (int ch = 0; ch < nfchans; ++ch) {
+                for (int bnd = 0; bnd < ncplsubnd; ++bnd) {
+                    const int low = cplstrtmant + bnd * coupling::kBinsPerSubBand;
+                    const int high = low + coupling::kBinsPerSubBand;
+                    double power_ch = 0.0;
+                    double power_sum = 0.0;
+                    for (int bin = low; bin < high; ++bin) {
+                        const double value =
+                            coeffs_at(ch, block)[static_cast<std::size_t>(bin)];
+                        // The sum, not the scaled coupling channel: the
+                        // decoder's x8 cancels the encoder's /8, so the
+                        // coordinate is the ratio against the raw sum.
+                        const double summed =
+                            cpl[static_cast<std::size_t>(bin)] * 8.0;
+                        power_ch += value * value;
+                        power_sum += summed * summed;
+                    }
+                    values[static_cast<std::size_t>(bnd)] =
+                        power_sum > 0.0 ? std::sqrt(power_ch / power_sum) : 0.0;
+                }
+                const int chosen = coupling::choose_master(values);
+                master_at(block, ch) = chosen;
+                for (int bnd = 0; bnd < ncplsubnd; ++bnd) {
+                    coord_at(block, ch, bnd) = coupling::quantize_coordinate(
+                        values[static_cast<std::size_t>(bnd)], chosen);
+                }
+                // Above the coupling frequency the channel carries nothing of
+                // its own any more.
+                for (int bin = cplstrtmant; bin < 256; ++bin) {
+                    coeffs_at(ch, block)[static_cast<std::size_t>(bin)] = 0.0;
+                }
+            }
+            // Blocks that reuse coordinates must reuse the ones actually
+            // transmitted, or encoder and decoder diverge.
+            if (!send_coords[static_cast<std::size_t>(block)]) {
+                for (int ch = 0; ch < nfchans; ++ch) {
+                    master_at(block, ch) = master_at(block - 1, ch);
+                    for (int bnd = 0; bnd < ncplsubnd; ++bnd) {
+                        coord_at(block, ch, bnd) = coord_at(block - 1, ch, bnd);
+                    }
+                }
+            }
+        }
+    }
+
+    // --- 3. Rematrixing (2/0 only, §7.5.3) ---------------------------------
     std::array<std::array<bool, 4>, kBlocksPerFrame> rematflg{};
     const bool rematrixing = config_.acmod == Acmod::k2_0;
+    const int nrematbd = rematrix_band_count(cplinu, cplbegf);
     if (rematrixing) {
         for (int block = 0; block < kBlocksPerFrame; ++block) {
             auto& left = coeffs_at(0, block);
             auto& right = coeffs_at(1, block);
-            for (std::size_t band = 0; band < kRematrixBands.size(); ++band) {
-                const int low = kRematrixBands[band][0];
-                const int high = std::min(kRematrixBands[band][1], endmant - 1);
+            for (int band = 0; band < nrematbd; ++band) {
+                const int low = kRematrixBands[static_cast<std::size_t>(band)][0];
+                int high = kRematrixBands[static_cast<std::size_t>(band)][1];
+                high = std::min(high, fbw_endmant - 1);
+                if (low > high) {
+                    continue;
+                }
                 double power_l = 0.0;
                 double power_r = 0.0;
                 double power_sum = 0.0;
@@ -169,10 +304,9 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                     power_sum += (l + r) * (l + r);
                     power_diff += (l - r) * (l - r);
                 }
-                const double keep = std::min(power_l, power_r);
-                const double matrix = std::min(power_sum, power_diff);
-                if (matrix < keep) {
-                    rematflg[static_cast<std::size_t>(block)][band] = true;
+                if (std::min(power_sum, power_diff) < std::min(power_l, power_r)) {
+                    rematflg[static_cast<std::size_t>(block)][static_cast<std::size_t>(band)] =
+                        true;
                     for (int bin = low; bin <= high; ++bin) {
                         const double l = left[static_cast<std::size_t>(bin)];
                         const double r = right[static_cast<std::size_t>(bin)];
@@ -184,47 +318,49 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         }
     }
 
-    // --- 3. Fixed-point conversion + per-block raw exponents ---
+    // --- 4. Fixed point + per-block raw exponents --------------------------
     std::vector<std::int32_t> fixed;
-    fixed.reserve(static_cast<std::size_t>(nchans) * kBlocksPerFrame *
-                  static_cast<std::size_t>(endmant));
-    std::vector<std::size_t> fixed_base(static_cast<std::size_t>(nchans) * kBlocksPerFrame);
+    std::vector<std::size_t> fixed_base(static_cast<std::size_t>(streams) * kBlocksPerFrame);
     std::vector<std::vector<std::uint8_t>> block_exps(
-        static_cast<std::size_t>(nchans) * kBlocksPerFrame);
-    for (int ch = 0; ch < nchans; ++ch) {
-        const int ch_end = channel_endmant(ch);
+        static_cast<std::size_t>(streams) * kBlocksPerFrame);
+    for (int s = 0; s < streams; ++s) {
+        const int begin = stream_start(s);
+        const int end = stream_end(s);
         for (int block = 0; block < kBlocksPerFrame; ++block) {
-            const auto slot = static_cast<std::size_t>(ch) * kBlocksPerFrame +
+            const auto slot = static_cast<std::size_t>(s) * kBlocksPerFrame +
                               static_cast<std::size_t>(block);
             fixed_base[slot] = fixed.size();
-            block_exps[slot].resize(static_cast<std::size_t>(ch_end));
-            for (int bin = 0; bin < ch_end; ++bin) {
+            block_exps[slot].resize(static_cast<std::size_t>(end - begin));
+            for (int bin = begin; bin < end; ++bin) {
                 const std::int32_t f =
-                    to_fixed25(coeffs_at(ch, block)[static_cast<std::size_t>(bin)]);
+                    to_fixed25(coeffs_at(s, block)[static_cast<std::size_t>(bin)]);
                 fixed.push_back(f);
-                block_exps[slot][static_cast<std::size_t>(bin)] =
+                block_exps[slot][static_cast<std::size_t>(bin - begin)] =
                     static_cast<std::uint8_t>(exponent_from_fixed(f));
             }
         }
     }
-    const auto fixed_at = [&](int ch, int block, int bin) {
-        return fixed[fixed_base[static_cast<std::size_t>(ch) * kBlocksPerFrame +
+    // Indexed from the stream's own start bin.
+    const auto fixed_at = [&](int s, int block, int offset) {
+        return fixed[fixed_base[static_cast<std::size_t>(s) * kBlocksPerFrame +
                                 static_cast<std::size_t>(block)] +
-                     static_cast<std::size_t>(bin)];
+                     static_cast<std::size_t>(offset)];
     };
 
-    // --- 4. Exponent strategy plan per channel (§8.2.8) ---
-    std::vector<ChannelPlan> plan(static_cast<std::size_t>(nchans));
-    for (int ch = 0; ch < nchans; ++ch) {
-        auto& p = plan[static_cast<std::size_t>(ch)];
-        const bool is_lfe = ch >= nfchans;
-        // Decide run boundaries from raw exponent variation.
+    // --- 5. Exponent strategy plan per stream (§8.2.8) ---------------------
+    std::vector<StreamPlan> plan(static_cast<std::size_t>(streams));
+    for (int s = 0; s < streams; ++s) {
+        auto& p = plan[static_cast<std::size_t>(s)];
+        const bool is_lfe = s < nchans && s >= nfchans;
+        const bool is_cpl = s == cpl_stream;
+        const int begin = stream_start(s);
+        const int end = stream_end(s);
+
         std::vector<int> starts{0};
-        if (!is_lfe) {  // the 7-bin LFE set: one D15 set per frame
-            const auto* reference =
-                &block_exps[static_cast<std::size_t>(ch) * kBlocksPerFrame];
+        if (!is_lfe) {
+            const auto* reference = &block_exps[static_cast<std::size_t>(s) * kBlocksPerFrame];
             for (int block = 1; block < kBlocksPerFrame; ++block) {
-                const auto& current = block_exps[static_cast<std::size_t>(ch) * kBlocksPerFrame +
+                const auto& current = block_exps[static_cast<std::size_t>(s) * kBlocksPerFrame +
                                                  static_cast<std::size_t>(block)];
                 if (needs_new_exponents(current, *reference)) {
                     starts.push_back(block);
@@ -233,35 +369,227 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
             }
         }
         starts.push_back(kBlocksPerFrame);
+
         for (std::size_t run = 0; run + 1 < starts.size(); ++run) {
-            const int begin = starts[run];
-            const int end = starts[run + 1];
-            const auto strategy =
-                is_lfe ? ExpStrategy::kD15 : strategy_for_span(end - begin);
-            // The run's exponents: minimum across its blocks, so reuse is safe.
+            const int first = starts[run];
+            const int last = starts[run + 1];
+            // The coupling channel's group count must divide its bin count
+            // exactly, which only D15 guarantees for every sub-band count.
+            const auto strategy = (is_lfe || is_cpl) ? ExpStrategy::kD15
+                                                     : strategy_for_span(last - first);
+
             std::vector<std::uint8_t> raw(
-                block_exps[static_cast<std::size_t>(ch) * kBlocksPerFrame +
-                           static_cast<std::size_t>(begin)]);
-            for (int block = begin + 1; block < end; ++block) {
-                const auto& other = block_exps[static_cast<std::size_t>(ch) * kBlocksPerFrame +
+                block_exps[static_cast<std::size_t>(s) * kBlocksPerFrame +
+                           static_cast<std::size_t>(first)]);
+            for (int block = first + 1; block < last; ++block) {
+                const auto& other = block_exps[static_cast<std::size_t>(s) * kBlocksPerFrame +
                                                static_cast<std::size_t>(block)];
-                for (std::size_t bin = 0; bin < raw.size(); ++bin) {
-                    raw[bin] = std::min(raw[bin], other[bin]);
+                for (std::size_t i = 0; i < raw.size(); ++i) {
+                    raw[i] = std::min(raw[i], other[i]);
                 }
             }
-            p.run_start.push_back(begin);
-            p.run_strategy.push_back(strategy);
-            p.run_encoded.push_back(encode_exponents(raw, strategy));
-            auto& decoded = p.run_decoded.emplace_back(raw.size());
-            decode_exponents(p.run_encoded.back().absolute, p.run_encoded.back().groups,
-                             strategy, decoded);
-            for (int block = begin; block < end; ++block) {
+
+            ExponentRun entry;
+            entry.start_block = first;
+            entry.strategy = strategy;
+            // Exponents are indexed from bin 0 for the allocator's sake, so
+            // a coupling run leaves its low bins untouched.
+            entry.decoded.assign(static_cast<std::size_t>(end), kMaxExponent);
+            if (is_cpl) {
+                entry.cpl = encode_coupling_exponents(raw, strategy);
+                decode_coupling_exponents(
+                    entry.cpl.cplabsexp, entry.cpl.groups, strategy,
+                    std::span{entry.decoded}.subspan(static_cast<std::size_t>(begin)));
+            } else {
+                entry.fbw = encode_exponents(raw, strategy);
+                decode_exponents(entry.fbw.absolute, entry.fbw.groups, strategy, entry.decoded);
+            }
+            for (int block = first; block < last; ++block) {
                 p.run_of_block[static_cast<std::size_t>(block)] = static_cast<int>(run);
             }
+            p.runs.push_back(std::move(entry));
         }
     }
 
-    // --- 5. Side-information bits for this frame's exact plan ---
+    // --- 6. Coupling leak seeds --------------------------------------------
+    // The transmitted leaks continue the masking decay across the coupling
+    // boundary; derive them from the coupling channel's own first band so the
+    // allocator starts from a sensible level rather than a fixed guess.
+    int cplfleak = 0;
+    int cplsleak = 0;
+    if (cplinu) {
+        const auto& first_run = plan[static_cast<std::size_t>(cpl_stream)].runs.front();
+        const int exp = first_run.decoded[static_cast<std::size_t>(cplstrtmant)];
+        const int psd = 3072 - (exp << 7);
+        cplfleak = std::clamp((psd - fast_gain(codes.fgaincod) - 768) >> 8, 0, 7);
+        cplsleak = std::clamp((psd - slow_gain(codes.sgaincod) - 768) >> 8, 0, 7);
+    }
+
+    // --- 7. The block emitter ----------------------------------------------
+    // One function writes a block's side information; the bit budget is
+    // measured by running it into a throwaway writer rather than maintaining
+    // a parallel formula that every new field could silently invalidate.
+    std::vector<std::vector<std::uint8_t>> stream_bap(static_cast<std::size_t>(streams));
+    int csnroffst = 0;
+    int fsnroffst = 0;
+
+    const auto emit_block_side_info = [&](BitWriter& w, int block) {
+        const bool first = block == 0;
+        for (int ch = 0; ch < nfchans; ++ch) {
+            w.put(0, 1);  // blksw
+        }
+        for (int ch = 0; ch < nfchans; ++ch) {
+            w.put(0, 1);  // dithflag
+        }
+        w.put(0, 1);  // dynrnge
+
+        w.put(first ? 1 : 0, 1);  // cplstre
+        if (first) {
+            w.put(cplinu ? 1 : 0, 1);
+            if (cplinu) {
+                for (int ch = 0; ch < nfchans; ++ch) {
+                    w.put(1, 1);  // chincpl: every fbw channel is coupled
+                }
+                if (config_.acmod == Acmod::k2_0) {
+                    w.put(0, 1);  // phsflginu: no phase restoration
+                }
+                w.put(static_cast<std::uint32_t>(cplbegf), 4);
+                w.put(static_cast<std::uint32_t>(cplendf), 4);
+                for (int bnd = 1; bnd < ncplsubnd; ++bnd) {
+                    w.put(0, 1);  // cplbndstrc: one band per sub-band
+                }
+            }
+        }
+        if (cplinu) {
+            for (int ch = 0; ch < nfchans; ++ch) {
+                const bool send = send_coords[static_cast<std::size_t>(block)];
+                w.put(send ? 1 : 0, 1);  // cplcoe
+                if (send) {
+                    w.put(static_cast<std::uint32_t>(master_at(block, ch)), 2);
+                    for (int bnd = 0; bnd < ncplsubnd; ++bnd) {
+                        const auto coordinate = coord_at(block, ch, bnd);
+                        w.put(coordinate.exp, 4);
+                        w.put(coordinate.mant, 4);
+                    }
+                }
+            }
+            // phsflginu is 0, so no phase flags follow.
+        }
+
+        if (rematrixing) {
+            const bool send = first || rematflg[static_cast<std::size_t>(block)] !=
+                                           rematflg[static_cast<std::size_t>(block) - 1];
+            w.put(send ? 1 : 0, 1);  // rematstr
+            if (send) {
+                for (int band = 0; band < nrematbd; ++band) {
+                    w.put(rematflg[static_cast<std::size_t>(block)]
+                                  [static_cast<std::size_t>(band)]
+                              ? 1
+                              : 0,
+                          1);
+                }
+            }
+        }
+
+        // Exponent strategies: coupling first, then fbw, then LFE.
+        const auto fresh = [&](int s) {
+            const auto& p = plan[static_cast<std::size_t>(s)];
+            const int run = p.run_of_block[static_cast<std::size_t>(block)];
+            return p.runs[static_cast<std::size_t>(run)].start_block == block;
+        };
+        if (cplinu) {
+            w.put(static_cast<std::uint32_t>(fresh(cpl_stream) ? ExpStrategy::kD15
+                                                               : ExpStrategy::kReuse),
+                  2);
+        }
+        for (int ch = 0; ch < nfchans; ++ch) {
+            const auto& p = plan[static_cast<std::size_t>(ch)];
+            const int run = p.run_of_block[static_cast<std::size_t>(block)];
+            w.put(static_cast<std::uint32_t>(
+                      fresh(ch) ? p.runs[static_cast<std::size_t>(run)].strategy
+                                : ExpStrategy::kReuse),
+                  2);
+        }
+        if (config_.lfe) {
+            w.put(fresh(nfchans) ? 1 : 0, 1);  // lfeexpstr
+        }
+        // chbwcod exists only for channels NOT in coupling.
+        if (!cplinu) {
+            for (int ch = 0; ch < nfchans; ++ch) {
+                if (fresh(ch)) {
+                    w.put(static_cast<std::uint32_t>(chbwcod), 6);
+                }
+            }
+        }
+
+        // Exponents, same order.
+        if (cplinu && fresh(cpl_stream)) {
+            const auto& p = plan[static_cast<std::size_t>(cpl_stream)];
+            const auto& run = p.runs[static_cast<std::size_t>(
+                p.run_of_block[static_cast<std::size_t>(block)])];
+            w.put(run.cpl.cplabsexp, 4);
+            for (const auto group : run.cpl.groups) {
+                w.put(group, 7);
+            }
+        }
+        for (int ch = 0; ch < nfchans; ++ch) {
+            if (!fresh(ch)) {
+                continue;
+            }
+            const auto& p = plan[static_cast<std::size_t>(ch)];
+            const auto& run = p.runs[static_cast<std::size_t>(
+                p.run_of_block[static_cast<std::size_t>(block)])];
+            w.put(run.fbw.absolute, 4);
+            for (const auto group : run.fbw.groups) {
+                w.put(group, 7);
+            }
+            w.put(0, 2);  // gainrng
+        }
+        if (config_.lfe && fresh(nfchans)) {
+            const auto& p = plan[static_cast<std::size_t>(nfchans)];
+            const auto& run = p.runs[static_cast<std::size_t>(
+                p.run_of_block[static_cast<std::size_t>(block)])];
+            w.put(run.fbw.absolute, 4);
+            for (const auto group : run.fbw.groups) {
+                w.put(group, 7);
+            }
+        }
+
+        w.put(first ? 1 : 0, 1);  // baie
+        if (first) {
+            w.put(static_cast<std::uint32_t>(codes.sdcycod), 2);
+            w.put(static_cast<std::uint32_t>(codes.fdcycod), 2);
+            w.put(static_cast<std::uint32_t>(codes.sgaincod), 2);
+            w.put(static_cast<std::uint32_t>(codes.dbpbcod), 2);
+            w.put(static_cast<std::uint32_t>(codes.floorcod), 3);
+        }
+        w.put(first ? 1 : 0, 1);  // snroffste
+        if (first) {
+            w.put(static_cast<std::uint32_t>(csnroffst), 6);
+            if (cplinu) {
+                w.put(static_cast<std::uint32_t>(fsnroffst), 4);       // cplfsnroffst
+                w.put(static_cast<std::uint32_t>(codes.fgaincod), 3);  // cplfgaincod
+            }
+            for (int ch = 0; ch < nfchans; ++ch) {
+                w.put(static_cast<std::uint32_t>(fsnroffst), 4);
+                w.put(static_cast<std::uint32_t>(codes.fgaincod), 3);
+            }
+            if (config_.lfe) {
+                w.put(static_cast<std::uint32_t>(fsnroffst), 4);
+                w.put(static_cast<std::uint32_t>(codes.fgaincod), 3);
+            }
+        }
+        if (cplinu) {
+            w.put(first ? 1 : 0, 1);  // cplleake
+            if (first) {
+                w.put(static_cast<std::uint32_t>(cplfleak), 3);
+                w.put(static_cast<std::uint32_t>(cplsleak), 3);
+            }
+        }
+        w.put(0, 1);  // deltbaie
+    };
+
+    // --- 8. Measure the side information -----------------------------------
     std::uint32_t side_bits = 16 + 16 + 2 + 6;  // syncinfo
     {
         std::uint32_t bsi = 25;
@@ -270,71 +598,53 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         if (config_.acmod == Acmod::k2_0) bsi += 2;
         side_bits += bsi;
     }
-    std::array<bool, kBlocksPerFrame> send_rematstr{};
-    for (int block = 0; block < kBlocksPerFrame; ++block) {
-        std::uint32_t bits = 2 * static_cast<std::uint32_t>(nfchans) + 1;  // blksw+dith+dynrnge
-        bits += block == 0 ? 2 : 1;  // cplstre (+cplinu in block 0)
-        if (rematrixing) {
-            send_rematstr[static_cast<std::size_t>(block)] =
-                block == 0 || rematflg[static_cast<std::size_t>(block)] !=
-                                  rematflg[static_cast<std::size_t>(block) - 1];
-            bits += 1 + (send_rematstr[static_cast<std::size_t>(block)] ? 4 : 0);
+    {
+        BitWriter counter;
+        for (int block = 0; block < kBlocksPerFrame; ++block) {
+            emit_block_side_info(counter, block);
+            counter.put(0, 1);  // skiple, always present
         }
-        bits += 2 * static_cast<std::uint32_t>(nfchans);  // chexpstr
-        if (config_.lfe) bits += 1;                       // lfeexpstr
-        for (int ch = 0; ch < nchans; ++ch) {
-            const auto& p = plan[static_cast<std::size_t>(ch)];
-            const int run = p.run_of_block[static_cast<std::size_t>(block)];
-            if (p.run_start[static_cast<std::size_t>(run)] != block) {
-                continue;  // reuse: no exponent payload
-            }
-            if (ch < nfchans) {
-                bits += 6;  // chbwcod
-                bits += 4 + static_cast<std::uint32_t>(
-                                p.run_encoded[static_cast<std::size_t>(run)].groups.size()) *
-                                7 +
-                        2;  // abs + groups + gainrng
-            } else {
-                bits += 4 + 2 * 7;  // LFE: abs + nlfegrps, no gainrng
-            }
-        }
-        bits += 1 + (block == 0 ? 11u : 0u);  // baie
-        bits += 1 + (block == 0 ? 6 + static_cast<std::uint32_t>(nfchans) * 7 +
-                                      (config_.lfe ? 7u : 0u)
-                                : 0u);        // snroffste
-        bits += 1 + 1;                        // deltbaie + skiple
-        side_bits += bits;
+        side_bits += static_cast<std::uint32_t>(counter.bit_count());
     }
-    assert(side_bits + detail::kTailBits <= total_bits);
+    if (side_bits + detail::kTailBits > total_bits) {
+        // The chosen configuration cannot fit its own headers at this rate.
+        return std::unexpected(FrameError::kInvalidBitrate);
+    }
     const std::uint32_t budget = total_bits - side_bits - detail::kTailBits;
 
-    // --- 6. SNR-offset search (bap varies per run) ---
-    // bap cache: per channel, per run, for the current composite offset.
+    // --- 9. SNR-offset search ----------------------------------------------
     std::vector<std::vector<std::vector<std::uint8_t>>> run_bap(
-        static_cast<std::size_t>(nchans));
-    for (int ch = 0; ch < nchans; ++ch) {
-        run_bap[static_cast<std::size_t>(ch)].resize(
-            plan[static_cast<std::size_t>(ch)].run_start.size());
+        static_cast<std::size_t>(streams));
+    for (int s = 0; s < streams; ++s) {
+        run_bap[static_cast<std::size_t>(s)].resize(
+            plan[static_cast<std::size_t>(s)].runs.size());
     }
-    std::vector<std::span<const std::uint8_t>> bap_views(static_cast<std::size_t>(nchans));
+    std::vector<std::span<const std::uint8_t>> bap_views(static_cast<std::size_t>(streams));
+
     const auto bits_at = [&](int composite) {
-        for (int ch = 0; ch < nchans; ++ch) {
-            auto& p = plan[static_cast<std::size_t>(ch)];
-            for (std::size_t run = 0; run < p.run_start.size(); ++run) {
-                auto& bap = run_bap[static_cast<std::size_t>(ch)][run];
-                bap.resize(p.run_decoded[run].size());
-                compute_bit_allocation(p.run_decoded[run], config_.sample_rate, codes,
-                                       composite >> 4, composite & 15, bap);
+        for (int s = 0; s < streams; ++s) {
+            auto& p = plan[static_cast<std::size_t>(s)];
+            const BitAllocRegion region{.start = stream_start(s),
+                                        .coupling = s == cpl_stream,
+                                        .cplfleak = cplfleak,
+                                        .cplsleak = cplsleak};
+            for (std::size_t run = 0; run < p.runs.size(); ++run) {
+                auto& bap = run_bap[static_cast<std::size_t>(s)][run];
+                bap.assign(p.runs[run].decoded.size(), 0);
+                compute_bit_allocation(p.runs[run].decoded, config_.sample_rate, codes,
+                                       composite >> 4, composite & 15, bap, region);
             }
         }
         std::uint32_t total = 0;
         for (int block = 0; block < kBlocksPerFrame; ++block) {
-            for (int ch = 0; ch < nchans; ++ch) {
-                const auto& p = plan[static_cast<std::size_t>(ch)];
-                bap_views[static_cast<std::size_t>(ch)] =
-                    run_bap[static_cast<std::size_t>(ch)]
-                           [static_cast<std::size_t>(
-                               p.run_of_block[static_cast<std::size_t>(block)])];
+            for (int s = 0; s < streams; ++s) {
+                const auto& p = plan[static_cast<std::size_t>(s)];
+                const auto run = static_cast<std::size_t>(
+                    p.run_of_block[static_cast<std::size_t>(block)]);
+                // Only the stream's own region carries mantissas.
+                const auto& bap = run_bap[static_cast<std::size_t>(s)][run];
+                bap_views[static_cast<std::size_t>(s)] =
+                    std::span{bap}.subspan(static_cast<std::size_t>(stream_start(s)));
             }
             total += static_cast<std::uint32_t>(mantissa_bits_per_block(bap_views));
         }
@@ -351,28 +661,43 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
             hi = mid - 1;
         }
     }
-    const int csnroffst = lo >> 4;
-    const int fsnroffst = lo & 15;
+    csnroffst = lo >> 4;
+    fsnroffst = lo & 15;
     const std::uint32_t mantissa_bits = bits_at(lo);
     assert(mantissa_bits <= budget);
 
-    // --- 7. Mantissa tokens per block ---
+    // --- 10. Mantissa tokens per block -------------------------------------
+    // §5.3.3 ordering: each fbw channel's mantissas, with the coupling
+    // channel's inserted right after the FIRST coupled channel, then the LFE.
     std::array<std::vector<MantissaToken>, kBlocksPerFrame> block_tokens;
     std::size_t token_bits_total = 0;
     for (int block = 0; block < kBlocksPerFrame; ++block) {
         MantissaBlockWriter writer;
-        for (int ch = 0; ch < nchans; ++ch) {
-            const auto& p = plan[static_cast<std::size_t>(ch)];
+        const auto emit_stream = [&](int s) {
+            const auto& p = plan[static_cast<std::size_t>(s)];
             const auto run = static_cast<std::size_t>(
                 p.run_of_block[static_cast<std::size_t>(block)]);
-            const auto& exps = p.run_decoded[run];
-            const auto& bap = run_bap[static_cast<std::size_t>(ch)][run];
-            for (int bin = 0; bin < channel_endmant(ch); ++bin) {
+            const auto& exps = p.runs[run].decoded;
+            const auto& bap = run_bap[static_cast<std::size_t>(s)][run];
+            const int begin = stream_start(s);
+            const int end = stream_end(s);
+            for (int bin = begin; bin < end; ++bin) {
                 const int exp = exps[static_cast<std::size_t>(bin)];
                 const auto mantissa = static_cast<std::int32_t>(
-                    static_cast<std::int64_t>(fixed_at(ch, block, bin)) << exp);
+                    static_cast<std::int64_t>(fixed_at(s, block, bin - begin)) << exp);
                 writer.add(mantissa, bap[static_cast<std::size_t>(bin)]);
             }
+        };
+        bool emitted_coupling = false;
+        for (int ch = 0; ch < nfchans; ++ch) {
+            emit_stream(ch);
+            if (cplinu && !emitted_coupling) {
+                emit_stream(cpl_stream);
+                emitted_coupling = true;
+            }
+        }
+        if (config_.lfe) {
+            emit_stream(nfchans);
         }
         writer.finish_block();
         token_bits_total += writer.bit_count();
@@ -380,7 +705,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     }
     assert(token_bits_total == mantissa_bits);
 
-    // --- 8. Padding plan, 9. packing ---
+    // --- 11. Pack ----------------------------------------------------------
     const auto plan_pad = detail::plan_padding(budget - mantissa_bits);
 
     BitWriter w;
@@ -413,81 +738,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     w.put(0, 1);  // addbsie
 
     for (int block = 0; block < kBlocksPerFrame; ++block) {
-        const bool first = block == 0;
-        for (int ch = 0; ch < nfchans; ++ch) {
-            w.put(0, 1);  // blksw
-        }
-        for (int ch = 0; ch < nfchans; ++ch) {
-            w.put(0, 1);  // dithflag
-        }
-        w.put(0, 1);              // dynrnge
-        w.put(first ? 1 : 0, 1);  // cplstre
-        if (first) {
-            w.put(0, 1);  // cplinu
-        }
-        if (rematrixing) {
-            const bool send = send_rematstr[static_cast<std::size_t>(block)];
-            w.put(send ? 1 : 0, 1);  // rematstr
-            if (send) {
-                for (std::size_t band = 0; band < 4; ++band) {
-                    w.put(rematflg[static_cast<std::size_t>(block)][band] ? 1 : 0, 1);
-                }
-            }
-        }
-        for (int ch = 0; ch < nfchans; ++ch) {
-            const auto& p = plan[static_cast<std::size_t>(ch)];
-            const int run = p.run_of_block[static_cast<std::size_t>(block)];
-            const bool fresh = p.run_start[static_cast<std::size_t>(run)] == block;
-            w.put(static_cast<std::uint32_t>(
-                      fresh ? p.run_strategy[static_cast<std::size_t>(run)]
-                            : ExpStrategy::kReuse),
-                  2);
-        }
-        if (config_.lfe) {
-            const auto& p = plan[static_cast<std::size_t>(nfchans)];
-            const int run = p.run_of_block[static_cast<std::size_t>(block)];
-            w.put(p.run_start[static_cast<std::size_t>(run)] == block ? 1 : 0, 1);
-        }
-        for (int ch = 0; ch < nfchans; ++ch) {
-            const auto& p = plan[static_cast<std::size_t>(ch)];
-            const int run = p.run_of_block[static_cast<std::size_t>(block)];
-            if (p.run_start[static_cast<std::size_t>(run)] == block) {
-                w.put(static_cast<std::uint32_t>(chbwcod), 6);
-            }
-        }
-        for (int ch = 0; ch < nchans; ++ch) {
-            const auto& p = plan[static_cast<std::size_t>(ch)];
-            const auto run = static_cast<std::size_t>(
-                p.run_of_block[static_cast<std::size_t>(block)]);
-            if (p.run_start[run] != block) {
-                continue;
-            }
-            const auto& e = p.run_encoded[run];
-            w.put(e.absolute, 4);
-            for (const auto group : e.groups) {
-                w.put(group, 7);
-            }
-            if (ch < nfchans) {
-                w.put(0, 2);  // gainrng
-            }
-        }
-        w.put(first ? 1 : 0, 1);  // baie
-        if (first) {
-            w.put(static_cast<std::uint32_t>(codes.sdcycod), 2);
-            w.put(static_cast<std::uint32_t>(codes.fdcycod), 2);
-            w.put(static_cast<std::uint32_t>(codes.sgaincod), 2);
-            w.put(static_cast<std::uint32_t>(codes.dbpbcod), 2);
-            w.put(static_cast<std::uint32_t>(codes.floorcod), 3);
-        }
-        w.put(first ? 1 : 0, 1);  // snroffste
-        if (first) {
-            w.put(static_cast<std::uint32_t>(csnroffst), 6);
-            for (int ch = 0; ch < nchans; ++ch) {
-                w.put(static_cast<std::uint32_t>(fsnroffst), 4);
-                w.put(static_cast<std::uint32_t>(codes.fgaincod), 3);
-            }
-        }
-        w.put(0, 1);  // deltbaie
+        emit_block_side_info(w, block);
 
         const std::uint16_t skip = plan_pad.skip_bytes[static_cast<std::size_t>(block)];
         w.put(skip > 0 ? 1 : 0, 1);  // skiple
