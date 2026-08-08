@@ -28,14 +28,17 @@ constexpr int band_width(int start_bin) {
 
 }  // namespace
 
-double decode_coordinate(Coordinate coordinate, int master) {
+double decode_coordinate(Coordinate coordinate, int master, int mantissa_bits) {
+    const double one = static_cast<double>(1 << mantissa_bits);
     const double mantissa = coordinate.exp == kMaxExp
-                                ? coordinate.mant / 16.0
-                                : (coordinate.mant + 16) / 32.0;
+                                ? coordinate.mant / one
+                                : (coordinate.mant + one) / (2.0 * one);
     return std::ldexp(mantissa, -(coordinate.exp + 3 * master));
 }
 
-Coordinate quantize_coordinate(double value, int master) {
+Coordinate quantize_coordinate(double value, int master, int mantissa_bits) {
+    const int max_mant = (1 << mantissa_bits) - 1;
+    const double one = static_cast<double>(1 << mantissa_bits);
     if (!(value > 0.0)) {
         return {.exp = kMaxExp, .mant = 0};
     }
@@ -49,28 +52,31 @@ Coordinate quantize_coordinate(double value, int master) {
 
     if (exp < 0) {
         // Louder than this master allows: clamp to the largest coordinate.
-        return {.exp = 0, .mant = 15};
+        return {.exp = 0, .mant = static_cast<std::uint8_t>(max_mant)};
     }
     if (exp >= kMaxExp) {
         // Quieter than the implicit-one form reaches: use the exp==15 escape,
         // whose mantissa is a plain fraction and can go all the way to zero.
         const double scaled = std::ldexp(value, kMaxExp + 3 * master);
-        const auto mant = static_cast<int>(std::lround(scaled * 16.0));
-        return {.exp = kMaxExp, .mant = static_cast<std::uint8_t>(std::clamp(mant, 0, 15))};
+        const auto mant = static_cast<int>(std::lround(scaled * one));
+        return {.exp = kMaxExp,
+                .mant = static_cast<std::uint8_t>(std::clamp(mant, 0, max_mant))};
     }
 
     const double scaled = std::ldexp(value, exp + 3 * master);  // now in [0.5, 1)
-    auto mant = static_cast<int>(std::lround(scaled * 32.0)) - 16;
-    if (mant > 15) {
+    auto mant = static_cast<int>(std::lround(scaled * 2.0 * one)) - (1 << mantissa_bits);
+    if (mant > max_mant) {
         // Rounding pushed it to the next binade; renormalise one step up.
         if (exp == 0) {
-            return {.exp = 0, .mant = 15};
+            return {.exp = 0, .mant = static_cast<std::uint8_t>(max_mant)};
         }
         --exp;
-        mant = static_cast<int>(std::lround(std::ldexp(value, exp + 3 * master) * 32.0)) - 16;
+        mant = static_cast<int>(
+                   std::lround(std::ldexp(value, exp + 3 * master) * 2.0 * one)) -
+               (1 << mantissa_bits);
     }
     return {.exp = static_cast<std::uint8_t>(exp),
-            .mant = static_cast<std::uint8_t>(std::clamp(mant, 0, 15))};
+            .mant = static_cast<std::uint8_t>(std::clamp(mant, 0, max_mant))};
 }
 
 BandLayout group_bands(int cplbegf, int subbands, std::span<const bool> structure) {

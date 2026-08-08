@@ -54,6 +54,14 @@ struct BitAllocRegion {
     // while the others allocate normally, which desynchronises the shared
     // mantissa stream.
     bool snr_all_zero = false;
+    // §E3.4.3.1: when the adaptive hybrid transform is in use for this
+    // channel, the final table lookup goes through hebaptab instead of
+    // baptab. Everything up to that point - psd, banding, excitation,
+    // masking, the snroffset/floor/truncation dance - is identical, so this
+    // is one table swap rather than a second allocator. The outcome is a
+    // pointer in 0..19 rather than 0..15, and it means something different:
+    // 1-7 select vector quantisers, 8-19 scalar ones.
+    bool high_efficiency = false;
 };
 
 // §7.2.2.2-7.2.2.7 for one channel. exps are the DECODED exponents (the

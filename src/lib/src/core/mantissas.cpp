@@ -86,6 +86,14 @@ void MantissaBlockWriter::add(std::int32_t mantissa, int bap) {
     }
 }
 
+void MantissaBlockWriter::add_raw(std::uint32_t value, int bits) {
+    if (bits <= 0) {
+        return;
+    }
+    tokens_.push_back({static_cast<std::uint8_t>(bits), value});
+    bit_count_ += static_cast<std::size_t>(bits);
+}
+
 void MantissaBlockWriter::finish_block() {
     // §7.3.5: partial groups at block end are completed with dummy mantissas
     // (code 0 is always legal); dummies are ignored by the decoder.

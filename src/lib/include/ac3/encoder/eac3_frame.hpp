@@ -87,6 +87,62 @@ struct FrameConfig {
     // surmixlev entirely, so without this a stream carries no downmix levels
     // at all and a receiver falls back on its own defaults.
     std::optional<meta::MixMetadata> mixing = std::nullopt;
+    // --- Annex E coding tools -----------------------------------------------
+    // Channel coupling (§E3.3, §7.4). Needs two full-bandwidth channels to
+    // share anything, so it is ignored for mono. Above the coupling frequency
+    // the coupled channels stop carrying coefficients of their own and a
+    // single shared channel plus per-channel per-band coordinates stands in
+    // for them; chbwcod then disappears, because the coupling frequency IS
+    // the coded bandwidth of every coupled channel.
+    bool coupling = false;
+    // Coupling begin frequency code (§5.4.3.11), 0-15: the region starts at
+    // coefficient 37 + 12 * cplbegf. Negative picks a rate-dependent default,
+    // which is the useful behaviour - the whole point of coupling is to buy
+    // bits at rates that cannot afford two full-bandwidth channels, so the
+    // right frequency falls as the rate does.
+    int cplbegf = -1;
+
+    // Spectral extension (§E3.6). Above the extension frequency nothing is
+    // coded at all: the decoder copies a lower band up, blends it with noise
+    // and scales it to the banded envelope the encoder measured. It is
+    // cheaper than coupling - scale factors only, no shared channel - and
+    // correspondingly cruder, so the two stack: independent low, coupled mid,
+    // synthesized high.
+    bool spx = false;
+    // Spectral extension begin frequency code (§E2.3.3.5), 0-7. Synthesis
+    // starts at coefficient 25 + 12 * spx_begin_subbnd(spxbegf), which is
+    // non-linear in spxbegf. Negative picks a rate-dependent default.
+    //
+    // With coupling also in use this value FIXES the coupling end frequency:
+    // §E3.3.1 stops transmitting cplendf and derives it from spxbegf, so that
+    // coupling ends exactly where synthesis begins. cplbegf is clamped down if
+    // it would leave the coupling region empty, and coupling is dropped
+    // outright if there is no room for it at all.
+    int spxbegf = -1;
+    // Spectral extension attenuation (§E3.6.4.2.3): a five-tap notch across
+    // the seam where the coded band meets the synthesized one, and across
+    // every point where the copy wraps back to its source. Only meaningful
+    // when spx is set. It costs six bits per channel per frame.
+    bool spx_atten = true;
+    // The attenuation depth (§E2.3.2.25), 0-31: deeper with the code. Negative
+    // matches the notch to how big a step the seam actually is.
+    int spxattencod = -1;
+
+    // Adaptive hybrid transform (§E3.4). A second transform stage - a 6-point
+    // DCT down each spectral bin across the frame's six blocks - which for
+    // stationary material collapses six coefficients into essentially one.
+    // It brings a finer allocation table and vector quantisation with it, and
+    // it restructures the frame: an AHT channel's whole frame of mantissas is
+    // packed into block 0 and the other five carry nothing for it.
+    //
+    // It is not free for material that moves between blocks, so it is decided
+    // per channel per frame; setting this permits it rather than forces it.
+    bool aht = false;
+    // Gain-adaptive quantization mode (§E3.4.4.2, Table E3.3), 0-3. Negative
+    // lets the encoder pick the cheapest per channel, which is the useful
+    // behaviour; pinning it to 0 turns GAQ off while leaving the rest of AHT
+    // alone, which is how the tool's contribution gets measured on its own.
+    int gaqmod = -1;
 };
 
 // Words per syncframe at a given rate. E-AC-3 signals the size directly, so
@@ -113,7 +169,7 @@ struct FrameMetadata {
 // the one reference encoders use, because those are the paths reference
 // decoders are exercised on: frame-level exponent strategies (Table E2.10
 // code 0 - D15 in block 0, reused for the other five) and frame-level SNR
-// offsets. No coupling, no spectral extension, long blocks only.
+// offsets. Long blocks only; the Annex E tools are opt-in per FrameConfig.
 class FrameEncoder {
 public:
     explicit FrameEncoder(const FrameConfig& config);

@@ -51,6 +51,7 @@ void print_usage() {
     std::println("  ac3cli devices");
     std::println("  ac3cli record  <out.ac3> [seconds] [bitrate_kbps] [device_index]");
     std::println("  ac3cli encode  <in.wav> <out.ac3> [bitrate_kbps] [couple]");
+    std::println("  ac3cli eac3-encode <in.wav> <out.ec3> [bitrate_kbps] [tools]");
     std::println("  ac3cli decode  <in.ac3|in.ec3> <out.wav>   (AC-3 or E-AC-3; bsid decides)");
     std::println("  ac3cli levels  <in.wav|in.ac3>     (per-channel peak/RMS report)");
     std::println("  ac3cli loudness <in.wav>             (BS.1770-4 loudness -> dialnorm)");
@@ -58,6 +59,11 @@ void print_usage() {
     std::println("  ac3cli mkv     <in.ac3|in.ec3> <out.mkv>  (wrap as a playable Matroska file)");
     std::println("  ac3cli outputs                      (render endpoints + AC-3 passthrough support)");
     std::println("  ac3cli play    <in.ac3> [device_index]  (exclusive-mode IEC 61937 passthrough)");
+    std::println("");
+    std::println("tools:  Annex E coding tools, '+'-joined — none | cpl | spx | aht | all;");
+    std::println("        cpl:N / spx:N pin that tool's band edge (e.g. cpl:4+spx:5);");
+    std::println("        aht:N pins the GAQ mode — aht:0 is AHT with GAQ switched off;");
+    std::println("        atten:N pins the SPX notch depth, noatten removes it");
     std::println("");
     std::println("layout: stereo (default) | 51 — 5.1 uses per-channel tones;");
     std::println("        append 'c' (stereoc, 51c) to enable channel coupling");
@@ -709,6 +715,151 @@ int run_eac3_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_
     }
     std::println("wrote {} E-AC-3 {} access units ({} channels, {} substreams, bsid 16) to {}",
                  count, layout, nchans, config.dependents.size() + 1, out_path);
+    return 0;
+}
+
+// Which Annex E tools to switch on, as a '+'-joined list ("cpl", "cpl+spx",
+// "all", "none"). Every tool is a trade rather than a free win, so they are
+// selected rather than assumed - and being able to encode the same material
+// with and without one is the only way to say whether it earned its place.
+constexpr std::string_view kEac3Tools =
+    "none | cpl | spx | aht | all (cpl:N / spx:N pin a band edge, aht:N the gain mode)";
+
+bool parse_eac3_tools(std::string_view text, ac3::eac3::FrameConfig& config) {
+    if (text.empty() || text == "none") {
+        return true;
+    }
+    while (!text.empty()) {
+        const auto split = text.find('+');
+        const auto token = text.substr(0, split);
+        // "cpl:N" pins the coupling begin frequency code, which is how a
+        // band-edge question gets answered by experiment rather than argument.
+        if (token.starts_with("cpl:")) {
+            config.coupling = true;
+            config.cplbegf = static_cast<int>(parse_u32_or(token.substr(4), 99));
+            if (config.cplbegf > 15) {
+                return false;
+            }
+        } else if (token.starts_with("spx:")) {
+            config.spx = true;
+            config.spxbegf = static_cast<int>(parse_u32_or(token.substr(4), 99));
+            if (config.spxbegf > 7) {
+                return false;
+            }
+        } else if (token == "cpl") {
+            config.coupling = true;
+        } else if (token == "spx") {
+            config.spx = true;
+        } else if (token == "noatten") {
+            // Spectral extension without its band-border notch, for the A/B.
+            config.spx_atten = false;
+        } else if (token.starts_with("atten:")) {
+            config.spxattencod = static_cast<int>(parse_u32_or(token.substr(6), 99));
+            if (config.spxattencod > 31) {
+                return false;
+            }
+        } else if (token.starts_with("aht:")) {
+            // "aht:0" is AHT with gain-adaptive quantization switched off,
+            // which is how GAQ's own contribution gets measured.
+            config.aht = true;
+            config.gaqmod = static_cast<int>(parse_u32_or(token.substr(4), 99));
+            if (config.gaqmod > 3) {
+                return false;
+            }
+        } else if (token == "aht") {
+            config.aht = true;
+        } else if (token == "all") {
+            config.coupling = true;
+            config.spx = true;
+            config.aht = true;
+        } else {
+            return false;
+        }
+        text = split == std::string_view::npos ? std::string_view{} : text.substr(split + 1);
+    }
+    return true;
+}
+
+// Real program material through the E-AC-3 path. The tone generators above
+// exercise field placement; only recorded-style material exercises the coding
+// decisions, which is what the Annex E tools are judged on.
+int run_eac3_encode(std::string_view in_path, std::string_view out_path,
+                    std::uint32_t bitrate, std::string_view tools) {
+    const auto wav = ac3::io::read_wav(std::string{in_path});
+    if (!wav) {
+        std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(wav.error()));
+        return 1;
+    }
+    ac3::SampleRate sr{};
+    switch (wav->sample_rate) {
+        case 48000: sr = ac3::SampleRate::k48000; break;
+        case 44100: sr = ac3::SampleRate::k44100; break;
+        case 32000: sr = ac3::SampleRate::k32000; break;
+        default:
+            std::println(stderr,
+                         "error: sample rate {} is not legal for E-AC-3 (need 32/44.1/48 kHz)",
+                         wav->sample_rate);
+            return 1;
+    }
+
+    // WAV channel order is not AC-3 channel order, so a 5.1 file has to be
+    // permuted on the way in - the inverse of wav_channel_map below.
+    ac3::eac3::FrameConfig config{.sample_rate = sr, .bitrate_kbps = bitrate};
+    std::vector<std::size_t> source;  // coded channel -> wav channel
+    switch (wav->channels.size()) {
+        case 1:
+            config.acmod = ac3::Acmod::k1_0;
+            source = {0};
+            break;
+        case 2:
+            config.acmod = ac3::Acmod::k2_0;
+            source = {0, 1};
+            break;
+        case 6:
+            config.acmod = ac3::Acmod::k3_2;
+            config.lfe = true;
+            source = {0, 2, 1, 4, 5, 3};  // L C R Ls Rs LFE <- FL FR FC LFE BL BR
+            break;
+        default:
+            std::println(stderr, "error: {} channels; expected 1, 2 or 6",
+                         wav->channels.size());
+            return 1;
+    }
+
+    if (!parse_eac3_tools(tools, config)) {
+        std::println(stderr, "error: unknown tool set '{}' ({})", tools, kEac3Tools);
+        return 1;
+    }
+
+    ac3::eac3::FrameEncoder encoder{config};
+    const auto nchans = source.size();
+    const std::size_t total = wav->frame_count();
+    std::vector<std::vector<float>> block(nchans,
+                                          std::vector<float>(ac3::kSamplesPerFrame));
+    std::vector<std::span<const float>> views(nchans);
+    std::vector<std::vector<std::byte>> frames;
+    for (std::size_t start = 0; start < total; start += ac3::kSamplesPerFrame) {
+        for (std::size_t c = 0; c < nchans; ++c) {
+            const auto& channel = wav->channels[source[c]];
+            for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+                const std::size_t at = start + static_cast<std::size_t>(i);
+                block[c][static_cast<std::size_t>(i)] = at < total ? channel[at] : 0.0f;
+            }
+            views[c] = block[c];
+        }
+        auto frame = encoder.encode_frame(views);
+        if (!frame) {
+            std::println(stderr, "error: the encoder cannot express this configuration");
+            return 1;
+        }
+        frames.push_back(std::move(*frame));
+    }
+    if (!write_frames(out_path, frames)) {
+        return 1;
+    }
+    std::println("encoded {} E-AC-3 frames ({} kbps, {} Hz, {} channels, tools: {}) to {}",
+                 frames.size(), bitrate, wav->sample_rate, nchans,
+                 tools.empty() ? "none" : tools, out_path);
     return 0;
 }
 
@@ -1535,6 +1686,11 @@ int main(int argc, char** argv) {
     }
     if (command == "mkv" && args.size() > 2) {
         return run_mkv(args[1], args[2]);
+    }
+    if (command == "eac3-encode" && args.size() > 3) {
+        return run_eac3_encode(args[2], args[3],
+                               args.size() > 4 ? parse_u32_or(args[4], 192) : 192,
+                               args.size() > 5 ? std::string_view{args[5]} : "none");
     }
     if (command == "eac3-sine") {
         return run_eac3_sine(args[1], args.size() > 2 ? parse_u32_or(args[2], 5) : 5,

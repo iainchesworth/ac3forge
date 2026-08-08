@@ -29,6 +29,7 @@ target_sources(ac3forge
         src/decoder/eac3_decoder.cpp
         src/encoder/coupling.cpp
         src/encoder/eac3_frame.cpp
+        src/encoder/eac3_tools.cpp
         src/encoder/encoder.cpp
         src/io/elementary.cpp
         src/io/wav.cpp
