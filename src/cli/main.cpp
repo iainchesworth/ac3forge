@@ -797,13 +797,26 @@ int run_levels(std::string_view in_path) {
     }
     // A syncframe opens with 0x0B77 (§5.4.1.1); anything else is treated as a
     // WAV, whose reader reports its own diagnosis if it is neither.
-    const bool is_ac3 = bytes.size() >= 2 && std::to_integer<int>(bytes[0]) == 0x0B &&
-                        std::to_integer<int>(bytes[1]) == 0x77;
+    const bool syncword = bytes.size() >= 6 && std::to_integer<int>(bytes[0]) == 0x0B &&
+                          std::to_integer<int>(bytes[1]) == 0x77;
 
-    if (is_ac3) {
+    if (syncword) {
+        // E-AC-3 shares the sync word, so the sync word alone cannot tell the
+        // two apart. bsid can: Annex E places it at bits 40..44 of the frame,
+        // exactly where §5.4.1.1 puts AC-3's, so that a decoder can identify
+        // the variant before parsing anything else.
+        const auto bsid = std::to_integer<unsigned>(bytes[5]) >> 3;
+        if (bsid > 8) {
+            std::println(stderr,
+                         "error: {} is {} (bsid {}); the in-repo decoder reads only the "
+                         "bsid<=8 syntax, so levels cannot open it",
+                         in_path,
+                         bsid > 10 ? "E-AC-3" : "AC-3 alternate syntax (A/52 Annex D)", bsid);
+            return 1;
+        }
         const auto frames = ac3::split_frames(bytes);
         if (!frames || frames->empty()) {
-            std::println(stderr, "error: not a valid AC-3 stream");
+            std::println(stderr, "error: {} is not a valid AC-3 stream", in_path);
             return 1;
         }
         ac3::FrameDecoder decoder;
