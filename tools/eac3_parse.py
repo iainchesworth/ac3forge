@@ -220,9 +220,17 @@ def parse_frame(data, verbose=True):
         blkid = 1 if numblkscod == 3 else r.bits(1)
         if blkid:
             r.bits(6)                # frmsizecod
+    # TS 103 420 §8.3: an object-audio stream puts its only decoder-visible
+    # marker here. addbsil counts bytes minus one.
+    oba = None
     if r.bits(1):                    # addbsie
         addbsil = r.bits(6)
-        r.bits((addbsil + 1) * 8)
+        first = r.bits(8)
+        if first & 1:                # flag_ec3_extension_type_a
+            oba = r.bits(8)          # complexity_index_type_a = object count
+            r.bits((addbsil + 1 - 2) * 8)
+        else:
+            r.bits(addbsil * 8)
 
     log(f'bsi: strmtyp={strmtyp} substreamid={substreamid} frmsiz={frmsiz} '
         f'fscod={fscod} numblkscod={numblkscod} acmod={acmod} lfeon={lfeon} '
@@ -372,6 +380,7 @@ def parse_frame(data, verbose=True):
     # separately and ahead of the per-channel ones.
     cplfsnroffst = 0
     cplfgaincod = 4
+    skip_fields = []
 
     for blk in range(nblks):
         start = r.pos
@@ -568,6 +577,11 @@ def parse_frame(data, verbose=True):
         if skipflde:
             if r.bits(1):            # skiple
                 skipl = r.bits(9)
+                # Where the metadata actually lives. Dolby's own DD+ JOC
+                # streams put the EMDF container here, not in the aux field:
+                # theirs read auxdatae=0 with the container a third of the way
+                # into the frame, which is a block skip field and nothing else.
+                skip_fields.append((r.pos, skipl * 8))
                 r.bits(skipl * 8)
 
         side = r.pos - start
@@ -651,11 +665,125 @@ def parse_frame(data, verbose=True):
     total_bits = (frmsiz + 1) * 16
     log(f'consumed {r.pos} of {total_bits} bits; {total_bits - r.pos} left for '
         f'aux + errorcheck (needs >= 18)')
+
+    # --- aux data, read from the back of the frame -------------------------
+    # A/52 §5.4.4.1 puts user data at the END of auxbits precisely so it can be
+    # found without knowing nauxbits, which is only knowable once the audio has
+    # been decoded. So this walks backwards from crc2 rather than forwards from
+    # where the blocks happened to stop.
+    emdf = None
+    aux_start = None
+    # A skip field is the first place to look: it is where Dolby's own streams
+    # carry the container, and unlike the aux field its position is already
+    # known exactly from parsing the blocks.
+    for at, length in skip_fields:
+        emdf = parse_emdf(data, at, length, log)
+        if emdf is not None:
+            emdf['in_skip'] = True
+            aux_start = at
+            break
+    if emdf is None and total_bits >= 32:
+        tail = Reader(data)
+        tail.pos = total_bits - 18       # auxdatae, crcrsv, crc2
+        if tail.bits(1):                 # auxdatae
+            tail.pos = total_bits - 32
+            auxdatal = tail.bits(14)
+            # §5.4.4.1: "backup auxdatal bits from the beginning of auxdatal",
+            # so the user data ends where auxdatal starts - 32 bits from the
+            # end of the frame, not 18. auxdatal is inside the backup point.
+            aux_start = total_bits - 32 - auxdatal
+            log(f'auxdata: {auxdatal} bits starting at bit {aux_start}')
+            if aux_start < r.pos:
+                log('  AUX OVERLAPS the audio blocks')
+            emdf = parse_emdf(data, aux_start, auxdatal, log)
+
     return r.pos, total_bits, {'strmtyp': strmtyp, 'substreamid': substreamid,
                                'fscod': fscod, 'numblkscod': numblkscod,
                                'acmod': acmod, 'lfeon': lfeon, 'chanmap': chanmap,
                                'dialnorm': dialnorm, 'compr': compr,
-                               'mixmdate': mix or None, 'dynrng': dynrng_blocks}
+                               'mixmdate': mix or None, 'dynrng': dynrng_blocks,
+                               'oba': oba, 'emdf': emdf, 'aux_start': aux_start}
+
+
+def variable_bits(r, n):
+    """TS 102 366 §H.2.1.2.1."""
+    value = 0
+    while True:
+        value += r.bits(n)
+        if not r.bits(1):
+            return value
+        value <<= n
+        value += 1 << n
+
+
+def parse_emdf(data, start_bit, length_bits, log):
+    """TS 102 366 Annex H, over the aux field located by the caller."""
+    r = Reader(data)
+    r.pos = start_bit
+    if r.bits(16) != 0x5838:
+        log('  aux data is not an EMDF container')
+        return None
+    container_length = r.bits(16)
+    log(f'EMDF: container {container_length} bytes '
+        f'(aux field holds {length_bits // 8})')
+    version = r.bits(2)
+    if version == 3:
+        version += variable_bits(r, 2)
+    key_id = r.bits(3)
+    if key_id == 7:
+        key_id += variable_bits(r, 3)
+    payloads = []
+    while True:
+        payload_id = r.bits(5)
+        if payload_id == 0x1F:
+            payload_id += variable_bits(r, 5)
+        if payload_id == 0:
+            break
+        # §H.2.1.3, and TS 103 420 Table 56 for what object audio must send.
+        cfg = {}
+        cfg['smploffste'] = r.bits(1)
+        if cfg['smploffste']:
+            r.bits(11); r.bits(1)
+        cfg['duratione'] = r.bits(1)
+        if cfg['duratione']:
+            variable_bits(r, 11)
+        cfg['groupide'] = r.bits(1)
+        if cfg['groupide']:
+            cfg['groupid'] = variable_bits(r, 2)
+        cfg['codecdatae'] = r.bits(1)
+        if cfg['codecdatae']:
+            r.bits(8)
+        cfg['discard_unknown_payload'] = r.bits(1)
+        aligned = None
+        if not cfg['discard_unknown_payload']:
+            if not cfg['smploffste']:
+                aligned = r.bits(1)
+                if aligned:
+                    cfg['create_duplicate'] = r.bits(1)
+                    cfg['remove_duplicate'] = r.bits(1)
+            if cfg['smploffste'] or aligned:
+                cfg['priority'] = r.bits(5)
+                cfg['proc_allowed'] = r.bits(2)
+        size = variable_bits(r, 8)
+        payload = bytes(r.bits(8) for _ in range(size))
+        name = {11: 'OAMD', 14: 'JOC'}.get(payload_id, f'id {payload_id}')
+        log(f'  payload {name}: {size} bytes, config {cfg}')
+        payloads.append((payload_id, payload))
+    prim = r.bits(2)
+    sec = r.bits(2)
+    r.bits((0, 8, 32, 128)[prim])
+    r.bits((0, 8, 32, 128)[sec])
+    used = r.pos - start_bit
+    # §H.2.2.1.2 measures emdf_container(), which emdf_sync() precedes.
+    declared = 32 + container_length * 8
+    if used > declared:
+        log(f'  EMDF OVERRUN: parsed {used} bits, container declares {declared}')
+    elif declared > length_bits:
+        log(f'  EMDF does not fit: declares {declared} bits, aux field has {length_bits}')
+    else:
+        log(f'  EMDF ok: {used} bits parsed, {declared} declared, '
+            f'{declared - used} padding')
+    return {'payloads': payloads, 'ok': used <= declared <= length_bits}
 
 
 def expand(absexp, groups, grpsize, end):
@@ -792,6 +920,16 @@ def main():
         if slack < 18:
             print(f'   OVERRUN by {18 - slack} bits')
             ok = False
+        if info['oba'] is not None:
+            print(f'   addbsi: object audio, {info["oba"]} objects')
+        if info['emdf'] is not None:
+            names = ', '.join({11: 'OAMD', 14: 'JOC'}.get(pid, str(pid))
+                              for pid, _ in info['emdf']['payloads']) or 'none'
+            state = 'ok' if info['emdf']['ok'] else 'MALFORMED'
+            print(f'   EMDF container ({state}): payloads {names}')
+            ok = ok and info['emdf']['ok']
+            where = 'a block skip field' if info['emdf'].get('in_skip') else 'the aux field'
+            print(f'   EMDF carried in {where}')
         # Cross-substream invariants. A dependent that disagrees with its
         # parent about the sample rate or the block count silently desynchronises
         # the program rather than failing to parse.

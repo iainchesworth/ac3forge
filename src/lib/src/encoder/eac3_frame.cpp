@@ -58,14 +58,18 @@ constexpr BitAllocCodes kBamode0Codes{.sdcycod = 2,
                                       .fgaincod = 4};  // frmfgaincode == 0 (§8.2.12)
 constexpr int kFrmfgaincode = 0;   // fgaincod defaults to 0x4, matching AC-3
 constexpr int kDbaflde = 0;        // no delta bit allocation
-// AC-3 has to push its padding through in-block skip fields, because §5.5
-// confines the aux field to the final 3/8 of the frame - a rule that exists
-// to protect the crc1-at-5/8 checkpoint. E-AC-3 has no crc1 and Annex E
-// states no equivalent constraint, so auxbits can absorb the whole
-// remainder. That is both simpler and, measurably, what decoders expect:
-// padding routed through a block-0 skip field came back as audible data,
-// and FFmpeg's own encoder likewise sets skipflde to 0.
-constexpr int kSkipflde = 0;
+// Padding goes through auxbits. AC-3 cannot do that - §5.5 confines its aux
+// field to the final 3/8 of the frame, to protect the crc1-at-5/8 checkpoint -
+// but E-AC-3 has no crc1 and Annex E states no equivalent constraint, so
+// auxbits absorb the whole remainder. FFmpeg's own encoder likewise sets
+// skipflde to 0 when it has nothing to carry.
+//
+// Metadata is a different matter. The skip field exists in EVERY block
+// (§2.3.2.10: "full skip field syntax shall be present in each audio block"),
+// so switching it on costs one bit per block whether or not anything is
+// carried, and the frame-level flag has to be decided before the blocks are
+// written.
+
 // How deep to taper the seam when the caller does not say. The taps come out
 // at -1.2, -2.4 and -3.6 dB, deepest on the join - a gentle smoothing rather
 // than a hole.
@@ -79,6 +83,29 @@ constexpr int kSkipflde = 0;
 constexpr int kDefaultSpxAttenCod = 2;
 
 constexpr int kTailBits = 18;  // auxdatae + crcrsv + crc2
+
+// The skip field is 9 bits of length, so one block can hold this much.
+constexpr std::size_t kMaxSkipBytes = 511;
+
+// Which block carries the whole container. Dolby's own streams use a middle
+// block; a decoder that scans for the EMDF sync word should not care.
+constexpr int kMetadataBlock = 0;
+
+// §5.4.3.58-60, at the position Annex E's audblk gives it: after the delta
+// bit allocation fields and before the quantized mantissas. Getting that
+// order wrong does not fail to parse - it shifts every mantissa in the block,
+// which comes back as noise rather than as an error.
+void put_skip_field(BitWriter& w, std::span<const std::byte> payload) {
+    if (payload.empty()) {
+        w.put(0, 1);  // skiple: this block carries nothing
+        return;
+    }
+    w.put(1, 1);  // skiple
+    w.put(static_cast<std::uint32_t>(payload.size()), 9);  // skipl, in bytes
+    for (const auto byte : payload) {
+        w.put(std::to_integer<std::uint32_t>(byte), 8);
+    }
+}
 
 // One coded stream: its exponents (frame-constant, D15 in block 0) and the
 // allocation they produce. The full-bandwidth channels come first, then LFE,
@@ -322,11 +349,12 @@ struct Payload {
 // frame bar padding and the tail. Silence and real audio go through this one
 // function, so the two can never drift apart on field placement.
 void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
-                const Payload& payload) {
+                const Payload& payload, std::span<const std::byte> metadata = {}) {
     const int nfchans = fullbw_channel_count(config.acmod);
     const bool dependent = config.strmtyp == StreamType::kDependent;
     const auto& cpl = payload.cpl;
     const auto& spx = payload.spx;
+    const int skipflde = metadata.empty() ? 0 : 1;
 
     w.put(kSyncWord, 16);
 
@@ -402,7 +430,18 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
     }
     w.put(0, 1);  // infomdate
     // convsync is absent because numblkscod == 0x3; strmtyp != 0x2.
-    w.put(0, 1);  // addbsie
+    if (config.oba_complexity_index) {
+        // TS 103 420 §8.3.1 fixes the addbsi contents for an object-audio
+        // stream: seven reserved bits, the extension flag, then the complexity
+        // index. addbsil counts BYTES MINUS ONE, so the two bytes below are 1.
+        w.put(1, 1);  // addbsie
+        w.put(1, 6);  // addbsil
+        w.put(0, 7);  // reserved
+        w.put(1, 1);  // flag_ec3_extension_type_a
+        w.put(static_cast<std::uint32_t>(*config.oba_complexity_index), 8);
+    } else {
+        w.put(0, 1);  // addbsie
+    }
 
     // --- audfrm (Table E1.3) ---
     w.put(kExpstre, 1);
@@ -414,7 +453,7 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
     w.put(kBamode, 1);
     w.put(kFrmfgaincode, 1);
     w.put(kDbaflde, 1);
-    w.put(kSkipflde, 1);
+    w.put(static_cast<std::uint32_t>(skipflde), 1);
     w.put(spx.atten ? 1 : 0, 1);  // spxattene
 
     if (static_cast<std::uint8_t>(config.acmod) > 0x1) {
@@ -681,7 +720,14 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
                 w.put(static_cast<std::uint32_t>(cpl.sleak), 3);
             }
         }
-        // dbaflde == 0: no delta allocation. skipflde == 0: no skip field.
+        // dbaflde == 0: no delta allocation. The skip field, when switched on,
+        // sits here - after the delta bit allocation fields and before the
+        // mantissas. Getting that order wrong does not fail to parse; it
+        // shifts every mantissa in the block, which comes back as noise.
+        if (skipflde != 0) {
+            put_skip_field(w, blk == kMetadataBlock ? metadata
+                                                    : std::span<const std::byte>{});
+        }
 
         for (const auto& token : payload.mantissas[static_cast<std::size_t>(blk)]) {
             w.put(token.value, token.bits);
@@ -691,12 +737,18 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
 
 // Pad with auxbits, close the tail and patch crc2.
 std::expected<std::vector<std::byte>, FrameError> finish_frame(
-    const FrameConfig& config, std::uint32_t words, const Payload& payload) {
+    const FrameConfig& config, std::uint32_t words, const Payload& payload,
+    std::span<const std::byte> aux) {
     const std::uint32_t total_bytes = words * 2;
     const std::uint32_t total_bits = total_bytes * 8;
 
+    // skipl is 9 bits, so one block cannot carry more than this.
+    if (aux.size() > kMaxSkipBytes) {
+        return std::unexpected(FrameError::kInvalidObjectAudio);
+    }
+
     BitWriter probe;
-    emit_frame(probe, config, words, payload);
+    emit_frame(probe, config, words, payload, aux);
     const auto content_bits = static_cast<std::uint32_t>(probe.bit_count());
     if (content_bits + kTailBits > total_bits) {
         return std::unexpected(FrameError::kInvalidBitrate);
@@ -704,9 +756,9 @@ std::expected<std::vector<std::byte>, FrameError> finish_frame(
     const std::uint32_t spare = total_bits - content_bits - kTailBits;
 
     BitWriter w;
-    emit_frame(w, config, words, payload);
+    emit_frame(w, config, words, payload, aux);
     for (std::uint32_t i = 0; i < spare; ++i) {
-        w.put(0, 1);  // auxbits
+        w.put(0, 1);  // auxbits: padding, and nothing else
     }
     w.put(0, 1);   // auxdatae
     w.put(0, 1);   // crcrsv
@@ -747,6 +799,12 @@ std::expected<void, FrameError> validate(const FrameConfig& config) {
         config.strmtyp != StreamType::kDependent) {
         return std::unexpected(FrameError::kInvalidSubstream);
     }
+    // TS 103 420 §8.3.2.2: complexity_index_type_a is the object count, and
+    // "the maximum value of this field shall be 16".
+    if (config.oba_complexity_index &&
+        (*config.oba_complexity_index < 1 || *config.oba_complexity_index > 16)) {
+        return std::unexpected(FrameError::kInvalidObjectAudio);
+    }
     // Only a dependent substream carries a channel map, and §E2.3.1.8 requires
     // the locations it names to add up to exactly the channels acmod and lfeon
     // code. Disagreement is not a parse failure - the decoder simply puts
@@ -784,7 +842,7 @@ std::expected<void, FrameError> validate(const FrameConfig& config) {
 }  // namespace
 
 std::expected<std::vector<std::byte>, FrameError> build_silent_frame(
-    const FrameConfig& config) {
+    const FrameConfig& config, AuxPayload aux) {
     if (const auto ok = validate(config); !ok) {
         return std::unexpected(ok.error());
     }
@@ -815,7 +873,7 @@ std::expected<std::vector<std::byte>, FrameError> build_silent_frame(
     }
 
     return finish_frame(config, frame_words(config.sample_rate, config.bitrate_kbps),
-                        payload);
+                        payload, aux);
 }
 
 FrameEncoder::FrameEncoder(const FrameConfig& config) : config_(config) {
@@ -871,7 +929,7 @@ FrameMetadata derive_metadata(const FrameConfig& config,
 }  // namespace
 
 std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
-    std::span<const std::span<const float>> channels) {
+    std::span<const std::span<const float>> channels, AuxPayload aux) {
     if (const auto ok = validate(config_); !ok) {
         return std::unexpected(ok.error());
     }
@@ -879,11 +937,13 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     return encode_frame(
         channels,
         derive_metadata(config_, std::span{history_}.first(static_cast<std::size_t>(nfchans)),
-                        channels, range_, heavy_));
+                        channels, range_, heavy_),
+        aux);
 }
 
 std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
-    std::span<const std::span<const float>> channels, const FrameMetadata& metadata) {
+    std::span<const std::span<const float>> channels, const FrameMetadata& metadata,
+    AuxPayload aux) {
     if (const auto ok = validate(config_); !ok) {
         return std::unexpected(ok.error());
     }
@@ -1281,9 +1341,12 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     // The side info is offset-independent here (bamode 0, no delta
     // allocation), so it can be measured once and the remainder handed
     // wholly to the mantissas.
+    // The metadata competes with the mantissas for the same frame. It is
+    // inside emit_frame's output now that it rides in a skip field, so the
+    // side-info measurement already accounts for it.
     const auto side_bits = [&] {
         BitWriter probe;
-        emit_frame(probe, config_, words, payload);
+        emit_frame(probe, config_, words, payload, aux);
         return static_cast<std::uint32_t>(probe.bit_count());
     }();
     if (side_bits + kTailBits > total_bits) {
@@ -1644,7 +1707,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         }
     }
 
-    return finish_frame(config_, words, payload);
+    return finish_frame(config_, words, payload, aux);
 }
 
 // --- access units ----------------------------------------------------------
@@ -1720,14 +1783,15 @@ std::uint32_t access_unit_words(const AccessUnitConfig& config) {
 }
 
 std::expected<AccessUnit, FrameError> build_silent_access_unit(
-    const AccessUnitConfig& config) {
+    const AccessUnitConfig& config, AuxPayload aux) {
     const auto subs = substream_configs(config);
     if (!subs) {
         return std::unexpected(subs.error());
     }
     AccessUnit unit;
     for (const auto& sub : *subs) {
-        const auto frame = build_silent_frame(sub);
+        const bool carries_aux = &sub == &subs->back();  // §8.2: the last one
+        const auto frame = build_silent_frame(sub, carries_aux ? aux : AuxPayload{});
         if (!frame) {
             return std::unexpected(frame.error());
         }
@@ -1765,7 +1829,7 @@ int AccessUnitEncoder::channel_count() const {
 }
 
 std::expected<AccessUnit, FrameError> AccessUnitEncoder::encode_access_unit(
-    std::span<const std::span<const float>> channels) {
+    std::span<const std::span<const float>> channels, AuxPayload aux) {
     if (substreams_.empty()) {
         // The constructor rejected the layout; re-run it for the real reason.
         const auto subs = substream_configs(config_);
@@ -1794,7 +1858,11 @@ std::expected<AccessUnit, FrameError> AccessUnitEncoder::encode_access_unit(
     std::size_t taken = 0;
     for (auto& sub : substreams_) {
         const auto count = static_cast<std::size_t>(sub.channel_count());
-        const auto frame = sub.encode_frame(channels.subspan(taken, count), metadata);
+        // §8.2: the object metadata rides in the LAST substream of the access
+        // unit, so a decoder has the whole programme in hand before it reads it.
+        const bool carries_aux = &sub == &substreams_.back();
+        const auto frame = sub.encode_frame(channels.subspan(taken, count), metadata,
+                                            carries_aux ? aux : AuxPayload{});
         if (!frame) {
             return std::unexpected(frame.error());
         }

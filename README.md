@@ -2,8 +2,9 @@
 
 A **clean-room AC-3 encoder** written from first principles in C++23, working directly from
 the published standards — no FFmpeg, no codec libraries. The goal: take one or more channels
-of PCM audio (eventually: sound objects positioned and moved in 3D space) and produce a
-compliant AC-3 elementary stream that any decoder or AV receiver accepts.
+of PCM audio — or sound objects positioned and moved in 3D space — and produce a compliant
+AC-3, Dolby Digital Plus, or DD+ with Dolby Atmos elementary stream that any decoder or AV
+receiver accepts.
 
 > **Naming note:** "Dolby Digital" is a live trademark of Dolby Laboratories. This project
 > implements the openly published **AC-3** standard (ATSC A/52 / ETSI TS 102 366) and is not
@@ -112,6 +113,46 @@ frame with `substreamid != 0` in `ff_ac3_parse_header` — proven exhaustively a
 hand-rolled MKV, FFmpeg Matroska, MPEG-TS and MP4. A decoder we control is what closes
 that gap, and every later Annex E feature inherits the same self-check.
 
+**Dolby Atmos objects encode (ETSI TS 103 420).** `ac3cli atmos out.ec3` sends objects
+orbiting the room at different heights and rates, and ffprobe reports
+`eac3 (Dolby Digital Plus + Dolby Atmos), 48000 Hz, 5.1(side)` — the same shape real DD+
+Atmos files probe as. There are no extra coded channels: the objects are panned into a 5.1
+bed that any decoder plays unchanged, and beside it ride two payloads in an EMDF container
+(ETSI TS 102 366 Annex H) tucked into a block skip field — **OAMD** saying where each
+object is, and **JOC** saying how to pull them back out as a per-band matrix over the five
+downmix channels. (Dolby's own DD+ JOC streams carry the container in a skip field with
+`auxdatae` clear, not in the aux field; ours match, checked against their reference content.) This is also why discrete 7.1.4 was a dead end: real 7.1.4 is JOC over a
+5.1 bed, not twelve channels, and no shipping profile allows the two dependent substreams
+the discrete layout would need.
+
+The JOC Huffman tables are not printed in the standard — Annex A.1 gives only their names,
+modes and types, and ships the trees in the companion archive as `ts_103420_tables.c`, so
+`tools/gen_joc_tables.py` inverts that file (decoder trees in, encoder codewords out) and
+refuses to write unless every tree is a complete prefix code. The reconstruction matrix is
+the minimum mean-square estimate `M = P Dᵀ (P D Dᵀ + εI)⁻¹`; because the encoder *built*
+the downmix it knows `D` exactly instead of estimating it, which makes the solve near-exact
+for well-separated objects. Objects that share a direction — two at one azimuth and
+different heights, say — cannot be separated by any linear combination of the bed, and the
+solve splits their energy by power instead. `ac3gui` exposes the same thing: a switch, a
+plan view of the room to drag the objects around, and a height slider.
+
+The syntax was checked field-for-field against Dolby's own tooling — the Reference Player
+and the Dolby Media Encoder — used as oracles. That diffing fixed several real bugs (the
+skip-field carriage above; `codecdatae=0`; a dynamic-object-only program with the LFE as an
+object but not a JOC output; metadata flag arrays transmitted index-0-first) and left our
+frame headers and container matching Dolby's byte-for-byte on the fields that matter.
+
+> **The one thing our objects will *not* do:** decode as objects in Dolby's decoder.
+> Reverse-engineering established why, and it is not a bug in this encoder. DD+ JOC gates
+> object decoding on a keyed, sequence-bound MAC (HMAC-SHA-256) in the EMDF `protection`
+> field — which the standard leaves "implementation dependent and not defined" — whose key
+> is a secret embedded in every decoder binary. Our stream is spec-correct (FFmpeg validates
+> it, the bed decodes bit-exactly, Dolby's own parser flags `atmos=true`); it simply isn't
+> *signed* with Dolby's key, so the decoder falls back to the 5.1 bed. The gate is
+> authenticity, not conformance. What *is* verified about reconstruction is the maths —
+> §6.6.6 applied per band recovers each object to better than −20 dB, and the same for
+> leakage between them.
+
 **You can see what every channel is carrying.** `ac3/analysis/` meters audio the way a
 console does — peak with an instant attack and a 20 dB/s fallback, a 1.2 s hold marker, RMS
 over a 300 ms integration — plus exact whole-signal statistics and the Gerzon energy vector
@@ -168,9 +209,11 @@ roadmap.
 
 ## Ground rules
 
-- **Clean-room:** every table and algorithm is transcribed from ATSC A/52:2018 with its
-  section number cited in a comment. Open-source encoders are consulted for architecture
-  lessons only; no code is ever copied.
+- **Clean-room:** every table and algorithm is transcribed from ATSC A/52:2018 — or, for
+  the object layer, from ETSI TS 103 420 and TS 102 366 — with its section number cited in
+  a comment. Open-source encoders are consulted for architecture lessons only; no code is
+  ever copied. (The one exception is normative by construction: TS 103 420 ships its JOC
+  Huffman tables *as* a C file, so that file is the standard, not an implementation of it.)
 - **FFmpeg is an oracle, not a dependency:** the installed `ffmpeg`/`ffprobe` CLI validates
   our output (`ffmpeg -v error -err_detect crccheck+bitstream+buffer+explode -i out.ac3 …`);
   nothing links against it.
@@ -179,6 +222,11 @@ roadmap.
   standard install roots (`C:/Qt/6.x/msvc2022_64`, `~/Qt`, `/opt/Qt`, …) and then defers to
   Qt's own config package. `-DCMAKE_PREFIX_PATH=…` or `-DQt6_DIR=…` always wins.
 - **Warnings are errors** (`ac3::warnings`, linked privately into every first-party target).
+- **Standards documents are not redistributed.** `docs/spec/` is gitignored. The table
+  generators in `tools/` read from it, so fetch the three free documents first — ATSC
+  A/52:2018, ETSI TS 102 366 (EMDF is Annex H) and ETSI TS 103 420 plus its companion
+  archive `ts_103420v010201p0.zip`, which is where the JOC Huffman tables actually live —
+  and extract each PDF to page-marked text (`===== PDF PAGE n =====`) beside it.
 
 ## Building
 
@@ -204,6 +252,9 @@ cmake/          FindQt6.cmake (prebuilt-Qt discovery), CompilerWarnings.cmake
 src/lib/        ac3::forge — the whole codec, GUI-free
   include/ac3/  public headers: core/ encoder/ decoder/ meta/ spatial/ analysis/
                 sinks/ io/ capture/
+  include/ac3/  public headers: core/ encoder/ decoder/ spatial/ analysis/
+                oba/ emdf/ sinks/ io/  (oba/ = object-based audio: OAMD, JOC,
+                the Atmos encoder; emdf/ = the TS 102 366 Annex H container)
   src/          implementation
 src/cli/        ac3cli — command-line front end
 src/gui/        ac3gui — Qt6 Quick front end (QML module "Ac3Forge")

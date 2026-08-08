@@ -45,6 +45,22 @@ using PanGains = std::array<double, kBedChannels>;
 // any value; normalized internally) onto the 5.1 ring.
 [[nodiscard]] PanGains pan_azimuth(double azimuth_deg);
 
+// The same pan, addressed by a room-anchored position instead of an angle:
+// x runs 0 at the left wall to 1 at the right and y 0 at the front wall to 1
+// at the back, which is TS 103 420 §4.2.1's system. A source at the exact
+// centre of the room has no direction at all and stays at the front.
+//
+// There is no z. A 5.1 ring has no height speakers, so elevation cannot be
+// rendered and a raised source folds onto the ring at its azimuth, at full
+// level - a legacy 5.1 decoder has to hear everything, or backward
+// compatibility means nothing. The height survives in the object metadata
+// instead, which is the entire reason the object layer exists.
+//
+// The consequence is worth stating plainly: two sources at the same azimuth
+// and different heights get IDENTICAL bed gains, and nothing downstream can
+// tell them apart from the bed alone.
+[[nodiscard]] PanGains pan_room(double x, double y);
+
 struct ObjectState {
     double azimuth_deg = 0.0;
     double gain = 1.0;      // linear

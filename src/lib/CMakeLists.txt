@@ -27,6 +27,7 @@ target_sources(ac3forge
         src/core/mdct.cpp
         src/decoder/decoder.cpp
         src/decoder/eac3_decoder.cpp
+        src/emdf/emdf.cpp
         src/encoder/coupling.cpp
         src/encoder/eac3_frame.cpp
         src/encoder/eac3_tools.cpp
@@ -36,6 +37,9 @@ target_sources(ac3forge
         src/meta/drc.cpp
         src/meta/loudness.cpp
         src/meta/mixing.cpp
+        src/oba/atmos.cpp
+        src/oba/joc.cpp
+        src/oba/oamd.cpp
         src/sinks/iec61937.cpp
         src/spatial/spatial.cpp)
 

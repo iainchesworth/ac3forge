@@ -69,6 +69,17 @@ PanGains pan_azimuth(double azimuth_deg) {
     return gains;
 }
 
+PanGains pan_room(double x, double y) {
+    // Forward is -y and left is -x, so the ring's azimuth (CCW from front,
+    // left positive) is atan2(left, forward).
+    const double left = 0.5 - x;
+    const double forward = 0.5 - y;
+    if (left == 0.0 && forward == 0.0) {
+        return pan_azimuth(0.0);
+    }
+    return pan_azimuth(std::atan2(left, forward) / kDegToRad);
+}
+
 std::size_t BedRenderer::add_object(const ObjectState& initial) {
     Slot slot;
     slot.target = initial;

@@ -32,10 +32,15 @@ ApplicationWindow {
 
     FileDialog {
         id: saveDialog
-        title: qsTr("Save AC-3 stream")
+        // Object mode writes E-AC-3, which is a different codec in a
+        // different container, so the suffix follows the mode.
+        title: EncoderController.atmosEnabled ? qsTr("Save Dolby Atmos stream")
+                                              : qsTr("Save AC-3 stream")
         fileMode: FileDialog.SaveFile
-        defaultSuffix: "ac3"
-        nameFilters: [qsTr("AC-3 elementary stream (*.ac3)")]
+        defaultSuffix: EncoderController.atmosEnabled ? "ec3" : "ac3"
+        nameFilters: EncoderController.atmosEnabled
+                     ? [qsTr("E-AC-3 elementary stream (*.ec3)")]
+                     : [qsTr("AC-3 elementary stream (*.ac3)")]
         onAccepted: EncoderController.encodeTo(selectedFile)
     }
 
@@ -309,11 +314,156 @@ ApplicationWindow {
                         Item { Layout.fillWidth: true }
 
                         Text {
-                            text: (EncoderController.hasLevels
-                                   ? EncoderController.layoutName
-                                   : qsTr("2/0 stereo")) + qsTr(" · long blocks · rematrixing on")
+                            // In object mode the source layout stops being the
+                            // output layout: whatever comes in becomes objects
+                            // over a 5.1 bed.
+                            text: EncoderController.atmosEnabled
+                                  ? qsTr("E-AC-3 5.1 bed · JOC + OAMD · one object per source channel")
+                                  : (EncoderController.hasLevels
+                                     ? EncoderController.layoutName
+                                     : qsTr("2/0 stereo")) + qsTr(" · long blocks · rematrixing on")
                             color: Theme.textMuted
                             font.pixelSize: Theme.fontSmall
+                        }
+                    }
+                }
+
+                // ---- objects -------------------------------------------------
+                Card {
+                    title: qsTr("Dolby Atmos objects")
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.gap
+
+                        Switch {
+                            id: atmosSwitch
+                            text: qsTr("Encode as objects")
+                            enabled: !EncoderController.busy
+                            checked: EncoderController.atmosEnabled
+                            onToggled: EncoderController.atmosEnabled = checked
+                        }
+
+                        Item { Layout.fillWidth: true }
+
+                        // The metadata costs a few hundred bits a frame, which
+                        // is not the problem. The problem is that the bed is
+                        // always 5.1, so a rate that was generous for the
+                        // source's own layout may not be for six channels.
+                        Text {
+                            visible: EncoderController.atmosEnabled
+                                     && EncoderController.bitrateKbps < 384
+                            text: qsTr("⚠ the bed is 5.1 — 384 kbps or more")
+                            color: Theme.bad
+                            font.pixelSize: Theme.fontSmall
+                        }
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: qsTr("Every source channel becomes an object, spread either side of the point below. They are panned into a 5.1 bed that any decoder can play, and the object positions ride alongside as metadata — so a height is carried even though no bed channel can reproduce it.")
+                        color: Theme.textMuted
+                        font.pixelSize: Theme.fontSmall
+                        wrapMode: Text.WordWrap
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        visible: EncoderController.atmosEnabled
+                        spacing: Theme.pad
+
+                        // Plan view of the room: §4.2.1's x to the right, y
+                        // towards the back, listener in the middle.
+                        Rectangle {
+                            id: room
+                            Layout.preferredWidth: 190
+                            Layout.preferredHeight: 190
+                            radius: Theme.radius
+                            color: Theme.surfaceAlt
+                            border.color: Theme.border
+                            border.width: 1
+
+                            readonly property real spread: 0.15
+
+                            Text {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                anchors.top: parent.top
+                                anchors.topMargin: 4
+                                text: qsTr("front")
+                                color: Theme.textMuted
+                                font.pixelSize: Theme.fontSmall
+                            }
+
+                            Rectangle {
+                                anchors.centerIn: parent
+                                width: 6
+                                height: 6
+                                radius: 3
+                                color: Theme.textMuted
+                            }
+
+                            Repeater {
+                                model: [-room.spread, room.spread]
+                                Rectangle {
+                                    width: 16
+                                    height: 16
+                                    radius: 8
+                                    color: Theme.accent
+                                    opacity: 0.9
+                                    x: Math.max(0, Math.min(1, EncoderController.objectX
+                                                            + modelData)) * (room.width - width)
+                                    y: EncoderController.objectY * (room.height - height)
+                                }
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                enabled: !EncoderController.busy
+                                onPositionChanged: (mouse) => place(mouse)
+                                onPressed: (mouse) => place(mouse)
+                                function place(mouse) {
+                                    EncoderController.objectX = mouse.x / room.width;
+                                    EncoderController.objectY = mouse.y / room.height;
+                                }
+                            }
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.gap
+
+                            Text {
+                                text: qsTr("Height")
+                                color: Theme.text
+                                font.pixelSize: Theme.fontNormal
+                            }
+
+                            Slider {
+                                Layout.fillWidth: true
+                                from: -1.0
+                                to: 1.0
+                                enabled: !EncoderController.busy
+                                value: EncoderController.objectZ
+                                onMoved: EncoderController.objectZ = value
+                            }
+
+                            Text {
+                                text: qsTr("x %1 · y %2 · z %3")
+                                      .arg(EncoderController.objectX.toFixed(2))
+                                      .arg(EncoderController.objectY.toFixed(2))
+                                      .arg(EncoderController.objectZ.toFixed(2))
+                                color: Theme.textMuted
+                                font.pixelSize: Theme.fontSmall
+                                font.family: "monospace"
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: qsTr("Height changes the metadata, not the bed — a 5.1 ring has no speakers above it. That is what an object renderer is for.")
+                                color: Theme.textMuted
+                                font.pixelSize: Theme.fontSmall
+                                wrapMode: Text.WordWrap
+                            }
                         }
                     }
                 }

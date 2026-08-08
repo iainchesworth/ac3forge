@@ -15,6 +15,8 @@
 
 #include "ac3/analysis/levels.hpp"
 #include "ac3/capture/capture.hpp"
+#include "ac3/core/tables.hpp"
+#include "ac3/oba/oamd.hpp"
 #include "ac3/sinks/passthrough.hpp"
 
 // The QObject facade the QML layer talks to. All codec and capture work
@@ -55,6 +57,17 @@ class EncoderController : public QObject {
     Q_PROPERTY(bool metering READ metering NOTIFY meteringChanged)
     Q_PROPERTY(double meterFloorDb READ meterFloorDb CONSTANT)
 
+    // ---- objects ----------------------------------------------------------
+    // Object mode. The source's two channels become two objects placed either
+    // side of one point in the room, encoded as a 5.1 E-AC-3 bed with JOC and
+    // OAMD beside it (TS 103 420) instead of as an AC-3 stereo pair.
+    Q_PROPERTY(bool atmosEnabled READ atmosEnabled WRITE setAtmosEnabled NOTIFY atmosChanged)
+    // Room-anchored per §4.2.1: x 0 at the left wall to 1 at the right, y 0 at
+    // the front wall to 1 at the back, z -1 at the floor to +1 at the ceiling.
+    Q_PROPERTY(double objectX READ objectX WRITE setObjectX NOTIFY atmosChanged)
+    Q_PROPERTY(double objectY READ objectY WRITE setObjectY NOTIFY atmosChanged)
+    Q_PROPERTY(double objectZ READ objectZ WRITE setObjectZ NOTIFY atmosChanged)
+
 public:
     explicit EncoderController(QObject* parent = nullptr);
     ~EncoderController() override;
@@ -88,7 +101,16 @@ public:
     [[nodiscard]] bool metering() const { return metering_; }
     [[nodiscard]] double meterFloorDb() const { return kMeterFloorDb; }
 
+    [[nodiscard]] bool atmosEnabled() const { return atmos_enabled_; }
+    [[nodiscard]] double objectX() const { return object_x_; }
+    [[nodiscard]] double objectY() const { return object_y_; }
+    [[nodiscard]] double objectZ() const { return object_z_; }
+
     void setBitrateKbps(int kbps);
+    void setAtmosEnabled(bool enabled);
+    void setObjectX(double value);
+    void setObjectY(double value);
+    void setObjectZ(double value);
 
     Q_INVOKABLE void loadSourceFile(const QUrl& url);
     Q_INVOKABLE void encodeTo(const QUrl& url);
@@ -121,6 +143,7 @@ signals:
     void layoutChanged();
     void levelsChanged();
     void meteringChanged();
+    void atmosChanged();
     void encodeFinished(bool ok, const QString& message);
 
 private:
@@ -129,6 +152,11 @@ private:
     // The meters read -60 dBFS at the bottom: far enough down to show room
     // tone, close enough up that programme material uses most of the bar.
     static constexpr double kMeterFloorDb = -60.0;
+
+    // One object per source channel, over a 5.1 bed. `planes` is already in
+    // A/52 channel order, the same as the AC-3 path receives.
+    void encodeAtmos(const QString& path, ac3::SampleRate rate, int bitrate,
+                     std::uint32_t sample_rate, std::vector<std::vector<float>> planes);
 
     void setStatus(const QString& text);
     void setBusy(bool busy);
@@ -158,6 +186,11 @@ private:
     double progress_ = 0.0;
     double recorded_seconds_ = 0.0;
     int bitrate_kbps_ = 192;
+    bool atmos_enabled_ = false;
+    // Straight ahead at ear height, which is where a stereo pair already is.
+    double object_x_ = 0.5;
+    double object_y_ = 0.0;
+    double object_z_ = 0.0;
     bool playing_ = false;
     QStringList capture_devices_;
     QStringList output_devices_;

@@ -6,6 +6,7 @@
 #include <iterator>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <fstream>
@@ -18,6 +19,7 @@
 #include "ac3/decoder/decoder.hpp"
 #include "ac3/encoder/encoder.hpp"
 #include "ac3/io/wav.hpp"
+#include "ac3/oba/atmos.hpp"
 #include "ac3/sinks/iec61937.hpp"
 
 namespace {
@@ -516,10 +518,202 @@ void EncoderController::loadSourceFile(const QUrl& url) {
 }
 
 QString EncoderController::suggestedOutputName() const {
+    // Object mode produces E-AC-3, not AC-3 - a different codec in a different
+    // container, so it must not inherit the .ac3 name.
+    const QString suffix = atmos_enabled_ ? QStringLiteral(".ec3") : QStringLiteral(".ac3");
     if (source_path_.isEmpty()) {
-        return QStringLiteral("output.ac3");
+        return QStringLiteral("output") + suffix;
     }
-    return QFileInfo(source_path_).completeBaseName() + QStringLiteral(".ac3");
+    return QFileInfo(source_path_).completeBaseName() + suffix;
+}
+
+void EncoderController::setAtmosEnabled(bool enabled) {
+    if (atmos_enabled_ == enabled || busy_) {
+        return;
+    }
+    atmos_enabled_ = enabled;
+    emit atmosChanged();
+}
+
+void EncoderController::setObjectX(double value) {
+    const double clamped = std::clamp(value, 0.0, 1.0);
+    if (object_x_ != clamped) {
+        object_x_ = clamped;
+        emit atmosChanged();
+    }
+}
+
+void EncoderController::setObjectY(double value) {
+    const double clamped = std::clamp(value, 0.0, 1.0);
+    if (object_y_ != clamped) {
+        object_y_ = clamped;
+        emit atmosChanged();
+    }
+}
+
+void EncoderController::setObjectZ(double value) {
+    const double clamped = std::clamp(value, -1.0, 1.0);
+    if (object_z_ != clamped) {
+        object_z_ = clamped;
+        emit atmosChanged();
+    }
+}
+
+namespace {
+
+// Half the width the source's channels are spread over, either side of the
+// chosen point. One object per source channel rather than a mono sum: a sum
+// collapses the image, and objects that reach the bed by the SAME route are
+// exactly the ones JOC cannot pull apart again, so spreading them is what
+// makes them recoverable at all.
+constexpr double kSourceSpread = 0.15;
+
+// Where the n'th of `count` source channels sits, relative to the centre the
+// user picked. A stereo pair lands at exactly -/+ kSourceSpread.
+[[nodiscard]] double spread_offset(std::size_t index, std::size_t count) {
+    if (count < 2) {
+        return 0.0;
+    }
+    const double t = static_cast<double>(index) / static_cast<double>(count - 1);
+    return kSourceSpread * (2.0 * t - 1.0);
+}
+
+}  // namespace
+
+// Object mode's encode. Kept apart from the AC-3 path rather than threaded
+// through it with flags: almost nothing is shared - different codec, different
+// frame type, a bed whose channel count has nothing to do with the source's,
+// and a per-frame metadata payload the AC-3 encoder has no concept of.
+void EncoderController::encodeAtmos(const QString& path, ac3::SampleRate rate, int bitrate,
+                                    std::uint32_t sample_rate,
+                                    std::vector<std::vector<float>> planes) {
+    const ac3::oba::Position centre{.x = object_x_, .y = object_y_, .z = object_z_};
+
+    std::ignore = QtConcurrent::run([this, path, rate, bitrate, sample_rate, centre,
+                                     planes = std::move(planes)]() mutable {
+        const std::size_t nobjects = planes.size();
+        ac3::oba::AtmosEncoder encoder{
+            {.sample_rate = rate, .bitrate_kbps = static_cast<std::uint32_t>(bitrate)},
+            static_cast<int>(nobjects)};
+        std::vector<ac3::oba::ObjectPlacement> placement(nobjects);
+        for (std::size_t i = 0; i < nobjects; ++i) {
+            placement[i].position = {
+                .x = std::clamp(centre.x + spread_offset(i, nobjects), 0.0, 1.0),
+                .y = centre.y,
+                .z = centre.z};
+        }
+
+        // The bed is always 3/2 + LFE whatever the source was, so the meters
+        // show what a decoder that ignores the objects entirely would play.
+        ac3::analysis::LevelMeter meter{ac3::Acmod::k3_2, true, sample_rate};
+
+        std::ofstream out{path.toStdString(), std::ios::binary};
+        if (!out) {
+            QMetaObject::invokeMethod(this, [this] {
+                setBusy(false);
+                setMetering(false);
+                setStatus(QStringLiteral("Could not open the output file for writing."));
+                emit encodeFinished(false, status());
+            });
+            return;
+        }
+
+        const std::size_t total = planes.front().size();
+        std::vector<std::vector<float>> block(nobjects,
+                                              std::vector<float>(ac3::kSamplesPerFrame));
+        std::vector<std::span<const float>> views(nobjects);
+        std::vector<std::span<const float>> metered(6);
+        std::size_t frames = 0;
+        std::uint64_t bytes = 0;
+        bool cancelled = false;
+        auto published_at = std::chrono::steady_clock::now() - kPublishInterval;
+
+        for (std::size_t start = 0; start < total; start += ac3::kSamplesPerFrame) {
+            if (cancel_requested_.load(std::memory_order_relaxed)) {
+                cancelled = true;
+                break;
+            }
+            const auto valid = std::min<std::size_t>(ac3::kSamplesPerFrame, total - start);
+            for (std::size_t ch = 0; ch < nobjects; ++ch) {
+                for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+                    const std::size_t at = start + static_cast<std::size_t>(i);
+                    block[ch][static_cast<std::size_t>(i)] = at < total ? planes[ch][at] : 0.0f;
+                }
+                views[ch] = block[ch];
+            }
+            const auto unit = encoder.encode_frame(views, placement);
+            if (!unit) {
+                QMetaObject::invokeMethod(this, [this] {
+                    setBusy(false);
+                    setMetering(false);
+                    setStatus(QStringLiteral(
+                        "The frame cannot hold a 5.1 bed and the object metadata at this "
+                        "bit rate — try 384 kbps or more."));
+                    emit encodeFinished(false, status());
+                });
+                return;
+            }
+            // The bed only exists once the frame is encoded, so it is metered
+            // after the fact - unlike the AC-3 path, where the meter sees the
+            // same samples the encoder is about to be handed.
+            for (std::size_t ch = 0; ch < metered.size(); ++ch) {
+                metered[ch] = std::span{encoder.bed()[ch]}.first(valid);
+            }
+            meter.process(metered);
+
+            out.write(reinterpret_cast<const char*>(unit->bytes.data()),
+                      static_cast<std::streamsize>(unit->bytes.size()));
+            bytes += unit->bytes.size();
+            ++frames;
+
+            const double done = static_cast<double>(start + ac3::kSamplesPerFrame) /
+                                static_cast<double>(total);
+            const auto now = std::chrono::steady_clock::now();
+            if (now - published_at >= kPublishInterval) {
+                published_at = now;
+                std::vector<ac3::analysis::ChannelLevel> snapshot(meter.levels().begin(),
+                                                                 meter.levels().end());
+                QMetaObject::invokeMethod(
+                    this, [this, done, snapshot = std::move(snapshot)] {
+                        setProgress(std::min(done, 1.0));
+                        publishLevels(snapshot);
+                    });
+            } else {
+                QMetaObject::invokeMethod(this,
+                                          [this, done] { setProgress(std::min(done, 1.0)); });
+            }
+        }
+        out.close();
+
+        std::vector<ac3::analysis::ChannelLevel> totals(
+            static_cast<std::size_t>(meter.channel_count()));
+        for (std::size_t ch = 0; ch < totals.size(); ++ch) {
+            const auto& stats = meter.summary()[ch];
+            totals[ch].peak_db = stats.peak_db();
+            totals[ch].hold_db = stats.peak_db();
+            totals[ch].rms_db = stats.rms_db();
+            totals[ch].clipped = stats.clipped_samples > 0;
+        }
+
+        QMetaObject::invokeMethod(this, [this, frames, bytes, nobjects, cancelled,
+                                         totals = std::move(totals)] {
+            setBusy(false);
+            setMetering(false);
+            setProgress(cancelled ? 0.0 : 1.0);
+            publishLevels(totals);
+            if (cancelled) {
+                setStatus(QStringLiteral("Encode cancelled."));
+            } else {
+                setStatus(QStringLiteral("Wrote %1 Atmos frames (%2 KB) to %3 — "
+                                         "%4 objects over a 5.1 bed")
+                              .arg(frames)
+                              .arg(bytes / 1024)
+                              .arg(QFileInfo(output_path_).fileName())
+                              .arg(nobjects));
+            }
+            emit encodeFinished(!cancelled, status());
+        });
+    });
 }
 
 void EncoderController::cancel() {
@@ -550,6 +744,15 @@ void EncoderController::encodeTo(const QUrl& url) {
     planes.reserve(layout.wav_index.size());
     for (const auto wav_channel : layout.wav_index) {
         planes.push_back(source_->wav.channels[wav_channel]);
+    }
+
+    if (atmos_enabled_) {
+        // The meters follow the BED, not the source: 5.1 is what comes out and
+        // what a legacy decoder hears, whatever the source layout was.
+        setLayout(ac3::Acmod::k3_2, true);
+        setMetering(true);
+        encodeAtmos(path, rate, bitrate, sample_rate, std::move(planes));
+        return;
     }
 
     setLayout(layout.acmod, layout.lfe);

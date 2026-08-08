@@ -51,6 +51,9 @@ enum class FrameError {
     // A mixing-metadata field would go out as a reserved code (Tables D2.4 and
     // D2.6 reserve three of the eight surround levels) or out of range.
     kInvalidMixLevel,
+    // Aux user data longer than auxdatal's 14 bits can measure (§5.4.4.2), or
+    // an object count outside what TS 103 420 §8.3.2.2 allows in addbsi.
+    kInvalidObjectAudio,
 };
 
 namespace detail {
