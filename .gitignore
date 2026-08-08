@@ -15,3 +15,10 @@ __pycache__/
 
 # Downloaded standards documents (free from ATSC/ETSI; not redistributed here)
 docs/spec/
+
+# The RE-derived EMDF signer is quarantined and MUST NOT reach a public remote:
+# it embeds a key extracted from Dolby's binary (see its README on its own
+# branch). It lives only on a local branch, never on main/develop. Ignoring it
+# here means it cannot be staged onto an integration branch by accident; a CI
+# "no quarantine on main" check backs this up.
+src/quarantine/
