@@ -22,6 +22,7 @@
 #include "ac3/sinks/iec61937.hpp"
 #include "ac3/sinks/passthrough.hpp"
 #include "ac3/spatial/spatial.hpp"
+#include "matroska/matroska.hpp"
 
 namespace {
 
@@ -221,6 +222,102 @@ std::optional<Eac3Layout> eac3_layout(std::string_view name, std::uint32_t bitra
         return out;
     }
     return std::nullopt;
+}
+
+// Channels a layout RENDERS, which is not the channel count the encoder is
+// fed: a dependent substream's channels may overwrite the bed's rather than
+// add to it, so 7.1 codes ten and renders eight.
+int rendered_channels(const ac3::eac3::AccessUnitConfig& config) {
+    // Start from the bed's own locations, then union in each dependent's map.
+    const int bed = ac3::fullbw_channel_count(config.independent.acmod) +
+                    (config.independent.lfe ? 1 : 0);
+    std::uint16_t extra = 0;
+    for (const auto& dep : config.dependents) {
+        if (dep.chanmap) {
+            extra = static_cast<std::uint16_t>(extra | *dep.chanmap);
+        }
+    }
+    // The bed already covers L/C/R/Ls/Rs/LFE, so only locations outside it add
+    // to the count.
+    constexpr std::uint16_t kBedLocations =
+        ac3::eac3::chanmap::kLeft | ac3::eac3::chanmap::kCentre |
+        ac3::eac3::chanmap::kRight | ac3::eac3::chanmap::kLeftSurround |
+        ac3::eac3::chanmap::kRightSurround | ac3::eac3::chanmap::kLfe;
+    return bed + ac3::eac3::chanmap::channel_count(
+                     static_cast<std::uint16_t>(extra & ~kBedLocations));
+}
+
+int run_eac3_mkv(std::string_view out_path, std::string_view ec3_path,
+                 std::uint32_t bitrate, std::string_view layout) {
+    const auto chosen = eac3_layout(layout, bitrate);
+    if (!chosen) {
+        std::println(stderr, "error: unknown layout '{}' ({})", layout, kEac3Layouts);
+        return 1;
+    }
+    std::ifstream in{std::string{ec3_path}, std::ios::binary};
+    if (!in) {
+        std::println(stderr, "error: cannot open {}", ec3_path);
+        return 1;
+    }
+    const std::vector<char> raw{std::istreambuf_iterator<char>{in},
+                                std::istreambuf_iterator<char>{}};
+
+    // Split the elementary stream back into access units. A new one begins at
+    // each independent substream (strmtyp 0), and every syncframe declares its
+    // own length in frmsiz - so the container's packet boundaries come from
+    // the bitstream itself rather than from anything we remembered.
+    std::vector<std::vector<std::byte>> units;
+    std::size_t offset = 0;
+    while (offset + 4 <= raw.size()) {
+        const auto byte = [&](std::size_t i) {
+            return static_cast<std::uint8_t>(raw[offset + i]);
+        };
+        if (byte(0) != 0x0B || byte(1) != 0x77) {
+            std::println(stderr, "error: lost sync at byte {}", offset);
+            return 1;
+        }
+        const int strmtyp = byte(2) >> 6;
+        const std::size_t size =
+            ((static_cast<std::size_t>(byte(2) & 0x07) << 8 | byte(3)) + 1) * 2;
+        if (offset + size > raw.size()) {
+            break;  // a truncated tail frame is not an access unit
+        }
+        if (strmtyp == 0 || units.empty()) {
+            units.emplace_back();
+        }
+        const auto* start = reinterpret_cast<const std::byte*>(raw.data() + offset);
+        units.back().insert(units.back().end(), start, start + size);
+        offset += size;
+    }
+    if (units.empty()) {
+        std::println(stderr, "error: no access units in {}", ec3_path);
+        return 1;
+    }
+
+    const matroska::AudioTrack track{
+        .codec_id = std::string{matroska::kCodecEac3},
+        .sample_rate = ac3::sample_rate_hz(chosen->config.independent.sample_rate),
+        .channels = rendered_channels(chosen->config),
+        .samples_per_frame = ac3::kSamplesPerFrame};
+    const auto file = matroska::mux(track, units);
+    if (!file) {
+        std::println(stderr, "error: {}", matroska::describe(file.error()));
+        return 1;
+    }
+    std::ofstream out{std::string{out_path}, std::ios::binary};
+    if (!out) {
+        std::println(stderr, "error: cannot write {}", out_path);
+        return 1;
+    }
+    out.write(reinterpret_cast<const char*>(file->data()),
+              static_cast<std::streamsize>(file->size()));
+    if (!out) {
+        std::println(stderr, "error: write failed");
+        return 1;
+    }
+    std::println("wrote {} access units ({} channels, {} bytes) to {}", units.size(),
+                 track.channels, file->size(), out_path);
+    return 0;
 }
 
 int run_eac3_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_t bitrate,
@@ -752,6 +849,11 @@ int main(int argc, char** argv) {
                      "{} bytes each, bsid 16) to {}",
                      count, layout, unit->substream_count(), unit->bytes.size(), args[2]);
         return 0;
+    }
+    if (command == "eac3-mkv" && args.size() > 3) {
+        return run_eac3_mkv(args[2], args[3],
+                            args.size() > 4 ? parse_u32_or(args[4], 448) : 448,
+                            args.size() > 5 ? std::string_view{args[5]} : "51");
     }
     if (command == "eac3-sine") {
         return run_eac3_sine(args[2], args.size() > 3 ? parse_u32_or(args[3], 5) : 5,

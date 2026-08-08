@@ -39,6 +39,10 @@ option(AC3FORGE_BUILD_TESTS "Build the unit test suite" ON)
 # The library holds the entire codec and spatial engine and is GUI-free.
 add_subdirectory(src/lib)
 
+# A standalone container writer, kept apart from the codec on purpose: it
+# depends on nothing of ac3::forge and knows nothing about AC-3.
+add_subdirectory(src/matroska)
+
 if(AC3FORGE_BUILD_CLI)
     add_subdirectory(src/cli)
 endif()

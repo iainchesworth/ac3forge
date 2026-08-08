@@ -6,4 +6,5 @@ add_executable(ac3cli main.cpp)
 target_link_libraries(ac3cli
     PRIVATE
         ac3::forge
+        matroska::matroska
         ac3::warnings)
