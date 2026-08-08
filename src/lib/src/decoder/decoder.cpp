@@ -9,6 +9,7 @@
 #include "ac3/core/exponents.hpp"
 #include "ac3/core/mantissas.hpp"
 #include "ac3/core/mdct.hpp"
+#include "ac3/encoder/coupling.hpp"
 
 namespace ac3 {
 
@@ -166,14 +167,34 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
     out.channels.assign(static_cast<std::size_t>(nchans),
                         std::vector<float>(kSamplesPerFrame, 0.0f));
 
-    // Per-channel decode state persisting across blocks.
-    std::vector<int> endmant(static_cast<std::size_t>(nchans), kLfeEndmant);
-    std::vector<std::vector<std::uint8_t>> exps(static_cast<std::size_t>(nchans));
+    // Decode state persisting across blocks. Streams are the fbw channels,
+    // then the LFE, then - when coupling is in use - the coupling channel as
+    // one more stream, exactly as the encoder lays them out.
+    const std::size_t max_streams = static_cast<std::size_t>(nchans) + 1;
+    std::vector<int> endmant(max_streams, kLfeEndmant);
+    std::vector<std::vector<std::uint8_t>> exps(max_streams);
     BitAllocCodes base_codes{};
-    std::vector<int> fgaincod(static_cast<std::size_t>(nchans), base_codes.fgaincod);
+    std::vector<int> fgaincod(max_streams, base_codes.fgaincod);
     int csnroffst = 0;
-    std::vector<int> fsnroffst(static_cast<std::size_t>(nchans), 0);
+    std::vector<int> fsnroffst(max_streams, 0);
     std::array<bool, 4> rematflg{};
+
+    // Coupling state (§7.4). All of it persists until re-transmitted.
+    const int cpl_stream = nchans;
+    bool cplinu = false;
+    bool phsflginu = false;
+    int cplbegf = 0;
+    int cplstrtmant = 0;
+    int ncplsubnd = 0;
+    int cplfleak = 0;
+    int cplsleak = 0;
+    std::vector<bool> chincpl(static_cast<std::size_t>(nfchans), false);
+    // Which coupling band each sub-band belongs to (cplbndstrc expansion).
+    std::vector<int> subband_band;
+    int ncplbnd = 0;
+    // [channel][sub-band] - already expanded from bands to sub-bands.
+    std::vector<std::vector<double>> cplco(static_cast<std::size_t>(nfchans));
+    std::vector<bool> phsflg;
 
     for (int block = 0; block < kBlocksPerFrame; ++block) {
         for (int ch = 0; ch < nfchans; ++ch) {
@@ -185,20 +206,102 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
             (void)r.read(1);  // dithflag: bap-0 bins reconstruct as zero either way
         }
         if (r.read(1) != 0) r.skip(8);  // dynrnge/dynrng: parsed, not applied
-        if (r.read(1) != 0) {           // cplstre
-            if (r.read(1) != 0) {       // cplinu
-                return std::unexpected(DecodeError::kUnsupported);
-            }
-        }
-        if (acmod == Acmod::k2_0) {
-            if (r.read(1) != 0) {  // rematstr: new flags; else prior flags persist
-                for (auto& flag : rematflg) {
-                    flag = r.read(1) != 0;
+
+        // --- coupling strategy (§5.3.3) ---
+        if (r.read(1) != 0) {  // cplstre: a new strategy, else the prior one stands
+            cplinu = r.read(1) != 0;
+            if (cplinu) {
+                for (int ch = 0; ch < nfchans; ++ch) {
+                    chincpl[static_cast<std::size_t>(ch)] = r.read(1) != 0;
+                }
+                phsflginu = acmod == Acmod::k2_0 && r.read(1) != 0;
+                cplbegf = static_cast<int>(r.read(4));
+                const int cplendf = static_cast<int>(r.read(4));
+                ncplsubnd = coupling::sub_band_count(cplbegf, cplendf);
+                if (ncplsubnd < 1) {
+                    return std::unexpected(DecodeError::kInvalidStream);
+                }
+                cplstrtmant = coupling::start_mant(cplbegf);
+                const int cplendmant = coupling::end_mant(cplendf);
+                if (cplendmant > 253 || cplstrtmant >= cplendmant) {
+                    return std::unexpected(DecodeError::kInvalidStream);
+                }
+                endmant[static_cast<std::size_t>(cpl_stream)] = cplendmant;
+
+                // cplbndstrc: a 1 folds this sub-band into the previous
+                // coupling band, so coordinates are per band and duplicated
+                // back out across the sub-bands they cover.
+                subband_band.assign(static_cast<std::size_t>(ncplsubnd), 0);
+                ncplbnd = 1;
+                for (int bnd = 1; bnd < ncplsubnd; ++bnd) {
+                    const bool merged = r.read(1) != 0;
+                    if (!merged) {
+                        ++ncplbnd;
+                    }
+                    subband_band[static_cast<std::size_t>(bnd)] = ncplbnd - 1;
+                }
+                for (auto& channel : cplco) {
+                    channel.assign(static_cast<std::size_t>(ncplsubnd), 0.0);
+                }
+                phsflg.assign(static_cast<std::size_t>(ncplbnd), false);
+                // Coupled channels stop carrying their own coefficients here.
+                for (int ch = 0; ch < nfchans; ++ch) {
+                    if (chincpl[static_cast<std::size_t>(ch)]) {
+                        endmant[static_cast<std::size_t>(ch)] = cplstrtmant;
+                    }
                 }
             }
         }
 
-        std::vector<ExpStrategy> strategy(static_cast<std::size_t>(nchans), ExpStrategy::kReuse);
+        // --- coupling coordinates (§7.4.3) ---
+        if (cplinu) {
+            bool any_new = false;
+            for (int ch = 0; ch < nfchans; ++ch) {
+                if (!chincpl[static_cast<std::size_t>(ch)]) {
+                    continue;
+                }
+                if (r.read(1) == 0) {  // cplcoe: reuse the previous values
+                    continue;
+                }
+                any_new = true;
+                const int master = static_cast<int>(r.read(2));
+                std::vector<double> band_values(static_cast<std::size_t>(ncplbnd));
+                for (int bnd = 0; bnd < ncplbnd; ++bnd) {
+                    const auto exp = static_cast<std::uint8_t>(r.read(4));
+                    const auto mant = static_cast<std::uint8_t>(r.read(4));
+                    band_values[static_cast<std::size_t>(bnd)] =
+                        coupling::decode_coordinate({.exp = exp, .mant = mant}, master);
+                }
+                for (int bnd = 0; bnd < ncplsubnd; ++bnd) {
+                    cplco[static_cast<std::size_t>(ch)][static_cast<std::size_t>(bnd)] =
+                        band_values[static_cast<std::size_t>(
+                            subband_band[static_cast<std::size_t>(bnd)])];
+                }
+            }
+            if (phsflginu && any_new) {
+                for (int bnd = 0; bnd < ncplbnd; ++bnd) {
+                    phsflg[static_cast<std::size_t>(bnd)] = r.read(1) != 0;
+                }
+            }
+        }
+
+        if (acmod == Acmod::k2_0) {
+            if (r.read(1) != 0) {  // rematstr: new flags; else prior flags persist
+                // §7.5.2: coupling limits how many rematrix bands exist.
+                const int nrematbd = !cplinu ? 4 : (cplbegf > 2 ? 4 : (cplbegf > 0 ? 3 : 2));
+                rematflg.fill(false);
+                for (int band = 0; band < nrematbd; ++band) {
+                    rematflg[static_cast<std::size_t>(band)] = r.read(1) != 0;
+                }
+            }
+        }
+
+        // §5.3.3 exponent strategies: coupling channel first, then fbw, then LFE.
+        std::vector<ExpStrategy> strategy(max_streams, ExpStrategy::kReuse);
+        if (cplinu) {
+            strategy[static_cast<std::size_t>(cpl_stream)] =
+                static_cast<ExpStrategy>(r.read(2));
+        }
         for (int ch = 0; ch < nfchans; ++ch) {
             strategy[static_cast<std::size_t>(ch)] = static_cast<ExpStrategy>(r.read(2));
             if (block == 0 && strategy[static_cast<std::size_t>(ch)] == ExpStrategy::kReuse) {
@@ -212,8 +315,10 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
                 return std::unexpected(DecodeError::kInvalidStream);
             }
         }
+        // chbwcod exists only for fbw channels that are NOT coupled.
         for (int ch = 0; ch < nfchans; ++ch) {
-            if (strategy[static_cast<std::size_t>(ch)] != ExpStrategy::kReuse) {
+            if (strategy[static_cast<std::size_t>(ch)] != ExpStrategy::kReuse &&
+                !(cplinu && chincpl[static_cast<std::size_t>(ch)])) {
                 const auto chbwcod = r.read(6);
                 if (chbwcod > 60) {
                     return std::unexpected(DecodeError::kInvalidStream);
@@ -221,6 +326,29 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
                 endmant[static_cast<std::size_t>(ch)] =
                     ((static_cast<int>(chbwcod) + 12) * 3) + 37;
             }
+        }
+
+        // Exponents, in the same order. The coupling channel's set is offset
+        // to its own start bin and uses the even-valued absolute reference.
+        if (cplinu && strategy[static_cast<std::size_t>(cpl_stream)] != ExpStrategy::kReuse) {
+            const auto strat = strategy[static_cast<std::size_t>(cpl_stream)];
+            const int end = endmant[static_cast<std::size_t>(cpl_stream)];
+            const int span = end - cplstrtmant;
+            const int group_size = exponent_group_size(strat);
+            if (group_size == 0 || span % (3 * group_size) != 0) {
+                return std::unexpected(DecodeError::kInvalidStream);
+            }
+            const int ngrps = span / (3 * group_size);
+            const auto cplabsexp = static_cast<std::uint8_t>(r.read(4));
+            std::vector<std::uint8_t> groups(static_cast<std::size_t>(ngrps));
+            for (auto& g : groups) {
+                g = static_cast<std::uint8_t>(r.read(7));
+            }
+            auto& target = exps[static_cast<std::size_t>(cpl_stream)];
+            target.assign(static_cast<std::size_t>(end), kMaxExponent);
+            decode_coupling_exponents(
+                cplabsexp, groups, strat,
+                std::span{target}.subspan(static_cast<std::size_t>(cplstrtmant)));
         }
         for (int ch = 0; ch < nchans; ++ch) {
             const auto strat = strategy[static_cast<std::size_t>(ch)];
@@ -234,7 +362,7 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
             for (auto& g : groups) {
                 g = static_cast<std::uint8_t>(r.read(7));
             }
-            exps[static_cast<std::size_t>(ch)].resize(static_cast<std::size_t>(end));
+            exps[static_cast<std::size_t>(ch)].assign(static_cast<std::size_t>(end), 0);
             decode_exponents(absolute, groups, strat, exps[static_cast<std::size_t>(ch)]);
             if (ch < nfchans) {
                 (void)r.read(2);  // gainrng
@@ -252,12 +380,22 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
         }
         if (r.read(1) != 0) {  // snroffste
             csnroffst = static_cast<int>(r.read(6));
+            if (cplinu) {
+                fsnroffst[static_cast<std::size_t>(cpl_stream)] = static_cast<int>(r.read(4));
+                fgaincod[static_cast<std::size_t>(cpl_stream)] = static_cast<int>(r.read(3));
+            }
             for (int ch = 0; ch < nchans; ++ch) {
                 fsnroffst[static_cast<std::size_t>(ch)] = static_cast<int>(r.read(4));
                 fgaincod[static_cast<std::size_t>(ch)] = static_cast<int>(r.read(3));
             }
         } else if (block == 0) {
             return std::unexpected(DecodeError::kInvalidStream);
+        }
+        if (cplinu) {
+            if (r.read(1) != 0) {  // cplleake
+                cplfleak = static_cast<int>(r.read(3));
+                cplsleak = static_cast<int>(r.read(3));
+            }
         }
         if (r.read(1) != 0) {  // deltbaie
             return std::unexpected(DecodeError::kUnsupported);
@@ -269,37 +407,90 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
 
         // Bit allocation (recomputed every block: parameters are stored
         // state, so the result matches the decoder-update rule of §7.2.1).
-        std::vector<std::vector<std::uint8_t>> bap(static_cast<std::size_t>(nchans));
-        for (int ch = 0; ch < nchans; ++ch) {
-            const int end = endmant[static_cast<std::size_t>(ch)];
-            if (static_cast<int>(exps[static_cast<std::size_t>(ch)].size()) != end) {
+        const int streams = nchans + (cplinu ? 1 : 0);
+        std::vector<std::vector<std::uint8_t>> bap(max_streams);
+        for (int s = 0; s < streams; ++s) {
+            const bool is_cpl = s == cpl_stream;
+            const int end = endmant[static_cast<std::size_t>(s)];
+            if (static_cast<int>(exps[static_cast<std::size_t>(s)].size()) != end) {
                 return std::unexpected(DecodeError::kInvalidStream);
             }
             BitAllocCodes codes = base_codes;
-            codes.fgaincod = fgaincod[static_cast<std::size_t>(ch)];
-            bap[static_cast<std::size_t>(ch)].resize(static_cast<std::size_t>(end));
-            compute_bit_allocation(exps[static_cast<std::size_t>(ch)], sample_rate, codes,
-                                   csnroffst, fsnroffst[static_cast<std::size_t>(ch)],
-                                   bap[static_cast<std::size_t>(ch)]);
+            codes.fgaincod = fgaincod[static_cast<std::size_t>(s)];
+            const BitAllocRegion region{.start = is_cpl ? cplstrtmant : 0,
+                                        .coupling = is_cpl,
+                                        .cplfleak = cplfleak,
+                                        .cplsleak = cplsleak};
+            bap[static_cast<std::size_t>(s)].assign(static_cast<std::size_t>(end), 0);
+            compute_bit_allocation(exps[static_cast<std::size_t>(s)], sample_rate, codes,
+                                   csnroffst, fsnroffst[static_cast<std::size_t>(s)],
+                                   bap[static_cast<std::size_t>(s)], region);
         }
 
-        // Mantissas -> coefficients (all channels first: rematrix undo needs
-        // both), then rematrix undo, inverse transform, overlap-add.
+        // Mantissas -> coefficients. §5.3.3 orders them by fbw channel, with
+        // the coupling channel inserted after the FIRST coupled one, then the
+        // LFE. Everything is unpacked before any reconstruction, because
+        // decoupling and the rematrix undo both need whole channels.
         GroupReadState groups_state;
-        std::vector<std::array<double, 256>> coeffs(static_cast<std::size_t>(nchans));
-        for (int ch = 0; ch < nchans; ++ch) {
-            const int end = endmant[static_cast<std::size_t>(ch)];
-            for (int bin = 0; bin < end; ++bin) {
+        std::vector<std::array<double, 256>> coeffs(max_streams);
+        const auto read_stream = [&](int s) {
+            const int begin = s == cpl_stream ? cplstrtmant : 0;
+            const int end = endmant[static_cast<std::size_t>(s)];
+            for (int bin = begin; bin < end; ++bin) {
                 const int bap_value =
-                    bap[static_cast<std::size_t>(ch)][static_cast<std::size_t>(bin)];
+                    bap[static_cast<std::size_t>(s)][static_cast<std::size_t>(bin)];
                 if (bap_value == 0) {
                     continue;  // silence (dither substitution not implemented)
                 }
                 const auto code = groups_state.read_code(r, bap_value);
                 const int exp =
-                    exps[static_cast<std::size_t>(ch)][static_cast<std::size_t>(bin)];
-                coeffs[static_cast<std::size_t>(ch)][static_cast<std::size_t>(bin)] =
+                    exps[static_cast<std::size_t>(s)][static_cast<std::size_t>(bin)];
+                coeffs[static_cast<std::size_t>(s)][static_cast<std::size_t>(bin)] =
                     dequantize_mantissa(code, bap_value) / static_cast<double>(1u << exp);
+            }
+        };
+        bool read_coupling = false;
+        for (int ch = 0; ch < nfchans; ++ch) {
+            read_stream(ch);
+            if (cplinu && chincpl[static_cast<std::size_t>(ch)] && !read_coupling) {
+                read_stream(cpl_stream);
+                read_coupling = true;
+            }
+        }
+        if (lfe) {
+            read_stream(nfchans);
+        }
+
+        // §7.4.3 decoupling: each coupled channel's high band is the shared
+        // channel scaled by that channel's coordinate, times 8 - undoing the
+        // encoder's /8 headroom scaling.
+        if (cplinu) {
+            const auto& shared = coeffs[static_cast<std::size_t>(cpl_stream)];
+            const int cplendmant = endmant[static_cast<std::size_t>(cpl_stream)];
+            for (int ch = 0; ch < nfchans; ++ch) {
+                if (!chincpl[static_cast<std::size_t>(ch)]) {
+                    continue;
+                }
+                auto& target = coeffs[static_cast<std::size_t>(ch)];
+                for (int bnd = 0; bnd < ncplsubnd; ++bnd) {
+                    const double coordinate =
+                        cplco[static_cast<std::size_t>(ch)][static_cast<std::size_t>(bnd)];
+                    // §7.4.1: a set phase flag negates the right channel of a
+                    // 2/0 pair across that band, restoring the phase the
+                    // coupling sum discarded.
+                    const double sign =
+                        (phsflginu && ch == 1 &&
+                         phsflg[static_cast<std::size_t>(
+                             subband_band[static_cast<std::size_t>(bnd)])])
+                            ? -1.0
+                            : 1.0;
+                    const int low = cplstrtmant + bnd * coupling::kBinsPerSubBand;
+                    const int high = std::min(low + coupling::kBinsPerSubBand, cplendmant);
+                    for (int bin = low; bin < high; ++bin) {
+                        target[static_cast<std::size_t>(bin)] =
+                            shared[static_cast<std::size_t>(bin)] * coordinate * 8.0 * sign;
+                    }
+                }
             }
         }
         if (acmod == Acmod::k2_0) {

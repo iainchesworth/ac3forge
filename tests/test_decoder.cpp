@@ -203,6 +203,37 @@ TEST_CASE("dynamic and correlated material exercises strategies and rematrixing"
     }
 }
 
+TEST_CASE("coupled streams round-trip through the in-repo decoder", "[decoder][coupling]") {
+    // Coupling discards inter-channel detail above the coupling frequency,
+    // so the bar here is the low band (which coupling must leave alone) plus
+    // the stream decoding at all. The high-band envelope is checked
+    // separately by tools/check_coupling.py against FFmpeg.
+    using ac3::Acmod;
+    for (const auto acmod : {Acmod::k2_0, Acmod::k3_2}) {
+        for (const auto [begf, endf] : {std::pair{6, 12}, std::pair{0, 15}}) {
+            CAPTURE(static_cast<int>(acmod), begf, endf);
+            const auto nchans =
+                static_cast<std::size_t>(ac3::fullbw_channel_count(acmod));
+            std::vector<double> tones(nchans);
+            for (std::size_t ch = 0; ch < nchans; ++ch) {
+                // All below the lowest coupling start (37 * 93.75 Hz ~ 3.4 kHz)
+                // so the comparison is against content coupling preserves.
+                tones[ch] = 400.0 + 200.0 * static_cast<double>(ch);
+            }
+            const auto rt = round_trip({.bitrate_kbps = 448,
+                                        .acmod = acmod,
+                                        .coupling = true,
+                                        .cplbegf = begf,
+                                        .cplendf = endf},
+                                       tones, 3);
+            for (std::size_t ch = 0; ch < nchans; ++ch) {
+                CAPTURE(ch);
+                CHECK(snr_db(rt.input[ch], rt.decoded[ch]) > 30.0);
+            }
+        }
+    }
+}
+
 TEST_CASE("decoder rejects corrupted streams", "[decoder]") {
     ac3::FrameEncoder encoder{{.bitrate_kbps = 192}};
     const std::vector<float> silence(ac3::kSamplesPerFrame, 0.0f);
