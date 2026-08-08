@@ -377,6 +377,122 @@ TEST_CASE("coupling is refused where Annex E has no syntax for it",
     CHECK(reader.read(1) == 0);  // blkstrtinfoe
 }
 
+TEST_CASE("coupling and spectral extension partition the spectrum", "[eac3][spx]") {
+    using namespace ac3::eac3;
+    // The failure this guards against does not look like a failure. If the
+    // coupling region and the extension region disagree about where one ends
+    // and the other begins, every field still lands where the decoder expects
+    // and the frame parses perfectly - it just reconstructs one band twice,
+    // or leaves a hole. §E3.3.1 exists precisely to make the two agree, by
+    // deriving cplendf from spxbegf instead of transmitting it, and the whole
+    // point is this identity.
+    for (int spxbegf = 0; spxbegf <= 7; ++spxbegf) {
+        CAPTURE(spxbegf);
+        const int synthesis_starts = spx_band_start(spx_begin_subbnd(spxbegf));
+        const int coupling_ends =
+            kCplFirstBin + kCplBinsPerSubBand * (derived_cplendf(spxbegf) + 3);
+        CHECK(coupling_ends == synthesis_starts);
+    }
+    // Both codes are non-linear at the top, which is the reason to check the
+    // ends rather than trust an offset.
+    CHECK(spx_begin_subbnd(5) == 7);
+    CHECK(spx_begin_subbnd(6) == 9);   // not 8: the step doubles here
+    CHECK(spx_end_subbnd(2) == 7);
+    CHECK(spx_end_subbnd(3) == 9);     // likewise
+    CHECK(spx_band_start(0) == 25);
+    CHECK(spx_band_start(17) == 229);  // one past the last synthesized band
+}
+
+TEST_CASE("E-AC-3 spectral extension places its fields where Annex E puts them",
+          "[eac3][spx]") {
+    const auto frame =
+        steady_state_frame({.bitrate_kbps = 192, .spx = true, .spxbegf = 4}, 2);
+    ac3::BitReader reader{frame};
+    reader.skip(16 + 38 + 12);
+    CHECK(reader.read(1) == 0);  // cplinu[0]: coupling off
+    for (int blk = 1; blk < ac3::kBlocksPerFrame; ++blk) {
+        CHECK(reader.read(1) == 0);  // cplstre[blk]
+    }
+    // No block couples, so frmcplexpstr is absent and frmchexpstr comes next.
+    CHECK(reader.read(5) == 0);
+    CHECK(reader.read(5) == 0);
+    reader.skip(10 + 10);        // convexpstr, then the frame SNR offsets
+    CHECK(reader.read(1) == 0);  // blkstrtinfoe
+
+    reader.skip(2);              // dithflag[0..1]
+    CHECK(reader.read(1) == 0);  // dynrnge
+    CHECK(reader.read(1) == 1);  // spxinu (spxstre implied in block 0)
+    CHECK(reader.read(1) == 1);  // chinspx[0]
+    CHECK(reader.read(1) == 1);  // chinspx[1]
+    reader.skip(2);              // spxstrtf
+    CHECK(reader.read(3) == 4);  // spxbegf
+    CHECK(reader.read(3) == 7);  // spxendf: synthesis runs to coefficient 229
+    CHECK(reader.read(1) == 1);  // spxbndstrce
+    const int begin = ac3::eac3::spx_begin_subbnd(4);
+    const int end = ac3::eac3::spx_end_subbnd(7);
+    int bands = 1;
+    for (int sbnd = begin + 1; sbnd < end; ++sbnd) {
+        bands += reader.read(1) == 0 ? 1 : 0;
+    }
+    // Block 0's spxcoe is implied by firstspxcos, so the coordinates follow
+    // with no flag: spxblnd, mstrspxco, then 6 bits a band.
+    for (int ch = 0; ch < 2; ++ch) {
+        reader.skip(5 + 2 + 6 * bands);
+    }
+    // Coupling is off, so nothing follows before rematrixing - and with only
+    // spectral extension in use spxbegf 4 leaves all four bands (§E3.3.2).
+    for (int bnd = 0; bnd < 4; ++bnd) {
+        CHECK(reader.read(1) == 0);  // rematflg
+    }
+    // chbwcod is NOT sent for a channel in spectral extension: its coded
+    // bandwidth is where synthesis begins. So exponents come straight after,
+    // and the first field is a 4-bit absolute exponent.
+    CHECK(reader.read(4) <= 15);
+}
+
+TEST_CASE("spectral extension buys bits for the band it keeps", "[eac3][spx]") {
+    // Synthesis removes coefficients from the coded spectrum outright, so
+    // whatever is left must be able to afford a higher SNR offset. If it
+    // cannot, the side information the tool adds is costing more than the
+    // mantissas it removed, which for a handful of scale factors a frame
+    // would mean something is wrong rather than merely unprofitable.
+    for (const std::uint32_t kbps : {96u, 128u, 192u}) {
+        CAPTURE(kbps);
+        const auto plain = steady_state_frame({.bitrate_kbps = kbps}, 2);
+        const auto extended = steady_state_frame({.bitrate_kbps = kbps, .spx = true}, 2);
+        const int plain_offset = frame_snr_offset(plain);
+        const int spx_offset = frame_snr_offset(extended);
+        CAPTURE(plain_offset, spx_offset);
+        CHECK(spx_offset >= plain_offset);
+    }
+}
+
+TEST_CASE("E-AC-3 tools stack without desynchronising the frame", "[eac3][spx]") {
+    using ac3::Acmod;
+    // Coupling and spectral extension together is the configuration where the
+    // boundaries have to agree: cplendf stops being transmitted and becomes a
+    // function of spxbegf, and cplbegf has to be pulled down to leave the
+    // coupling region non-empty.
+    for (const auto acmod : {Acmod::k2_0, Acmod::k3_2}) {
+        for (const int spxbegf : {0, 2, 4, 7}) {
+            for (const std::uint32_t kbps : {192u, 448u}) {
+                const int channels = ac3::fullbw_channel_count(acmod) + 1;
+                CAPTURE(static_cast<int>(acmod), spxbegf, kbps);
+                const auto frame = steady_state_frame({.bitrate_kbps = kbps,
+                                                       .acmod = acmod,
+                                                       .lfe = true,
+                                                       .coupling = true,
+                                                       .spx = true,
+                                                       .spxbegf = spxbegf},
+                                                      channels);
+                CHECK(frame.size() ==
+                      ac3::eac3::frame_words(ac3::SampleRate::k48000, kbps) * 2);
+                CHECK(ac3::crc16(std::span{frame}.subspan(2)) == 0x0000);
+            }
+        }
+    }
+}
+
 TEST_CASE("E-AC-3 encodes every supported layout", "[eac3]") {
     ac3::eac3::FrameEncoder encoder{
         {.bitrate_kbps = 448, .acmod = ac3::Acmod::k3_2, .lfe = true}};

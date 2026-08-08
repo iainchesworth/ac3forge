@@ -105,26 +105,53 @@ struct CouplingPlan {
     std::vector<coupling::Coordinate> coords;  // [blk][ch][bnd]
 };
 
+// Everything the spectral extension tool contributes. There is no shared
+// channel and no mantissas: above startmant the bitstream carries only these
+// per-band scale factors, and the decoder rebuilds the band by copying a
+// lower one up, blending noise into it and scaling the result to match.
+struct SpxPlan {
+    bool in_use = false;
+    int begf = 0;
+    int endf = 0;
+    int strtf = 0;
+    int begin_subbnd = 0;
+    int end_subbnd = 0;
+    int startmant = 0;   // where synthesis begins - and coding stops
+    int endmant = 0;     // one past the last synthesized coefficient
+    int copystart = 0;   // first coefficient of the copy source region
+    std::array<bool, kSpxSubBands> structure{};
+    BandLayout bands{};
+    std::array<bool, kBlocksPerFrame> send{};
+    std::vector<int> blend;                    // [blk][ch] spxblnd
+    std::vector<int> master;                   // [blk][ch] mstrspxco
+    std::vector<coupling::Coordinate> coords;  // [blk][ch][bnd]
+};
+
 struct Payload {
     int csnroffst = 0;
     int fsnroffst = 0;
     CouplingPlan cpl;
+    SpxPlan spx;
     std::vector<ChannelPlan> chans;
     std::array<std::vector<MantissaToken>, kBlocksPerFrame> mantissas;
 };
 
-// §7.5.2.1-7.5.2.4: with coupling in use the rematrixing bands cannot reach
-// above the coupling frequency, so both their count and where the last one
-// stops change. Nothing here rematrixes yet, but the COUNT is transmitted, so
-// getting it wrong shifts every later field in block 0.
-[[nodiscard]] int rematrix_band_count(const CouplingPlan& cpl) {
-    if (!cpl.in_use) {
-        return 4;
+// §E3.3.2: the rematrixing bands cannot reach above whichever tool takes over
+// the spectrum first, so both their count and where the last one stops depend
+// on coupling and spectral extension. Nothing here rematrixes yet, but the
+// COUNT is transmitted, so getting it wrong shifts every later field in
+// block 0.
+[[nodiscard]] int rematrix_band_count(const CouplingPlan& cpl, const SpxPlan& spx) {
+    if (cpl.in_use) {
+        if (cpl.begf == 0) {
+            return 2;
+        }
+        return cpl.begf < 3 ? 3 : 4;
     }
-    if (cpl.begf == 0) {
-        return 2;
+    if (spx.in_use) {
+        return spx.begf < 2 ? 3 : 4;
     }
-    return cpl.begf < 3 ? 3 : 4;
+    return 4;
 }
 
 // Where coupling should start when the caller does not say. Sub-band 4 - bin
@@ -144,6 +171,68 @@ struct Payload {
     return std::clamp(4 + (per_channel - 48) / 24, 4, 10);
 }
 
+// Where synthesis should take over when the caller does not say. Spectral
+// extension is the crudest of the tools - a copied band with noise stirred in
+// and an envelope painted back on - so it belongs as high as the rate allows.
+//
+// Code 4, coefficient 97, 9.1 kHz at 48 kHz, is where it stops costing
+// anything measurable: on the reference program it improves BOTH the banded
+// envelope and waveform SNR against not using it, at every rate from 96 to
+// 192 kbit/s. Lower start frequencies keep improving the envelope and give up
+// waveform fidelity fast, which is a trade a caller can still ask for through
+// FrameConfig::spxbegf but is not one to make on their behalf.
+[[nodiscard]] int default_spxbegf(std::uint32_t bitrate_kbps, int nfchans) {
+    const int per_channel = static_cast<int>(bitrate_kbps) / std::max(nfchans, 1);
+    if (per_channel < 40) {
+        return 3;  // coefficient 85, 8.0 kHz
+    }
+    if (per_channel < 136) {
+        return 4;  // coefficient 97, 9.1 kHz
+    }
+    return 5;  // coefficient 109, 10.2 kHz
+}
+
+// The copy source has to be a band the decoder actually has: it must sit
+// below where synthesis begins, and it wants to be wide enough that the wrap
+// does not repeat a handful of bins over and over. Two sub-bands is the floor.
+[[nodiscard]] int default_spxstrtf(int startmant) {
+    int strtf = 0;
+    for (int s = 1; s <= 3; ++s) {
+        if (spx_band_start(s) + 2 * kSpxBinsPerSubBand <= startmant) {
+            strtf = s;
+        }
+    }
+    return strtf;
+}
+
+// §E3.6.4.2.1: how much of the synthesized band is noise rather than copied
+// signal. The decoder derives a per-band factor from spxblnd and the band's
+// place in the spectrum; what the encoder has to decide is the offset, which
+// is a judgement about the material. Tonal content wants its harmonics copied
+// and noise kept out; noise-like content is better served by noise, since a
+// copied band lands its harmonics at the wrong frequencies.
+//
+// Spectral flatness answers exactly that question: near 0 for a tone, near 1
+// for noise. noffset is spxblnd/32 and SUBTRACTS from the noise ratio, so a
+// tone wants the offset high.
+[[nodiscard]] int spx_blend(std::span<const double> region) {
+    double log_sum = 0.0;
+    double sum = 0.0;
+    int count = 0;
+    for (const double value : region) {
+        const double power = value * value + 1e-30;
+        log_sum += std::log(power);
+        sum += power;
+        ++count;
+    }
+    if (count == 0 || !(sum > 0.0)) {
+        return 31;  // nothing up here to blend; copying costs nothing either
+    }
+    const double flatness =
+        std::exp(log_sum / count) / (sum / static_cast<double>(count));
+    return std::clamp(static_cast<int>(std::lround((1.0 - flatness) * 32.0)), 0, 31);
+}
+
 // Everything from the sync word to the end of the last block: the whole
 // frame bar padding and the tail. Silence and real audio go through this one
 // function, so the two can never drift apart on field placement.
@@ -152,6 +241,7 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
     const int nfchans = fullbw_channel_count(config.acmod);
     const bool dependent = config.strmtyp == StreamType::kDependent;
     const auto& cpl = payload.cpl;
+    const auto& spx = payload.spx;
 
     w.put(kSyncWord, 16);
 
@@ -252,12 +342,53 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
         }
         w.put(0, 1);  // dynrnge
 
-        // Spectral extension: block 0 has spxstre implied, later blocks
-        // send it explicitly.
+        // Spectral extension strategy: block 0 has spxstre implied, later
+        // blocks send it explicitly. The strategy is set once a frame, so
+        // those later blocks all say "reuse".
         if (first) {
-            w.put(0, 1);  // spxinu
+            w.put(spx.in_use ? 1 : 0, 1);  // spxinu
+            if (spx.in_use) {
+                // 1/0 is the one mode where chinspx is not transmitted.
+                if (config.acmod != Acmod::k1_0) {
+                    for (int ch = 0; ch < nfchans; ++ch) {
+                        w.put(1, 1);  // chinspx[ch]
+                    }
+                }
+                w.put(static_cast<std::uint32_t>(spx.strtf), 2);
+                w.put(static_cast<std::uint32_t>(spx.begf), 3);
+                w.put(static_cast<std::uint32_t>(spx.endf), 3);
+                w.put(1, 1);  // spxbndstrce: sent, for the same reason as cpl
+                for (int sbnd = spx.begin_subbnd + 1; sbnd < spx.end_subbnd; ++sbnd) {
+                    w.put(spx.structure[static_cast<std::size_t>(sbnd)] ? 1 : 0, 1);
+                }
+            }
         } else {
-            w.put(0, 1);  // spxstre
+            w.put(0, 1);  // spxstre: keep the strategy from block 0
+        }
+
+        // Spectral extension coordinates, which precede the COUPLING strategy
+        // rather than following it - the two tools interleave in audblk.
+        if (spx.in_use) {
+            const bool send = spx.send[static_cast<std::size_t>(blk)];
+            for (int ch = 0; ch < nfchans; ++ch) {
+                if (!first) {
+                    w.put(send ? 1 : 0, 1);  // spxcoe[ch]
+                }
+                if (send) {
+                    const auto at = static_cast<std::size_t>(blk) *
+                                        static_cast<std::size_t>(nfchans) +
+                                    static_cast<std::size_t>(ch);
+                    w.put(static_cast<std::uint32_t>(spx.blend[at]), 5);   // spxblnd
+                    w.put(static_cast<std::uint32_t>(spx.master[at]), 2);  // mstrspxco
+                    for (int bnd = 0; bnd < spx.bands.count; ++bnd) {
+                        const auto coordinate =
+                            spx.coords[at * static_cast<std::size_t>(spx.bands.count) +
+                                       static_cast<std::size_t>(bnd)];
+                        w.put(coordinate.exp, 4);
+                        w.put(coordinate.mant, 2);
+                    }
+                }
+            }
         }
 
         // Coupling strategy. cplstre[0] is implied 1, so block 0 carries one;
@@ -274,7 +405,12 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
                 w.put(0, 1);  // phsflginu: no phase restoration
             }
             w.put(static_cast<std::uint32_t>(cpl.begf), 4);
-            w.put(static_cast<std::uint32_t>(cpl.endf), 4);  // spxinu == 0
+            // §E3.3.1: with spectral extension in use cplendf is derived from
+            // spxbegf rather than transmitted, so that the coupling region
+            // ends exactly where synthesis begins.
+            if (!spx.in_use) {
+                w.put(static_cast<std::uint32_t>(cpl.endf), 4);
+            }
             // The banding structure is sent rather than defaulted. Leaving
             // cplbndstrce at 0 would hand the decoder Table E2.12's default,
             // which is NOT one band per sub-band and whose indexing the
@@ -320,18 +456,18 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
             if (!first) {
                 w.put(0, 1);  // rematstr: keep the previous flags
             } else {
-                for (int band = 0; band < rematrix_band_count(cpl); ++band) {
+                for (int band = 0; band < rematrix_band_count(cpl, spx); ++band) {
                     w.put(0, 1);  // rematflg
                 }
             }
         }
 
         // chbwcod accompanies a fresh exponent strategy, but only for a
-        // channel carrying its own high band: a coupled channel's bandwidth
-        // IS the coupling frequency, and sending chbwcod anyway would both
-        // waste the bits and desynchronise the block.
+        // channel carrying its own high band: a coupled or extended channel's
+        // bandwidth is fixed by where that tool takes over, and sending
+        // chbwcod anyway would both waste the bits and desynchronise the block.
         if (first) {
-            if (!cpl.in_use) {
+            if (!cpl.in_use && !spx.in_use) {
                 for (int ch = 0; ch < nfchans; ++ch) {
                     w.put(static_cast<std::uint32_t>(config.chbwcod), 6);
                 }
@@ -509,9 +645,47 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     const std::uint32_t words = frame_words(config_.sample_rate, config_.bitrate_kbps);
     const std::uint32_t total_bits = words * 16;
 
-    // --- 1. Coupling decision ----------------------------------------------
+    // --- 1. Tool decisions --------------------------------------------------
+    // Spectral extension is settled first, because when both tools are in use
+    // it fixes where coupling has to stop (§E3.3.1).
     Payload payload;
     auto& cpl = payload.cpl;
+    auto& spx = payload.spx;
+    spx.in_use = config_.spx;
+    if (spx.in_use) {
+        spx.begf = std::clamp(config_.spxbegf >= 0
+                                  ? config_.spxbegf
+                                  : default_spxbegf(config_.bitrate_kbps, nfchans),
+                              0, 7);
+        // Synthesis runs to sub-band 17, coefficient 229 - 21.5 kHz at 48 kHz.
+        // Nothing is coded or synthesized above it, which is a bandwidth no
+        // listener is going to miss and a table entry that exists for exactly
+        // this purpose.
+        spx.endf = 7;
+        spx.begin_subbnd = spx_begin_subbnd(spx.begf);
+        spx.end_subbnd = spx_end_subbnd(spx.endf);
+        spx.startmant = spx_band_start(spx.begin_subbnd);
+        spx.endmant = spx_band_start(spx.end_subbnd);
+        spx.strtf = default_spxstrtf(spx.startmant);
+        spx.copystart = spx_band_start(spx.strtf);
+        spx.structure = kDefaultSpxBandStructure;
+        spx.bands = group_bands(
+            spx.startmant, spx.end_subbnd - spx.begin_subbnd, kSpxBinsPerSubBand,
+            std::span{spx.structure}.subspan(static_cast<std::size_t>(spx.begin_subbnd)));
+        // The coordinates cannot be computed until the baseband has been
+        // quantized, but their SIZE is fixed now - and the side-information
+        // probe below needs that size - so the arrays are laid out here and
+        // filled in at the end.
+        const auto slots = static_cast<std::size_t>(kBlocksPerFrame) *
+                           static_cast<std::size_t>(nfchans);
+        spx.blend.assign(slots, 0);
+        spx.master.assign(slots, 0);
+        spx.coords.assign(slots * static_cast<std::size_t>(spx.bands.count), {});
+        for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
+            spx.send[static_cast<std::size_t>(blk)] = blk % 2 == 0;
+        }
+    }
+
     // §E2.2.3 gates the whole coupling element on acmod > 0x1, so 1/0 and the
     // rejected 1+1 cannot couple however the caller asks.
     cpl.in_use = config_.coupling && static_cast<std::uint8_t>(config_.acmod) > 0x1;
@@ -520,21 +694,39 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                                   ? config_.cplbegf
                                   : default_cplbegf(config_.bitrate_kbps, nfchans),
                               0, 15);
-        // Coupling runs to the top of the coded spectrum. With chbwcod gone
-        // for a coupled channel the coupling end frequency IS its bandwidth,
-        // so stopping short would not save the top band's bits - it would
-        // discard the band, which is what the tool exists to avoid.
+        // Without spectral extension, coupling runs to the top of the coded
+        // spectrum: chbwcod is gone for a coupled channel, so the coupling end
+        // frequency IS its bandwidth and stopping short discards the band
+        // rather than saving its bits.
         cpl.endf = 15;
+        if (spx.in_use) {
+            // §E3.3.1 derives cplendf from spxbegf and stops transmitting it.
+            // The value may be negative, which is legal because it is never
+            // sent - but it can leave no room for coupling at all, and it can
+            // leave less room than the requested cplbegf wants.
+            cpl.endf = derived_cplendf(spx.begf);
+            if (cpl.endf + 2 < 0) {
+                cpl.in_use = false;  // synthesis starts below where coupling could
+            } else {
+                cpl.begf = std::min(cpl.begf, cpl.endf + 2);
+            }
+        }
+    }
+    if (cpl.in_use) {
         cpl.strtmant = kCplFirstBin + kCplBinsPerSubBand * cpl.begf;
         cpl.endmant = kCplFirstBin + kCplBinsPerSubBand * (cpl.endf + 3);
         cpl.nsubnd = 3 + cpl.endf - cpl.begf;
+        assert(cpl.nsubnd >= 1);
+        assert(!spx.in_use || cpl.endmant == spx.startmant);
         std::copy_n(kDefaultCplBandStructure.begin(), cpl.nsubnd, cpl.structure.begin());
         cpl.bands = group_bands(cpl.strtmant, cpl.nsubnd, kCplBinsPerSubBand,
                                 std::span{cpl.structure});
     }
 
-    const int fbw_endmant =
-        cpl.in_use ? cpl.strtmant : ((config_.chbwcod + 12) * 3) + 37;
+    // §E3.3.3: whichever tool takes over first sets the coded bandwidth.
+    const int fbw_endmant = cpl.in_use    ? cpl.strtmant
+                            : spx.in_use  ? spx.startmant
+                                          : ((config_.chbwcod + 12) * 3) + 37;
     // Streams: the fbw channels, the LFE, then the coupling channel as one
     // more stream carrying the shared high band.
     const int cpl_stream = cpl.in_use ? nchans : -1;
@@ -825,6 +1017,120 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     // block after the first lands at the wrong bit offset.
     assert(token_bits == mantissa_bits);
     (void)token_bits;
+
+    // --- 9. Spectral extension coordinates ----------------------------------
+    // Last, because the gains have to be measured against what the DECODER
+    // will hold, not against what the encoder started with. The copy source is
+    // the baseband this function has just quantized, and at low rates a good
+    // part of that baseband has bap 0 and reconstructs to exactly zero - so
+    // measuring against the original coefficients would ask for gains that
+    // scale silence. Nothing about the frame's SIZE depends on these values,
+    // only on how many there are, so computing them here is free.
+    if (spx.in_use) {
+        const auto spx_nbnd = static_cast<std::size_t>(spx.bands.count);
+        std::vector<double> recon(static_cast<std::size_t>(spx.startmant), 0.0);
+        std::vector<double> gains(spx_nbnd, 0.0);
+        // The decoder's own reconstruction: quantize, dequantize, undo the
+        // exponent. bap 0 with dither off is exactly zero, which is the case
+        // that matters.
+        const auto rebuild = [&](int s, int blk, int from, int to) {
+            const auto& plan = payload.chans[static_cast<std::size_t>(s)];
+            const auto& block = fixed_at(s, blk);
+            for (int bin = from; bin < to; ++bin) {
+                const int bap = plan.bap[static_cast<std::size_t>(bin)];
+                if (bap == 0) {
+                    // No bits, and dithflag is 0, so the decoder holds exactly
+                    // zero here. This is the case that makes the whole
+                    // reconstruction worth doing rather than reusing the
+                    // encoder's own coefficients.
+                    recon[static_cast<std::size_t>(bin)] = 0.0;
+                    continue;
+                }
+                const int exp = plan.decoded[static_cast<std::size_t>(bin)];
+                const auto mantissa = static_cast<std::int32_t>(
+                    static_cast<std::int64_t>(block[static_cast<std::size_t>(bin)]) << exp);
+                recon[static_cast<std::size_t>(bin)] =
+                    std::ldexp(dequantize_mantissa(quantize_mantissa(mantissa, bap), bap),
+                               -exp);
+            }
+        };
+
+        for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
+            for (int ch = 0; ch < nfchans; ++ch) {
+                const auto at = coord_slot(blk, ch);
+                if (!spx.send[static_cast<std::size_t>(blk)]) {
+                    spx.blend[at] = spx.blend[coord_slot(blk - 1, ch)];
+                    spx.master[at] = spx.master[coord_slot(blk - 1, ch)];
+                    for (std::size_t bnd = 0; bnd < spx_nbnd; ++bnd) {
+                        spx.coords[at * spx_nbnd + bnd] =
+                            spx.coords[coord_slot(blk - 1, ch) * spx_nbnd + bnd];
+                    }
+                    continue;
+                }
+                rebuild(ch, blk, 0, payload.chans[static_cast<std::size_t>(ch)].endmant);
+                // With coupling below the extension region, part of the copy
+                // source is not this channel's own coded data at all - it is
+                // the shared channel scaled by this channel's coordinate.
+                if (cpl.in_use) {
+                    rebuild(cpl_stream, blk, cpl.strtmant, cpl.endmant);
+                    for (int bnd = 0; bnd < cpl.bands.count; ++bnd) {
+                        const double coord = coupling::decode_coordinate(
+                            cpl.coords[at * nbnd + static_cast<std::size_t>(bnd)],
+                            cpl.master[at]);
+                        const int low = cpl.bands.start[static_cast<std::size_t>(bnd)];
+                        const int high = low + cpl.bands.size[static_cast<std::size_t>(bnd)];
+                        for (int bin = low; bin < high; ++bin) {
+                            recon[static_cast<std::size_t>(bin)] *= coord * 8.0;
+                        }
+                    }
+                }
+
+                // §E3.6.4.1: copy bands up from the source region, wrapping
+                // back to its start whenever the next band would run past its
+                // end. The decoder does exactly this, so the encoder measures
+                // the energy of exactly the coefficients the decoder will get.
+                int copyindex = spx.copystart;
+                for (int bnd = 0; bnd < spx.bands.count; ++bnd) {
+                    const int size = spx.bands.size[static_cast<std::size_t>(bnd)];
+                    if (copyindex + size > spx.startmant) {
+                        copyindex = spx.copystart;
+                    }
+                    double source = 0.0;
+                    for (int i = 0; i < size; ++i) {
+                        if (copyindex == spx.startmant) {
+                            copyindex = spx.copystart;
+                        }
+                        const double value = recon[static_cast<std::size_t>(copyindex++)];
+                        source += value * value;
+                    }
+                    double target = 0.0;
+                    const int low = spx.bands.start[static_cast<std::size_t>(bnd)];
+                    for (int bin = low; bin < low + size; ++bin) {
+                        const double value =
+                            coeffs_at(ch, blk)[static_cast<std::size_t>(bin)];
+                        target += value * value;
+                    }
+                    // Noise blending is energy-preserving in expectation - the
+                    // noise is scaled by the translated band's own RMS - so
+                    // the only gain that matters is the ratio of the original
+                    // band's energy to the copied band's, and the decoder
+                    // applies it as spxco * 32.
+                    gains[static_cast<std::size_t>(bnd)] =
+                        source > 0.0 ? std::sqrt(target / source) / 32.0 : 0.0;
+                }
+                const int chosen = coupling::choose_master(gains);
+                spx.master[at] = chosen;
+                for (std::size_t bnd = 0; bnd < spx_nbnd; ++bnd) {
+                    spx.coords[at * spx_nbnd + bnd] = coupling::quantize_coordinate(
+                        gains[bnd], chosen, coupling::kSpxMantissaBits);
+                }
+                spx.blend[at] = spx_blend(
+                    std::span{coeffs_at(ch, blk)}
+                        .subspan(static_cast<std::size_t>(spx.startmant),
+                                 static_cast<std::size_t>(spx.endmant - spx.startmant)));
+            }
+        }
+    }
 
     return finish_frame(config_, words, payload);
 }

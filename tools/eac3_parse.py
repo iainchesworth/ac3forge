@@ -24,6 +24,15 @@ LFE_ENDMANT = 7
 # different ncplbnd from the decoder.
 DEF_CPL_BNDSTRC = [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 1, 1, 1, 1, 1]
 
+# Table E2.11. Unlike coupling's, this one is indexed by the ABSOLUTE spectral
+# extension sub-band number - the transmitted loop runs from
+# spx_begin_subbnd + 1, not from 1.
+DEF_SPX_BNDSTRC = [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1]
+
+
+def spx_band_start(subbnd):
+    return 25 + 12 * subbnd
+
 
 def group_bands(first_bin, subbands, bins_per_subband, structure):
     """Merge sub-bands into bands; returns [(start_bin, size), ...]."""
@@ -261,6 +270,12 @@ def parse_frame(data, verbose=True):
     csnroffst = 0
     fsnroffst = [0] * (nfchans + 1)
     spxinu = 0
+    spxbegf = 0
+    spxstart = 0
+    spxbnds = []
+    chinspx = [0] * nfchans
+    spxbndstrc = list(DEF_SPX_BNDSTRC)
+    firstspxcos = [1] * nfchans
     chincpl = [0] * nfchans
     phsflginu = 0
     cplbnds = []
@@ -292,7 +307,37 @@ def parse_frame(data, verbose=True):
         if spxstre:
             spxinu = r.bits(1)
             if spxinu:
-                raise SystemExit('spectral extension not modelled')
+                chinspx = [1] if acmod == 1 else [r.bits(1) for _ in range(nfchans)]
+                spxstrtf = r.bits(2)
+                spxbegf = r.bits(3)
+                spxendf = r.bits(3)
+                spx_begin = spxbegf + 2 if spxbegf < 6 else spxbegf * 2 - 3
+                spx_end = spxendf + 5 if spxendf < 3 else spxendf * 2 + 3
+                if r.bits(1):    # spxbndstrce
+                    for bnd in range(spx_begin + 1, spx_end):
+                        spxbndstrc[bnd] = r.bits(1)
+                spxbnds = group_bands(spx_band_start(spx_begin), spx_end - spx_begin,
+                                      12, spxbndstrc[spx_begin:])
+                spxstart = spx_band_start(spx_begin)
+            else:
+                chinspx = [0] * nfchans
+                firstspxcos = [1] * nfchans
+        if spxinu:
+            for ch in range(nfchans):
+                if not chinspx[ch]:
+                    firstspxcos[ch] = 1
+                    continue
+                if firstspxcos[ch]:
+                    spxcoe = 1
+                    firstspxcos[ch] = 0
+                else:
+                    spxcoe = r.bits(1)
+                if spxcoe:
+                    r.bits(5)    # spxblnd
+                    r.bits(2)    # mstrspxco
+                    for _ in spxbnds:
+                        r.bits(4)  # spxcoexp
+                        r.bits(2)  # spxcomant
 
         # cplstre[blk] came from audfrm: block 0's is implied 1, the rest
         # were transmitted there.
@@ -308,7 +353,12 @@ def parse_frame(data, verbose=True):
                 if acmod == 2:
                     phsflginu = r.bits(1)
                 cplbegf = r.bits(4)
-                cplendf = r.bits(4)   # spxinu == 0
+                if spxinu:
+                    # §E3.3.1: cplendf is derived from spxbegf, not sent, so
+                    # that coupling ends exactly where synthesis begins.
+                    cplendf = spxbegf - 2 if spxbegf < 6 else spxbegf * 2 - 7
+                else:
+                    cplendf = r.bits(4)
                 ncplsubnd = 3 + cplendf - cplbegf
                 cplstrtmant = 37 + 12 * cplbegf
                 cplendmant = 37 + 12 * (cplendf + 3)
@@ -344,15 +394,18 @@ def parse_frame(data, verbose=True):
         if acmod == 2:
             rematstr = 1 if blk == 0 else r.bits(1)
             if rematstr:
-                for _ in range(nrematbd(cplinu[blk], cplbegf if cplinu[blk] else 0)):
+                for _ in range(nrematbd(cplinu[blk], cplbegf if cplinu[blk] else 0,
+                                        spxinu, spxbegf)):
                     r.bits(1)
 
         for ch in range(nfchans):
             if chexpstr[blk][ch] != 0:
-                # §E3.3.3: a coupled channel's coded band stops where coupling
-                # begins, and chbwcod is not sent for it at all.
+                # §E3.3.3: whichever tool takes the spectrum over first sets
+                # the coded band, and chbwcod is not sent for such a channel.
                 if chincpl[ch]:
                     endmant[ch] = cplstrtmant
+                elif chinspx[ch]:
+                    endmant[ch] = spxstart
                 else:
                     chbwcod = r.bits(6)
                     endmant[ch] = ((chbwcod + 12) * 3) + 37
@@ -497,13 +550,15 @@ def expand_cpl(absexp, groups, grpsize, count):
     return out[:count] + [24] * max(0, count - len(out))
 
 
-def nrematbd(cplinu, cplbegf):
-    """§7.5.2: rematrixing bands cannot reach above the coupling frequency."""
-    if not cplinu:
-        return 4
-    if cplbegf == 0:
-        return 2
-    return 3 if cplbegf < 3 else 4
+def nrematbd(cplinu, cplbegf, spxinu=0, spxbegf=0):
+    """§E3.3.2: rematrixing bands stop where the first tool takes over."""
+    if cplinu:
+        if cplbegf == 0:
+            return 2
+        return 3 if cplbegf < 3 else 4
+    if spxinu:
+        return 3 if spxbegf < 2 else 4
+    return 4
 
 
 # Table E2.5 locations that name a PAIR of channels rather than one, so a

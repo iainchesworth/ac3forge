@@ -39,13 +39,24 @@ struct Coordinate {
     std::uint8_t mant = 0;  // cplcomant, 4 bits
 };
 
+// Annex E's spectral extension coordinate (§E3.6.3) is the same format with
+// a narrower mantissa: 4-bit exponent, 2-bit mantissa, 2-bit per-channel
+// master buying three exponent steps at a time, implicit leading one except
+// at exponent 15 where the mantissa becomes a plain fraction. Only the
+// mantissa width differs, so it is a parameter rather than a second copy of
+// the arithmetic.
+inline constexpr int kCplMantissaBits = 4;
+inline constexpr int kSpxMantissaBits = 2;
+
 // Reconstruct exactly as the decoder does (§7.4.3), so the encoder can see
 // the value the decoder will actually apply.
-[[nodiscard]] double decode_coordinate(Coordinate coordinate, int master);
+[[nodiscard]] double decode_coordinate(Coordinate coordinate, int master,
+                                       int mantissa_bits = kCplMantissaBits);
 
 // Quantize a linear coupling coordinate for a given per-channel master.
 // Values are clamped into the representable range rather than wrapping.
-[[nodiscard]] Coordinate quantize_coordinate(double value, int master);
+[[nodiscard]] Coordinate quantize_coordinate(double value, int master,
+                                             int mantissa_bits = kCplMantissaBits);
 
 // The smallest master (0..3) that keeps every coordinate in `values`
 // representable. The master buys 3 exponent steps at a time, extending the

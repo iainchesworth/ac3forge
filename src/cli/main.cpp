@@ -42,7 +42,8 @@ void print_usage() {
     std::println("  ac3cli outputs                      (render endpoints + AC-3 passthrough support)");
     std::println("  ac3cli play    <in.ac3> [device_index]  (exclusive-mode IEC 61937 passthrough)");
     std::println("");
-    std::println("tools:  Annex E coding tools, '+'-joined — none | cpl | all");
+    std::println("tools:  Annex E coding tools, '+'-joined — none | cpl | spx | all;");
+    std::println("        cpl:N / spx:N pin that tool's band edge (e.g. cpl:4+spx:5)");
     std::println("");
     std::println("layout: stereo (default) | 51 — 5.1 uses per-channel tones;");
     std::println("        append 'c' (stereoc, 51c) to enable channel coupling");
@@ -378,7 +379,7 @@ int run_eac3_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_
 // "all", "none"). Every tool is a trade rather than a free win, so they are
 // selected rather than assumed - and being able to encode the same material
 // with and without one is the only way to say whether it earned its place.
-constexpr std::string_view kEac3Tools = "none | cpl | all";
+constexpr std::string_view kEac3Tools = "none | cpl | spx | all (cpl:N / spx:N pin the band edge)";
 
 bool parse_eac3_tools(std::string_view text, ac3::eac3::FrameConfig& config) {
     if (text.empty() || text == "none") {
@@ -395,8 +396,19 @@ bool parse_eac3_tools(std::string_view text, ac3::eac3::FrameConfig& config) {
             if (config.cplbegf > 15) {
                 return false;
             }
-        } else if (token == "all" || token == "cpl") {
+        } else if (token.starts_with("spx:")) {
+            config.spx = true;
+            config.spxbegf = static_cast<int>(parse_u32_or(token.substr(4), 99));
+            if (config.spxbegf > 7) {
+                return false;
+            }
+        } else if (token == "cpl") {
             config.coupling = true;
+        } else if (token == "spx") {
+            config.spx = true;
+        } else if (token == "all") {
+            config.coupling = true;
+            config.spx = true;
         } else {
             return false;
         }

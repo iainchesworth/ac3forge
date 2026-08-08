@@ -56,4 +56,51 @@ inline constexpr std::array<bool, 18> kDefaultCplBandStructure = {
 inline constexpr int kCplFirstBin = 37;
 inline constexpr int kCplBinsPerSubBand = 12;
 
+// --- spectral extension (§E3.6.2, Table E3.13) -----------------------------
+// Coefficients 25 through 228 in 17 sub-bands of 12. The table's final entry
+// is not a sub-band: it exists so spx_end_subbnd can name the bin one past
+// the last synthesized one.
+inline constexpr int kSpxFirstBin = 25;
+inline constexpr int kSpxBinsPerSubBand = 12;
+inline constexpr int kSpxSubBands = 17;
+
+[[nodiscard]] constexpr int spx_band_start(int subbnd) {
+    return kSpxFirstBin + kSpxBinsPerSubBand * subbnd;
+}
+
+// §E2.3.3.5 and §E2.3.3.6. Both codes are non-linear at the top, which is why
+// they are tables in disguise rather than plain offsets.
+[[nodiscard]] constexpr int spx_begin_subbnd(int spxbegf) {
+    return spxbegf < 6 ? spxbegf + 2 : spxbegf * 2 - 3;
+}
+
+[[nodiscard]] constexpr int spx_end_subbnd(int spxendf) {
+    return spxendf < 3 ? spxendf + 5 : spxendf * 2 + 3;
+}
+
+// §E3.3.1: with spectral extension in use, cplendf is NOT transmitted. It is
+// derived from spxbegf so that the coupling region ends exactly where
+// synthesis begins - and the spec notes it may come out negative, which is
+// legal precisely because it is never sent.
+[[nodiscard]] constexpr int derived_cplendf(int spxbegf) {
+    return spxbegf < 6 ? spxbegf - 2 : spxbegf * 2 - 7;
+}
+
+// The three regions have to tile the spectrum with no gap and no overlap:
+// coupling ends where synthesis starts, or a decoder reconstructs a band
+// twice or not at all. This is the identity that guarantees it.
+static_assert(kCplFirstBin + kCplBinsPerSubBand * (derived_cplendf(3) + 3) ==
+              spx_band_start(spx_begin_subbnd(3)));
+static_assert(kCplFirstBin + kCplBinsPerSubBand * (derived_cplendf(7) + 3) ==
+              spx_band_start(spx_begin_subbnd(7)));
+
+// §E2.3.3.7, Table E2.11. Unlike coupling's, this array is indexed by the
+// ABSOLUTE sub-band number: the transmitted loop runs bnd from
+// spx_begin_subbnd + 1 to spx_end_subbnd, and §E3.6.2's band-size pseudocode
+// reads it over the same absolute range.
+inline constexpr std::array<bool, kSpxSubBands> kDefaultSpxBandStructure = {
+    false, false, false, false, false, false, false, false, true,
+    false, true,  false, true,  false, true,  false, true,
+};
+
 }  // namespace ac3::eac3

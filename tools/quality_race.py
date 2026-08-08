@@ -69,14 +69,42 @@ def make_material():
     return np.clip(left, -0.98, 0.98), np.clip(right, -0.98, 0.98)
 
 
-def write_wav_f32(path, left, right):
-    data = np.empty(left.size * 2, dtype=np.float32)
-    data[0::2] = left
-    data[1::2] = right
+def make_material_51():
+    """Six DECORRELATED channels, in WAV order (FL FR FC LFE BL BR).
+
+    An upmix would be the wrong test: coupling exists to exploit that channels
+    share a high-frequency envelope but not a waveform, and correlated
+    channels make it look better than it is. These share program material but
+    differ in level, delay and detuning, which is what real multichannel
+    content does.
+    """
+    rng = np.random.default_rng(0x0B77 + 51)
+    left, right = make_material()
+    n = left.size
+    t = np.arange(n) / RATE
+    centre = 0.6 * (left + right) / 2 + 0.15 * np.sin(2 * np.pi * 620.0 * t)
+    lfe = 0.5 * np.sin(2 * np.pi * 45.0 * t) * (0.6 + 0.4 * np.sin(2 * np.pi * 0.7 * t))
+    # Surrounds: delayed, detuned and noise-dusted, so nothing above the
+    # coupling frequency lines up with the fronts.
+    delay = 719
+    back_l = 0.55 * np.roll(right, delay) + 0.05 * rng.standard_normal(n)
+    back_r = 0.55 * np.roll(left, -delay) + 0.05 * rng.standard_normal(n)
+    channels = [left, right, centre, lfe, back_l, back_r]
+    return [np.clip(c, -0.98, 0.98).astype(np.float32) for c in channels]
+
+
+def write_wav_f32(path, *channels):
+    if len(channels) == 1:
+        channels = channels[0]
+    count = len(channels)
+    data = np.empty(channels[0].size * count, dtype=np.float32)
+    for i, channel in enumerate(channels):
+        data[i::count] = channel
     payload = data.tobytes()
     with open(path, "wb") as f:
         f.write(b"RIFF" + struct.pack("<I", 36 + len(payload)) + b"WAVE")
-        f.write(b"fmt " + struct.pack("<IHHIIHH", 16, 3, 2, RATE, RATE * 8, 8, 32))
+        f.write(b"fmt " + struct.pack("<IHHIIHH", 16, 3, count, RATE, RATE * 4 * count,
+                                      4 * count, 32))
         f.write(b"data" + struct.pack("<I", len(payload)) + payload)
 
 
@@ -208,14 +236,14 @@ def race_ac3(original, source, seconds):
 # One column per E-AC-3 variant: the label, and the tool token handed to
 # `ac3cli eac3-encode`. "none" is the tool-free coding path the Annex E tools
 # have to beat to earn their place.
-EAC3_VARIANTS = [("none", None), ("cpl", "cpl")]
+EAC3_VARIANTS = [("none", None), ("cpl", "cpl"), ("spx", "spx"), ("cpl+spx", "cpl+spx")]
 
 
-def race_eac3(original, source, seconds):
+def race_eac3(original, source, seconds, rates=(96, 128, 192)):
     print(f"{'kbps':>5} | {'variant':<10} | {'SNR dB':>7} | {'LSD dB':>6} | "
           f"{'HF dB':>6} | {'rate':>6}")
     print("-" * 60)
-    for kbps in (96, 128, 192):
+    for kbps in rates:
         for label, tools in EAC3_VARIANTS + [("ffmpeg", "ffmpeg")]:
             coded = BUILD / f"race_e_{label}_{kbps}.ec3"
             if tools == "ffmpeg":
@@ -245,10 +273,17 @@ def main():
     seconds = len(left) / RATE
     if which == "eac3":
         race_eac3(original, source, seconds)
+    elif which == "eac3-51":
+        # Coupling's saving scales with the channel count - five high bands
+        # collapse into one, where stereo only collapses two - so 5.1 is where
+        # it has the most to prove.
+        source = BUILD / "race_src51.wav"
+        write_wav_f32(source, make_material_51())
+        race_eac3(read_wav_f32(source), source, seconds, rates=(192, 256, 384))
     elif which == "ac3":
         race_ac3(original, source, seconds)
     else:
-        raise SystemExit(f"unknown race '{which}' (ac3 | eac3)")
+        raise SystemExit(f"unknown race '{which}' (ac3 | eac3 | eac3-51)")
 
 
 if __name__ == "__main__":

@@ -145,6 +145,24 @@ struct FrameConfig {
     // bits at rates that cannot afford two full-bandwidth channels, so the
     // right frequency falls as the rate does.
     int cplbegf = -1;
+
+    // Spectral extension (§E3.6). Above the extension frequency nothing is
+    // coded at all: the decoder copies a lower band up, blends it with noise
+    // and scales it to the banded envelope the encoder measured. It is
+    // cheaper than coupling - scale factors only, no shared channel - and
+    // correspondingly cruder, so the two stack: independent low, coupled mid,
+    // synthesized high.
+    bool spx = false;
+    // Spectral extension begin frequency code (§E2.3.3.5), 0-7. Synthesis
+    // starts at coefficient 25 + 12 * spx_begin_subbnd(spxbegf), which is
+    // non-linear in spxbegf. Negative picks a rate-dependent default.
+    //
+    // With coupling also in use this value FIXES the coupling end frequency:
+    // §E3.3.1 stops transmitting cplendf and derives it from spxbegf, so that
+    // coupling ends exactly where synthesis begins. cplbegf is clamped down if
+    // it would leave the coupling region empty, and coupling is dropped
+    // outright if there is no room for it at all.
+    int spxbegf = -1;
 };
 
 // Words per syncframe at a given rate. E-AC-3 signals the size directly, so
