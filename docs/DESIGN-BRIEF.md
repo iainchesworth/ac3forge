@@ -1,13 +1,14 @@
 # ac3forge GUI — design brief
 
 An input document for a design pass over the ac3forge desktop application. It describes what the
-application is for, what it shows today, how people move through it, and what the library behind it
-is about to require of the interface. It does not propose a design.
+application is for, what it shows today, how people move through it, and what still has to be
+accommodated. It does not propose a design.
 
-Everything in the "current state" section describes the GUI as of `master` (`acd2c78`, GUI last
-touched by `40be082`). The screenshots are of that build. A separate workstream is adding several of
-the capabilities listed under *What the design must accommodate*; at the time of writing none of it
-had landed, so treat that section as incoming work rather than a wish list.
+**Which version this describes.** The GUI recently gained most of the codec surface it had been
+missing, on branch `claude/youthful-hermann-549468` (commit `dcaca85`, "Both front ends reach the
+whole codec"). That work is finished but not yet merged to `master`. This brief describes **that**
+version, because it is the one a designer will be working from — it is a substantially different and
+much larger interface than the seven-card `master` build. Every screenshot here is of that build.
 
 ---
 
@@ -15,9 +16,9 @@ had landed, so treat that section as incoming work rather than a wish list.
 
 ac3forge encodes audio into Dolby formats. Someone brings in audio — a WAV file on disk, or a live
 feed from a microphone or from whatever the machine is playing — and gets back an encoded stream:
-AC-3 (Dolby Digital), or Dolby Digital Plus carrying Dolby Atmos objects. Before encoding, they can
-place sounds at points in a three-dimensional room, so the encoded stream carries position metadata
-alongside the audio.
+AC-3 (Dolby Digital), or Dolby Digital Plus, optionally carrying Dolby Atmos objects. Before
+encoding, they can place sounds at points in a three-dimensional room, so the stream carries position
+metadata alongside the audio.
 
 The encoder is a clean-room implementation written from the published standards (ATSC A/52, ETSI TS
 103 420), so it is also a tool for checking that implementation: what did the encoder actually do to
@@ -26,14 +27,15 @@ this signal, and does the result play back correctly.
 ### Who uses it
 
 - **Someone producing a Dolby stream from existing audio** — a mix that needs to ship as AC-3 or
-  E-AC-3, at a chosen bit rate, with correct loudness and downmix metadata.
+  E-AC-3, at a chosen bit rate and channel layout, with correct loudness and downmix metadata.
 - **Someone authoring spatial audio** — placing sources in a room and encoding them as Atmos objects
   over a conventional bed, then checking the result decodes.
-- **Someone working on the codec itself** — encoding known material, watching per-channel levels, and
-  bitstreaming the result to a hardware receiver to confirm a real decoder accepts it.
+- **Someone working on the codec itself** — encoding known material with a specific coding tool on or
+  off, watching per-channel levels, and bitstreaming the result to a hardware receiver to confirm a
+  real decoder accepts it.
 
 All three care about exact figures. The interface is read as much as it is operated: levels in dBFS,
-bit rates in kbps, channel assignments by their standard names.
+bit rates in kbps, band edges as integers, channels under their standard names.
 
 ---
 
@@ -41,114 +43,139 @@ bit rates in kbps, channel assignments by their standard names.
 
 ### The window
 
-A single `ApplicationWindow`, 820 × 880 by default, minimum 640 × 560, containing one vertically
-scrolling column of seven titled cards. There is no navigation, no tabs, no menu bar, and no second
+A single `ApplicationWindow`, 900 × 940 by default, minimum 720 × 560, containing one vertically
+scrolling column of nine titled cards. There is no navigation, no tabs, no menu bar and no second
 window — the entire application is this one column. Qt Quick Controls is pinned to the **Fusion**
-style in `main.cpp`, so the controls render identically on every platform rather than adopting the
+style in `main.cpp` so that controls render identically on every platform rather than adopting the
 native Windows look.
 
-![The application at its default size, with nothing loaded](design/01-initial.png)
+![The default state with a 5.1 file loaded](design/01-default.png)
 
-*Initial state at the default 820 × 880 window. Six of the seven cards are visible; the seventh —
-Encode — is below the fold.*
+*Default state with a 5.1 WAV loaded. The window has been enlarged to 900 × 1500 to fit the content;
+at the default 940 px height everything from Dynamic range downwards is below the fold. The Annex E
+card is absent here because AC-3 does not offer those tools.*
 
 ### The cards, in order
 
-**1. Source.** A `Choose WAV…` button opening a file dialog, the selected path (middle-elided), and a
-summary line: `48000 Hz · 3/2 + LFE · 0:08`, shown in green when the file is usable. Accepts WAV with
-1–6 channels at 32, 44.1 or 48 kHz; anything else loads but reports why it cannot be encoded. The
-channel count picks the coding mode (1 → 1/0, 2 → 2/0, 3 → 3/0, 4 → 2/2, 5 → 3/2, 6 → 3/2 + LFE).
+**1. Source.** A `Choose WAV…` button, the selected path (middle-elided), and a summary line —
+`48000 Hz · 6 channels · 0:08`. It reports the channel *count* rather than a layout name, because the
+output layout is now chosen separately and need not match the file.
 
 **2. Live capture.** A dropdown of WASAPI endpoints — microphones and playback-device loopbacks, the
-default one marked `[default]` — plus `Refresh` and a `Record…` button that becomes a highlighted
-`Stop` while running. During a recording, a monospace `Recording — 2.8 s` line appears. If no
-endpoints are found, the card explains what a loopback entry is instead.
+default marked `[default]` — plus `Refresh` and a `Record…` button that becomes a highlighted `Stop`
+while running, with a monospace `Recording — 2.9 s` line beneath. A note explains that a capture
+endpoint feeds the same format, layout and metadata a file does, and that its channels are routed
+onto whichever layout is selected below.
 
-**3. Channel levels.** The layout name (`3/2 + LFE`) or `no source`; a red dot and the word `live`
-while a run is in flight, otherwise `peak and RMS over the whole signal`. Below it, one meter row per
-channel and a −60…0 dB tick scale. To the right, a soundfield view, shown whenever the layout has two
-or more full-bandwidth channels. With nothing loaded, the card holds a sentence of placeholder text.
+**3. Channel levels.** The layout name (`3/2 + LFE`, `7.1.4`) or `no source`; a red dot and the word
+`live` while a run is in flight, otherwise `peak and RMS over the whole signal`. Then one meter row
+per channel, a −60…0 dB tick scale, and the soundfield view to the right.
 
-**4. Encoder settings.** One control: a bit rate dropdown with a fixed list of ten AC-3 values (96,
-128, 160, 192, 224, 256, 320, 384, 448, 640 kbps). Beside it, a read-only summary of what the encoder
-will do — `3/2 + LFE · long blocks · rematrixing on`, or in object mode `E-AC-3 5.1 bed · JOC + OAMD ·
-one object per source channel`. The word "settings" is currently doing a lot of work for a single
-combo box.
+The meters now follow the **coded** channels rather than the speakers, which is why 7.1.4 draws
+fourteen rows for twelve speakers. A bed channel that a dependent substream replaces is labelled
+`Ls (bed)` so that a 7.1 display does not show `Ls` twice with different levels and no way to tell
+them apart. A channel the routing feeds nothing is drawn at 45% opacity and reads `-∞`, so "correctly
+silent" is distinguishable from "meter wired to nothing".
 
-**5. Dolby Atmos objects.** An `Encode as objects` switch, a paragraph explaining what object mode
-does, and — when the switch is on — a 190 × 190 plan view of the room, a Height slider, and a
-monospace `x 0.50 · y 0.00 · z 0.00` readout. The plan view is click-and-drag: x runs left to right,
-y runs front to back. Every source channel becomes one object, spread ±0.15 either side of the chosen
-point. A warning appears next to the switch when the bit rate is below 384 kbps, because the bed is
-always 5.1 regardless of what the source was.
+**4. Format.** Four dropdowns in a four-column grid — Codec (AC-3, E-AC-3), Layout, Bit rate,
+Container (Elementary stream, Matroska). The layout list is filtered by codec: AC-3 offers mono,
+stereo and 5.1; E-AC-3 adds 7.1, 5.1.2, 5.1.4 and 7.1.4. The bit-rate list likewise comes from the
+plan rather than being a fixed set. Below the grid, two lines of generated description — what the
+layout costs (`12 speakers from 14 coded channels · 2 dependent substreams`) and what the routing
+will do with this particular source (`The source is already 5.1; every channel is carried straight
+through.`). In object mode a third, amber line says the codec and layout are fixed.
 
-**6. Passthrough to a receiver.** A dropdown of render endpoints, each annotated with what it will
-accept — `AC-3 ready`, `cannot bitstream`, or `no exclusive access` — plus `Refresh` and `Play`.
-Sends the encoded stream as IEC 61937 bursts in exclusive mode so the receiver does the decoding.
-Enabled only once an encode has actually written a file.
+**5. Annex E coding tools.** Present only when the codec offers them. Three checkboxes, each with a
+spin box that reads `auto` at its lowest value: Channel coupling (begin band 0–15), Spectral
+extension (begin band 0–7), Adaptive hybrid transform (GAQ mode 0–3). Turning on spectral extension
+adds a further checkbox for attenuating the seam. At the foot of the card, the equivalent `ac3cli`
+tools token in monospace — `cpl+spx+aht` — so a setting found here can be reproduced on the command
+line.
 
-**7. Encode.** The primary button, `Encode to AC-3…`, which opens a save dialog. While encoding, a
-`Cancel` button and a progress bar appear. Under them, a single line of status text — the only place
-the application reports anything, success or failure.
+**6. Dynamic range and metadata.** The densest card. A DRC profile dropdown (`none` plus five
+profiles); a dialnorm spin box, 1–31, disabled by a `measure` checkbox that derives it from BS.1770-4
+loudness instead; centre and surround downmix dropdowns. A `Heavy compression` checkbox reveals a
+ceiling spin box counted in tenths of a decibel (so the default −0.5 dBFS survives) and a
+dialogue-level spin box. For E-AC-3 only, a `Mixing metadata` checkbox reveals a preferred-downmix
+dropdown and an LFE mix spin box that reads `off` at −1 and `10 dB` at 0. Three paragraphs of
+explanation, two of them conditional.
 
-![The full interface with a 5.1 file loaded](design/02-file-loaded.png)
+![E-AC-3 at 7.1.4 with every coding tool and metadata group open](design/02-eac3-714.png)
 
-*All seven cards, with a 5.1 file loaded. The window has been enlarged to 820 × 1180 to fit them; at
-the default height the Encode card and the status line are not visible.*
+*E-AC-3 at 7.1.4 with all three Annex E tools, heavy compression and mixing metadata switched on,
+during a live capture. Fourteen meter rows for twelve speakers; the twelve channels a stereo capture
+cannot fill are dimmed and read −∞. This is the interface at its fullest — roughly 1,950 px tall, and
+still cut off at the bottom of this capture.*
 
-![Object mode, with the room plan view and height slider revealed](design/03-object-mode.png)
+**7. Dolby Atmos objects.** An `Encode as objects` switch, an object count (`6 objects + the bed's
+LFE`), and a warning when the bit rate is below 384 kbps because the bed is always 5.1. When on: a
+190 × 190 plan view of the room with one marker per object, and three sliders — Height (−1…1), Spread
+(0…0.5) and LFE send (0…1) — above a five-value monospace readout.
 
-*Object mode on. The Atmos card grows by about 200 px to reveal the plan view, Height slider and
-coordinate readout; the bit-rate warning appears; the Encoder settings summary changes to describe an
-E-AC-3 bed. Note that the two object markers sit on the front wall at the default y of 0.00, on top
-of the "front" label.*
+![Object mode with a 5.1 file loaded](design/03-object-mode.png)
 
-![Live capture running, with live meters](design/04-live-capture.png)
+*Object mode with the same 5.1 file: six objects over a 5.1 bed. All six markers sit on the front
+wall at the default y of 0.00, overlapping each other and the "front" label.*
 
-*A live capture in progress: the Record button has become a highlighted Stop, the elapsed time is
-shown, and Channel levels has switched to its live presentation — red dot, the word `live`, and
-meters updating from the incoming audio. The soundfield vector points straight ahead for centred
-stereo content.*
+**8. Passthrough to a receiver.** A dropdown of render endpoints, each annotated with what it will
+accept — `AC-3 ready`, `cannot bitstream`, `no exclusive access` — plus `Refresh` and `Play`. The
+explanatory text now states that the packer emits AC-3 bursts only (data type 1), so an E-AC-3 stream
+is refused here rather than sent as something it is not.
+
+**9. Encode.** The primary button, whose label follows the plan — `Encode to .ac3…`, `.ec3` or
+`.mkv`. While encoding, a `Cancel` button and a progress bar. Under them, a single line of status
+text — still the only place the application reports anything.
 
 ### Shared components
 
-- **`Card.qml`** — a titled panel: surface fill, 1 px border, 10 px radius, 18 px padding, and a
-  small uppercase heading. Children stack vertically. Every screen region is one of these.
-- **`ChannelMeter.qml`** — one row: channel name (30 px), the bar track, a dB readout (46 px), and a
-  `CLIP` box (30 px). Inside the track, an RMS fill at 55% opacity, a 2 px bright peak edge, and a 1 px
-  white hold marker that lags the peak downwards. Colour is green, amber above −6 dBFS, red above −1
-  or once a sample has hit full scale. Bar positions and the printed numbers both come from the C++
-  analysis layer, so they cannot disagree.
+- **`Card.qml`** — a titled panel: surface fill, 1 px border, 10 px radius, 18 px padding, small
+  uppercase heading. Every screen region is one of these.
+- **`ChannelMeter.qml`** — one row: channel name (58 px, elided from the left), the bar track, a dB
+  readout (46 px) and a `CLIP` box (30 px). Inside the track, an RMS fill at 55% opacity, a 2 px
+  bright peak edge, and a 1 px white hold marker that lags the peak downwards. Colour is green, amber
+  above −6 dBFS, red above −1 or once a sample has hit full scale. Bar positions and printed numbers
+  both come from the C++ analysis layer, so they cannot disagree.
 - **`SoundfieldView.qml`** — a 176 × 176 plan view of the loudspeaker ring, listener at the centre
-  facing up. Each speaker is placed at its ITU-R BS.775 azimuth and brightens and grows with its own
-  level; the LFE is a halo at the centre rather than a point on the ring; an arrow shows the computed
-  energy vector — the direction a listener would place the sound, and how tightly it is focused.
+  facing up, each speaker placed at its ITU-R BS.775 azimuth and brightening with its level; the LFE
+  as a halo at the centre; an arrow for the computed energy vector. **Unchanged by the recent work** —
+  it is still a single flat horizontal ring, so the height channels of 5.1.2, 5.1.4 and 7.1.4 appear
+  as meter rows with no position.
 - **`Theme.qml`** — a singleton holding eleven colours, three spacing values (gap 12, pad 18, radius
-  10) and three font sizes (22 / 14 / 12). It is a single dark palette of hard-coded literals. There
-  is no light theme and no scheme switch.
+  10) and three font sizes (22 / 14 / 12). A single dark palette of hard-coded literals. No light
+  theme, and no scheme switch.
 
 ### Where the current interface is weak
 
-Stated plainly, as input to the design pass:
+Stated plainly, as input to the design pass.
 
-- **The primary action is below the fold.** At the default window size the Encode button and the
-  status line are both off screen. The user must scroll to start the job and scroll to find out what
-  happened.
-- **Seven cards of equal visual weight, in one flat column.** Nothing distinguishes what you are
-  encoding, how it will be encoded, and the command to do it. Card order is the only hierarchy.
-- **Source and Live capture are alternatives presented as siblings.** They sit adjacent with no
-  indication that choosing one supersedes the other, and no shared idea of "the input".
-- **Object mode changes the codec and the container, but the button does not say so.** In object mode
-  the output is E-AC-3 in a `.ec3` file; the save dialog reflects this, but the primary button still
-  reads `Encode to AC-3…`.
-- **Permanent explanatory prose.** The Atmos and Passthrough cards each carry 50–60 words that never
-  collapse, so text a user has read once keeps occupying the same space as the controls.
-- **One status line for everything.** Progress, errors, rejected settings and success all land in the
-  same sentence at the bottom of the window.
-- **The room view is under-described.** One axis label (`front`), no scale, no grid, no indication of
-  where the bed speakers are relative to the object.
-- **Meters and soundfield have nowhere to grow.** The meter block and the ring sit side by side inside
-  one card, sized for up to six channels.
+- **The theme only reaches half the interface.** `Theme.qml` styles the custom-drawn parts — meters,
+  soundfield, room view, card chrome — and its accent is blue (`#4c9aff`). Every standard control is
+  drawn by Fusion's own palette, which nothing sets, so switches, checkboxes, sliders and progress
+  bars come out pale pink. Two unrelated accent colours are visible in every screenshot here. This is
+  the single most visible inconsistency and it is not intentional.
+- **Length.** At 900 px wide the interface is about 1,500 px tall in its default state, 1,700 px with
+  object mode on and roughly 1,950 px with E-AC-3 tools and metadata expanded — close to twice the
+  usable height of a 1080p display. It is one scroll column with no grouping above the card level.
+- **Disclosure is one-way and inline.** Ticking a box injects controls *and* a paragraph into the
+  middle of the column, pushing everything below it down. There is no way to collapse a card that is
+  configured and no longer interesting.
+- **The two generated lines under the Format grid can restate each other.** In the 7.1.4 capture state
+  they read `12 speakers from 14 coded channels · 2 dependent substreams` and `7.1.4 · 12 speakers
+  from 14 coded channels · 2 dependent substreams`.
+- **A disabled control can disagree with the text beneath it.** In object mode the Layout box is
+  greyed but keeps showing the source-derived layout — `2/0 stereo` for a stereo capture — while the
+  line below it and the bed itself are 5.1.
+- **Objects default to the front wall.** `y = 0.00` puts every marker on the top edge of the room
+  view, overlapping the only axis label; with six objects they overlap into a smear.
+- **The room view is under-described**, and now has three sliders beside it whose ranges and units are
+  invisible — Height runs −1…1, Spread 0…0.5, LFE send 0…1, and only the readout hints at any of it.
+- **Explanatory prose has grown with the control count.** The nine cards carry roughly 450 words of
+  body text — most of it always on screen, the rest appearing with the option it explains — and none
+  of it collapses once read.
+- **One status line for everything.** Progress, rejected settings, errors and success all land in the
+  same sentence at the bottom of a long scroll.
+- **The soundfield view has not kept up with the meters.** Meters went to fourteen rows; the ring did
+  not change, so four of those channels have no spatial representation at all.
 
 ---
 
@@ -156,85 +183,82 @@ Stated plainly, as input to the design pass:
 
 ### A. Encode a file
 
-1. `Choose WAV…`, pick a file. The card fills in with sample rate, layout and duration.
-2. Channel levels immediately shows peak and RMS for the whole file, plus the soundfield.
-3. Optionally change the bit rate.
-4. Scroll down to `Encode to AC-3…`, which opens a save dialog.
-5. Name the file and accept. A progress bar runs; the status line reports frames and size.
+1. `Choose WAV…`, pick a file. The card fills in with sample rate, channel count and duration.
+2. Channel levels shows peak and RMS for the whole file, plus the soundfield.
+3. In Format, choose codec, layout, bit rate and container. The two generated lines say what that
+   costs and what will happen to this particular source.
+4. Optionally set coding tools and metadata.
+5. Scroll to `Encode to .ac3…`, which opens a save dialog with the suffix already correct.
+6. Name the file and accept. A progress bar runs; the status line reports frames and size.
 
 **Awkward today:** the file must be named before any encoding happens, so a run cannot be tried and
-then kept. Steps 4 and 5 are below the fold at the default window size, as is the result of step 5.
-The only encoding decision available is the bit rate.
+then kept. By step 5 the button is a long way down the column — and so is the status line that says
+whether it worked. Steps 3 and 4 together are about twenty controls with no sense of which matter.
 
 ### B. Capture and encode live
 
-1. Pick an endpoint from the Live capture dropdown — a microphone, or a playback device's loopback
-   entry to capture what the machine is playing.
-2. Press `Record…`, which immediately opens a save dialog.
-3. Name the file and accept. Recording starts; the elapsed time counts up and the meters go live.
-4. Press `Stop`. The status line reports frames written, dropped and silence-filled.
+1. Pick an endpoint — a microphone, or a playback device's loopback entry.
+2. Set the format as in journey A; the endpoint's channels will be routed onto whatever layout is
+   chosen, so a stereo microphone can be encoded as 7.1.4 with ten channels left silent.
+3. Press `Record…`, which immediately opens a save dialog.
+4. Name the file and accept. Recording starts, the elapsed time counts up, the meters go live.
+5. Press `Stop`. The status line reports frames written, dropped and silence-filled.
 
-**Awkward today:** the meters only run once recording has started, so there is no way to check that an
-endpoint is producing signal — or to set a level — before committing to a filename and a take. The
-device dropdown offers no monitoring state. Recording is also AC-3 only, at whatever bit rate the
-Encoder settings card happens to hold.
+**Awkward today:** the meters only run once recording has started, so there is still no way to check
+that an endpoint is producing signal — or to set a level — before committing to a filename and a
+take. The consequences of routing a narrow source onto a wide layout are only visible after the fact,
+as a column of dimmed meters.
 
 ### C. Place objects in space and encode them
 
-1. Load a file as in journey A.
-2. Turn on `Encode as objects`. The card expands; the Encoder settings summary changes to describe an
-   E-AC-3 5.1 bed with JOC and OAMD.
-3. Drag inside the plan view to place the source in the room; use the Height slider for the vertical
-   axis; read back the exact coordinates.
+1. Load a file, or choose a capture endpoint.
+2. Turn on `Encode as objects`. Codec and layout are fixed to E-AC-3 over a 5.1 bed and their
+   dropdowns grey out; the card reports how many objects the source will produce.
+3. Drag in the plan view to place the source; use Height for the vertical axis, Spread to control how
+   far apart the objects sit, LFE send to reach the one channel panning cannot.
 4. If the bit rate is under 384 kbps, a warning appears — the bed is 5.1 whatever the source was.
-5. Encode as in journey A. The output is `.ec3`.
+5. Encode. The output is `.ec3`, or `.mkv` if that container is chosen.
 
-**Awkward today:** the position is a single static point for the entire file — objects cannot move,
-which is most of what object audio is for. The bit-rate warning appears in the Atmos card but the
-control it refers to is in a different card above it. The meters continue to show the 5.1 bed rather
-than the objects, which is deliberate — it is what a decoder ignoring the objects would play — but
-nothing in the interface says so. And the primary button still says AC-3.
+**Awkward today:** the position is still a single static point for the whole file — objects cannot
+move, which is most of what object audio is for. Spread is a single number applied to an even fan, so
+individual objects cannot be placed independently. The bit-rate warning is in the objects card while
+the control it refers to is in Format, two cards above. The meters continue to show the 5.1 bed rather
+than the objects — deliberately, since it is what a decoder ignoring the objects would play — but
+nothing on screen says so.
 
 ---
 
 ## 4. What the design must accommodate
 
-The library is substantially ahead of the interface. A redesign should be sized for the following,
-all of which exist and are exercised by the command-line tool today. A separate session is currently
-bringing several of them into the GUI, so treat these as incoming rather than absent.
+Most of what was previously missing has now landed, and the list below is what a redesign has to hold
+**and** what is still to come.
 
-**Codec choice.** AC-3 and E-AC-3 (Dolby Digital Plus) as a user-visible choice, not a side effect of
-turning on object mode. The two differ in legal bit rates, available coding tools and output
-extension.
+### Already in the interface, and needing a home
 
-**Channel layouts.** `stereo | 51 | 71 | 512 | 514 | 714`, chosen by the user rather than inferred
-from the input file. 7.1.4 is twelve channels — double what the meter block is currently laid out
-for — and the height channels have no place on the existing soundfield ring, which is a flat plan
-view of a single horizontal loudspeaker circle.
+- Codec choice, AC-3 or E-AC-3.
+- Seven channel layouts, mono through 7.1.4, filtered by codec.
+- Annex E coding tools as toggles with band edges and GAQ mode.
+- The full DRC and metadata group — profile, dialnorm (set or measured), heavy compression with
+  ceiling and dialogue target, centre and surround downmix, mixing metadata with preferred downmix
+  and LFE mix level.
+- Object mode with position, spread and LFE send.
+- Elementary-stream and Matroska output.
+- Live per-channel metering, up to fourteen coded channels, and the soundfield view.
 
-**Dolby Atmos objects.** Objects positioned *and moved* in three dimensions over time (EMDF / OAMD /
-JOC). This is the largest single addition: it turns a static coordinate picker into something with a
-time axis — object count, per-object trajectories, and a way to scrub, preview and edit them.
+That is roughly forty controls in one scrolling column. **Organising them is the central design
+problem**, more than any individual screen.
 
-**Annex E coding tools**, as toggles with parameters: coupling, spectral extension and AHT. Each has
-an optional band edge (`cpl:N`, `spx:N`), AHT has a GAQ mode (`aht:N`, including AHT with GAQ off),
-and spectral extension has a notch depth (`atten:N`, or off). These are expert controls whose defaults
-must stay out of the way.
+### Still to come
 
-**Dynamic range and metadata.** A DRC profile (`film-standard`, `film-light`, `music-standard`,
-`music-light`, `speech`); heavy compression with a peak ceiling and a dialogue target in dBFS;
-dialogue level either measured from the audio to BS.1770 or set directly as 1–31; centre and surround
-downmix levels; preferred stereo downmix mode (Lt/Rt, Lo/Ro, none); and for E-AC-3 the mixing metadata
-group and LFE mix level. This is a dozen or so numeric and enumerated fields — the densest cluster of
-controls in the application, and the one most in need of grouping and sensible defaults.
-
-**Output format.** Raw elementary stream, S/PDIF-wrapped WAV (playable as PCM, for feeding a receiver
-through a normal sound card), or Matroska. Currently the only output is a raw elementary stream, with
-the extension following the codec.
-
-**Live metering and the soundfield view.** Both already exist and both are load-bearing — this is a
-tool where watching the signal is part of the job. They should survive the redesign, but need to scale
-to twelve channels and to represent height.
+- **Object motion in three dimensions.** Objects are placed once and stay there. Trajectories over
+  time are the largest single addition still outstanding, and the one most likely to need a surface
+  of its own — a time axis, per-object paths, and a way to scrub and preview them.
+- **S/PDIF-wrapped WAV output.** The container dropdown offers elementary stream and Matroska; the
+  library and the command-line tool can also wrap a stream as playable PCM in a WAV, and the GUI
+  cannot.
+- **A light theme**, and a Fusion palette aligned to whichever theme is active.
+- **Height in the soundfield view**, so 5.1.2, 5.1.4 and 7.1.4 are legible as more than a longer list
+  of meters.
 
 ---
 
@@ -242,72 +266,85 @@ to twelve channels and to represent height.
 
 - **Qt Quick / QML.** The interface is QML with Qt Quick Controls, pinned to the Fusion style so that
   layout does not reflow across platforms. Anything proposed must be buildable from Qt Quick
-  primitives; there is no web layer and no HTML.
-- **Desktop, Windows first.** Mouse and keyboard, resizable window, currently 640 × 560 minimum. Live
-  capture and receiver passthrough are WASAPI-based and Windows-specific.
-- **Light and dark themes.** Only dark exists today, as hard-coded literals in a `Theme` singleton.
-  Both are required, which means colour decisions need to survive inversion — particularly the meter
-  colours, where green/amber/red carry meaning.
-- **Real-time metering.** The meters must stay smooth: the controller publishes a level snapshot about
-  30 times a second (one per encoded frame) and QML animates between snapshots over 40–90 ms, so the
-  scene needs to render at 60 fps without dropping frames. Anything expensive per frame — shadows,
-  blurs, large repaints behind the meters — costs directly here.
-- **This is a technical tool.** Users want exact numbers, and want them where they can be read at a
-  glance: levels to 0.1 dBFS, bit rates in kbps, channels under their standard names (L, C, R, SL, SR,
-  LFE), coordinates to two decimal places. Numeric readouts are set in a monospace face today so that
-  changing digits do not shift position. Aesthetic decisions must not cost precision or density.
+  primitives; there is no web layer. Note that restyling standard controls means either overriding the
+  Fusion palette or supplying custom control styles — today neither is done.
+- **Desktop, Windows first.** Mouse and keyboard, resizable window, 720 × 560 minimum. Live capture
+  and receiver passthrough are WASAPI-based and Windows-specific.
+- **Light and dark themes.** Only dark exists today. Both are required, which means colour decisions
+  must survive inversion — particularly the meter colours, where green/amber/red carry meaning.
+- **Real-time metering.** The controller publishes a level snapshot about 30 times a second (one per
+  encoded frame) and QML animates between snapshots over 40–90 ms, so the scene needs to render at 60
+  fps without dropping frames. With fourteen meters plus the soundfield animating together, anything
+  expensive per frame — shadows, blurs, large repaints behind the meters — costs directly.
+- **This is a technical tool.** Users want exact numbers where they can be read at a glance: levels to
+  0.1 dBFS, bit rates in kbps, band edges as integers, coordinates to two decimals. Numeric readouts
+  are set in a monospace face so that changing digits do not shift position. Density is a feature
+  here; aesthetic decisions must not cost precision.
+- **Parity with the command line is deliberate.** The GUI and `ac3cli` are generated from the same
+  tables, and the Annex E card prints the exact token that reproduces its state. Whatever replaces it
+  should keep a settings-to-command-line path.
 
 ---
 
 ## 6. Open questions for the designer
 
-1. **How should the input be modelled?** File and live capture are alternatives, but they are two
-   independent cards today. Is there one "input" with a source selector, or do they stay separate?
-2. **Where does encoder configuration live** once it is a codec choice, a layout, three coding tools
-   with parameters, and a dozen metadata fields — one dense panel, progressive disclosure, or a
-   separate configuration surface?
-3. **What is the default level of expertise?** Should Annex E tools and DRC metadata be visible by
-   default, hidden behind an advanced mode, or presented as presets that can be opened up?
-4. **How is object motion authored and shown?** Objects need trajectories over time. Does the room
-   view gain a timeline, is there a separate editing surface, and how do a dozen objects stay legible
-   in a single view?
-5. **How does the soundfield view represent height** once layouts go to 5.1.2, 5.1.4 and 7.1.4? A flat
-   ring cannot show a ceiling layer.
-6. **How do twelve meters fit** alongside everything else without the levels display taking over the
-   window — and should the meters show the source, the encoded bed, or both?
-7. **Should encoding be a modal, blocking action or a job?** Today it is one button, one progress bar
-   and one status line. With more encode-time options, is there a queue, a history, or a result view?
-8. **Where does feedback belong?** Errors, progress, warnings and results currently share one line of
-   text at the bottom of a scrolling column.
-9. **What is the relationship between object mode and codec choice?** Object mode implies E-AC-3
-   today. Once the user picks the codec explicitly, does object mode become a property of an E-AC-3
-   encode rather than a switch that silently changes codec?
-10. **What should passthrough communicate about E-AC-3?** The endpoint capability check and all the
-    explanatory text are written in terms of AC-3, while object mode produces E-AC-3. What a receiver
-    will and will not accept needs to be legible before the user presses Play.
-11. **How much explanation stays on screen?** The current cards explain themselves at length. Which of
-    that is genuinely needed at every use, and which belongs in a tooltip, a first-run state, or
-    documentation?
+1. **How should forty controls be organised?** One dense panel, progressive disclosure, a separate
+   configuration surface, or presets that can be opened up? This is the main question.
+2. **What is the default level of expertise?** Should Annex E tools and the metadata group be visible
+   by default, or behind an advanced mode? A codec developer wants them first; someone encoding a mix
+   may never touch them.
+3. **How should the input be modelled?** File and live capture are alternatives presented as adjacent
+   cards. Is there one "input" with a source selector?
+4. **How is object motion authored?** Objects need trajectories over time. Does the room view gain a
+   timeline, is there a separate surface, and how do a dozen objects stay legible at once?
+5. **Can objects be placed independently?** Today one point plus a spread fans them out evenly. Is
+   per-object placement the target, and if so what happens to the spread control?
+6. **How does the soundfield view represent height** for 5.1.2, 5.1.4 and 7.1.4? A flat ring cannot
+   show a ceiling layer.
+7. **How should coded-versus-rendered channels be presented?** Fourteen meters for twelve speakers is
+   correct and useful to a codec developer, and probably confusing to everyone else. Is that a mode?
+8. **How should routing consequences be shown before the fact?** Encoding a stereo source as 7.1.4
+   leaves ten channels silent. Today that is a sentence in Format and a column of dim meters
+   afterwards.
+9. **Should encoding be a modal action or a job?** One button, one progress bar and one status line.
+   With this many options, is there a queue, a history, or a result view?
+10. **Where does feedback belong?** Errors, progress, warnings and results share one line of text at
+    the bottom of a very long column.
+11. **How much explanation stays on screen?** Roughly 450 words of it, most always visible. Which is
+    needed at every use, and which belongs in a tooltip, a first-run state, or documentation?
 
 ---
 
 ## Appendix: how the screenshots were made
 
-Real captures of a real build — `ac3gui` built from `master` (`acd2c78`) with MSVC, Qt 6.8.3, Debug.
+Real captures of a real build — `ac3gui` from `claude/youthful-hermann-549468` (`dcaca85`), rebuilt
+with MSVC against Qt 6.8.3, Debug.
 
 The application has a built-in headless self-check mode (`--smoke`, `--smoke-record`) that drives the
-real controller and the real QML and grabs the window through `QQuickWindow::grabWindow()`. Image 04
-was produced that way, and the run reported its own state — 2 channel meters instantiated, 125
-level publishes while live — so the scene is known to have rendered rather than merely started.
-Images 01–03 were captured from the running windowed application via `PrintWindow`, because they need
-states the smoke modes do not reach (nothing loaded; object mode enabled; a window tall enough to show
-all seven cards at once).
+real controller and the real QML, then grabs the window through `QQuickWindow::grabWindow()`. It
+accepts trailing `prop=value` tokens applied through Qt's property system — the same path a QML
+binding writes through — so a run can be put into a specific state and photographed. Images 02 and 04
+were made that way, with the window enlarged from outside the process while the run was in flight so
+that the grab caught every card rather than the top of a 940 px window. Each run reported its own
+state (image 02: 14 meters for 14 channels, 133 level publishes while live), so the scene is known to
+have rendered rather than merely started.
+
+Images 01 and 03 were captured from the running windowed application via `PrintWindow`, because they
+need a loaded source file, which the smoke modes do not take alongside a capture run. Image 03 was
+produced by clicking the object switch through a synthesised mouse message.
 
 Two notes on what the images do and do not show:
 
 - Under the offscreen platform plugin, text renders as empty boxes unless `QT_QPA_FONTDIR` is set, and
-  even then the font fallback is not the one the application actually uses. Every screenshot here was
-  therefore taken under the normal Windows platform plugin, so the typography is what a user sees.
-- In image 04 the capture device dropdown still shows the default microphone while the meters are fed
-  from a loopback endpoint. That is an artefact of the headless harness passing a device index
-  directly, not a bug in the interface — in normal use the dropdown is what selects the device.
+  even then the font fallback is not the one the application uses. Every screenshot here was taken
+  under the normal Windows platform plugin, so the typography is what a user sees.
+- In images 02 and 04 the capture dropdown still shows the default microphone while the meters are fed
+  from a loopback endpoint, and the Source card reads "No file selected". Both are artefacts of the
+  headless harness, which passes a device index directly and does not load a file — not defects in the
+  interface.
+
+![Object mode driven from a capture endpoint](design/04-object-mode-capture.png)
+
+*Image 04: object mode with the sliders at non-default values, driven from a capture endpoint. Note
+the Layout box reading `2/0 stereo` while the line below it and the bed are 5.1, and the meters at −∞
+because nothing was playing on the machine at that moment.*
