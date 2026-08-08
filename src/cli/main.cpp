@@ -31,6 +31,10 @@
 
 namespace {
 
+// Named here rather than beside eac3_layout so the usage text and the error
+// message that rejects a bad layout can never list different sets.
+constexpr std::string_view kEac3Layouts = "stereo | 51 | 71 | 512 | 514 | 714";
+
 void print_usage() {
     std::println("ac3forge — clean-room AC-3 (ATSC A/52) encoder/decoder");
     std::println("");
@@ -44,12 +48,18 @@ void print_usage() {
     std::println("  ac3cli decode  <in.ac3> <out.wav>");
     std::println("  ac3cli levels  <in.wav|in.ac3>     (per-channel peak/RMS report)");
     std::println("  ac3cli spdif   <in.ac3> <out.wav>   (IEC 61937 wrap as playable PCM16 WAV)");
+    std::println("  ac3cli eac3-mkv <in.ec3> <out.mkv> [bitrate_kbps] [layout]");
     std::println("  ac3cli outputs                      (render endpoints + AC-3 passthrough support)");
     std::println("  ac3cli play    <in.ac3> [device_index]  (exclusive-mode IEC 61937 passthrough)");
     std::println("");
     std::println("layout: stereo (default) | 51 — 5.1 uses per-channel tones;");
     std::println("        append 'c' (stereoc, 51c) to enable channel coupling");
     std::println("        (L 1000, C 800, R 1200, SL 600, SR 1400, LFE 60 Hz)");
+    std::println("");
+    std::println("eac3-mkv wraps an E-AC-3 elementary stream in Matroska. Packet boundaries");
+    std::println("come from the bitstream, but the track header's rate and channel count come");
+    std::println("from [layout] ({}) and [bitrate_kbps], so those", kEac3Layouts);
+    std::println("must match the stream being wrapped.");
     std::println("");
     std::println("encode takes 1 to 6 channel WAVs and picks the acmod to match: 1 -> 1/0,");
     std::println("2 -> 2/0, 3 -> 3/0, 4 -> 2/2, 5 -> 3/2, 6 -> 3/2 + LFE. Commands that");
@@ -248,8 +258,6 @@ struct Eac3Layout {
     std::vector<double> tones;  // one per encoder input channel, in coded order
 };
 
-constexpr std::string_view kEac3Layouts = "stereo | 51 | 71 | 512 | 514 | 714";
-
 std::optional<Eac3Layout> eac3_layout(std::string_view name, std::uint32_t bitrate) {
     Eac3Layout out;
     out.config.independent.bitrate_kbps = bitrate;
@@ -336,7 +344,7 @@ int rendered_channels(const ac3::eac3::AccessUnitConfig& config) {
                      static_cast<std::uint16_t>(extra & ~kBedLocations));
 }
 
-int run_eac3_mkv(std::string_view out_path, std::string_view ec3_path,
+int run_eac3_mkv(std::string_view ec3_path, std::string_view out_path,
                  std::uint32_t bitrate, std::string_view layout) {
     const auto chosen = eac3_layout(layout, bitrate);
     if (!chosen) {
