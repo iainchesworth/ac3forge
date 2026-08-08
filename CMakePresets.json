@@ -18,11 +18,64 @@
       "name": "release",
       "inherits": "base",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "ci",
+      "hidden": true,
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "AC3FORGE_BUILD_CLI": "ON",
+        "AC3FORGE_BUILD_TESTS": "ON",
+        "AC3FORGE_BUILD_GUI": "OFF"
+      }
+    },
+    {
+      "name": "windows-msvc",
+      "displayName": "Windows MSVC",
+      "description": "Needs an MSVC environment on PATH (Developer PowerShell, or vcvars64.bat), because Ninja does not set one up itself.",
+      "inherits": "ci",
+      "cacheVariables": { "CMAKE_CXX_COMPILER": "cl" },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "windows-llvm",
+      "displayName": "Windows LLVM (clang-cl)",
+      "description": "clang-cl targets the MSVC ABI, so this needs the same MSVC environment as windows-msvc for the headers and import libraries.",
+      "inherits": "ci",
+      "cacheVariables": { "CMAKE_CXX_COMPILER": "clang-cl" },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "linux-gcc",
+      "displayName": "Linux GCC",
+      "inherits": "ci",
+      "cacheVariables": { "CMAKE_CXX_COMPILER": "g++" },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
+    },
+    {
+      "name": "linux-llvm",
+      "displayName": "Linux LLVM (clang)",
+      "inherits": "ci",
+      "cacheVariables": { "CMAKE_CXX_COMPILER": "clang++" },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
+    },
+    {
+      "name": "macos-llvm",
+      "displayName": "macOS LLVM (AppleClang)",
+      "description": "Xcode's clang, i.e. the compiler a Mac actually has. Named -llvm for symmetry with the other LLVM legs; it is what exercises the AppleClang branch of cmake/CompilerWarnings.cmake.",
+      "inherits": "ci",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" }
     }
   ],
   "buildPresets": [
     { "name": "debug", "configurePreset": "debug" },
-    { "name": "release", "configurePreset": "release" }
+    { "name": "release", "configurePreset": "release" },
+    { "name": "windows-msvc", "configurePreset": "windows-msvc" },
+    { "name": "windows-llvm", "configurePreset": "windows-llvm" },
+    { "name": "linux-gcc", "configurePreset": "linux-gcc" },
+    { "name": "linux-llvm", "configurePreset": "linux-llvm" },
+    { "name": "macos-llvm", "configurePreset": "macos-llvm" }
   ],
   "testPresets": [
     {
@@ -34,6 +87,17 @@
       "name": "release",
       "configurePreset": "release",
       "output": { "outputOnFailure": true }
-    }
+    },
+    {
+      "name": "ci",
+      "hidden": true,
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+    },
+    { "name": "windows-msvc", "inherits": "ci", "configurePreset": "windows-msvc" },
+    { "name": "windows-llvm", "inherits": "ci", "configurePreset": "windows-llvm" },
+    { "name": "linux-gcc", "inherits": "ci", "configurePreset": "linux-gcc" },
+    { "name": "linux-llvm", "inherits": "ci", "configurePreset": "linux-llvm" },
+    { "name": "macos-llvm", "inherits": "ci", "configurePreset": "macos-llvm" }
   ]
 }

@@ -1,0 +1,73 @@
+name: Setup MSVC environment
+description: >-
+  Load the MSVC x64 developer environment (cl.exe, INCLUDE, LIB, PATH, ...) into
+  $GITHUB_ENV for subsequent steps. For self-hosted Windows runners that bake in
+  the VS Build Tools but do not expose the MSVC environment on the default PATH.
+  Pure PowerShell (no Node.js) — replaces the third-party ilammy/msvc-dev-cmd,
+  which only ships a deprecated Node 20 runtime.
+
+runs:
+  using: composite
+  steps:
+    - name: Load MSVC x64 environment
+      if: runner.os == 'Windows'
+      # Windows PowerShell (always present), NOT pwsh/PowerShell 7 which the
+      # self-hosted runner image does not ship.
+      shell: powershell
+      run: |
+        $ErrorActionPreference = 'Stop'
+
+        # Locate the VS install (the VS Installer always ships vswhere.exe here).
+        $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+        if (-not (Test-Path $vswhere)) {
+            throw "vswhere.exe not found at '$vswhere'. Is Visual Studio / Build Tools installed on this runner?"
+        }
+
+        $installPath = & $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath
+        if ([string]::IsNullOrWhiteSpace($installPath)) {
+            throw "vswhere found no Visual Studio install providing the VC.Tools.x86.x64 component."
+        }
+
+        $vcvars = Join-Path $installPath 'VC\Auxiliary\Build\vcvars64.bat'
+        if (-not (Test-Path $vcvars)) {
+            throw "vcvars64.bat not found at '$vcvars'."
+        }
+        Write-Host "Loading MSVC x64 environment from $vcvars"
+
+        # Snapshot the environment, source vcvars64.bat in a child cmd, snapshot
+        # again, and export only the variables vcvars added or changed.
+        function Read-CmdEnv([string]$command) {
+            $table = @{}
+            foreach ($line in (cmd /c $command)) {
+                if ($line -match '^([^=]+)=(.*)$') { $table[$matches[1]] = $matches[2] }
+            }
+            return $table
+        }
+
+        $before = Read-CmdEnv 'set'
+        $after  = Read-CmdEnv "`"$vcvars`" >nul 2>&1 && set"
+
+        if (-not $after.ContainsKey('VCToolsInstallDir')) {
+            cmd /c "`"$vcvars`""   # re-run unsuppressed so the banner/error reaches the log
+            throw "vcvars64.bat did not initialise the MSVC environment (VCToolsInstallDir unset)."
+        }
+
+        $lines = New-Object System.Collections.Generic.List[string]
+        foreach ($key in $after.Keys) {
+            $value = $after[$key]
+            if (-not $before.ContainsKey($key) -or $before[$key] -ne $value) {
+                # GITHUB_ENV is a single-line KEY=VALUE file; MSVC values never
+                # contain newlines, so the plain form is safe.
+                $lines.Add("$key=$value")
+            }
+        }
+
+        # UTF-8 without BOM so an appended BOM can't corrupt the first key.
+        [System.IO.File]::AppendAllLines(
+            $env:GITHUB_ENV,
+            [string[]]$lines,
+            (New-Object System.Text.UTF8Encoding $false))
+
+        Write-Host "Exported $($lines.Count) MSVC environment variable(s) to GITHUB_ENV."

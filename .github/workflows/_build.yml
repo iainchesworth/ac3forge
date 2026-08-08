@@ -1,0 +1,217 @@
+# Reusable configure/build/test workflow — the single definition of how ac3forge
+# is built and tested on each platform. Called by ci.yml. Modelled on
+# aqualink-automate's .github/workflows/_build.yml, minus the packaging half
+# (ac3forge ships no packages yet).
+#
+# ---------------------------------------------------------------------------
+# On `experimental: true`
+# ---------------------------------------------------------------------------
+# Only windows-msvc has ever been built, so it is the only leg proven green
+# (175/175 tests at the commit that added this file). The other four fail during
+# compilation, all for the same reason: cmake/CompilerWarnings.cmake turns on a
+# strict GNU-style warning set with -Werror, and no non-MSVC compiler has ever
+# had to satisfy it. The failures are in the codec sources, not in this
+# workflow — see the table in ci.yml.
+#
+# Those legs therefore run with continue-on-error, which reports their real
+# status without making the default branch red on every push. As each one is
+# fixed, delete its `experimental: true` line; the leg then blocks like
+# windows-msvc does. That one-line change is the whole promotion process.
+name: Reusable Build
+
+on:
+  workflow_call:
+    inputs:
+      vcpkg-commit:
+        description: "microsoft/vcpkg commit to pin (see .github/actions/setup-vcpkg)."
+        type: string
+        default: "eaca4a577b6b678c6e10252754b6988a61746c19"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    # Ubuntu 26.04 for the Linux legs, where the distro archive carries gcc-15
+    # and LLVM 21 outright. This is a pin, not a convenience: on ubuntu-latest
+    # (24.04 at the time of writing) the LLVM script has to fall back to
+    # apt.llvm.org, whose noble repo is missing clang-tidy-21, lld-21 and
+    # libc++-21-dev, so the install fails before a single file is compiled.
+    # Pinning the container also stops a runner-image bump silently changing
+    # the compiler under the matrix. Empty for the Windows/macOS legs, which
+    # run directly on the host runner.
+    container: ${{ matrix.container }}
+    # A failing experimental leg annotates the run but does not fail it.
+    continue-on-error: ${{ matrix.experimental || false }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: "Windows MSVC"
+            runner: windows-latest
+            preset: windows-msvc
+            # VS 2026 Build Tools / MSVC 14.5x, from the aka.ms/vs/18/stable
+            # channel. Pinned by channel, not exact version: the runner image
+            # ships whatever 18.x is current, and the assert step below fails
+            # loudly if that ever stops being a 14.5x toolset.
+            msvc: true
+
+          - name: "Windows LLVM (clang-cl)"
+            runner: windows-latest
+            preset: windows-llvm
+            msvc: true          # clang-cl targets the MSVC ABI: same headers, same libs
+            llvm: true
+            experimental: true
+
+          - name: "Linux GCC"
+            runner: ubuntu-latest
+            container: ubuntu:26.04
+            preset: linux-gcc
+            gcc: true
+            experimental: true
+
+          - name: "Linux LLVM (clang)"
+            runner: ubuntu-latest
+            container: ubuntu:26.04
+            preset: linux-llvm
+            llvm: true
+            experimental: true
+
+          # No Mac is available to the project locally, so CI is the first place
+          # this is exercised at all. Expect it to surface genuine failures.
+          - name: "macOS LLVM (AppleClang)"
+            runner: macos-latest
+            preset: macos-llvm
+            experimental: true
+
+    steps:
+      # Before checkout: the bare ubuntu image has no git, and actions/checkout
+      # silently degrades to a REST tarball download without it. Also installs
+      # what the toolchain scripts assume is present (lsb_release,
+      # add-apt-repository, curl+gnupg for the apt.llvm.org key path).
+      - name: Bootstrap container
+        if: matrix.container
+        run: |
+          set -eu
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends \
+            build-essential ca-certificates cmake curl git gnupg lsb-release \
+            ninja-build pkg-config software-properties-common tar unzip wget zip
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # ---------------------------------------------------------------------
+      # Toolchains
+      # ---------------------------------------------------------------------
+      # gcc-15 and LLVM 21, from the scripts aqualink-automate uses to build its
+      # runner images, copied verbatim. On the pinned 26.04 container both take
+      # the distribution-archive path and neither fallback runs. Each script
+      # asserts its own resulting version and exits non-zero on drift.
+      # `sudo` is absent in the container (already root) and required on the
+      # host runners, hence the probe rather than a hardcoded prefix.
+      - name: Install GCC 15
+        if: matrix.gcc
+        run: |
+          set -eu
+          if command -v sudo >/dev/null 2>&1; then sudo -E bash .github/toolchain/02-gcc-toolchain.sh
+          else bash .github/toolchain/02-gcc-toolchain.sh; fi
+
+      - name: Install LLVM 21
+        if: matrix.llvm && runner.os == 'Linux'
+        run: |
+          set -eu
+          if command -v sudo >/dev/null 2>&1; then sudo -E bash .github/toolchain/03-llvm-toolchain.sh
+          else bash .github/toolchain/03-llvm-toolchain.sh; fi
+
+      # The Windows runner image ships an LLVM, but not necessarily 21. Install
+      # the official build straight from the llvm-project release, pinned to the
+      # same 21.1.8 the Ubuntu 26.04 archive carries, so both LLVM legs are on
+      # one version. Chocolatey is deliberately avoided: its llvm package tracks
+      # whatever is newest and would drift off the pin.
+      - name: Install LLVM 21 (Windows)
+        if: matrix.llvm && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = '21.1.8'
+          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$version/LLVM-$version-win64.exe"
+          $exe = Join-Path $env:RUNNER_TEMP "LLVM-$version-win64.exe"
+          Invoke-WebRequest -Uri $url -OutFile $exe
+          # NSIS installer; /S is a silent install into the default location.
+          Start-Process -FilePath $exe -ArgumentList '/S' -Wait -NoNewWindow
+          "$env:ProgramFiles\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      # cl.exe, INCLUDE and LIB are not on the default PATH, and Ninja does not
+      # set them up itself (unlike MSBuild). clang-cl needs them too.
+      - name: Setup MSVC environment
+        if: matrix.msvc
+        uses: ./.github/actions/setup-msvc-env
+
+      - name: Install Ninja
+        if: ${{ !matrix.container }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS" in
+            macOS)   brew install ninja ;;
+            Windows) choco install ninja -y --no-progress ;;
+          esac
+
+      # CMakePresets.json is version 6 and the project needs >= 3.28. Every
+      # current runner image is well past that; assert rather than discover it
+      # through a confusing "unknown preset field" error.
+      - name: Report and assert toolchain versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --version
+          ninja --version
+          # Let CMake do its own version comparison rather than parsing it in sh.
+          cat > "${RUNNER_TEMP}/assert-cmake-version.cmake" <<'EOF'
+          if(CMAKE_VERSION VERSION_LESS 3.28)
+            message(FATAL_ERROR "CMake ${CMAKE_VERSION} is too old; ac3forge needs >= 3.28")
+          endif()
+          EOF
+          cmake -P "${RUNNER_TEMP}/assert-cmake-version.cmake"
+          case "${{ matrix.preset }}" in
+            linux-gcc)    g++ --version | head -1
+                          g++ --version | head -1 | grep -q ' 15\.' || { echo "::error::expected g++ 15"; exit 1; } ;;
+            linux-llvm)   clang++ --version | head -1
+                          clang++ --version | head -1 | grep -qE 'version 21\.' || { echo "::error::expected clang 21"; exit 1; } ;;
+            windows-llvm) clang-cl --version | head -1
+                          clang-cl --version | head -1 | grep -qE 'version 21\.' || { echo "::error::expected clang-cl 21"; exit 1; } ;;
+            windows-msvc) echo "MSVC toolset: ${VCToolsVersion:-unknown}"
+                          case "${VCToolsVersion:-}" in
+                            14.5*) ;;
+                            *) echo "::error::expected an MSVC 14.5x toolset, got '${VCToolsVersion:-unset}'"; exit 1 ;;
+                          esac ;;
+            macos-llvm)   c++ --version | head -1 ;;
+          esac
+
+      - uses: ./.github/actions/setup-vcpkg
+        with:
+          vcpkg-commit: ${{ inputs.vcpkg-commit }}
+
+      # ---------------------------------------------------------------------
+      # Configure / build / test
+      # ---------------------------------------------------------------------
+      # The presets carry everything: generator, compiler, Release, and
+      # AC3FORGE_BUILD_GUI=OFF. Nothing is passed with -D here, so `cmake
+      # --preset <leg>` locally reproduces CI exactly.
+      - name: Configure
+        shell: bash
+        run: cmake --preset ${{ matrix.preset }}
+
+      # -k 0 so a first-time port sees every diagnostic in one run rather than
+      # one-per-push. Warnings are errors on every compiler
+      # (cmake/CompilerWarnings.cmake) and CI does not relax that.
+      - name: Build
+        shell: bash
+        run: cmake --build --preset ${{ matrix.preset }} -- -k 0
+
+      - name: Test
+        shell: bash
+        run: ctest --preset ${{ matrix.preset }}

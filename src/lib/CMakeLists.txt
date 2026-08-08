@@ -53,6 +53,11 @@ target_compile_features(ac3forge PUBLIC cxx_std_23)
 target_link_libraries(ac3forge PRIVATE ac3::warnings)
 
 # WASAPI: COM for the device enumerator, MMCSS for capture-thread priority.
+# The two defines belong here rather than at the top of the WASAPI sources so
+# those stay free of preprocessor logic - see the no-#ifdef rule that
+# .github/workflows/ci.yml enforces. Both are windows.h configuration, not
+# platform branching: they trim the header and stop it defining min/max macros.
 if(WIN32)
+    target_compile_definitions(ac3forge PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
     target_link_libraries(ac3forge PRIVATE ole32 avrt)
 endif()

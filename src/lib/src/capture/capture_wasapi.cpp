@@ -2,13 +2,8 @@
 
 // The Windows capture backend. CMake selects this translation unit on
 // Windows and capture_stub.cpp everywhere else, so there is no #ifdef here.
-
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
+// WIN32_LEAN_AND_MEAN and NOMINMAX come from the Windows branch of
+// src/lib/CMakeLists.txt, which keeps this file free of preprocessor logic.
 
 #include <windows.h>
 // windows.h must precede the audio headers.
