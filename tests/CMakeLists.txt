@@ -8,6 +8,7 @@ find_package(Catch2 3 CONFIG REQUIRED)
 add_executable(ac3tests
     msvc_crt_report.cpp
     test_analysis.cpp
+    test_atmos.cpp
     test_bitalloc.cpp
     test_bitwriter.cpp
     test_coupling.cpp
@@ -21,7 +22,6 @@ add_executable(ac3tests
     test_frame.cpp
     test_mantissas.cpp
     test_matroska.cpp
-    test_atmos.cpp
     test_mdct.cpp
     test_oba.cpp
     test_ring_buffer.cpp
