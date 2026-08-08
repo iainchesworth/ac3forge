@@ -54,7 +54,9 @@ def bit_alloc(exps, fscod, sdcycod, fdcycod, sgaincod, dbpbcod, floorcod,
     seeds its leak state from cplfleak/cplsleak instead.
     """
     end = len(exps)
-    # 7.2.2.1.1 special case: all-zero SNR offsets -> all-zero bap.
+    # 7.2.2.1.1: the all-zero-SNR mute spans EVERY channel's offsets. These
+    # golden cases are single-channel, so the frame-wide condition reduces to
+    # this channel's own offsets being zero.
     if csnroffst == 0 and fsnroffst == 0:
         return [0] * end
 

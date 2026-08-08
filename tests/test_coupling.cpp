@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cmath>
+#include <random>
 #include <vector>
 
 #include "ac3/core/exponents.hpp"
@@ -107,9 +108,61 @@ TEST_CASE("coupling exponent set round-trips through the normative decode", "[co
     }
 }
 
-TEST_CASE("quantization never exceeds the representable maximum", "[coupling]") {
-    // Coordinates above 1.0 cannot happen from a sqrt power ratio against the
-    // sum, but clamping must be graceful rather than wrapping the fields.
+TEST_CASE("the encoder's per-band scaling keeps every coordinate representable",
+          "[coupling]") {
+    // The transmitted coordinate is ratio * K / 8, where ratio =
+    // sqrt(E_ch / E_sum) and K = max|sum| over the band. Because
+    // max|sum| <= sqrt(E_sum) for any band, that product is bounded by
+    // sqrt(E_ch) / 8 <= sqrt(bins) / 8 - comfortably inside the format's
+    // 0.96875 ceiling however badly the channels cancel. This is the
+    // invariant that replaced the old (false) assumption that a ratio
+    // against the sum could never exceed 1.
+    std::mt19937 rng(0x0C0F);
+    std::uniform_real_distribution<double> dist(-1.0, 1.0);
+    constexpr int kBins = ac3::coupling::kBinsPerSubBand;
+
+    for (int trial = 0; trial < 500; ++trial) {
+        // Two channels with an adversarial mix of correlation, including
+        // near-total cancellation.
+        const double mix = dist(rng);
+        std::array<double, kBins> a{};
+        std::array<double, kBins> b{};
+        std::array<double, kBins> sum{};
+        double energy_a = 0.0;
+        double energy_sum = 0.0;
+        double peak = 0.0;
+        for (int i = 0; i < kBins; ++i) {
+            a[static_cast<std::size_t>(i)] = dist(rng);
+            b[static_cast<std::size_t>(i)] = mix * a[static_cast<std::size_t>(i)] +
+                                             0.02 * dist(rng);
+            sum[static_cast<std::size_t>(i)] =
+                a[static_cast<std::size_t>(i)] + b[static_cast<std::size_t>(i)];
+            energy_a += a[static_cast<std::size_t>(i)] * a[static_cast<std::size_t>(i)];
+            energy_sum += sum[static_cast<std::size_t>(i)] * sum[static_cast<std::size_t>(i)];
+            peak = std::max(peak, std::abs(sum[static_cast<std::size_t>(i)]));
+        }
+        if (energy_sum <= 0.0) {
+            continue;
+        }
+        const double ratio = std::sqrt(energy_a / energy_sum);
+        const double coordinate = ratio * peak / 8.0;
+        CAPTURE(trial, mix, ratio, peak, coordinate);
+        // The bound the scheme guarantees.
+        REQUIRE(coordinate <= std::sqrt(static_cast<double>(kBins)) / 8.0 + 1e-12);
+        // And therefore inside what the field can carry, so no clamping.
+        REQUIRE(coordinate < 31.0 / 32.0);
+
+        const std::array<double, 1> single = {coordinate};
+        const int master = choose_master(single);
+        const auto encoded = quantize_coordinate(coordinate, master);
+        const double back = decode_coordinate(encoded, master);
+        CHECK(std::abs(back - coordinate) <= coordinate * 0.05 + 1e-9);
+    }
+}
+
+TEST_CASE("quantization clamps gracefully rather than wrapping", "[coupling]") {
+    // Out-of-range inputs should not be reachable from the encoder, but the
+    // quantizer must still produce legal 4-bit fields if handed one.
     for (const double value : {1.0, 1.5, 4.0}) {
         const auto coordinate = quantize_coordinate(value, 0);
         CAPTURE(value, coordinate.exp, coordinate.mant);

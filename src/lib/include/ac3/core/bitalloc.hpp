@@ -45,6 +45,13 @@ struct BitAllocRegion {
     bool coupling = false;     // §7.2.2.4 takes the "else" branch: no lowcomp
     int cplfleak = 0;          // 3-bit cplfleak, only when coupling
     int cplsleak = 0;          // 3-bit cplsleak, only when coupling
+    // §7.2.2.1.1: the all-zero-SNR mute is a FRAME-WIDE condition - csnroffst
+    // together with every fsnroffst, cplfsnroffst and lfefsnroffst. It cannot
+    // be decided from one channel's offsets, so the caller evaluates it and
+    // passes the answer; getting this wrong zeroes one channel's allocation
+    // while the others allocate normally, which desynchronises the shared
+    // mantissa stream.
+    bool snr_all_zero = false;
 };
 
 // §7.2.2.2-7.2.2.7 for one channel. exps are the DECODED exponents (the

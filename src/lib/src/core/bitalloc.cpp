@@ -60,8 +60,10 @@ void compute_bit_allocation(std::span<const std::uint8_t> exps, SampleRate sampl
     assert(end >= 1 && end <= 253);
     assert(region.start >= 0 && region.start < end);
 
-    // §7.2.2.1.1 special case: all-zero SNR offsets -> all-zero bap.
-    if (csnroffst == 0 && fsnroffst == 0) {
+    // §7.2.2.1.1 special case: when EVERY SNR offset in the block is zero,
+    // the whole bap array is zero and no allocation runs. The condition spans
+    // all channels, so the caller supplies it.
+    if (region.snr_all_zero) {
         std::ranges::fill(bap, std::uint8_t{0});
         return;
     }

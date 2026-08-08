@@ -18,10 +18,14 @@ TEST_CASE("bit allocation matches the independent Python reference bit-exactly",
                                        .dbpbcod = c.dbpbcod,
                                        .floorcod = c.floorcod,
                                        .fgaincod = c.fgaincod};
+        // Single-channel cases, so the frame-wide §7.2.2.1.1 condition is
+        // just this channel's offsets - matching what the Python reference
+        // assumes when it generates these vectors.
         const ac3::BitAllocRegion region{.start = c.start,
                                          .coupling = c.coupling,
                                          .cplfleak = c.cplfleak,
-                                         .cplsleak = c.cplsleak};
+                                         .cplsleak = c.cplsleak,
+                                         .snr_all_zero = c.csnroffst == 0 && c.fsnroffst == 0};
         ac3::compute_bit_allocation(exps, static_cast<ac3::SampleRate>(c.fscod), codes,
                                     c.csnroffst, c.fsnroffst, bap, region);
         // Only the allocated region is meaningful; bins below a coupling
@@ -51,7 +55,8 @@ TEST_CASE("monotonicity: more snr offset never allocates fewer bits", "[bitalloc
     long long previous = -1;
     for (int composite = 0; composite <= 1023; composite += 51) {
         ac3::compute_bit_allocation(exps, ac3::SampleRate::k48000, codes, composite >> 4,
-                                    composite & 15, bap);
+                                    composite & 15, bap,
+                                    {.snr_all_zero = composite == 0});
         long long total = 0;
         for (const auto b : bap) {
             total += b;

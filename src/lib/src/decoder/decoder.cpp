@@ -240,10 +240,15 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
                     }
                     subband_band[static_cast<std::size_t>(bnd)] = ncplbnd - 1;
                 }
+                // Coordinates survive a re-sent strategy: cplcoe == 0 in this
+                // very block legally means "reuse the previous coordinates"
+                // (§5.4.3.14), so clearing them here would silence the
+                // coupled high band. Only a change in geometry forces a
+                // resize, and then only the new entries start at zero.
                 for (auto& channel : cplco) {
-                    channel.assign(static_cast<std::size_t>(ncplsubnd), 0.0);
+                    channel.resize(static_cast<std::size_t>(ncplsubnd), 0.0);
                 }
-                phsflg.assign(static_cast<std::size_t>(ncplbnd), false);
+                phsflg.resize(static_cast<std::size_t>(ncplbnd), false);
                 // Coupled channels stop carrying their own coefficients here.
                 for (int ch = 0; ch < nfchans; ++ch) {
                     if (chincpl[static_cast<std::size_t>(ch)]) {
@@ -343,12 +348,26 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
             std::vector<std::uint8_t> groups(static_cast<std::size_t>(ngrps));
             for (auto& g : groups) {
                 g = static_cast<std::uint8_t>(r.read(7));
+                // §7.10.2 error condition 17: a grouped value above 124 is
+                // not a legal triple of mapped values.
+                if (g > 124) {
+                    return std::unexpected(DecodeError::kInvalidStream);
+                }
             }
             auto& target = exps[static_cast<std::size_t>(cpl_stream)];
             target.assign(static_cast<std::size_t>(end), kMaxExponent);
             decode_coupling_exponents(
                 cplabsexp, groups, strat,
                 std::span{target}.subspan(static_cast<std::size_t>(cplstrtmant)));
+            // §7.2.2.2: exponents are 0..24. A malformed differential chain
+            // can walk outside that, and the reconstruction shifts by the
+            // exponent - undefined behaviour, not merely wrong audio.
+            for (std::size_t bin = static_cast<std::size_t>(cplstrtmant); bin < target.size();
+                 ++bin) {
+                if (target[bin] > kMaxExponent) {
+                    return std::unexpected(DecodeError::kInvalidStream);
+                }
+            }
         }
         for (int ch = 0; ch < nchans; ++ch) {
             const auto strat = strategy[static_cast<std::size_t>(ch)];
@@ -361,9 +380,19 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
             std::vector<std::uint8_t> groups(static_cast<std::size_t>(ngrps));
             for (auto& g : groups) {
                 g = static_cast<std::uint8_t>(r.read(7));
+                if (g > 124) {  // §7.10.2 error condition 17
+                    return std::unexpected(DecodeError::kInvalidStream);
+                }
             }
             exps[static_cast<std::size_t>(ch)].assign(static_cast<std::size_t>(end), 0);
             decode_exponents(absolute, groups, strat, exps[static_cast<std::size_t>(ch)]);
+            // §7.2.2.2: exponents must stay within 0..24; the mantissa
+            // reconstruction shifts by them.
+            for (const auto exp : exps[static_cast<std::size_t>(ch)]) {
+                if (exp > kMaxExponent) {
+                    return std::unexpected(DecodeError::kInvalidStream);
+                }
+            }
             if (ch < nfchans) {
                 (void)r.read(2);  // gainrng
             }
@@ -408,6 +437,12 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
         // Bit allocation (recomputed every block: parameters are stored
         // state, so the result matches the decoder-update rule of §7.2.1).
         const int streams = nchans + (cplinu ? 1 : 0);
+        // §7.2.2.1.1 is frame-wide: csnroffst plus EVERY channel's fine
+        // offset, including the coupling channel's and the LFE's.
+        bool snr_all_zero = csnroffst == 0;
+        for (int s = 0; s < streams && snr_all_zero; ++s) {
+            snr_all_zero = fsnroffst[static_cast<std::size_t>(s)] == 0;
+        }
         std::vector<std::vector<std::uint8_t>> bap(max_streams);
         for (int s = 0; s < streams; ++s) {
             const bool is_cpl = s == cpl_stream;
@@ -420,7 +455,8 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
             const BitAllocRegion region{.start = is_cpl ? cplstrtmant : 0,
                                         .coupling = is_cpl,
                                         .cplfleak = cplfleak,
-                                        .cplsleak = cplsleak};
+                                        .cplsleak = cplsleak,
+                                        .snr_all_zero = snr_all_zero};
             bap[static_cast<std::size_t>(s)].assign(static_cast<std::size_t>(end), 0);
             compute_bit_allocation(exps[static_cast<std::size_t>(s)], sample_rate, codes,
                                    csnroffst, fsnroffst[static_cast<std::size_t>(s)],

@@ -224,33 +224,64 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
 
             auto& cpl = coeffs_at(cpl_stream, block);
             cpl.fill(0.0);
-            for (int bin = cplstrtmant; bin < cplendmant; ++bin) {
-                double sum = 0.0;
-                for (int ch = 0; ch < nfchans; ++ch) {
-                    sum += coeffs_at(ch, block)[static_cast<std::size_t>(bin)];
+
+            // Per-band normalisation. The decoder computes
+            //     channel = coupling * coordinate * 8,
+            // so storing coupling = sum / K makes the required coordinate
+            // r*K/8, where r = sqrt(E_ch / E_sum) is the magnitude ratio.
+            //
+            // A fixed K = 8 (the "divide by 8" of §8.2.5.1) makes the
+            // coordinate equal r, which caps it at the format's 0.96875 and
+            // silently clamps every band where a channel is LOUDER than the
+            // sum - which is exactly what partial cancellation between
+            // channels produces, and is the common case for anti-correlated
+            // stereo. Choosing K = max|sum| over the band instead keeps the
+            // stored coefficients inside [-1, 1] (so the 25-bit fixed-point
+            // conversion never clips) while provably keeping the coordinate
+            // representable: max|sum| <= sqrt(E_sum) for a band, so
+            //     r*K/8 <= sqrt(E_ch)/8 <= sqrt(bins)/8 < 0.96875.
+            // K needs no signalling - it is folded into the coordinates.
+            std::vector<double> band_scale(static_cast<std::size_t>(ncplsubnd), 0.0);
+            for (int bnd = 0; bnd < ncplsubnd; ++bnd) {
+                const int low = cplstrtmant + bnd * coupling::kBinsPerSubBand;
+                const int high = std::min(low + coupling::kBinsPerSubBand, cplendmant);
+                double peak = 0.0;
+                for (int bin = low; bin < high; ++bin) {
+                    double sum = 0.0;
+                    for (int ch = 0; ch < nfchans; ++ch) {
+                        sum += coeffs_at(ch, block)[static_cast<std::size_t>(bin)];
+                    }
+                    cpl[static_cast<std::size_t>(bin)] = sum;  // unscaled for now
+                    peak = std::max(peak, std::abs(sum));
                 }
-                cpl[static_cast<std::size_t>(bin)] = sum / 8.0;
+                band_scale[static_cast<std::size_t>(bnd)] = peak;
+                if (peak > 0.0) {
+                    for (int bin = low; bin < high; ++bin) {
+                        cpl[static_cast<std::size_t>(bin)] /= peak;
+                    }
+                }
             }
 
             for (int ch = 0; ch < nfchans; ++ch) {
                 for (int bnd = 0; bnd < ncplsubnd; ++bnd) {
                     const int low = cplstrtmant + bnd * coupling::kBinsPerSubBand;
-                    const int high = low + coupling::kBinsPerSubBand;
+                    const int high = std::min(low + coupling::kBinsPerSubBand, cplendmant);
                     double power_ch = 0.0;
                     double power_sum = 0.0;
                     for (int bin = low; bin < high; ++bin) {
                         const double value =
                             coeffs_at(ch, block)[static_cast<std::size_t>(bin)];
-                        // The sum, not the scaled coupling channel: the
-                        // decoder's x8 cancels the encoder's /8, so the
-                        // coordinate is the ratio against the raw sum.
-                        const double summed =
-                            cpl[static_cast<std::size_t>(bin)] * 8.0;
+                        // Against the RAW sum: the stored channel was divided
+                        // by the band scale, which the coordinate re-applies.
+                        const double summed = cpl[static_cast<std::size_t>(bin)] *
+                                              band_scale[static_cast<std::size_t>(bnd)];
                         power_ch += value * value;
                         power_sum += summed * summed;
                     }
-                    values[static_cast<std::size_t>(bnd)] =
+                    const double ratio =
                         power_sum > 0.0 ? std::sqrt(power_ch / power_sum) : 0.0;
+                    values[static_cast<std::size_t>(bnd)] =
+                        ratio * band_scale[static_cast<std::size_t>(bnd)] / 8.0;
                 }
                 const int chosen = coupling::choose_master(values);
                 master_at(block, ch) = chosen;
@@ -624,10 +655,13 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     const auto bits_at = [&](int composite) {
         for (int s = 0; s < streams; ++s) {
             auto& p = plan[static_cast<std::size_t>(s)];
+            // Every stream shares one fsnroffst here, so the frame-wide
+            // §7.2.2.1.1 condition reduces to the composite being zero.
             const BitAllocRegion region{.start = stream_start(s),
                                         .coupling = s == cpl_stream,
                                         .cplfleak = cplfleak,
-                                        .cplsleak = cplsleak};
+                                        .cplsleak = cplsleak,
+                                        .snr_all_zero = composite == 0};
             for (std::size_t run = 0; run < p.runs.size(); ++run) {
                 auto& bap = run_bap[static_cast<std::size_t>(s)][run];
                 bap.assign(p.runs[run].decoded.size(), 0);
