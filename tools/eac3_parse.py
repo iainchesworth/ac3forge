@@ -134,25 +134,57 @@ def parse_frame(data, verbose=True):
                 r.bits(6)            # extpgmscl
             mixdef = r.bits(2)
             if mixdef == 1:
-                r.bits(1); r.bits(1); r.bits(3)
+                r.bits(1); r.bits(1); r.bits(3)  # premixcmpsel, drcsrc, premixcmpscl
             elif mixdef == 2:
-                r.bits(12)
+                r.bits(12)           # mixdata
             elif mixdef == 3:
+                # §E2.3.1.22: mixdeflen 0-31 means a mixdata field of 2-33
+                # BYTES, and whatever the sub-structures below do not use is
+                # mixdatafill. So the length is authoritative and the parse of
+                # the contents only has to be good enough to not overrun it -
+                # skipping to the end is both simpler and more robust than
+                # trusting a field-by-field walk of a rarely used element.
                 mixdeflen = r.bits(5)
-                r.bits((mixdeflen + 2) * 8)
+                mixdata_start = r.pos
+                if r.bits(1):        # mixdata2e
+                    r.bits(1); r.bits(1); r.bits(3)
+                    for _ in range(6):   # L, C, R, Ls, Rs and LFE scale factors
+                        if r.bits(1):
+                            r.bits(4)
+                    if r.bits(1):    # dmixscle
+                        r.bits(4)
+                    if r.bits(1):    # addche
+                        for _ in range(2):   # two auxiliary channels
+                            if r.bits(1):
+                                r.bits(4)
+                if r.bits(1):        # mixdata3e
+                    r.bits(5)        # spchdat
+                    if r.bits(1):    # addspchdate
+                        r.bits(5); r.bits(2)      # spchdat1, spchan1att
+                        if r.bits(1):             # addspchdat1e
+                            r.bits(5); r.bits(3)  # spchdat2, spchan2att
+                used = r.pos - mixdata_start
+                r.bits(8 * (mixdeflen + 2) - used)   # mixdata remainder + fill
             if acmod < 2:
-                if r.bits(1):
-                    r.bits(6)        # panmean
-                    r.bits(8)        # paninfo
+                if r.bits(1):        # paninfoe
+                    r.bits(8)        # panmean
+                    r.bits(6)        # paninfo
                 if acmod == 0:
-                    if r.bits(1):
-                        r.bits(6); r.bits(8)
-            if numblkscod == 0:
-                r.bits(5)            # blkmixcfginfo[0]
-            else:
-                for _ in range(nblks):
-                    if r.bits(1):
-                        r.bits(5)
+                    if r.bits(1):    # paninfo2e
+                        r.bits(8); r.bits(6)
+            # §E2.3.1.59: the per-block mixing configuration is gated by ONE
+            # frame-level bit. Reading the block flags without it costs five
+            # bits or more, and everything downstream lands adrift - which is
+            # exactly how this went unnoticed until a real encoder's 5.1
+            # stream, the first one here to carry mixing metadata at all,
+            # failed to parse.
+            if r.bits(1):            # frmmixcfginfoe
+                if numblkscod == 0:
+                    r.bits(5)        # blkmixcfginfo[0]
+                else:
+                    for _ in range(nblks):
+                        if r.bits(1):    # blkmixcfginfoe
+                            r.bits(5)    # blkmixcfginfo[blk]
     if r.bits(1):                    # infomdate
         r.bits(3)                    # bsmod
         r.bits(1); r.bits(1)         # copyrightb, origbs
@@ -269,7 +301,11 @@ def parse_frame(data, verbose=True):
                 r.bits(5)
     if numblkscod != 0:
         if r.bits(1):                # blkstrtinfoe
-            nblkstrtbits = (nblks - 1) * (4 + (frmsiz + 1).bit_length())
+            # §E2.3.2.27: ceiling(log2(words_per_frame)), which is NOT
+            # bit_length - the two differ by one at every exact power of two,
+            # and a 256 kbps frame is exactly 512 words.
+            words = frmsiz + 1
+            nblkstrtbits = (nblks - 1) * (4 + (words - 1).bit_length())
             r.bits(nblkstrtbits)
     log(f'audfrm: expstre={expstre} ahte={ahte} snroffststr={snroffststr} '
         f'blkswe={blkswe} dithflage={dithflage} bamode={bamode} '
@@ -305,6 +341,11 @@ def parse_frame(data, verbose=True):
     firstcplcos = [1] * nfchans
     firstcplleak = 1
     cplfleak = cplsleak = 0
+    # The coupling channel's own allocation parameters. Under snroffststr 0 and
+    # frmfgaincode 0 they simply follow the frame values, but both can be sent
+    # separately and ahead of the per-channel ones.
+    cplfsnroffst = 0
+    cplfgaincod = 4
 
     for blk in range(nblks):
         start = r.pos
@@ -457,6 +498,7 @@ def parse_frame(data, verbose=True):
         if snroffststr == 0:
             csnroffst = frmcsnroffst
             fsnroffst = [frmfsnroffst] * (nfchans + 1)
+            cplfsnroffst = frmfsnroffst
         else:
             snroffste = 1 if blk == 0 else r.bits(1)
             if snroffste:
@@ -464,11 +506,19 @@ def parse_frame(data, verbose=True):
                 if snroffststr == 1:
                     blkfsnroffst = r.bits(4)
                     fsnroffst = [blkfsnroffst] * (nfchans + 1)
+                    cplfsnroffst = blkfsnroffst
                 elif snroffststr == 2:
+                    # The coupling channel gets its own offset, ahead of the
+                    # per-channel ones.
+                    if cplinu[blk]:
+                        cplfsnroffst = r.bits(4)
                     fsnroffst = [r.bits(4) for _ in range(nfchans)] + \
                                 ([r.bits(4)] if lfeon else [0])
         fgaincode = r.bits(1) if frmfgaincode else 0
         if fgaincode:
+            # Likewise the coupling channel's fast gain leads the list.
+            if cplinu[blk]:
+                cplfgaincod = r.bits(3)
             fgaincod = [r.bits(3) for _ in range(nfchans)] + \
                        ([r.bits(3)] if lfeon else [4])
         if strmtyp == 0:
@@ -510,8 +560,8 @@ def parse_frame(data, verbose=True):
             if cplinu[blk] and chincpl[ch] and not got_cplchan:
                 # cplfsnroffst and cplfgaincod follow frmfsnroffst / 0x4 exactly
                 # as the fbw channels do under snroffststr 0 and frmfgaincode 0.
-                regions.append((cplexps, cplstrtmant, cplendmant, 4, fsnroffst[0],
-                                True, cplahtinu))
+                regions.append((cplexps, cplstrtmant, cplendmant, cplfgaincod,
+                                cplfsnroffst, True, cplahtinu))
                 got_cplchan = True
         if lfeon:
             regions.append((lfeexps, 0, LFE_ENDMANT, fgaincod[nfchans],
