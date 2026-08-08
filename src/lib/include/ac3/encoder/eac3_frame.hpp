@@ -163,6 +163,14 @@ struct FrameConfig {
     // it would leave the coupling region empty, and coupling is dropped
     // outright if there is no room for it at all.
     int spxbegf = -1;
+    // Spectral extension attenuation (§E3.6.4.2.3): a five-tap notch across
+    // the seam where the coded band meets the synthesized one, and across
+    // every point where the copy wraps back to its source. Only meaningful
+    // when spx is set. It costs six bits per channel per frame.
+    bool spx_atten = true;
+    // The attenuation depth (§E2.3.2.25), 0-31: deeper with the code. Negative
+    // matches the notch to how big a step the seam actually is.
+    int spxattencod = -1;
 
     // Adaptive hybrid transform (§E3.4). A second transform stage - a 6-point
     // DCT down each spectral bin across the frame's six blocks - which for

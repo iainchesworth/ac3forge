@@ -66,7 +66,17 @@ constexpr int kDbaflde = 0;        // no delta bit allocation
 // padding routed through a block-0 skip field came back as audible data,
 // and FFmpeg's own encoder likewise sets skipflde to 0.
 constexpr int kSkipflde = 0;
-constexpr int kSpxattene = 0;      // no spectral extension attenuation
+// How deep to taper the seam when the caller does not say. The taps come out
+// at -1.2, -2.4 and -3.6 dB, deepest on the join - a gentle smoothing rather
+// than a hole.
+//
+// This is a judgement, not a tuned value, and it is worth being plain about
+// why: the standard offers no guidance on choosing spxattencod, Dolby's own
+// encoder never emits the field at all, and the artifact the notch exists to
+// soften - a splice between two unrelated pieces of spectrum - is not
+// something the banded metrics this project measures with can see. The depth
+// is exposed through FrameConfig for anyone who can hear the difference.
+constexpr int kDefaultSpxAttenCod = 2;
 
 constexpr int kTailBits = 18;  // auxdatae + crcrsv + crc2
 
@@ -176,6 +186,11 @@ struct SpxPlan {
     std::vector<int> blend;                    // [blk][ch] spxblnd
     std::vector<int> master;                   // [blk][ch] mstrspxco
     std::vector<coupling::Coordinate> coords;  // [blk][ch][bnd]
+    // §E3.6.4.2.3. attencod is per channel and frame-constant; wrapflag says
+    // which band boundaries the copy wrapped at, and so where the notch goes.
+    bool atten = false;
+    std::vector<int> attencod;                 // [ch], -1 when that channel opts out
+    std::array<bool, kMaxSubBands> wrapflag{};
 };
 
 struct Payload {
@@ -267,6 +282,18 @@ struct Payload {
 // Spectral flatness answers exactly that question: near 0 for a tone, near 1
 // for noise. noffset is spxblnd/32 and SUBTRACTS from the noise ratio, so a
 // tone wants the offset high.
+// §E3.6.4.2.1: the fraction of a band the decoder will fill with noise rather
+// than with copied signal. It rises with frequency across the extension
+// region and spxblnd shifts the whole curve down.
+[[nodiscard]] double spx_noise_ratio(const SpxPlan& spx, int bnd, int blend) {
+    const auto at = static_cast<std::size_t>(bnd);
+    const double centre =
+        spx.bands.start[at] + 0.5 * static_cast<double>(spx.bands.size[at]);
+    const double ratio =
+        centre / static_cast<double>(spx.endmant) - static_cast<double>(blend) / 32.0;
+    return std::clamp(ratio, 0.0, 1.0);
+}
+
 [[nodiscard]] int spx_blend(std::span<const double> region) {
     double log_sum = 0.0;
     double sum = 0.0;
@@ -342,7 +369,7 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
     w.put(kFrmfgaincode, 1);
     w.put(kDbaflde, 1);
     w.put(kSkipflde, 1);
-    w.put(kSpxattene, 1);
+    w.put(spx.atten ? 1 : 0, 1);  // spxattene
 
     if (static_cast<std::uint8_t>(config.acmod) > 0x1) {
         w.put(cpl.in_use ? 1 : 0, 1);  // cplinu[0] (cplstre[0] is implied 1)
@@ -396,7 +423,18 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
     // all-zero allocation, hence no mantissa data at all.
     w.put(static_cast<std::uint32_t>(payload.csnroffst), 6);  // frmcsnroffst
     w.put(static_cast<std::uint32_t>(payload.fsnroffst), 4);  // frmfsnroffst
-    // ahte == 0, transproce == 0, spxattene == 0 all contribute nothing - but
+    // transproce == 0 contributes nothing. The attenuation codes are
+    // per channel and frame-constant, which is why they live here and not in
+    // the blocks.
+    if (spx.atten) {
+        for (int ch = 0; ch < nfchans; ++ch) {
+            const int code = spx.attencod[static_cast<std::size_t>(ch)];
+            w.put(code >= 0 ? 1 : 0, 1);  // chinspxatten[ch]
+            if (code >= 0) {
+                w.put(static_cast<std::uint32_t>(code), 5);  // spxattencod[ch]
+            }
+        }
+    }
     // audfrm still ends with the block-start info flag whenever numblkscod
     // != 0. Omitting this one bit shifts every audio block along, which a
     // decoder reads as spectral extension being switched on.
@@ -750,6 +788,16 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         spx.blend.assign(slots, 0);
         spx.master.assign(slots, 0);
         spx.coords.assign(slots * static_cast<std::size_t>(spx.bands.count), {});
+        // Which channels attenuate is a size question - chinspxatten gates a
+        // 5-bit field - so it is settled here, before the side information is
+        // measured. The depth itself is not, and could be refined later.
+        spx.atten = config_.spx_atten;
+        spx.attencod.assign(static_cast<std::size_t>(nfchans),
+                            spx.atten ? std::clamp(config_.spxattencod >= 0
+                                                       ? config_.spxattencod
+                                                       : kDefaultSpxAttenCod,
+                                                   0, kSpxAttenCodes - 1)
+                                      : -1);
         for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
             spx.send[static_cast<std::size_t>(blk)] = blk % 2 == 0;
         }
@@ -1289,6 +1337,8 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         const auto spx_nbnd = static_cast<std::size_t>(spx.bands.count);
         std::vector<double> recon(static_cast<std::size_t>(spx.startmant), 0.0);
         std::vector<double> gains(spx_nbnd, 0.0);
+        std::vector<double> synth(static_cast<std::size_t>(spx.endmant - spx.startmant), 0.0);
+        std::vector<double> band_rms(spx_nbnd, 0.0);
         // The decoder's own reconstruction: quantize, dequantize, undo the
         // exponent. bap 0 with dither off is exactly zero, which is the case
         // that matters.
@@ -1339,6 +1389,12 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                     }
                     continue;
                 }
+                // The blend factor is settled first: the gains below have to
+                // know how much of each band will be noise.
+                spx.blend[at] = spx_blend(
+                    std::span{coeffs_at(ch, blk)}
+                        .subspan(static_cast<std::size_t>(spx.startmant),
+                                 static_cast<std::size_t>(spx.endmant - spx.startmant)));
                 rebuild(ch, blk, 0, payload.chans[static_cast<std::size_t>(ch)].endmant);
                 // With coupling below the extension region, part of the copy
                 // source is not this channel's own coded data at all - it is
@@ -1361,34 +1417,67 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                 // back to its start whenever the next band would run past its
                 // end. The decoder does exactly this, so the encoder measures
                 // the energy of exactly the coefficients the decoder will get.
+                // The translated band is materialised rather than just summed,
+                // because the notch below has to be applied to it before its
+                // energy means anything.
                 int copyindex = spx.copystart;
                 for (int bnd = 0; bnd < spx.bands.count; ++bnd) {
                     const int size = spx.bands.size[static_cast<std::size_t>(bnd)];
+                    spx.wrapflag[static_cast<std::size_t>(bnd)] = false;
                     if (copyindex + size > spx.startmant) {
                         copyindex = spx.copystart;
+                        spx.wrapflag[static_cast<std::size_t>(bnd)] = true;
                     }
-                    double source = 0.0;
+                    double accum = 0.0;
+                    const int low = spx.bands.start[static_cast<std::size_t>(bnd)];
                     for (int i = 0; i < size; ++i) {
                         if (copyindex == spx.startmant) {
                             copyindex = spx.copystart;
                         }
                         const double value = recon[static_cast<std::size_t>(copyindex++)];
-                        source += value * value;
+                        synth[static_cast<std::size_t>(low - spx.startmant + i)] = value;
+                        accum += value * value;
                     }
-                    double target = 0.0;
+                    // §E3.6.4.2.2's banded RMS, taken BEFORE the notch - the
+                    // noise is scaled by it, so the notch does not quieten the
+                    // noise the way it quietens the copied signal.
+                    band_rms[static_cast<std::size_t>(bnd)] =
+                        std::sqrt(accum / size);
+                }
+
+                // §E3.6.4.2.3, after the banded RMS and before the blend.
+                spx_apply_notch(synth, spx.startmant, spx.bands,
+                                std::span{spx.wrapflag},
+                                spx.atten ? spx.attencod[static_cast<std::size_t>(ch)]
+                                          : -1);
+
+                for (int bnd = 0; bnd < spx.bands.count; ++bnd) {
+                    const int size = spx.bands.size[static_cast<std::size_t>(bnd)];
                     const int low = spx.bands.start[static_cast<std::size_t>(bnd)];
+                    double target = 0.0;
                     for (int bin = low; bin < low + size; ++bin) {
                         const double value =
                             coeffs_at(ch, blk)[static_cast<std::size_t>(bin)];
                         target += value * value;
                     }
-                    // Noise blending is energy-preserving in expectation - the
-                    // noise is scaled by the translated band's own RMS - so
-                    // the only gain that matters is the ratio of the original
-                    // band's energy to the copied band's, and the decoder
-                    // applies it as spxco * 32.
+                    // What the decoder will actually hold once it has blended
+                    // noise in. Without the notch this reduces to the
+                    // translated band's own energy, because the noise carries
+                    // that band's RMS and the two factors are complementary -
+                    // but the notch quietens the signal side only, so once it
+                    // is in play the blend has to be modelled outright.
+                    const double ratio = spx_noise_ratio(spx, bnd, spx.blend[at]);
+                    double blended = 0.0;
+                    for (int i = 0; i < size; ++i) {
+                        const double value =
+                            synth[static_cast<std::size_t>(low - spx.startmant + i)];
+                        blended += value * value * (1.0 - ratio);
+                    }
+                    blended += size * band_rms[static_cast<std::size_t>(bnd)] *
+                               band_rms[static_cast<std::size_t>(bnd)] * ratio;
+                    // The decoder applies the coordinate as spxco * 32.
                     gains[static_cast<std::size_t>(bnd)] =
-                        source > 0.0 ? std::sqrt(target / source) / 32.0 : 0.0;
+                        blended > 0.0 ? std::sqrt(target / blended) / 32.0 : 0.0;
                 }
                 const int chosen = coupling::choose_master(gains);
                 spx.master[at] = chosen;
@@ -1396,10 +1485,6 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                     spx.coords[at * spx_nbnd + bnd] = coupling::quantize_coordinate(
                         gains[bnd], chosen, coupling::kSpxMantissaBits);
                 }
-                spx.blend[at] = spx_blend(
-                    std::span{coeffs_at(ch, blk)}
-                        .subspan(static_cast<std::size_t>(spx.startmant),
-                                 static_cast<std::size_t>(spx.endmant - spx.startmant)));
             }
         }
     }

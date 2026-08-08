@@ -107,6 +107,35 @@ inline constexpr std::array<bool, kSpxSubBands> kDefaultSpxBandStructure = {
     false, true,  false, true,  false, true,  false, true,
 };
 
+// §E3.6.4.2.3: a five-tap notch straddling the border between the coded band
+// and the synthesized one, and every point where the copy wraps back to the
+// start of its source. Those are the places the translation leaves a seam -
+// two unrelated pieces of spectrum butted together - and the notch tapers
+// across it. The taps are t0, t1, t2, t1, t0 centred on the first synthesized
+// bin, so the deepest attenuation sits exactly on the join and two CODED bins
+// below it get attenuated too.
+inline constexpr int kSpxAttenTaps = 5;
+inline constexpr int kSpxAttenCodes = 32;
+
+// Table E3.14 is 2^(-(spxattencod + 1) * (index + 1) / 15) throughout - all 96
+// of its entries agree with this to within the precision it prints them at, so
+// there is nothing to transcribe and nothing to get wrong transcribing.
+[[nodiscard]] double spx_attenuation(int spxattencod, int index);
+
+// Apply the notch to a synthesized region, in place. `synth` covers the
+// extension region from `startmant` upwards; `bands` and `wrapflag` say where
+// the copy wrapped, and so where the seams are besides the first one.
+//
+// Two of the five taps at each seam fall BELOW the band they are centred on.
+// At the first seam that puts them on coded coefficients, which the decoder
+// attenuates and this does not - they are already quantized and belong to no
+// extension band, so nothing downstream of here needs to know. At a wrap the
+// same two taps land on the end of the previous band, which very much is
+// ours, and dropping them would leave the encoder's idea of that band's
+// energy too high.
+void spx_apply_notch(std::span<double> synth, int startmant, const BandLayout& bands,
+                     std::span<const bool> wrapflag, int spxattencod);
+
 // --- adaptive hybrid transform (§E3.4) -------------------------------------
 // A second transform stage, cascaded after the MDCT: a 6-point DCT-II taken
 // down each spectral bin across the frame's six blocks. For material that is

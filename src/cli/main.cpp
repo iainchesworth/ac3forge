@@ -44,7 +44,8 @@ void print_usage() {
     std::println("");
     std::println("tools:  Annex E coding tools, '+'-joined — none | cpl | spx | aht | all;");
     std::println("        cpl:N / spx:N pin that tool's band edge (e.g. cpl:4+spx:5);");
-    std::println("        aht:N pins the GAQ mode — aht:0 is AHT with GAQ switched off");
+    std::println("        aht:N pins the GAQ mode — aht:0 is AHT with GAQ switched off;");
+    std::println("        atten:N pins the SPX notch depth, noatten removes it");
     std::println("");
     std::println("layout: stereo (default) | 51 — 5.1 uses per-channel tones;");
     std::println("        append 'c' (stereoc, 51c) to enable channel coupling");
@@ -408,6 +409,14 @@ bool parse_eac3_tools(std::string_view text, ac3::eac3::FrameConfig& config) {
             config.coupling = true;
         } else if (token == "spx") {
             config.spx = true;
+        } else if (token == "noatten") {
+            // Spectral extension without its band-border notch, for the A/B.
+            config.spx_atten = false;
+        } else if (token.starts_with("atten:")) {
+            config.spxattencod = static_cast<int>(parse_u32_or(token.substr(6), 99));
+            if (config.spxattencod > 31) {
+                return false;
+            }
         } else if (token.starts_with("aht:")) {
             // "aht:0" is AHT with gain-adaptive quantization switched off,
             // which is how GAQ's own contribution gets measured.

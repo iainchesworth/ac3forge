@@ -86,6 +86,37 @@ int aht_bin_bits(int hebap) {
     return 6 * aht_mantissa_bits(hebap);
 }
 
+double spx_attenuation(int spxattencod, int index) {
+    assert(spxattencod >= 0 && spxattencod < kSpxAttenCodes);
+    // The table's three stored taps are the first three of a symmetric five,
+    // so an index past the middle mirrors back.
+    const int tap = index < 3 ? index : kSpxAttenTaps - 1 - index;
+    return std::exp2(-static_cast<double>(spxattencod + 1) *
+                     static_cast<double>(tap + 1) / 15.0);
+}
+
+void spx_apply_notch(std::span<double> synth, int startmant, const BandLayout& bands,
+                     std::span<const bool> wrapflag, int spxattencod) {
+    if (spxattencod < 0) {
+        return;
+    }
+    const auto notch = [&](int centre) {
+        for (int tap = 0; tap < kSpxAttenTaps; ++tap) {
+            const int at = centre - 2 + tap - startmant;
+            if (at < 0 || at >= static_cast<int>(synth.size())) {
+                continue;
+            }
+            synth[static_cast<std::size_t>(at)] *= spx_attenuation(spxattencod, tap);
+        }
+    };
+    notch(startmant);
+    for (int bnd = 1; bnd < bands.count; ++bnd) {
+        if (wrapflag[static_cast<std::size_t>(bnd)]) {
+            notch(bands.start[static_cast<std::size_t>(bnd)]);
+        }
+    }
+}
+
 std::span<const int> aht_gaq_gains(int gaqmod) {
     // Table E3.3. Mode 1's gains reach only to hebap 11; modes 2 and 3 reach
     // to 16, which aht_gaq_endbap encodes.

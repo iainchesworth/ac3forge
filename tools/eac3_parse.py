@@ -274,6 +274,7 @@ def parse_frame(data, verbose=True):
     log(f'audfrm: expstre={expstre} ahte={ahte} snroffststr={snroffststr} '
         f'blkswe={blkswe} dithflage={dithflage} bamode={bamode} '
         f'frmfgaincode={frmfgaincode} dbaflde={dbaflde} skipflde={skipflde} '
+        f'spxattene={spxattene} transproce={transproce} '
         f'cplinu={cplinu}  -> {r.pos} bits')
 
     # --- audblk x N (Table E1.4) ---

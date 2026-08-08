@@ -264,6 +264,49 @@ def race_eac3(original, source, seconds, rates=(96, 128, 192)):
         print()
 
 
+def seam_check(source, spxbegf=4):
+    """Is the spectral extension notch where the standard says, and how deep?
+
+    The banded scores cannot see this: the notch removes energy from a handful
+    of bins and the band's own scale factor puts it straight back, so LSD and
+    SNR move by hundredths either way. What CAN be checked is the decoded
+    spectrum itself - the dip has to sit on the first synthesized coefficient
+    and deepen with spxattencod. That also answers whether the decoder
+    implements the tool at all, which is not a given.
+    """
+    seam_bin = 25 + 12 * (spxbegf + 2 if spxbegf < 6 else spxbegf * 2 - 3)
+    seam_hz = seam_bin * (RATE / 2) / 256
+    nfft = 4096
+    depths = {}
+    for code in (None, 2, 8, 16, 31):
+        label = "off" if code is None else f"cod{code}"
+        tools = f"spx:{spxbegf}+" + ("noatten" if code is None else f"atten:{code}")
+        coded = BUILD / f"seam_{label}.ec3"
+        run([CLI, "eac3-encode", source, coded, "128", tools])
+        wav = BUILD / f"seam_{label}.wav"
+        run(["ffmpeg", "-v", "error", "-y", "-i", coded, "-c:a", "pcm_f32le", wav])
+        d = read_wav_f32(wav)[RATE:-RATE, 0]
+        frames = len(d) // nfft
+        acc = np.zeros(nfft // 2 + 1)
+        for i in range(frames):
+            acc += np.abs(np.fft.rfft(d[i * nfft:(i + 1) * nfft] * np.hanning(nfft))) ** 2
+        depths[label] = acc / frames
+    freqs = np.fft.rfftfreq(nfft, 1.0 / RATE)
+    base = depths["off"]
+    print(f"spectral extension notch, seam at coefficient {seam_bin} = {seam_hz:.0f} Hz")
+    print(f"{'spxattencod':>12} | {'notch dB':>9} | {'at Hz':>7}")
+    for label, spec in depths.items():
+        if label == "off":
+            continue
+        rel = 10 * np.log10(np.maximum(spec, 1e-30) / np.maximum(base, 1e-30))
+        window = (freqs > seam_hz - 500) & (freqs < seam_hz + 500)
+        at = int(np.argmin(np.where(window, rel, 0.0)))
+        print(f"{label:>12} | {rel[at]:>9.2f} | {freqs[at]:>7.0f}")
+        # The dip has to land on the seam, not somewhere else in the band.
+        if abs(freqs[at] - seam_hz) > 250:
+            print(f"  WARNING: notch is {freqs[at] - seam_hz:+.0f} Hz off the seam")
+
+
 def main():
     which = sys.argv[1] if len(sys.argv) > 1 else "ac3"
     BUILD.mkdir(exist_ok=True)
@@ -281,10 +324,12 @@ def main():
         source = BUILD / "race_src51.wav"
         write_wav_f32(source, make_material_51())
         race_eac3(read_wav_f32(source), source, seconds, rates=(192, 256, 384))
+    elif which == "seam":
+        seam_check(source)
     elif which == "ac3":
         race_ac3(original, source, seconds)
     else:
-        raise SystemExit(f"unknown race '{which}' (ac3 | eac3 | eac3-51)")
+        raise SystemExit(f"unknown race '{which}' (ac3 | eac3 | eac3-51 | seam)")
 
 
 if __name__ == "__main__":

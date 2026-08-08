@@ -641,12 +641,90 @@ TEST_CASE("coupling and spectral extension partition the spectrum", "[eac3][spx]
     CHECK(spx_band_start(17) == 229);  // one past the last synthesized band
 }
 
+TEST_CASE("the SPX attenuation taps match Table E3.14", "[eac3][spx]") {
+    using ac3::eac3::spx_attenuation;
+    const auto near = [](double a, double b) { return std::abs(a - b) < 5e-9; };
+    // Table E3.14 is 2^(-(cod + 1)(index + 1)/15) throughout, so it is derived
+    // rather than transcribed. These are rows the standard happens to print as
+    // exact binary fractions, which is where a wrong exponent would show up
+    // first, plus the top-left and bottom-right corners.
+    CHECK(near(spx_attenuation(0, 0), 0.954841604));
+    CHECK(near(spx_attenuation(0, 2), 0.870550563));
+    CHECK(near(spx_attenuation(4, 2), 0.5));       // (5 * 3)/15 == 1
+    CHECK(near(spx_attenuation(14, 0), 0.5));      // (15 * 1)/15 == 1
+    CHECK(near(spx_attenuation(9, 2), 0.25));
+    CHECK(near(spx_attenuation(29, 0), 0.25));
+    CHECK(near(spx_attenuation(31, 2), 0.011841536));
+    // Five taps, symmetric about the middle one, deepest on the join.
+    for (const int cod : {0, 7, 31}) {
+        CAPTURE(cod);
+        CHECK(near(spx_attenuation(cod, 3), spx_attenuation(cod, 1)));
+        CHECK(near(spx_attenuation(cod, 4), spx_attenuation(cod, 0)));
+        CHECK(spx_attenuation(cod, 2) < spx_attenuation(cod, 1));
+        CHECK(spx_attenuation(cod, 1) < spx_attenuation(cod, 0));
+        CHECK(spx_attenuation(cod, 0) < 1.0);
+    }
+}
+
+TEST_CASE("the SPX notch lands on every seam and nowhere else", "[eac3][spx]") {
+    using ac3::eac3::group_bands;
+    using ac3::eac3::spx_apply_notch;
+    using ac3::eac3::spx_attenuation;
+    // Placement is the part a decoder cannot tell you about. The decoder
+    // derives the notch position itself, so an encoder that filters the wrong
+    // bins still produces a stream whose decoded spectrum has the dip in the
+    // right place - it just compensates the band gains for bins it never
+    // attenuated. Only checking the filter directly catches that.
+    constexpr int kStart = 97;
+    const std::array<bool, 17> flat{};
+    const auto bands = group_bands(kStart, 6, 12, std::span{flat});
+    std::array<bool, ac3::eac3::kMaxSubBands> wrapflag{};
+    wrapflag[2] = true;  // the copy wrapped into band 2
+
+    std::vector<double> synth(static_cast<std::size_t>(6 * 12), 1.0);
+    spx_apply_notch(synth, kStart, bands, std::span{wrapflag}, 7);
+
+    // Every bin the notch did not touch is untouched, exactly.
+    const auto expected = [&](std::size_t index) {
+        const auto bin = static_cast<int>(index) + kStart;
+        for (const int centre : {kStart, bands.start[2]}) {
+            const int tap = bin - (centre - 2);
+            if (tap >= 0 && tap < ac3::eac3::kSpxAttenTaps) {
+                return spx_attenuation(7, tap);
+            }
+        }
+        return 1.0;
+    };
+    int touched = 0;
+    for (std::size_t i = 0; i < synth.size(); ++i) {
+        CAPTURE(i, static_cast<int>(i) + kStart);
+        CHECK(std::abs(synth[i] - expected(i)) < 1e-12);
+        touched += synth[i] != 1.0 ? 1 : 0;
+    }
+    // Five taps at the wrap, three at the border - the other two fall below
+    // startmant, onto coded bins this buffer does not cover.
+    CHECK(touched == 8);
+    // Deepest exactly on the first synthesized coefficient, and on the first
+    // coefficient of the band that wrapped.
+    CHECK(synth[0] == spx_attenuation(7, 2));
+    CHECK(synth[static_cast<std::size_t>(bands.start[2] - kStart)] ==
+          spx_attenuation(7, 2));
+    // A band that did not wrap has no seam and must be left alone.
+    CHECK(synth[static_cast<std::size_t>(bands.start[4] - kStart)] == 1.0);
+
+    // Switched off, nothing moves at all.
+    std::vector<double> untouched(static_cast<std::size_t>(6 * 12), 1.0);
+    spx_apply_notch(untouched, kStart, bands, std::span{wrapflag}, -1);
+    CHECK(std::ranges::all_of(untouched, [](double v) { return v == 1.0; }));
+}
+
 TEST_CASE("E-AC-3 spectral extension places its fields where Annex E puts them",
           "[eac3][spx]") {
-    const auto frame =
-        steady_state_frame({.bitrate_kbps = 192, .spx = true, .spxbegf = 4}, 2);
+    const auto frame = steady_state_frame(
+        {.bitrate_kbps = 192, .spx = true, .spxbegf = 4, .spxattencod = 9}, 2);
     ac3::BitReader reader{frame};
-    reader.skip(16 + 38 + 12);
+    reader.skip(16 + 38 + 11);   // bsi, then expstre..skipflde
+    CHECK(reader.read(1) == 1);  // spxattene, the last of the audfrm flags
     CHECK(reader.read(1) == 0);  // cplinu[0]: coupling off
     for (int blk = 1; blk < ac3::kBlocksPerFrame; ++blk) {
         CHECK(reader.read(1) == 0);  // cplstre[blk]
@@ -655,6 +733,14 @@ TEST_CASE("E-AC-3 spectral extension places its fields where Annex E puts them",
     CHECK(reader.read(5) == 0);
     CHECK(reader.read(5) == 0);
     reader.skip(10 + 10);        // convexpstr, then the frame SNR offsets
+    // The attenuation codes are per channel and frame-constant, so they live
+    // in audfrm rather than the blocks - between the SNR offsets and
+    // blkstrtinfoe. Worth pinning: getting it wrong shifts every audio block
+    // by twelve bits, which a decoder reads as a different tool entirely.
+    for (int ch = 0; ch < 2; ++ch) {
+        CHECK(reader.read(1) == 1);  // chinspxatten[ch]
+        CHECK(reader.read(5) == 9);  // spxattencod[ch]
+    }
     CHECK(reader.read(1) == 0);  // blkstrtinfoe
 
     reader.skip(2);              // dithflag[0..1]
