@@ -70,6 +70,10 @@ constexpr int kTailBits = 18;  // auxdatae + crcrsv + crc2
 // The skip field is 9 bits of length, so one block can hold this much.
 constexpr std::size_t kMaxSkipBytes = 511;
 
+// Which block carries the whole container. Dolby's own streams use a middle
+// block; a decoder that scans for the EMDF sync word should not care.
+constexpr int kMetadataBlock = 0;
+
 // §5.4.3.58-60, at the position Annex E's audblk gives it: after the delta
 // bit allocation fields and before the quantized mantissas. Getting that
 // order wrong does not fail to parse - it shifts every mantissa in the block,
@@ -283,10 +287,8 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
         }
         // cplinu == 0: no coupling leak. dbaflde == 0: no delta allocation.
         if (skipflde != 0) {
-            // The whole container rides in block 0. It could go in any block -
-            // Dolby's own streams put it further in - but a decoder finds it by
-            // scanning for the EMDF sync word, so the choice is the encoder's.
-            put_skip_field(w, first ? metadata : std::span<const std::byte>{});
+            put_skip_field(w, blk == kMetadataBlock ? metadata
+                                                    : std::span<const std::byte>{});
         }
 
         for (const auto& token : payload.mantissas[static_cast<std::size_t>(blk)]) {

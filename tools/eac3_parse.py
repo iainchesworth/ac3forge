@@ -115,18 +115,23 @@ def parse_frame(data, verbose=True):
                 mixdeflen = r.bits(5)
                 r.bits((mixdeflen + 2) * 8)
             if acmod < 2:
-                if r.bits(1):
-                    r.bits(6)        # panmean
-                    r.bits(8)        # paninfo
+                if r.bits(1):        # panmeane
+                    r.bits(8)        # panmean
+                    r.bits(6)        # paninfo
                 if acmod == 0:
                     if r.bits(1):
-                        r.bits(6); r.bits(8)
-            if numblkscod == 0:
-                r.bits(5)            # blkmixcfginfo[0]
-            else:
-                for _ in range(nblks):
-                    if r.bits(1):
-                        r.bits(5)
+                        r.bits(8); r.bits(6)
+            # frmmixcfginfoe gates the whole per-block mixing config. Leaving
+            # it out shifts everything after it - addbsi, audfrm, the lot -
+            # which no stream this encoder produces could ever reveal, because
+            # they all send mixmdate = 0 and never reach here.
+            if r.bits(1):            # frmmixcfginfoe
+                if numblkscod == 0:
+                    r.bits(5)        # blkmixcfginfo[0]
+                else:
+                    for _ in range(nblks):
+                        if r.bits(1):
+                            r.bits(5)
     if r.bits(1):                    # infomdate
         r.bits(3)                    # bsmod
         r.bits(1); r.bits(1)         # copyrightb, origbs
