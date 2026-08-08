@@ -25,7 +25,13 @@ constexpr int kDithflage = 1;      // sent explicitly: the DEFAULT when absent i
 constexpr int kBamode = 0;         // default allocation parameters, zero bits
 constexpr int kFrmfgaincode = 0;   // fgaincod defaults to 0x4, matching AC-3
 constexpr int kDbaflde = 0;        // no delta bit allocation
-constexpr int kSkipflde = 1;       // skip fields carry the CBR padding
+// AC-3 has to push its padding through in-block skip fields, because §5.5
+// confines the aux field to the final 3/8 of the frame - a rule that exists
+// to protect the crc1-at-5/8 checkpoint. E-AC-3 has no crc1 and Annex E
+// states no equivalent constraint, so auxbits can absorb the whole
+// remainder. That is both simpler and, measurably, what decoders expect:
+// padding routed through a block-0 skip field came back as audible data.
+constexpr int kSkipflde = 0;
 constexpr int kSpxattene = 0;      // no spectral extension attenuation
 
 constexpr int kTailBits = 18;  // auxdatae + crcrsv + crc2
@@ -58,9 +64,9 @@ std::expected<std::vector<std::byte>, FrameError> build_silent_frame(
     std::vector<std::uint8_t> lfe_quiet(7, kMaxExponent);
     const auto lfe_exps = encode_exponents(lfe_quiet, ExpStrategy::kD15);
 
-    // Everything except the skip payload and the tail, so the padding can be
-    // sized. Written twice: once to measure, once for real.
-    const auto emit = [&](BitWriter& w, std::uint32_t skip_bytes_total, bool real) {
+    // Everything except the padding and the tail. Written twice: once to
+    // measure, once for real.
+    const auto emit = [&](BitWriter& w) {
         w.put(kSyncWord, 16);
 
         // --- bsi (Table E1.2) ---
@@ -191,38 +197,22 @@ std::expected<std::vector<std::byte>, FrameError> build_silent_frame(
             w.put(0, 1);  // convsnroffste (strmtyp == 0)
             // cplinu == 0: no coupling leak. dbaflde == 0: no delta allocation.
 
-            if (kSkipflde != 0) {
-                const std::uint32_t skip = real && first ? skip_bytes_total : 0;
-                w.put(skip > 0 ? 1 : 0, 1);  // skiple
-                if (skip > 0) {
-                    w.put(skip, 9);
-                    for (std::uint32_t i = 0; i < skip; ++i) {
-                        w.put(0, 8);
-                    }
-                }
-            }
+            // skipflde == 0: no skip field in any block.
             // Every bap is zero, so no mantissa data follows.
         }
     };
 
-    // Measure, then size the padding. A skip field holds at most 511 bytes;
-    // anything left over goes to auxbits.
+    // Measure the syntax, then let auxbits absorb the whole remainder.
     BitWriter probe;
-    emit(probe, 0, false);
+    emit(probe);
     const auto content_bits = static_cast<std::uint32_t>(probe.bit_count());
     if (content_bits + kTailBits > total_bits) {
         return std::unexpected(FrameError::kInvalidBitrate);
     }
-    std::uint32_t spare = total_bits - content_bits - kTailBits;
-    // Adding a skip field costs its own 9-bit length prefix.
-    std::uint32_t skip_bytes = 0;
-    if (spare >= 9 + 8) {
-        skip_bytes = std::min<std::uint32_t>(511, (spare - 9) / 8);
-        spare -= 9 + 8 * skip_bytes;
-    }
+    const std::uint32_t spare = total_bits - content_bits - kTailBits;
 
     BitWriter w;
-    emit(w, skip_bytes, true);
+    emit(w);
     for (std::uint32_t i = 0; i < spare; ++i) {
         w.put(0, 1);  // auxbits
     }
