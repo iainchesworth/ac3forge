@@ -36,6 +36,7 @@ void print_usage() {
     std::println("  ac3cli devices");
     std::println("  ac3cli record  <out.ac3> [seconds] [bitrate_kbps] [device_index]");
     std::println("  ac3cli encode  <in.wav> <out.ac3> [bitrate_kbps] [couple]");
+    std::println("  ac3cli eac3-encode <in.wav> <out.ec3> [bitrate_kbps]");
     std::println("  ac3cli decode  <in.ac3> <out.wav>");
     std::println("  ac3cli spdif   <in.ac3> <out.wav>   (IEC 61937 wrap as playable PCM16 WAV)");
     std::println("  ac3cli outputs                      (render endpoints + AC-3 passthrough support)");
@@ -368,6 +369,83 @@ int run_eac3_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_
     }
     std::println("wrote {} E-AC-3 {} access units ({} channels, {} substreams, bsid 16) to {}",
                  count, layout, nchans, config.dependents.size() + 1, out_path);
+    return 0;
+}
+
+// Real program material through the E-AC-3 path. The tone generators above
+// exercise field placement; only recorded-style material exercises the coding
+// decisions, which is what the Annex E tools are judged on.
+int run_eac3_encode(std::string_view in_path, std::string_view out_path,
+                    std::uint32_t bitrate) {
+    const auto wav = ac3::io::read_wav(std::string{in_path});
+    if (!wav) {
+        std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(wav.error()));
+        return 1;
+    }
+    ac3::SampleRate sr{};
+    switch (wav->sample_rate) {
+        case 48000: sr = ac3::SampleRate::k48000; break;
+        case 44100: sr = ac3::SampleRate::k44100; break;
+        case 32000: sr = ac3::SampleRate::k32000; break;
+        default:
+            std::println(stderr,
+                         "error: sample rate {} is not legal for E-AC-3 (need 32/44.1/48 kHz)",
+                         wav->sample_rate);
+            return 1;
+    }
+
+    // WAV channel order is not AC-3 channel order, so a 5.1 file has to be
+    // permuted on the way in - the inverse of wav_channel_map below.
+    ac3::eac3::FrameConfig config{.sample_rate = sr, .bitrate_kbps = bitrate};
+    std::vector<std::size_t> source;  // coded channel -> wav channel
+    switch (wav->channels.size()) {
+        case 1:
+            config.acmod = ac3::Acmod::k1_0;
+            source = {0};
+            break;
+        case 2:
+            config.acmod = ac3::Acmod::k2_0;
+            source = {0, 1};
+            break;
+        case 6:
+            config.acmod = ac3::Acmod::k3_2;
+            config.lfe = true;
+            source = {0, 2, 1, 4, 5, 3};  // L C R Ls Rs LFE <- FL FR FC LFE BL BR
+            break;
+        default:
+            std::println(stderr, "error: {} channels; expected 1, 2 or 6",
+                         wav->channels.size());
+            return 1;
+    }
+
+    ac3::eac3::FrameEncoder encoder{config};
+    const auto nchans = source.size();
+    const std::size_t total = wav->frame_count();
+    std::vector<std::vector<float>> block(nchans,
+                                          std::vector<float>(ac3::kSamplesPerFrame));
+    std::vector<std::span<const float>> views(nchans);
+    std::vector<std::vector<std::byte>> frames;
+    for (std::size_t start = 0; start < total; start += ac3::kSamplesPerFrame) {
+        for (std::size_t c = 0; c < nchans; ++c) {
+            const auto& channel = wav->channels[source[c]];
+            for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+                const std::size_t at = start + static_cast<std::size_t>(i);
+                block[c][static_cast<std::size_t>(i)] = at < total ? channel[at] : 0.0f;
+            }
+            views[c] = block[c];
+        }
+        auto frame = encoder.encode_frame(views);
+        if (!frame) {
+            std::println(stderr, "error: the encoder cannot express this configuration");
+            return 1;
+        }
+        frames.push_back(std::move(*frame));
+    }
+    if (!write_frames(out_path, frames)) {
+        return 1;
+    }
+    std::println("encoded {} E-AC-3 frames ({} kbps, {} Hz, {} channels) to {}", frames.size(),
+                 bitrate, wav->sample_rate, nchans, out_path);
     return 0;
 }
 
@@ -854,6 +932,10 @@ int main(int argc, char** argv) {
         return run_eac3_mkv(args[2], args[3],
                             args.size() > 4 ? parse_u32_or(args[4], 448) : 448,
                             args.size() > 5 ? std::string_view{args[5]} : "51");
+    }
+    if (command == "eac3-encode" && args.size() > 3) {
+        return run_eac3_encode(args[2], args[3],
+                               args.size() > 4 ? parse_u32_or(args[4], 192) : 192);
     }
     if (command == "eac3-sine") {
         return run_eac3_sine(args[2], args.size() > 3 ? parse_u32_or(args[3], 5) : 5,

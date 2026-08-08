@@ -1,11 +1,16 @@
-"""Quality race: our encoder vs FFmpeg's ac3 encoder at matched bitrates.
+"""Quality race: our encoder vs FFmpeg's, at matched bitrates.
 
 Synthesizes stereo program material (tones with vibrato, a sweep, filtered
 noise, correlated near-mono content for rematrixing, tone bursts), encodes it
 with both encoders, decodes both with FFmpeg (the neutral referee), aligns by
-cross-correlation, and reports SNR vs the original per segment and overall.
+cross-correlation, and reports SNR vs the original.
 
-Usage (repo root, after building):  python tools/quality_race.py
+Two races:
+  ac3   - our AC-3 encoder vs FFmpeg's, at 192-448 kbps
+  eac3  - our E-AC-3 encoder, one column per Annex E tool set, vs FFmpeg's
+          E-AC-3 encoder, at the low rates the tools exist to serve
+
+Usage (repo root, after building):  python tools/quality_race.py [ac3|eac3]
 """
 
 import struct
@@ -90,8 +95,8 @@ def run(cmd):
         raise SystemExit(f"command failed: {' '.join(map(str, cmd))}\n{result.stderr}")
 
 
-def aligned_snr(original, decoded):
-    """Align by cross-correlation on a probe window, SNR over the overlap."""
+def align(original, decoded):
+    """Align by cross-correlation on a probe window; return the overlap."""
     probe = original[RATE:RATE + 32768, 0]
     window = decoded[: RATE + 65536, 0]
     corr = np.correlate(window, probe, mode="valid")
@@ -99,38 +104,151 @@ def aligned_snr(original, decoded):
     n = min(len(original), len(decoded) - lag) - 2 * RATE
     o = original[RATE:RATE + n - RATE]
     d = decoded[RATE + lag:RATE + lag + len(o)]
+    return o, d, lag
+
+
+def aligned_snr(original, decoded):
+    o, d, lag = align(original, decoded)
     noise = d - o
     return 10 * np.log10(np.sum(o**2) / max(np.sum(noise**2), 1e-30)), lag
 
 
+NFFT = 1024
+_HANN = np.hanning(NFFT)
+
+
+def _spectrogram(x):
+    """Magnitude-squared STFT of one channel, frames along axis 0."""
+    hop = NFFT // 2
+    count = (len(x) - NFFT) // hop
+    frames = np.lib.stride_tricks.as_strided(
+        x, shape=(count, NFFT), strides=(x.strides[0] * hop, x.strides[0]))
+    return np.abs(np.fft.rfft(frames * _HANN, axis=1)) ** 2
+
+
+def _bark_bands():
+    """Band edges (rfft bin indices) on a Bark-like scale up to Nyquist."""
+    hz = np.fft.rfftfreq(NFFT, 1.0 / RATE)
+    bark = 13 * np.arctan(0.00076 * hz) + 3.5 * np.arctan((hz / 7500.0) ** 2)
+    edges = [0]
+    for step in np.linspace(bark[1], bark[-1], 25)[1:]:
+        edges.append(int(np.searchsorted(bark, step)))
+    return [(a, b) for a, b in zip(edges, edges[1:]) if b > a]
+
+
+BANDS = _bark_bands()
+
+
+def spectral_scores(o, d):
+    """Log-spectral distance, and the high-band energy ratio, both in dB.
+
+    Waveform SNR is the wrong lens for parametric tools: coupling replaces a
+    channel's high band with a scaled copy of a shared one, and spectral
+    extension synthesizes it outright, so both destroy the waveform there by
+    construction while preserving the banded envelope, which is what they set
+    out to preserve and what a listener hears. LSD scores that envelope; the
+    HF ratio says whether the top of the spectrum is present at all.
+    """
+    lsd = []
+    hf = int(10000.0 / (RATE / NFFT))
+    hf_o = hf_d = 0.0
+    for c in range(o.shape[1]):
+        so = _spectrogram(np.ascontiguousarray(o[:, c]))
+        sd = _spectrogram(np.ascontiguousarray(d[:, c]))
+        hf_o += so[:, hf:].sum()
+        hf_d += sd[:, hf:].sum()
+        # Ignore near-silent frames: their band ratios are dominated by the
+        # floor and would swamp the average with meaningless dBs.
+        energy = so.sum(axis=1)
+        loud = energy > 1e-6 * max(energy.max(), 1e-30)
+        for lo, hi in BANDS:
+            eo = so[loud, lo:hi].sum(axis=1) + 1e-12
+            ed = sd[loud, lo:hi].sum(axis=1) + 1e-12
+            lsd.append(np.mean(np.abs(10 * np.log10(ed / eo))))
+    return float(np.mean(lsd)), 10 * np.log10((hf_d + 1e-20) / (hf_o + 1e-20))
+
+
+def decode_scores(original, coded, wav_path, strict=True):
+    """Decode with FFmpeg (the neutral referee) and score against the source."""
+    cmd = ["ffmpeg", "-v", "error", "-y"]
+    if strict:
+        # Only our own output gets the strict reader: a frame-layout error
+        # shows up here as a CRC failure rather than as quiet noise.
+        cmd += ["-err_detect", "crccheck+bitstream+buffer+explode"]
+    run(cmd + ["-i", coded, "-c:a", "pcm_f32le", wav_path])
+    o, d, _ = align(original, read_wav_f32(wav_path))
+    snr = 10 * np.log10(np.sum(o**2) / max(np.sum((d - o) ** 2), 1e-30))
+    lsd, hf = spectral_scores(o, d)
+    return snr, lsd, hf
+
+
+def measured_kbps(path, seconds):
+    return Path(path).stat().st_size * 8 / seconds / 1000.0
+
+
+def race_ac3(original, source, seconds):
+    print(f"{'kbps':>5} | {'ours dB':>8} | {'ffmpeg dB':>9} | {'gap':>6}")
+    print("-" * 38)
+    worst_gap = -1e9
+    for kbps in (192, 256, 320, 448):
+        ours = BUILD / f"race_ours_{kbps}.ac3"
+        theirs = BUILD / f"race_ff_{kbps}.ac3"
+        run([CLI, "encode", source, ours, str(kbps)])
+        run(["ffmpeg", "-v", "error", "-y", "-i", source, "-c:a", "ac3",
+             "-b:a", f"{kbps}k", theirs])
+        ours_snr, _, _ = decode_scores(original, ours, BUILD / f"race_ours_{kbps}.wav")
+        ff_snr, _, _ = decode_scores(original, theirs, BUILD / f"race_ff_{kbps}.wav",
+                                     strict=False)
+        gap = ff_snr - ours_snr
+        worst_gap = max(worst_gap, gap)
+        print(f"{kbps:>5} | {ours_snr:>8.2f} | {ff_snr:>9.2f} | {gap:>+6.2f}")
+    print(f"\nworst gap vs ffmpeg: {worst_gap:+.2f} dB (positive = ffmpeg better)")
+
+
+# One column per E-AC-3 variant: the label, and the tool token handed to
+# `ac3cli eac3-encode`. "none" is the tool-free coding path the Annex E tools
+# have to beat to earn their place.
+EAC3_VARIANTS = [("none", None)]
+
+
+def race_eac3(original, source, seconds):
+    print(f"{'kbps':>5} | {'variant':<10} | {'SNR dB':>7} | {'LSD dB':>6} | "
+          f"{'HF dB':>6} | {'rate':>6}")
+    print("-" * 60)
+    for kbps in (96, 128, 192):
+        for label, tools in EAC3_VARIANTS + [("ffmpeg", "ffmpeg")]:
+            coded = BUILD / f"race_e_{label}_{kbps}.ec3"
+            if tools == "ffmpeg":
+                run(["ffmpeg", "-v", "error", "-y", "-i", source, "-c:a", "eac3",
+                     "-b:a", f"{kbps}k", coded])
+            else:
+                cmd = [CLI, "eac3-encode", source, coded, str(kbps)]
+                if tools:
+                    cmd.append(tools)
+                run(cmd)
+            snr, lsd, hf = decode_scores(original, coded,
+                                         BUILD / f"race_e_{label}_{kbps}.wav",
+                                         strict=tools != "ffmpeg")
+            rate = measured_kbps(coded, seconds)
+            print(f"{kbps:>5} | {label:<10} | {snr:>7.2f} | {lsd:>6.2f} | "
+                  f"{hf:>+6.1f} | {rate:>6.1f}")
+        print()
+
+
 def main():
+    which = sys.argv[1] if len(sys.argv) > 1 else "ac3"
     BUILD.mkdir(exist_ok=True)
     left, right = make_material()
     source = BUILD / "race_src.wav"
     write_wav_f32(source, left, right)
     original = read_wav_f32(source)
-
-    print(f"{'kbps':>5} | {'ours dB':>8} | {'ffmpeg dB':>9} | {'gap':>6}")
-    print("-" * 38)
-    worst_gap = -1e9
-    for kbps in (192, 256, 320, 448):
-        ours_ac3 = BUILD / f"race_ours_{kbps}.ac3"
-        ff_ac3 = BUILD / f"race_ff_{kbps}.ac3"
-        run([CLI, "encode", source, ours_ac3, str(kbps)])
-        run(["ffmpeg", "-v", "error", "-y", "-i", source, "-c:a", "ac3",
-             "-b:a", f"{kbps}k", ff_ac3])
-        ours_wav = BUILD / f"race_ours_{kbps}.wav"
-        ff_wav = BUILD / f"race_ff_{kbps}.wav"
-        run(["ffmpeg", "-v", "error", "-y",
-             "-err_detect", "crccheck+bitstream+buffer+explode",
-             "-i", ours_ac3, "-c:a", "pcm_f32le", ours_wav])
-        run(["ffmpeg", "-v", "error", "-y", "-i", ff_ac3, "-c:a", "pcm_f32le", ff_wav])
-        ours_snr, _ = aligned_snr(original, read_wav_f32(ours_wav))
-        ff_snr, _ = aligned_snr(original, read_wav_f32(ff_wav))
-        gap = ff_snr - ours_snr
-        worst_gap = max(worst_gap, gap)
-        print(f"{kbps:>5} | {ours_snr:>8.2f} | {ff_snr:>9.2f} | {gap:>+6.2f}")
-    print(f"\nworst gap vs ffmpeg: {worst_gap:+.2f} dB (positive = ffmpeg better)")
+    seconds = len(left) / RATE
+    if which == "eac3":
+        race_eac3(original, source, seconds)
+    elif which == "ac3":
+        race_ac3(original, source, seconds)
+    else:
+        raise SystemExit(f"unknown race '{which}' (ac3 | eac3)")
 
 
 if __name__ == "__main__":
