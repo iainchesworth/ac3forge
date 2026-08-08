@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 
 #include "ac3/core/bitalloc.hpp"
 #include "ac3/core/bitwriter.hpp"
@@ -10,14 +11,16 @@
 #include "ac3/core/mantissas.hpp"
 #include "ac3/core/mdct.hpp"
 #include "ac3/core/window.hpp"
+#include "ac3/encoder/coupling.hpp"
+#include "ac3/encoder/eac3_tools.hpp"
 
 namespace ac3::eac3 {
 
 namespace {
 
-// Frame-level strategy flags for this minimal profile. Every advanced tool
-// is switched off; what remains is the AC-3 coding path inside an E-AC-3
-// container.
+// Frame-level strategy flags. The tools that stay off here are off because
+// nothing in this encoder drives them, not because the container cannot
+// carry them; the ones a FrameConfig can switch on appear below.
 //
 // expstre and snroffststr each have a frame-level and a per-block form. The
 // frame-level ones are chosen deliberately: they are what real encoders emit,
@@ -64,21 +67,82 @@ constexpr int kSpxattene = 0;      // no spectral extension attenuation
 
 constexpr int kTailBits = 18;  // auxdatae + crcrsv + crc2
 
-// One coded channel: its exponents (frame-constant, D15 in block 0) and the
-// allocation they produce. LFE, when present, is the last entry.
+// One coded stream: its exponents (frame-constant, D15 in block 0) and the
+// allocation they produce. The full-bandwidth channels come first, then LFE,
+// then - when coupling is in use - the shared coupling channel, which is a
+// stream like any other except that it starts above bin 0.
 struct ChannelPlan {
+    int start = 0;    // strtmant: 0 for fbw and LFE, cplstrtmant for coupling
     int endmant = 0;
-    EncodedExponents coded;
+    EncodedExponents coded;              // fbw and LFE channels
+    EncodedCouplingExponents cpl_coded;  // the coupling channel
+    // Both are indexed from bin 0 even when the stream starts higher, because
+    // that is what the allocator wants; the bins below `start` are inert.
     std::vector<std::uint8_t> decoded;  // decoder-mirror exponents
     std::vector<std::uint8_t> bap;
+};
+
+// Everything the coupling tool contributes to a frame. Annex E hoists
+// cplstre/cplinu out of the blocks and into audfrm, so whether a block
+// couples is a frame-level decision; this encoder either couples every block
+// or none, which is also the only shape that leaves ncplregs at 1.
+struct CouplingPlan {
+    bool in_use = false;
+    int begf = 0;
+    int endf = 0;
+    int strtmant = 0;
+    int endmant = 0;
+    int nsubnd = 0;
+    std::array<bool, kMaxSubBands> structure{};
+    BandLayout bands{};
+    int fleak = 0;
+    int sleak = 0;
+    // Coordinates go out in blocks 0, 2 and 4 and are reused in between
+    // (§8.2.4.1). A reusing block holds a copy of what was actually sent, so
+    // the encoder's own view of the decoder's state is never a special case.
+    std::array<bool, kBlocksPerFrame> send{};
+    std::vector<int> master;                   // [blk][ch]
+    std::vector<coupling::Coordinate> coords;  // [blk][ch][bnd]
 };
 
 struct Payload {
     int csnroffst = 0;
     int fsnroffst = 0;
+    CouplingPlan cpl;
     std::vector<ChannelPlan> chans;
     std::array<std::vector<MantissaToken>, kBlocksPerFrame> mantissas;
 };
+
+// §7.5.2.1-7.5.2.4: with coupling in use the rematrixing bands cannot reach
+// above the coupling frequency, so both their count and where the last one
+// stops change. Nothing here rematrixes yet, but the COUNT is transmitted, so
+// getting it wrong shifts every later field in block 0.
+[[nodiscard]] int rematrix_band_count(const CouplingPlan& cpl) {
+    if (!cpl.in_use) {
+        return 4;
+    }
+    if (cpl.begf == 0) {
+        return 2;
+    }
+    return cpl.begf < 3 ? 3 : 4;
+}
+
+// Where coupling should start when the caller does not say. Sub-band 4 - bin
+// 85, 8.0 kHz at 48 kHz - is the floor, because that is roughly where
+// per-channel waveform detail stops being what a listener is hearing. Below
+// it the envelope metric keeps improving and waveform SNR falls off a cliff;
+// above it coupling still helps but has less left to save. The band edge
+// rises slowly with the per-channel rate, since a channel that can afford its
+// own high band should keep it.
+//
+// This is a default, not a limit: FrameConfig::cplbegf overrides it, and a
+// caller who trusts banded envelope fidelity over waveform fidelity has good
+// reason to go lower. At 96 kbit/s stereo, coupling from sub-band 0 scores a
+// full dB better on log-spectral distance than not coupling at all.
+[[nodiscard]] int default_cplbegf(std::uint32_t bitrate_kbps, int nfchans) {
+    const int per_channel = static_cast<int>(bitrate_kbps) / std::max(nfchans, 1);
+    return std::clamp(4 + (per_channel - 48) / 24, 4, 10);
+}
 
 // Everything from the sync word to the end of the last block: the whole
 // frame bar padding and the tail. Silence and real audio go through this one
@@ -87,6 +151,7 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
                 const Payload& payload) {
     const int nfchans = fullbw_channel_count(config.acmod);
     const bool dependent = config.strmtyp == StreamType::kDependent;
+    const auto& cpl = payload.cpl;
 
     w.put(kSyncWord, 16);
 
@@ -138,13 +203,16 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
     w.put(kSpxattene, 1);
 
     if (static_cast<std::uint8_t>(config.acmod) > 0x1) {
-        w.put(0, 1);  // cplinu[0]: coupling off (cplstre[0] is implied 1)
+        w.put(cpl.in_use ? 1 : 0, 1);  // cplinu[0] (cplstre[0] is implied 1)
         for (int blk = 1; blk < kBlocksPerFrame; ++blk) {
-            w.put(0, 1);  // cplstre[blk] = 0, so cplinu inherits 0
+            w.put(0, 1);  // cplstre[blk] = 0, so cplinu inherits block 0's
         }
     }
     // expstre == 0: one Table E2.10 code per channel covers all six blocks.
-    // frmcplexpstr is absent because no block couples.
+    // frmcplexpstr precedes them, and exists only when some block couples.
+    if (cpl.in_use) {
+        w.put(kFrmExpStrategyCode, 5);  // frmcplexpstr
+    }
     for (int ch = 0; ch < nfchans; ++ch) {
         w.put(kFrmExpStrategyCode, 5);  // frmchexpstr[ch]
     }
@@ -191,8 +259,59 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
         } else {
             w.put(0, 1);  // spxstre
         }
-        // cplstre[0] is implied 1 with cplinu[0] == 0, which carries no
-        // payload; blocks 1-5 had cplstre 0. Nothing to write.
+
+        // Coupling strategy. cplstre[0] is implied 1, so block 0 carries one;
+        // blocks 1-5 sent cplstre 0 in audfrm, so they carry none at all.
+        if (cpl.in_use && first) {
+            w.put(0, 1);  // ecplinu: standard coupling, not enhanced
+            // 2/0 is the one mode where chincpl is not transmitted: both
+            // channels are coupled by definition.
+            if (config.acmod != Acmod::k2_0) {
+                for (int ch = 0; ch < nfchans; ++ch) {
+                    w.put(1, 1);  // chincpl[ch]: every fbw channel couples
+                }
+            } else {
+                w.put(0, 1);  // phsflginu: no phase restoration
+            }
+            w.put(static_cast<std::uint32_t>(cpl.begf), 4);
+            w.put(static_cast<std::uint32_t>(cpl.endf), 4);  // spxinu == 0
+            // The banding structure is sent rather than defaulted. Leaving
+            // cplbndstrce at 0 would hand the decoder Table E2.12's default,
+            // which is NOT one band per sub-band and whose indexing the
+            // standard pins to the array's first element being sub-band
+            // cplbegf (§5.4.3.13) - a reading real decoders do not share.
+            // ncplsubnd - 1 bits a frame settles the question outright.
+            w.put(1, 1);  // cplbndstrce
+            for (int sbnd = 1; sbnd < cpl.nsubnd; ++sbnd) {
+                w.put(cpl.structure[static_cast<std::size_t>(sbnd)] ? 1 : 0, 1);
+            }
+        }
+
+        // Coupling coordinates. firstcplcos[ch] starts at 1, so block 0's
+        // cplcoe is implied 1 and not transmitted - one bit per channel that
+        // AC-3 does send and Annex E does not.
+        if (cpl.in_use) {
+            const bool send = cpl.send[static_cast<std::size_t>(blk)];
+            for (int ch = 0; ch < nfchans; ++ch) {
+                if (!first) {
+                    w.put(send ? 1 : 0, 1);  // cplcoe[ch]
+                }
+                if (send) {
+                    const auto at = static_cast<std::size_t>(blk) *
+                                        static_cast<std::size_t>(nfchans) +
+                                    static_cast<std::size_t>(ch);
+                    w.put(static_cast<std::uint32_t>(cpl.master[at]), 2);  // mstrcplco
+                    for (int bnd = 0; bnd < cpl.bands.count; ++bnd) {
+                        const auto coordinate =
+                            cpl.coords[at * static_cast<std::size_t>(cpl.bands.count) +
+                                       static_cast<std::size_t>(bnd)];
+                        w.put(coordinate.exp, 4);
+                        w.put(coordinate.mant, 4);
+                    }
+                }
+            }
+            // phsflginu == 0, so no phase flags follow.
+        }
 
         if (config.acmod == Acmod::k2_0) {
             // Unlike AC-3, block 0's rematstr is IMPLIED 1 rather than
@@ -201,17 +320,29 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
             if (!first) {
                 w.put(0, 1);  // rematstr: keep the previous flags
             } else {
-                for (int band = 0; band < 4; ++band) {
+                for (int band = 0; band < rematrix_band_count(cpl); ++band) {
                     w.put(0, 1);  // rematflg
                 }
             }
         }
 
-        // chbwcod accompanies a fresh exponent strategy for uncoupled
-        // channels; the strategies themselves already went out in audfrm.
+        // chbwcod accompanies a fresh exponent strategy, but only for a
+        // channel carrying its own high band: a coupled channel's bandwidth
+        // IS the coupling frequency, and sending chbwcod anyway would both
+        // waste the bits and desynchronise the block.
         if (first) {
-            for (int ch = 0; ch < nfchans; ++ch) {
-                w.put(static_cast<std::uint32_t>(config.chbwcod), 6);
+            if (!cpl.in_use) {
+                for (int ch = 0; ch < nfchans; ++ch) {
+                    w.put(static_cast<std::uint32_t>(config.chbwcod), 6);
+                }
+            }
+            // Exponents: the coupling channel first, then fbw, then LFE.
+            if (cpl.in_use) {
+                const auto& coded = payload.chans.back().cpl_coded;
+                w.put(coded.cplabsexp, 4);
+                for (const auto group : coded.groups) {
+                    w.put(group, 7);
+                }
             }
             for (int ch = 0; ch < nfchans; ++ch) {
                 const auto& coded = payload.chans[static_cast<std::size_t>(ch)].coded;
@@ -222,7 +353,8 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
                 w.put(0, 2);  // gainrng
             }
             if (config.lfe) {
-                const auto& coded = payload.chans.back().coded;
+                const auto& coded =
+                    payload.chans[static_cast<std::size_t>(nfchans)].coded;
                 w.put(coded.absolute, 4);
                 assert(coded.groups.size() == 2);
                 for (const auto group : coded.groups) {
@@ -238,8 +370,18 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
         if (!dependent) {
             w.put(0, 1);  // convsnroffste, gated on strmtyp == 0x0
         }
-        // cplinu == 0: no coupling leak. dbaflde == 0: no delta allocation.
-        // skipflde == 0: no skip field in any block.
+        // The coupling leak seeds follow the same first-time rule as the
+        // coordinates: firstcplleak starts at 1, so block 0's cplleake is
+        // implied and the seeds are mandatory there.
+        if (cpl.in_use) {
+            if (!first) {
+                w.put(0, 1);  // cplleake: keep the seeds from block 0
+            } else {
+                w.put(static_cast<std::uint32_t>(cpl.fleak), 3);
+                w.put(static_cast<std::uint32_t>(cpl.sleak), 3);
+            }
+        }
+        // dbaflde == 0: no delta allocation. skipflde == 0: no skip field.
 
         for (const auto& token : payload.mantissas[static_cast<std::size_t>(blk)]) {
             w.put(token.value, token.bits);
@@ -329,17 +471,22 @@ std::expected<std::vector<std::byte>, FrameError> build_silent_frame(
     // zero everywhere. Both offsets stay at zero, which §7.2.2.1.1 defines as
     // an all-zero allocation - no mantissas exist and the frame is pure
     // syntax.
+    // Coupling stays off: a silent frame has nothing to share, and switching
+    // it on would only add coordinates describing zero.
     Payload payload;
     const std::vector<std::uint8_t> quiet(static_cast<std::size_t>(endmant), kMaxExponent);
     for (int ch = 0; ch < nfchans; ++ch) {
-        payload.chans.push_back({.endmant = endmant,
-                                 .coded = encode_exponents(quiet, ExpStrategy::kD15)});
+        ChannelPlan plan;
+        plan.endmant = endmant;
+        plan.coded = encode_exponents(quiet, ExpStrategy::kD15);
+        payload.chans.push_back(std::move(plan));
     }
     if (config.lfe) {
         const std::vector<std::uint8_t> lfe_quiet(kLfeEndmant, kMaxExponent);
-        payload.chans.push_back(
-            {.endmant = kLfeEndmant,
-             .coded = encode_exponents(lfe_quiet, ExpStrategy::kD15)});
+        ChannelPlan plan;
+        plan.endmant = kLfeEndmant;
+        plan.coded = encode_exponents(lfe_quiet, ExpStrategy::kD15);
+        payload.chans.push_back(std::move(plan));
     }
 
     return finish_frame(config, frame_words(config.sample_rate, config.bitrate_kbps),
@@ -359,16 +506,53 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         (void)channel;
     }
 
-    const int fbw_endmant = ((config_.chbwcod + 12) * 3) + 37;
     const std::uint32_t words = frame_words(config_.sample_rate, config_.bitrate_kbps);
     const std::uint32_t total_bits = words * 16;
 
-    // --- 1. MDCT, then the 25-bit fixed-point coefficients -----------------
-    std::vector<std::array<std::int32_t, 256>> fixed(
-        static_cast<std::size_t>(nchans) * kBlocksPerFrame);
-    const auto fixed_at = [&](int ch, int blk) -> std::array<std::int32_t, 256>& {
-        return fixed[static_cast<std::size_t>(ch) * kBlocksPerFrame +
-                     static_cast<std::size_t>(blk)];
+    // --- 1. Coupling decision ----------------------------------------------
+    Payload payload;
+    auto& cpl = payload.cpl;
+    // §E2.2.3 gates the whole coupling element on acmod > 0x1, so 1/0 and the
+    // rejected 1+1 cannot couple however the caller asks.
+    cpl.in_use = config_.coupling && static_cast<std::uint8_t>(config_.acmod) > 0x1;
+    if (cpl.in_use) {
+        cpl.begf = std::clamp(config_.cplbegf >= 0
+                                  ? config_.cplbegf
+                                  : default_cplbegf(config_.bitrate_kbps, nfchans),
+                              0, 15);
+        // Coupling runs to the top of the coded spectrum. With chbwcod gone
+        // for a coupled channel the coupling end frequency IS its bandwidth,
+        // so stopping short would not save the top band's bits - it would
+        // discard the band, which is what the tool exists to avoid.
+        cpl.endf = 15;
+        cpl.strtmant = kCplFirstBin + kCplBinsPerSubBand * cpl.begf;
+        cpl.endmant = kCplFirstBin + kCplBinsPerSubBand * (cpl.endf + 3);
+        cpl.nsubnd = 3 + cpl.endf - cpl.begf;
+        std::copy_n(kDefaultCplBandStructure.begin(), cpl.nsubnd, cpl.structure.begin());
+        cpl.bands = group_bands(cpl.strtmant, cpl.nsubnd, kCplBinsPerSubBand,
+                                std::span{cpl.structure});
+    }
+
+    const int fbw_endmant =
+        cpl.in_use ? cpl.strtmant : ((config_.chbwcod + 12) * 3) + 37;
+    // Streams: the fbw channels, the LFE, then the coupling channel as one
+    // more stream carrying the shared high band.
+    const int cpl_stream = cpl.in_use ? nchans : -1;
+    const int streams = nchans + (cpl.in_use ? 1 : 0);
+    const auto stream_start = [&](int s) { return s == cpl_stream ? cpl.strtmant : 0; };
+    const auto stream_end = [&](int s) {
+        if (s == cpl_stream) {
+            return cpl.endmant;
+        }
+        return s < nfchans ? fbw_endmant : kLfeEndmant;
+    };
+
+    // --- 2. MDCT ------------------------------------------------------------
+    std::vector<std::array<double, 256>> coeffs(
+        static_cast<std::size_t>(streams) * kBlocksPerFrame);
+    const auto coeffs_at = [&](int s, int blk) -> std::array<double, 256>& {
+        return coeffs[static_cast<std::size_t>(s) * kBlocksPerFrame +
+                      static_cast<std::size_t>(blk)];
     };
     for (int ch = 0; ch < nchans; ++ch) {
         const auto& pcm = channels[static_cast<std::size_t>(ch)];
@@ -383,13 +567,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
             }
             std::array<double, 512> windowed{};
             apply_analysis_window(time, windowed);
-            std::array<double, 256> coeffs{};
-            mdct512_forward(windowed, coeffs);
-            auto& out = fixed_at(ch, blk);
-            for (int bin = 0; bin < 256; ++bin) {
-                out[static_cast<std::size_t>(bin)] =
-                    to_fixed25(coeffs[static_cast<std::size_t>(bin)]);
-            }
+            mdct512_forward(windowed, coeffs_at(ch, blk));
         }
         for (int n = 0; n < 256; ++n) {
             hist[static_cast<std::size_t>(n)] =
@@ -397,34 +575,170 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         }
     }
 
-    // --- 2. One frame-constant exponent set per channel --------------------
+    // --- 3. Coupling: the shared channel and its coordinates ---------------
+    const auto nbnd = static_cast<std::size_t>(std::max(cpl.bands.count, 1));
+    const auto coord_slot = [&](int blk, int ch) {
+        return static_cast<std::size_t>(blk) * static_cast<std::size_t>(nfchans) +
+               static_cast<std::size_t>(ch);
+    };
+    if (cpl.in_use) {
+        cpl.master.assign(static_cast<std::size_t>(kBlocksPerFrame) *
+                              static_cast<std::size_t>(nfchans),
+                          0);
+        cpl.coords.assign(cpl.master.size() * nbnd, {});
+        std::vector<double> values(nbnd, 0.0);
+
+        // §7.4.1: the coupling channel is the AVERAGE of the coupled
+        // channels' coefficients. The divisor is not a free parameter, and
+        // this encoder measured both ways it can be got wrong.
+        //
+        // Scaling the shared channel UP - normalising each band, or the whole
+        // region, to unit peak - looks attractive because it makes the
+        // coordinate small and so unclampable. But the bit allocator reads
+        // psd absolutely, against a fixed hearing threshold: a coupling
+        // channel normalised to full scale is simply the loudest thing in the
+        // frame, and the allocator buys it bits accordingly. Measured at 128
+        // kbit/s, that handed the coupling channel 291 of the 420 mantissa
+        // bits in a block - more per bin than the baseband it was supposed to
+        // be subsidising - and the frame's coarse SNR offset fell from 27 to
+        // 11. Coupling made the encoder run out of bits SOONER.
+        //
+        // The mean leaves the shared channel at the natural level of one
+        // coupled channel, which is the level the allocator's model expects.
+        // It also has to be one constant for the whole FRAME rather than per
+        // block: coordinates go out in blocks 0, 2 and 4 and are reused in 1,
+        // 3 and 5, so any per-block term in the scale reaches the decoder
+        // multiplied by the wrong block's value.
+        const double scale = static_cast<double>(nfchans);
+        for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
+            cpl.send[static_cast<std::size_t>(blk)] = blk % 2 == 0;
+            auto& shared = coeffs_at(cpl_stream, blk);
+            shared.fill(0.0);
+            for (int bin = cpl.strtmant; bin < cpl.endmant; ++bin) {
+                double sum = 0.0;
+                for (int ch = 0; ch < nfchans; ++ch) {
+                    sum += coeffs_at(ch, blk)[static_cast<std::size_t>(bin)];
+                }
+                shared[static_cast<std::size_t>(bin)] = sum;
+            }
+            for (int ch = 0; ch < nfchans; ++ch) {
+                for (int bnd = 0; bnd < cpl.bands.count; ++bnd) {
+                    const int low = cpl.bands.start[static_cast<std::size_t>(bnd)];
+                    const int high = low + cpl.bands.size[static_cast<std::size_t>(bnd)];
+                    double power_ch = 0.0;
+                    double power_sum = 0.0;
+                    for (int bin = low; bin < high; ++bin) {
+                        const double value =
+                            coeffs_at(ch, blk)[static_cast<std::size_t>(bin)];
+                        const double summed = shared[static_cast<std::size_t>(bin)];
+                        power_ch += value * value;
+                        power_sum += summed * summed;
+                    }
+                    // The decoder computes channel = coupling * coordinate * 8
+                    // and the stored coupling is sum / scale, so the
+                    // coordinate that restores this band's energy is
+                    // sqrt(E_ch / E_sum) * scale / 8.
+                    const double ratio =
+                        power_sum > 0.0 ? std::sqrt(power_ch / power_sum) : 0.0;
+                    values[static_cast<std::size_t>(bnd)] = ratio * scale / 8.0;
+                }
+                const int chosen = coupling::choose_master(values);
+                cpl.master[coord_slot(blk, ch)] = chosen;
+                for (int bnd = 0; bnd < cpl.bands.count; ++bnd) {
+                    cpl.coords[coord_slot(blk, ch) * nbnd + static_cast<std::size_t>(bnd)] =
+                        coupling::quantize_coordinate(values[static_cast<std::size_t>(bnd)],
+                                                      chosen);
+                }
+            }
+            // A block that reuses coordinates must reuse the ones actually
+            // transmitted, or encoder and decoder diverge from block 1 on.
+            if (!cpl.send[static_cast<std::size_t>(blk)]) {
+                for (int ch = 0; ch < nfchans; ++ch) {
+                    cpl.master[coord_slot(blk, ch)] = cpl.master[coord_slot(blk - 1, ch)];
+                    for (std::size_t bnd = 0; bnd < nbnd; ++bnd) {
+                        cpl.coords[coord_slot(blk, ch) * nbnd + bnd] =
+                            cpl.coords[coord_slot(blk - 1, ch) * nbnd + bnd];
+                    }
+                }
+            }
+            for (int bin = cpl.strtmant; bin < cpl.endmant; ++bin) {
+                shared[static_cast<std::size_t>(bin)] /= scale;
+            }
+        }
+    }
+
+    // --- 4. Fixed point -----------------------------------------------------
+    std::vector<std::array<std::int32_t, 256>> fixed(
+        static_cast<std::size_t>(streams) * kBlocksPerFrame);
+    const auto fixed_at = [&](int s, int blk) -> std::array<std::int32_t, 256>& {
+        return fixed[static_cast<std::size_t>(s) * kBlocksPerFrame +
+                     static_cast<std::size_t>(blk)];
+    };
+    for (int s = 0; s < streams; ++s) {
+        for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
+            const auto& source = coeffs_at(s, blk);
+            auto& out = fixed_at(s, blk);
+            for (int bin = stream_start(s); bin < stream_end(s); ++bin) {
+                out[static_cast<std::size_t>(bin)] =
+                    to_fixed25(source[static_cast<std::size_t>(bin)]);
+            }
+        }
+    }
+
+    // --- 5. One frame-constant exponent set per stream ---------------------
     // Table E2.10 code 0 sends D15 in block 0 and reuses it for the other
     // five, so a bin's exponent has to accommodate its LOUDEST block. The
     // smallest exponent across the frame is that bin's worst case; anything
     // larger would overflow the mantissa in the block that peaks.
-    Payload payload;
-    payload.chans.resize(static_cast<std::size_t>(nchans));
-    for (int ch = 0; ch < nchans; ++ch) {
-        auto& plan = payload.chans[static_cast<std::size_t>(ch)];
-        plan.endmant = ch < nfchans ? fbw_endmant : kLfeEndmant;
-        const auto span = static_cast<std::size_t>(plan.endmant);
+    payload.chans.resize(static_cast<std::size_t>(streams));
+    for (int s = 0; s < streams; ++s) {
+        auto& plan = payload.chans[static_cast<std::size_t>(s)];
+        plan.start = stream_start(s);
+        plan.endmant = stream_end(s);
+        const auto span = static_cast<std::size_t>(plan.endmant - plan.start);
 
         std::vector<std::uint8_t> raw(span, kMaxExponent);
         std::vector<std::uint8_t> block_exps(span, 0);
         for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
-            extract_exponents(std::span{fixed_at(ch, blk)}.first(span), block_exps);
+            extract_exponents(
+                std::span{fixed_at(s, blk)}.subspan(static_cast<std::size_t>(plan.start),
+                                                    span),
+                block_exps);
             for (std::size_t bin = 0; bin < span; ++bin) {
                 raw[bin] = std::min(raw[bin], block_exps[bin]);
             }
         }
-        plan.coded = encode_exponents(raw, ExpStrategy::kD15);
-        plan.decoded.assign(span, 0);
-        decode_exponents(plan.coded.absolute, plan.coded.groups, ExpStrategy::kD15,
-                         plan.decoded);
-        plan.bap.assign(span, 0);
+        // Bins below the stream's own start are inert but must still hold a
+        // value the allocator can read; the quietest possible one keeps them
+        // from influencing anything.
+        plan.decoded.assign(static_cast<std::size_t>(plan.endmant), kMaxExponent);
+        if (s == cpl_stream) {
+            plan.cpl_coded = encode_coupling_exponents(raw, ExpStrategy::kD15);
+            decode_coupling_exponents(
+                plan.cpl_coded.cplabsexp, plan.cpl_coded.groups, ExpStrategy::kD15,
+                std::span{plan.decoded}.subspan(static_cast<std::size_t>(plan.start)));
+        } else {
+            plan.coded = encode_exponents(raw, ExpStrategy::kD15);
+            decode_exponents(plan.coded.absolute, plan.coded.groups, ExpStrategy::kD15,
+                             plan.decoded);
+        }
+        plan.bap.assign(static_cast<std::size_t>(plan.endmant), 0);
     }
 
-    // --- 3. SNR-offset search ----------------------------------------------
+    // --- 6. Coupling leak seeds ---------------------------------------------
+    // The coupling channel's allocation starts above the low-frequency region
+    // entirely, so instead of running lowcomp it continues the masking decay
+    // from transmitted leak state. Deriving the seeds from the coupling
+    // channel's own first band starts the allocator at a sensible level.
+    if (cpl.in_use) {
+        const auto& plan = payload.chans[static_cast<std::size_t>(cpl_stream)];
+        const int exp = plan.decoded[static_cast<std::size_t>(cpl.strtmant)];
+        const int psd = 3072 - (exp << 7);
+        cpl.fleak = std::clamp((psd - fast_gain(kBamode0Codes.fgaincod) - 768) >> 8, 0, 7);
+        cpl.sleak = std::clamp((psd - slow_gain(kBamode0Codes.sgaincod) - 768) >> 8, 0, 7);
+    }
+
+    // --- 7. SNR-offset search ----------------------------------------------
     // The side info is offset-independent here (bamode 0, no delta
     // allocation), so it can be measured once and the remainder handed
     // wholly to the mantissas.
@@ -439,16 +753,22 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     const std::uint32_t budget = total_bits - side_bits - kTailBits;
 
     std::vector<std::span<const std::uint8_t>> bap_views(
-        static_cast<std::size_t>(nchans));
+        static_cast<std::size_t>(streams));
     const auto bits_at = [&](int composite) {
-        // Every channel shares one fsnroffst, so the frame-wide
-        // §7.2.2.1.1 condition reduces to the composite being zero.
-        const BitAllocRegion region{.snr_all_zero = composite == 0};
-        for (int ch = 0; ch < nchans; ++ch) {
-            auto& plan = payload.chans[static_cast<std::size_t>(ch)];
+        for (int s = 0; s < streams; ++s) {
+            auto& plan = payload.chans[static_cast<std::size_t>(s)];
+            // Every stream shares one fsnroffst, so the frame-wide
+            // §7.2.2.1.1 condition reduces to the composite being zero.
+            const BitAllocRegion region{.start = plan.start,
+                                        .coupling = s == cpl_stream,
+                                        .cplfleak = cpl.fleak,
+                                        .cplsleak = cpl.sleak,
+                                        .snr_all_zero = composite == 0};
             compute_bit_allocation(plan.decoded, config_.sample_rate, kBamode0Codes,
                                    composite >> 4, composite & 15, plan.bap, region);
-            bap_views[static_cast<std::size_t>(ch)] = plan.bap;
+            // Only the stream's own region carries mantissas.
+            bap_views[static_cast<std::size_t>(s)] =
+                std::span{plan.bap}.subspan(static_cast<std::size_t>(plan.start));
         }
         // Every block reuses the same exponents, hence the same allocation.
         return static_cast<std::uint32_t>(mantissa_bits_per_block(bap_views)) *
@@ -470,20 +790,32 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     payload.csnroffst = lo >> 4;
     payload.fsnroffst = lo & 15;
 
-    // --- 4. Mantissa tokens per block --------------------------------------
+    // --- 8. Mantissa tokens per block --------------------------------------
+    // §E2.2.4 ordering: each fbw channel's mantissas, with the coupling
+    // channel's inserted right after the FIRST coupled channel, then the LFE.
     std::size_t token_bits = 0;
     for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
         MantissaBlockWriter writer;
-        for (int ch = 0; ch < nchans; ++ch) {
-            const auto& plan = payload.chans[static_cast<std::size_t>(ch)];
-            const auto& coeffs = fixed_at(ch, blk);
-            for (int bin = 0; bin < plan.endmant; ++bin) {
+        const auto emit_stream = [&](int s) {
+            const auto& plan = payload.chans[static_cast<std::size_t>(s)];
+            const auto& block = fixed_at(s, blk);
+            for (int bin = plan.start; bin < plan.endmant; ++bin) {
                 const int exp = plan.decoded[static_cast<std::size_t>(bin)];
                 const auto mantissa = static_cast<std::int32_t>(
-                    static_cast<std::int64_t>(coeffs[static_cast<std::size_t>(bin)])
-                    << exp);
+                    static_cast<std::int64_t>(block[static_cast<std::size_t>(bin)]) << exp);
                 writer.add(mantissa, plan.bap[static_cast<std::size_t>(bin)]);
             }
+        };
+        bool emitted_coupling = false;
+        for (int ch = 0; ch < nfchans; ++ch) {
+            emit_stream(ch);
+            if (cpl.in_use && !emitted_coupling) {
+                emit_stream(cpl_stream);
+                emitted_coupling = true;
+            }
+        }
+        if (config_.lfe) {
+            emit_stream(nfchans);
         }
         writer.finish_block();
         token_bits += writer.bit_count();

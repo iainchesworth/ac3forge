@@ -36,11 +36,13 @@ void print_usage() {
     std::println("  ac3cli devices");
     std::println("  ac3cli record  <out.ac3> [seconds] [bitrate_kbps] [device_index]");
     std::println("  ac3cli encode  <in.wav> <out.ac3> [bitrate_kbps] [couple]");
-    std::println("  ac3cli eac3-encode <in.wav> <out.ec3> [bitrate_kbps]");
+    std::println("  ac3cli eac3-encode <in.wav> <out.ec3> [bitrate_kbps] [tools]");
     std::println("  ac3cli decode  <in.ac3> <out.wav>");
     std::println("  ac3cli spdif   <in.ac3> <out.wav>   (IEC 61937 wrap as playable PCM16 WAV)");
     std::println("  ac3cli outputs                      (render endpoints + AC-3 passthrough support)");
     std::println("  ac3cli play    <in.ac3> [device_index]  (exclusive-mode IEC 61937 passthrough)");
+    std::println("");
+    std::println("tools:  Annex E coding tools, '+'-joined — none | cpl | all");
     std::println("");
     std::println("layout: stereo (default) | 51 — 5.1 uses per-channel tones;");
     std::println("        append 'c' (stereoc, 51c) to enable channel coupling");
@@ -372,11 +374,42 @@ int run_eac3_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_
     return 0;
 }
 
+// Which Annex E tools to switch on, as a '+'-joined list ("cpl", "cpl+spx",
+// "all", "none"). Every tool is a trade rather than a free win, so they are
+// selected rather than assumed - and being able to encode the same material
+// with and without one is the only way to say whether it earned its place.
+constexpr std::string_view kEac3Tools = "none | cpl | all";
+
+bool parse_eac3_tools(std::string_view text, ac3::eac3::FrameConfig& config) {
+    if (text.empty() || text == "none") {
+        return true;
+    }
+    while (!text.empty()) {
+        const auto split = text.find('+');
+        const auto token = text.substr(0, split);
+        // "cpl:N" pins the coupling begin frequency code, which is how a
+        // band-edge question gets answered by experiment rather than argument.
+        if (token.starts_with("cpl:")) {
+            config.coupling = true;
+            config.cplbegf = static_cast<int>(parse_u32_or(token.substr(4), 99));
+            if (config.cplbegf > 15) {
+                return false;
+            }
+        } else if (token == "all" || token == "cpl") {
+            config.coupling = true;
+        } else {
+            return false;
+        }
+        text = split == std::string_view::npos ? std::string_view{} : text.substr(split + 1);
+    }
+    return true;
+}
+
 // Real program material through the E-AC-3 path. The tone generators above
 // exercise field placement; only recorded-style material exercises the coding
 // decisions, which is what the Annex E tools are judged on.
 int run_eac3_encode(std::string_view in_path, std::string_view out_path,
-                    std::uint32_t bitrate) {
+                    std::uint32_t bitrate, std::string_view tools) {
     const auto wav = ac3::io::read_wav(std::string{in_path});
     if (!wav) {
         std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(wav.error()));
@@ -418,6 +451,11 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
             return 1;
     }
 
+    if (!parse_eac3_tools(tools, config)) {
+        std::println(stderr, "error: unknown tool set '{}' ({})", tools, kEac3Tools);
+        return 1;
+    }
+
     ac3::eac3::FrameEncoder encoder{config};
     const auto nchans = source.size();
     const std::size_t total = wav->frame_count();
@@ -444,8 +482,9 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
     if (!write_frames(out_path, frames)) {
         return 1;
     }
-    std::println("encoded {} E-AC-3 frames ({} kbps, {} Hz, {} channels) to {}", frames.size(),
-                 bitrate, wav->sample_rate, nchans, out_path);
+    std::println("encoded {} E-AC-3 frames ({} kbps, {} Hz, {} channels, tools: {}) to {}",
+                 frames.size(), bitrate, wav->sample_rate, nchans,
+                 tools.empty() ? "none" : tools, out_path);
     return 0;
 }
 
@@ -935,7 +974,8 @@ int main(int argc, char** argv) {
     }
     if (command == "eac3-encode" && args.size() > 3) {
         return run_eac3_encode(args[2], args[3],
-                               args.size() > 4 ? parse_u32_or(args[4], 192) : 192);
+                               args.size() > 4 ? parse_u32_or(args[4], 192) : 192,
+                               args.size() > 5 ? std::string_view{args[5]} : "none");
     }
     if (command == "eac3-sine") {
         return run_eac3_sine(args[2], args.size() > 3 ? parse_u32_or(args[3], 5) : 5,

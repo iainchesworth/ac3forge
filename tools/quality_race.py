@@ -208,7 +208,7 @@ def race_ac3(original, source, seconds):
 # One column per E-AC-3 variant: the label, and the tool token handed to
 # `ac3cli eac3-encode`. "none" is the tool-free coding path the Annex E tools
 # have to beat to earn their place.
-EAC3_VARIANTS = [("none", None)]
+EAC3_VARIANTS = [("none", None), ("cpl", "cpl")]
 
 
 def race_eac3(original, source, seconds):

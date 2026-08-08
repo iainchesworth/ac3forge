@@ -18,6 +18,23 @@ from bitalloc_ref import bit_alloc  # noqa: E402  (shares the spec's tables)
 BLOCKS = 6
 LFE_ENDMANT = 7
 
+# Table E2.12: the coupling banding structure a decoder assumes when
+# cplbndstrce is 0 in the first coupled block. Note this is NOT "one band per
+# sub-band" - that is the AC-3 reading, and assuming it here computes a
+# different ncplbnd from the decoder.
+DEF_CPL_BNDSTRC = [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 1, 1, 1, 1, 1]
+
+
+def group_bands(first_bin, subbands, bins_per_subband, structure):
+    """Merge sub-bands into bands; returns [(start_bin, size), ...]."""
+    bands = [[first_bin, bins_per_subband]]
+    for sbnd in range(1, subbands):
+        if structure[sbnd]:
+            bands[-1][1] += bins_per_subband
+        else:
+            bands.append([first_bin + sbnd * bins_per_subband, bins_per_subband])
+    return [tuple(b) for b in bands]
+
 # Table E2.10: frmchexpstr / frmcplexpstr code -> the six blocks' strategies,
 # as 0=reuse, 1=D15, 2=D25, 3=D45.
 _E210 = """D15 R R R R R;D15 R R R R D45;D15 R R R D25 R;D15 R R R D45 D45;
@@ -172,14 +189,18 @@ def parse_frame(data, verbose=True):
     spxattene = r.bits(1)
 
     cplinu = [0] * nblks
+    cplstre = [0] * nblks
     if acmod > 1:
+        cplstre[0] = 1               # implied
         cplinu[0] = r.bits(1)
         for blk in range(1, nblks):
-            if r.bits(1):            # cplstre[blk]
+            cplstre[blk] = r.bits(1)
+            if cplstre[blk]:
                 cplinu[blk] = r.bits(1)
             else:
                 cplinu[blk] = cplinu[blk - 1]
 
+    ncplblks = sum(cplinu)
     chexpstr = [[0] * nfchans for _ in range(nblks)]
     cplexpstr = [0] * nblks
     if expstre:
@@ -190,7 +211,6 @@ def parse_frame(data, verbose=True):
                 chexpstr[blk][ch] = r.bits(2)
     else:
         # Table E2.10: one 5-bit code expands to all six blocks' strategies.
-        ncplblks = sum(cplinu)
         if acmod > 1 and ncplblks > 0:
             code = r.bits(5)
             for blk in range(nblks):
@@ -235,11 +255,24 @@ def parse_frame(data, verbose=True):
     endmant = [0] * nfchans
     exps = [None] * nfchans
     lfeexps = None
+    cplexps = None
     codes = dict(sdcycod=2, fdcycod=1, sgaincod=1, dbpbcod=2, floorcod=7)
     fgaincod = [4] * (nfchans + 1)
     csnroffst = 0
     fsnroffst = [0] * (nfchans + 1)
     spxinu = 0
+    chincpl = [0] * nfchans
+    phsflginu = 0
+    cplbnds = []
+    cplbegf = 0
+    cplstrtmant = cplendmant = 0
+    cplbndstrc = list(DEF_CPL_BNDSTRC)
+    # §E2.3.2.28-30: the "first time this frame" states, all set at audfrm's
+    # end. They are what makes block 0 cheaper than AC-3's - cplcoe and
+    # cplleake are implied there rather than transmitted.
+    firstcplcos = [1] * nfchans
+    firstcplleak = 1
+    cplfleak = cplsleak = 0
 
     for blk in range(nblks):
         start = r.pos
@@ -260,19 +293,78 @@ def parse_frame(data, verbose=True):
             spxinu = r.bits(1)
             if spxinu:
                 raise SystemExit('spectral extension not modelled')
+
+        # cplstre[blk] came from audfrm: block 0's is implied 1, the rest
+        # were transmitted there.
+        if cplstre[blk]:
+            if cplinu[blk]:
+                ecplinu = r.bits(1)
+                if ecplinu:
+                    raise SystemExit('enhanced coupling not modelled')
+                if acmod == 2:
+                    chincpl = [1, 1]
+                else:
+                    chincpl = [r.bits(1) for _ in range(nfchans)]
+                if acmod == 2:
+                    phsflginu = r.bits(1)
+                cplbegf = r.bits(4)
+                cplendf = r.bits(4)   # spxinu == 0
+                ncplsubnd = 3 + cplendf - cplbegf
+                cplstrtmant = 37 + 12 * cplbegf
+                cplendmant = 37 + 12 * (cplendf + 3)
+                if r.bits(1):        # cplbndstrce
+                    cplbndstrc = [0] + [r.bits(1) for _ in range(1, ncplsubnd)]
+                cplbnds = group_bands(cplstrtmant, ncplsubnd, 12, cplbndstrc)
+            else:
+                chincpl = [0] * nfchans
+                firstcplcos = [1] * nfchans
+                firstcplleak = 1
+                phsflginu = 0
+
+        cplcoe = [0] * nfchans
         if cplinu[blk]:
-            raise SystemExit('coupling not modelled')
+            for ch in range(nfchans):
+                if not chincpl[ch]:
+                    firstcplcos[ch] = 1
+                    continue
+                if firstcplcos[ch]:
+                    cplcoe[ch] = 1
+                    firstcplcos[ch] = 0
+                else:
+                    cplcoe[ch] = r.bits(1)
+                if cplcoe[ch]:
+                    r.bits(2)        # mstrcplco
+                    for _ in cplbnds:
+                        r.bits(4)    # cplcoexp
+                        r.bits(4)    # cplcomant
+            if acmod == 2 and phsflginu and (cplcoe[0] or cplcoe[1]):
+                for _ in cplbnds:
+                    r.bits(1)        # phsflg
 
         if acmod == 2:
             rematstr = 1 if blk == 0 else r.bits(1)
             if rematstr:
-                for _ in range(4):   # nrematbd == 4 with no coupling or spx
+                for _ in range(nrematbd(cplinu[blk], cplbegf if cplinu[blk] else 0)):
                     r.bits(1)
 
         for ch in range(nfchans):
             if chexpstr[blk][ch] != 0:
-                chbwcod = r.bits(6)
-                endmant[ch] = ((chbwcod + 12) * 3) + 37
+                # §E3.3.3: a coupled channel's coded band stops where coupling
+                # begins, and chbwcod is not sent for it at all.
+                if chincpl[ch]:
+                    endmant[ch] = cplstrtmant
+                else:
+                    chbwcod = r.bits(6)
+                    endmant[ch] = ((chbwcod + 12) * 3) + 37
+        if cplinu[blk] and cplexpstr[blk] != 0:
+            grpsize = (0, 1, 2, 4)[cplexpstr[blk]]
+            ncplgrps = (cplendmant - cplstrtmant) // (3 * grpsize)
+            absexp = r.bits(4)
+            groups = [r.bits(7) for _ in range(ncplgrps)]
+            # cplabsexp is a reference, not a coefficient's exponent, and is
+            # transmitted halved (§7.1.3).
+            cplexps = [24] * cplstrtmant + expand_cpl(absexp * 2, groups, grpsize,
+                                                      cplendmant - cplstrtmant)
         for ch in range(nfchans):
             if chexpstr[blk][ch] != 0:
                 grpsize = (0, 1, 2, 4)[chexpstr[blk][ch]]
@@ -312,6 +404,17 @@ def parse_frame(data, verbose=True):
         if strmtyp == 0:
             if r.bits(1):            # convsnroffste
                 r.bits(10)
+        if cplinu[blk]:
+            # §E2.2.4: firstcplleak makes block 0's cplleake implied, so the
+            # leak seeds are mandatory there and the flag costs nothing.
+            if firstcplleak:
+                cplleake = 1
+                firstcplleak = 0
+            else:
+                cplleake = r.bits(1)
+            if cplleake:
+                cplfleak = r.bits(3)
+                cplsleak = r.bits(3)
         if dbaflde:
             if r.bits(1):            # deltbaie
                 raise SystemExit('delta bit allocation not modelled')
@@ -324,23 +427,40 @@ def parse_frame(data, verbose=True):
         # Mantissas, using the same allocation the decoder computes.
         total_mant_bits = 0
         counts = {1: 0, 2: 0, 4: 0}
-        for ch in list(range(nfchans)) + ([nfchans] if lfeon else []):
-            e = exps[ch] if ch < nfchans else lfeexps
-            end = endmant[ch] if ch < nfchans else LFE_ENDMANT
+        regions = [(exps[ch], 0, endmant[ch], fgaincod[ch], fsnroffst[ch], False)
+                   for ch in range(nfchans)]
+        if cplinu[blk]:
+            # cplfsnroffst and cplfgaincod follow frmfsnroffst / 0x4 exactly as
+            # the fbw channels do under snroffststr 0 and frmfgaincode 0.
+            regions.append((cplexps, cplstrtmant, cplendmant, 4, fsnroffst[0], True))
+        if lfeon:
+            regions.append((lfeexps, 0, LFE_ENDMANT, fgaincod[nfchans],
+                            fsnroffst[nfchans], False))
+        # Per-region subtotals: the grouped baps are only exact frame-wide, so
+        # these are the ungrouped cost and are for apportioning blame, not for
+        # checking the budget.
+        per_region = []
+        for e, begin, end, fgain, fsnr, is_cpl in regions:
             bap = bit_alloc(e[:end], fscod, codes['sdcycod'], codes['fdcycod'],
                             codes['sgaincod'], codes['dbpbcod'], codes['floorcod'],
-                            fgaincod[ch], csnroffst, fsnroffst[ch])
-            for b in bap:
+                            fgain, csnroffst, fsnr, start=begin, coupling=is_cpl,
+                            cplfleak=cplfleak, cplsleak=cplsleak)
+            share = 0
+            for b in bap[begin:]:
                 if b in counts:
                     counts[b] += 1
+                    share += {1: 5 / 3, 2: 7 / 3, 4: 3.5}[b]
                 elif b:
-                    total_mant_bits += (0, 0, 0, 3, 0, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 16)[b]
+                    bits = (0, 0, 0, 3, 0, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 16)[b]
+                    total_mant_bits += bits
+                    share += bits
+            per_region.append(('cpl' if is_cpl else f'{end - begin}bin', round(share)))
         total_mant_bits += 5 * ((counts[1] + 2) // 3)
         total_mant_bits += 7 * ((counts[2] + 2) // 3)
         total_mant_bits += 7 * ((counts[4] + 1) // 2)
         log(f'  blk {blk}: side {side} bits, csnroffst={csnroffst} '
             f'fsnroffst={fsnroffst[0]}, mantissas {total_mant_bits} bits '
-            f'-> ends at {r.pos + total_mant_bits}')
+            f'{per_region} -> ends at {r.pos + total_mant_bits}')
         if r.pos + total_mant_bits > len(r.data) * 8:
             raise SystemExit(
                 f'  OVERRUN: block {blk} wants {total_mant_bits} mantissa bits but only '
@@ -364,6 +484,26 @@ def expand(absexp, groups, grpsize, end):
             prev += d - 2
             out.extend([prev] * grpsize)
     return out[:end] + [24] * max(0, end - len(out))
+
+
+def expand_cpl(absexp, groups, grpsize, count):
+    """Coupling exponents: absexp is a reference, not a coefficient's own."""
+    out = []
+    prev = absexp
+    for g in groups:
+        for d in (g // 25, (g % 25) // 5, (g % 25) % 5):
+            prev += d - 2
+            out.extend([prev] * grpsize)
+    return out[:count] + [24] * max(0, count - len(out))
+
+
+def nrematbd(cplinu, cplbegf):
+    """§7.5.2: rematrixing bands cannot reach above the coupling frequency."""
+    if not cplinu:
+        return 4
+    if cplbegf == 0:
+        return 2
+    return 3 if cplbegf < 3 else 4
 
 
 # Table E2.5 locations that name a PAIR of channels rather than one, so a

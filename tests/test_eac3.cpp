@@ -1,15 +1,19 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <numbers>
 #include <span>
+#include <utility>
 #include <vector>
 
 #include "ac3/core/bitreader.hpp"
 #include "ac3/core/crc16.hpp"
 #include "ac3/encoder/eac3_frame.hpp"
+#include "ac3/encoder/eac3_tools.hpp"
 
 namespace {
 
@@ -88,10 +92,11 @@ namespace {
 
 // The frame SNR offsets, read straight out of a stereo frame: sync(16) +
 // bsi(38) + the eleven audfrm flags(12) + cplinu/cplstre(6, acmod > 1) +
-// frmchexpstr(2x5) + convexpstr(2x5) lands exactly on frmcsnroffst.
-int frame_snr_offset(std::span<const std::byte> frame) {
+// frmcplexpstr(5, only when some block couples) + frmchexpstr(2x5) +
+// convexpstr(2x5) lands exactly on frmcsnroffst.
+int frame_snr_offset(std::span<const std::byte> frame, bool coupled = false) {
     ac3::BitReader reader{frame};
-    reader.skip(16 + 38 + 12 + 6 + 10 + 10);
+    reader.skip(16 + 38 + 12 + 6 + (coupled ? 5 : 0) + 10 + 10);
     const auto csnroffst = reader.read(6);
     const auto fsnroffst = reader.read(4);
     return static_cast<int>((csnroffst << 4) | fsnroffst);
@@ -110,6 +115,55 @@ std::vector<std::vector<float>> tone_frame(int channels, std::uint64_t start) {
         }
     }
     return pcm;
+}
+
+// Program-like material with energy right across the spectrum and a DIFFERENT
+// balance per channel. A pure tone would make coupling a no-op - there is
+// nothing above the coupling frequency to share - and identical channels
+// would make every coupling coordinate the same, so neither could tell a
+// working coupling implementation from a broken one.
+std::vector<std::vector<float>> wideband_frame(int channels, std::uint64_t start) {
+    constexpr std::array<double, 5> kTones = {310.0, 1450.0, 5200.0, 9700.0, 15100.0};
+    std::vector<std::vector<float>> pcm(
+        static_cast<std::size_t>(channels),
+        std::vector<float>(static_cast<std::size_t>(ac3::kSamplesPerFrame)));
+    for (std::size_t ch = 0; ch < pcm.size(); ++ch) {
+        for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+            const auto n = static_cast<double>(start + static_cast<std::uint64_t>(i));
+            double value = 0.0;
+            for (std::size_t t = 0; t < kTones.size(); ++t) {
+                // Each channel weights the tones differently, so the coupling
+                // coordinates genuinely differ band to band and channel to
+                // channel.
+                const double gain = 0.18 / (1.0 + static_cast<double>((t + ch) % 4));
+                value += gain * std::sin(2.0 * std::numbers::pi * kTones[t] *
+                                         (1.0 + 0.01 * static_cast<double>(ch)) * n / 48000.0);
+            }
+            pcm[ch][static_cast<std::size_t>(i)] = static_cast<float>(value);
+        }
+    }
+    return pcm;
+}
+
+// Encode `count` frames and return the last one, so the MDCT history is real
+// rather than the half-empty window the first frame sees.
+std::vector<std::byte> steady_state_frame(const ac3::eac3::FrameConfig& config, int channels,
+                                          int count = 3) {
+    ac3::eac3::FrameEncoder encoder{config};
+    std::vector<std::byte> last;
+    std::uint64_t n = 0;
+    for (int f = 0; f < count; ++f) {
+        auto pcm = wideband_frame(channels, n);
+        n += ac3::kSamplesPerFrame;
+        std::vector<std::span<const float>> views;
+        for (const auto& channel : pcm) {
+            views.emplace_back(channel);
+        }
+        auto frame = encoder.encode_frame(views);
+        REQUIRE(frame.has_value());
+        last = std::move(*frame);
+    }
+    return last;
 }
 
 }  // namespace
@@ -174,6 +228,153 @@ TEST_CASE("E-AC-3 real audio fills the frame it claims", "[eac3]") {
             }
         }
     }
+}
+
+TEST_CASE("coupling sub-bands group into bands", "[eac3][coupling]") {
+    using ac3::eac3::group_bands;
+    // Nothing merged: one band per sub-band, each 12 bins wide.
+    const std::array<bool, 18> none{};
+    const auto flat = group_bands(37, 18, 12, std::span{none});
+    CHECK(flat.count == 18);
+    CHECK(flat.start[0] == 37);
+    CHECK(flat.start[17] == 37 + 17 * 12);
+    CHECK(flat.size[17] == 12);
+
+    // Table E2.12's default: eight ones among the eighteen entries, and entry
+    // 0 is never consulted because the first sub-band always opens a band.
+    const auto& def = ac3::eac3::kDefaultCplBandStructure;
+    const auto merged = group_bands(37, 18, 12, std::span{def});
+    const auto ones = static_cast<int>(std::count(def.begin() + 1, def.end(), true));
+    CHECK(merged.count == 18 - ones);
+    // §5.4.3.13's own formula for ncplbnd, independently.
+    CHECK(merged.count == 10);
+    // Bands tile the region exactly, with no gaps and no overlap.
+    int bin = 37;
+    for (int b = 0; b < merged.count; ++b) {
+        CHECK(merged.start[static_cast<std::size_t>(b)] == bin);
+        bin += merged.size[static_cast<std::size_t>(b)];
+    }
+    CHECK(bin == 37 + 18 * 12);
+}
+
+TEST_CASE("E-AC-3 coupling places its fields where Annex E puts them",
+          "[eac3][coupling]") {
+    // Walking the frame back out is the only way to pin field PLACEMENT: a
+    // frame whose fields are one bit adrift still has the right size and a
+    // valid crc2, and still "decodes" - into noise.
+    const auto frame = steady_state_frame(
+        {.bitrate_kbps = 192, .coupling = true, .cplbegf = 4}, 2);
+    ac3::BitReader reader{frame};
+    reader.skip(16 + 38);  // syncword + bsi (stereo, independent, no chanmap)
+    reader.skip(12);       // expstre..spxattene (snroffststr is 2 bits)
+    CHECK(reader.read(1) == 1);  // cplinu[0]; cplstre[0] is implied 1
+    for (int blk = 1; blk < ac3::kBlocksPerFrame; ++blk) {
+        CHECK(reader.read(1) == 0);  // cplstre[blk]: strategy set once a frame
+    }
+    // frmcplexpstr precedes the per-channel codes and only exists because
+    // some block couples. Omitting it would shift the SNR offsets by 5 bits.
+    CHECK(reader.read(5) == 0);  // frmcplexpstr: Table E2.10 row 0
+    CHECK(reader.read(5) == 0);  // frmchexpstr[0]
+    CHECK(reader.read(5) == 0);  // frmchexpstr[1]
+    reader.skip(10);             // convexpstr[0..1]
+    reader.skip(10);             // frmcsnroffst + frmfsnroffst
+    CHECK(reader.read(1) == 0);  // blkstrtinfoe
+
+    // audblk 0.
+    reader.skip(2);              // dithflag[0..1]
+    CHECK(reader.read(1) == 0);  // dynrnge
+    CHECK(reader.read(1) == 0);  // spxinu (spxstre implied in block 0)
+    CHECK(reader.read(1) == 0);  // ecplinu: standard coupling
+    // chincpl is NOT transmitted in 2/0 - both channels couple by definition -
+    // so phsflginu comes next.
+    CHECK(reader.read(1) == 0);  // phsflginu
+    CHECK(reader.read(4) == 4);  // cplbegf
+    CHECK(reader.read(4) == 15); // cplendf: coupling runs to the top
+    CHECK(reader.read(1) == 1);  // cplbndstrce: structure sent, not defaulted
+    const int nsubnd = 3 + 15 - 4;
+    int bands = 1;
+    for (int sbnd = 1; sbnd < nsubnd; ++sbnd) {
+        bands += reader.read(1) == 0 ? 1 : 0;
+    }
+    // Block 0's cplcoe is implied by firstcplcos, so coordinates follow with
+    // no flag of their own - a bit AC-3 spends here and Annex E does not.
+    for (int ch = 0; ch < 2; ++ch) {
+        reader.skip(2);  // mstrcplco
+        for (int bnd = 0; bnd < bands; ++bnd) {
+            reader.skip(8);  // cplcoexp + cplcomant
+        }
+    }
+    // cplbegf 4 is above 2, so all four rematrixing bands survive (§7.5.2.2).
+    for (int bnd = 0; bnd < 4; ++bnd) {
+        CHECK(reader.read(1) == 0);  // rematflg
+    }
+    // chbwcod is absent for a coupled channel, so the coupling channel's
+    // exponents come next: cplabsexp then ncplgrps groups of 7.
+    reader.skip(4 + (15 - 4 + 3) * 12 / 3 * 7);
+    // Landing exactly on the first fbw channel's exponents is the assertion:
+    // its absolute exponent is 4 bits and cannot exceed 15.
+    CHECK(reader.read(4) <= 15);
+}
+
+TEST_CASE("coupling must not cost more bits than the channels it replaces",
+          "[eac3][coupling]") {
+    // Coupling replaces two channels' high bands with one shared channel, so
+    // the frame should be able to afford a HIGHER SNR offset, not a lower one.
+    //
+    // The way to get this backwards is to scale the shared channel up - to
+    // normalise it per band, or to the region peak - which makes the
+    // coordinates comfortably small but hands the allocator a channel that
+    // reads as full scale. psd is absolute, so the allocator then buys the
+    // coupling channel more bits per bin than the baseband it was meant to be
+    // subsidising, and the offset collapses: measured at 128 kbit/s, from 27
+    // coarse steps to 11. The frame still decodes, and still passes every
+    // size and CRC check, which is exactly why this needs its own test.
+    for (const std::uint32_t kbps : {128u, 192u}) {
+        CAPTURE(kbps);
+        const auto plain = steady_state_frame({.bitrate_kbps = kbps}, 2);
+        const auto coupled =
+            steady_state_frame({.bitrate_kbps = kbps, .coupling = true}, 2);
+        const int plain_offset = frame_snr_offset(plain);
+        const int coupled_offset = frame_snr_offset(coupled, true);
+        CAPTURE(plain_offset, coupled_offset);
+        CHECK(coupled_offset >= plain_offset);
+    }
+}
+
+TEST_CASE("E-AC-3 coupling fills the frame it claims", "[eac3][coupling]") {
+    using ac3::Acmod;
+    for (const auto acmod : {Acmod::k2_0, Acmod::k3_2}) {
+        for (const std::uint32_t kbps : {128u, 192u, 448u}) {
+            const int channels = ac3::fullbw_channel_count(acmod) + 1;
+            CAPTURE(static_cast<int>(acmod), kbps);
+            const auto frame = steady_state_frame(
+                {.bitrate_kbps = kbps, .acmod = acmod, .lfe = true, .coupling = true},
+                channels);
+            CHECK(frame.size() == ac3::eac3::frame_words(ac3::SampleRate::k48000, kbps) * 2);
+            CHECK(ac3::crc16(std::span{frame}.subspan(2)) == 0x0000);
+            CHECK(frame_snr_offset(frame, true) < 1023);
+        }
+    }
+}
+
+TEST_CASE("coupling is refused where Annex E has no syntax for it",
+          "[eac3][coupling]") {
+    // §E2.2.3 gates the whole coupling element on acmod > 0x1, so a mono
+    // substream has nowhere to put cplinu. Asking for it must produce a frame
+    // WITHOUT coupling rather than a frame with a field the syntax cannot
+    // express - which a decoder would read as part of the next element.
+    const auto frame = steady_state_frame(
+        {.bitrate_kbps = 192, .acmod = ac3::Acmod::k1_0, .coupling = true}, 1);
+    CHECK(frame.size() == ac3::eac3::frame_words(ac3::SampleRate::k48000, 192) * 2);
+    CHECK(ac3::crc16(std::span{frame}.subspan(2)) == 0x0000);
+    ac3::BitReader reader{frame};
+    // Mono bsi is 38 bits as for stereo; the audfrm flags follow, and with
+    // acmod 0x1 the next field is frmchexpstr, NOT cplinu.
+    reader.skip(16 + 38 + 12);
+    CHECK(reader.read(5) == 0);  // frmchexpstr[0]
+    reader.skip(5);              // convexpstr[0]
+    reader.skip(10);             // frmcsnroffst + frmfsnroffst
+    CHECK(reader.read(1) == 0);  // blkstrtinfoe
 }
 
 TEST_CASE("E-AC-3 encodes every supported layout", "[eac3]") {
