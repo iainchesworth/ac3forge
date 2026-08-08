@@ -5,6 +5,7 @@
 #include <cassert>
 #include <cstdlib>
 
+#include "ac3/core/aht_tables.hpp"
 #include "ac3/core/bitalloc_tables.hpp"
 
 namespace ac3 {
@@ -211,7 +212,10 @@ void compute_bit_allocation(std::span<const std::uint8_t> exps, SampleRate sampl
             for (int k = i; k < lastbin; ++k) {
                 int address = (psd[static_cast<std::size_t>(i)] - m) >> 5;
                 address = std::min(63, std::max(0, address));
-                bap[static_cast<std::size_t>(i)] = kBapTab[static_cast<std::size_t>(address)];
+                bap[static_cast<std::size_t>(i)] =
+                    region.high_efficiency
+                        ? kHeBapTab[static_cast<std::size_t>(address)]
+                        : kBapTab[static_cast<std::size_t>(address)];
                 ++i;
             }
             ++j;

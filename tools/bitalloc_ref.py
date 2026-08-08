@@ -44,14 +44,35 @@ def calc_lowcomp(a, b0, b1, bin_):
     return a
 
 
+# Table E3.1, hebaptab: the same address, 20 outcomes instead of 16.
+HEBAPTAB = [0, 1, 2, 3, 4, 5, 6, 7, 8, 8, 8, 8, 9, 9, 9, 10,
+            10, 10, 10, 11, 11, 11, 11, 12, 12, 12, 12, 13, 13, 13, 13, 14,
+            14, 14, 14, 15, 15, 15, 15, 16, 16, 16, 16, 17, 17, 17, 17, 18,
+            18, 18, 18, 18, 18, 18, 18, 19, 19, 19, 19, 19, 19, 19, 19, 19]
+
+# Table E3.2: bits per AHT bin FOR THE WHOLE FRAME - a VQ index covering six
+# blocks below hebap 8, six scalar mantissas at and above it.
+_AHT_VQ_BITS = [0, 2, 3, 4, 5, 7, 8, 9]
+_AHT_MANT_BITS = [0, 0, 0, 0, 0, 0, 0, 0, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 16]
+
+
+def aht_bin_bits(hebap):
+    if hebap <= 0:
+        return 0
+    if hebap <= 7:
+        return _AHT_VQ_BITS[hebap]
+    return 6 * _AHT_MANT_BITS[hebap]
+
+
 def bit_alloc(exps, fscod, sdcycod, fdcycod, sgaincod, dbpbcod, floorcod,
               fgaincod, csnroffst, fsnroffst, start=0, coupling=False,
-              cplfleak=0, cplsleak=0):
+              cplfleak=0, cplsleak=0, high_efficiency=False):
     """§7.2.2.1 through §7.2.2.7 for one channel.
 
     start/coupling select the two shapes: fbw and LFE channels start at bin 0
     and run the lowcomp path; the coupling channel starts at cplstrtmant and
-    seeds its leak state from cplfleak/cplsleak instead.
+    seeds its leak state from cplfleak/cplsleak instead. high_efficiency picks
+    §E3.4.3.1's hebaptab, which is the only change AHT makes to the routine.
     """
     end = len(exps)
     # 7.2.2.1.1: the all-zero-SNR mute spans EVERY channel's offsets. These
@@ -161,7 +182,7 @@ def bit_alloc(exps, fscod, sdcycod, fdcycod, sgaincod, dbpbcod, floorcod,
         for _ in range(i, lastbin):
             address = (psd[i] - m) >> 5
             address = min(63, max(0, address))
-            bap[i] = T["baptab"][address]
+            bap[i] = HEBAPTAB[address] if high_efficiency else T["baptab"][address]
             i += 1
         j += 1
         if end <= lastbin:

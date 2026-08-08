@@ -49,6 +49,13 @@ struct MantissaToken {
 class MantissaBlockWriter {
 public:
     void add(std::int32_t mantissa, int bap);
+    // A pre-formed codeword of a known width, placed in sequence with the
+    // rest. The adaptive hybrid transform needs this: its codewords are VQ
+    // indices and gain-adaptive mantissas rather than bap-quantized values,
+    // and they carry no grouping - but they sit in the same block's mantissa
+    // stream as ordinary channels' grouped ones, so they have to go through
+    // the same writer to keep the ordering and the group backfill straight.
+    void add_raw(std::uint32_t value, int bits);
     void finish_block();
     [[nodiscard]] std::size_t bit_count() const { return bit_count_; }
     [[nodiscard]] const std::vector<MantissaToken>& tokens() const { return tokens_; }

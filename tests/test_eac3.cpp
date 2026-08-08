@@ -377,6 +377,126 @@ TEST_CASE("coupling is refused where Annex E has no syntax for it",
     CHECK(reader.read(1) == 0);  // blkstrtinfoe
 }
 
+TEST_CASE("the AHT transform pair round-trips", "[eac3][aht]") {
+    using ac3::eac3::aht_forward;
+    using ac3::eac3::aht_inverse;
+    // The forward direction is not in the standard - only the decoder's
+    // inverse is - so it is derived, and a derivation that is self-consistent
+    // but wrong is exactly the failure mode to guard against. Both a
+    // stationary bin and an alternating one, since the interesting weight
+    // (R_0) only shows up when the six blocks have a non-zero mean.
+    for (const auto& blocks : {std::array<double, 6>{0.6, 0.61, 0.59, 0.6, 0.62, 0.58},
+                               std::array<double, 6>{0.5, -0.5, 0.5, -0.5, 0.5, -0.5},
+                               std::array<double, 6>{0.9, 0.0, 0.0, 0.0, 0.0, 0.0}}) {
+        std::array<double, 6> coefficients{};
+        std::array<double, 6> back{};
+        aht_forward(blocks, coefficients);
+        aht_inverse(coefficients, back);
+        for (std::size_t m = 0; m < 6; ++m) {
+            CAPTURE(m, blocks[m], back[m]);
+            CHECK(std::abs(back[m] - blocks[m]) < 1e-12);
+        }
+        // Nothing may leave the range a mantissa can hold, whatever the six
+        // blocks do inside it.
+        for (const double value : coefficients) {
+            CHECK(std::abs(value) < 1.0);
+        }
+    }
+    // A constant bin is the whole point: six equal coefficients have to
+    // collapse into the first one and nothing else.
+    const std::array<double, 6> flat{0.5, 0.5, 0.5, 0.5, 0.5, 0.5};
+    std::array<double, 6> concentrated{};
+    aht_forward(flat, concentrated);
+    CHECK(std::abs(concentrated[0] - 0.5) < 1e-12);
+    for (std::size_t j = 1; j < 6; ++j) {
+        CAPTURE(j);
+        CHECK(std::abs(concentrated[j]) < 1e-12);
+    }
+}
+
+TEST_CASE("the AHT synthesis basis is orthogonal with equal norms",
+          "[eac3][aht]") {
+    using ac3::eac3::aht_inverse;
+    // This is the test that has to exist, because round-tripping cannot catch
+    // the mistake worth catching. §E3.4.5's weights are printed with radical
+    // signs that a text extraction of the PDF drops, and reading them as 2
+    // and 1/2 instead of sqrt(2) and 1/sqrt(2) still gives a valid, exactly
+    // invertible transform - it just weights j = 0 differently from the rest,
+    // so an AHT channel comes back 3 dB quiet in every coefficient except the
+    // ones whose phase repeats block to block.
+    //
+    // What separates the two readings is a property, not a round trip: the
+    // basis columns all have the same norm. Under the misreading j = 0 has
+    // norm-squared 6 and the others 12.
+    std::array<std::array<double, 6>, 6> basis{};
+    for (std::size_t j = 0; j < 6; ++j) {
+        std::array<double, 6> unit{};
+        unit[j] = 1.0;
+        aht_inverse(unit, basis[j]);
+    }
+    for (std::size_t j = 0; j < 6; ++j) {
+        double norm = 0.0;
+        for (const double value : basis[j]) {
+            norm += value * value;
+        }
+        CAPTURE(j, norm);
+        CHECK(std::abs(norm - 6.0) < 1e-9);
+        for (std::size_t k = j + 1; k < 6; ++k) {
+            double dot = 0.0;
+            for (std::size_t m = 0; m < 6; ++m) {
+                dot += basis[j][m] * basis[k][m];
+            }
+            CAPTURE(k, dot);
+            CHECK(std::abs(dot) < 1e-9);
+        }
+    }
+}
+
+TEST_CASE("AHT hands whole frames to block 0 and fills the frame", "[eac3][aht]") {
+    using ac3::Acmod;
+    // 5.1 below 192 kbit/s cannot fit its own exponent sets, whatever the
+    // tools do, so it is not a case about AHT.
+    for (const auto& [acmod, rates] :
+         std::array<std::pair<Acmod, std::array<std::uint32_t, 3>>, 2>{
+             {{Acmod::k2_0, {96u, 192u, 448u}}, {Acmod::k3_2, {192u, 384u, 448u}}}}) {
+        for (const std::uint32_t kbps : rates) {
+            const int channels = ac3::fullbw_channel_count(acmod) + 1;
+            CAPTURE(static_cast<int>(acmod), kbps);
+            const auto frame = steady_state_frame(
+                {.bitrate_kbps = kbps, .acmod = acmod, .lfe = true, .aht = true},
+                channels);
+            CHECK(frame.size() == ac3::eac3::frame_words(ac3::SampleRate::k48000, kbps) * 2);
+            CHECK(ac3::crc16(std::span{frame}.subspan(2)) == 0x0000);
+            // ahte sits second in audfrm, right after expstre. The wideband
+            // test material is stationary, so it must actually be on - a
+            // frame that quietly declined the transform would pass every
+            // other check here while testing nothing.
+            ac3::BitReader reader{frame};
+            reader.skip(16 + 38 + 1);
+            CHECK(reader.read(1) == 1);  // ahte
+        }
+    }
+}
+
+TEST_CASE("all three E-AC-3 tools stack", "[eac3][aht][spx][coupling]") {
+    using ac3::Acmod;
+    for (const auto acmod : {Acmod::k2_0, Acmod::k3_2}) {
+        for (const std::uint32_t kbps : {128u, 448u}) {
+            const int channels = ac3::fullbw_channel_count(acmod) + 1;
+            CAPTURE(static_cast<int>(acmod), kbps);
+            const auto frame = steady_state_frame({.bitrate_kbps = kbps,
+                                                   .acmod = acmod,
+                                                   .lfe = true,
+                                                   .coupling = true,
+                                                   .spx = true,
+                                                   .aht = true},
+                                                  channels);
+            CHECK(frame.size() == ac3::eac3::frame_words(ac3::SampleRate::k48000, kbps) * 2);
+            CHECK(ac3::crc16(std::span{frame}.subspan(2)) == 0x0000);
+        }
+    }
+}
+
 TEST_CASE("coupling and spectral extension partition the spectrum", "[eac3][spx]") {
     using namespace ac3::eac3;
     // The failure this guards against does not look like a failure. If the

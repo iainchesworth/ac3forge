@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from bitalloc_ref import bit_alloc  # noqa: E402  (shares the spec's tables)
+from bitalloc_ref import aht_bin_bits, bit_alloc  # noqa: E402  (the spec's tables)
 
 BLOCKS = 6
 LFE_ENDMANT = 7
@@ -237,8 +237,24 @@ def parse_frame(data, verbose=True):
         if convexpstre:
             for _ in range(nfchans):
                 r.bits(5)            # convexpstr
+    cplahtinu = chahtinu = lfeahtinu = 0
+    chahtinu = [0] * nfchans
     if ahte:
-        raise SystemExit('AHT not modelled')
+        # §E2.2.3: each flag exists only where that channel's exponents are
+        # transmitted exactly once in the frame, since AHT spans the frame and
+        # cannot straddle a change of exponent set.
+        ncplregs = sum(1 for blk in range(nblks)
+                       if cplstre[blk] or cplexpstr[blk] != 0)
+        if ncplblks == nblks and ncplregs == 1:
+            cplahtinu = r.bits(1)
+        for ch in range(nfchans):
+            nchregs = sum(1 for blk in range(nblks) if chexpstr[blk][ch] != 0)
+            if nchregs == 1:
+                chahtinu[ch] = r.bits(1)
+        if lfeon:
+            nlferegs = sum(1 for blk in range(nblks) if lfeexpstr[blk] != 0)
+            if nlferegs == 1:
+                lfeahtinu = r.bits(1)
     frmcsnroffst = frmfsnroffst = 0
     if snroffststr == 0:
         frmcsnroffst = r.bits(6)
@@ -480,24 +496,36 @@ def parse_frame(data, verbose=True):
         # Mantissas, using the same allocation the decoder computes.
         total_mant_bits = 0
         counts = {1: 0, 2: 0, 4: 0}
-        regions = [(exps[ch], 0, endmant[ch], fgaincod[ch], fsnroffst[ch], False)
-                   for ch in range(nfchans)]
+        regions = [(exps[ch], 0, endmant[ch], fgaincod[ch], fsnroffst[ch], False,
+                    chahtinu[ch]) for ch in range(nfchans)]
         if cplinu[blk]:
             # cplfsnroffst and cplfgaincod follow frmfsnroffst / 0x4 exactly as
             # the fbw channels do under snroffststr 0 and frmfgaincode 0.
-            regions.append((cplexps, cplstrtmant, cplendmant, 4, fsnroffst[0], True))
+            regions.append((cplexps, cplstrtmant, cplendmant, 4, fsnroffst[0], True,
+                            cplahtinu))
         if lfeon:
             regions.append((lfeexps, 0, LFE_ENDMANT, fgaincod[nfchans],
-                            fsnroffst[nfchans], False))
+                            fsnroffst[nfchans], False, lfeahtinu))
         # Per-region subtotals: the grouped baps are only exact frame-wide, so
         # these are the ungrouped cost and are for apportioning blame, not for
         # checking the budget.
         per_region = []
-        for e, begin, end, fgain, fsnr, is_cpl in regions:
+        for e, begin, end, fgain, fsnr, is_cpl, aht in regions:
             bap = bit_alloc(e[:end], fscod, codes['sdcycod'], codes['fdcycod'],
                             codes['sgaincod'], codes['dbpbcod'], codes['floorcod'],
                             fgain, csnroffst, fsnr, start=begin, coupling=is_cpl,
-                            cplfleak=cplfleak, cplsleak=cplsleak)
+                            cplfleak=cplfleak, cplsleak=cplsleak, high_efficiency=aht)
+            if aht:
+                # §E2.2.4: an AHT region's whole frame of mantissas is read in
+                # block 0 and nothing is read for it afterwards. gaqmod is
+                # 2 bits at the head of it.
+                if blk != 0:
+                    per_region.append(('aht-', 0))
+                    continue
+                share = 2 + sum(aht_bin_bits(b) for b in bap[begin:])
+                total_mant_bits += share
+                per_region.append((f'aht{end - begin}', share))
+                continue
             share = 0
             for b in bap[begin:]:
                 if b in counts:

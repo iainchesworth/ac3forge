@@ -163,6 +163,17 @@ struct FrameConfig {
     // it would leave the coupling region empty, and coupling is dropped
     // outright if there is no room for it at all.
     int spxbegf = -1;
+
+    // Adaptive hybrid transform (§E3.4). A second transform stage - a 6-point
+    // DCT down each spectral bin across the frame's six blocks - which for
+    // stationary material collapses six coefficients into essentially one.
+    // It brings a finer allocation table and vector quantisation with it, and
+    // it restructures the frame: an AHT channel's whole frame of mantissas is
+    // packed into block 0 and the other five carry nothing for it.
+    //
+    // It is not free for material that moves between blocks, so it is decided
+    // per channel per frame; setting this permits it rather than forces it.
+    bool aht = false;
 };
 
 // Words per syncframe at a given rate. E-AC-3 signals the size directly, so

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <span>
 
@@ -18,6 +19,9 @@ namespace ac3::eac3 {
 // The widest sub-band count any of the tools reaches: enhanced coupling's 22
 // (§E3.5.2). Standard coupling has 18 and spectral extension 17.
 inline constexpr int kMaxSubBands = 22;
+
+// The adaptive hybrid transform's length: one coefficient per audio block.
+inline constexpr std::size_t kBlocksPerFrameSize = 6;
 
 struct BandLayout {
     int count = 0;                                // bands
@@ -102,5 +106,46 @@ inline constexpr std::array<bool, kSpxSubBands> kDefaultSpxBandStructure = {
     false, false, false, false, false, false, false, false, true,
     false, true,  false, true,  false, true,  false, true,
 };
+
+// --- adaptive hybrid transform (§E3.4) -------------------------------------
+// A second transform stage, cascaded after the MDCT: a 6-point DCT-II taken
+// down each spectral bin across the frame's six blocks. For material that is
+// not changing between blocks it concentrates six coefficients into
+// essentially one, which is where the coding gain comes from - and for
+// material that IS changing it spreads them over all six and costs, which is
+// why it is a decision the encoder makes per channel per frame.
+
+// §E3.4.5, inverted. The standard gives the decoder's transform,
+//   C(k,m) = 2 * sum_j R_j X(k,j) cos(j(2m+1)pi/12),  R_0 = 1/sqrt(2)
+// whose basis vectors are orthogonal with norm 12, so the forward direction
+// is the same sum scaled by 1/6 (and a further 1/sqrt(2) at j = 0).
+// `blocks` are the six normalised MDCT coefficients of one bin; `out` takes
+// the six AHT coefficients.
+void aht_forward(std::span<const double, kBlocksPerFrameSize> blocks,
+                 std::span<double, kBlocksPerFrameSize> out);
+
+// The decoder's direction, so the encoder can see what it will reconstruct.
+void aht_inverse(std::span<const double, kBlocksPerFrameSize> coefficients,
+                 std::span<double, kBlocksPerFrameSize> out);
+
+// Table E3.2: mantissa bits per coefficient for the scalar hebap range 8-19.
+// Outside it the answer is not a per-coefficient width at all - hebap 0 codes
+// nothing and 1-7 code all six coefficients as one VQ index - so those return
+// zero and the caller must handle them.
+[[nodiscard]] constexpr int aht_mantissa_bits(int hebap) {
+    constexpr std::array<int, 20> kBits = {0, 0, 0, 0, 0, 0, 0, 0, 3,  4,
+                                           5, 6, 7, 8, 9, 10, 11, 12, 14, 16};
+    return hebap >= 0 && hebap < 20 ? kBits[static_cast<std::size_t>(hebap)] : 0;
+}
+
+// Bits one bin costs for the WHOLE frame under AHT: one VQ index in the
+// vector range, six scalar mantissas above it.
+[[nodiscard]] int aht_bin_bits(int hebap);
+
+// Nearest codebook entry for a bin's six coefficients, by Euclidean distance
+// (§E3.4.4.1). hebap must be in 1..7. Writes the reconstruction the decoder
+// will use back into `values`.
+[[nodiscard]] int aht_vector_quantize(std::span<double, kBlocksPerFrameSize> values,
+                                      int hebap);
 
 }  // namespace ac3::eac3

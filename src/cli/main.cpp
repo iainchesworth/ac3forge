@@ -42,7 +42,7 @@ void print_usage() {
     std::println("  ac3cli outputs                      (render endpoints + AC-3 passthrough support)");
     std::println("  ac3cli play    <in.ac3> [device_index]  (exclusive-mode IEC 61937 passthrough)");
     std::println("");
-    std::println("tools:  Annex E coding tools, '+'-joined — none | cpl | spx | all;");
+    std::println("tools:  Annex E coding tools, '+'-joined — none | cpl | spx | aht | all;");
     std::println("        cpl:N / spx:N pin that tool's band edge (e.g. cpl:4+spx:5)");
     std::println("");
     std::println("layout: stereo (default) | 51 — 5.1 uses per-channel tones;");
@@ -379,7 +379,8 @@ int run_eac3_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_
 // "all", "none"). Every tool is a trade rather than a free win, so they are
 // selected rather than assumed - and being able to encode the same material
 // with and without one is the only way to say whether it earned its place.
-constexpr std::string_view kEac3Tools = "none | cpl | spx | all (cpl:N / spx:N pin the band edge)";
+constexpr std::string_view kEac3Tools =
+    "none | cpl | spx | aht | all (cpl:N / spx:N pin the band edge)";
 
 bool parse_eac3_tools(std::string_view text, ac3::eac3::FrameConfig& config) {
     if (text.empty() || text == "none") {
@@ -406,9 +407,12 @@ bool parse_eac3_tools(std::string_view text, ac3::eac3::FrameConfig& config) {
             config.coupling = true;
         } else if (token == "spx") {
             config.spx = true;
+        } else if (token == "aht") {
+            config.aht = true;
         } else if (token == "all") {
             config.coupling = true;
             config.spx = true;
+            config.aht = true;
         } else {
             return false;
         }

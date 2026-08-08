@@ -30,7 +30,10 @@ namespace {
 // reuse for the rest", which is the strategy this profile wanted anyway.
 constexpr int kExpstre = 0;
 constexpr int kFrmExpStrategyCode = 0;  // Table E2.10 row 0: D15 R R R R R
-constexpr int kAhte = 0;           // no adaptive hybrid transform
+// How far the six blocks' energies may spread before a channel is judged too
+// transient for the adaptive hybrid transform. An order of magnitude: below
+// that the DCT concentrates, above it the loud block smears across all six.
+constexpr double kAhtStationaryRatio = 10.0;
 constexpr int kSnroffststr = 0;    // one SNR offset pair for the whole frame
 constexpr int kTransproce = 0;     // no transient pre-noise processing
 constexpr int kBlkswe = 0;         // long blocks only, so no per-block flags
@@ -79,7 +82,15 @@ struct ChannelPlan {
     // Both are indexed from bin 0 even when the stream starts higher, because
     // that is what the allocator wants; the bins below `start` are inert.
     std::vector<std::uint8_t> decoded;  // decoder-mirror exponents
+    // bap for an ordinary stream; hebap (0..19, §E3.4.3.1) for an AHT one.
     std::vector<std::uint8_t> bap;
+    // §E3.4: when set, this stream's six blocks are transformed together and
+    // its whole frame of mantissas is emitted in block 0. The transform
+    // output IS the mantissa, so the exponents are derived from it rather
+    // than from the MDCT coefficients - see the note where they are built.
+    bool aht = false;
+    std::vector<std::array<std::int32_t, kBlocksPerFrameSize>> aht_fixed;  // [bin][j]
+    std::vector<std::array<double, kBlocksPerFrameSize>> aht_coeffs;  // reconstruction
 };
 
 // Everything the coupling tool contributes to a frame. Annex E hoists
@@ -130,11 +141,29 @@ struct SpxPlan {
 struct Payload {
     int csnroffst = 0;
     int fsnroffst = 0;
+    bool ahte = false;  // some stream uses the adaptive hybrid transform
     CouplingPlan cpl;
     SpxPlan spx;
     std::vector<ChannelPlan> chans;
     std::array<std::vector<MantissaToken>, kBlocksPerFrame> mantissas;
 };
+
+// §E3.4.4.2's Gk = 1 quantizer, which is what a gaqmod of 0 leaves in place
+// for every scalar hebap. Table E3.6's remapping constants are a restatement
+// of AC-3's symmetric quantizer: m transmitted bits, 2^m - 1 levels, and a
+// reconstruction of code * 2 / (2^m - 1). Spot-checked against the table at
+// hebap 8 (a = 0x1249 = 1/7, giving the 7-level quantizer's 2/7 step),
+// hebap 18 and hebap 19 (a = 0, where the two steps coincide).
+[[nodiscard]] int aht_quantize(double value, int mantissa_bits) {
+    const int levels = (1 << mantissa_bits) - 1;
+    const int limit = (1 << (mantissa_bits - 1)) - 1;
+    const auto code = static_cast<int>(std::lround(value * levels / 2.0));
+    return std::clamp(code, -limit, limit);
+}
+
+[[nodiscard]] double aht_dequantize(int code, int mantissa_bits) {
+    return 2.0 * code / static_cast<double>((1 << mantissa_bits) - 1);
+}
 
 // §E3.3.2: the rematrixing bands cannot reach above whichever tool takes over
 // the spectrum first, so both their count and where the last one stops depend
@@ -281,7 +310,7 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
 
     // --- audfrm (Table E1.3) ---
     w.put(kExpstre, 1);
-    w.put(kAhte, 1);
+    w.put(payload.ahte ? 1 : 0, 1);
     w.put(kSnroffststr, 2);
     w.put(kTransproce, 1);
     w.put(kBlkswe, 1);
@@ -320,6 +349,23 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
     if (!dependent) {
         for (int ch = 0; ch < nfchans; ++ch) {
             w.put(0, 5);  // convexpstr[ch]
+        }
+    }
+    // §E2.2.3's AHT block. Each flag exists only where the channel's exponents
+    // are transmitted exactly once in the frame - ncplregs, nchregs[ch] and
+    // nlferegs all 1 - because AHT spans the whole frame and cannot straddle a
+    // change of exponent set. Table E2.10 code 0 (D15 then reuse) is that
+    // shape by construction, and coupling additionally has to be in use for
+    // all six blocks, which this encoder's all-or-nothing coupling guarantees.
+    if (payload.ahte) {
+        if (cpl.in_use) {
+            w.put(payload.chans.back().aht ? 1 : 0, 1);  // cplahtinu
+        }
+        for (int ch = 0; ch < nfchans; ++ch) {
+            w.put(payload.chans[static_cast<std::size_t>(ch)].aht ? 1 : 0, 1);
+        }
+        if (config.lfe) {
+            w.put(payload.chans[static_cast<std::size_t>(nfchans)].aht ? 1 : 0, 1);
         }
     }
     // snroffststr == 0: the SNR offsets live here, once for the frame, and
@@ -859,7 +905,49 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         }
     }
 
-    // --- 4. Fixed point -----------------------------------------------------
+    // --- 4. Which streams take the adaptive hybrid transform ---------------
+    // AHT is worth having exactly when the six blocks look alike, because
+    // that is when the DCT down each bin collapses them into one large
+    // coefficient and five small ones. On a transient it does the opposite -
+    // one loud block spreads across all six - and it cannot be undone for
+    // part of a frame, so the decision is per channel per frame and the test
+    // is whether the block energies are within an order of magnitude.
+    payload.chans.resize(static_cast<std::size_t>(streams));
+    for (int s = 0; s < streams && config_.aht; ++s) {
+        auto& plan = payload.chans[static_cast<std::size_t>(s)];
+        std::array<double, kBlocksPerFrameSize> energy{};
+        for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
+            for (int bin = stream_start(s); bin < stream_end(s); ++bin) {
+                const double value = coeffs_at(s, blk)[static_cast<std::size_t>(bin)];
+                energy[static_cast<std::size_t>(blk)] += value * value;
+            }
+        }
+        const double peak = *std::ranges::max_element(energy);
+        const double quietest = *std::ranges::min_element(energy);
+        // Silence is stationary, and its coefficients are all zero, so the
+        // transform costs nothing either way.
+        plan.aht = !(peak > 0.0) || peak <= kAhtStationaryRatio * quietest;
+        payload.ahte = payload.ahte || plan.aht;
+    }
+
+    // --- 5. Fixed point and one frame-constant exponent set per stream -----
+    // Table E2.10 code 0 sends D15 in block 0 and reuses it for the other
+    // five, so a bin's exponent has to accommodate its LOUDEST block. The
+    // smallest exponent across the frame is that bin's worst case; anything
+    // larger would overflow the mantissa in the block that peaks.
+    //
+    // Under AHT the axis changes. The values the quantizers see are no longer
+    // the six blocks' MDCT coefficients but the six DCT coefficients taken
+    // down the bin, and §E3.4.5 has the decoder apply the exponent AFTER
+    // inverting that DCT - so the transform output IS the mantissa, and the
+    // exponent has to normalise IT. Normalising the MDCT coefficients instead
+    // leaves the AHT mantissas about sqrt(12) small, which the scalar
+    // quantizers merely waste headroom on but the vector quantizers cannot
+    // survive: their codebooks are fixed-magnitude direction vectors with
+    // components reaching full scale, so a bin presented at a third of full
+    // scale comes back at three times its own level. Measured on the
+    // reference program, that cost 46 dB of the vector range's SNR while the
+    // scalar range sat at a comfortable 33.
     std::vector<std::array<std::int32_t, 256>> fixed(
         static_cast<std::size_t>(streams) * kBlocksPerFrame);
     const auto fixed_at = [&](int s, int blk) -> std::array<std::int32_t, 256>& {
@@ -867,37 +955,56 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                      static_cast<std::size_t>(blk)];
     };
     for (int s = 0; s < streams; ++s) {
-        for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
-            const auto& source = coeffs_at(s, blk);
-            auto& out = fixed_at(s, blk);
-            for (int bin = stream_start(s); bin < stream_end(s); ++bin) {
-                out[static_cast<std::size_t>(bin)] =
-                    to_fixed25(source[static_cast<std::size_t>(bin)]);
-            }
-        }
-    }
-
-    // --- 5. One frame-constant exponent set per stream ---------------------
-    // Table E2.10 code 0 sends D15 in block 0 and reuses it for the other
-    // five, so a bin's exponent has to accommodate its LOUDEST block. The
-    // smallest exponent across the frame is that bin's worst case; anything
-    // larger would overflow the mantissa in the block that peaks.
-    payload.chans.resize(static_cast<std::size_t>(streams));
-    for (int s = 0; s < streams; ++s) {
         auto& plan = payload.chans[static_cast<std::size_t>(s)];
         plan.start = stream_start(s);
         plan.endmant = stream_end(s);
         const auto span = static_cast<std::size_t>(plan.endmant - plan.start);
-
         std::vector<std::uint8_t> raw(span, kMaxExponent);
-        std::vector<std::uint8_t> block_exps(span, 0);
-        for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
-            extract_exponents(
-                std::span{fixed_at(s, blk)}.subspan(static_cast<std::size_t>(plan.start),
-                                                    span),
-                block_exps);
-            for (std::size_t bin = 0; bin < span; ++bin) {
-                raw[bin] = std::min(raw[bin], block_exps[bin]);
+        std::vector<std::uint8_t> axis_exps(span, 0);
+
+        if (plan.aht) {
+            plan.aht_fixed.assign(static_cast<std::size_t>(plan.endmant), {});
+            plan.aht_coeffs.assign(static_cast<std::size_t>(plan.endmant), {});
+            std::vector<std::int32_t> column(span);
+            for (int bin = plan.start; bin < plan.endmant; ++bin) {
+                std::array<double, kBlocksPerFrameSize> blocks{};
+                for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
+                    blocks[static_cast<std::size_t>(blk)] =
+                        coeffs_at(s, blk)[static_cast<std::size_t>(bin)];
+                }
+                std::array<double, kBlocksPerFrameSize> transformed{};
+                aht_forward(blocks, transformed);
+                for (std::size_t j = 0; j < kBlocksPerFrameSize; ++j) {
+                    plan.aht_fixed[static_cast<std::size_t>(bin)][j] =
+                        to_fixed25(transformed[j]);
+                }
+            }
+            // The same "worst case wins" rule as below, down the transform
+            // axis instead of the block axis.
+            for (std::size_t j = 0; j < kBlocksPerFrameSize; ++j) {
+                for (std::size_t bin = 0; bin < span; ++bin) {
+                    column[bin] =
+                        plan.aht_fixed[bin + static_cast<std::size_t>(plan.start)][j];
+                }
+                extract_exponents(column, axis_exps);
+                for (std::size_t bin = 0; bin < span; ++bin) {
+                    raw[bin] = std::min(raw[bin], axis_exps[bin]);
+                }
+            }
+        } else {
+            for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
+                const auto& source = coeffs_at(s, blk);
+                auto& out = fixed_at(s, blk);
+                for (int bin = plan.start; bin < plan.endmant; ++bin) {
+                    out[static_cast<std::size_t>(bin)] =
+                        to_fixed25(source[static_cast<std::size_t>(bin)]);
+                }
+                extract_exponents(
+                    std::span{out}.subspan(static_cast<std::size_t>(plan.start), span),
+                    axis_exps);
+                for (std::size_t bin = 0; bin < span; ++bin) {
+                    raw[bin] = std::min(raw[bin], axis_exps[bin]);
+                }
             }
         }
         // Bins below the stream's own start are inert but must still hold a
@@ -944,9 +1051,11 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     }
     const std::uint32_t budget = total_bits - side_bits - kTailBits;
 
-    std::vector<std::span<const std::uint8_t>> bap_views(
-        static_cast<std::size_t>(streams));
+    std::vector<std::span<const std::uint8_t>> bap_views;
+    bap_views.reserve(static_cast<std::size_t>(streams));
     const auto bits_at = [&](int composite) {
+        bap_views.clear();
+        std::uint32_t aht_bits = 0;
         for (int s = 0; s < streams; ++s) {
             auto& plan = payload.chans[static_cast<std::size_t>(s)];
             // Every stream shares one fsnroffst, so the frame-wide
@@ -955,16 +1064,31 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                                         .coupling = s == cpl_stream,
                                         .cplfleak = cpl.fleak,
                                         .cplsleak = cpl.sleak,
-                                        .snr_all_zero = composite == 0};
+                                        .snr_all_zero = composite == 0,
+                                        .high_efficiency = plan.aht};
             compute_bit_allocation(plan.decoded, config_.sample_rate, kBamode0Codes,
                                    composite >> 4, composite & 15, plan.bap, region);
+            if (plan.aht) {
+                // An AHT stream's cost is a whole-frame figure: six blocks of
+                // one bin become one VQ index or six scalar mantissas, all
+                // emitted in block 0. It never enters the per-block grouping.
+                // The 2-bit gaqmod that opens the section is part of the
+                // mantissa element, so it is part of this budget.
+                aht_bits += 2;
+                for (int bin = plan.start; bin < plan.endmant; ++bin) {
+                    aht_bits += static_cast<std::uint32_t>(
+                        aht_bin_bits(plan.bap[static_cast<std::size_t>(bin)]));
+                }
+                continue;
+            }
             // Only the stream's own region carries mantissas.
-            bap_views[static_cast<std::size_t>(s)] =
-                std::span{plan.bap}.subspan(static_cast<std::size_t>(plan.start));
+            bap_views.push_back(
+                std::span{plan.bap}.subspan(static_cast<std::size_t>(plan.start)));
         }
         // Every block reuses the same exponents, hence the same allocation.
         return static_cast<std::uint32_t>(mantissa_bits_per_block(bap_views)) *
-               kBlocksPerFrame;
+                   kBlocksPerFrame +
+               aht_bits;
     };
 
     int lo = 0;
@@ -989,7 +1113,50 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
         MantissaBlockWriter writer;
         const auto emit_stream = [&](int s) {
-            const auto& plan = payload.chans[static_cast<std::size_t>(s)];
+            auto& plan = payload.chans[static_cast<std::size_t>(s)];
+            if (plan.aht) {
+                // §E2.2.4: an AHT stream's mantissas are read once, in the
+                // first block that carries them, and the decoder then marks
+                // it done - so blocks 1 to 5 emit NOTHING for this stream.
+                if (blk != 0) {
+                    return;
+                }
+                writer.add_raw(0, 2);  // chgaqmod 0: gain-adaptive quantization off
+                for (int bin = plan.start; bin < plan.endmant; ++bin) {
+                    const int hebap = plan.bap[static_cast<std::size_t>(bin)];
+                    const int exp = plan.decoded[static_cast<std::size_t>(bin)];
+                    auto& values = plan.aht_coeffs[static_cast<std::size_t>(bin)];
+                    // The mantissa the quantizers see: the transform output,
+                    // normalised by this bin's own exponent.
+                    for (std::size_t j = 0; j < kBlocksPerFrameSize; ++j) {
+                        values[j] = std::ldexp(
+                            static_cast<double>(
+                                plan.aht_fixed[static_cast<std::size_t>(bin)][j]),
+                            exp - 24);
+                    }
+                    if (hebap == 0) {
+                        values.fill(0.0);  // what the decoder will hold here
+                        continue;
+                    }
+                    if (hebap <= 7) {
+                        // One index for all six blocks of this bin.
+                        const int index = aht_vector_quantize(values, hebap);
+                        writer.add_raw(static_cast<std::uint32_t>(index),
+                                       aht_bin_bits(hebap));
+                        continue;
+                    }
+                    const int bits = aht_mantissa_bits(hebap);
+                    for (std::size_t j = 0; j < kBlocksPerFrameSize; ++j) {
+                        const int code = aht_quantize(values[j], bits);
+                        values[j] = aht_dequantize(code, bits);
+                        writer.add_raw(
+                            static_cast<std::uint32_t>(code) &
+                                ((1u << static_cast<unsigned>(bits)) - 1u),
+                            bits);
+                    }
+                }
+                return;
+            }
             const auto& block = fixed_at(s, blk);
             for (int bin = plan.start; bin < plan.endmant; ++bin) {
                 const int exp = plan.decoded[static_cast<std::size_t>(bin)];
@@ -1035,6 +1202,19 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         // that matters.
         const auto rebuild = [&](int s, int blk, int from, int to) {
             const auto& plan = payload.chans[static_cast<std::size_t>(s)];
+            if (plan.aht) {
+                // The AHT path already holds its reconstructed coefficients,
+                // quantized by step 8; undoing the DCT and the exponent gives
+                // the same bins the scalar path produces.
+                for (int bin = from; bin < to; ++bin) {
+                    std::array<double, kBlocksPerFrameSize> blocks{};
+                    aht_inverse(plan.aht_coeffs[static_cast<std::size_t>(bin)], blocks);
+                    recon[static_cast<std::size_t>(bin)] =
+                        std::ldexp(blocks[static_cast<std::size_t>(blk)],
+                                   -plan.decoded[static_cast<std::size_t>(bin)]);
+                }
+                return;
+            }
             const auto& block = fixed_at(s, blk);
             for (int bin = from; bin < to; ++bin) {
                 const int bap = plan.bap[static_cast<std::size_t>(bin)];
