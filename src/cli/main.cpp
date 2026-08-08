@@ -776,8 +776,7 @@ int run_decode(std::string_view in_path, std::string_view out_path) {
     }
     const auto frames = ac3::split_frames(stream);
     if (!frames) {
-        std::println(stderr, "error: {}: stream framing failed (code {})", in_path,
-                     static_cast<int>(frames.error()));
+        std::println(stderr, "error: {}: {}", in_path, ac3::describe(frames.error()));
         return 1;
     }
     ac3::FrameDecoder decoder;
@@ -788,8 +787,7 @@ int run_decode(std::string_view in_path, std::string_view out_path) {
     for (const auto& frame : *frames) {
         const auto decoded = decoder.decode_frame(frame);
         if (!decoded) {
-            std::println(stderr, "error: decode failed (code {})",
-                         static_cast<int>(decoded.error()));
+            std::println(stderr, "error: {}: {}", in_path, ac3::describe(decoded.error()));
             return 1;
         }
         if (!have_first) {
@@ -852,8 +850,7 @@ int run_levels(std::string_view in_path) {
         for (const auto& frame : *frames) {
             const auto decoded = decoder.decode_frame(frame);
             if (!decoded) {
-                std::println(stderr, "error: decode failed (code {})",
-                             static_cast<int>(decoded.error()));
+                std::println(stderr, "error: {}: {}", in_path, ac3::describe(decoded.error()));
                 return 1;
             }
             if (!meter) {

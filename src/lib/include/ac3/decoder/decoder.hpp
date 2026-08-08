@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <expected>
 #include <span>
+#include <string_view>
 #include <vector>
 
 #include "ac3/core/tables.hpp"
@@ -15,11 +16,12 @@
 //
 // Scope: the bsid<=8 syntax the project's encoder emits, decoded exactly:
 // any acmod 1/0..3/2 plus LFE, long blocks, D15/D25/D45/reuse exponents,
-// full bit allocation, mantissa ungrouping. Deliberately unsupported (clean
-// errors, not wrong audio): coupling, block switching, delta bit allocation,
-// dual mono. dynrng words are parsed but not applied; bap-0 bins reconstruct
-// as zero regardless of dithflag (the spec lets the dither sequence be "any
-// reasonably random sequence"; zeros keep decode parity deterministic).
+// full bit allocation, mantissa ungrouping, channel coupling. Deliberately
+// unsupported (clean errors, not wrong audio): block switching, delta bit
+// allocation, dual mono. dynrng words are parsed but not applied; bap-0 bins
+// reconstruct as zero regardless of dithflag (the spec lets the dither
+// sequence be "any reasonably random sequence"; zeros keep decode parity
+// deterministic).
 
 namespace ac3 {
 
@@ -28,9 +30,11 @@ enum class DecodeError {
     kBadSyncWord,
     kBadCrc,
     kReservedValue,
-    kUnsupported,
+    kUnsupported,  // legal AC-3, but syntax this decoder declines to read
     kInvalidStream,
 };
+
+[[nodiscard]] std::string_view describe(DecodeError error);
 
 struct DecodedFrame {
     SampleRate sample_rate = SampleRate::k48000;
