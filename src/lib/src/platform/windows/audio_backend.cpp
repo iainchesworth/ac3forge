@@ -9,8 +9,8 @@ namespace ac3::platform {
 
 const AudioBackend& audio_backend() {
     static constexpr AudioBackend kBackend{
-        .capture = {.available = true},
-        .passthrough = {.available = true},
+        .capture = {.available = true, .reason = {}},
+        .passthrough = {.available = true, .reason = {}},
     };
     return kBackend;
 }

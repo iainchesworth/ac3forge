@@ -1431,7 +1431,13 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         }
         lo = search();
     }
-    const std::uint32_t mantissa_bits = bits_at(lo);  // leaves payload.bap at lo
+    // The call is not optional: it is what leaves payload.bap holding the
+    // allocation for `lo`, which every mantissa below is quantised against.
+    // Only its RESULT is debug-only - checked here and against the tokens
+    // actually written at the end of the function - so the variable is
+    // unreferenced under NDEBUG while the call still has to happen. Folding it
+    // into the assert would delete the allocation along with the check.
+    [[maybe_unused]] const std::uint32_t mantissa_bits = bits_at(lo);
     assert(mantissa_bits <= budget);
     payload.csnroffst = lo >> 4;
     payload.fsnroffst = lo & 15;
