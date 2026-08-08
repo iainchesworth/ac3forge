@@ -309,13 +309,27 @@ std::expected<eac3::AccessUnit, FrameError> AtmosEncoder::encode_frame(
     params_.seq_count =
         frames_ == 0 ? 0 : static_cast<int>((frames_ - 1) % 1023 + 1);
 
-    const auto oamd = build_payload(program_, described);
-    const auto joc_payload = joc::build_payload(params_);
-    const std::array<emdf::Payload, 2> payloads{{
-        {.id = emdf::kPayloadIdOamd, .bytes = oamd},
-        {.id = emdf::kPayloadIdJoc, .bytes = joc_payload},
-    }};
-    const auto container = emdf::build_container(payloads);
+    // The container is what carries the objects - and, on a decoder that
+    // validates the emdf_protection field, it is also what commits that decoder
+    // to object decoding: the moment its sync word is found in the skip field
+    // and the container parses, that decoder must accept the protection field or
+    // reject the whole access unit; there is no tolerant middle path that keeps
+    // the bed. So a stream this encoder cannot make such a field validate for
+    // either carries objects (and is refused by that decoder) or omits the
+    // container and plays as the 5.1 bed - never both. config_.emit_object_metadata
+    // picks which. The float bed built below (views) is identical regardless;
+    // the encoded output is not bit-identical across the two, because dropping
+    // the container hands its skip-field bytes back to the mantissas.
+    std::vector<std::byte> container;
+    if (config_.emit_object_metadata) {
+        const auto oamd = build_payload(program_, described);
+        const auto joc_payload = joc::build_payload(params_);
+        const std::array<emdf::Payload, 2> payloads{{
+            {.id = emdf::kPayloadIdOamd, .bytes = oamd},
+            {.id = emdf::kPayloadIdJoc, .bytes = joc_payload},
+        }};
+        container = emdf::build_container(payloads);
+    }
 
     // --- 6. The stream ------------------------------------------------------
     std::array<std::span<const float>, 6> views{};

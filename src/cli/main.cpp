@@ -830,15 +830,24 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
 // which JOC can actually pull them apart again. Heights are what makes this
 // worth doing at all: a 5.1 bed cannot carry them, and the object metadata can.
 int run_atmos(std::string_view out_path, std::uint32_t seconds, std::uint32_t bitrate,
-              std::uint32_t objects, std::uint32_t orbit_seconds) {
+              std::uint32_t objects, std::uint32_t orbit_seconds, std::string_view mode) {
     if (objects < 1 || objects > 15) {
         std::println(stderr, "error: 1 to 15 objects (the bed's LFE is the 16th, "
                              "and TS 103 420 §8.3.2.2 caps the total at 16)");
         return 1;
     }
+    // "objects" emits the JOC + OAMD container; "bed51" omits it so the stream
+    // degrades to a plain 5.1 bed on a decoder that refuses an unvalidated
+    // object container instead of falling back (see AtmosConfig).
+    if (mode != "objects" && mode != "bed51") {
+        std::println(stderr, "error: mode is 'objects' (default) or 'bed51'");
+        return 1;
+    }
+    const bool emit_objects = mode != "bed51";
     const auto count = static_cast<std::size_t>(objects);
     ac3::oba::AtmosEncoder encoder{
-        {.bitrate_kbps = bitrate, .num_bands_idx = 4}, static_cast<int>(objects)};
+        {.bitrate_kbps = bitrate, .num_bands_idx = 4, .emit_object_metadata = emit_objects},
+        static_cast<int>(objects)};
 
     // Distinct tones so the objects are separable in the first place, and a
     // reader with an object renderer can tell which one ended up where.
@@ -907,8 +916,14 @@ int run_atmos(std::string_view out_path, std::uint32_t seconds, std::uint32_t bi
         return 1;
     }
     std::println("wrote {} E-AC-3 access units to {}", frames, out_path);
-    std::println("  {} dynamic objects + the bed's LFE = {} objects, JOC over a 5.1 downmix",
-                 objects, ac3::oba::object_count(encoder.program()));
+    if (emit_objects) {
+        std::println("  {} dynamic objects + the bed's LFE = {} objects, JOC over a 5.1 downmix",
+                     objects, ac3::oba::object_count(encoder.program()));
+    } else {
+        std::println("  bed51: 5.1 bed only, no object container — plays as 5.1 on a decoder "
+                     "that rejects an unvalidated one ({} objects were panned into the bed)",
+                     objects);
+    }
     return 0;
 }
 
@@ -1742,9 +1757,10 @@ constexpr std::array<Command, 16> kCommands{{
      [](const Args& x) {
          return run_orbit(x.str(1), x.u32(2, 8), x.u32(3, 448), x.u32(4, 4), x.meta);
      }},
-    {"atmos", 2, "<out.ec3> [seconds] [bitrate_kbps] [objects] [orbit_seconds]", "",
+    {"atmos", 2, "<out.ec3> [seconds] [bitrate_kbps] [objects] [orbit_seconds] [mode]", "",
      [](const Args& x) {
-         return run_atmos(x.str(1), x.u32(2, 8), x.u32(3, 448), x.u32(4, 4), x.u32(5, 6));
+         return run_atmos(x.str(1), x.u32(2, 8), x.u32(3, 448), x.u32(4, 4), x.u32(5, 6),
+                          x.str(6, "objects"));
      }},
     {"record", 2, "<out.ac3> [seconds] [bitrate_kbps] [device_index]", "",
      [](const Args& x) {
@@ -1805,6 +1821,9 @@ void print_usage() {
     std::println("atmos: objects orbit the room at different heights and rates,");
     std::println("       encoded as a 5.1 E-AC-3 bed with JOC + OAMD side data");
     std::println("       (TS 103 420). FFmpeg reports \"Dolby Digital Plus + Dolby Atmos\".");
+    std::println("atmos mode: objects (default) writes the JOC+OAMD container; bed51 omits");
+    std::println("       it so the 5.1 bed still plays on a decoder that refuses an object");
+    std::println("       container it cannot validate instead of falling back to the bed.");
     std::println("");
     std::println("layout: stereo (default) | 51 — 5.1 uses per-channel tones;");
     std::println("        append 'c' (stereoc, 51c) to enable channel coupling");

@@ -46,6 +46,25 @@ struct AtmosConfig {
     // coefficient. Worth it when objects are nearly degenerate and the matrix
     // entries are large.
     bool fine_quant = false;
+    // Whether to emit the EMDF object container (OAMD + JOC) into block 0's
+    // skip field. On by default: object-aware decoders get the objects, and a
+    // decoder that ignores the container plays the 5.1 bed underneath it - the
+    // design target described above.
+    //
+    // Turn it OFF to omit the container entirely. That is the only way to keep
+    // the 5.1 bed playable on a decoder that VALIDATES the emdf_protection
+    // field (TS 102 366 §H.2.2.4 leaves its contents "implementation dependent
+    // and not defined", so a third-party encoder cannot satisfy such a check):
+    // such a decoder treats the container's sync word as a commitment to object
+    // decoding and refuses the whole stream if the field does not validate,
+    // rather than falling back. With no container there is no sync word to find,
+    // so it decodes the bed as ordinary 5.1. The choice is objects-or-nothing,
+    // never both. The 5.1 MIX is the same either way (the same float bed is
+    // encoded); the decoded samples are not bit-identical across the two,
+    // because the frame's rate control gives the freed skip-field bytes back to
+    // the mantissas, so the bed here is encoded at slightly higher fidelity.
+    // See encode_frame().
+    bool emit_object_metadata = true;
 };
 
 // One object's placement for one frame. Positions are room-anchored per
