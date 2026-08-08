@@ -1,265 +1,328 @@
 # ac3forge
 
-A **clean-room AC-3 encoder** written from first principles in C++23, working directly from
-the published standards — no FFmpeg, no codec libraries. The goal: take one or more channels
-of PCM audio — or sound objects positioned and moved in 3D space — and produce a compliant
-AC-3, Dolby Digital Plus, or DD+ with Dolby Atmos elementary stream that any decoder or AV
-receiver accepts.
+A clean-room AC-3 and E-AC-3 encoder and decoder in C++23, implemented from the published
+standards. It turns PCM — or mono sources placed and moved in 3D space — into AC-3, E-AC-3,
+or E-AC-3 with Joint Object Coding elementary streams, and reads those streams back.
 
-> **Naming note:** "Dolby Digital" is a live trademark of Dolby Laboratories. This project
-> implements the openly published **AC-3** standard (ATSC A/52 / ETSI TS 102 366) and is not
-> affiliated with or endorsed by Dolby. `ac3forge` is a provisional working name.
+Nothing here links FFmpeg or any other codec library. The FFmpeg command-line tools are used
+during development as an independent decoder to check output against; the build does not
+depend on them.
 
-## Status
+**Standards and trademarks.** "Dolby", "Dolby Digital" and "Dolby Atmos" are trademarks of
+Dolby Laboratories. This project implements the openly published standards — ATSC A/52:2018
+(of which E-AC-3 is normative Annex E), ETSI TS 102 366 and ETSI TS 103 420 — and is not
+affiliated with, endorsed by, or certified by Dolby Laboratories. Code and documentation use
+the technical names AC-3 and E-AC-3. Whether the patents reading on these formats matter for
+your use is your problem to assess, not something this project resolves.
 
-**Milestones 0–2 complete.** The encoder emits fully valid AC-3 syncframes (2/0 digital
-silence, any legal bitrate × sample rate): `ac3cli silence out.ac3` produces a stream that
-FFmpeg strict-decodes (`-err_detect crccheck+bitstream+buffer+explode`) with zero errors to
-bit-perfect silence, and that an independent from-spec bitstream parser rates CONFORMANT —
-including the A/52 §5.5 layout constraints (padding via in-block skip fields) and both CRC
-words (crc1 solved via GF(2) polynomial inverse, since it precedes its coverage region).
+**Status.** Version 0.2.0. The API is not stable. Built and tested only with MSVC on Windows;
+see [Portability](#portability).
 
-**Milestone 3 (MDCT + KBD window) complete.** The analysis filterbank is in: the 512-point
-KBD window is generated at compile time from the Kaiser-Bessel formula and reproduces every
-value of the spec's published Table 7.33 exactly (5-decimal rounding), the forward MDCT
-matches independent numpy goldens ≤1e-10, and a 50%-overlap TDAC round-trip through the
-*normative* §7.9.4.1 decoder inverse reconstructs input ≤1e-10 — locking window, both
-transforms, and the −2/N ↔ ×2 level convention together.
+## Contents
 
-**Milestone 5 (the hard middle) complete — the encoder encodes real audio.**
-`ac3cli sine out.ac3` produces AC-3 that FFmpeg strict-decodes with zero errors to a
-999.93 Hz sine at exactly the target amplitude (+0.000 dB) with **88.3 dB SNR**. The full
-pipeline: windowed MDCT → 25-bit fixed coefficients → D15 exponents (decoder-mirrored) →
-the bit-exact §7.2.2 integer bit-allocation engine (validated against an independent
-Python transcription of the spec pseudocode, zero tolerance) → binary SNR-offset search →
-§7.3 mantissa quantization with cross-channel grouping → packing + CRCs. The
-bit-allocation tables (7.6–7.16) are script-extracted from the spec text with
-self-verification, like every table before them.
+- [What it does](#what-it-does)
+- [What it does not do](#what-it-does-not-do)
+- [Building](#building)
+- [Using the library](#using-the-library)
+- [Using the CLI](#using-the-cli)
+- [How it is validated](#how-it-is-validated)
+- [Repository layout](#repository-layout)
+- [Documentation](#documentation)
+- [Licence](#licence)
 
-**Milestone 6 (5.1 + LFE + the in-repo decoder) complete.** The encoder handles every
-audio coding mode (mono through 3/2) plus LFE at all three sample rates, with exact
-44.1 kHz CBR via Bresenham frame-size alternation. The new in-repo decoder — built on the
-same normative core — reaches **float32-precision PCM parity with FFmpeg's decoder**
-(max diff 7.9e-6 ≈ −102 dBFS) on identical streams, and a 5.1 encode with per-channel
-tones decodes through FFmpeg with every channel carrying exactly its own tone
-(channel-order verified end-to-end). `ac3cli decode` exercises the decoder from the CLI.
+## What it does
 
-**Milestone 7 (quality layer) complete — and the encoder now beats FFmpeg's.** Per-block
-exponent-strategy selection (§8.2.8: D45/D25/D15 by reuse span, variation-triggered),
-stereo rematrixing (§7.5.3 minimum-power rule, with the decoder-side undo), and
-bitrate-aware bandwidth defaults. The quality race (`tools/quality_race.py`, synthesized
-program material, FFmpeg as neutral referee): **ours 41.2/44.0/45.1/51.1 dB vs FFmpeg's
-41.0/42.9/44.2/47.6 dB at 192/256/320/448 kbps** — ahead at every rate (SNR metric;
-`ac3cli encode` now takes arbitrary stereo WAV input). Decoder parity vs FFmpeg holds on
-rematrix-active program material (max diff 1.1e-5).
+### Encoding
 
-**Milestones 8–9 complete: sounds move in space, and the stream is receiver-ready.**
-The spatial layer (`src/lib/src/spatial/`) places mono objects on the ITU 5.1 ring via
-energy-normalized 2D VBAP with per-block gain ramps and explicit LFE sends; `ac3cli orbit`
-renders a tone circling the listener straight into 5.1 AC-3 (an end-to-end test parks the
-object at each speaker and proves the decoded energy follows it: C → L → SL → SR → R).
-The IEC 61937 packer (`src/lib/src/sinks/`) wraps frames into S/PDIF bursts **byte-exact against
-FFmpeg's spdif muxer**, and `ac3cli spdif` emits them as a PCM16 WAV — played bit-exactly
-through a passthrough output, a receiver locks on and lights its Dolby Digital indicator.
+| | AC-3 (bsid 8) | E-AC-3 (bsid 16) |
+|---|---|---|
+| Coding modes | 1/0, 2/0, 3/0, 2/1, 3/1, 2/2, 3/2, each with or without LFE | the same, plus 7.1, 5.1.2, 5.1.4 and 7.1.4 through dependent substreams |
+| Sample rates | 48, 44.1, 32 kHz | 48, 44.1, 32 kHz |
+| Bit rates | the 19 nominal rates of Table 5.18, 32–640 kbps | the same 19, per substream |
+| Transform | long blocks only (512-point MDCT, KBD window) | long blocks only |
+| Exponents | D15 / D25 / D45, strategy chosen per block from the reuse span (§8.2.8) | frame-level, Table E2.10 code 0: D15 in block 0, reused for the other five |
+| Coupling | yes (§7.4), begin and end frequencies auto or pinned | yes (§E3.3) |
+| Rematrixing | yes, 2/0 (§7.5.3 minimum-power rule) | no — the syntax is written, the flags are always zero |
+| Annex E tools | — | spectral extension (§E3.6), adaptive hybrid transform with GAQ (§E3.4) |
+| Objects | panned to a 5.1 bed (no metadata survives) | OAMD + JOC in an EMDF container (TS 103 420) |
 
-**Live WASAPI capture works.** `ac3::capture` enumerates every active input endpoint plus
-every render endpoint as a loopback source, and streams interleaved float samples through a
-lock-free SPSC ring into the encoder. Verified end to end on real hardware: a 1 kHz tone
-played through the speakers was captured via loopback, encoded, and decoded back at exactly
-1000.0 Hz with zero ring overruns. Loopback gaps (a render endpoint delivers nothing while
-the machine is silent) are filled against a QPC timeline so the stream stays continuous.
-`ac3cli devices` lists endpoints, `ac3cli record` captures straight to AC-3, and the GUI's
-capture card is live with a peak-level meter.
+At 44.1 kHz, CBR needs non-integral frame sizes; the AC-3 encoder alternates between the two
+Table 5.18 lengths on a Bresenham accumulator so the long-run rate is exact. E-AC-3 signals
+`frmsiz` directly and needs no such alternation.
 
-**Exclusive-mode passthrough is implemented.** `ac3::sinks::PassthroughSink` opens a render
-endpoint in WASAPI exclusive mode with a `KSDATAFORMAT_SUBTYPE_IEC61937_DOLBY_DIGITAL`
-format (including the documented buffer-alignment retry) and streams bursts from a
-lock-free queue on an MMCSS "Pro Audio" thread — exclusive mode being mandatory, since the
-shared-mode engine would mix, resample or volume-scale the bursts and destroy the bit
-pattern. `ac3cli outputs` probes every endpoint twice, for AC-3 *and* for plain exclusive
-PCM, so an unavailable device tells you **why**: "cannot bitstream" (analog output) versus
-"no exclusive access" (disabled or in use). `ac3cli play` streams a file to a receiver.
+### Metadata
 
-> Not yet confirmed against real bitstreaming hardware: this machine has no S/PDIF or HDMI
-> audio endpoint, so `IsFormatSupported` correctly answers "no" everywhere. The exclusive-mode
-> path itself is proven — the Realtek endpoint accepts our exclusive PCM format — but the
-> IEC 61937 descriptor awaits a receiver to confirm positively.
+| Field | Section | What it does here |
+|---|---|---|
+| `dynrng` | §7.7.1 | Per-block dynamic range control from an RMS-detected compressor on a piecewise-linear curve. Five profiles: `film-standard`, `film-light`, `music-standard`, `music-light`, `speech`. A/52 fixes the wire format and the intent but not the curve, so the profiles are this project's, not the standard's. |
+| `compr` | §7.7.2 | Heavy compression as a limiter guaranteeing a peak ceiling in the §7.8 mono downmix. Rounds down, because nearest-code rounding can overshoot a ceiling by half a step. Its peak detector includes the previous frame's MDCT overlap. |
+| `dialnorm` | §5.4.2.8 | Measured with ITU-R BS.1770-4 gated loudness and negated, or set directly. A/52 predates BS.1770 and leaves the measurement open. |
+| Downmix levels | Tables 5.9/5.10, E1.2 | `cmixlev`/`surmixlev` in AC-3; the whole `mixmdate` group in E-AC-3. |
 
-**Channel coupling encodes and decodes.** Above the coupling frequency the full-bandwidth channels stop
-carrying their own coefficients and share one coupling channel plus per-band coordinates —
-the tool that makes 5.1 viable well below 448 kbit/s. `ac3cli sine … 51c` or
-`ac3cli encode … couple` turns it on. FFmpeg strict-decodes coupled 5.1, and a targeted
-probe confirms the envelope really is preserved: a channel carrying a 12 kHz tone stays
-113 dB above a silent one in that band, while the region below the coupling frequency is
-bit-for-bit untouched. The in-repo decoder reads coupling too — strategy, banded
-coordinates, phase flags and leak parameters — so coupled streams round-trip in process
-without FFmpeg in the loop.
+### Decoding
 
-**E-AC-3 encodes, up to 7.1.4.** `ac3cli eac3-sine` emits bsid-16 (Dolby Digital Plus)
-carrying real audio in stereo, 5.1, 7.1, 5.1.2, 5.1.4 and 7.1.4. E-AC-3 is a different
-container, not an AC-3 variant: no crc1, an arbitrary 11-bit `frmsiz` instead of a size
-table (so the 44.1 kHz padding alternation disappears), and exponent strategies for all
-six blocks hoisted into a frame-level `audfrm`. Layouts wider than 5.1 ride in *dependent
-substreams* beside a self-sufficient 5.1 bed, each with a Table E2.5 `chanmap` saying
-which speakers its channels belong to; per §E3.8.2 the ones that collide with the bed
-replace it and the rest extend the layout.
+The in-repo decoder shares its tables, bit-allocation engine, exponent decoding and IMDCT
+with the encoder. It reads AC-3 (bsid ≤ 8) and E-AC-3 (bsid 11–16), including dependent
+substreams, `chanmap`, and the §E3.8.2 render that lays a dependent's channels over the bed.
 
-**And it decodes.** The in-repo decoder now reads bsid 16 — the whole of Tables
-E1.2/E1.3/E1.4, dependent substreams, `chanmap` and the §E3.8.2 render — reaching
-float32-precision PCM parity with FFmpeg (max diff 1.4e-5) on every layout FFmpeg will
-read, and reading FFmpeg's *own* encoder output too. That last part is the point: **7.1.4
-has no external oracle at all.** It needs two dependent substreams, and FFmpeg refuses any
-frame with `substreamid != 0` in `ff_ac3_parse_header` — proven exhaustively across
-hand-rolled MKV, FFmpeg Matroska, MPEG-TS and MP4. A decoder we control is what closes
-that gap, and every later Annex E feature inherits the same self-check.
+### Other
 
-**Dolby Atmos objects encode (ETSI TS 103 420).** `ac3cli atmos out.ec3` sends objects
-orbiting the room at different heights and rates, and ffprobe reports
-`eac3 (Dolby Digital Plus + Dolby Atmos), 48000 Hz, 5.1(side)` — the same shape real DD+
-Atmos files probe as. There are no extra coded channels: the objects are panned into a 5.1
-bed that any decoder plays unchanged, and beside it ride two payloads in an EMDF container
-(ETSI TS 102 366 Annex H) tucked into a block skip field — **OAMD** saying where each
-object is, and **JOC** saying how to pull them back out as a per-band matrix over the five
-downmix channels. (Dolby's own DD+ JOC streams carry the container in a skip field with
-`auxdatae` clear, not in the aux field; ours match, checked against their reference content.) This is also why discrete 7.1.4 was a dead end: real 7.1.4 is JOC over a
-5.1 bed, not twelve channels, and no shipping profile allows the two dependent substreams
-the discrete layout would need.
+| Component | What it is |
+|---|---|
+| `ac3::io::scan` | Finds access-unit boundaries in a raw elementary stream and reports what it renders, without being told. |
+| `matroska::matroska` | A standalone MKV muxer. Links nothing from `ac3::forge` and knows nothing about AC-3. |
+| `ac3::sinks::iec61937` | S/PDIF burst packing, byte-exact against FFmpeg's `spdif` muxer. |
+| `ac3::capture` | WASAPI capture from input endpoints and render endpoints in loopback, through a lock-free SPSC ring. |
+| `ac3::sinks::PassthroughSink` | WASAPI exclusive-mode bitstream output. See the limitations below. |
+| `ac3::analysis` | Peak/RMS metering with console ballistics, and the Gerzon energy vector over the BS.775 ring. |
 
-The JOC Huffman tables are not printed in the standard — Annex A.1 gives only their names,
-modes and types, and ships the trees in the companion archive as `ts_103420_tables.c`, so
-`tools/gen_joc_tables.py` inverts that file (decoder trees in, encoder codewords out) and
-refuses to write unless every tree is a complete prefix code. The reconstruction matrix is
-the minimum mean-square estimate `M = P Dᵀ (P D Dᵀ + εI)⁻¹`; because the encoder *built*
-the downmix it knows `D` exactly instead of estimating it, which makes the solve near-exact
-for well-separated objects. Objects that share a direction — two at one azimuth and
-different heights, say — cannot be separated by any linear combination of the bed, and the
-solve splits their energy by power instead. `ac3gui` exposes the same thing: a switch, a
-plan view of the room to drag the objects around, and a height slider.
+## What it does not do
 
-The syntax was checked field-for-field against Dolby's own tooling — the Reference Player
-and the Dolby Media Encoder — used as oracles. That diffing fixed several real bugs (the
-skip-field carriage above; `codecdatae=0`; a dynamic-object-only program with the LFE as an
-object but not a JOC output; metadata flag arrays transmitted index-0-first) and left our
-frame headers and container matching Dolby's byte-for-byte on the fields that matter.
+### Not implemented
 
-> **The one thing our objects will *not* do:** decode as objects in Dolby's decoder.
-> Reverse-engineering established why, and it is not a bug in this encoder. DD+ JOC gates
-> object decoding on a keyed, sequence-bound MAC (HMAC-SHA-256) in the EMDF `protection`
-> field — which the standard leaves "implementation dependent and not defined" — whose key
-> is a secret embedded in every decoder binary. Our stream is spec-correct (FFmpeg validates
-> it, the bed decodes bit-exactly, Dolby's own parser flags `atmos=true`); it simply isn't
-> *signed* with Dolby's key, so the decoder falls back to the 5.1 bed. The gate is
-> authenticity, not conformance. What *is* verified about reconstruction is the maths —
-> §6.6.6 applied per band recovers each object to better than −20 dB, and the same for
-> leakage between them.
+| Missing | Where it matters |
+|---|---|
+| Block switching (short blocks) | Transients smear. FFmpeg's AC-3 encoder has never used short blocks either, so this is conventional rather than unusual, but it is still a gap. |
+| Dual mono (1+1, acmod 0) | Refused by the encoder and the decoder. It is two programmes sharing a syncframe, with a second copy of every metadata item, and it has no channel layout to render. |
+| Delta bit allocation | Encoder never emits it; decoder refuses a stream carrying it. |
+| E-AC-3 half sample rates (`fscod2`: 24, 22.05, 16 kHz) | Refused. Every table the core indexes is three columns wide. |
+| Enhanced coupling, transient pre-noise processing | Recognised by the decoder and refused, rather than mis-decoded. |
+| Variable bit rate | CBR only. |
 
-**You can see what every channel is carrying.** `ac3/analysis/` meters audio the way a
-console does — peak with an instant attack and a 20 dB/s fallback, a 1.2 s hold marker, RMS
-over a 300 ms integration — plus exact whole-signal statistics and the Gerzon energy vector
-over the BS.775 ring. Both front ends draw from it, including where a level sits on the bar,
-so a printed figure and a moving needle can never disagree. `ac3cli levels` reports any WAV
-or AC-3 file channel by channel; `encode`, `decode`, `sine` and `orbit` print the same table
-when they finish, and `record` meters live in the terminal. The GUI grows a Channel levels
-card that relabels itself for the active layout (1/0 through 3/2, with or without LFE, named
-per A/52 Table 5.8) beside a soundfield view showing the speaker ring and where the energy
-sits. Feeding those meters meant widening both front ends to 1–6 channel WAV input, with the
-WAV↔A/52 channel permutation now in the library rather than copied into each caller.
-`ac3gui --smoke` and `--smoke-record` drive the file and live-capture paths headlessly and
-report what the meters did, so "the display is wired to the audio" is a checkable claim
-rather than a screenshot.
+### Verification gaps
 
-**The metadata layer is real.** Everything above decodes; this is what makes it *play*
-right. An AV receiver reads exactly these bits to set level, compress dynamics and fold
-down to fewer speakers than the stream carries, and until now they were all zero.
+**7.1.4 has no external oracle.** It needs two dependent substreams, and FFmpeg refuses any
+frame with `substreamid != 0` in `ff_ac3_parse_header` — in every container tried
+(hand-rolled MKV, FFmpeg Matroska, MPEG-TS, MP4). Only the in-repo decoder reads it, so for
+that layout the encoder and decoder are checked against each other and nothing else:
 
-- **`dynrng` (§7.7.1)** — per-block dynamic range control, generated by an RMS-detected
-  compressor riding a piecewise-linear static curve. The five conventional Dolby profiles
-  (`drc=film-standard|film-light|music-standard|music-light|speech`) are exposed; A/52 fixes
-  the wire format and the intent but never the curve, so the profiles are documented as what
-  they are. Levels are referenced to dialogue via `dialnorm`, so a profile behaves the same
-  whatever level the source was mastered at.
-- **`compr` (§7.7.2)** — heavy compression, implemented as what the spec asks for: a
-  *limiter* guaranteeing a peak ceiling in the §7.8 mono downmix, not a rescaled `dynrng`.
-  Instantaneous attack, rate-limited release, and it rounds **down** because nearest-code
-  rounding can overshoot a ceiling by half a step. Its peak detector includes the previous
-  frame's MDCT overlap — those samples are coded in this frame, and omitting them is exactly
-  how the ceiling leaks at a loud-to-quiet transition.
-- **`dialnorm` (§5.4.2.8)** — measured, not defaulted. `ac3cli loudness` and
-  `dialnorm=auto` run ITU-R BS.1770-4 gated loudness (K-weighting designed analytically, so
-  44.1 and 32 kHz work too) and negate it. A/52 predates BS.1770 by eleven years and leaves
-  the measurement open; every modern delivery spec that fills the gap names BS.1770, so that
-  is what this measures. The 1 kHz/−20 dBFS calibration reads −19.99 LKFS, matching FFmpeg's
-  `ebur128` to 0.01 LU.
-- **Downmix levels** — `cmixlev`/`surmixlev` in AC-3, and in E-AC-3 the whole `mixmdate`
-  group (`dmixmod`, the Lt/Rt and Lo/Ro centre and surround levels, `lfemixlevcod`), with the
-  `strmtyp == 0x0` gate so a dependent substream carries only the level group.
+```
+$ ac3cli eac3-sine out.ec3 1 384 1000 50 714
+$ ffmpeg -v error -i out.ec3 -f null -
+[dec:eac3] Error submitting packet to decoder: Error number -84085770 occurred
+$ ac3cli decode out.ec3 out.wav
+decoded 32 E-AC-3 access units (3 substreams each) -> out.wav
+  12 channels, 48000 Hz: L R C LFE Lrs Rrs Ls Rs Vhl Vhr Lts Rts
+```
 
-Verified against the oracle rather than against the bits alone: `tools/check_drc.py` runs 22
-checks in which a decode that *applies* the metadata is compared against one that ignores it
-(`ffmpeg -drc_scale`, `-heavy_compr`, `-ac 2`), so a stream carrying dead metadata fails.
-Measured: 5.24 dB of cut on loud passages, 5.63 dB of boost on quiet ones, programme range
-39.0 → 28.1 dB; the `compr` ceiling holds across hard transitions; every downmix level code
-moves FFmpeg's own fold-down by the dB Tables 5.9/5.10 specify, to 0.01 dB. `tools/drc_ref.py`
-is an independent transcription of Tables 7.29/7.30 as arithmetic-shift lookups, so the
-bit-packing has a second opinion. One honest gap: FFmpeg's Annex E header parser *skips* the
-compression word, so E-AC-3 `compr` has no external oracle and is covered bit-by-bit instead.
+Fourteen channels are coded and twelve are rendered: per §E3.8.2 the dependent's Ls and Rs
+replace the bed's rather than adding to them.
 
-See [docs/RESEARCH.md](docs/RESEARCH.md) for the research summary, architecture, and
-roadmap.
+**The oracles are complementary, and neither covers everything.** The in-repo decoder refuses
+Annex E coupling, spectral extension and AHT; FFmpeg reads all three, but refuses a *second*
+dependent substream. A single dependent numbers from 0 in its own space, which is why FFmpeg
+reads 7.1, 5.1.2 and 5.1.4 without complaint and only 7.1.4 defeats it. So a stream using an
+Annex E tool *and* two dependents has no decoder available here at all, and that combination
+is unverified.
 
-## Ground rules
+| Stream | FFmpeg | In-repo decoder |
+|---|---|---|
+| AC-3, any supported mode | yes | yes |
+| E-AC-3 up to 5.1.4 (one dependent), no Annex E tools | yes | yes |
+| E-AC-3 7.1.4 (two dependents) | no | yes |
+| E-AC-3 with cpl / spx / aht | yes | no |
+| E-AC-3 7.1.4 with Annex E tools | no | no |
 
-- **Clean-room:** every table and algorithm is transcribed from ATSC A/52:2018 — or, for
-  the object layer, from ETSI TS 103 420 and TS 102 366 — with its section number cited in
-  a comment. Open-source encoders are consulted for architecture lessons only; no code is
-  ever copied. (The one exception is normative by construction: TS 103 420 ships its JOC
-  Huffman tables *as* a C file, so that file is the standard, not an implementation of it.)
-- **FFmpeg is an oracle, not a dependency:** the installed `ffmpeg`/`ffprobe` CLI validates
-  our output (`ffmpeg -v error -err_detect crccheck+bitstream+buffer+explode -i out.ac3 …`);
-  nothing links against it.
-- **vcpkg supplies test/tooling packages only** (currently Catch2). **Qt is a prebuilt
-  dependency**, never a vcpkg port: `cmake/FindQt6.cmake` widens `CMAKE_PREFIX_PATH` to the
-  standard install roots (`C:/Qt/6.x/msvc2022_64`, `~/Qt`, `/opt/Qt`, …) and then defers to
-  Qt's own config package. `-DCMAKE_PREFIX_PATH=…` or `-DQt6_DIR=…` always wins.
-- **Warnings are errors** (`ac3::warnings`, linked privately into every first-party target).
-- **Standards documents are not redistributed.** `docs/spec/` is gitignored. The table
-  generators in `tools/` read from it, so fetch the three free documents first — ATSC
-  A/52:2018, ETSI TS 102 366 (EMDF is Annex H) and ETSI TS 103 420 plus its companion
-  archive `ts_103420v010201p0.zip`, which is where the JOC Huffman tables actually live —
-  and extract each PDF to page-marked text (`===== PDF PAGE n =====`) beside it.
+**Exclusive-mode passthrough has never been confirmed against bitstreaming hardware.** The
+development machine has no S/PDIF or HDMI audio endpoint, so `IsFormatSupported` correctly
+answers no everywhere and the `KSDATAFORMAT_SUBTYPE_IEC61937_DOLBY_DIGITAL` descriptor has
+never been accepted by a real device. What *is* verified: the exclusive-mode path itself works
+(the Realtek endpoint accepts an exclusive PCM format), and the IEC 61937 bursts are
+byte-exact against FFmpeg's `spdif` muxer. A receiver locking on has been confirmed only by
+playing those bursts as a PCM16 WAV through a passthrough output, which is a different code
+path from `PassthroughSink`.
+
+**Objects will not decode as objects in Dolby's decoder.** DD+ JOC gates object decoding on a
+keyed, sequence-bound HMAC-SHA-256 tag in the EMDF `protection` field — which the standard
+itself leaves "implementation dependent and not defined" — keyed on a secret embedded in
+decoder binaries. Streams from here are spec-correct (FFmpeg validates them, the bed decodes
+bit-exactly, Dolby's own parser reports `atmos=true`) but they are not signed, so Dolby's
+decoder falls back to the 5.1 bed. The gate is authenticity, not conformance. Forging the tag
+is deliberately not attempted. What is verified about reconstruction is the mathematics:
+§6.6.6 applied per band recovers each object to better than −20 dB.
+
+**Objects sharing a direction cannot be separated.** JOC reconstructs objects as a linear
+combination of the five bed channels. Two objects at the same azimuth and different heights
+get identical bed gains, so no matrix can pull them apart; the solve splits their energy by
+power instead. This is what a parametric object coder is, not a defect in this encoder.
+
+**`compr` in E-AC-3 has no external oracle.** FFmpeg's Annex E header parser reads `compre`
+and then skips the word, so `-heavy_compr` changes nothing on an E-AC-3 stream however good
+the metadata is. It is covered bit-by-bit instead ([tests/test_drc.cpp](tests/test_drc.cpp),
+[tools/eac3_parse.py](tools/eac3_parse.py)).
+
+### Portability
+
+Only built and tested with MSVC 14.51 on Windows 11. The codec itself has no platform
+dependency, and `src/lib/CMakeLists.txt` selects stub implementations of capture and
+passthrough off Windows, but no other compiler or OS has been exercised. Treat non-Windows as
+unverified rather than supported.
 
 ## Building
 
 Requirements: Visual Studio 2026 (MSVC), CMake ≥ 3.28, Ninja, a
-[vcpkg](https://github.com/microsoft/vcpkg) checkout with `VCPKG_ROOT` set, and — for the
-GUI — a prebuilt Qt 6.5+ kit (auto-detected; verified against 6.8.3 msvc2022_64).
+[vcpkg](https://github.com/microsoft/vcpkg) checkout with `VCPKG_ROOT` set (it supplies
+Catch2, and nothing else), and — for the GUI only — a prebuilt Qt 6.5+ kit. Qt is never taken
+from vcpkg.
 
-From a *Developer PowerShell for VS 2026*:
+From a **Developer PowerShell for VS 2026**, so that `cl.exe` is on `PATH`:
 
-```powershell
-cmake --preset debug        # or your user preset inheriting it
-cmake --build --preset debug
+```bash
+cmake --preset debug && cmake --build --preset debug && ctest --preset debug
+```
+
+The presets do not pin a compiler, so running them from an ordinary shell picks up whatever is
+first on `PATH` — which is how you get a wall of unrelated errors from a different toolchain.
+[docs/BUILDING.md](docs/BUILDING.md) covers that failure, building without Qt, and the
+machine-local preset pattern.
+
+## Using the library
+
+Two headers and about a dozen lines to encode a frame:
+
+```cpp
+#include "ac3/core/tables.hpp"
+#include "ac3/encoder/encoder.hpp"
+
+ac3::FrameEncoder encoder{{
+    .bitrate_kbps = 448,
+    .acmod = ac3::Acmod::k3_2,  // L, C, R, SL, SR
+    .lfe = true,
+}};
+
+// Table 5.8 order, LFE last, exactly kSamplesPerFrame (1536) samples each.
+std::vector<std::vector<float>> pcm(6, std::vector<float>(ac3::kSamplesPerFrame));
+// encode_frame takes a span of spans, so the views must outlive the call.
+const std::vector<std::span<const float>> views{pcm.begin(), pcm.end()};
+
+for (int frame = 0; frame < 31; ++frame) {
+    fill_with_audio(pcm, frame, 48000.0);
+    if (const auto encoded = encoder.encode_frame(views)) {
+        write(stream, *encoded);  // one complete syncframe
+    }
+}
+```
+
+That is [examples/encode_ac3.cpp](examples/encode_ac3.cpp) with the error handling elided.
+
+[docs/LIBRARY.md](docs/LIBRARY.md) covers the rest: `ac3::eac3::FrameEncoder` and
+`AccessUnitEncoder`, both decoders, `ac3::io::scan`, the spatial object layer, the Atmos
+encoder, and `matroska::mux`. Every example in it is a program under [examples/](examples/)
+that the build compiles and `ctest` runs, so none of them can quietly rot.
+
+## Using the CLI
+
+`ac3cli` has sixteen commands. Run it with no arguments for the full listing.
+
+```bash
+ac3cli encode in.wav out.ac3 448 couple
+```
+
+```bash
+ac3cli eac3-sine out.ec3 5 384 1000 50 714
+```
+
+```bash
+ac3cli decode out.ec3 out.wav
+```
+
+`encode` takes 1–6 channel WAVs and picks the `acmod` to match. `eac3-sine` and
+`eac3-silence` take a layout: `stereo | 51 | 71 | 512 | 514 | 714`. Metadata options
+(`drc=`, `heavy`, `dialnorm=auto`, `cmixlev=`, …) follow the positional arguments in any
+order. `atmos`, `orbit`, `levels`, `loudness`, `spdif`, `mkv`, `record`, `devices` and
+`outputs` are documented in the usage text.
+
+`ac3gui` is a Qt Quick front end over the same library: file and live-capture encoding, a plan
+view for dragging objects around the room, a height slider, and channel-level metering.
+
+## How it is validated
+
+Four independent checks, in rough order of strength.
+
+1. **The in-repo decoder.** Fully normative and sharing the encoder's core, so a round trip
+   exercises the bit-allocation model in both directions. It reaches float32-precision PCM
+   parity with FFmpeg's decoder on identical streams: max sample difference 7.9e-6 (≈ −102
+   dBFS) for AC-3, 1.4e-5 for E-AC-3. It also reads FFmpeg's own encoder output.
+2. **FFmpeg as an external oracle.** Every stream this project produces is strict-decoded with
+   `-err_detect crccheck+bitstream+buffer+explode`, which fails on a CRC error, a bitstream
+   violation or a buffer problem rather than concealing it.
+3. **Independent Python transcriptions.** [tools/](tools/) holds second implementations of the
+   spec pseudocode, written from the standard separately from the C++: the §7.2.2 bit
+   allocation, the Tables 7.29/7.30 DRC lookups, MDCT goldens. Agreement between two
+   transcriptions of the same text is weaker evidence than a decoder, but it catches
+   transcription slips that a self-consistent round trip cannot.
+4. **Dolby's own tooling as a syntax oracle.** The Reference Player and the Dolby Media
+   Encoder were diffed field-for-field against this encoder's output during the object work.
+   That found several real bugs — the EMDF container belonging in a skip field with `auxdatae`
+   clear rather than in the aux field, `codecdatae=0`, a dynamic-object-only programme with the
+   LFE as an object but not a JOC output, and metadata flag arrays transmitted index-0-first.
+
+Quality is measured, not asserted. `tools/quality_race.py` synthesizes stereo programme
+material, encodes it with both encoders at matched bit rates, decodes both with FFmpeg as a
+neutral referee, aligns by cross-correlation, and reports SNR against the original:
+
+| Bit rate | ac3forge | FFmpeg | Difference |
+|---|---|---|---|
+| 192 kbps | 41.23 dB | 40.98 dB | +0.25 |
+| 256 kbps | 44.00 dB | 42.85 dB | +1.15 |
+| 320 kbps | 45.09 dB | 44.15 dB | +0.94 |
+| 448 kbps | 51.05 dB | 47.60 dB | +3.46 |
+
+Measured with FFmpeg 8.0.1 on 2026-08-09; reproduce with `python tools/quality_race.py ac3`.
+SNR on synthetic material is a narrow metric — it says the waveform is closer, not that it
+sounds better, and no listening test has been run.
+
+The test suite is 182 ctest entries: 175 Catch2 unit tests plus the seven example programs.
+
+```bash
 ctest --preset debug
 ```
 
-Options: `AC3FORGE_BUILD_CLI`, `AC3FORGE_BUILD_GUI`, `AC3FORGE_BUILD_TESTS` (all `ON`).
-Configure with `-DAC3FORGE_BUILD_GUI=OFF` to build without Qt.
-
-## Layout
+## Repository layout
 
 ```
 cmake/          FindQt6.cmake (prebuilt-Qt discovery), CompilerWarnings.cmake
 src/lib/        ac3::forge — the whole codec, GUI-free
-  include/ac3/  public headers: core/ encoder/ decoder/ meta/ spatial/ analysis/
-                sinks/ io/ capture/
-  include/ac3/  public headers: core/ encoder/ decoder/ spatial/ analysis/
-                oba/ emdf/ sinks/ io/  (oba/ = object-based audio: OAMD, JOC,
-                the Atmos encoder; emdf/ = the TS 102 366 Annex H container)
+  include/ac3/  the public API: core/ encoder/ decoder/ meta/ spatial/ oba/
+                emdf/ analysis/ sinks/ io/ capture/
   src/          implementation
+src/matroska/   matroska::matroska — a standalone MKV muxer, no ac3::forge dependency
 src/cli/        ac3cli — command-line front end
-src/gui/        ac3gui — Qt6 Quick front end (QML module "Ac3Forge")
+src/gui/        ac3gui — Qt Quick front end (QML module "Ac3Forge")
 tests/          Catch2 unit tests; golden/ vectors generated by tools/
-tools/          Python generators (spec-table extraction, golden vectors,
-                the FFmpeg quality race) and the sine analysis harness
-docs/           RESEARCH.md plus the full research briefs and verification records
+examples/       the programs docs/LIBRARY.md is written from
+tools/          Python: spec-table generators, independent reference
+                implementations, the FFmpeg quality race
+docs/           see below
 ```
+
+The standards documents are not redistributed. `docs/spec/` is gitignored; the table
+generators in `tools/` read from it. To run them, fetch ATSC A/52:2018, ETSI TS 102 366 and
+ETSI TS 103 420 (all free) plus the TS 103 420 companion archive `ts_103420v010201p0.zip`,
+which is where the JOC Huffman tables actually live, and extract each PDF to page-marked text
+beside it. [docs/BUILDING.md](docs/BUILDING.md) has the details.
+
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [docs/BUILDING.md](docs/BUILDING.md) | Building from a clean clone, including the failures you will hit |
+| [docs/LIBRARY.md](docs/LIBRARY.md) | The public API, with compiled examples |
+| [docs/HISTORY.md](docs/HISTORY.md) | How the implementation was built, milestone by milestone |
+| [docs/RESEARCH.md](docs/RESEARCH.md) | The original feasibility research and the decisions that came out of it |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Conventions, and the validation discipline |
+
+## Licence
+
+Copyright (C) 2026 Iain Chesworth.
+
+ac3forge is free software: you can redistribute it and/or modify it under the terms of the GNU
+General Public License version 3 as published by the Free Software Foundation. It is
+distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the
+implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the full text in
+[LICENSE](LICENSE).
+
+GPL-3.0 is copyleft: anything that links this library must be distributed under the GPL too.
+That is a deliberate choice, not an oversight. The licence covers this source only — it grants
+no rights in the standards it implements, and says nothing about any patents reading on AC-3
+or E-AC-3.

@@ -32,6 +32,7 @@ add_compile_options("$<$<CXX_COMPILER_ID:MSVC>:/utf-8>")
 option(AC3FORGE_BUILD_CLI "Build the ac3cli command-line application" ON)
 option(AC3FORGE_BUILD_GUI "Build the Qt6 Quick GUI application" ON)
 option(AC3FORGE_BUILD_TESTS "Build the unit test suite" ON)
+option(AC3FORGE_BUILD_EXAMPLES "Build the documented library examples" ON)
 
 # ---------------------------------------------------------------------------
 # Targets
@@ -56,7 +57,14 @@ if(AC3FORGE_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
+# After the tests block: the examples register themselves as tests, which needs
+# enable_testing() to have run.
+if(AC3FORGE_BUILD_EXAMPLES)
+    add_subdirectory(examples)
+endif()
+
 message(STATUS "ac3forge ${PROJECT_VERSION}")
-message(STATUS "  Build CLI   : ${AC3FORGE_BUILD_CLI}")
-message(STATUS "  Build GUI   : ${AC3FORGE_BUILD_GUI}")
-message(STATUS "  Build tests : ${AC3FORGE_BUILD_TESTS}")
+message(STATUS "  Build CLI      : ${AC3FORGE_BUILD_CLI}")
+message(STATUS "  Build GUI      : ${AC3FORGE_BUILD_GUI}")
+message(STATUS "  Build tests    : ${AC3FORGE_BUILD_TESTS}")
+message(STATUS "  Build examples : ${AC3FORGE_BUILD_EXAMPLES}")
