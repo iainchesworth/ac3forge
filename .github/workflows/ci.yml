@@ -1,0 +1,155 @@
+# ac3forge CI.
+#
+# ---------------------------------------------------------------------------
+# Matrix status at the commit that added this workflow
+# ---------------------------------------------------------------------------
+# Every leg was run for real before being claimed here: windows-msvc and
+# windows-llvm locally (MSVC 14.51 / clang-cl 21.1.0), the two Linux legs in an
+# Ubuntu 26.04 container built from .github/toolchain/ (gcc 15.2.0 / clang
+# 21.1.8). macOS could not be run at all — the project has no Mac.
+#
+#   leg            status    what stands in the way
+#   -------------  --------  ---------------------------------------------------
+#   windows-msvc   GREEN     175/175 tests pass
+#   windows-llvm   red       17 sites: sign-conversion, double-promotion
+#   linux-gcc      red       47 sites: shadow (141), sign-conversion (103),
+#                            double-promotion, missing-field-initializers,
+#                            null-dereference, range-loop-construct,
+#                            unused-function
+#   linux-llvm     red       16 sites: sign-conversion (102), double-promotion,
+#                            missing-designated-field-initializers,
+#                            implicit-int-float-conversion
+#   macos-llvm     unknown   never executed; shares linux-llvm's warning set, so
+#                            expect at least the same failures
+#
+# One root cause runs through all of it: cmake/CompilerWarnings.cmake enables a
+# strict GNU-style warning set with -Werror, and until now only MSVC's /W4 /WX
+# has ever had to be satisfied. The failures are in the codec sources, not in
+# CI, and fixing them is the cross-platform porting work — not this workflow's
+# job. So the four unproven legs run with continue-on-error (see _build.yml):
+# they report honestly without turning the default branch red on every push.
+#
+# Promote a leg by deleting its `experimental: true` line in _build.yml.
+name: CI
+
+# NOTE: master, not main - that is this repository's default branch.
+on:
+  # Only the default branch builds on push; the work happens on branches whose
+  # pull_request run covers them, so a WIP push does not also run the matrix.
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Classify the change so a docs-only edit skips a five-platform matrix. This
+  # is a job rather than a workflow-level paths-ignore on purpose: a filtered-out
+  # workflow never runs, so the required "CI Status" check below would sit
+  # pending forever and block the PR. Gating the heavy job instead keeps the
+  # gate reporting. Conservative - anything not clearly docs counts as code.
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.detect.outputs.code }}
+    steps:
+      - name: Classify changed files
+        id: detect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          docs_re='^(docs/|LICENSE$|.*\.md$)'
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            files=$(gh api --paginate "repos/$REPO/pulls/${{ github.event.pull_request.number }}/files" --jq '.[].filename')
+          else
+            before='${{ github.event.before }}'
+            if [ -z "$before" ] || [ "$before" = "0000000000000000000000000000000000000000" ]; then
+              files=$(gh api "repos/$REPO/commits/${{ github.sha }}" --jq '.files[].filename')
+            else
+              files=$(gh api "repos/$REPO/compare/$before...${{ github.sha }}" --jq '.files[].filename')
+            fi
+          fi
+
+          # No file list (a manual dispatch, an API hiccup) means build, not skip.
+          if [ -z "$files" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "No file list available; assuming code changed."
+            exit 0
+          fi
+
+          code=false
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            if ! echo "$f" | grep -qE "$docs_re"; then
+              echo "  code: $f"
+              code=true
+            fi
+          done <<< "$files"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "code=$code"
+
+  # The no-#ifdef rule. Cheap, fast, and deliberately ungated by `changes` so a
+  # violation is reported even while the porting legs are still red.
+  platform-macros:
+    name: Platform Macros
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check for preprocessor conditionals in src/
+        shell: pwsh
+        run: ./scripts/check-platform-macros.ps1 -Root $PWD
+
+  build-and-test:
+    name: Build & Test
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    uses: ./.github/workflows/_build.yml
+
+  # Branch protection points at this one check rather than at each matrix leg,
+  # so adding or renaming a leg does not need the protection rule updated.
+  # Experimental legs cannot reach it: continue-on-error means the reusable
+  # workflow reports success even when one of them fails.
+  ci-status:
+    name: CI Status
+    if: always()
+    needs: [ changes, platform-macros, build-and-test ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Gate on required job results
+        shell: bash
+        env:
+          R_CHANGES: ${{ needs.changes.result }}
+          R_MACROS: ${{ needs.platform-macros.result }}
+          # 'skipped' on a docs-only change, which is a pass, not a failure.
+          R_BUILD: ${{ needs.build-and-test.result }}
+        run: |
+          set -euo pipefail
+          fail=0
+          for pair in "changes:$R_CHANGES" "platform-macros:$R_MACROS" "build-and-test:$R_BUILD"; do
+            job="${pair%%:*}"; result="${pair#*:}"
+            echo "  $job: $result"
+            if [ "$result" = "failure" ] || [ "$result" = "cancelled" ]; then
+              echo "::error::$job reported '$result'."
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "CI failed - see the failing job(s) above."
+            exit 1
+          fi
+          echo "All required CI jobs passed or were skipped."

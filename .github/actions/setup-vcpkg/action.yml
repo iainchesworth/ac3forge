@@ -1,0 +1,78 @@
+name: Setup vcpkg
+description: >-
+  Clone and bootstrap vcpkg at a pinned commit, and wire up a cached binary +
+  download cache. ac3forge does not vendor vcpkg as a submodule (unlike
+  aqualink-automate), so the checkout happens here rather than in the repo.
+
+inputs:
+  vcpkg-commit:
+    description: >-
+      microsoft/vcpkg commit to pin. This is what fixes the dependency
+      versions: vcpkg.json carries no builtin-baseline, so the registry
+      baseline comes from the checkout's own git history.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # A full clone: manifest mode with no builtin-baseline resolves the baseline
+    # from the checkout's history, which a --depth 1 clone does not have. Then
+    # reset to the pin so a rebuild months from now installs the same Catch2.
+    - name: Clone and bootstrap vcpkg
+      shell: bash
+      run: |
+        set -euo pipefail
+        VCPKG_DIR="${RUNNER_TEMP}/vcpkg"
+        if [ ! -d "$VCPKG_DIR/.git" ]; then
+          git clone https://github.com/microsoft/vcpkg.git "$VCPKG_DIR"
+        fi
+        git -C "$VCPKG_DIR" fetch --tags origin
+        git -C "$VCPKG_DIR" checkout --force "${{ inputs.vcpkg-commit }}"
+        if [ "$RUNNER_OS" = "Windows" ]; then
+          "$VCPKG_DIR/bootstrap-vcpkg.bat" -disableMetrics
+          echo "VCPKG_ROOT=$(cygpath -w "$VCPKG_DIR")" >> "$GITHUB_ENV"
+        else
+          "$VCPKG_DIR/bootstrap-vcpkg.sh" -disableMetrics
+          echo "VCPKG_ROOT=$VCPKG_DIR" >> "$GITHUB_ENV"
+        fi
+
+    # vcpkg rejects an MSYS-style path (/c/...) for these, so hand it a native
+    # Windows path. The cache action below still needs the bash-style path,
+    # hence the two forms.
+    - name: Set up vcpkg cache directories
+      shell: bash
+      run: |
+        set -euo pipefail
+        BINARY_DIR="$HOME/.cache/vcpkg/archives"
+        DOWNLOADS_DIR="$HOME/.cache/vcpkg/downloads"
+        mkdir -p "$BINARY_DIR" "$DOWNLOADS_DIR"
+        if command -v cygpath >/dev/null 2>&1; then
+          BINARY_DIR=$(cygpath -w "$BINARY_DIR")
+          DOWNLOADS_DIR=$(cygpath -w "$DOWNLOADS_DIR")
+        fi
+        echo "VCPKG_DEFAULT_BINARY_CACHE=$BINARY_DIR" >> "$GITHUB_ENV"
+        echo "VCPKG_DOWNLOADS=$DOWNLOADS_DIR" >> "$GITHUB_ENV"
+        echo "VCPKG_BINARY_SOURCES=clear;default,readwrite" >> "$GITHUB_ENV"
+
+    # Keyed by OS + arch + the vcpkg pin + the manifest. Compiler is deliberately
+    # NOT in the key: the two Linux legs (gcc, clang) and the two Windows legs
+    # (cl, clang-cl) build the same x64-linux / x64-windows triplet, so they
+    # share one cache instead of duplicating it. vcpkg names archives by ABI
+    # hash, so entries for different triplets coexist safely anyway.
+    - name: Cache vcpkg binaries
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cache/vcpkg/archives
+        key: vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ inputs.vcpkg-commit }}-${{ hashFiles('vcpkg.json') }}
+        restore-keys: |
+          vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ inputs.vcpkg-commit }}-
+          vcpkg-${{ runner.os }}-${{ runner.arch }}-
+
+    - name: Cache vcpkg downloads
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cache/vcpkg/downloads
+        key: vcpkg-downloads-${{ runner.os }}-${{ inputs.vcpkg-commit }}-${{ hashFiles('vcpkg.json') }}
+        restore-keys: |
+          vcpkg-downloads-${{ runner.os }}-${{ inputs.vcpkg-commit }}-
+          vcpkg-downloads-${{ runner.os }}-

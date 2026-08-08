@@ -1,0 +1,11 @@
+# Development happens on Windows, where core.autocrlf is normally on. Shell
+# scripts must reach the Linux CI runners with LF endings regardless of any
+# contributor's local git config: bash reads a CRLF script as commands ending
+# in a stray \r and fails with "command not found". Pin them explicitly rather
+# than relying on autocrlf normalising the blob.
+*.sh text eol=lf
+
+# Same reasoning for the workflow files: YAML tolerates CRLF, but the shell
+# fragments inside `run:` blocks are extracted verbatim and run by bash.
+*.yml text eol=lf
+*.yaml text eol=lf

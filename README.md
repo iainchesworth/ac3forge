@@ -298,6 +298,49 @@ gitignored. Inherit the preset you want and add the environment:
 }
 ```
 
+## Continuous integration
+
+`.github/workflows/ci.yml` builds and runs the full test suite on five
+platform/compiler legs, each named after the preset it uses, so
+`cmake --preset linux-gcc` reproduces a CI leg exactly — the workflow passes no
+`-D` of its own. The GUI is **off** in CI (`AC3FORGE_BUILD_GUI=OFF` in the `ci`
+preset): Qt is a prebuilt per-platform kit by project rule, never a vcpkg port,
+and there is no such kit on a hosted runner. GUI coverage waits for a kit.
+
+Only one leg is proven today. The rest fail to compile, all for the same reason:
+`cmake/CompilerWarnings.cmake` enables a strict GNU-style warning set with
+`-Werror` and, until the cross-platform work started, only MSVC's `/W4 /WX` had
+ever had to be satisfied. Nothing in the build harness is at fault — on Linux
+every single failure is a warning-as-error.
+
+| leg            | status  | blocked by                                                        |
+| -------------- | ------- | ----------------------------------------------------------------- |
+| `windows-msvc` | green   | —, 175/175 tests pass                                             |
+| `windows-llvm` | red     | 17 sites: `sign-conversion`, `double-promotion`                   |
+| `linux-gcc`    | red     | 47 sites: `shadow` (141), `sign-conversion` (103), + 6 more kinds |
+| `linux-llvm`   | red     | 16 sites: `sign-conversion` (102), `double-promotion` (16), + 2   |
+| `macos-llvm`   | unknown | never executed — the project has no Mac; CI is the first look     |
+
+The four unproven legs run with `continue-on-error`, so they report honestly
+without turning `master` red on every push. Promote one by deleting its
+`experimental: true` line in `.github/workflows/_build.yml`.
+
+Toolchains are pinned: MSVC 14.5x from the VS 2026 `aka.ms/vs/18/stable`
+channel, GCC 15 and LLVM 21 via the scripts in `.github/toolchain/` (copied
+verbatim from aqualink-automate), and a fixed `microsoft/vcpkg` commit. The
+Linux legs run in an `ubuntu:26.04` container, whose archive carries both
+compilers outright — on `ubuntu-latest` the LLVM fallback to apt.llvm.org is
+missing `clang-tidy-21`/`lld-21`/`libc++-21-dev` and fails before compiling.
+
+`scripts/check-platform-macros.ps1` enforces the no-`#ifdef` rule as its own
+job: the OS is a CMake decision (see the `WIN32` block in
+`src/lib/CMakeLists.txt`), so `src/` must contain no preprocessor conditionals
+at all. Run it locally the same way CI does:
+
+```powershell
+./scripts/check-platform-macros.ps1
+```
+
 ## Layout
 
 ```
