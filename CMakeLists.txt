@@ -35,6 +35,7 @@ option(AC3FORGE_BUILD_TESTS "Build the unit test suite" ON)
 # Catch2 is the only build-time dependency. Turn this off to insist it comes
 # from a package manager instead of the network (see tests/CMakeLists.txt).
 option(AC3FORGE_FETCH_CATCH2 "Download Catch2 when no local copy is found" ON)
+option(AC3FORGE_BUILD_EXAMPLES "Build the documented library examples" ON)
 
 # ---------------------------------------------------------------------------
 # Targets
@@ -59,7 +60,14 @@ if(AC3FORGE_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
+# After the tests block: the examples register themselves as tests, which needs
+# enable_testing() to have run.
+if(AC3FORGE_BUILD_EXAMPLES)
+    add_subdirectory(examples)
+endif()
+
 message(STATUS "ac3forge ${PROJECT_VERSION}")
-message(STATUS "  Build CLI   : ${AC3FORGE_BUILD_CLI}")
-message(STATUS "  Build GUI   : ${AC3FORGE_BUILD_GUI}")
-message(STATUS "  Build tests : ${AC3FORGE_BUILD_TESTS}")
+message(STATUS "  Build CLI      : ${AC3FORGE_BUILD_CLI}")
+message(STATUS "  Build GUI      : ${AC3FORGE_BUILD_GUI}")
+message(STATUS "  Build tests    : ${AC3FORGE_BUILD_TESTS}")
+message(STATUS "  Build examples : ${AC3FORGE_BUILD_EXAMPLES}")
