@@ -105,6 +105,90 @@ EncodedExponents encode_exponents(std::span<const std::uint8_t> raw, ExpStrategy
     return encoded;
 }
 
+EncodedCouplingExponents encode_coupling_exponents(std::span<const std::uint8_t> raw,
+                                                   ExpStrategy strategy) {
+    const int group_size = exponent_group_size(strategy);
+    const int count = static_cast<int>(raw.size());
+    assert(group_size > 0 && count > 0);
+    assert(count % (3 * group_size) == 0);
+    const int ngrps = count / (3 * group_size);
+    const int diff_count = ngrps * 3;
+
+    // pre[0] is the absolute reference (even, 0..24); pre[1 + i] covers the
+    // i-th group of `group_size` coupling bins, taking the group minimum so
+    // every member stays representable.
+    std::vector<int> pre(static_cast<std::size_t>(diff_count) + 1);
+    for (int i = 0; i < diff_count; ++i) {
+        int value = kMaxExponent;
+        for (int j = 0; j < group_size; ++j) {
+            const int bin = i * group_size + j;
+            if (bin < count) {
+                value = std::min<int>(value, raw[static_cast<std::size_t>(bin)]);
+            }
+        }
+        pre[static_cast<std::size_t>(i) + 1] = value;
+    }
+    // Seed the reference at the first group's value rounded DOWN to an even
+    // number: rounding up could demand a -1 differential the first step
+    // cannot always absorb, and a lower reference is always safe.
+    pre[0] = std::clamp(pre[1] & ~1, 0, 24);
+
+    // Slew limiting, decrease-only, exactly as for fbw channels - except
+    // pre[0] must stay even, so it steps by 2.
+    for (int i = 1; i <= diff_count; ++i) {
+        pre[static_cast<std::size_t>(i)] =
+            std::min(pre[static_cast<std::size_t>(i)], pre[static_cast<std::size_t>(i) - 1] + 2);
+    }
+    for (int i = diff_count; i-- > 0;) {
+        auto& value = pre[static_cast<std::size_t>(i)];
+        value = std::min(value, pre[static_cast<std::size_t>(i) + 1] + 2);
+        if (i == 0) {
+            value &= ~1;  // keep the transmitted reference even
+        }
+    }
+
+    EncodedCouplingExponents encoded;
+    encoded.cplabsexp = static_cast<std::uint8_t>(pre[0] >> 1);
+    encoded.groups.reserve(static_cast<std::size_t>(ngrps));
+    for (int g = 0; g < ngrps; ++g) {
+        int mapped[3];
+        for (int j = 0; j < 3; ++j) {
+            const std::size_t i = static_cast<std::size_t>(3 * g + j);
+            const int diff = pre[i + 1] - pre[i];
+            assert(diff >= -2 && diff <= 2);
+            mapped[j] = diff + 2;
+        }
+        encoded.groups.push_back(
+            static_cast<std::uint8_t>(25 * mapped[0] + 5 * mapped[1] + mapped[2]));
+    }
+    return encoded;
+}
+
+void decode_coupling_exponents(std::uint8_t cplabsexp, std::span<const std::uint8_t> groups,
+                               ExpStrategy strategy, std::span<std::uint8_t> out) {
+    const int group_size = exponent_group_size(strategy);
+    const int ngrps = static_cast<int>(groups.size());
+    assert(group_size > 0);
+
+    // §7.1.3: absexp = cplabsexp << 1, and the expansion drops exp[0] - the
+    // reference is not itself a coefficient exponent.
+    int prevexp = cplabsexp << 1;
+    std::size_t bin = 0;
+    for (int grp = 0; grp < ngrps; ++grp) {
+        const int gexp = groups[static_cast<std::size_t>(grp)];
+        const int dexp[3] = {gexp / 25, (gexp % 25) / 5, (gexp % 25) % 5};
+        for (int j = 0; j < 3; ++j) {
+            prevexp += dexp[j] - 2;
+            for (int k = 0; k < group_size; ++k) {
+                if (bin < out.size()) {
+                    out[bin] = static_cast<std::uint8_t>(prevexp);
+                    ++bin;
+                }
+            }
+        }
+    }
+}
+
 void decode_exponents(std::uint8_t absolute, std::span<const std::uint8_t> groups,
                       ExpStrategy strategy, std::span<std::uint8_t> out) {
     const int group_size = exponent_group_size(strategy);

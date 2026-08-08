@@ -8,6 +8,7 @@ add_executable(ac3tests
     msvc_crt_report.cpp
     test_bitalloc.cpp
     test_bitwriter.cpp
+    test_coupling.cpp
     test_crc16.cpp
     test_decoder.cpp
     test_encoder.cpp

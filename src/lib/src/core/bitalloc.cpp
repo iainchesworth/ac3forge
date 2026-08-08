@@ -46,10 +46,11 @@ int calc_lowcomp(int a, int b0, int b1, int bin) {
 
 void compute_bit_allocation(std::span<const std::uint8_t> exps, SampleRate sample_rate,
                             const BitAllocCodes& codes, int csnroffst, int fsnroffst,
-                            std::span<std::uint8_t> bap) {
+                            std::span<std::uint8_t> bap, const BitAllocRegion& region) {
     assert(exps.size() == bap.size());
     const int end = static_cast<int>(exps.size());
     assert(end >= 1 && end <= 253);
+    assert(region.start >= 0 && region.start < end);
 
     // §7.2.2.1.1 special case: all-zero SNR offsets -> all-zero bap.
     if (csnroffst == 0 && fsnroffst == 0) {
@@ -67,7 +68,7 @@ void compute_bit_allocation(std::span<const std::uint8_t> exps, SampleRate sampl
     }
     const int fgain = kFastGain[static_cast<std::size_t>(codes.fgaincod)];
     const int snroffset = snr_offset(csnroffst, fsnroffst);
-    constexpr int kStart = 0;  // fbw channels
+    const int kStart = region.start;
 
     // §7.2.2.2: exponents -> 13-bit signed log PSD.
     std::array<int, 253> psd{};
@@ -96,15 +97,26 @@ void compute_bit_allocation(std::span<const std::uint8_t> exps, SampleRate sampl
         } while (end > lastbin);
     }
 
-    // §7.2.2.4: excitation function (fbw path: bndstrt == 0).
+    // §7.2.2.4: excitation function. Two shapes: fbw/LFE channels start at
+    // band 0 and run the lowcomp low-frequency compensation, the coupling
+    // channel starts higher and seeds its leaks instead.
     const int bndstrt = kMaskTab[kStart];
     const int bndend = kMaskTab[static_cast<std::size_t>(end - 1)] + 1;
     std::array<int, 50> excite{};
-    assert(bndstrt == 0);
     int lowcomp = 0;
     int fastleak = 0;
     int slowleak = 0;
-    {
+    int begin_band = bndstrt;
+    if (region.coupling) {
+        // §7.2.2.1 / §7.2.2.4: the coupling channel starts above the
+        // low-frequency region entirely, so it skips the lowcomp machinery
+        // and instead seeds the leak state from the transmitted cplfleak /
+        // cplsleak, continuing the decay from wherever the fbw channels left
+        // off below the coupling frequency.
+        fastleak = (region.cplfleak << 8) + 768;
+        slowleak = (region.cplsleak << 8) + 768;
+    } else {
+        assert(bndstrt == 0);
         // §7.2.2.4: for the LFE channel (bndend == 7), calc_lowcomp and the
         // monotone-rise break check are skipped for the last band (bin 6) —
         // bndpsd[7] does not exist there.
@@ -139,13 +151,18 @@ void compute_bit_allocation(std::span<const std::uint8_t> exps, SampleRate sampl
             slowleak = std::max(slowleak, bndpsd[static_cast<std::size_t>(bin)] - sgain);
             excite[static_cast<std::size_t>(bin)] = std::max(fastleak - lowcomp, slowleak);
         }
-        for (int bin = 22; bin < bndend; ++bin) {
-            fastleak -= fdecay;
-            fastleak = std::max(fastleak, bndpsd[static_cast<std::size_t>(bin)] - fgain);
-            slowleak -= sdecay;
-            slowleak = std::max(slowleak, bndpsd[static_cast<std::size_t>(bin)] - sgain);
-            excite[static_cast<std::size_t>(bin)] = std::max(fastleak, slowleak);
-        }
+        begin_band = 22;
+    }
+
+    // The common upper region: no lowcomp, plain dual-leak decay. For fbw
+    // channels this picks up at band 22; for the coupling channel it is the
+    // whole range.
+    for (int bin = begin_band; bin < bndend; ++bin) {
+        fastleak -= fdecay;
+        fastleak = std::max(fastleak, bndpsd[static_cast<std::size_t>(bin)] - fgain);
+        slowleak -= sdecay;
+        slowleak = std::max(slowleak, bndpsd[static_cast<std::size_t>(bin)] - sgain);
+        excite[static_cast<std::size_t>(bin)] = std::max(fastleak, slowleak);
     }
 
     // §7.2.2.5: masking curve (excitation, dB knee boost, hearing threshold).

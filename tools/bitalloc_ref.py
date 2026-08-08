@@ -45,8 +45,14 @@ def calc_lowcomp(a, b0, b1, bin_):
 
 
 def bit_alloc(exps, fscod, sdcycod, fdcycod, sgaincod, dbpbcod, floorcod,
-              fgaincod, csnroffst, fsnroffst):
-    """fbw-channel path (start = 0), §7.2.2.1 through §7.2.2.7."""
+              fgaincod, csnroffst, fsnroffst, start=0, coupling=False,
+              cplfleak=0, cplsleak=0):
+    """§7.2.2.1 through §7.2.2.7 for one channel.
+
+    start/coupling select the two shapes: fbw and LFE channels start at bin 0
+    and run the lowcomp path; the coupling channel starts at cplstrtmant and
+    seeds its leak state from cplfleak/cplsleak instead.
+    """
     end = len(exps)
     # 7.2.2.1.1 special case: all-zero SNR offsets -> all-zero bap.
     if csnroffst == 0 and fsnroffst == 0:
@@ -61,7 +67,6 @@ def bit_alloc(exps, fscod, sdcycod, fdcycod, sgaincod, dbpbcod, floorcod,
         floor -= 0x10000  # 0xf800 is a negative 16-bit value
     fgain = T["fastgain"][fgaincod]
     snroffset = ((csnroffst - 15) << 4) + fsnroffst << 2
-    start = 0
     lowcomp = 0
 
     # 7.2.2.2: exponent -> psd.
@@ -82,39 +87,49 @@ def bit_alloc(exps, fscod, sdcycod, fdcycod, sgaincod, dbpbcod, floorcod,
         if end <= lastbin:
             break
 
-    # 7.2.2.4: excitation function (fbw path, bndstrt == 0).
+    # 7.2.2.4: excitation function. Two shapes: fbw/LFE start at band 0 and
+    # run lowcomp; the coupling channel starts higher and seeds its leaks.
     bndstrt = T["masktab"][start]
     bndend = T["masktab"][end - 1] + 1
     excite = {}
-    assert bndstrt == 0
-    # LFE (bndend == 7): skip calc_lowcomp and the break check at bin 6.
-    def not_lfe_last(bin_):
-        return bndend != 7 or bin_ != 6
-
-    lowcomp = calc_lowcomp(lowcomp, bndpsd[0], bndpsd[1], 0)
-    excite[0] = bndpsd[0] - fgain - lowcomp
-    lowcomp = calc_lowcomp(lowcomp, bndpsd[1], bndpsd[2], 1)
-    excite[1] = bndpsd[1] - fgain - lowcomp
-    begin = 7
     fastleak = slowleak = 0
-    for bin_ in range(2, 7):
-        if not_lfe_last(bin_):
-            lowcomp = calc_lowcomp(lowcomp, bndpsd[bin_], bndpsd[bin_ + 1], bin_)
-        fastleak = bndpsd[bin_] - fgain
-        slowleak = bndpsd[bin_] - sgain
-        excite[bin_] = fastleak - lowcomp
-        if not_lfe_last(bin_) and bndpsd[bin_] <= bndpsd[bin_ + 1]:
-            begin = bin_ + 1
-            break
-    for bin_ in range(begin, min(bndend, 22)):
-        if not_lfe_last(bin_):
-            lowcomp = calc_lowcomp(lowcomp, bndpsd[bin_], bndpsd[bin_ + 1], bin_)
-        fastleak -= fdecay
-        fastleak = max(fastleak, bndpsd[bin_] - fgain)
-        slowleak -= sdecay
-        slowleak = max(slowleak, bndpsd[bin_] - sgain)
-        excite[bin_] = max(fastleak - lowcomp, slowleak)
-    for bin_ in range(22, bndend):
+    begin_band = bndstrt
+    if coupling:
+        fastleak = (cplfleak << 8) + 768
+        slowleak = (cplsleak << 8) + 768
+    else:
+        assert bndstrt == 0
+
+        # LFE (bndend == 7): skip calc_lowcomp and the break check at bin 6.
+        def not_lfe_last(bin_):
+            return bndend != 7 or bin_ != 6
+
+        lowcomp = calc_lowcomp(lowcomp, bndpsd[0], bndpsd[1], 0)
+        excite[0] = bndpsd[0] - fgain - lowcomp
+        lowcomp = calc_lowcomp(lowcomp, bndpsd[1], bndpsd[2], 1)
+        excite[1] = bndpsd[1] - fgain - lowcomp
+        begin = 7
+        for bin_ in range(2, 7):
+            if not_lfe_last(bin_):
+                lowcomp = calc_lowcomp(lowcomp, bndpsd[bin_], bndpsd[bin_ + 1], bin_)
+            fastleak = bndpsd[bin_] - fgain
+            slowleak = bndpsd[bin_] - sgain
+            excite[bin_] = fastleak - lowcomp
+            if not_lfe_last(bin_) and bndpsd[bin_] <= bndpsd[bin_ + 1]:
+                begin = bin_ + 1
+                break
+        for bin_ in range(begin, min(bndend, 22)):
+            if not_lfe_last(bin_):
+                lowcomp = calc_lowcomp(lowcomp, bndpsd[bin_], bndpsd[bin_ + 1], bin_)
+            fastleak -= fdecay
+            fastleak = max(fastleak, bndpsd[bin_] - fgain)
+            slowleak -= sdecay
+            slowleak = max(slowleak, bndpsd[bin_] - sgain)
+            excite[bin_] = max(fastleak - lowcomp, slowleak)
+        begin_band = 22
+
+    # Common upper region: no lowcomp, plain dual-leak decay.
+    for bin_ in range(begin_band, bndend):
         fastleak -= fdecay
         fastleak = max(fastleak, bndpsd[bin_] - fgain)
         slowleak -= sdecay
@@ -158,9 +173,13 @@ def main():
     cases = []
 
     def add_case(name, exps, fscod=0, csnr=20, fsnr=6,
-                 sd=2, fd=1, sg=1, db=2, fl=4, fg=4):
-        bap = bit_alloc(exps, fscod, sd, fd, sg, db, fl, fg, csnr, fsnr)
-        cases.append((name, exps, fscod, csnr, fsnr, sd, fd, sg, db, fl, fg, bap))
+                 sd=2, fd=1, sg=1, db=2, fl=4, fg=4,
+                 start=0, coupling=False, cplfleak=0, cplsleak=0):
+        bap = bit_alloc(exps, fscod, sd, fd, sg, db, fl, fg, csnr, fsnr,
+                        start=start, coupling=coupling, cplfleak=cplfleak,
+                        cplsleak=cplsleak)
+        cases.append((name, exps, fscod, csnr, fsnr, sd, fd, sg, db, fl, fg, bap,
+                      start, coupling, cplfleak, cplsleak))
 
     rng = random.Random(0x52)
 
@@ -188,6 +207,22 @@ def main():
     add_case("LfeLoud", [2, 3, 4, 6, 9, 14, 20])
     add_case("LfeRising", [20, 18, 14, 10, 6, 3, 1], csnr=30, fsnr=8)
 
+    # Coupling channel: starts at cplstrtmant = 37 + 12*cplbegf and runs to
+    # cplendmant = 37 + 12*(cplendf + 3), seeding the leaks from
+    # cplfleak/cplsleak instead of the lowcomp path.
+    for cplbegf, cplendf, fleak, sleak, tag in ((6, 12, 0, 0, "Mid"),
+                                                (0, 14, 7, 7, "Wide"),
+                                                (10, 4, 3, 5, "High")):
+        strtmant = 37 + 12 * cplbegf
+        endmant = 37 + 12 * (cplendf + 3)
+        if endmant > 253 or strtmant >= endmant:
+            continue
+        exps = [24] * endmant
+        for bin_ in range(strtmant, endmant):
+            exps[bin_] = 4 + (bin_ * 5) % 19
+        add_case(f"Coupling{tag}", exps, start=strtmant, coupling=True,
+                 cplfleak=fleak, cplsleak=sleak, csnr=22, fsnr=9)
+
     parts = [
         "// GENERATED by tools/bitalloc_ref.py - do not edit by hand. Bit-exact",
         "// golden bap vectors from an independent Python transcription of the",
@@ -208,6 +243,9 @@ def main():
         "    std::array<std::uint8_t, 253> exps;   // padded with 0xFF past endmant",
         "    std::array<std::uint8_t, 253> bap;    // padded with 0xFF past endmant",
         "    int endmant;",
+        "    int start;",
+        "    bool coupling;",
+        "    int cplfleak, cplsleak;",
         "};",
         "",
     ]
@@ -220,17 +258,19 @@ def main():
         return "{{\n" + "\n".join(rows) + "\n     }}"
 
     parts.append(f"inline constexpr std::array<BitAllocCase, {len(cases)}> kBitAllocCases = {{{{")
-    for (name, exps, fscod, csnr, fsnr, sd, fd, sg, db, fl, fg, bap) in cases:
+    for (name, exps, fscod, csnr, fsnr, sd, fd, sg, db, fl, fg, bap,
+         start, coupling, cplfleak, cplsleak) in cases:
         parts.append(f"    {{\"{name}\", {fscod}, {csnr}, {fsnr}, {sd}, {fd}, {sg}, {db}, {fl}, {fg},")
         parts.append(f"     {arr(exps)},")
         parts.append(f"     {arr(bap)},")
-        parts.append(f"     {len(exps)}}},")
+        parts.append(f"     {len(exps)}, {start}, {'true' if coupling else 'false'}, "
+                     f"{cplfleak}, {cplsleak}}},")
     parts.append("}};")
     parts.append("")
     parts.append("}  // namespace ac3::golden")
 
     OUT.write_text("\n".join(parts) + "\n", encoding="utf-8", newline="\n")
-    total_bits = sum(sum(b for b in c[-1]) for c in cases)
+    total_bits = sum(sum(case[11]) for case in cases)  # index 11 is the bap list
     print(f"wrote {OUT} ({len(cases)} cases; sanity: sum of all baps = {total_bits})")
 
 

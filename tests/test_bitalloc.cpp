@@ -18,9 +18,15 @@ TEST_CASE("bit allocation matches the independent Python reference bit-exactly",
                                        .dbpbcod = c.dbpbcod,
                                        .floorcod = c.floorcod,
                                        .fgaincod = c.fgaincod};
+        const ac3::BitAllocRegion region{.start = c.start,
+                                         .coupling = c.coupling,
+                                         .cplfleak = c.cplfleak,
+                                         .cplsleak = c.cplsleak};
         ac3::compute_bit_allocation(exps, static_cast<ac3::SampleRate>(c.fscod), codes,
-                                    c.csnroffst, c.fsnroffst, bap);
-        for (int bin = 0; bin < c.endmant; ++bin) {
+                                    c.csnroffst, c.fsnroffst, bap, region);
+        // Only the allocated region is meaningful; bins below a coupling
+        // channel's start are never touched by either implementation.
+        for (int bin = c.start; bin < c.endmant; ++bin) {
             CAPTURE(bin);
             // Integer pseudocode: zero tolerance.
             REQUIRE(bap[static_cast<std::size_t>(bin)] == c.bap[static_cast<std::size_t>(bin)]);

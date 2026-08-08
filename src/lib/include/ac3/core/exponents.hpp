@@ -75,4 +75,22 @@ struct EncodedExponents {
 void decode_exponents(std::uint8_t absolute, std::span<const std::uint8_t> groups,
                       ExpStrategy strategy, std::span<std::uint8_t> out);
 
+// The coupling channel's exponent set has a different shape (§7.1.3,
+// §5.4.3.25): its absolute exponent is a reference that does NOT correspond
+// to a coefficient - the first coded exponent is the one after it - and it is
+// restricted to even values, transmitted as cplabsexp = absexp / 2. `raw`
+// holds one exponent per coupling bin, and its length must be a multiple of
+// 3 * the strategy's group size.
+struct EncodedCouplingExponents {
+    std::uint8_t cplabsexp = 0;        // the 4-bit transmitted field (absexp >> 1)
+    std::vector<std::uint8_t> groups;  // ncplgrps 7-bit grouped mapped values
+};
+
+[[nodiscard]] EncodedCouplingExponents encode_coupling_exponents(
+    std::span<const std::uint8_t> raw, ExpStrategy strategy);
+
+// The matching normative decode: fills one exponent per coupling bin.
+void decode_coupling_exponents(std::uint8_t cplabsexp, std::span<const std::uint8_t> groups,
+                               ExpStrategy strategy, std::span<std::uint8_t> out);
+
 }  // namespace ac3

@@ -33,12 +33,22 @@ struct BitAllocCodes {
     return (((csnroffst - 15) << 4) + fsnroffst) << 2;
 }
 
-// §7.2.2.2-7.2.2.7 for one fbw channel. exps are the DECODED exponents (the
-// decoder mirror — never the raw ones); bap.size() == exps.size() == endmant.
+// Where the allocation starts, and - for the coupling channel - the leak
+// state the spec seeds instead of running the low-frequency lowcomp path.
+struct BitAllocRegion {
+    int start = 0;             // strtmant: 0 for fbw and LFE, cplstrtmant for coupling
+    bool coupling = false;     // §7.2.2.4 takes the "else" branch: no lowcomp
+    int cplfleak = 0;          // 3-bit cplfleak, only when coupling
+    int cplsleak = 0;          // 3-bit cplsleak, only when coupling
+};
+
+// §7.2.2.2-7.2.2.7 for one channel. exps are the DECODED exponents (the
+// decoder mirror — never the raw ones); exps and bap are indexed from bin 0
+// even when the region starts higher, so both span [0, endmant).
 // csnroffst == 0 && fsnroffst == 0 triggers the §7.2.2.1.1 special case
 // (all-zero bap).
 void compute_bit_allocation(std::span<const std::uint8_t> exps, SampleRate sample_rate,
                             const BitAllocCodes& codes, int csnroffst, int fsnroffst,
-                            std::span<std::uint8_t> bap);
+                            std::span<std::uint8_t> bap, const BitAllocRegion& region = {});
 
 }  // namespace ac3
