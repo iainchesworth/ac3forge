@@ -248,6 +248,7 @@ def parse_frame(data, verbose=True):
     csnroffst = 0
     fsnroffst = [0] * (nfchans + 1)
     spxinu = 0
+    skip_fields = []
 
     for blk in range(nblks):
         start = r.pos
@@ -326,6 +327,11 @@ def parse_frame(data, verbose=True):
         if skipflde:
             if r.bits(1):            # skiple
                 skipl = r.bits(9)
+                # Where the metadata actually lives. Dolby's own DD+ JOC
+                # streams put the EMDF container here, not in the aux field:
+                # theirs read auxdatae=0 with the container a third of the way
+                # into the frame, which is a block skip field and nothing else.
+                skip_fields.append((r.pos, skipl * 8))
                 r.bits(skipl * 8)
 
         side = r.pos - start
@@ -367,7 +373,16 @@ def parse_frame(data, verbose=True):
     # where the blocks happened to stop.
     emdf = None
     aux_start = None
-    if total_bits >= 32:
+    # A skip field is the first place to look: it is where Dolby's own streams
+    # carry the container, and unlike the aux field its position is already
+    # known exactly from parsing the blocks.
+    for at, length in skip_fields:
+        emdf = parse_emdf(data, at, length, log)
+        if emdf is not None:
+            emdf['in_skip'] = True
+            aux_start = at
+            break
+    if emdf is None and total_bits >= 32:
         tail = Reader(data)
         tail.pos = total_bits - 18       # auxdatae, crcrsv, crc2
         if tail.bits(1):                 # auxdatae
@@ -535,10 +550,8 @@ def main():
             state = 'ok' if info['emdf']['ok'] else 'MALFORMED'
             print(f'   EMDF container ({state}): payloads {names}')
             ok = ok and info['emdf']['ok']
-            # The container has to start after the audio, not inside it.
-            if info['aux_start'] is not None and info['aux_start'] < used:
-                print('   EMDF OVERLAPS the audio blocks')
-                ok = False
+            where = 'a block skip field' if info['emdf'].get('in_skip') else 'the aux field'
+            print(f'   EMDF carried in {where}')
         # Cross-substream invariants. A dependent that disagrees with its
         # parent about the sample rate or the block count silently desynchronises
         # the program rather than failing to parse.

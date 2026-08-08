@@ -116,7 +116,7 @@ void band_energy(std::span<const float> signal, std::span<const std::uint8_t, 64
 AtmosEncoder::AtmosEncoder(const AtmosConfig& config, int objects)
     : config_(config),
       objects_(objects),
-      program_{.bed = bed::kLfe, .dynamic_objects = objects},
+      program_{.dynamic_only = true, .lfe = true, .dynamic_objects = objects},
       encoder_(eac3::AccessUnitConfig{
           .independent = {.sample_rate = config.sample_rate,
                           .bitrate_kbps = config.bitrate_kbps,

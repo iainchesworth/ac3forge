@@ -80,37 +80,51 @@ static_assert(channel_count(kLfe) == 1);
 
 }  // namespace bed
 
-// The program: one optional bed instance, then some dynamic objects.
+// The program: either §5.6.0.5's dynamic-object-only branch, or a bed instance
+// with dynamic objects beside it.
 //
-// The default is an LFE-ONLY bed alongside the objects, which is the shape
-// this encoder's spatial layer actually produces. The reason is
-// double-counting. A renderer sums the bed and the objects, so if the 5.1
-// downmix is the VBAP render of the objects and the program ALSO declares
-// those five channels as a bed, every object arrives twice. Declaring only
-// the objects (plus the LFE, which no panner feeds) says exactly what is
-// there. §5.6.1.1.6's b_lfe_only exists for precisely this bed.
+// The default is dynamic-object-only with an LFE, because that is what Dolby's
+// own reference streams carry - checked against the DD+ JOC test signals from
+// their Online Delivery Kit, which declare object_count 16,
+// b_dyn_object_only_program 1, b_lfe_present 1. It also happens to be the
+// honest description of what this encoder produces: the 5.1 downmix IS the
+// objects' VBAP render, so declaring those five channels as a BED as well
+// would make a renderer play every object twice, once as bed and once as
+// object.
 //
-// A dynamic-object-only program (§5.6.0.5) would say nearly the same thing,
-// but its branch of program_assignment signals neither the object count nor
-// where the LFE sits in the object order, leaving both to be inferred. The
-// LFE-only bed instance leaves nothing to inference.
+// The branch signals no object count of its own - object_count above it covers
+// the whole program - and says nothing about where the LFE falls in the object
+// order. Dolby's streams settle the count question: joc_num_objects is 15
+// against an object_count of 16, so exactly one object, the LFE, is not a JOC
+// output. They do not settle the ordering, and this encoder puts the LFE
+// first, following §5.6.4.8's rule that speaker-anchored objects precede
+// dynamic ones.
 struct Program {
-    std::uint16_t bed = bed::kLfe;  // 0 for no bed instance at all
+    bool dynamic_only = true;
+    bool lfe = true;                // b_lfe_present, dynamic_only branch only
+    std::uint16_t bed = 0;          // bed instance, when !dynamic_only
     int dynamic_objects = 0;
 };
 
-// Objects in the program, bed first. This is object_count in the payload and
+// Whether the program carries an LFE, by either route.
+[[nodiscard]] constexpr bool has_lfe(const Program& program) {
+    return program.dynamic_only ? program.lfe : (program.bed & bed::kLfe) != 0;
+}
+
+// Objects in the program, LFE first. This is object_count in the payload and
 // complexity_index_type_a in addbsi (TS 103 420 §8.3.2.2).
 [[nodiscard]] constexpr int object_count(const Program& program) {
-    return bed::channel_count(program.bed) + program.dynamic_objects;
+    const int fixed = program.dynamic_only ? (program.lfe ? 1 : 0)
+                                           : bed::channel_count(program.bed);
+    return fixed + program.dynamic_objects;
 }
 
 // Objects the JOC tool has to reconstruct. §6.3.2.2's note bypasses the LFE
 // rather than matrixing it, so it costs no JOC output even though it is an
 // object like any other.
 [[nodiscard]] constexpr int joc_object_count(const Program& program) {
-    return object_count(program) - ((program.bed & bed::kLfe) ? 1 : 0) -
-           ((program.bed & bed::kLfe2) ? 1 : 0);
+    return object_count(program) - (has_lfe(program) ? 1 : 0) -
+           (!program.dynamic_only && (program.bed & bed::kLfe2) ? 1 : 0);
 }
 
 // One object_audio_metadata_payload (§5.5.2), padded to whole bytes because

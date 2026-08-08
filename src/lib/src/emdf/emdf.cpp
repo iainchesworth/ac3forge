@@ -29,17 +29,19 @@ struct VarBitsShape {
 // §H.2.2.3, restricted to TS 103 420 Table 56. Every field there is fixed, so
 // the only degree of freedom is groupid.
 //
-// Table 56 disagrees with §H.2.2.3.7, which says codecdatae "shall be set to
-// '0'" for configurations conforming to Annex H. TS 103 420 is the narrower
-// specification and the one a JOC decoder is written against, so its value
-// wins; the eight bits it drags in are reserved and sent as zero.
+// Except codecdatae, where the two standards contradict each other: Table 56
+// says 1, and §H.2.2.3.7 says it "shall be set to '0'" for configurations
+// conforming to Annex H. Dolby's own reference streams settle it - they send
+// 0. Sending 1 costs eight reserved bits, and since emdf_payload_config has no
+// length of its own, those eight bits shift every field after them; a decoder
+// reading the other convention gets a garbage payload size and abandons the
+// container. So the tie goes to the value that is actually on the wire.
 void put_payload_config(BitWriter& w, int groupid) {
     w.put(0, 1);  // smploffste: the payload applies from the frame's first sample
     w.put(0, 1);  // duratione: ... to its last
     w.put(1, 1);  // groupide
     put_variable_bits(w, static_cast<std::uint32_t>(groupid), 2);
-    w.put(1, 1);  // codecdatae
-    w.put(0, 8);  // reserved
+    w.put(0, 1);  // codecdatae
     w.put(0, 1);  // discard_unknown_payload
     // discard_unknown_payload == 0 with smploffste == 0 opens the alignment
     // branch; frame alignment then opens priority and proc_allowed.

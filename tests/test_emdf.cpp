@@ -111,8 +111,12 @@ TEST_CASE("EMDF container carries its payloads verbatim", "[emdf]") {
         CHECK(r.read(1) == 0);  // duratione
         CHECK(r.read(1) == 1);  // groupide
         CHECK(read_variable_bits(r, 2) == 1);  // groupid
-        CHECK(r.read(1) == 1);  // codecdatae
-        CHECK(r.read(8) == 0);  // reserved
+        // TS 103 420 Table 56 says codecdatae is 1 and TS 102 366 §H.2.2.3.7
+        // says it "shall be set to '0'". Dolby's own reference streams send 0,
+        // and since the payload config has no length of its own, the eight
+        // reserved bits a 1 drags in shift everything after them - so this is
+        // not a stylistic choice, it decides whether the container parses.
+        CHECK(r.read(1) == 0);  // codecdatae
         CHECK(r.read(1) == 0);  // discard_unknown_payload
         CHECK(r.read(1) == 1);  // payload_frame_aligned
         CHECK(r.read(1) == 0);  // create_duplicate
@@ -134,7 +138,7 @@ TEST_CASE("EMDF container carries its payloads verbatim", "[emdf]") {
     CHECK_FALSE(r.overflowed());
 }
 
-TEST_CASE("an EMDF container rides in the frame's aux data", "[emdf][eac3]") {
+TEST_CASE("an EMDF container rides in a block skip field", "[emdf][eac3]") {
     const std::vector<std::byte> payload(6, std::byte{0x5A});
     const std::array<ac3::emdf::Payload, 1> payloads{
         {{.id = ac3::emdf::kPayloadIdOamd, .bytes = payload}}};
@@ -156,16 +160,30 @@ TEST_CASE("an EMDF container rides in the frame's aux data", "[emdf][eac3]") {
     const std::size_t at = find_emdf_sync(*carrying);
     REQUIRE(at != static_cast<std::size_t>(-1));
 
-    // §5.4.4.1 puts user data at the END of auxbits so a decoder can find it
-    // from the back of the frame without knowing nauxbits: auxdatal, auxdatae,
-    // crcrsv and crc2 are the only things past it.
+    // The container is INSIDE the audio blocks, not after them: §5.4.3.58's
+    // skip field sits in block 0 between the bit-allocation fields and the
+    // mantissas. Dolby's own DD+ JOC streams carry it there and leave
+    // auxdatae at 0 - checked against the DD+ test signals in their Online
+    // Delivery Kit - and their decoder does not look in the aux field.
     const std::size_t total = carrying->size() * 8;
-    CHECK(at + container.size() * 8 == total - 32);
+    CHECK(at < total / 2);
 
     ac3::BitReader tail{*carrying};
-    tail.skip(total - 32);
-    CHECK(tail.read(14) == container.size() * 8);  // auxdatal
-    CHECK(tail.read(1) == 1);                      // auxdatae
+    tail.skip(total - 18);
+    CHECK(tail.read(1) == 0);  // auxdatae: nothing in the aux field
+
+    // skipflde has to be set for the block-level field to exist at all, and it
+    // lives in audfrm. bsi is 54 bits with addbsie == 0, then audfrm's
+    // expstre, ahte, snroffststr(2), transproce, blkswe, dithflage, bamode,
+    // frmfgaincode, dbaflde put skipflde at bit 64.
+    ac3::BitReader frm{*carrying};
+    frm.skip(64);
+    CHECK(frm.read(1) == 1);  // skipflde
+    // ... and a frame with nothing to carry must leave it clear, or every
+    // block would pay a bit for a field that is never used.
+    ac3::BitReader plain_frm{*plain};
+    plain_frm.skip(64);
+    CHECK(plain_frm.read(1) == 0);
 }
 
 TEST_CASE("addbsi announces object audio", "[emdf][eac3]") {

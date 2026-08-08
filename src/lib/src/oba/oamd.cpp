@@ -110,7 +110,10 @@ void put_object_info_block(BitWriter& w, const DynamicObject* dynamic) {
 // copied through a byte buffer without picking up padding that is not theirs.
 void put_object_element(BitWriter& w, const Program& program,
                         std::span<const DynamicObject> objects) {
-    const int beds = bed::channel_count(program.bed);
+    // Objects that are anchored rather than placed: the LFE in the
+    // dynamic-only branch, or the whole bed instance otherwise. They come
+    // first (§5.6.4.8) and carry no render info.
+    const int anchored = object_count(program) - program.dynamic_objects;
     const int total = object_count(program);
 
     // md_update_info (§5.5.6). One update per frame, aligned to its first
@@ -128,9 +131,10 @@ void put_object_element(BitWriter& w, const Program& program,
     w.put(1, 1);  // b_reserved_data_not_present
 
     for (int object = 0; object < total; ++object) {
-        const bool is_bed = object < beds;
+        const bool is_anchored = object < anchored;
         put_object_info_block(
-            w, is_bed ? nullptr : &objects[static_cast<std::size_t>(object - beds)]);
+            w, is_anchored ? nullptr
+                           : &objects[static_cast<std::size_t>(object - anchored)]);
     }
 }
 
@@ -159,26 +163,34 @@ std::vector<std::byte> build_payload(const Program& program,
     w.put(static_cast<std::uint32_t>(total - 1), 5);  // object_count_bits
 
     // --- program_assignment (§5.5.3) ---
-    w.put(0, 1);  // b_dyn_object_only_program: this branch names everything
-    // content_description[], index 3 as the most significant bit (Table 11a):
-    // bit 3 a bed instance, bit 2 ISF, bit 1 dynamic objects, bit 0 reserved.
-    const std::uint32_t content = (program.bed != 0 ? 0b1000u : 0u) |
-                                  (program.dynamic_objects > 0 ? 0b0010u : 0u);
-    w.put(content, 4);
-    if (program.bed != 0) {
-        w.put(0, 1);  // b_bed_chan_distribute
-        w.put(0, 1);  // b_multiple_bed_instances_present => one instance
-        // §5.6.1.1.6: b_lfe_only is not a shorthand for the assignment, it
-        // REPLACES it - the 10-bit field is absent entirely.
-        const bool lfe_only = program.bed == bed::kLfe;
-        w.put(lfe_only ? 1 : 0, 1);  // b_lfe_only
-        if (!lfe_only) {
-            w.put(1, 1);             // b_standard_chan_assign
-            w.put(program.bed, 10);  // bed_channel_assignment[]
+    if (program.dynamic_only) {
+        // The whole branch is two bits. The object count is object_count
+        // above; the number of dynamic objects is what is left after the LFE.
+        w.put(1, 1);  // b_dyn_object_only_program
+        w.put(program.lfe ? 1 : 0, 1);  // b_lfe_present
+    } else {
+        w.put(0, 1);
+        // content_description[], index 3 as the most significant bit (Table
+        // 11a): bit 3 a bed instance, bit 2 ISF, bit 1 dynamic objects, bit 0
+        // reserved.
+        const std::uint32_t content = (program.bed != 0 ? 0b1000u : 0u) |
+                                      (program.dynamic_objects > 0 ? 0b0010u : 0u);
+        w.put(content, 4);
+        if (program.bed != 0) {
+            w.put(0, 1);  // b_bed_chan_distribute
+            w.put(0, 1);  // b_multiple_bed_instances_present => one instance
+            // §5.6.1.1.6: b_lfe_only is not a shorthand for the assignment, it
+            // REPLACES it - the 10-bit field is absent entirely.
+            const bool lfe_only = program.bed == bed::kLfe;
+            w.put(lfe_only ? 1 : 0, 1);  // b_lfe_only
+            if (!lfe_only) {
+                w.put(1, 1);             // b_standard_chan_assign
+                w.put(program.bed, 10);  // bed_channel_assignment[]
+            }
         }
-    }
-    if (program.dynamic_objects > 0) {
-        w.put(static_cast<std::uint32_t>(program.dynamic_objects - 1), 5);
+        if (program.dynamic_objects > 0) {
+            w.put(static_cast<std::uint32_t>(program.dynamic_objects - 1), 5);
+        }
     }
 
     w.put(0, 1);  // b_alternate_object_data_present

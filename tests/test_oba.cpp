@@ -168,10 +168,13 @@ TEST_CASE("JOC codes an unchanged band in a single bit", "[oba][joc]") {
     CHECK(payload.size() == (38 + 5 * 23 + 7) / 8);
 }
 
-TEST_CASE("OAMD describes an LFE-only bed and its objects", "[oba][oamd]") {
-    const ac3::oba::Program program{.bed = ac3::oba::bed::kLfe, .dynamic_objects = 3};
+TEST_CASE("OAMD describes a dynamic-object program and its LFE", "[oba][oamd]") {
+    // The shape Dolby's own DD+ JOC reference streams use: object_count 16,
+    // b_dyn_object_only_program 1, b_lfe_present 1, and joc_num_objects 15 -
+    // one fewer, because the LFE is bypassed rather than matrixed.
+    const ac3::oba::Program program{
+        .dynamic_only = true, .lfe = true, .dynamic_objects = 3};
     CHECK(ac3::oba::object_count(program) == 4);
-    // The LFE is an object but never a JOC output - §6.3.2.2 bypasses it.
     CHECK(ac3::oba::joc_object_count(program) == 3);
 
     const std::array<ac3::oba::DynamicObject, 3> objects{{
@@ -186,12 +189,10 @@ TEST_CASE("OAMD describes an LFE-only bed and its objects", "[oba][oamd]") {
     CHECK(r.read(5) == 3);  // object_count_bits = object_count - 1
 
     // --- program_assignment ---
-    CHECK(r.read(1) == 0);       // b_dyn_object_only_program
-    CHECK(r.read(4) == 0b1010);  // content_description: a bed and dynamic objects
-    CHECK(r.read(1) == 0);       // b_bed_chan_distribute
-    CHECK(r.read(1) == 0);       // b_multiple_bed_instances_present
-    CHECK(r.read(1) == 1);       // b_lfe_only - the assignment field is absent
-    CHECK(r.read(5) == 2);       // num_dynamic_objects_bits = count - 1
+    // The whole branch is two bits: object_count above already covers the
+    // program, so the dynamic-object count is what is left after the LFE.
+    CHECK(r.read(1) == 1);  // b_dyn_object_only_program
+    CHECK(r.read(1) == 1);  // b_lfe_present
 
     CHECK(r.read(1) == 0);  // b_alternate_object_data_present
     CHECK(r.read(4) == 1);  // oa_element_count_bits
@@ -270,17 +271,16 @@ TEST_CASE("oa_element_size holds whatever the object count makes it", "[oba][oam
     // computed from the element without the flag bit that precedes it.
     for (int count = 1; count <= 8; ++count) {
         CAPTURE(count);
-        const ac3::oba::Program program{.bed = ac3::oba::bed::kLfe,
-                                        .dynamic_objects = count};
+        const ac3::oba::Program program{
+            .dynamic_only = true, .lfe = true, .dynamic_objects = count};
         const std::vector<ac3::oba::DynamicObject> objects(
             static_cast<std::size_t>(count));
         const auto payload = ac3::oba::build_payload(program, objects);
 
         ac3::BitReader r{payload};
-        r.skip(2 + 5);              // version, object_count
-        r.skip(1 + 4 + 1 + 1 + 1);  // program_assignment through b_lfe_only
-        r.skip(5);                  // num_dynamic_objects_bits
-        r.skip(1 + 4);              // alternate data, oa_element_count
+        r.skip(2 + 5);  // version, object_count
+        r.skip(1 + 1);  // b_dyn_object_only_program, b_lfe_present
+        r.skip(1 + 4);  // alternate data, oa_element_count
         r.skip(4);                  // oa_element_id_idx
         const auto size_bits = read_variable_bits_max(r, 4, 4);
         const std::size_t flag_at = r.bit_position();
@@ -302,7 +302,8 @@ TEST_CASE("oa_element_size holds whatever the object count makes it", "[oba][oam
 }
 
 TEST_CASE("OAMD carries a full 5.1 bed when asked", "[oba][oamd]") {
-    const ac3::oba::Program program{.bed = ac3::oba::bed::k51, .dynamic_objects = 0};
+    const ac3::oba::Program program{
+        .dynamic_only = false, .bed = ac3::oba::bed::k51, .dynamic_objects = 0};
     CHECK(ac3::oba::object_count(program) == 6);
     CHECK(ac3::oba::joc_object_count(program) == 5);
 

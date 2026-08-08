@@ -52,27 +52,47 @@ constexpr BitAllocCodes kBamode0Codes{.sdcycod = 2,
                                       .fgaincod = 4};  // frmfgaincode == 0 (§8.2.12)
 constexpr int kFrmfgaincode = 0;   // fgaincod defaults to 0x4, matching AC-3
 constexpr int kDbaflde = 0;        // no delta bit allocation
-// AC-3 has to push its padding through in-block skip fields, because §5.5
-// confines the aux field to the final 3/8 of the frame - a rule that exists
-// to protect the crc1-at-5/8 checkpoint. E-AC-3 has no crc1 and Annex E
-// states no equivalent constraint, so auxbits can absorb the whole
-// remainder. That is both simpler and, measurably, what decoders expect:
-// padding routed through a block-0 skip field came back as audible data,
-// and FFmpeg's own encoder likewise sets skipflde to 0.
-constexpr int kSkipflde = 0;
+// Padding goes through auxbits. AC-3 cannot do that - §5.5 confines its aux
+// field to the final 3/8 of the frame, to protect the crc1-at-5/8 checkpoint -
+// but E-AC-3 has no crc1 and Annex E states no equivalent constraint, so
+// auxbits absorb the whole remainder. FFmpeg's own encoder likewise sets
+// skipflde to 0 when it has nothing to carry.
+//
+// Metadata is a different matter. The skip field exists in EVERY block
+// (§2.3.2.10: "full skip field syntax shall be present in each audio block"),
+// so switching it on costs one bit per block whether or not anything is
+// carried, and the frame-level flag has to be decided before the blocks are
+// written.
 constexpr int kSpxattene = 0;      // no spectral extension attenuation
 
-constexpr int kTailBits = 18;      // auxdatae + crcrsv + crc2
-constexpr int kAuxdatalBits = 14;  // joins them only when aux user data exists
+constexpr int kTailBits = 18;  // auxdatae + crcrsv + crc2
 
-// Bits the frame has to reserve after the last audio block. auxdatal is sent
-// only when there is user data to measure, so a frame without it keeps the
-// exact layout - and hence the exact bit budget - it always had.
-[[nodiscard]] std::uint32_t tail_bits(std::span<const std::byte> aux) {
-    if (aux.empty()) {
-        return kTailBits;
+// The skip field is 9 bits of length, so one block can hold this much.
+constexpr std::size_t kMaxSkipBytes = 511;
+
+// §5.4.3.58-60, at the position Annex E's audblk gives it: after the delta
+// bit allocation fields and before the quantized mantissas. Getting that
+// order wrong does not fail to parse - it shifts every mantissa in the block,
+// which comes back as noise rather than as an error.
+void put_skip_field(BitWriter& w, std::span<const std::byte> payload) {
+    if (payload.empty()) {
+        w.put(0, 1);  // skiple: this block carries nothing
+        return;
     }
-    return kTailBits + kAuxdatalBits + static_cast<std::uint32_t>(aux.size()) * 8;
+    w.put(1, 1);  // skiple
+    w.put(static_cast<std::uint32_t>(payload.size()), 9);  // skipl, in bytes
+    for (const auto byte : payload) {
+        w.put(std::to_integer<std::uint32_t>(byte), 8);
+    }
+}
+
+// Bits a payload costs the frame: skipl and the bytes themselves, on top of
+// the one skiple bit every block pays once skipflde is set.
+[[nodiscard]] std::uint32_t skip_field_bits(std::span<const std::byte> payload) {
+    if (payload.empty()) {
+        return 0;
+    }
+    return 9 + static_cast<std::uint32_t>(payload.size()) * 8;
 }
 
 // One coded channel: its exponents (frame-constant, D15 in block 0) and the
@@ -95,9 +115,10 @@ struct Payload {
 // frame bar padding and the tail. Silence and real audio go through this one
 // function, so the two can never drift apart on field placement.
 void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
-                const Payload& payload) {
+                const Payload& payload, std::span<const std::byte> metadata = {}) {
     const int nfchans = fullbw_channel_count(config.acmod);
     const bool dependent = config.strmtyp == StreamType::kDependent;
+    const int skipflde = metadata.empty() ? 0 : 1;
 
     w.put(kSyncWord, 16);
 
@@ -156,7 +177,7 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
     w.put(kBamode, 1);
     w.put(kFrmfgaincode, 1);
     w.put(kDbaflde, 1);
-    w.put(kSkipflde, 1);
+    w.put(static_cast<std::uint32_t>(skipflde), 1);
     w.put(kSpxattene, 1);
 
     if (static_cast<std::uint8_t>(config.acmod) > 0x1) {
@@ -261,7 +282,12 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
             w.put(0, 1);  // convsnroffste, gated on strmtyp == 0x0
         }
         // cplinu == 0: no coupling leak. dbaflde == 0: no delta allocation.
-        // skipflde == 0: no skip field in any block.
+        if (skipflde != 0) {
+            // The whole container rides in block 0. It could go in any block -
+            // Dolby's own streams put it further in - but a decoder finds it by
+            // scanning for the EMDF sync word, so the choice is the encoder's.
+            put_skip_field(w, first ? metadata : std::span<const std::byte>{});
+        }
 
         for (const auto& token : payload.mantissas[static_cast<std::size_t>(blk)]) {
             w.put(token.value, token.bits);
@@ -276,36 +302,27 @@ std::expected<std::vector<std::byte>, FrameError> finish_frame(
     const std::uint32_t total_bytes = words * 2;
     const std::uint32_t total_bits = total_bytes * 8;
 
-    BitWriter probe;
-    emit_frame(probe, config, words, payload);
-    const auto content_bits = static_cast<std::uint32_t>(probe.bit_count());
-    // auxdatal is 14 bits and counts bits, so a container longer than this
-    // cannot be located by a decoder even though it would fit in the frame.
-    if (aux.size() * 8 > 0x3FFF) {
+    // skipl is 9 bits, so one block cannot carry more than this.
+    if (aux.size() > kMaxSkipBytes) {
         return std::unexpected(FrameError::kInvalidObjectAudio);
     }
-    const std::uint32_t tail = tail_bits(aux);
-    if (content_bits + tail > total_bits) {
+
+    BitWriter probe;
+    emit_frame(probe, config, words, payload, aux);
+    const auto content_bits = static_cast<std::uint32_t>(probe.bit_count());
+    if (content_bits + kTailBits > total_bits) {
         return std::unexpected(FrameError::kInvalidBitrate);
     }
-    const std::uint32_t spare = total_bits - content_bits - tail;
+    const std::uint32_t spare = total_bits - content_bits - kTailBits;
 
     BitWriter w;
-    emit_frame(w, config, words, payload);
+    emit_frame(w, config, words, payload, aux);
     for (std::uint32_t i = 0; i < spare; ++i) {
-        w.put(0, 1);  // auxbits: the unused part of the field
+        w.put(0, 1);  // auxbits: padding, and nothing else
     }
-    if (!aux.empty()) {
-        // §5.4.4.1: the user data sits at the END of auxbits, so the zero
-        // padding above precedes it and auxdatal measures only from here.
-        for (const auto byte : aux) {
-            w.put(std::to_integer<std::uint32_t>(byte), 8);
-        }
-        w.put(static_cast<std::uint32_t>(aux.size()) * 8, 14);  // auxdatal
-    }
-    w.put(aux.empty() ? 0 : 1, 1);  // auxdatae
-    w.put(0, 1);                    // crcrsv
-    w.put(0, 16);                   // crc2, patched below
+    w.put(0, 1);   // auxdatae
+    w.put(0, 1);   // crcrsv
+    w.put(0, 16);  // crc2, patched below
     assert(w.bit_count() == total_bits);
 
     std::vector<std::byte> frame = w.take();
@@ -471,19 +488,18 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     // The side info is offset-independent here (bamode 0, no delta
     // allocation), so it can be measured once and the remainder handed
     // wholly to the mantissas.
+    // The metadata competes with the mantissas for the same frame. It is
+    // inside emit_frame's output now that it rides in a skip field, so the
+    // side-info measurement already accounts for it.
     const auto side_bits = [&] {
         BitWriter probe;
-        emit_frame(probe, config_, words, payload);
+        emit_frame(probe, config_, words, payload, aux);
         return static_cast<std::uint32_t>(probe.bit_count());
     }();
-    // The aux payload competes with the mantissas for the same frame, so it
-    // has to come out of the budget the SNR search spends - not out of the
-    // padding, which is exactly the bits the search has already claimed.
-    const std::uint32_t tail = tail_bits(aux);
-    if (side_bits + tail > total_bits) {
+    if (side_bits + kTailBits > total_bits) {
         return std::unexpected(FrameError::kInvalidBitrate);
     }
-    const std::uint32_t budget = total_bits - side_bits - tail;
+    const std::uint32_t budget = total_bits - side_bits - kTailBits;
 
     std::vector<std::span<const std::uint8_t>> bap_views(
         static_cast<std::size_t>(nchans));
