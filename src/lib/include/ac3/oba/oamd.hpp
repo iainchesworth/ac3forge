@@ -117,6 +117,13 @@ struct Program {
 // emdf_payload_size counts bytes. `objects` describes the dynamic objects in
 // order; the bed's are implied by the channel assignment and are sent at unity
 // gain and default priority.
+//
+// object_count(program) must be in [1, 31]. §5.5.2 has an escape for larger
+// counts - object_count_bits 0x1F plus a 7-bit extension - and it is not
+// implemented, because two other clauses forbid ever needing it: §8.3.2.2 caps
+// complexity_index_type_a at 16 objects and §6.3.2.4 caps joc_num_objects at
+// the same. A stream that got past this would be rejected by the frame writer
+// (FrameError::kInvalidObjectAudio) before any of it reached a file.
 [[nodiscard]] std::vector<std::byte> build_payload(const Program& program,
                                                    std::span<const DynamicObject> objects);
 
