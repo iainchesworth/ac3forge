@@ -99,6 +99,33 @@ std::vector<std::byte> read_all(std::string_view path) {
     return bytes;
 }
 
+// Reports (and returns true) when a stream is a syncframe format nothing here
+// can handle. E-AC-3 shares AC-3's 0x0B77 sync word, so a command that sniffs
+// only the sync word ends up blaming the file for the reader's limits. bsid
+// separates them: Annex E places it at bits 40..44 of the frame, exactly where
+// §5.4.1.1 puts AC-3's, so that a decoder can identify the variant before it
+// has parsed anything else. `limitation` names what actually cannot cope, so
+// the message says why rather than only what.
+//
+// A stream with no sync word at all is passed through untouched: the caller's
+// framer has a better vocabulary for malformed input than a guess made from
+// six bytes.
+bool reject_non_ac3_syntax(std::span<const std::byte> stream, std::string_view path,
+                           std::string_view limitation) {
+    if (stream.size() < 6 || std::to_integer<int>(stream[0]) != 0x0B ||
+        std::to_integer<int>(stream[1]) != 0x77) {
+        return false;
+    }
+    const auto bsid = std::to_integer<unsigned>(stream[5]) >> 3;
+    if (bsid <= 8) {
+        return false;
+    }
+    std::println(stderr, "error: {} is {} (bsid {}); {}", path,
+                 bsid > 10 ? "E-AC-3" : "AC-3 alternate syntax (A/52 Annex D)", bsid,
+                 limitation);
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // Level reporting. Every number comes from ac3::analysis, so a level reads
 // the same here as on the GUI's meters; only the drawing is local.
@@ -801,17 +828,8 @@ int run_levels(std::string_view in_path) {
                           std::to_integer<int>(bytes[1]) == 0x77;
 
     if (syncword) {
-        // E-AC-3 shares the sync word, so the sync word alone cannot tell the
-        // two apart. bsid can: Annex E places it at bits 40..44 of the frame,
-        // exactly where §5.4.1.1 puts AC-3's, so that a decoder can identify
-        // the variant before parsing anything else.
-        const auto bsid = std::to_integer<unsigned>(bytes[5]) >> 3;
-        if (bsid > 8) {
-            std::println(stderr,
-                         "error: {} is {} (bsid {}); the in-repo decoder reads only the "
-                         "bsid<=8 syntax, so levels cannot open it",
-                         in_path,
-                         bsid > 10 ? "E-AC-3" : "AC-3 alternate syntax (A/52 Annex D)", bsid);
+        if (reject_non_ac3_syntax(bytes, in_path,
+                                  "the in-repo decoder reads only the bsid<=8 syntax")) {
             return 1;
         }
         const auto frames = ac3::split_frames(bytes);
@@ -882,9 +900,14 @@ int run_spdif(std::string_view in_path, std::string_view out_path) {
         std::println(stderr, "error: cannot read {}", in_path);
         return 1;
     }
+    if (reject_non_ac3_syntax(stream, in_path,
+                              "the IEC 61937 packer emits AC-3 bursts only (data type 1, one "
+                              "6144-byte burst per frame)")) {
+        return 1;
+    }
     const auto frames = ac3::split_frames(stream);
     if (!frames || frames->empty()) {
-        std::println(stderr, "error: not a valid AC-3 stream");
+        std::println(stderr, "error: {} is not a valid AC-3 stream", in_path);
         return 1;
     }
     const auto fscod = std::to_integer<std::uint32_t>((*frames)[0][4]) >> 6;
@@ -949,9 +972,14 @@ int run_play(std::string_view in_path, int device_index) {
         std::println(stderr, "error: cannot read {}", in_path);
         return 1;
     }
+    if (reject_non_ac3_syntax(stream, in_path,
+                              "the IEC 61937 packer emits AC-3 bursts only (data type 1, one "
+                              "6144-byte burst per frame)")) {
+        return 1;
+    }
     const auto frames = ac3::split_frames(stream);
     if (!frames || frames->empty()) {
-        std::println(stderr, "error: not a valid AC-3 stream");
+        std::println(stderr, "error: {} is not a valid AC-3 stream", in_path);
         return 1;
     }
     const auto fscod = std::to_integer<std::uint32_t>((*frames)[0][4]) >> 6;
