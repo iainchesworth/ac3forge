@@ -62,7 +62,18 @@ constexpr int kDbaflde = 0;        // no delta bit allocation
 constexpr int kSkipflde = 0;
 constexpr int kSpxattene = 0;      // no spectral extension attenuation
 
-constexpr int kTailBits = 18;  // auxdatae + crcrsv + crc2
+constexpr int kTailBits = 18;      // auxdatae + crcrsv + crc2
+constexpr int kAuxdatalBits = 14;  // joins them only when aux user data exists
+
+// Bits the frame has to reserve after the last audio block. auxdatal is sent
+// only when there is user data to measure, so a frame without it keeps the
+// exact layout - and hence the exact bit budget - it always had.
+[[nodiscard]] std::uint32_t tail_bits(std::span<const std::byte> aux) {
+    if (aux.empty()) {
+        return kTailBits;
+    }
+    return kTailBits + kAuxdatalBits + static_cast<std::uint32_t>(aux.size()) * 8;
+}
 
 // One coded channel: its exponents (frame-constant, D15 in block 0) and the
 // allocation they produce. LFE, when present, is the last entry.
@@ -122,7 +133,18 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
     w.put(0, 1);  // mixmdate
     w.put(0, 1);  // infomdate
     // convsync is absent because numblkscod == 0x3; strmtyp != 0x2.
-    w.put(0, 1);  // addbsie
+    if (config.oba_complexity_index) {
+        // TS 103 420 §8.3.1 fixes the addbsi contents for an object-audio
+        // stream: seven reserved bits, the extension flag, then the complexity
+        // index. addbsil counts BYTES MINUS ONE, so the two bytes below are 1.
+        w.put(1, 1);  // addbsie
+        w.put(1, 6);  // addbsil
+        w.put(0, 7);  // reserved
+        w.put(1, 1);  // flag_ec3_extension_type_a
+        w.put(static_cast<std::uint32_t>(*config.oba_complexity_index), 8);
+    } else {
+        w.put(0, 1);  // addbsie
+    }
 
     // --- audfrm (Table E1.3) ---
     w.put(kExpstre, 1);
@@ -249,26 +271,41 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
 
 // Pad with auxbits, close the tail and patch crc2.
 std::expected<std::vector<std::byte>, FrameError> finish_frame(
-    const FrameConfig& config, std::uint32_t words, const Payload& payload) {
+    const FrameConfig& config, std::uint32_t words, const Payload& payload,
+    std::span<const std::byte> aux) {
     const std::uint32_t total_bytes = words * 2;
     const std::uint32_t total_bits = total_bytes * 8;
 
     BitWriter probe;
     emit_frame(probe, config, words, payload);
     const auto content_bits = static_cast<std::uint32_t>(probe.bit_count());
-    if (content_bits + kTailBits > total_bits) {
+    // auxdatal is 14 bits and counts bits, so a container longer than this
+    // cannot be located by a decoder even though it would fit in the frame.
+    if (aux.size() * 8 > 0x3FFF) {
+        return std::unexpected(FrameError::kInvalidObjectAudio);
+    }
+    const std::uint32_t tail = tail_bits(aux);
+    if (content_bits + tail > total_bits) {
         return std::unexpected(FrameError::kInvalidBitrate);
     }
-    const std::uint32_t spare = total_bits - content_bits - kTailBits;
+    const std::uint32_t spare = total_bits - content_bits - tail;
 
     BitWriter w;
     emit_frame(w, config, words, payload);
     for (std::uint32_t i = 0; i < spare; ++i) {
-        w.put(0, 1);  // auxbits
+        w.put(0, 1);  // auxbits: the unused part of the field
     }
-    w.put(0, 1);   // auxdatae
-    w.put(0, 1);   // crcrsv
-    w.put(0, 16);  // crc2, patched below
+    if (!aux.empty()) {
+        // §5.4.4.1: the user data sits at the END of auxbits, so the zero
+        // padding above precedes it and auxdatal measures only from here.
+        for (const auto byte : aux) {
+            w.put(std::to_integer<std::uint32_t>(byte), 8);
+        }
+        w.put(static_cast<std::uint32_t>(aux.size()) * 8, 14);  // auxdatal
+    }
+    w.put(aux.empty() ? 0 : 1, 1);  // auxdatae
+    w.put(0, 1);                    // crcrsv
+    w.put(0, 16);                   // crc2, patched below
     assert(w.bit_count() == total_bits);
 
     std::vector<std::byte> frame = w.take();
@@ -298,6 +335,12 @@ std::expected<void, FrameError> validate(const FrameConfig& config) {
     if (config.substreamid < 0 || config.substreamid > 7) {
         return std::unexpected(FrameError::kInvalidSubstream);
     }
+    // TS 103 420 §8.3.2.2: complexity_index_type_a is the object count, and
+    // "the maximum value of this field shall be 16".
+    if (config.oba_complexity_index &&
+        (*config.oba_complexity_index < 1 || *config.oba_complexity_index > 16)) {
+        return std::unexpected(FrameError::kInvalidObjectAudio);
+    }
     // Only a dependent substream carries a channel map, and §E2.3.1.8 requires
     // the locations it names to add up to exactly the channels acmod and lfeon
     // code. Disagreement is not a parse failure - the decoder simply puts
@@ -317,7 +360,7 @@ std::expected<void, FrameError> validate(const FrameConfig& config) {
 }  // namespace
 
 std::expected<std::vector<std::byte>, FrameError> build_silent_frame(
-    const FrameConfig& config) {
+    const FrameConfig& config, AuxPayload aux) {
     if (const auto ok = validate(config); !ok) {
         return std::unexpected(ok.error());
     }
@@ -343,11 +386,11 @@ std::expected<std::vector<std::byte>, FrameError> build_silent_frame(
     }
 
     return finish_frame(config, frame_words(config.sample_rate, config.bitrate_kbps),
-                        payload);
+                        payload, aux);
 }
 
 std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
-    std::span<const std::span<const float>> channels) {
+    std::span<const std::span<const float>> channels, AuxPayload aux) {
     if (const auto ok = validate(config_); !ok) {
         return std::unexpected(ok.error());
     }
@@ -433,10 +476,14 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         emit_frame(probe, config_, words, payload);
         return static_cast<std::uint32_t>(probe.bit_count());
     }();
-    if (side_bits + kTailBits > total_bits) {
+    // The aux payload competes with the mantissas for the same frame, so it
+    // has to come out of the budget the SNR search spends - not out of the
+    // padding, which is exactly the bits the search has already claimed.
+    const std::uint32_t tail = tail_bits(aux);
+    if (side_bits + tail > total_bits) {
         return std::unexpected(FrameError::kInvalidBitrate);
     }
-    const std::uint32_t budget = total_bits - side_bits - kTailBits;
+    const std::uint32_t budget = total_bits - side_bits - tail;
 
     std::vector<std::span<const std::uint8_t>> bap_views(
         static_cast<std::size_t>(nchans));
@@ -494,7 +541,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     assert(token_bits == mantissa_bits);
     (void)token_bits;
 
-    return finish_frame(config_, words, payload);
+    return finish_frame(config_, words, payload, aux);
 }
 
 // --- access units ----------------------------------------------------------
@@ -560,14 +607,15 @@ std::uint32_t access_unit_words(const AccessUnitConfig& config) {
 }
 
 std::expected<AccessUnit, FrameError> build_silent_access_unit(
-    const AccessUnitConfig& config) {
+    const AccessUnitConfig& config, AuxPayload aux) {
     const auto subs = substream_configs(config);
     if (!subs) {
         return std::unexpected(subs.error());
     }
     AccessUnit unit;
     for (const auto& sub : *subs) {
-        const auto frame = build_silent_frame(sub);
+        const bool carries_aux = &sub == &subs->back();  // §8.2: the last one
+        const auto frame = build_silent_frame(sub, carries_aux ? aux : AuxPayload{});
         if (!frame) {
             return std::unexpected(frame.error());
         }
@@ -596,7 +644,7 @@ int AccessUnitEncoder::channel_count() const {
 }
 
 std::expected<AccessUnit, FrameError> AccessUnitEncoder::encode_access_unit(
-    std::span<const std::span<const float>> channels) {
+    std::span<const std::span<const float>> channels, AuxPayload aux) {
     if (substreams_.empty()) {
         // The constructor rejected the layout; re-run it for the real reason.
         const auto subs = substream_configs(config_);
@@ -608,7 +656,9 @@ std::expected<AccessUnit, FrameError> AccessUnitEncoder::encode_access_unit(
     std::size_t taken = 0;
     for (auto& sub : substreams_) {
         const auto count = static_cast<std::size_t>(sub.channel_count());
-        const auto frame = sub.encode_frame(channels.subspan(taken, count));
+        const bool carries_aux = &sub == &substreams_.back();  // §8.2
+        const auto frame =
+            sub.encode_frame(channels.subspan(taken, count), carries_aux ? aux : AuxPayload{});
         if (!frame) {
             return std::unexpected(frame.error());
         }

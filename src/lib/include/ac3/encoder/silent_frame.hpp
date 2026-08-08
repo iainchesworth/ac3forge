@@ -48,6 +48,9 @@ enum class FrameError {
     // The channel locations a chanmap names do not add up to the channels the
     // substream's acmod and lfeon actually code (A/52 §E2.3.1.8).
     kInvalidChannelMap,
+    // Aux user data longer than auxdatal's 14 bits can measure (§5.4.4.2), or
+    // an object count outside what TS 103 420 §8.3.2.2 allows in addbsi.
+    kInvalidObjectAudio,
 };
 
 namespace detail {

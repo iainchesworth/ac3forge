@@ -130,6 +130,15 @@ struct FrameConfig {
     // program - it is how a decoder knows the program is complete. Set by the
     // access-unit builder; meaningless on an independent substream.
     bool last_dependent = false;
+
+    // TS 103 420 §8.3. An object-audio stream sets flag_ec3_extension_type_a in
+    // the addbsi field of whichever substream carries the EMDF container, and
+    // follows it with the number of bed, ISF and dynamic objects (§8.3.2.2 caps
+    // it at 16). This is the only Atmos marker a decoder can read without
+    // hunting through the aux data for the container, and it is what FFmpeg
+    // keys its "Dolby Digital Plus + Dolby Atmos" report off. std::nullopt
+    // writes addbsie == 0, which is what every stream here did before.
+    std::optional<int> oba_complexity_index = std::nullopt;
 };
 
 // Words per syncframe at a given rate. E-AC-3 signals the size directly, so
@@ -141,8 +150,18 @@ struct FrameConfig {
     return static_cast<std::uint32_t>(bits / 16);
 }
 
+// An EMDF container (ac3::emdf::build_container) to carry in this frame's aux
+// data, or an empty span for none.
+//
+// A/52 §5.4.4.1 puts aux user data at the END of the auxbits field, immediately
+// before auxdatal, "so a decoder can find and unpack the auxdatal user bits
+// without knowing the value of nauxbits" - nauxbits being unknowable until the
+// whole frame has been decoded. So the container is not appended after the
+// padding; the padding is what gets pushed in front of it.
+using AuxPayload = std::span<const std::byte>;
+
 [[nodiscard]] std::expected<std::vector<std::byte>, FrameError> build_silent_frame(
-    const FrameConfig& config);
+    const FrameConfig& config, AuxPayload aux = {});
 
 // Real audio through the same container. The coding profile is deliberately
 // the one reference encoders use, because those are the paths reference
@@ -157,7 +176,7 @@ public:
     // followed by LFE last when config.lfe is set. Each span holds exactly
     // kSamplesPerFrame samples, nominally in [-1, 1).
     [[nodiscard]] std::expected<std::vector<std::byte>, FrameError> encode_frame(
-        std::span<const std::span<const float>> channels);
+        std::span<const std::span<const float>> channels, AuxPayload aux = {});
 
     [[nodiscard]] const FrameConfig& config() const { return config_; }
     [[nodiscard]] int channel_count() const {
@@ -197,8 +216,12 @@ struct AccessUnit {
 // share one frame period, not one frame - so the total is the sum.
 [[nodiscard]] std::uint32_t access_unit_words(const AccessUnitConfig& config);
 
+// TS 103 420 §8.2 fixes which substream carries the container: the LAST
+// dependent substream if the access unit has any, otherwise the independent
+// one. The object metadata describes the whole program, so it may not arrive
+// before every substream that contributes to it.
 [[nodiscard]] std::expected<AccessUnit, FrameError> build_silent_access_unit(
-    const AccessUnitConfig& config);
+    const AccessUnitConfig& config, AuxPayload aux = {});
 
 // Real audio across an independent substream and its dependents. One
 // FrameEncoder per substream: each keeps its own MDCT overlap and runs its own
@@ -211,7 +234,7 @@ public:
     // transmission order - the independent's first (AC-3 order, Table 5.8,
     // LFE last), then each dependent's in the order its chanmap names them.
     [[nodiscard]] std::expected<AccessUnit, FrameError> encode_access_unit(
-        std::span<const std::span<const float>> channels);
+        std::span<const std::span<const float>> channels, AuxPayload aux = {});
 
     [[nodiscard]] const AccessUnitConfig& config() const { return config_; }
     // Summed across substreams: the span count encode_access_unit expects.
