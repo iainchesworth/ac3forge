@@ -1844,6 +1844,13 @@ void print_usage() {
         // repeated on every affected row.
         const std::string_view note = unmet(c.needs) != nullptr ? "UNAVAILABLE HERE" : c.note;
         if (!note.empty()) {
+            // The note column starts at 62, but 'record' has a spec longer
+            // than that and no padding is applied to a line already past the
+            // stop - so guarantee the separating space by hand rather than
+            // letting the note run into the last argument.
+            if (line.size() >= 62) {
+                line += ' ';
+            }
             line = std::format("{:<62}({})", line, note);
         }
         std::println("{}", line);
@@ -1852,10 +1859,10 @@ void print_usage() {
     if (!backend.capture.available || !backend.passthrough.available) {
         std::println("");
         if (!backend.capture.available) {
-            std::println("UNAVAILABLE HERE: {}.", backend.capture.reason);
+            std::println("UNAVAILABLE HERE — {}.", backend.capture.reason);
         }
         if (!backend.passthrough.available) {
-            std::println("UNAVAILABLE HERE: {}.", backend.passthrough.reason);
+            std::println("UNAVAILABLE HERE — {}.", backend.passthrough.reason);
         }
         std::println("Everything else is file I/O and behaves identically on every platform;");
         std::println("'spdif' in particular reaches a receiver without any audio backend at all.");
