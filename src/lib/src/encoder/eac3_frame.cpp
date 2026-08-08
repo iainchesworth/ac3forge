@@ -86,12 +86,13 @@ struct Payload {
 void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
                 const Payload& payload) {
     const int nfchans = fullbw_channel_count(config.acmod);
+    const bool dependent = config.strmtyp == StreamType::kDependent;
 
     w.put(kSyncWord, 16);
 
     // --- bsi (Table E1.2) ---
-    w.put(0, 2);  // strmtyp: independent
-    w.put(0, 3);  // substreamid
+    w.put(static_cast<std::uint32_t>(config.strmtyp), 2);
+    w.put(static_cast<std::uint32_t>(config.substreamid), 3);
     w.put(words - 1, 11);  // frmsiz is words - 1
     w.put(static_cast<std::uint32_t>(config.sample_rate), 2);  // fscod (not 0x3)
     w.put(3, 2);  // numblkscod: six blocks per syncframe
@@ -99,7 +100,25 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
     w.put(config.lfe ? 1 : 0, 1);
     w.put(kBsid, 5);
     w.put(static_cast<std::uint32_t>(config.dialnorm), 5);
-    w.put(0, 1);  // compre
+    // §E3.8.5: in a dependent substream compre is not really "a compression
+    // word follows" - it marks the LAST dependent of the program, which is how
+    // a decoder knows every channel has arrived. The last one must set it and
+    // the others must clear it. The compr word it drags in is 0x00, which
+    // §7.7.1 defines as unity gain and directs an encoder applying no
+    // compression to send.
+    const bool compre = dependent && config.last_dependent;
+    w.put(compre ? 1 : 0, 1);
+    if (compre) {
+        w.put(0, 8);  // compr: 0 dB
+    }
+    // acmod == 0x0 (1+1) is rejected in validate(), so the dialnorm2 /
+    // compr2e block never applies.
+    if (dependent) {
+        w.put(config.chanmap ? 1 : 0, 1);  // chanmape
+        if (config.chanmap) {
+            w.put(*config.chanmap, 16);
+        }
+    }
     w.put(0, 1);  // mixmdate
     w.put(0, 1);  // infomdate
     // convsync is absent because numblkscod == 0x3; strmtyp != 0x2.
@@ -134,12 +153,16 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
             w.put(blk == 0 ? 1 : 0, 1);  // lfeexpstr
         }
     }
-    // strmtyp == 0 and numblkscod == 0x3, so convexpstre is implied 1 and
-    // the converter strategies always follow. They describe how an AC-3
-    // converter would code this frame; mirroring the real strategy is the
+    // The whole converter-exponent element is gated on strmtyp == 0x0: only an
+    // independent substream can be converted back to AC-3, so a dependent
+    // sends none of it. For an independent substream numblkscod == 0x3 implies
+    // convexpstre, and the strategies always follow; they describe how a
+    // converter would code this frame, so mirroring the real strategy is the
     // honest value.
-    for (int ch = 0; ch < nfchans; ++ch) {
-        w.put(0, 5);  // convexpstr[ch]
+    if (!dependent) {
+        for (int ch = 0; ch < nfchans; ++ch) {
+            w.put(0, 5);  // convexpstr[ch]
+        }
     }
     // snroffststr == 0: the SNR offsets live here, once for the frame, and
     // every channel inherits them. Zero for both means §7.2.2.1.1 gives an
@@ -212,7 +235,9 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
         // snroffststr == 0: the offsets came from audfrm, so the block
         // carries no SNR fields whatsoever.
         // frmfgaincode == 0, so fgaincod defaults to 0x4 for every channel.
-        w.put(0, 1);  // convsnroffste (strmtyp == 0)
+        if (!dependent) {
+            w.put(0, 1);  // convsnroffste, gated on strmtyp == 0x0
+        }
         // cplinu == 0: no coupling leak. dbaflde == 0: no delta allocation.
         // skipflde == 0: no skip field in any block.
 
@@ -269,6 +294,22 @@ std::expected<void, FrameError> validate(const FrameConfig& config) {
     // 1+1 needs a second program's metadata throughout; out of scope here.
     if (config.acmod == Acmod::kDualMono) {
         return std::unexpected(FrameError::kInvalidBitrate);
+    }
+    if (config.substreamid < 0 || config.substreamid > 7) {
+        return std::unexpected(FrameError::kInvalidSubstream);
+    }
+    // Only a dependent substream carries a channel map, and §E2.3.1.8 requires
+    // the locations it names to add up to exactly the channels acmod and lfeon
+    // code. Disagreement is not a parse failure - the decoder simply puts
+    // audio in the wrong speakers - so it has to be caught here.
+    if (config.chanmap) {
+        if (config.strmtyp != StreamType::kDependent) {
+            return std::unexpected(FrameError::kInvalidSubstream);
+        }
+        const int coded = fullbw_channel_count(config.acmod) + (config.lfe ? 1 : 0);
+        if (chanmap::channel_count(*config.chanmap) != coded) {
+            return std::unexpected(FrameError::kInvalidChannelMap);
+        }
     }
     return {};
 }
@@ -454,6 +495,128 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     (void)token_bits;
 
     return finish_frame(config_, words, payload);
+}
+
+// --- access units ----------------------------------------------------------
+
+namespace {
+
+// The substreams of one access unit in transmission order, with the identity
+// fields Annex E fixes rather than leaves to the caller: the independent one
+// first, then dependents numbered from 0 in their own space, the last of which
+// carries the compre marker that closes the program.
+std::expected<std::vector<FrameConfig>, FrameError> substream_configs(
+    const AccessUnitConfig& config) {
+    if (config.independent.strmtyp != StreamType::kIndependent) {
+        return std::unexpected(FrameError::kInvalidSubstream);
+    }
+    // §E2.3.1.2: eight dependents per independent substream, no more.
+    if (config.dependents.size() > 8) {
+        return std::unexpected(FrameError::kInvalidSubstream);
+    }
+    std::vector<FrameConfig> out;
+    out.reserve(config.dependents.size() + 1);
+    out.push_back(config.independent);
+    out.back().substreamid = 0;
+    out.back().last_dependent = false;
+
+    for (std::size_t i = 0; i < config.dependents.size(); ++i) {
+        FrameConfig dep = config.dependents[i];
+        // Every substream codes the same 1536 samples of one program, so a
+        // dependent cannot disagree with its parent about the sample rate.
+        if (dep.sample_rate != config.independent.sample_rate) {
+            return std::unexpected(FrameError::kInvalidSubstream);
+        }
+        dep.strmtyp = StreamType::kDependent;
+        dep.substreamid = static_cast<int>(i);
+        dep.last_dependent = i + 1 == config.dependents.size();
+        out.push_back(dep);
+    }
+    for (const auto& sub : out) {
+        if (const auto ok = validate(sub); !ok) {
+            return std::unexpected(ok.error());
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
+std::span<const std::byte> AccessUnit::substream(std::size_t index) const {
+    std::size_t offset = 0;
+    for (std::size_t i = 0; i < index; ++i) {
+        offset += substream_bytes[i];
+    }
+    return std::span{bytes}.subspan(offset, substream_bytes[index]);
+}
+
+std::uint32_t access_unit_words(const AccessUnitConfig& config) {
+    std::uint32_t words =
+        frame_words(config.independent.sample_rate, config.independent.bitrate_kbps);
+    for (const auto& dep : config.dependents) {
+        words += frame_words(dep.sample_rate, dep.bitrate_kbps);
+    }
+    return words;
+}
+
+std::expected<AccessUnit, FrameError> build_silent_access_unit(
+    const AccessUnitConfig& config) {
+    const auto subs = substream_configs(config);
+    if (!subs) {
+        return std::unexpected(subs.error());
+    }
+    AccessUnit unit;
+    for (const auto& sub : *subs) {
+        const auto frame = build_silent_frame(sub);
+        if (!frame) {
+            return std::unexpected(frame.error());
+        }
+        unit.substream_bytes.push_back(static_cast<std::uint32_t>(frame->size()));
+        unit.bytes.insert(unit.bytes.end(), frame->begin(), frame->end());
+    }
+    return unit;
+}
+
+AccessUnitEncoder::AccessUnitEncoder(const AccessUnitConfig& config) : config_(config) {
+    // Identity is settled once here so encode_access_unit stays a hot path and
+    // so a caller cannot renumber substreams between frames.
+    if (const auto subs = substream_configs(config)) {
+        for (const auto& sub : *subs) {
+            substreams_.emplace_back(sub);
+        }
+    }
+}
+
+int AccessUnitEncoder::channel_count() const {
+    int total = 0;
+    for (const auto& sub : substreams_) {
+        total += sub.channel_count();
+    }
+    return total;
+}
+
+std::expected<AccessUnit, FrameError> AccessUnitEncoder::encode_access_unit(
+    std::span<const std::span<const float>> channels) {
+    if (substreams_.empty()) {
+        // The constructor rejected the layout; re-run it for the real reason.
+        const auto subs = substream_configs(config_);
+        return std::unexpected(subs ? FrameError::kInvalidSubstream : subs.error());
+    }
+    assert(static_cast<int>(channels.size()) == channel_count());
+
+    AccessUnit unit;
+    std::size_t taken = 0;
+    for (auto& sub : substreams_) {
+        const auto count = static_cast<std::size_t>(sub.channel_count());
+        const auto frame = sub.encode_frame(channels.subspan(taken, count));
+        if (!frame) {
+            return std::unexpected(frame.error());
+        }
+        taken += count;
+        unit.substream_bytes.push_back(static_cast<std::uint32_t>(frame->size()));
+        unit.bytes.insert(unit.bytes.end(), frame->begin(), frame->end());
+    }
+    return unit;
 }
 
 }  // namespace ac3::eac3

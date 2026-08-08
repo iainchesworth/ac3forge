@@ -81,9 +81,10 @@ def parse_frame(data, verbose=True):
         r.bits(5)
         if r.bits(1):
             r.bits(8)
+    chanmap = None
     if strmtyp == 1:
         if r.bits(1):                # chanmape
-            r.bits(16)
+            chanmap = r.bits(16)
     nfchans = fullbw_channels(acmod)
     nblks = (1, 2, 3, 6)[numblkscod]
 
@@ -350,7 +351,9 @@ def parse_frame(data, verbose=True):
     total_bits = (frmsiz + 1) * 16
     log(f'consumed {r.pos} of {total_bits} bits; {total_bits - r.pos} left for '
         f'aux + errorcheck (needs >= 18)')
-    return r.pos, total_bits
+    return r.pos, total_bits, {'strmtyp': strmtyp, 'substreamid': substreamid,
+                               'fscod': fscod, 'numblkscod': numblkscod,
+                               'acmod': acmod, 'lfeon': lfeon, 'chanmap': chanmap}
 
 
 def expand(absexp, groups, grpsize, end):
@@ -363,23 +366,73 @@ def expand(absexp, groups, grpsize, end):
     return out[:end] + [24] * max(0, end - len(out))
 
 
+# Table E2.5 locations that name a PAIR of channels rather than one, so a
+# map's population count is not its channel count.
+CHANMAP_PAIRS = 0x0400 | 0x0200 | 0x0040 | 0x0020 | 0x0010 | 0x0004
+
+
+def chanmap_channels(m):
+    return bin(m).count('1') + bin(m & CHANMAP_PAIRS).count('1')
+
+
+def split_access_units(data):
+    """Group syncframes into access units. A new one starts at each strmtyp 0."""
+    units, offset = [], 0
+    while offset + 4 <= len(data):
+        assert data[offset] == 0x0B and data[offset + 1] == 0x77, 'lost sync'
+        # Byte 2 is strmtyp(2) | substreamid(3) | the top 3 bits of frmsiz.
+        strmtyp = data[offset + 2] >> 6
+        substreamid = (data[offset + 2] >> 3) & 0x07
+        frmsiz = ((data[offset + 2] & 0x07) << 8) | data[offset + 3]
+        size = (frmsiz + 1) * 2
+        if strmtyp == 0 or not units:
+            units.append([])
+        units[-1].append((offset, size, strmtyp, substreamid))
+        offset += size
+    return units
+
+
 def main():
     path = Path(sys.argv[1])
     want = int(sys.argv[2]) if len(sys.argv) > 2 else 0
     data = path.read_bytes()
-    offset = 0
-    for index in range(want + 1):
-        assert data[offset] == 0x0B and data[offset + 1] == 0x77, 'lost sync'
-        frmsiz = ((data[offset + 2] & 0x07) << 8) | data[offset + 3]
-        size = (frmsiz + 1) * 2
-        if index == want:
-            print(f'frame {index} at byte {offset}, {size} bytes')
-            used, total = parse_frame(data[offset:offset + size])
-            slack = total - used
-            print('VERDICT:', 'consistent' if 18 <= slack else
-                  f'OVERRUN by {-(slack - 18)} bits')
-            return
-        offset += size
+    units = split_access_units(data)
+    if want >= len(units):
+        raise SystemExit(f'only {len(units)} access units in {path}')
+    unit = units[want]
+    print(f'access unit {want}: {len(unit)} substream(s), '
+          f'{sum(s for _, s, _, _ in unit)} bytes')
+
+    ok = True
+    parent = None
+    for offset, size, strmtyp, substreamid in unit:
+        kind = ('independent', 'dependent', 'independent (AC-3 convertible)',
+                'reserved')[strmtyp]
+        print(f'-- {kind} substreamid={substreamid} at byte {offset}, {size} bytes')
+        used, total, info = parse_frame(data[offset:offset + size])
+        slack = total - used
+        if slack < 18:
+            print(f'   OVERRUN by {18 - slack} bits')
+            ok = False
+        # Cross-substream invariants. A dependent that disagrees with its
+        # parent about the sample rate or the block count silently desynchronises
+        # the program rather than failing to parse.
+        if strmtyp == 0:
+            parent = info
+        elif parent is not None:
+            for field in ('fscod', 'numblkscod'):
+                if info[field] != parent[field]:
+                    print(f'   MISMATCH {field}: {info[field]} vs parent {parent[field]}')
+                    ok = False
+        # E2.3.1.8: the locations a chanmap names must equal the channels the
+        # substream's acmod and lfeon actually code.
+        if info['chanmap'] is not None:
+            coded = fullbw_channels(info['acmod']) + info['lfeon']
+            named = chanmap_channels(info['chanmap'])
+            state = 'ok' if named == coded else f'MISMATCH: codes {coded}'
+            print(f'   chanmap 0x{info["chanmap"]:04X} names {named} channels ({state})')
+            ok = ok and named == coded
+    print('VERDICT:', 'consistent' if ok else 'INCONSISTENT')
 
 
 if __name__ == '__main__':

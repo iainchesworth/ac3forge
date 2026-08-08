@@ -150,21 +150,58 @@ int run_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_t bit
 // Real audio is the only input that can detect a frame-layout error at all:
 // with silence every bap is zero, so a stray bit lands in zero-filled aux
 // data and the frame still "decodes".
+// Layouts wider than 5.1 need a dependent substream: the independent one
+// always carries a self-sufficient 5.1 bed, and the extra channels ride along
+// beside it with a chanmap saying where they belong.
+ac3::eac3::AccessUnitConfig eac3_layout(std::string_view layout, std::uint32_t bitrate,
+                                        std::vector<double>& tone_hz) {
+    ac3::eac3::AccessUnitConfig config;
+    config.independent.bitrate_kbps = bitrate;
+    if (layout == "stereo") {
+        tone_hz = {1000.0, 1000.0};
+        return config;
+    }
+    config.independent.acmod = ac3::Acmod::k3_2;
+    config.independent.lfe = true;
+    tone_hz = {1000.0, 800.0, 1200.0, 600.0, 1400.0, 60.0};  // L C R Ls Rs LFE
+    if (layout == "51") {
+        return config;
+    }
+    // A dependent substream gets its own slice of the rate, not a share of the
+    // independent's - they occupy one frame period, not one frame.
+    ac3::eac3::FrameConfig dep{.bitrate_kbps = bitrate / 2};
+    if (layout == "71") {
+        // The spec's own worked example: acmod 2/2 with bits 3, 4 and 6 set,
+        // so Ls and Rs REPLACE the bed's surrounds and Lrs/Rrs are new.
+        dep.acmod = ac3::Acmod::k2_2;
+        dep.chanmap = ac3::eac3::chanmap::k71Rear;
+        // Deliberately NOT the bed's 600/1400 for the two surrounds. The
+        // dependent's Ls/Rs are supposed to overwrite the bed's, and identical
+        // tones could not tell that happening apart from it being ignored.
+        tone_hz.insert(tone_hz.end(), {500.0, 1600.0, 400.0, 1800.0});
+    } else {  // "512" - a 5.1 bed with two height channels above it
+        dep.acmod = ac3::Acmod::k2_0;
+        dep.chanmap = ac3::eac3::chanmap::k512Height;
+        tone_hz.insert(tone_hz.end(), {2000.0, 2400.0});
+    }
+    config.dependents.push_back(dep);
+    return config;
+}
+
 int run_eac3_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_t bitrate,
                   std::uint32_t freq_hz, std::uint32_t amplitude_pct,
                   std::string_view layout) {
-    const bool surround = layout == "51";
-    ac3::eac3::FrameConfig config{.bitrate_kbps = bitrate};
     std::vector<double> tone_hz;
-    if (surround) {
-        config.acmod = ac3::Acmod::k3_2;
-        config.lfe = true;
-        tone_hz = {1000.0, 800.0, 1200.0, 600.0, 1400.0, 60.0};  // L C R SL SR LFE
-    } else {
+    const auto config = eac3_layout(layout, bitrate, tone_hz);
+    if (layout == "stereo") {
         tone_hz = {static_cast<double>(freq_hz), static_cast<double>(freq_hz)};
     }
-    ac3::eac3::FrameEncoder encoder{config};
+    ac3::eac3::AccessUnitEncoder encoder{config};
     const auto nchans = static_cast<std::size_t>(encoder.channel_count());
+    if (nchans != tone_hz.size()) {
+        std::println(stderr, "error: unknown layout '{}' (stereo | 51 | 71 | 512)", layout);
+        return 1;
+    }
     const double amplitude = amplitude_pct / 100.0;
 
     const std::uint64_t count = (static_cast<std::uint64_t>(seconds) * 48000 + 1535) / 1536;
@@ -185,18 +222,18 @@ int run_eac3_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_
             views[ch] = samples[ch];
         }
         n0 += ac3::kSamplesPerFrame;
-        auto frame = encoder.encode_frame(views);
-        if (!frame) {
+        auto unit = encoder.encode_access_unit(views);
+        if (!unit) {
             std::println(stderr, "error: invalid E-AC-3 configuration");
             return 1;
         }
-        frames.push_back(std::move(*frame));
+        frames.push_back(std::move(unit->bytes));
     }
     if (!write_frames(out_path, frames)) {
         return 1;
     }
-    std::println("wrote {} E-AC-3 {} frames ({} kbps, bsid 16) to {}", count,
-                 surround ? "5.1" : "stereo", bitrate, out_path);
+    std::println("wrote {} E-AC-3 {} access units ({} channels, {} substreams, bsid 16) to {}",
+                 count, layout, nchans, config.dependents.size() + 1, out_path);
     return 0;
 }
 

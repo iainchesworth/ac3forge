@@ -1,9 +1,11 @@
 #pragma once
 
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -32,6 +34,65 @@ namespace ac3::eac3 {
 
 inline constexpr int kBsid = 16;
 
+// §E2.3.1.1, Table E2.1. Type 0x2 - an independent substream whose program
+// was previously coded as AC-3 - is deliberately absent: it drags in a
+// blkid/frmsizecod branch nothing here would ever write.
+enum class StreamType : std::uint8_t {
+    kIndependent = 0,  // decodable alone; begins an access unit
+    kDependent = 1,    // extends the independent substream it follows
+};
+
+// §E2.3.1.8, Table E2.5 - the custom channel map. Bit 0 is stored in the MOST
+// significant bit of the 16-bit field ("Bit 0, which indicates the presence of
+// the left channel, is stored in the most significant bit"), so location n has
+// mask 1 << (15 - n). The spec's own worked example - bits 3, 4 and 6 giving
+// Ls, Rs, Lrs, Rrs - is 0x1A00, which only comes out right under that
+// numbering.
+//
+// Six of the sixteen locations name a PAIR of channels rather than one, so a
+// map's population count is not its channel count.
+namespace chanmap {
+
+inline constexpr std::uint16_t kLeft = 0x8000;          // bit 0
+inline constexpr std::uint16_t kCentre = 0x4000;        // bit 1
+inline constexpr std::uint16_t kRight = 0x2000;         // bit 2
+inline constexpr std::uint16_t kLeftSurround = 0x1000;  // bit 3
+inline constexpr std::uint16_t kRightSurround = 0x0800; // bit 4
+inline constexpr std::uint16_t kLcRc = 0x0400;          // bit 5  (pair)
+inline constexpr std::uint16_t kLrsRrs = 0x0200;        // bit 6  (pair)
+inline constexpr std::uint16_t kCs = 0x0100;            // bit 7
+inline constexpr std::uint16_t kTs = 0x0080;            // bit 8
+inline constexpr std::uint16_t kLsdRsd = 0x0040;        // bit 9  (pair)
+inline constexpr std::uint16_t kLwRw = 0x0020;          // bit 10 (pair)
+inline constexpr std::uint16_t kVhlVhr = 0x0010;        // bit 11 (pair)
+inline constexpr std::uint16_t kVhc = 0x0008;           // bit 12
+inline constexpr std::uint16_t kLtsRts = 0x0004;        // bit 13 (pair)
+inline constexpr std::uint16_t kLfe2 = 0x0002;          // bit 14
+inline constexpr std::uint16_t kLfe = 0x0001;           // bit 15
+
+inline constexpr std::uint16_t kPairs =
+    kLcRc | kLrsRrs | kLsdRsd | kLwRw | kVhlVhr | kLtsRts;
+
+// Coded channels a map accounts for. §E2.3.1.8 requires this to equal the
+// channels the substream's acmod and lfeon code, and the coded order to
+// follow the enabled bits from bit 0 downwards.
+[[nodiscard]] constexpr int channel_count(std::uint16_t map) {
+    return std::popcount(map) +
+           std::popcount(static_cast<std::uint16_t>(map & kPairs));
+}
+
+// Canonical 7.1: the dependent replaces the bed's surrounds and adds the two
+// rear surrounds. This is the spec's own example (bits 3, 4, 6 with acmod 2/2).
+inline constexpr std::uint16_t k71Rear = kLeftSurround | kRightSurround | kLrsRrs;
+// 5.1.2: two height channels supplementing an untouched 5.1 bed.
+inline constexpr std::uint16_t k512Height = kVhlVhr;
+
+static_assert(k71Rear == 0x1A00, "Table E2.5 bit 0 must be the MSB");
+static_assert(channel_count(k71Rear) == 4);
+static_assert(channel_count(k512Height) == 2);
+
+}  // namespace chanmap
+
 struct FrameConfig {
     SampleRate sample_rate = SampleRate::k48000;
     std::uint32_t bitrate_kbps = 192;
@@ -39,6 +100,24 @@ struct FrameConfig {
     bool lfe = false;
     int dialnorm = 31;
     int chbwcod = 60;
+
+    // --- substream identity (Table E1.2) -----------------------------------
+    // The defaults describe the lone independent substream this encoder has
+    // always emitted, so existing callers keep their exact bit layout.
+    StreamType strmtyp = StreamType::kIndependent;
+    // §E2.3.1.2. Independent substreams number from 0; the dependents of one
+    // independent substream number from 0 in their OWN space, so a dependent's
+    // id does not continue its parent's.
+    int substreamid = 0;
+    // Sent only by dependent substreams. std::nullopt clears chanmape, which
+    // lets acmod and lfeon speak for themselves - the dependent's channels
+    // then simply overwrite the matching ones in the independent substream.
+    std::optional<std::uint16_t> chanmap = std::nullopt;
+    // §E3.8.5. In a dependent substream compre stops meaning "a compression
+    // word follows" and becomes the marker for the LAST dependent of the
+    // program - it is how a decoder knows the program is complete. Set by the
+    // access-unit builder; meaningless on an independent substream.
+    bool last_dependent = false;
 };
 
 // Words per syncframe at a given rate. E-AC-3 signals the size directly, so
@@ -76,6 +155,59 @@ public:
 private:
     FrameConfig config_;
     std::array<std::array<double, 256>, 6> history_{};  // MDCT overlap per channel
+};
+
+// An independent substream and the dependents that extend it. Every substream
+// codes the same 1536 samples of the same program, so a dependent contributes
+// only its own channels, its chanmap and its share of the bit rate.
+struct AccessUnitConfig {
+    FrameConfig independent{};
+    std::vector<FrameConfig> dependents{};
+};
+
+// One access unit: the independent substream's frame followed by its
+// dependents' in transmission order, concatenated exactly as they go on the
+// wire. Nothing may sit between them and they may not be reordered - a decoder
+// finds each substream by walking sync word and frmsiz, so the concatenation
+// IS the framing.
+struct AccessUnit {
+    std::vector<std::byte> bytes;
+    // Byte length of each substream frame, independent first; sums to
+    // bytes.size(). Retained because crc2 is per substream, so anything that
+    // re-checks a written stream has to find these boundaries again.
+    std::vector<std::uint32_t> substream_bytes;
+
+    [[nodiscard]] std::size_t substream_count() const { return substream_bytes.size(); }
+    [[nodiscard]] std::span<const std::byte> substream(std::size_t index) const;
+};
+
+// Words in a whole access unit. bitrate_kbps is PER SUBSTREAM - the substreams
+// share one frame period, not one frame - so the total is the sum.
+[[nodiscard]] std::uint32_t access_unit_words(const AccessUnitConfig& config);
+
+[[nodiscard]] std::expected<AccessUnit, FrameError> build_silent_access_unit(
+    const AccessUnitConfig& config);
+
+// Real audio across an independent substream and its dependents. One
+// FrameEncoder per substream: each keeps its own MDCT overlap and runs its own
+// SNR search against its own share of the rate.
+class AccessUnitEncoder {
+public:
+    explicit AccessUnitEncoder(const AccessUnitConfig& config);
+
+    // channels: every channel of the access unit grouped by substream in
+    // transmission order - the independent's first (AC-3 order, Table 5.8,
+    // LFE last), then each dependent's in the order its chanmap names them.
+    [[nodiscard]] std::expected<AccessUnit, FrameError> encode_access_unit(
+        std::span<const std::span<const float>> channels);
+
+    [[nodiscard]] const AccessUnitConfig& config() const { return config_; }
+    // Summed across substreams: the span count encode_access_unit expects.
+    [[nodiscard]] int channel_count() const;
+
+private:
+    AccessUnitConfig config_;
+    std::vector<FrameEncoder> substreams_;
 };
 
 }  // namespace ac3::eac3

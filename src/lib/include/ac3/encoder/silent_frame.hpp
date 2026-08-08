@@ -41,6 +41,13 @@ struct SilentFrameConfig {
 enum class FrameError {
     kInvalidBitrate,
     kInvalidDialnorm,
+    // A substream's strmtyp/substreamid is out of range, an access unit has
+    // more than eight dependents, or a dependent disagrees with its parent on
+    // sample rate.
+    kInvalidSubstream,
+    // The channel locations a chanmap names do not add up to the channels the
+    // substream's acmod and lfeon actually code (A/52 §E2.3.1.8).
+    kInvalidChannelMap,
 };
 
 namespace detail {

@@ -190,6 +190,155 @@ TEST_CASE("E-AC-3 encodes every supported layout", "[eac3]") {
     CHECK(ac3::crc16(std::span{*frame}.subspan(2)) == 0x0000);
 }
 
+namespace {
+
+// The canonical 7.1 access unit: a self-sufficient 5.1 bed plus a dependent
+// carrying Ls, Rs, Lrs, Rrs - the spec's own worked example for chanmap.
+ac3::eac3::AccessUnitConfig seven_one() {
+    return {.independent = {.bitrate_kbps = 448, .acmod = ac3::Acmod::k3_2, .lfe = true},
+            .dependents = {{.bitrate_kbps = 224,
+                            .acmod = ac3::Acmod::k2_2,
+                            .chanmap = ac3::eac3::chanmap::k71Rear}}};
+}
+
+}  // namespace
+
+TEST_CASE("chanmap counts paired locations as two channels", "[eac3]") {
+    using namespace ac3::eac3::chanmap;
+    // Six of the sixteen Table E2.5 locations name a pair, so population count
+    // is not channel count - and the two disagreeing is a wrong-speaker bug
+    // that parses perfectly.
+    CHECK(channel_count(kLeft) == 1);
+    CHECK(channel_count(kLfe) == 1);
+    CHECK(channel_count(kLrsRrs) == 2);
+    CHECK(channel_count(kVhlVhr) == 2);
+    CHECK(channel_count(static_cast<std::uint16_t>(kLeft | kCentre | kRight)) == 3);
+    // Bit 0 is the MSB, which is the only numbering under which the spec's
+    // example (bits 3, 4, 6 with acmod 2/2) comes to four channels.
+    CHECK(k71Rear == 0x1A00);
+    CHECK(channel_count(k71Rear) == 4);
+}
+
+TEST_CASE("E-AC-3 access unit concatenates its substreams", "[eac3]") {
+    const auto unit = ac3::eac3::build_silent_access_unit(seven_one());
+    REQUIRE(unit.has_value());
+    REQUIRE(unit->substream_count() == 2);
+
+    // The access unit is exactly its substreams end to end - concatenation IS
+    // the framing, since a decoder finds each one by sync word and frmsiz.
+    CHECK(unit->substream_bytes[0] == ac3::eac3::frame_words(ac3::SampleRate::k48000, 448) * 2);
+    CHECK(unit->substream_bytes[1] == ac3::eac3::frame_words(ac3::SampleRate::k48000, 224) * 2);
+    CHECK(unit->bytes.size() == unit->substream_bytes[0] + unit->substream_bytes[1]);
+    CHECK(unit->bytes.size() == ac3::eac3::access_unit_words(seven_one()) * 2);
+
+    // crc2 is per substream, so each has to check out on its own.
+    for (std::size_t i = 0; i < unit->substream_count(); ++i) {
+        const auto sub = unit->substream(i);
+        CHECK(std::to_integer<std::uint8_t>(sub[0]) == 0x0B);
+        CHECK(std::to_integer<std::uint8_t>(sub[1]) == 0x77);
+        CHECK(ac3::crc16(sub.subspan(2)) == 0x0000);
+    }
+}
+
+TEST_CASE("E-AC-3 dependent substream bsi", "[eac3]") {
+    const auto unit = ac3::eac3::build_silent_access_unit(seven_one());
+    REQUIRE(unit.has_value());
+
+    // The independent substream keeps the exact layout it had before
+    // substreams existed: strmtyp 0, substreamid 0, compre clear.
+    ac3::BitReader lead{unit->substream(0)};
+    lead.skip(16);
+    CHECK(lead.read(2) == 0);  // strmtyp
+    CHECK(lead.read(3) == 0);  // substreamid
+
+    ac3::BitReader dep{unit->substream(1)};
+    dep.skip(16);
+    CHECK(dep.read(2) == 1);  // strmtyp: dependent
+    // E2.3.1.2: a dependent's id lives in its own numbering space and starts
+    // at 0 - it does not continue its parent's.
+    CHECK(dep.read(3) == 0);  // substreamid
+    dep.skip(11 + 2 + 2);     // frmsiz, fscod, numblkscod
+    CHECK(dep.read(3) == static_cast<std::uint32_t>(ac3::Acmod::k2_2));
+    CHECK(dep.read(1) == 0);  // lfeon
+    dep.skip(5 + 5);          // bsid, dialnorm
+    // E3.8.5: compre marks the LAST dependent of the program, and drags in an
+    // 8-bit compr that 7.7.1 defines as unity at 0x00.
+    CHECK(dep.read(1) == 1);  // compre
+    CHECK(dep.read(8) == 0);  // compr: 0 dB
+    CHECK(dep.read(1) == 1);  // chanmape
+    CHECK(dep.read(16) == ac3::eac3::chanmap::k71Rear);
+}
+
+TEST_CASE("E-AC-3 access unit carries real audio in every substream", "[eac3]") {
+    ac3::eac3::AccessUnitEncoder encoder{seven_one()};
+    // Ten spans in: the bed's six, then the dependent's four. Two of the
+    // dependent's overwrite the bed's surrounds, so eight channels come out.
+    REQUIRE(encoder.channel_count() == 10);
+
+    std::uint64_t n = 0;
+    for (int f = 0; f < 3; ++f) {
+        auto pcm = tone_frame(10, n);
+        n += ac3::kSamplesPerFrame;
+        std::vector<std::span<const float>> views;
+        for (const auto& channel : pcm) {
+            views.emplace_back(channel);
+        }
+        const auto unit = encoder.encode_access_unit(views);
+        REQUIRE(unit.has_value());
+        REQUIRE(unit->substream_count() == 2);
+        for (std::size_t i = 0; i < 2; ++i) {
+            CHECK(ac3::crc16(unit->substream(i).subspan(2)) == 0x0000);
+        }
+        if (f > 0) {
+            // Both substreams run their own SNR search against their own share
+            // of the rate; neither may saturate.
+            CHECK(frame_snr_offset(unit->substream(0)) < 1023);
+            CHECK(frame_snr_offset(unit->substream(1)) < 1023);
+        }
+    }
+}
+
+TEST_CASE("E-AC-3 rejects substream layouts it cannot express", "[eac3]") {
+    using ac3::eac3::AccessUnitConfig;
+    using ac3::eac3::FrameConfig;
+    using ac3::eac3::StreamType;
+
+    // E2.3.1.8: the locations a chanmap names must equal the channels acmod
+    // and lfeon code. A decoder would not fail on this - it would just put
+    // audio in the wrong speakers - so the encoder has to refuse it.
+    auto wrong = seven_one();
+    wrong.dependents[0].chanmap = ac3::eac3::chanmap::kLrsRrs;  // 2, not 4
+    CHECK(ac3::eac3::build_silent_access_unit(wrong).error() ==
+          ac3::FrameError::kInvalidChannelMap);
+
+    // Only a dependent substream may carry one.
+    CHECK(ac3::eac3::build_silent_frame(
+              {.chanmap = ac3::eac3::chanmap::kLeft})
+              .error() == ac3::FrameError::kInvalidSubstream);
+
+    // E2.3.1.2: eight dependents per independent substream, no more.
+    AccessUnitConfig crowded;
+    crowded.dependents.assign(
+        9, {.bitrate_kbps = 32, .chanmap = ac3::eac3::chanmap::kLwRw});
+    CHECK(ac3::eac3::build_silent_access_unit(crowded).error() ==
+          ac3::FrameError::kInvalidSubstream);
+
+    // Every substream codes the same 1536 samples, so a dependent cannot
+    // disagree with its parent about the sample rate.
+    AccessUnitConfig mixed;
+    mixed.dependents.push_back({.sample_rate = ac3::SampleRate::k32000,
+                                .bitrate_kbps = 96,
+                                .chanmap = ac3::eac3::chanmap::kLwRw});
+    CHECK(ac3::eac3::build_silent_access_unit(mixed).error() ==
+          ac3::FrameError::kInvalidSubstream);
+
+    // An access unit must begin with an independent substream.
+    AccessUnitConfig headless;
+    headless.independent.strmtyp = StreamType::kDependent;
+    CHECK(ac3::eac3::build_silent_access_unit(headless).error() ==
+          ac3::FrameError::kInvalidSubstream);
+}
+
 TEST_CASE("E-AC-3 rejects configurations it cannot express", "[eac3]") {
     CHECK(ac3::eac3::build_silent_frame({.bitrate_kbps = 100}).error() ==
           ac3::FrameError::kInvalidBitrate);
