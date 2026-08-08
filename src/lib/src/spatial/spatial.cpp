@@ -15,12 +15,14 @@ struct RingSpeaker {
     double azimuth_deg;
     int bed_index;
 };
+// Ascending azimuth is what the pair search below needs, so the two rear
+// speakers appear wrapped into [0, 360) rather than negative.
 constexpr std::array<RingSpeaker, 5> kRing = {{
-    {0.0, 1},    // C
-    {30.0, 0},   // L
-    {110.0, 3},  // SL
-    {250.0, 4},  // SR (-110°)
-    {330.0, 2},  // R  (-30°)
+    {kSpeakerAzimuthDeg[1], 1},          // C     0°
+    {kSpeakerAzimuthDeg[0], 0},          // L   +30°
+    {kSpeakerAzimuthDeg[3], 3},          // SL +110°
+    {kSpeakerAzimuthDeg[4] + 360.0, 4},  // SR -110°
+    {kSpeakerAzimuthDeg[2] + 360.0, 2},  // R   -30°
 }};
 
 constexpr double kDegToRad = std::numbers::pi / 180.0;

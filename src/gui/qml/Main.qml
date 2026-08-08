@@ -12,7 +12,9 @@ ApplicationWindow {
     id: window
 
     width: 820
-    height: 680
+    // Tall enough that the meters and the soundfield ring are on screen
+    // beside the controls rather than below the fold.
+    height: 880
     minimumWidth: 640
     minimumHeight: 560
     visible: true
@@ -155,39 +157,125 @@ ApplicationWindow {
                         }
                     }
 
-                    RowLayout {
-                        Layout.fillWidth: true
+                    Text {
                         visible: EncoderController.recording
-                        spacing: Theme.gap
-
-                        Text {
-                            text: qsTr("%1 s").arg(EncoderController.recordedSeconds.toFixed(1))
-                            color: Theme.text
-                            font.pixelSize: Theme.fontNormal
-                            font.family: "monospace"
-                        }
-
-                        // Peak level of the frame just encoded — enough to see
-                        // at a glance that real audio is arriving.
-                        Rectangle {
-                            Layout.fillWidth: true
-                            height: 8
-                            radius: 4
-                            color: Theme.surfaceAlt
-
-                            Rectangle {
-                                width: parent.width * Math.min(1.0, EncoderController.captureLevel)
-                                height: parent.height
-                                radius: parent.radius
-                                color: EncoderController.captureLevel > 0.98 ? Theme.bad : Theme.good
-                            }
-                        }
+                        text: qsTr("Recording — %1 s").arg(EncoderController.recordedSeconds.toFixed(1))
+                        color: Theme.text
+                        font.pixelSize: Theme.fontNormal
+                        font.family: "monospace"
                     }
 
                     Text {
                         Layout.fillWidth: true
                         visible: !EncoderController.captureSupported
                         text: qsTr("No active capture endpoints were found. Plug in a microphone, or use a playback device's loopback entry to capture what the machine is playing.")
+                        color: Theme.textMuted
+                        font.pixelSize: Theme.fontSmall
+                        wrapMode: Text.WordWrap
+                    }
+                }
+
+                // ---- channel levels ------------------------------------------
+                Card {
+                    title: qsTr("Channel levels")
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.gap
+
+                        Text {
+                            text: EncoderController.hasLevels
+                                  ? EncoderController.layoutName
+                                  : qsTr("no source")
+                            color: Theme.text
+                            font.pixelSize: Theme.fontNormal
+                            font.bold: true
+                        }
+
+                        // A steady dot while a run is live, so a frozen
+                        // display is never mistaken for a silent one.
+                        Rectangle {
+                            width: 8
+                            height: 8
+                            radius: 4
+                            visible: EncoderController.metering
+                            color: Theme.bad
+                        }
+
+                        Text {
+                            text: EncoderController.metering
+                                  ? qsTr("live")
+                                  : qsTr("peak and RMS over the whole signal")
+                            color: Theme.textMuted
+                            font.pixelSize: Theme.fontSmall
+                            visible: EncoderController.hasLevels
+                        }
+
+                        Item { Layout.fillWidth: true }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        visible: EncoderController.hasLevels
+                        spacing: Theme.gap
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            Layout.alignment: Qt.AlignTop
+                            spacing: 4
+
+                            Repeater {
+                                objectName: "channelMeters"
+                                model: EncoderController.channelNames
+
+                                delegate: ChannelMeter {
+                                    required property int index
+                                    required property string modelData
+
+                                    Layout.fillWidth: true
+                                    channelName: modelData
+                                    level: index < EncoderController.channelLevels.length
+                                           ? EncoderController.channelLevels[index] : ({})
+                                }
+                            }
+
+                            // The scale the bars are drawn against, with the
+                            // tick positions asked of the same mapping the
+                            // bars themselves use.
+                            Item {
+                                // Inset to match ChannelMeter's track: the
+                                // label to its left, and the readout and clip
+                                // flag to its right, each plus a row spacing.
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 30 + 8
+                                Layout.rightMargin: 8 + 46 + 8 + 30
+                                Layout.preferredHeight: 14
+
+                                Repeater {
+                                    model: [-60, -50, -40, -30, -20, -10, 0]
+
+                                    delegate: Text {
+                                        required property int modelData
+                                        x: parent.width * EncoderController.meterFraction(modelData)
+                                           - width / 2
+                                        text: modelData
+                                        color: Theme.border
+                                        font.pixelSize: 9
+                                    }
+                                }
+                            }
+                        }
+
+                        SoundfieldView {
+                            Layout.alignment: Qt.AlignTop
+                            visible: EncoderController.surround
+                        }
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        visible: !EncoderController.hasLevels
+                        text: qsTr("Load a WAV file or start recording, and every channel it carries appears here — named and ordered as A/52 Table 5.8 defines them.")
                         color: Theme.textMuted
                         font.pixelSize: Theme.fontSmall
                         wrapMode: Text.WordWrap
@@ -221,7 +309,9 @@ ApplicationWindow {
                         Item { Layout.fillWidth: true }
 
                         Text {
-                            text: qsTr("2.0 stereo · long blocks · rematrixing on")
+                            text: (EncoderController.hasLevels
+                                   ? EncoderController.layoutName
+                                   : qsTr("2/0 stereo")) + qsTr(" · long blocks · rematrixing on")
                             color: Theme.textMuted
                             font.pixelSize: Theme.fontSmall
                         }

@@ -105,6 +105,46 @@ std::expected<WavData, WavError> read_wav(const std::string& path) {
     return result;
 }
 
+std::optional<Ac3Layout> ac3_layout_for(std::size_t wav_channels) {
+    // WAV order per channel count, mapped onto the A/52 Table 5.8 array. Only
+    // the counts an acmod can express appear; 5.1 is the interesting one,
+    // where every channel but L moves.
+    switch (wav_channels) {
+        case 1:  // FC                      -> C
+            return Ac3Layout{.acmod = Acmod::k1_0, .lfe = false, .wav_index = {0}};
+        case 2:  // FL FR                   -> L R
+            return Ac3Layout{.acmod = Acmod::k2_0, .lfe = false, .wav_index = {0, 1}};
+        case 3:  // FL FR FC                -> L C R
+            return Ac3Layout{.acmod = Acmod::k3_0, .lfe = false, .wav_index = {0, 2, 1}};
+        case 4:  // FL FR BL BR             -> L R SL SR
+            return Ac3Layout{.acmod = Acmod::k2_2, .lfe = false, .wav_index = {0, 1, 2, 3}};
+        case 5:  // FL FR FC BL BR          -> L C R SL SR
+            return Ac3Layout{.acmod = Acmod::k3_2, .lfe = false, .wav_index = {0, 2, 1, 3, 4}};
+        case 6:  // FL FR FC LFE BL BR      -> L C R SL SR LFE
+            return Ac3Layout{.acmod = Acmod::k3_2, .lfe = true, .wav_index = {0, 2, 1, 4, 5, 3}};
+        default: return std::nullopt;
+    }
+}
+
+std::vector<std::size_t> wav_channel_order(Acmod acmod, bool lfe) {
+    const auto count = static_cast<std::size_t>(fullbw_channel_count(acmod)) + (lfe ? 1u : 0u);
+    const auto layout = ac3_layout_for(count);
+    std::vector<std::size_t> order(count);
+    if (!layout || layout->acmod != acmod || layout->lfe != lfe) {
+        // No WAV convention claims this layout (2/1 and 3/1 have no standard
+        // mono-surround slot, and 1+1 is not a soundfield at all), so the
+        // channels go out in the order the codec holds them.
+        for (std::size_t i = 0; i < count; ++i) {
+            order[i] = i;
+        }
+        return order;
+    }
+    for (std::size_t ac3 = 0; ac3 < count; ++ac3) {
+        order[layout->wav_index[ac3]] = ac3;
+    }
+    return order;
+}
+
 std::expected<void, WavError> write_wav_f32(const std::string& path,
                                             std::span<const std::vector<float>> channels,
                                             std::uint32_t sample_rate,

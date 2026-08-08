@@ -31,7 +31,9 @@ qt_add_qml_module(ac3gui
     QML_FILES
         qml/Main.qml
         qml/Theme.qml
-        qml/Card.qml)
+        qml/Card.qml
+        qml/ChannelMeter.qml
+        qml/SoundfieldView.qml)
 
 target_link_libraries(ac3gui
     PRIVATE

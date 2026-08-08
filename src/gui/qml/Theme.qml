@@ -15,6 +15,7 @@ QtObject {
     readonly property color accent: "#4c9aff"
     readonly property color accentText: "#08101f"
     readonly property color good: "#4cc38a"
+    readonly property color warn: "#e2b53d"
     readonly property color bad: "#f2555a"
 
     readonly property int gap: 12

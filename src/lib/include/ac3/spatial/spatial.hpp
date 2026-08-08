@@ -26,6 +26,18 @@ namespace ac3::spatial {
 inline constexpr int kBedChannels = 5;  // AC-3 3/2 order: L, C, R, SL, SR
 inline constexpr int kBlockSamples = 256;
 
+// The ITU-R BS.775 ring, in AC-3 3/2 channel order, degrees counterclockwise
+// from front. Everything spatial — the panner here, and the soundfield
+// analysis the front ends draw — is defined against this one array so the
+// geometry cannot drift between them.
+inline constexpr std::array<double, kBedChannels> kSpeakerAzimuthDeg = {
+    30.0,    // L
+    0.0,     // C
+    -30.0,   // R
+    110.0,   // SL
+    -110.0,  // SR
+};
+
 // Per-speaker gains for one source direction, AC-3 3/2 channel order.
 using PanGains = std::array<double, kBedChannels>;
 
