@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 
 #include "ac3/core/bitalloc.hpp"
 #include "ac3/core/bitreader.hpp"
@@ -10,6 +11,7 @@
 #include "ac3/core/mantissas.hpp"
 #include "ac3/core/mdct.hpp"
 #include "ac3/encoder/coupling.hpp"
+#include "ac3/meta/drc.hpp"
 
 namespace ac3 {
 
@@ -73,6 +75,28 @@ std::expected<std::size_t, DecodeError> syncframe_bytes(std::span<const std::byt
     }
     const std::uint32_t kbps = kBitratesKbps[frmsizecod >> 1];
     return *frame_size_bytes(static_cast<SampleRate>(fscod), kbps, (frmsizecod & 1) != 0);
+}
+
+// The §7.7 gain for one block, resolving which of the two control signals
+// applies. §7.7.2.1: a decoder told to use compr falls back on dynrng for any
+// syncframe with no compr word, so heavy compression is a preference and not a
+// mode switch.
+double block_gain(const DecoderConfig& config, std::uint8_t dynrng_word,
+                  std::optional<std::uint8_t> compr) {
+    if (config.heavy_compression && compr) {
+        // §7.7.2 states no partial-compression scaling: compr's whole purpose
+        // is a hard ceiling, and a decoder that applied a fraction of it would
+        // be promising a ceiling it does not deliver.
+        return meta::compr_gain(*compr);
+    }
+    if (config.drc_scale == 0.0 || dynrng_word == meta::kDynrngUnity) {
+        return 1.0;
+    }
+    const double gain = meta::dynrng_gain(dynrng_word);
+    // §7.7.1's "Partial Compression" scales the word as a signed fraction of
+    // dB, which in the linear domain is exactly raising the gain to that
+    // power. Doing it here rather than on the bits avoids re-quantising.
+    return config.drc_scale == 1.0 ? gain : std::pow(gain, config.drc_scale);
 }
 
 }  // namespace
@@ -194,7 +218,10 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
     }
     const bool lfe = r.read(1) != 0;
     const auto dialnorm = static_cast<int>(r.read(5));
-    if (r.read(1) != 0) r.skip(8);   // compre/compr
+    std::optional<std::uint8_t> compr;
+    if (r.read(1) != 0) {  // compre (§5.4.2.9)
+        compr = static_cast<std::uint8_t>(r.read(8));
+    }
     if (r.read(1) != 0) r.skip(8);   // langcode/langcod
     if (r.read(1) != 0) r.skip(7);   // audprodie: mixlevel + roomtyp
     (void)r.read(1);                 // copyrightb
@@ -215,8 +242,15 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
     out.acmod = acmod;
     out.lfe = lfe;
     out.dialnorm = dialnorm;
+    out.compr = compr;
+    out.dynrng.fill(meta::kDynrngUnity);
     out.channels.assign(static_cast<std::size_t>(nchans),
                         std::vector<float>(kSamplesPerFrame, 0.0f));
+
+    // §7.7.1.2: an absent word inherits from the previous BLOCK, and block 0
+    // without one is unity — never the previous frame's value, which is what
+    // lets a decoder join a stream mid-programme at the right level.
+    std::uint8_t dynrng_word = meta::kDynrngUnity;
 
     // Decode state persisting across blocks. Streams are the fbw channels,
     // then the LFE, then - when coupling is in use - the coupling channel as
@@ -256,7 +290,10 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
         for (int ch = 0; ch < nfchans; ++ch) {
             (void)r.read(1);  // dithflag: bap-0 bins reconstruct as zero either way
         }
-        if (r.read(1) != 0) r.skip(8);  // dynrnge/dynrng: parsed, not applied
+        if (r.read(1) != 0) {  // dynrnge
+            dynrng_word = static_cast<std::uint8_t>(r.read(8));
+        }
+        out.dynrng[static_cast<std::size_t>(block)] = dynrng_word;
 
         // --- coupling strategy (§5.3.3) ---
         if (r.read(1) != 0) {  // cplstre: a new strategy, else the prior one stands
@@ -597,6 +634,22 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
                     const double rr = coeffs[1][static_cast<std::size_t>(bin)];
                     coeffs[0][static_cast<std::size_t>(bin)] = l + rr;
                     coeffs[1][static_cast<std::size_t>(bin)] = l - rr;
+                }
+            }
+        }
+        // §7.7 gain, applied to the COEFFICIENTS rather than to the output
+        // samples: the overlap-add window then cross-fades one block's gain
+        // into the next, which is what keeps a per-block gain change from
+        // clicking. Scaling the 256 output samples instead would step.
+        // Applied to every coded channel including the LFE: §7.7.1 describes a
+        // gain change to the audio block, not to a subset of its channels. The
+        // coupling channel is skipped because decoupling has already spread it
+        // into the channels above.
+        const double drc = block_gain(config_, dynrng_word, compr);
+        if (drc != 1.0) {
+            for (int ch = 0; ch < nchans; ++ch) {
+                for (auto& value : coeffs[static_cast<std::size_t>(ch)]) {
+                    value *= drc;
                 }
             }
         }

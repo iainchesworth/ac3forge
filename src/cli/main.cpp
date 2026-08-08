@@ -25,6 +25,9 @@
 #include "ac3/encoder/silent_frame.hpp"
 #include "ac3/io/elementary.hpp"
 #include "ac3/io/wav.hpp"
+#include "ac3/meta/drc.hpp"
+#include "ac3/meta/loudness.hpp"
+#include "ac3/meta/mixing.hpp"
 #include "ac3/sinks/iec61937.hpp"
 #include "ac3/sinks/passthrough.hpp"
 #include "ac3/spatial/spatial.hpp"
@@ -35,6 +38,8 @@ namespace {
 // Named here rather than beside eac3_layout so the usage text and the error
 // message that rejects a bad layout can never list different sets.
 constexpr std::string_view kEac3Layouts = "stereo | 51 | 71 | 512 | 514 | 714";
+
+void print_meta_usage();
 
 void print_usage() {
     std::println("ac3forge — clean-room AC-3 (ATSC A/52) encoder/decoder");
@@ -48,6 +53,7 @@ void print_usage() {
     std::println("  ac3cli encode  <in.wav> <out.ac3> [bitrate_kbps] [couple]");
     std::println("  ac3cli decode  <in.ac3|in.ec3> <out.wav>   (AC-3 or E-AC-3; bsid decides)");
     std::println("  ac3cli levels  <in.wav|in.ac3>     (per-channel peak/RMS report)");
+    std::println("  ac3cli loudness <in.wav>             (BS.1770-4 loudness -> dialnorm)");
     std::println("  ac3cli spdif   <in.ac3> <out.wav>   (IEC 61937 wrap as playable PCM16 WAV)");
     std::println("  ac3cli mkv     <in.ac3|in.ec3> <out.mkv>  (wrap as a playable Matroska file)");
     std::println("  ac3cli outputs                      (render endpoints + AC-3 passthrough support)");
@@ -65,12 +71,237 @@ void print_usage() {
     std::println("encode takes 1 to 6 channel WAVs and picks the acmod to match: 1 -> 1/0,");
     std::println("2 -> 2/0, 3 -> 3/0, 4 -> 2/2, 5 -> 3/2, 6 -> 3/2 + LFE. Commands that");
     std::println("carry PCM report per-channel levels when they finish; 'record' meters live.");
+    print_meta_usage();
+    std::println("");
+    std::println("For decode, drc=<scale> applies §7.7.1 partial compression (0 = ignore,");
+    std::println("1 = as encoded) and 'heavy' prefers compr where the stream carries it.");
 }
 
 std::uint32_t parse_u32_or(std::string_view text, std::uint32_t fallback) {
     std::uint32_t value = 0;
     const auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
     return ec == std::errc{} && ptr == text.data() + text.size() ? value : fallback;
+}
+
+// --- metadata options -------------------------------------------------------
+// Bare words and key=value tokens, appended after the positional arguments in
+// any order, the same way 'couple' already works. Everything defaults off, so
+// a command line that says nothing about metadata produces exactly the stream
+// it produced before this layer existed.
+
+void print_meta_usage() {
+    std::println("metadata options (any order, after the positional arguments):");
+    std::println("  drc=<profile>     §7.7.1 dynamic range control per block");
+    std::println("                    {}", ac3::meta::kProfileNames);
+    std::println("  heavy             §7.7.2 heavy compression: a peak ceiling in the");
+    std::println("                    mono downmix, at syncframe resolution");
+    std::println("  ceiling=<dBFS>    that ceiling (default -0.5)");
+    std::println("  dialogue=<dBFS>   where heavy compression puts dialogue (default -20)");
+    std::println("  dialnorm=auto     measure BS.1770 loudness and derive dialnorm (§5.4.2.8)");
+    std::println("  dialnorm=<1..31>  set it directly (default 31)");
+    std::println("  cmixlev=-3|-4.5|-6      centre downmix level (Table 5.9)");
+    std::println("  surmixlev=-3|-6|off     surround downmix level (Table 5.10)");
+    std::println("  mixmeta           E-AC-3 only: emit the mixmdate group (Table E1.2)");
+    std::println("  lfemix=<0..31>|off      E-AC-3 LFE mix level, 10-code dB (§E2.3.1.11)");
+    std::println("  dmixmod=ltrt|loro|none  preferred stereo downmix (Table D2.2)");
+}
+
+struct MetaOptions {
+    std::optional<ac3::meta::Profile> drc;
+    std::optional<ac3::meta::HeavyConfig> heavy;
+    ac3::meta::CentreMixLevel cmixlev = ac3::meta::CentreMixLevel::kMinus4_5dB;
+    ac3::meta::SurroundMixLevel surmixlev = ac3::meta::SurroundMixLevel::kMinus6dB;
+    int dialnorm = 31;
+    bool measure_dialnorm = false;
+    bool mixmeta = false;
+    std::optional<int> lfemix = ac3::meta::kLfeMixLevelIdeal;
+    ac3::meta::DownmixMode dmixmod = ac3::meta::DownmixMode::kLoRo;
+    // Decoder side, for 'decode'.
+    double drc_scale = 0.0;
+    bool apply_heavy = false;
+};
+
+bool parse_double(std::string_view text, double& out) {
+    // from_chars for floating point needs the locale-independent form, which
+    // is what a command line gives.
+    const auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), out);
+    return ec == std::errc{} && ptr == text.data() + text.size();
+}
+
+// Returns false and prints the offending token on anything unrecognised: a
+// silently ignored metadata flag looks exactly like metadata that did not work.
+bool parse_meta_options(std::span<char*> tokens, MetaOptions& out) {
+    for (char* raw : tokens) {
+        const std::string_view token{raw};
+        const auto eq = token.find('=');
+        const std::string_view key = token.substr(0, eq);
+        const std::string_view value =
+            eq == std::string_view::npos ? std::string_view{} : token.substr(eq + 1);
+
+        if (token == "couple" || token == "heavy" || token == "mixmeta") {
+            if (token == "heavy") {
+                out.heavy.emplace();
+            } else if (token == "mixmeta") {
+                out.mixmeta = true;
+            }
+            continue;
+        }
+        if (key == "drc") {
+            // On the decode side drc= is a scale factor (§7.7.1 partial
+            // compression); on the encode side it names a profile. A numeric
+            // value is unambiguous, so one spelling serves both.
+            double scale = 0.0;
+            if (parse_double(value, scale)) {
+                out.drc_scale = scale;
+                continue;
+            }
+            ac3::meta::ProfileId id{};
+            if (!ac3::meta::parse_profile(value, id)) {
+                std::println(stderr, "error: unknown DRC profile '{}' ({})", value,
+                             ac3::meta::kProfileNames);
+                return false;
+            }
+            out.drc = ac3::meta::profile(id);
+            continue;
+        }
+        if (key == "ceiling" || key == "dialogue") {
+            double db = 0.0;
+            if (!parse_double(value, db)) {
+                std::println(stderr, "error: {} needs a level in dBFS", key);
+                return false;
+            }
+            if (!out.heavy) {
+                out.heavy.emplace();
+            }
+            if (key == "ceiling") {
+                out.heavy->peak_ceiling_dbfs = db;
+            } else {
+                out.heavy->dialogue_target_dbfs = db;
+            }
+            continue;
+        }
+        if (key == "dialnorm") {
+            if (value == "auto") {
+                out.measure_dialnorm = true;
+                continue;
+            }
+            const auto n = parse_u32_or(value, 0);
+            if (n < 1 || n > 31) {
+                std::println(stderr, "error: dialnorm must be auto or 1..31 (§5.4.2.8)");
+                return false;
+            }
+            out.dialnorm = static_cast<int>(n);
+            continue;
+        }
+        if (key == "cmixlev") {
+            if (value == "-3") {
+                out.cmixlev = ac3::meta::CentreMixLevel::kMinus3dB;
+            } else if (value == "-4.5") {
+                out.cmixlev = ac3::meta::CentreMixLevel::kMinus4_5dB;
+            } else if (value == "-6") {
+                out.cmixlev = ac3::meta::CentreMixLevel::kMinus6dB;
+            } else {
+                std::println(stderr, "error: cmixlev must be -3, -4.5 or -6 (Table 5.9)");
+                return false;
+            }
+            continue;
+        }
+        if (key == "surmixlev") {
+            if (value == "-3") {
+                out.surmixlev = ac3::meta::SurroundMixLevel::kMinus3dB;
+            } else if (value == "-6") {
+                out.surmixlev = ac3::meta::SurroundMixLevel::kMinus6dB;
+            } else if (value == "off") {
+                out.surmixlev = ac3::meta::SurroundMixLevel::kSilent;
+            } else {
+                std::println(stderr, "error: surmixlev must be -3, -6 or off (Table 5.10)");
+                return false;
+            }
+            continue;
+        }
+        if (key == "lfemix") {
+            out.mixmeta = true;
+            if (value == "off") {
+                out.lfemix = std::nullopt;
+                continue;
+            }
+            const auto n = parse_u32_or(value, 99);
+            if (n > 31) {
+                std::println(stderr, "error: lfemix must be off or 0..31 (§E2.3.1.11)");
+                return false;
+            }
+            out.lfemix = static_cast<int>(n);
+            continue;
+        }
+        if (key == "dmixmod") {
+            out.mixmeta = true;
+            if (value == "ltrt") {
+                out.dmixmod = ac3::meta::DownmixMode::kLtRt;
+            } else if (value == "loro") {
+                out.dmixmod = ac3::meta::DownmixMode::kLoRo;
+            } else if (value == "none") {
+                out.dmixmod = ac3::meta::DownmixMode::kNotIndicated;
+            } else {
+                std::println(stderr, "error: dmixmod must be ltrt, loro or none (Table D2.2)");
+                return false;
+            }
+            continue;
+        }
+        std::println(stderr, "error: unknown option '{}'", token);
+        print_meta_usage();
+        return false;
+    }
+    return true;
+}
+
+// The two coarse AC-3 levels have no exact 3-bit twins for every value, but
+// each one they do have is the same coefficient, so an E-AC-3 stream asked for
+// "-4.5 dB centre" gets the level a listener would measure either way.
+ac3::meta::MixLevel widen(ac3::meta::CentreMixLevel value) {
+    switch (value) {
+        case ac3::meta::CentreMixLevel::kMinus3dB: return ac3::meta::MixLevel::kMinus3dB;
+        case ac3::meta::CentreMixLevel::kMinus4_5dB: return ac3::meta::MixLevel::kMinus4_5dB;
+        case ac3::meta::CentreMixLevel::kMinus6dB: return ac3::meta::MixLevel::kMinus6dB;
+    }
+    return ac3::meta::MixLevel::kMinus4_5dB;
+}
+
+ac3::meta::MixLevel widen(ac3::meta::SurroundMixLevel value) {
+    switch (value) {
+        case ac3::meta::SurroundMixLevel::kMinus3dB: return ac3::meta::MixLevel::kMinus3dB;
+        case ac3::meta::SurroundMixLevel::kMinus6dB: return ac3::meta::MixLevel::kMinus6dB;
+        case ac3::meta::SurroundMixLevel::kSilent: return ac3::meta::MixLevel::kSilent;
+    }
+    return ac3::meta::MixLevel::kMinus6dB;
+}
+
+ac3::meta::MixMetadata mix_metadata(const MetaOptions& options) {
+    return {.dmixmod = options.dmixmod,
+            // Lt/Rt folds down into a matrix that will be re-decoded, so the
+            // centre traditionally sits 1.5 dB hotter there than in Lo/Ro.
+            .ltrtcmixlev = ac3::meta::MixLevel::kMinus3dB,
+            .lorocmixlev = widen(options.cmixlev),
+            .ltrtsurmixlev = ac3::meta::MixLevel::kMinus3dB,
+            .lorosurmixlev = widen(options.surmixlev),
+            .lfemixlevcod = options.lfemix};
+}
+
+// BS.1770 integrated loudness of a whole WAV, and the dialnorm it implies.
+std::optional<int> measured_dialnorm(const ac3::io::WavData& wav, ac3::SampleRate rate,
+                                     ac3::Acmod acmod, bool lfe) {
+    ac3::meta::LoudnessMeter meter{rate, acmod, lfe};
+    std::vector<std::span<const float>> views;
+    for (const auto& channel : wav.channels) {
+        views.emplace_back(channel);
+    }
+    meter.push(views);
+    const auto lkfs = meter.integrated_lkfs();
+    if (!lkfs) {
+        return std::nullopt;
+    }
+    const int dialnorm = ac3::meta::dialnorm_from_lkfs(*lkfs);
+    std::println("measured {:.2f} LKFS (BS.1770-4, gated) -> dialnorm {}", *lkfs, dialnorm);
+    return dialnorm;
 }
 
 bool write_frames(std::string_view path, std::span<const std::vector<std::byte>> frames) {
@@ -227,13 +458,21 @@ int run_silence(std::string_view out_path, std::uint32_t seconds, std::uint32_t 
 }
 
 int run_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_t bitrate,
-             std::uint32_t freq_hz, std::uint32_t amplitude_pct, std::string_view layout) {
-    // Layouts: stereo | 51, each optionally suffixed with "c" to turn
-    // channel coupling on (e.g. 51c).
-    const bool couple = !layout.empty() && layout.back() == 'c';
+             std::uint32_t freq_hz, std::uint32_t amplitude_pct, std::string_view layout,
+             bool couple_flag, const MetaOptions& meta) {
+    // Layouts: stereo | 51, each optionally suffixed with "c" to turn channel
+    // coupling on (e.g. 51c). A bare 'couple' token does the same, so the flag
+    // that works for 'encode' is not silently ignored here.
+    const bool couple = couple_flag || (!layout.empty() && layout.back() == 'c');
     const std::string_view base = couple ? layout.substr(0, layout.size() - 1) : layout;
     const bool surround = base == "51";
-    ac3::EncoderConfig config{.bitrate_kbps = bitrate, .coupling = couple};
+    ac3::EncoderConfig config{.bitrate_kbps = bitrate,
+                              .dialnorm = meta.dialnorm,
+                              .coupling = couple,
+                              .drc = meta.drc,
+                              .heavy = meta.heavy,
+                              .cmixlev = meta.cmixlev,
+                              .surmixlev = meta.surmixlev};
     std::vector<double> tone_hz;
     if (surround) {
         config.acmod = ac3::Acmod::k3_2;
@@ -294,9 +533,16 @@ struct Eac3Layout {
     std::vector<double> tones;  // one per encoder input channel, in coded order
 };
 
-std::optional<Eac3Layout> eac3_layout(std::string_view name, std::uint32_t bitrate) {
+std::optional<Eac3Layout> eac3_layout(std::string_view name, std::uint32_t bitrate,
+                                      const MetaOptions& meta = {}) {
     Eac3Layout out;
     out.config.independent.bitrate_kbps = bitrate;
+    out.config.independent.dialnorm = meta.dialnorm;
+    out.config.independent.drc = meta.drc;
+    out.config.independent.heavy = meta.heavy;
+    if (meta.mixmeta) {
+        out.config.independent.mixing = mix_metadata(meta);
+    }
     if (name == "stereo") {
         out.tones = {1000.0, 1000.0};
         return out;
@@ -416,9 +662,9 @@ int run_mkv(std::string_view in_path, std::string_view out_path) {
 }
 
 int run_eac3_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_t bitrate,
-                  std::uint32_t freq_hz, std::uint32_t amplitude_pct,
-                  std::string_view layout) {
-    auto chosen = eac3_layout(layout, bitrate);
+                  std::uint32_t freq_hz, std::uint32_t amplitude_pct, std::string_view layout,
+                  const MetaOptions& meta) {
+    auto chosen = eac3_layout(layout, bitrate, meta);
     if (!chosen) {
         std::println(stderr, "error: unknown layout '{}' ({})", layout, kEac3Layouts);
         return 1;
@@ -467,12 +713,18 @@ int run_eac3_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_
 }
 
 int run_orbit(std::string_view out_path, std::uint32_t seconds, std::uint32_t bitrate,
-              std::uint32_t orbit_seconds) {
+              std::uint32_t orbit_seconds, const MetaOptions& meta) {
     ac3::spatial::BedRenderer renderer;
     const auto object =
         renderer.add_object({.azimuth_deg = 0.0, .gain = 0.7, .lfe_send = 0.15});
-    ac3::FrameEncoder encoder{
-        {.bitrate_kbps = bitrate, .acmod = ac3::Acmod::k3_2, .lfe = true}};
+    ac3::FrameEncoder encoder{{.bitrate_kbps = bitrate,
+                               .dialnorm = meta.dialnorm,
+                               .acmod = ac3::Acmod::k3_2,
+                               .lfe = true,
+                               .drc = meta.drc,
+                               .heavy = meta.heavy,
+                               .cmixlev = meta.cmixlev,
+                               .surmixlev = meta.surmixlev}};
     ac3::analysis::LevelMeter meter{ac3::Acmod::k3_2, true, 48000};
 
     const std::uint64_t count = (static_cast<std::uint64_t>(seconds) * 48000 + 1535) / 1536;
@@ -657,7 +909,7 @@ int run_record(std::string_view out_path, std::uint32_t seconds, std::uint32_t b
 }
 
 int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_t bitrate,
-               bool couple) {
+               bool couple, const MetaOptions& meta) {
     const auto wav = ac3::io::read_wav(std::string{in_path});
     if (!wav) {
         std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(wav.error()));
@@ -682,14 +934,38 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
             return 1;
     }
 
+    // §5.4.2.8 says dialnorm "shall affect the sound reproduction level", so
+    // getting it wrong is not a cosmetic error - a stream that claims 31 when
+    // dialogue is really at -18 plays 13 dB too loud on a levelled system.
+    // Measuring needs the whole programme (the BS.1770 relative gate does),
+    // which is why it happens here rather than inside the frame encoder. It
+    // gets the real layout rather than an assumed stereo one, because the
+    // BS.1770 channel weighting depends on which coded positions are surrounds.
+    int dialnorm = meta.dialnorm;
+    if (meta.measure_dialnorm) {
+        const auto measured = measured_dialnorm(*wav, sr, layout->acmod, layout->lfe);
+        if (!measured) {
+            std::println(stderr,
+                         "error: no audio above the -70 LKFS absolute gate; "
+                         "pass dialnorm=<1..31> explicitly");
+            return 1;
+        }
+        dialnorm = *measured;
+    }
+
     // Coupling shares coefficients between full-bandwidth channels (§7.4), so
     // a mono program has nothing to share it with.
     const bool coupling = couple && ac3::fullbw_channel_count(layout->acmod) >= 2;
     ac3::FrameEncoder encoder{{.sample_rate = sr,
                                .bitrate_kbps = bitrate,
+                               .dialnorm = dialnorm,
                                .acmod = layout->acmod,
                                .lfe = layout->lfe,
-                               .coupling = coupling}};
+                               .coupling = coupling,
+                               .drc = meta.drc,
+                               .heavy = meta.heavy,
+                               .cmixlev = meta.cmixlev,
+                               .surmixlev = meta.surmixlev}};
     ac3::analysis::LevelMeter meter{layout->acmod, layout->lfe, wav->sample_rate};
     const auto nchans = static_cast<std::size_t>(encoder.channel_count());
     const std::size_t total = wav->frame_count();
@@ -825,7 +1101,8 @@ int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path
     return 0;
 }
 
-int run_decode(std::string_view in_path, std::string_view out_path) {
+int run_decode(std::string_view in_path, std::string_view out_path,
+               const MetaOptions& meta) {
     const auto stream = read_all(in_path);
     if (stream.empty()) {
         std::println(stderr, "error: cannot read {}", in_path);
@@ -847,16 +1124,34 @@ int run_decode(std::string_view in_path, std::string_view out_path) {
         std::println(stderr, "error: {}: {}", in_path, ac3::describe(frames.error()));
         return 1;
     }
-    ac3::FrameDecoder decoder;
+    ac3::FrameDecoder decoder{
+        {.drc_scale = meta.drc_scale, .heavy_compression = meta.heavy.has_value()}};
     std::vector<std::vector<float>> pcm;
     std::optional<ac3::analysis::LevelMeter> meter;
     ac3::DecodedFrame first{};
     bool have_first = false;
+    // What the stream actually carried, reported whether or not it was applied.
+    double dynrng_min_db = 0.0;
+    double dynrng_max_db = 0.0;
+    double compr_min_db = 0.0;
+    double compr_max_db = 0.0;
+    std::size_t compr_frames = 0;
     for (const auto& frame : *frames) {
         const auto decoded = decoder.decode_frame(frame);
         if (!decoded) {
             std::println(stderr, "error: {}: {}", in_path, ac3::describe(decoded.error()));
             return 1;
+        }
+        for (const auto word : decoded->dynrng) {
+            const double db = ac3::meta::to_db(ac3::meta::dynrng_gain(word));
+            dynrng_min_db = std::min(dynrng_min_db, db);
+            dynrng_max_db = std::max(dynrng_max_db, db);
+        }
+        if (decoded->compr) {
+            const double db = ac3::meta::to_db(ac3::meta::compr_gain(*decoded->compr));
+            compr_min_db = compr_frames == 0 ? db : std::min(compr_min_db, db);
+            compr_max_db = compr_frames == 0 ? db : std::max(compr_max_db, db);
+            ++compr_frames;
         }
         if (!have_first) {
             first = *decoded;
@@ -887,6 +1182,18 @@ int run_decode(std::string_view in_path, std::string_view out_path) {
     std::println("decoded {} frames -> {} ({}, {} Hz)", frames->size(), out_path,
                  ac3::analysis::layout_name(first.acmod, first.lfe),
                  sample_rate_hz(first.sample_rate));
+    std::println("metadata: dialnorm {} (dialogue at -{} dBFS)", first.dialnorm,
+                 first.dialnorm);
+    std::println("          dynrng {:+.2f} .. {:+.2f} dB{}", dynrng_min_db, dynrng_max_db,
+                 meta.drc_scale != 0.0 ? std::format(", applied at scale {}", meta.drc_scale)
+                                       : ", not applied");
+    if (compr_frames > 0) {
+        std::println("          compr  {:+.2f} .. {:+.2f} dB over {} frames{}", compr_min_db,
+                     compr_max_db, compr_frames,
+                     meta.heavy ? ", applied" : ", not applied");
+    } else {
+        std::println("          compr  absent");
+    }
     print_channel_summary(*meter);
     return 0;
 }
@@ -963,6 +1270,47 @@ int run_levels(std::string_view in_path) {
     }
     meter.process(views);
     print_channel_summary(meter);
+    return 0;
+}
+
+// Measure a WAV and report what dialnorm it implies. §5.4.2.8 wants dialogue
+// level below full scale and A/52 predates any standard way to measure it;
+// BS.1770 gated loudness is the modern answer, so this is the number the
+// encoder would put on the stream for dialnorm=auto.
+int run_loudness(std::string_view in_path) {
+    const auto wav = ac3::io::read_wav(std::string{in_path});
+    if (!wav) {
+        std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(wav.error()));
+        return 1;
+    }
+    ac3::SampleRate sr{};
+    switch (wav->sample_rate) {
+        case 48000: sr = ac3::SampleRate::k48000; break;
+        case 44100: sr = ac3::SampleRate::k44100; break;
+        case 32000: sr = ac3::SampleRate::k32000; break;
+        default:
+            std::println(stderr, "error: sample rate {} is not legal for AC-3", wav->sample_rate);
+            return 1;
+    }
+    // The BS.1770 channel weighting depends on which coded positions are
+    // surrounds, so the layout has to be inferred from the channel count
+    // (Table 5.8) rather than assumed.
+    const auto layout = ac3::io::ac3_layout_for(wav->channels.size());
+    if (!layout) {
+        std::println(stderr, "error: {} channels is not an AC-3 layout",
+                     wav->channels.size());
+        return 1;
+    }
+    const auto dialnorm = measured_dialnorm(*wav, sr, layout->acmod, layout->lfe);
+    if (!dialnorm) {
+        std::println("no audio above the -70 LKFS absolute gate: loudness undefined");
+        return 1;
+    }
+    // Reporting the answer was missing where this came from, so the command
+    // measured the programme and then said nothing about it.
+    std::println("{}: {} Hz, {}", in_path, wav->sample_rate,
+                 ac3::analysis::layout_name(layout->acmod, layout->lfe));
+    std::println("  dialogue level -{} LKFS -> dialnorm {}", *dialnorm, *dialnorm);
     return 0;
 }
 
@@ -1115,32 +1463,56 @@ int run_play(std::string_view in_path, int device_index) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    const std::span<char*> args{argv, static_cast<std::size_t>(argc)};
-    if (args.size() >= 2 && std::string_view{args[1]} == "devices") {
+    const std::span<char*> raw{argv, static_cast<std::size_t>(argc)};
+    // Split the command line into positional arguments and metadata options. An
+    // option is a key=value token or one of the three bare flags, so the
+    // positional arguments keep their places whether options are present or
+    // not, and options may appear in any order.
+    std::vector<char*> args{};      // args[0] is the command
+    std::vector<char*> options{};
+    bool couple_flag = false;
+    for (std::size_t i = 1; i < raw.size(); ++i) {
+        const std::string_view token{raw[i]};
+        const bool is_option = token.find('=') != std::string_view::npos ||
+                               token == "couple" || token == "heavy" || token == "mixmeta";
+        if (token == "couple") {
+            couple_flag = true;
+        }
+        (is_option ? options : args).push_back(raw[i]);
+    }
+    MetaOptions meta;
+    if (!parse_meta_options(options, meta)) {
+        return 1;
+    }
+
+    if (!args.empty() && std::string_view{args[0]} == "devices") {
         return run_devices();
     }
-    if (args.size() >= 2 && std::string_view{args[1]} == "outputs") {
+    if (!args.empty() && std::string_view{args[0]} == "outputs") {
         return run_outputs();
     }
-    if (args.size() < 3) {
+    if (args.size() < 2) {
         print_usage();
-        return args.size() < 2 ? 0 : 1;
+        return args.empty() ? 0 : 1;
     }
-    const std::string_view command{args[1]};
+    const std::string_view command{args[0]};
     if (command == "record") {
-        return run_record(args[2], args.size() > 3 ? parse_u32_or(args[3], 5) : 5,
-                          args.size() > 4 ? parse_u32_or(args[4], 192) : 192,
-                          args.size() > 5 ? static_cast<int>(parse_u32_or(args[5], 0)) : 0);
+        return run_record(args[1], args.size() > 2 ? parse_u32_or(args[2], 5) : 5,
+                          args.size() > 3 ? parse_u32_or(args[3], 192) : 192,
+                          args.size() > 4 ? static_cast<int>(parse_u32_or(args[4], 0)) : 0);
     }
     if (command == "silence") {
-        return run_silence(args[2], args.size() > 3 ? parse_u32_or(args[3], 5) : 5,
-                           args.size() > 4 ? parse_u32_or(args[4], 192) : 192);
+        return run_silence(args[1], args.size() > 2 ? parse_u32_or(args[2], 5) : 5,
+                           args.size() > 3 ? parse_u32_or(args[3], 192) : 192);
+    }
+    if (command == "loudness") {
+        return run_loudness(args[1]);
     }
     if (command == "eac3-silence") {
-        const auto seconds = args.size() > 3 ? parse_u32_or(args[3], 5) : 5;
-        const auto bitrate = args.size() > 4 ? parse_u32_or(args[4], 192) : 192;
-        const std::string_view layout = args.size() > 5 ? args[5] : "stereo";
-        const auto chosen = eac3_layout(layout, bitrate);
+        const auto seconds = args.size() > 2 ? parse_u32_or(args[2], 5) : 5;
+        const auto bitrate = args.size() > 3 ? parse_u32_or(args[3], 192) : 192;
+        const std::string_view layout = args.size() > 4 ? args[4] : "stereo";
+        const auto chosen = eac3_layout(layout, bitrate, meta);
         if (!chosen) {
             std::println(stderr, "error: unknown layout '{}' ({})", layout, kEac3Layouts);
             return 1;
@@ -1158,47 +1530,51 @@ int main(int argc, char** argv) {
         }
         std::println("wrote {} silent E-AC-3 {} access units ({} substreams, "
                      "{} bytes each, bsid 16) to {}",
-                     count, layout, unit->substream_count(), unit->bytes.size(), args[2]);
+                     count, layout, unit->substream_count(), unit->bytes.size(), args[1]);
         return 0;
     }
-    if (command == "mkv" && args.size() > 3) {
-        return run_mkv(args[2], args[3]);
+    if (command == "mkv" && args.size() > 2) {
+        return run_mkv(args[1], args[2]);
     }
     if (command == "eac3-sine") {
-        return run_eac3_sine(args[2], args.size() > 3 ? parse_u32_or(args[3], 5) : 5,
-                             args.size() > 4 ? parse_u32_or(args[4], 192) : 192,
-                             args.size() > 5 ? parse_u32_or(args[5], 1000) : 1000,
-                             args.size() > 6 ? parse_u32_or(args[6], 50) : 50,
-                             args.size() > 7 ? std::string_view{args[7]} : "stereo");
+        return run_eac3_sine(args[1], args.size() > 2 ? parse_u32_or(args[2], 5) : 5,
+                             args.size() > 3 ? parse_u32_or(args[3], 192) : 192,
+                             args.size() > 4 ? parse_u32_or(args[4], 1000) : 1000,
+                             args.size() > 5 ? parse_u32_or(args[5], 50) : 50,
+                             args.size() > 6 ? std::string_view{args[6]} : "stereo", meta);
     }
     if (command == "sine") {
-        return run_sine(args[2], args.size() > 3 ? parse_u32_or(args[3], 5) : 5,
-                        args.size() > 4 ? parse_u32_or(args[4], 192) : 192,
-                        args.size() > 5 ? parse_u32_or(args[5], 1000) : 1000,
-                        args.size() > 6 ? parse_u32_or(args[6], 50) : 50,
-                        args.size() > 7 ? std::string_view{args[7]} : "stereo");
+        return run_sine(args[1], args.size() > 2 ? parse_u32_or(args[2], 5) : 5,
+                        args.size() > 3 ? parse_u32_or(args[3], 192) : 192,
+                        args.size() > 4 ? parse_u32_or(args[4], 1000) : 1000,
+                        args.size() > 5 ? parse_u32_or(args[5], 50) : 50,
+                        args.size() > 6 ? std::string_view{args[6]} : "stereo", couple_flag,
+                        meta);
     }
     if (command == "orbit") {
-        return run_orbit(args[2], args.size() > 3 ? parse_u32_or(args[3], 8) : 8,
-                         args.size() > 4 ? parse_u32_or(args[4], 448) : 448,
-                         args.size() > 5 ? parse_u32_or(args[5], 4) : 4);
+        return run_orbit(args[1], args.size() > 2 ? parse_u32_or(args[2], 8) : 8,
+                         args.size() > 3 ? parse_u32_or(args[3], 448) : 448,
+                         args.size() > 4 ? parse_u32_or(args[4], 4) : 4, meta);
     }
-    if (command == "encode" && args.size() > 3) {
-        return run_encode(args[2], args[3], args.size() > 4 ? parse_u32_or(args[4], 192) : 192,
-                          args.size() > 5 && std::string_view{args[5]} == "couple");
+    if (command == "encode" && args.size() > 2) {
+        return run_encode(args[1], args[2], args.size() > 3 ? parse_u32_or(args[3], 192) : 192,
+                          couple_flag, meta);
     }
-    if (command == "decode" && args.size() > 3) {
-        return run_decode(args[2], args[3]);
+    if (command == "decode" && args.size() > 2) {
+        return run_decode(args[1], args[2], meta);
     }
-    if (command == "levels") {
-        return run_levels(args[2]);
+    if (command == "levels" && args.size() > 1) {
+        return run_levels(args[1]);
     }
-    if (command == "spdif" && args.size() > 3) {
-        return run_spdif(args[2], args[3]);
+    if (command == "loudness" && args.size() > 1) {
+        return run_loudness(args[1]);
+    }
+    if (command == "spdif" && args.size() > 2) {
+        return run_spdif(args[1], args[2]);
     }
     if (command == "play") {
-        return run_play(args[2],
-                        args.size() > 3 ? static_cast<int>(parse_u32_or(args[3], 0)) : -1);
+        return run_play(args[1],
+                        args.size() > 2 ? static_cast<int>(parse_u32_or(args[2], 0)) : -1);
     }
     print_usage();
     return 1;

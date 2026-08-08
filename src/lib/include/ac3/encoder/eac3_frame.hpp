@@ -11,6 +11,8 @@
 #include "ac3/core/eac3_tables.hpp"
 #include "ac3/core/tables.hpp"
 #include "ac3/encoder/silent_frame.hpp"  // FrameError
+#include "ac3/meta/drc.hpp"
+#include "ac3/meta/mixing.hpp"
 
 // E-AC-3 (Dolby Digital Plus) framing - ATSC A/52:2018 Annex E, bsid 16.
 //
@@ -64,6 +66,27 @@ struct FrameConfig {
     // program - it is how a decoder knows the program is complete. Set by the
     // access-unit builder; meaningless on an independent substream.
     bool last_dependent = false;
+
+    // --- dynamic range and mixing metadata ---------------------------------
+    // As in AC-3: std::nullopt keeps dynrnge clear in every block and compre
+    // clear in bsi, so a metadata-free stream is bit-identical to before.
+    std::optional<meta::Profile> drc = std::nullopt;
+    // §7.7.2 heavy compression. Only an INDEPENDENT substream can carry it:
+    // §E3.8.5 repurposes a dependent's compre as the end-of-programme marker,
+    // so the eight bits it drags in there are not a gain any decoder will use.
+    //
+    // This is the one part of the metadata layer with no external oracle.
+    // FFmpeg's E-AC-3 header parser reads compre and then SKIPS the word, so
+    // -heavy_compr changes nothing on an E-AC-3 stream however good the
+    // metadata is - unlike -drc_scale, which honours dynrng here as it does in
+    // AC-3. What holds it up instead: the word format and the generator are
+    // shared with the AC-3 path, which ffmpeg does verify, and the field's
+    // placement is checked bit by bit (tests/test_drc.cpp, tools/eac3_parse.py).
+    std::optional<meta::HeavyConfig> heavy = std::nullopt;
+    // The mixmdate group (Table E1.2). E-AC-3 dropped bsi's cmixlev and
+    // surmixlev entirely, so without this a stream carries no downmix levels
+    // at all and a receiver falls back on its own defaults.
+    std::optional<meta::MixMetadata> mixing = std::nullopt;
 };
 
 // Words per syncframe at a given rate. E-AC-3 signals the size directly, so
@@ -78,6 +101,14 @@ struct FrameConfig {
 [[nodiscard]] std::expected<std::vector<std::byte>, FrameError> build_silent_frame(
     const FrameConfig& config);
 
+// The §7.7 words for one frame, separated from FrameConfig because they change
+// every frame and from the encoder because every substream of an access unit
+// has to carry the SAME ones - see AccessUnitEncoder.
+struct FrameMetadata {
+    std::array<std::uint8_t, kBlocksPerFrame> dynrng{};
+    std::optional<std::uint8_t> compr = std::nullopt;
+};
+
 // Real audio through the same container. The coding profile is deliberately
 // the one reference encoders use, because those are the paths reference
 // decoders are exercised on: frame-level exponent strategies (Table E2.10
@@ -85,13 +116,21 @@ struct FrameConfig {
 // offsets. No coupling, no spectral extension, long blocks only.
 class FrameEncoder {
 public:
-    explicit FrameEncoder(const FrameConfig& config) : config_(config) {}
+    explicit FrameEncoder(const FrameConfig& config);
 
     // channels: the full-bandwidth channels in AC-3 order (Table 5.8),
     // followed by LFE last when config.lfe is set. Each span holds exactly
     // kSamplesPerFrame samples, nominally in [-1, 1).
     [[nodiscard]] std::expected<std::vector<std::byte>, FrameError> encode_frame(
         std::span<const std::span<const float>> channels);
+
+    // As above, but with the §7.7 words supplied instead of derived. This is
+    // the access-unit path: a substream that measured only its own channels
+    // would reach a different gain from its siblings, and a decoder applies
+    // each substream's word to that substream's channels - so disagreement
+    // does not average out, it tilts the mix.
+    [[nodiscard]] std::expected<std::vector<std::byte>, FrameError> encode_frame(
+        std::span<const std::span<const float>> channels, const FrameMetadata& metadata);
 
     [[nodiscard]] const FrameConfig& config() const { return config_; }
     [[nodiscard]] int channel_count() const {
@@ -101,6 +140,10 @@ public:
 private:
     FrameConfig config_;
     std::array<std::array<double, 256>, 6> history_{};  // MDCT overlap per channel
+    // Smoothed across frames: see the AC-3 FrameEncoder for why they cannot be
+    // per-frame objects.
+    std::optional<meta::RangeController> range_;
+    std::optional<meta::HeavyCompressor> heavy_;
 };
 
 // An independent substream and the dependents that extend it. Every substream
@@ -154,6 +197,17 @@ public:
 private:
     AccessUnitConfig config_;
     std::vector<FrameEncoder> substreams_;
+    // The programme's own controllers, measured on the INDEPENDENT substream's
+    // channels. That substream is by definition a self-sufficient rendering of
+    // the whole programme (§E1.3.1), so measuring it measures the programme -
+    // and the answer does not then depend on how many dependents ride along.
+    std::optional<meta::RangeController> range_;
+    std::optional<meta::HeavyCompressor> heavy_;
+    // Its own copy of the independent substream's MDCT overlap - the previous
+    // access unit's last 256 samples per channel. The substream encoder keeps
+    // the same window for its transform; this copy exists because the peak
+    // §7.7.2 bounds has to be measured before any substream runs.
+    std::array<std::array<double, 256>, 6> tail_{};
 };
 
 }  // namespace ac3::eac3

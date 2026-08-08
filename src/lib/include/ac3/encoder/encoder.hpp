@@ -4,11 +4,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <optional>
 #include <span>
 #include <vector>
 
 #include "ac3/core/tables.hpp"
 #include "ac3/encoder/silent_frame.hpp"  // FrameError, SkipPlan/plan_padding
+#include "ac3/meta/drc.hpp"
+#include "ac3/meta/mixing.hpp"
 
 // The AC-3 encoder: any audio coding mode (mono through 3/2) plus optional
 // LFE, long blocks, optional channel coupling, 2/0 rematrixing, adaptive
@@ -40,11 +43,25 @@ struct EncoderConfig {
     bool coupling = false;
     int cplbegf = -1;
     int cplendf = -1;
+
+    // --- dynamic range and downmix metadata (§7.7, §7.8) -------------------
+    // Dynamic range control. std::nullopt leaves dynrnge clear in every block,
+    // which is what §7.7.1.2 says an encoder applying no compression does, and
+    // keeps a DRC-free stream bit-identical to one from before this existed.
+    std::optional<meta::Profile> drc = std::nullopt;
+    // Heavy compression, independent of drc: the two answer different
+    // questions (§7.7.2.1), so a stream may carry either, both or neither.
+    std::optional<meta::HeavyConfig> heavy = std::nullopt;
+    // Table 5.9 / Table 5.10. Transmitted only when the layout has the
+    // channels they describe, but they always define the §7.8 downmix, so the
+    // heavy-compression peak detector consults them whatever acmod is.
+    meta::CentreMixLevel cmixlev = meta::CentreMixLevel::kMinus4_5dB;
+    meta::SurroundMixLevel surmixlev = meta::SurroundMixLevel::kMinus6dB;
 };
 
 class FrameEncoder {
 public:
-    explicit FrameEncoder(const EncoderConfig& config) : config_(config) {}
+    explicit FrameEncoder(const EncoderConfig& config);
 
     // channels: the full-bandwidth channels in AC-3 order (Table 5.8: e.g.
     // 3/2 = L, C, R, SL, SR), followed by the LFE channel last when
@@ -63,6 +80,10 @@ private:
     std::array<std::array<double, 256>, 6> history_{};  // MDCT overlap per channel
     std::uint64_t rate_accumulator_ = 0;                // ideal-bits Bresenham state
     std::uint64_t words_emitted_ = 0;
+    // Both controllers smooth their gain over time, so they have to outlive a
+    // frame - a per-frame instance would restart the attack every 32 ms.
+    std::optional<meta::RangeController> range_;
+    std::optional<meta::HeavyCompressor> heavy_;
 };
 
 }  // namespace ac3
