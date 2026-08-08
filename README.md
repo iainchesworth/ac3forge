@@ -230,25 +230,62 @@ roadmap.
 
 ## Building
 
-Requirements: Visual Studio 2026 (MSVC), CMake ≥ 3.28, Ninja, a
-[vcpkg](https://github.com/microsoft/vcpkg) checkout with `VCPKG_ROOT` set, and — for the
-GUI — a prebuilt Qt 6.5+ kit (auto-detected; verified against 6.8.3 msvc2022_64).
+Requirements: CMake ≥ 3.28, Ninja, a [vcpkg](https://github.com/microsoft/vcpkg) checkout
+with `VCPKG_ROOT` set, one of the pinned compilers below, and — for the GUI — a prebuilt
+Qt 6.5+ kit (auto-detected; verified against 6.8.3 msvc2022_64).
 
-From a *Developer PowerShell for VS 2026*:
+Presets are named `config-<os>-<compiler>[-debug]`, with `build-` and `test-` counterparts
+and a `ci-` workflow that runs all three. Each one pins its compiler through a chainloaded
+toolchain in `cmake/toolchains/`, so nothing is inherited from whatever happens to be on
+`PATH`. Only the presets whose host matches are offered — `cmake --list-presets` shows what
+this machine can build.
+
+| Preset | Compiler | GUI |
+| --- | --- | --- |
+| `config-windows-msvc`, `-debug` | MSVC 14.5x (VS 2026 Build Tools) | on |
+| `config-windows-llvm`, `-debug` | clang-cl 21 | on |
+| `config-linux-gcc`, `-debug` | gcc-15 / g++-15 | off |
+| `config-linux-llvm`, `-debug` | clang-21 / clang++-21 | off |
+| `config-macos-llvm`, `-debug` | clang 21 (Homebrew/MacPorts LLVM), arm64 | off |
+
+The GUI is off outside Windows because `cmake/FindQt6.cmake` only knows the Windows
+prebuilt-kit layout so far. `-DAC3FORGE_BUILD_GUI=OFF` gives a CLI-and-tests build on any
+preset; `AC3FORGE_BUILD_CLI` and `AC3FORGE_BUILD_TESTS` are the other options, both `ON`.
 
 ```powershell
-cmake --preset debug        # or your user preset inheriting it
-cmake --build --preset debug
-ctest --preset debug
+cmake --preset config-windows-msvc
+cmake --build --preset build-windows-msvc
+ctest --preset test-windows-msvc
 ```
 
-Options: `AC3FORGE_BUILD_CLI`, `AC3FORGE_BUILD_GUI`, `AC3FORGE_BUILD_TESTS` (all `ON`).
-Configure with `-DAC3FORGE_BUILD_GUI=OFF` to build without Qt.
+No Developer PowerShell needed: the Windows toolchains locate Visual Studio with `vswhere`
+and import the MSVC environment themselves, then bake the CRT and SDK search paths into the
+generated build rules so `cmake --build` works from any shell.
+
+`VCPKG_ROOT` and any other machine-local paths belong in `CMakeUserPresets.json`, which is
+gitignored. Inherit the preset you want and add the environment:
+
+```json
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "dev",
+      "inherits": "config-windows-msvc-debug",
+      "environment": { "VCPKG_ROOT": "D:/vcpkg" }
+    }
+  ],
+  "buildPresets": [ { "name": "dev", "configurePreset": "dev" } ],
+  "testPresets": [ { "name": "dev", "configurePreset": "dev", "output": { "outputOnFailure": true } } ]
+}
+```
 
 ## Layout
 
 ```
 cmake/          FindQt6.cmake (prebuilt-Qt discovery), CompilerWarnings.cmake
+  toolchains/   one per OS/compiler, chainloaded by the matching preset
+  vcpkg/        overlay triplets, one per OS/compiler
 src/lib/        ac3::forge — the whole codec, GUI-free
   include/ac3/  public headers: core/ encoder/ decoder/ meta/ spatial/ analysis/
                 sinks/ io/ capture/

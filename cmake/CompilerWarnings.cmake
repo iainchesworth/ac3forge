@@ -62,3 +62,20 @@ else()
         "$<$<CXX_COMPILER_ID:MSVC>:${AC3_MSVC_WARNINGS}>"
         "$<$<OR:$<CXX_COMPILER_ID:GNU>,$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>>:${AC3_GNU_CLANG_WARNINGS}>")
 endif()
+
+# ---------------------------------------------------------------------------
+# AC3_WARNINGS_OFF_FLAG - switches every warning off for one source file.
+#
+# The note above is true for third-party *headers*, but not for third-party
+# code generators. Qt's moc, rcc, qmltyperegistrar and qmlcachegen emit C++
+# into the build tree and add it to our own target, where it inherits
+# ac3::warnings - so a warning in a file nobody here wrote becomes a build
+# failure under -Werror. It is not ours to fix, so it is not ours to warn
+# about: see how src/gui/CMakeLists.txt applies this to the generated sources.
+# ---------------------------------------------------------------------------
+if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+    set(AC3_WARNINGS_OFF_FLAG "/w")
+else()
+    # clang-cl accepts the GNU spelling too, so this covers every non-cl case.
+    set(AC3_WARNINGS_OFF_FLAG "-w")
+endif()

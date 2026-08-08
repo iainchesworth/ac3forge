@@ -1,39 +1,335 @@
 {
   "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 28,
+    "patch": 0
+  },
+
   "configurePresets": [
     {
-      "name": "base",
+      "name": "core",
       "hidden": true,
+      "description": "Shared configuration for every platform/compiler preset. NOTE: VCPKG_CHAINLOAD_TOOLCHAIN_FILE is the single source of truth for the chainloaded compiler toolchain and is set per concrete preset; the vcpkg overlay triplets must NOT also set it.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/${presetName}",
       "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
-      "cacheVariables": { "CMAKE_EXPORT_COMPILE_COMMANDS": "ON" }
+      "cacheVariables": {
+        "AC3FORGE_BUILD_CLI": "ON",
+        "AC3FORGE_BUILD_TESTS": "ON",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/cmake/vcpkg/triplets"
+      }
     },
     {
       "name": "debug",
-      "inherits": "base",
+      "hidden": true,
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
     },
     {
       "name": "release",
-      "inherits": "base",
+      "hidden": true,
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
-    }
-  ],
-  "buildPresets": [
-    { "name": "debug", "configurePreset": "debug" },
-    { "name": "release", "configurePreset": "release" }
-  ],
-  "testPresets": [
+    },
+
     {
-      "name": "debug",
-      "configurePreset": "debug",
-      "output": { "outputOnFailure": true }
+      "name": "windows-msvc",
+      "hidden": true,
+      "description": "Windows/MSVC toolchain selection, shared by the Release and Debug presets. The compiler is pinned through the chainloaded toolchain rather than left to PATH: cl.exe is not on PATH outside a Developer PowerShell, so an unpinned Ninja configure resolves to whatever else is there (clang) and builds something nobody asked for. The toolchain imports the MSVC environment itself, so these presets configure from any shell.",
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "x64-windows-msvc",
+        "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/windows.msvc.toolchain.cmake",
+        "AC3FORGE_BUILD_GUI": "ON"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
     },
     {
-      "name": "release",
-      "configurePreset": "release",
-      "output": { "outputOnFailure": true }
+      "name": "windows-llvm",
+      "hidden": true,
+      "description": "Windows/clang-cl toolchain selection. clang-cl is MSVC-ABI compatible, so it links the same vcpkg packages and the same prebuilt msvc2022_64 Qt kit as the MSVC presets.",
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "x64-windows-llvm",
+        "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/windows.llvm.toolchain.cmake",
+        "AC3FORGE_BUILD_GUI": "ON"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "linux-gcc",
+      "hidden": true,
+      "description": "Linux/GCC 15 toolchain selection. The GUI is off: cmake/FindQt6.cmake only knows the Windows prebuilt-kit layout so far, and a preset that cannot find Qt should say so by not asking for it rather than by failing to configure.",
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "x64-linux-gcc",
+        "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/linux.gcc.toolchain.cmake",
+        "AC3FORGE_BUILD_GUI": "OFF"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
+      "name": "linux-llvm",
+      "hidden": true,
+      "description": "Linux/LLVM 21 toolchain selection. GUI off for the same reason as linux-gcc.",
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "x64-linux-llvm",
+        "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/linux.llvm.toolchain.cmake",
+        "AC3FORGE_BUILD_GUI": "OFF"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
+      "name": "macos-llvm",
+      "hidden": true,
+      "description": "macOS (Apple Silicon)/LLVM 21 toolchain selection. UNVERIFIED: this project has no macOS host, so these presets have never been configured, built or tested. GUI off for the same reason as linux-gcc.",
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "arm64-macos-llvm",
+        "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/macos.llvm.toolchain.cmake",
+        "AC3FORGE_BUILD_GUI": "OFF"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      }
+    },
+
+    {
+      "name": "config-windows-msvc",
+      "inherits": [ "release", "windows-msvc", "core" ],
+      "displayName": "Windows MSVC Release"
+    },
+    {
+      "name": "config-windows-msvc-debug",
+      "inherits": [ "debug", "windows-msvc", "core" ],
+      "displayName": "Windows MSVC Debug"
+    },
+    {
+      "name": "config-windows-llvm",
+      "inherits": [ "release", "windows-llvm", "core" ],
+      "displayName": "Windows LLVM Release (clang-cl)"
+    },
+    {
+      "name": "config-windows-llvm-debug",
+      "inherits": [ "debug", "windows-llvm", "core" ],
+      "displayName": "Windows LLVM Debug (clang-cl)"
+    },
+    {
+      "name": "config-linux-gcc",
+      "inherits": [ "release", "linux-gcc", "core" ],
+      "displayName": "Linux GCC Release"
+    },
+    {
+      "name": "config-linux-gcc-debug",
+      "inherits": [ "debug", "linux-gcc", "core" ],
+      "displayName": "Linux GCC Debug"
+    },
+    {
+      "name": "config-linux-llvm",
+      "inherits": [ "release", "linux-llvm", "core" ],
+      "displayName": "Linux LLVM Release"
+    },
+    {
+      "name": "config-linux-llvm-debug",
+      "inherits": [ "debug", "linux-llvm", "core" ],
+      "displayName": "Linux LLVM Debug"
+    },
+    {
+      "name": "config-macos-llvm",
+      "inherits": [ "release", "macos-llvm", "core" ],
+      "displayName": "macOS LLVM Release"
+    },
+    {
+      "name": "config-macos-llvm-debug",
+      "inherits": [ "debug", "macos-llvm", "core" ],
+      "displayName": "macOS LLVM Debug"
+    }
+  ],
+
+  "buildPresets": [
+    {
+      "name": "build-windows-msvc",
+      "configurePreset": "config-windows-msvc",
+      "displayName": "Windows MSVC Release"
+    },
+    {
+      "name": "build-windows-msvc-debug",
+      "configurePreset": "config-windows-msvc-debug",
+      "displayName": "Windows MSVC Debug"
+    },
+    {
+      "name": "build-windows-llvm",
+      "configurePreset": "config-windows-llvm",
+      "displayName": "Windows LLVM Release"
+    },
+    {
+      "name": "build-windows-llvm-debug",
+      "configurePreset": "config-windows-llvm-debug",
+      "displayName": "Windows LLVM Debug"
+    },
+    {
+      "name": "build-linux-gcc",
+      "configurePreset": "config-linux-gcc",
+      "displayName": "Linux GCC Release"
+    },
+    {
+      "name": "build-linux-gcc-debug",
+      "configurePreset": "config-linux-gcc-debug",
+      "displayName": "Linux GCC Debug"
+    },
+    {
+      "name": "build-linux-llvm",
+      "configurePreset": "config-linux-llvm",
+      "displayName": "Linux LLVM Release"
+    },
+    {
+      "name": "build-linux-llvm-debug",
+      "configurePreset": "config-linux-llvm-debug",
+      "displayName": "Linux LLVM Debug"
+    },
+    {
+      "name": "build-macos-llvm",
+      "configurePreset": "config-macos-llvm",
+      "displayName": "macOS LLVM Release"
+    },
+    {
+      "name": "build-macos-llvm-debug",
+      "configurePreset": "config-macos-llvm-debug",
+      "displayName": "macOS LLVM Debug"
+    }
+  ],
+
+  "testPresets": [
+    {
+      "name": "test-windows-msvc",
+      "configurePreset": "config-windows-msvc",
+      "displayName": "Windows MSVC Release Tests",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+    },
+    {
+      "name": "test-windows-msvc-debug",
+      "configurePreset": "config-windows-msvc-debug",
+      "displayName": "Windows MSVC Debug Tests",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+    },
+    {
+      "name": "test-windows-llvm",
+      "configurePreset": "config-windows-llvm",
+      "displayName": "Windows LLVM Release Tests",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+    },
+    {
+      "name": "test-windows-llvm-debug",
+      "configurePreset": "config-windows-llvm-debug",
+      "displayName": "Windows LLVM Debug Tests",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+    },
+    {
+      "name": "test-linux-gcc",
+      "configurePreset": "config-linux-gcc",
+      "displayName": "Linux GCC Release Tests",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+    },
+    {
+      "name": "test-linux-gcc-debug",
+      "configurePreset": "config-linux-gcc-debug",
+      "displayName": "Linux GCC Debug Tests",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+    },
+    {
+      "name": "test-linux-llvm",
+      "configurePreset": "config-linux-llvm",
+      "displayName": "Linux LLVM Release Tests",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+    },
+    {
+      "name": "test-linux-llvm-debug",
+      "configurePreset": "config-linux-llvm-debug",
+      "displayName": "Linux LLVM Debug Tests",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+    },
+    {
+      "name": "test-macos-llvm",
+      "configurePreset": "config-macos-llvm",
+      "displayName": "macOS LLVM Release Tests",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+    },
+    {
+      "name": "test-macos-llvm-debug",
+      "configurePreset": "config-macos-llvm-debug",
+      "displayName": "macOS LLVM Debug Tests",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+    }
+  ],
+
+  "workflowPresets": [
+    {
+      "name": "ci-windows-msvc",
+      "displayName": "Windows MSVC CI (configure, build, test)",
+      "steps": [
+        { "type": "configure", "name": "config-windows-msvc" },
+        { "type": "build", "name": "build-windows-msvc" },
+        { "type": "test", "name": "test-windows-msvc" }
+      ]
+    },
+    {
+      "name": "ci-windows-llvm",
+      "displayName": "Windows LLVM CI (configure, build, test)",
+      "steps": [
+        { "type": "configure", "name": "config-windows-llvm" },
+        { "type": "build", "name": "build-windows-llvm" },
+        { "type": "test", "name": "test-windows-llvm" }
+      ]
+    },
+    {
+      "name": "ci-linux-gcc",
+      "displayName": "Linux GCC CI (configure, build, test)",
+      "steps": [
+        { "type": "configure", "name": "config-linux-gcc" },
+        { "type": "build", "name": "build-linux-gcc" },
+        { "type": "test", "name": "test-linux-gcc" }
+      ]
+    },
+    {
+      "name": "ci-linux-llvm",
+      "displayName": "Linux LLVM CI (configure, build, test)",
+      "steps": [
+        { "type": "configure", "name": "config-linux-llvm" },
+        { "type": "build", "name": "build-linux-llvm" },
+        { "type": "test", "name": "test-linux-llvm" }
+      ]
+    },
+    {
+      "name": "ci-macos-llvm",
+      "displayName": "macOS LLVM CI (configure, build, test)",
+      "steps": [
+        { "type": "configure", "name": "config-macos-llvm" },
+        { "type": "build", "name": "build-macos-llvm" },
+        { "type": "test", "name": "test-macos-llvm" }
+      ]
     }
   ]
 }

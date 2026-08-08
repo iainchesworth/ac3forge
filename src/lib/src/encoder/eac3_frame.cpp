@@ -1431,7 +1431,8 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         }
         lo = search();
     }
-    const std::uint32_t mantissa_bits = bits_at(lo);  // leaves payload.bap at lo
+    // maybe_unused: only the asserts read this, and NDEBUG removes them.
+    [[maybe_unused]] const std::uint32_t mantissa_bits = bits_at(lo);  // leaves payload.bap at lo
     assert(mantissa_bits <= budget);
     payload.csnroffst = lo >> 4;
     payload.fsnroffst = lo & 15;
