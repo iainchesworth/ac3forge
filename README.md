@@ -85,6 +85,24 @@ PCM, so an unavailable device tells you **why**: "cannot bitstream" (analog outp
 > path itself is proven — the Realtek endpoint accepts our exclusive PCM format — but the
 > IEC 61937 descriptor awaits a receiver to confirm positively.
 
+**Live audio is Windows-only, and says so.** Capture and passthrough are the only parts of
+ac3forge that touch the machine's hardware, and they are deliberately not implemented on
+Linux or macOS: the codec is the subject here, and everything that encodes, decodes,
+measures or wraps AC-3 is file I/O that runs identically everywhere. So `record`, `devices`,
+`outputs` and `play` refuse on those platforms — named `UNAVAILABLE HERE` in the usage
+listing and turned away before they run, with the reason — rather than being offered and
+then failing obscurely. **`spdif` is the portable substitute and needs no backend at all:**
+it writes the same IEC 61937 bursts as a PCM16 WAV, which any player pushes through a
+passthrough output bit-exactly, so a receiver can be tested from any platform.
+
+Each backend lives under `src/lib/src/platform/<os>/` — one file per concern, the *same*
+filename in every platform directory, and `src/lib/CMakeLists.txt` compiles exactly one
+directory of them. There is no `#ifdef` anywhere in the sources: a platform's answer to
+"can you do this?" is `src/platform/<os>/audio_backend.cpp`, a value the CLI reads as data.
+Adding ALSA, PipeWire or CoreAudio later means adding a directory and flipping the
+`Capability` in that one file; the CLI needs no change. Capture and passthrough are reported
+separately because gaining one without the other is the expected order.
+
 **Channel coupling encodes and decodes.** Above the coupling frequency the full-bandwidth channels stop
 carrying their own coefficients and share one coupling channel plus per-band coordinates —
 the tool that makes 5.1 viable well below 448 kbit/s. `ac3cli sine … 51c` or

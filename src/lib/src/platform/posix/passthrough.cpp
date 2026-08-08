@@ -1,8 +1,14 @@
 #include "ac3/sinks/passthrough.hpp"
 
-// The no-backend build. CMake selects this translation unit on platforms
-// without an exclusive-mode passthrough implementation; every entry point
-// fails cleanly with kNoBackend rather than the API disappearing.
+// The Unix passthrough backend: there isn't one. CMake compiles this
+// directory's passthrough.cpp on Linux and macOS, and every entry point fails
+// with kNoBackend rather than the API disappearing - callers keep compiling,
+// and get told no instead of getting nothing.
+//
+// Ask ac3::platform::audio_backend() BEFORE calling any of this if the answer
+// wants to be a sentence rather than an error code; see
+// platform/posix/audio_backend.cpp for why there is no backend here, and what
+// to reach for instead.
 
 namespace ac3::sinks {
 
