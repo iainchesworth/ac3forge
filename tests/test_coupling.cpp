@@ -9,7 +9,6 @@
 #include "ac3/encoder/coupling.hpp"
 
 using ac3::coupling::choose_master;
-using ac3::coupling::Coordinate;
 using ac3::coupling::decode_coordinate;
 using ac3::coupling::quantize_coordinate;
 
@@ -108,55 +107,137 @@ TEST_CASE("coupling exponent set round-trips through the normative decode", "[co
     }
 }
 
-TEST_CASE("the encoder's per-band scaling keeps every coordinate representable",
+TEST_CASE("coupling bands tile the coupled region exactly once", "[coupling]") {
+    // A coordinate is applied to every bin of its band, so the bands must
+    // partition the region: no gap gets no coordinate, no overlap gets two.
+    // The decoder rebuilds this partition from cplbndstrc alone, and a band
+    // count the two sides disagree about does not misplace one coordinate -
+    // it shifts every field after it in the block.
+    for (int begf = 0; begf <= 15; ++begf) {
+        for (int endf = 0; endf <= 15; ++endf) {
+            const int subbands = ac3::coupling::sub_band_count(begf, endf);
+            if (subbands < 1 || subbands > ac3::coupling::kSubBands) {
+                continue;
+            }
+            CAPTURE(begf, endf, subbands);
+            const auto structure = ac3::coupling::band_structure(begf, subbands);
+            const auto bands = ac3::coupling::group_bands(begf, subbands, structure);
+
+            // §5.4.3.13 numbers cplbndstrc from the first coupled sub-band,
+            // and its first entry is never sent because sub-band 0 always
+            // opens a band.
+            CHECK_FALSE(structure[0]);
+            // The count a decoder derives from the transmitted bits.
+            int clear = 1;
+            for (int sbnd = 1; sbnd < subbands; ++sbnd) {
+                clear += structure[static_cast<std::size_t>(sbnd)] ? 0 : 1;
+            }
+            REQUIRE(bands.count == clear);
+            REQUIRE(bands.count >= 1);
+            REQUIRE(bands.count <= subbands);
+
+            int bin = ac3::coupling::start_mant(begf);
+            for (int bnd = 0; bnd < bands.count; ++bnd) {
+                CAPTURE(bnd);
+                CHECK(bands.start[static_cast<std::size_t>(bnd)] == bin);
+                CHECK(bands.size[static_cast<std::size_t>(bnd)] %
+                          ac3::coupling::kBinsPerSubBand ==
+                      0);
+                CHECK(bands.size[static_cast<std::size_t>(bnd)] >=
+                      ac3::coupling::kBinsPerSubBand);
+                bin += bands.size[static_cast<std::size_t>(bnd)];
+            }
+            // And they finish exactly where the sub-bands do.
+            CHECK(bin == ac3::coupling::start_mant(begf) +
+                             subbands * ac3::coupling::kBinsPerSubBand);
+        }
+    }
+}
+
+TEST_CASE("coupling bands widen with frequency", "[coupling]") {
+    // A coordinate restores a band's level, so a band that is much narrower
+    // than the ear's own resolution up there is detail nobody hears, paid for
+    // three times a frame per channel. Bands therefore grow towards the top
+    // of the spectrum - and never shrink going up, or the shape is not
+    // tracking anything.
+    const int subbands = ac3::coupling::sub_band_count(0, 15);  // the whole range
+    const auto structure = ac3::coupling::band_structure(0, subbands);
+    const auto bands = ac3::coupling::group_bands(0, subbands, structure);
+    CAPTURE(subbands, bands.count);
+    CHECK(bands.count < subbands);  // something was actually joined
+
+    // The last band is whatever sub-bands are left over when the region runs
+    // out, so it is the one band that may be narrower than the one below it.
+    int previous = 0;
+    for (int bnd = 0; bnd + 1 < bands.count; ++bnd) {
+        const int size = bands.size[static_cast<std::size_t>(bnd)];
+        CAPTURE(bnd, bands.start[static_cast<std::size_t>(bnd)], size);
+        CHECK(size >= previous);
+        previous = size;
+    }
+    CHECK(bands.size[static_cast<std::size_t>(bands.count - 1)] <= previous);
+
+    // Below ~11 kHz a sub-band is already coarser than a critical band, so
+    // nothing is joined down there; by the top of the spectrum three are.
+    CHECK(bands.size[0] == ac3::coupling::kBinsPerSubBand);
+    CHECK(previous == 3 * ac3::coupling::kBinsPerSubBand);
+}
+
+TEST_CASE("the mean coupling divisor keeps coordinates representable",
           "[coupling]") {
-    // The transmitted coordinate is ratio * K / 8, where ratio =
-    // sqrt(E_ch / E_sum) and K = max|sum| over the band. Because
-    // max|sum| <= sqrt(E_sum) for any band, that product is bounded by
-    // sqrt(E_ch) / 8 <= sqrt(bins) / 8 - comfortably inside the format's
-    // 0.96875 ceiling however badly the channels cancel. This is the
-    // invariant that replaced the old (false) assumption that a ratio
-    // against the sum could never exceed 1.
+    // §7.4.1's coupling channel is the mean of the coupled channels, so the
+    // transmitted coordinate is ratio * nfchans / 8 with ratio =
+    // sqrt(E_ch / E_sum). That is a level-free number - which is what lets
+    // one coordinate serve two blocks - but it is NOT bounded: partial
+    // cancellation between the channels shrinks E_sum without shrinking
+    // E_ch, and the field stops at 0.96875. This pins down where that
+    // actually bites, so the limit is a measured fact rather than a hope.
+    //
+    // Scaling the coupling channel up per band would dodge the ceiling, and
+    // costs far more than it saves; see the encoder's own note and the
+    // "coupling must not cost more bits" test.
     std::mt19937 rng(0x0C0F);
     std::uniform_real_distribution<double> dist(-1.0, 1.0);
     constexpr int kBins = ac3::coupling::kBinsPerSubBand;
+    constexpr double kCeiling = 31.0 / 32.0;
 
     for (int trial = 0; trial < 500; ++trial) {
-        // Two channels with an adversarial mix of correlation, including
-        // near-total cancellation.
+        // Two channels whose correlation runs from anti-phase through
+        // independent to identical.
         const double mix = dist(rng);
-        std::array<double, kBins> a{};
-        std::array<double, kBins> b{};
-        std::array<double, kBins> sum{};
         double energy_a = 0.0;
         double energy_sum = 0.0;
-        double peak = 0.0;
         for (int i = 0; i < kBins; ++i) {
-            a[static_cast<std::size_t>(i)] = dist(rng);
-            b[static_cast<std::size_t>(i)] = mix * a[static_cast<std::size_t>(i)] +
-                                             0.02 * dist(rng);
-            sum[static_cast<std::size_t>(i)] =
-                a[static_cast<std::size_t>(i)] + b[static_cast<std::size_t>(i)];
-            energy_a += a[static_cast<std::size_t>(i)] * a[static_cast<std::size_t>(i)];
-            energy_sum += sum[static_cast<std::size_t>(i)] * sum[static_cast<std::size_t>(i)];
-            peak = std::max(peak, std::abs(sum[static_cast<std::size_t>(i)]));
+            const double a = dist(rng);
+            const double b = mix * a + 0.02 * dist(rng);
+            energy_a += a * a;
+            energy_sum += (a + b) * (a + b);
         }
         if (energy_sum <= 0.0) {
             continue;
         }
         const double ratio = std::sqrt(energy_a / energy_sum);
-        const double coordinate = ratio * peak / 8.0;
-        CAPTURE(trial, mix, ratio, peak, coordinate);
-        // The bound the scheme guarantees.
-        REQUIRE(coordinate <= std::sqrt(static_cast<double>(kBins)) / 8.0 + 1e-12);
-        // And therefore inside what the field can carry, so no clamping.
-        REQUIRE(coordinate < 31.0 / 32.0);
+        const double coordinate = ratio * 2.0 / 8.0;  // stereo: nfchans == 2
+        CAPTURE(trial, mix, ratio, coordinate);
+
+        // Anything short of the channels cancelling stays inside the field:
+        // stereo has room up to ratio 3.875, which is E_sum nearly 12 dB
+        // below E_ch.
+        if (mix > -0.5) {
+            REQUIRE(coordinate < kCeiling);
+        }
 
         const std::array<double, 1> single = {coordinate};
         const int master = choose_master(single);
         const auto encoded = quantize_coordinate(coordinate, master);
         const double back = decode_coordinate(encoded, master);
-        CHECK(std::abs(back - coordinate) <= coordinate * 0.05 + 1e-9);
+        if (coordinate < kCeiling) {
+            CHECK(std::abs(back - coordinate) <= coordinate * 0.05 + 1e-9);
+        } else {
+            // Beyond it the quantizer clamps rather than wrapping, so the
+            // band comes out quiet instead of arriving at the wrong level.
+            CHECK(back == kCeiling);
+        }
     }
 }
 

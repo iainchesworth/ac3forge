@@ -1,6 +1,7 @@
 #include "ac3/encoder/coupling.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 
 namespace ac3::coupling {
@@ -12,6 +13,18 @@ namespace {
 // represented at all.
 constexpr int kMaxExp = 15;
 constexpr int kMaxMaster = 3;
+
+// How many sub-bands a band starting at this coefficient should span. The
+// steps are where a critical band passes one and two sub-band widths: bin
+// 117 is 11.0 kHz and bin 181 is 17.0 kHz at 48 kHz, against a sub-band's
+// 1125 Hz. Below the first step a sub-band is already coarser than the ear,
+// so nothing is gained by joining any.
+constexpr int band_width(int start_bin) {
+    if (start_bin < 117) {
+        return 1;
+    }
+    return start_bin < 181 ? 2 : 3;
+}
 
 }  // namespace
 
@@ -58,6 +71,45 @@ Coordinate quantize_coordinate(double value, int master) {
     }
     return {.exp = static_cast<std::uint8_t>(exp),
             .mant = static_cast<std::uint8_t>(std::clamp(mant, 0, 15))};
+}
+
+BandLayout group_bands(int cplbegf, int subbands, std::span<const bool> structure) {
+    assert(subbands >= 1 && subbands <= kSubBands);
+    assert(structure.size() >= static_cast<std::size_t>(subbands));
+
+    const int first_bin = start_mant(cplbegf);
+    BandLayout out;
+    out.count = 1;
+    out.start[0] = first_bin;
+    out.size[0] = kBinsPerSubBand;
+    for (int sbnd = 1; sbnd < subbands; ++sbnd) {
+        const auto band = static_cast<std::size_t>(out.count);
+        if (structure[static_cast<std::size_t>(sbnd)]) {
+            out.size[band - 1] += kBinsPerSubBand;
+        } else {
+            out.start[band] = first_bin + sbnd * kBinsPerSubBand;
+            out.size[band] = kBinsPerSubBand;
+            ++out.count;
+        }
+    }
+    return out;
+}
+
+std::array<bool, kSubBands> band_structure(int cplbegf, int subbands) {
+    std::array<bool, kSubBands> out{};
+    const int first_bin = start_mant(cplbegf);
+    int band_start = first_bin;
+    int width = 1;
+    for (int sbnd = 1; sbnd < subbands; ++sbnd) {
+        if (width < band_width(band_start)) {
+            out[static_cast<std::size_t>(sbnd)] = true;
+            ++width;
+        } else {
+            band_start = first_bin + sbnd * kBinsPerSubBand;
+            width = 1;
+        }
+    }
+    return out;
 }
 
 int choose_master(std::span<const double> values) {

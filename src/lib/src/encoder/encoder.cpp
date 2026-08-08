@@ -55,6 +55,36 @@ bool needs_new_exponents(std::span<const std::uint8_t> current,
     return diff > 2 * static_cast<long long>(current.size());
 }
 
+// Where coupling should start when the caller does not say. Sub-band 4 - bin
+// 85, 8.0 kHz at 48 kHz - is the floor, because that is roughly where
+// per-channel waveform detail stops being what a listener is hearing. The
+// band edge rises slowly with the PER-CHANNEL rate, since a channel that can
+// afford its own high band should keep it: 5.1 at 448 kbit/s has less to
+// spare per channel than stereo at 256 and couples from lower down.
+//
+// This is a default, not a limit - EncoderConfig::cplbegf overrides it - and
+// it is the same curve the E-AC-3 encoder settled on, over the same sub-band
+// geometry (§7.4.2 and §E2.2.3 number the coupling bands identically).
+int default_cplbegf(std::uint32_t bitrate_kbps, int nfchans) {
+    const int per_channel = static_cast<int>(bitrate_kbps) / std::max(nfchans, 1);
+    return std::clamp(4 + (per_channel - 48) / 24, 4, 10);
+}
+
+// Where coupling should stop. With coupling in use every fbw channel is
+// coupled, so chbwcod is not transmitted at all (§5.4.3.8) and cplendf alone
+// decides the frame's bandwidth. Following the bandwidth the uncoupled path
+// would have chosen keeps coupling a decision about the COST of a band of
+// spectrum rather than a decision about how much of it to code - which the
+// old fixed 12 (20.3 kHz at any rate) was not: at 96 kbit/s stereo it coded
+// 4.5 kHz the uncoupled encoder would have dropped, and paid for the
+// coordinates on top, so coupling came out behind.
+//
+// cplendmant is 37 + 12 * (cplendf + 3), so this rounds DOWN to a sub-band
+// edge: coupling never widens the band, only ever leaves a little of it.
+int default_cplendf(int chbw_endmant) {
+    return std::clamp((chbw_endmant - coupling::kFirstBin) / coupling::kBinsPerSubBand - 3, 0, 15);
+}
+
 // §7.5.2: how many rematrixing bands exist, and where the last one stops.
 // With coupling active the bands cannot reach above where coupling begins.
 int rematrix_band_count(bool cplinu, int cplbegf) {
@@ -100,6 +130,18 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         (void)channel;
     }
 
+    // Bandwidth: explicit config, or a bitrate-aware default. This comes
+    // before the coupling decision because coupling inherits it - see
+    // default_cplendf.
+    int chbwcod = config_.chbwcod;
+    if (chbwcod < 0) {
+        const int per_channel_kbps =
+            static_cast<int>(config_.bitrate_kbps) / std::max(nfchans, 1);
+        chbwcod = std::clamp(per_channel_kbps * 2 / 3, 24, 60);
+    }
+    assert(chbwcod >= 0 && chbwcod <= 60);
+    const int chbw_endmant = ((chbwcod + 12) * 3) + 37;
+
     // --- Coupling decision -------------------------------------------------
     // Coupling needs at least two full-bandwidth channels to share anything.
     const bool cplinu = config_.coupling && nfchans >= 2;
@@ -108,11 +150,19 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     int cplstrtmant = 0;
     int cplendmant = 0;
     int ncplsubnd = 0;
+    std::array<bool, coupling::kSubBands> cplbndstrc{};
+    coupling::BandLayout cplbands{};
     if (cplinu) {
-        cplbegf = config_.cplbegf >= 0 ? config_.cplbegf : 6;
-        cplendf = config_.cplendf >= 0 ? config_.cplendf : 12;
-        cplbegf = std::clamp(cplbegf, 0, 15);
+        cplendf = config_.cplendf >= 0 ? config_.cplendf
+                                       : default_cplendf(chbw_endmant);
         cplendf = std::clamp(cplendf, 0, 15);
+        // The default start never runs past the end; an explicit one is
+        // caught by the sub-band count below.
+        cplbegf = config_.cplbegf >= 0
+                      ? config_.cplbegf
+                      : std::min(default_cplbegf(config_.bitrate_kbps, nfchans),
+                                 cplendf + 2);
+        cplbegf = std::clamp(cplbegf, 0, 15);
         // cplendf is read by adding 3, so the coded region must extend past
         // where coupling starts.
         if (coupling::sub_band_count(cplbegf, cplendf) < 1) {
@@ -121,18 +171,12 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         cplstrtmant = coupling::start_mant(cplbegf);
         cplendmant = std::min(coupling::end_mant(cplendf), 253);
         ncplsubnd = (cplendmant - cplstrtmant) / coupling::kBinsPerSubBand;
+        cplbndstrc = coupling::band_structure(cplbegf, ncplsubnd);
+        cplbands = coupling::group_bands(cplbegf, ncplsubnd, cplbndstrc);
     }
 
-    // Bandwidth: explicit config, or a bitrate-aware default. Coupled
-    // channels stop at the coupling frequency instead.
-    int chbwcod = config_.chbwcod;
-    if (chbwcod < 0) {
-        const int per_channel_kbps =
-            static_cast<int>(config_.bitrate_kbps) / std::max(nfchans, 1);
-        chbwcod = std::clamp(per_channel_kbps * 2 / 3, 24, 60);
-    }
-    assert(chbwcod >= 0 && chbwcod <= 60);
-    const int fbw_endmant = cplinu ? cplstrtmant : ((chbwcod + 12) * 3) + 37;
+    // Coupled channels stop at the coupling frequency instead.
+    const int fbw_endmant = cplinu ? cplstrtmant : chbw_endmant;
 
     // Stream layout: the fbw channels, the LFE, then the coupling channel as
     // one more stream carrying the shared high band.
@@ -196,19 +240,20 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
 
     // --- 2. Coupling: form the shared channel and its coordinates ----------
     // Coordinates are sent in blocks 0, 2 and 4 and reused in between
-    // (§8.2.4.1); the coupling channel itself is the plain average the spec's
-    // basic encoder describes, scaled by 1/8 so it cannot overflow, which the
-    // decoder undoes with its matching x8.
+    // (§8.2.4.1); the coupling channel itself is the plain average of the
+    // coupled channels the spec's basic encoder describes (§7.4.1), with the
+    // decoder's x8 living entirely in the coordinates. One coordinate per
+    // BAND, which is one or more sub-bands joined by cplbndstrc.
     std::array<bool, kBlocksPerFrame> send_coords{};
     std::vector<int> master(static_cast<std::size_t>(kBlocksPerFrame) *
                             static_cast<std::size_t>(std::max(nfchans, 1)));
     std::vector<coupling::Coordinate> coords(
         static_cast<std::size_t>(kBlocksPerFrame) * static_cast<std::size_t>(std::max(nfchans, 1)) *
-        static_cast<std::size_t>(std::max(ncplsubnd, 1)));
+        static_cast<std::size_t>(std::max(cplbands.count, 1)));
     const auto coord_at = [&](int block, int ch, int bnd) -> coupling::Coordinate& {
         return coords[(static_cast<std::size_t>(block) * static_cast<std::size_t>(nfchans) +
                        static_cast<std::size_t>(ch)) *
-                          static_cast<std::size_t>(ncplsubnd) +
+                          static_cast<std::size_t>(cplbands.count) +
                       static_cast<std::size_t>(bnd)];
     };
     const auto master_at = [&](int block, int ch) -> int& {
@@ -217,74 +262,77 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     };
 
     if (cplinu) {
-        std::vector<double> values(static_cast<std::size_t>(ncplsubnd));
+        std::vector<double> values(static_cast<std::size_t>(cplbands.count));
+
+        // The decoder computes
+        //     channel = coupling * coordinate * 8,
+        // so storing coupling = sum / K makes the required coordinate r*K/8,
+        // where r = sqrt(E_ch / E_sum) is the band's magnitude ratio. K is
+        // never transmitted - it is folded into the coordinates - which makes
+        // it look like a free parameter. It is not, in two separate ways, and
+        // this encoder measured both of them the hard way.
+        //
+        // Scaling the shared channel UP - normalising each band, or the whole
+        // coupled region, to unit peak - is tempting because it makes every
+        // coordinate small and so unclampable. But §7.2.2 reads psd
+        // ABSOLUTELY, against a fixed hearing threshold: a coupling channel
+        // normalised to full scale is simply the loudest thing in the frame,
+        // and the allocator buys it bits to match. Measured at 128 kbit/s
+        // stereo, that handed the coupling channel 291 of a block's 420
+        // mantissa bits - more per bin than the baseband it was supposed to
+        // be subsidising - and dropped the frame's coarse SNR offset from 27
+        // to 11. Coupling made the encoder run out of bits SOONER than not
+        // coupling at all, while still producing frames that pass every size
+        // and CRC check.
+        //
+        // K must also be constant across the whole frame, not per block.
+        // Coordinates go out in blocks 0, 2 and 4 and are reused in 1, 3 and
+        // 5, so a K carrying anything block-specific reaches the decoder
+        // multiplied by the PREVIOUS block's value: the reusing blocks come
+        // back wrong by the ratio of the two blocks' scales.
+        //
+        // §7.4.1's own answer satisfies both: the coupling channel is the
+        // average of the coupled channels, K = nfchans, so the shared channel
+        // sits at the natural level of one real channel - which is the level
+        // the allocator's model expects - and every block shares one scale.
+        const double scale = static_cast<double>(nfchans);
+
         for (int block = 0; block < kBlocksPerFrame; ++block) {
             send_coords[static_cast<std::size_t>(block)] = block % 2 == 0;
 
             auto& cpl = coeffs_at(cpl_stream, block);
             cpl.fill(0.0);
-
-            // Per-band normalisation. The decoder computes
-            //     channel = coupling * coordinate * 8,
-            // so storing coupling = sum / K makes the required coordinate
-            // r*K/8, where r = sqrt(E_ch / E_sum) is the magnitude ratio.
-            //
-            // A fixed K = 8 (the "divide by 8" of §8.2.5.1) makes the
-            // coordinate equal r, which caps it at the format's 0.96875 and
-            // silently clamps every band where a channel is LOUDER than the
-            // sum - which is exactly what partial cancellation between
-            // channels produces, and is the common case for anti-correlated
-            // stereo. Choosing K = max|sum| over the band instead keeps the
-            // stored coefficients inside [-1, 1] (so the 25-bit fixed-point
-            // conversion never clips) while provably keeping the coordinate
-            // representable: max|sum| <= sqrt(E_sum) for a band, so
-            //     r*K/8 <= sqrt(E_ch)/8 <= sqrt(bins)/8 < 0.96875.
-            // K needs no signalling - it is folded into the coordinates.
-            std::vector<double> band_scale(static_cast<std::size_t>(ncplsubnd), 0.0);
-            for (int bnd = 0; bnd < ncplsubnd; ++bnd) {
-                const int low = cplstrtmant + bnd * coupling::kBinsPerSubBand;
-                const int high = std::min(low + coupling::kBinsPerSubBand, cplendmant);
-                double peak = 0.0;
-                for (int bin = low; bin < high; ++bin) {
-                    double sum = 0.0;
-                    for (int ch = 0; ch < nfchans; ++ch) {
-                        sum += coeffs_at(ch, block)[static_cast<std::size_t>(bin)];
-                    }
-                    cpl[static_cast<std::size_t>(bin)] = sum;  // unscaled for now
-                    peak = std::max(peak, std::abs(sum));
+            // The raw sum for now; the division by `scale` comes after the
+            // coordinates, which are measured against that same raw sum.
+            for (int bin = cplstrtmant; bin < cplendmant; ++bin) {
+                double sum = 0.0;
+                for (int ch = 0; ch < nfchans; ++ch) {
+                    sum += coeffs_at(ch, block)[static_cast<std::size_t>(bin)];
                 }
-                band_scale[static_cast<std::size_t>(bnd)] = peak;
-                if (peak > 0.0) {
-                    for (int bin = low; bin < high; ++bin) {
-                        cpl[static_cast<std::size_t>(bin)] /= peak;
-                    }
-                }
+                cpl[static_cast<std::size_t>(bin)] = sum;
             }
 
             for (int ch = 0; ch < nfchans; ++ch) {
-                for (int bnd = 0; bnd < ncplsubnd; ++bnd) {
-                    const int low = cplstrtmant + bnd * coupling::kBinsPerSubBand;
-                    const int high = std::min(low + coupling::kBinsPerSubBand, cplendmant);
+                for (int bnd = 0; bnd < cplbands.count; ++bnd) {
+                    const int low = cplbands.start[static_cast<std::size_t>(bnd)];
+                    const int high =
+                        std::min(low + cplbands.size[static_cast<std::size_t>(bnd)], cplendmant);
                     double power_ch = 0.0;
                     double power_sum = 0.0;
                     for (int bin = low; bin < high; ++bin) {
                         const double value =
                             coeffs_at(ch, block)[static_cast<std::size_t>(bin)];
-                        // Against the RAW sum: the stored channel was divided
-                        // by the band scale, which the coordinate re-applies.
-                        const double summed = cpl[static_cast<std::size_t>(bin)] *
-                                              band_scale[static_cast<std::size_t>(bnd)];
+                        const double summed = cpl[static_cast<std::size_t>(bin)];
                         power_ch += value * value;
                         power_sum += summed * summed;
                     }
                     const double ratio =
                         power_sum > 0.0 ? std::sqrt(power_ch / power_sum) : 0.0;
-                    values[static_cast<std::size_t>(bnd)] =
-                        ratio * band_scale[static_cast<std::size_t>(bnd)] / 8.0;
+                    values[static_cast<std::size_t>(bnd)] = ratio * scale / 8.0;
                 }
                 const int chosen = coupling::choose_master(values);
                 master_at(block, ch) = chosen;
-                for (int bnd = 0; bnd < ncplsubnd; ++bnd) {
+                for (int bnd = 0; bnd < cplbands.count; ++bnd) {
                     coord_at(block, ch, bnd) = coupling::quantize_coordinate(
                         values[static_cast<std::size_t>(bnd)], chosen);
                 }
@@ -299,10 +347,13 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
             if (!send_coords[static_cast<std::size_t>(block)]) {
                 for (int ch = 0; ch < nfchans; ++ch) {
                     master_at(block, ch) = master_at(block - 1, ch);
-                    for (int bnd = 0; bnd < ncplsubnd; ++bnd) {
+                    for (int bnd = 0; bnd < cplbands.count; ++bnd) {
                         coord_at(block, ch, bnd) = coord_at(block - 1, ch, bnd);
                     }
                 }
+            }
+            for (int bin = cplstrtmant; bin < cplendmant; ++bin) {
+                cpl[static_cast<std::size_t>(bin)] /= scale;
             }
         }
     }
@@ -485,8 +536,12 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                 }
                 w.put(static_cast<std::uint32_t>(cplbegf), 4);
                 w.put(static_cast<std::uint32_t>(cplendf), 4);
+                // cplbndstrc, one bit per sub-band after the first. AC-3
+                // always sends it, so the ncplsubnd - 1 bits are spent
+                // whatever the structure - what the structure buys back is
+                // 8 bits per band it removes, three times a frame per channel.
                 for (int bnd = 1; bnd < ncplsubnd; ++bnd) {
-                    w.put(0, 1);  // cplbndstrc: one band per sub-band
+                    w.put(cplbndstrc[static_cast<std::size_t>(bnd)] ? 1 : 0, 1);
                 }
             }
         }
@@ -496,7 +551,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                 w.put(send ? 1 : 0, 1);  // cplcoe
                 if (send) {
                     w.put(static_cast<std::uint32_t>(master_at(block, ch)), 2);
-                    for (int bnd = 0; bnd < ncplsubnd; ++bnd) {
+                    for (int bnd = 0; bnd < cplbands.count; ++bnd) {
                         const auto coordinate = coord_at(block, ch, bnd);
                         w.put(coordinate.exp, 4);
                         w.put(coordinate.mant, 4);

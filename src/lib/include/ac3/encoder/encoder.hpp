@@ -34,8 +34,9 @@ struct EncoderConfig {
     // Channel coupling (§7.4): above the coupling frequency the fbw channels
     // share one channel plus per-band coordinates. Needs >= 2 fbw channels;
     // the win shows up at low bit rates, where the saved coefficients buy
-    // precision everywhere else. cplbegf/cplendf are sub-band indices (-1
-    // picks the spec's basic-encoder defaults of 6 and 12).
+    // precision everywhere else. cplbegf/cplendf are sub-band indices; -1
+    // asks the encoder to choose, which it does from the per-channel rate
+    // (start) and from the bandwidth it would have coded anyway (end).
     bool coupling = false;
     int cplbegf = -1;
     int cplendf = -1;
