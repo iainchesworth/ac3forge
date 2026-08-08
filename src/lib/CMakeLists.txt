@@ -71,6 +71,12 @@ if(WIN32)
             src/platform/windows/capture.cpp
             src/platform/windows/passthrough.cpp)
 
+    # How <windows.h> is to be configured wherever it is included: the lean
+    # header set, and no min/max macros to collide with <algorithm>. Stated
+    # here rather than #defined at the top of each backend, so the two cannot
+    # drift apart and a third backend cannot forget.
+    target_compile_definitions(ac3forge PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+
     # WASAPI: COM for the device enumerator, MMCSS for capture-thread priority.
     target_link_libraries(ac3forge PRIVATE ole32 avrt)
 endif(WIN32)

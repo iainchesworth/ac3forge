@@ -3,13 +3,11 @@
 // The Windows passthrough backend. CMake compiles this directory's
 // passthrough.cpp on Windows and another platform directory's everywhere
 // else, so there is no #ifdef - the file's path is what says "Windows".
-
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
+//
+// WIN32_LEAN_AND_MEAN and NOMINMAX are set by the WIN32 block of
+// src/lib/CMakeLists.txt, not by #defines here: they configure <windows.h> for
+// every translation unit that pulls it in, and one setting in one place cannot
+// disagree with itself the way per-file guards can.
 
 #include <windows.h>
 // windows.h must precede the audio headers.
