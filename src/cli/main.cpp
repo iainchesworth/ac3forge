@@ -1,11 +1,15 @@
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <format>
 #include <fstream>
 #include <iterator>
 #include <numbers>
+#include <optional>
 #include <print>
 #include <span>
 #include <string>
@@ -13,6 +17,7 @@
 #include <thread>
 #include <vector>
 
+#include "ac3/analysis/levels.hpp"
 #include "ac3/capture/capture.hpp"
 #include "ac3/decoder/decoder.hpp"
 #include "ac3/encoder/eac3_frame.hpp"
@@ -26,6 +31,10 @@
 
 namespace {
 
+// Named here rather than beside eac3_layout so the usage text and the error
+// message that rejects a bad layout can never list different sets.
+constexpr std::string_view kEac3Layouts = "stereo | 51 | 71 | 512 | 514 | 714";
+
 void print_usage() {
     std::println("ac3forge — clean-room AC-3 (ATSC A/52) encoder/decoder");
     std::println("");
@@ -37,13 +46,24 @@ void print_usage() {
     std::println("  ac3cli record  <out.ac3> [seconds] [bitrate_kbps] [device_index]");
     std::println("  ac3cli encode  <in.wav> <out.ac3> [bitrate_kbps] [couple]");
     std::println("  ac3cli decode  <in.ac3> <out.wav>");
+    std::println("  ac3cli levels  <in.wav|in.ac3>     (per-channel peak/RMS report)");
     std::println("  ac3cli spdif   <in.ac3> <out.wav>   (IEC 61937 wrap as playable PCM16 WAV)");
+    std::println("  ac3cli eac3-mkv <in.ec3> <out.mkv> [bitrate_kbps] [layout]");
     std::println("  ac3cli outputs                      (render endpoints + AC-3 passthrough support)");
     std::println("  ac3cli play    <in.ac3> [device_index]  (exclusive-mode IEC 61937 passthrough)");
     std::println("");
     std::println("layout: stereo (default) | 51 — 5.1 uses per-channel tones;");
     std::println("        append 'c' (stereoc, 51c) to enable channel coupling");
     std::println("        (L 1000, C 800, R 1200, SL 600, SR 1400, LFE 60 Hz)");
+    std::println("");
+    std::println("eac3-mkv wraps an E-AC-3 elementary stream in Matroska. Packet boundaries");
+    std::println("come from the bitstream, but the track header's rate and channel count come");
+    std::println("from [layout] ({}) and [bitrate_kbps], so those", kEac3Layouts);
+    std::println("must match the stream being wrapped.");
+    std::println("");
+    std::println("encode takes 1 to 6 channel WAVs and picks the acmod to match: 1 -> 1/0,");
+    std::println("2 -> 2/0, 3 -> 3/0, 4 -> 2/2, 5 -> 3/2, 6 -> 3/2 + LFE. Commands that");
+    std::println("carry PCM report per-channel levels when they finish; 'record' meters live.");
 }
 
 std::uint32_t parse_u32_or(std::string_view text, std::uint32_t fallback) {
@@ -77,6 +97,82 @@ std::vector<std::byte> read_all(std::string_view path) {
         bytes[i] = static_cast<std::byte>(static_cast<unsigned char>(raw[i]));
     }
     return bytes;
+}
+
+// ---------------------------------------------------------------------------
+// Level reporting. Every number comes from ac3::analysis, so a level reads
+// the same here as on the GUI's meters; only the drawing is local.
+// ---------------------------------------------------------------------------
+
+// A bar on the same -60..0 dBFS scale the GUI's meters use. ASCII rather than
+// block glyphs: this has to stay legible in a bare console whatever code page
+// it happens to be running.
+std::string meter_bar(double db, int width) {
+    std::string bar(static_cast<std::size_t>(width), '-');
+    const auto filled = static_cast<int>(std::lround(ac3::analysis::meter_fraction(db) * width));
+    for (int i = 0; i < filled; ++i) {
+        bar[static_cast<std::size_t>(i)] = '#';
+    }
+    return bar;
+}
+
+// The exact figures for a finished run. Peak and RMS here are unweighted over
+// the whole signal — ballistics exist to make a moving display readable, and
+// would only blur a question that has a right answer.
+void print_channel_summary(const ac3::analysis::LevelMeter& meter) {
+    const auto acmod = meter.acmod();
+    const bool lfe = meter.lfe();
+    std::println("");
+    std::println("per-channel levels ({}):", ac3::analysis::layout_name(acmod, lfe));
+    std::println("  {:<4} {:>8} {:>8}  {:<20} {}", "ch", "peak", "rms", "peak (-60..0 dBFS)",
+                 "clipped");
+    for (int ch = 0; ch < meter.channel_count(); ++ch) {
+        const auto& stats = meter.summary()[static_cast<std::size_t>(ch)];
+        std::println("  {:<4} {:>8.2f} {:>8.2f}  [{}] {}",
+                     ac3::analysis::channel_name(acmod, lfe, ch), stats.peak_db(),
+                     stats.rms_db(), meter_bar(stats.peak_db(), 18),
+                     stats.clipped_samples > 0 ? std::to_string(stats.clipped_samples) : "-");
+    }
+    // The energy vector over the whole run, not the last few hundred
+    // milliseconds levels() remembers: a summary line has to describe the
+    // same span of audio as the table above it.
+    std::vector<ac3::analysis::ChannelLevel> whole(
+        static_cast<std::size_t>(meter.channel_count()));
+    for (std::size_t ch = 0; ch < whole.size(); ++ch) {
+        whole[ch].rms_db = meter.summary()[ch].rms_db();
+    }
+    const auto field = ac3::analysis::energy_vector(whole, acmod);
+    if (ac3::fullbw_channel_count(acmod) >= 2 && field.magnitude > 0.0) {
+        // A perfectly centred image leaves a vanishing negative y, which
+        // rounds to a correct but ridiculous "-0°".
+        const double azimuth = std::round(field.azimuth_deg);
+        std::println("  soundfield: {:.0f}° azimuth, focus {:.2f} (1.0 = a single speaker)",
+                     azimuth == 0.0 ? 0.0 : azimuth, field.magnitude);
+    }
+}
+
+// One line, rewritten in place. A carriage return rather than ANSI cursor
+// moves, so it behaves the same in a bare console as in a terminal that
+// speaks escape sequences. Every field is fixed width, so the line never
+// leaves fragments of a longer previous line behind.
+void print_live_meter(const ac3::analysis::LevelMeter& meter, double seconds) {
+    const bool narrow = meter.channel_count() > 2;
+    const int width = narrow ? 8 : 14;
+    std::string line = std::format("{:6.1f} s", seconds);
+    for (int ch = 0; ch < meter.channel_count(); ++ch) {
+        const auto& level = meter.levels()[static_cast<std::size_t>(ch)];
+        line += std::format(
+            "  {:>3} [{}]", ac3::analysis::channel_name(meter.acmod(), meter.lfe(), ch),
+            meter_bar(level.peak_db, width));
+        if (!narrow) {
+            line += std::format(" {:>6.1f} {:<4}", level.peak_db, level.clipped ? "CLIP" : "");
+        }
+    }
+    std::print("\r{}", line);
+    // Without a newline nothing reaches the console on its own: stdout is
+    // block-buffered the moment it is redirected, and a meter nobody sees
+    // until the run ends is not a meter.
+    std::fflush(stdout);
 }
 
 int run_silence(std::string_view out_path, std::uint32_t seconds, std::uint32_t bitrate) {
@@ -113,6 +209,7 @@ int run_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_t bit
     ac3::FrameEncoder encoder{config};
     const auto nchans = static_cast<std::size_t>(encoder.channel_count());
     const double amplitude = amplitude_pct / 100.0;
+    ac3::analysis::LevelMeter meter{config.acmod, config.lfe, 48000};
 
     const std::uint64_t count = (static_cast<std::uint64_t>(seconds) * 48000 + 1535) / 1536;
     std::vector<std::vector<float>> samples(nchans,
@@ -132,6 +229,7 @@ int run_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_t bit
             views[ch] = samples[ch];
         }
         n0 += ac3::kSamplesPerFrame;
+        meter.process(views);
         auto frame = encoder.encode_frame(views);
         if (!frame) {
             std::println(stderr, "error: bitrate must be a legal AC-3 rate");
@@ -144,6 +242,7 @@ int run_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_t bit
     }
     std::println("wrote {} {} frames ({} kbps) to {}", count, surround ? "5.1" : "stereo",
                  bitrate, out_path);
+    print_channel_summary(meter);
     return 0;
 }
 
@@ -158,8 +257,6 @@ struct Eac3Layout {
     ac3::eac3::AccessUnitConfig config;
     std::vector<double> tones;  // one per encoder input channel, in coded order
 };
-
-constexpr std::string_view kEac3Layouts = "stereo | 51 | 71 | 512 | 514 | 714";
 
 std::optional<Eac3Layout> eac3_layout(std::string_view name, std::uint32_t bitrate) {
     Eac3Layout out;
@@ -247,7 +344,7 @@ int rendered_channels(const ac3::eac3::AccessUnitConfig& config) {
                      static_cast<std::uint16_t>(extra & ~kBedLocations));
 }
 
-int run_eac3_mkv(std::string_view out_path, std::string_view ec3_path,
+int run_eac3_mkv(std::string_view ec3_path, std::string_view out_path,
                  std::uint32_t bitrate, std::string_view layout) {
     const auto chosen = eac3_layout(layout, bitrate);
     if (!chosen) {
@@ -378,6 +475,7 @@ int run_orbit(std::string_view out_path, std::uint32_t seconds, std::uint32_t bi
         renderer.add_object({.azimuth_deg = 0.0, .gain = 0.7, .lfe_send = 0.15});
     ac3::FrameEncoder encoder{
         {.bitrate_kbps = bitrate, .acmod = ac3::Acmod::k3_2, .lfe = true}};
+    ac3::analysis::LevelMeter meter{ac3::Acmod::k3_2, true, 48000};
 
     const std::uint64_t count = (static_cast<std::uint64_t>(seconds) * 48000 + 1535) / 1536;
     std::vector<float> mono(ac3::spatial::kBlockSamples);
@@ -418,6 +516,7 @@ int run_orbit(std::string_view out_path, std::uint32_t seconds, std::uint32_t bi
         for (std::size_t ch = 0; ch < 6; ++ch) {
             views[ch] = frame_channels[ch];
         }
+        meter.process(views);
         auto frame = encoder.encode_frame(views);
         if (!frame) {
             std::println(stderr, "error: bitrate must be a legal AC-3 rate");
@@ -430,6 +529,9 @@ int run_orbit(std::string_view out_path, std::uint32_t seconds, std::uint32_t bi
     }
     std::println("wrote {} 5.1 frames: 440 Hz tone orbiting every {} s -> {}", count,
                  orbit_seconds, out_path);
+    // An orbit visits every speaker equally, so the summary's job here is to
+    // show that no channel was left out and none dominates.
+    print_channel_summary(meter);
     return 0;
 }
 
@@ -497,6 +599,9 @@ int run_record(std::string_view out_path, std::uint32_t seconds, std::uint32_t b
                  capture.sample_rate(), channels, seconds);
 
     ac3::FrameEncoder encoder{{.sample_rate = sr, .bitrate_kbps = bitrate}};
+    // Meters what the encoder is fed, not what the endpoint delivers: a
+    // needle that moves on a channel the stream never carries would be a lie.
+    ac3::analysis::LevelMeter meter{ac3::Acmod::k2_0, false, capture.sample_rate()};
     const std::uint64_t target_frames =
         (static_cast<std::uint64_t>(seconds) * capture.sample_rate() + ac3::kSamplesPerFrame - 1) /
         ac3::kSamplesPerFrame;
@@ -527,13 +632,19 @@ int run_record(std::string_view out_path, std::uint32_t seconds, std::uint32_t b
             planar[1][static_cast<std::size_t>(i)] =
                 channels > 1 ? interleaved[base + 1] : interleaved[base];
         }
+        meter.process(views);
         auto frame = encoder.encode_frame(views);
         if (!frame) {
             std::println(stderr, "error: bitrate must be a legal AC-3 rate");
             return 1;
         }
         frames.push_back(std::move(*frame));
+        // One frame is 32 ms at 48 kHz, so the meter redraws about 30 times a
+        // second without any throttling of its own.
+        print_live_meter(meter, static_cast<double>(frames.size() * ac3::kSamplesPerFrame) /
+                                    capture.sample_rate());
     }
+    std::println("");
 
     capture.stop();
     const auto stats = capture.stats();
@@ -543,6 +654,7 @@ int run_record(std::string_view out_path, std::uint32_t seconds, std::uint32_t b
     std::println("wrote {} frames ({} kbps) to {}", frames.size(), bitrate, out_path);
     std::println("captured {} frames, {} silence-filled, {} dropped", stats.frames_captured,
                  stats.frames_silence_filled, stats.frames_dropped);
+    print_channel_summary(meter);
     return 0;
 }
 
@@ -553,8 +665,11 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
         std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(wav.error()));
         return 1;
     }
-    if (wav->channels.size() != 2) {
-        std::println(stderr, "error: encode currently expects stereo input ({} channels given)",
+    const auto layout = ac3::io::ac3_layout_for(wav->channels.size());
+    if (!layout) {
+        std::println(stderr,
+                     "error: encode handles 1 to 6 channels ({} given); no AC-3 coding mode is "
+                     "wider than 3/2 + LFE",
                      wav->channels.size());
         return 1;
     }
@@ -569,21 +684,35 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
             return 1;
     }
 
-    ac3::FrameEncoder encoder{
-        {.sample_rate = sr, .bitrate_kbps = bitrate, .coupling = couple}};
+    // Coupling shares coefficients between full-bandwidth channels (§7.4), so
+    // a mono program has nothing to share it with.
+    const bool coupling = couple && ac3::fullbw_channel_count(layout->acmod) >= 2;
+    ac3::FrameEncoder encoder{{.sample_rate = sr,
+                               .bitrate_kbps = bitrate,
+                               .acmod = layout->acmod,
+                               .lfe = layout->lfe,
+                               .coupling = coupling}};
+    ac3::analysis::LevelMeter meter{layout->acmod, layout->lfe, wav->sample_rate};
+    const auto nchans = static_cast<std::size_t>(encoder.channel_count());
     const std::size_t total = wav->frame_count();
-    std::vector<std::vector<float>> block(2, std::vector<float>(ac3::kSamplesPerFrame));
-    std::vector<std::span<const float>> views(2);
+    std::vector<std::vector<float>> block(nchans, std::vector<float>(ac3::kSamplesPerFrame));
+    std::vector<std::span<const float>> views(nchans);
+    std::vector<std::span<const float>> metered(nchans);
     std::vector<std::vector<std::byte>> frames;
     for (std::size_t start = 0; start < total; start += ac3::kSamplesPerFrame) {
-        for (std::size_t c = 0; c < 2; ++c) {
+        // The tail frame is zero-padded to a full 1536 samples; the meter sees
+        // only the real ones, so the padding cannot pull the RMS down.
+        const auto valid = std::min<std::size_t>(ac3::kSamplesPerFrame, total - start);
+        for (std::size_t c = 0; c < nchans; ++c) {
+            const auto& source = wav->channels[layout->wav_index[c]];
             for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
                 const std::size_t at = start + static_cast<std::size_t>(i);
-                block[c][static_cast<std::size_t>(i)] =
-                    at < total ? wav->channels[c][at] : 0.0f;
+                block[c][static_cast<std::size_t>(i)] = at < total ? source[at] : 0.0f;
             }
             views[c] = block[c];
+            metered[c] = std::span{block[c]}.first(valid);
         }
+        meter.process(metered);
         auto frame = encoder.encode_frame(views);
         if (!frame) {
             std::println(stderr, "error: bitrate must be a legal AC-3 rate");
@@ -594,22 +723,11 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
     if (!write_frames(out_path, frames)) {
         return 1;
     }
-    std::println("encoded {} frames ({} kbps, {} Hz) to {}", frames.size(), bitrate,
-                 wav->sample_rate, out_path);
+    std::println("encoded {} frames ({} kbps, {} Hz, {}) to {}", frames.size(), bitrate,
+                 wav->sample_rate, ac3::analysis::layout_name(layout->acmod, layout->lfe),
+                 out_path);
+    print_channel_summary(meter);
     return 0;
-}
-
-// AC-3 channel order -> standard WAV order for the supported layouts.
-std::vector<std::size_t> wav_channel_map(ac3::Acmod acmod, bool lfe) {
-    if (acmod == ac3::Acmod::k3_2 && lfe) {
-        return {0, 2, 1, 5, 3, 4};  // FL FR FC LFE BL BR <- L C R SL SR LFE
-    }
-    std::vector<std::size_t> identity(
-        static_cast<std::size_t>(ac3::fullbw_channel_count(acmod)) + (lfe ? 1 : 0));
-    for (std::size_t i = 0; i < identity.size(); ++i) {
-        identity[i] = i;
-    }
-    return identity;
 }
 
 int run_decode(std::string_view in_path, std::string_view out_path) {
@@ -626,6 +744,7 @@ int run_decode(std::string_view in_path, std::string_view out_path) {
     }
     ac3::FrameDecoder decoder;
     std::vector<std::vector<float>> pcm;
+    std::optional<ac3::analysis::LevelMeter> meter;
     ac3::DecodedFrame first{};
     bool have_first = false;
     for (const auto& frame : *frames) {
@@ -638,26 +757,119 @@ int run_decode(std::string_view in_path, std::string_view out_path) {
         if (!have_first) {
             first = *decoded;
             pcm.resize(decoded->channels.size());
+            meter.emplace(decoded->acmod, decoded->lfe, sample_rate_hz(decoded->sample_rate));
             have_first = true;
         }
+        std::vector<std::span<const float>> views;
+        views.reserve(decoded->channels.size());
         for (std::size_t ch = 0; ch < decoded->channels.size(); ++ch) {
             pcm[ch].insert(pcm[ch].end(), decoded->channels[ch].begin(),
                            decoded->channels[ch].end());
+            views.emplace_back(decoded->channels[ch]);
         }
+        meter->process(views);
     }
     if (!have_first) {
         std::println(stderr, "error: no frames");
         return 1;
     }
-    const auto map = wav_channel_map(first.acmod, first.lfe);
+    const auto map = ac3::io::wav_channel_order(first.acmod, first.lfe);
     const auto written = ac3::io::write_wav_f32(std::string{out_path}, pcm,
                                                 sample_rate_hz(first.sample_rate), map);
     if (!written) {
         std::println(stderr, "error: {}", ac3::io::describe(written.error()));
         return 1;
     }
-    std::println("decoded {} frames -> {} ({} channels, {} Hz)", frames->size(), out_path,
-                 map.size(), sample_rate_hz(first.sample_rate));
+    std::println("decoded {} frames -> {} ({}, {} Hz)", frames->size(), out_path,
+                 ac3::analysis::layout_name(first.acmod, first.lfe),
+                 sample_rate_hz(first.sample_rate));
+    print_channel_summary(*meter);
+    return 0;
+}
+
+// What is actually in a file, channel by channel — the answer both front ends
+// are built to show, without having to encode anything to get it.
+int run_levels(std::string_view in_path) {
+    const auto bytes = read_all(in_path);
+    if (bytes.empty()) {
+        std::println(stderr, "error: cannot read {}", in_path);
+        return 1;
+    }
+    // A syncframe opens with 0x0B77 (§5.4.1.1); anything else is treated as a
+    // WAV, whose reader reports its own diagnosis if it is neither.
+    const bool syncword = bytes.size() >= 6 && std::to_integer<int>(bytes[0]) == 0x0B &&
+                          std::to_integer<int>(bytes[1]) == 0x77;
+
+    if (syncword) {
+        // E-AC-3 shares the sync word, so the sync word alone cannot tell the
+        // two apart. bsid can: Annex E places it at bits 40..44 of the frame,
+        // exactly where §5.4.1.1 puts AC-3's, so that a decoder can identify
+        // the variant before parsing anything else.
+        const auto bsid = std::to_integer<unsigned>(bytes[5]) >> 3;
+        if (bsid > 8) {
+            std::println(stderr,
+                         "error: {} is {} (bsid {}); the in-repo decoder reads only the "
+                         "bsid<=8 syntax, so levels cannot open it",
+                         in_path,
+                         bsid > 10 ? "E-AC-3" : "AC-3 alternate syntax (A/52 Annex D)", bsid);
+            return 1;
+        }
+        const auto frames = ac3::split_frames(bytes);
+        if (!frames || frames->empty()) {
+            std::println(stderr, "error: {} is not a valid AC-3 stream", in_path);
+            return 1;
+        }
+        ac3::FrameDecoder decoder;
+        std::optional<ac3::analysis::LevelMeter> meter;
+        for (const auto& frame : *frames) {
+            const auto decoded = decoder.decode_frame(frame);
+            if (!decoded) {
+                std::println(stderr, "error: decode failed (code {})",
+                             static_cast<int>(decoded.error()));
+                return 1;
+            }
+            if (!meter) {
+                meter.emplace(decoded->acmod, decoded->lfe,
+                              sample_rate_hz(decoded->sample_rate));
+                std::println("{}: {} frames, {}, {} kbps, {} Hz", in_path, frames->size(),
+                             ac3::analysis::layout_name(decoded->acmod, decoded->lfe),
+                             decoded->bitrate_kbps, sample_rate_hz(decoded->sample_rate));
+            }
+            std::vector<std::span<const float>> views;
+            views.reserve(decoded->channels.size());
+            for (const auto& channel : decoded->channels) {
+                views.emplace_back(channel);
+            }
+            meter->process(views);
+        }
+        print_channel_summary(*meter);
+        return 0;
+    }
+
+    const auto wav = ac3::io::read_wav(std::string{in_path});
+    if (!wav) {
+        std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(wav.error()));
+        return 1;
+    }
+    const auto layout = ac3::io::ac3_layout_for(wav->channels.size());
+    if (!layout) {
+        std::println(stderr, "error: levels handles 1 to 6 channels ({} given)",
+                     wav->channels.size());
+        return 1;
+    }
+    const double seconds = wav->sample_rate > 0
+                               ? static_cast<double>(wav->frame_count()) / wav->sample_rate
+                               : 0.0;
+    std::println("{}: {} Hz, {:.2f} s, shown in A/52 order as {}", in_path, wav->sample_rate,
+                 seconds, ac3::analysis::layout_name(layout->acmod, layout->lfe));
+
+    ac3::analysis::LevelMeter meter{layout->acmod, layout->lfe, wav->sample_rate};
+    std::vector<std::span<const float>> views(layout->wav_index.size());
+    for (std::size_t ch = 0; ch < layout->wav_index.size(); ++ch) {
+        views[ch] = wav->channels[layout->wav_index[ch]];
+    }
+    meter.process(views);
+    print_channel_summary(meter);
     return 0;
 }
 
@@ -880,6 +1092,9 @@ int main(int argc, char** argv) {
     }
     if (command == "decode" && args.size() > 3) {
         return run_decode(args[2], args[3]);
+    }
+    if (command == "levels") {
+        return run_levels(args[2]);
     }
     if (command == "spdif" && args.size() > 3) {
         return run_spdif(args[2], args[3]);

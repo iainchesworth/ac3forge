@@ -32,10 +32,20 @@ std::optional<ac3::SampleRate> to_sample_rate(std::uint32_t hz) {
     }
 }
 
+QString to_qstring(std::string_view text) {
+    return QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size()));
+}
+
+// Live meters redraw no faster than this. A file encodes far quicker than it
+// plays, so without a wall-clock throttle a two-minute track would fire tens
+// of thousands of property updates the display could never show.
+constexpr auto kPublishInterval = std::chrono::milliseconds(33);
+
 }  // namespace
 
 struct EncoderController::Source {
     ac3::io::WavData wav;
+    ac3::io::Ac3Layout layout;
 };
 
 EncoderController::EncoderController(QObject* parent) : QObject(parent) {
@@ -91,6 +101,95 @@ void EncoderController::setProgress(double value) {
     }
     progress_ = value;
     emit progressChanged();
+}
+
+void EncoderController::setMetering(bool metering) {
+    if (metering == metering_) {
+        return;
+    }
+    metering_ = metering;
+    emit meteringChanged();
+}
+
+// ---------------------------------------------------------------------------
+// Metering. Every figure the meters draw — including where a level sits on
+// the bar — comes from ac3::analysis, so the GUI and ac3cli cannot disagree
+// about the same audio.
+// ---------------------------------------------------------------------------
+
+void EncoderController::setLayout(ac3::Acmod acmod, bool lfe) {
+    acmod_ = acmod;
+    lfe_ = lfe;
+    channel_names_.clear();
+    const int count = ac3::analysis::channel_count(acmod, lfe);
+    for (int ch = 0; ch < count; ++ch) {
+        channel_names_.append(to_qstring(ac3::analysis::channel_name(acmod, lfe, ch)));
+    }
+    layout_name_ = to_qstring(ac3::analysis::layout_name(acmod, lfe));
+    emit layoutChanged();
+    // Start silent: leaving the previous source's levels under the new
+    // source's labels would put a number against the wrong channel.
+    publishLevels(std::vector<ac3::analysis::ChannelLevel>(static_cast<std::size_t>(count)));
+}
+
+void EncoderController::clearLayout() {
+    channel_names_.clear();
+    layout_name_.clear();
+    channel_levels_.clear();
+    soundfield_.clear();
+    setMetering(false);
+    emit layoutChanged();
+    emit levelsChanged();
+}
+
+void EncoderController::publishLevels(std::span<const ac3::analysis::ChannelLevel> levels) {
+    QVariantList entries;
+    entries.reserve(static_cast<qsizetype>(levels.size()));
+    for (std::size_t ch = 0; ch < levels.size(); ++ch) {
+        const auto& level = levels[ch];
+        const auto azimuth =
+            ac3::analysis::channel_azimuth_deg(acmod_, lfe_, static_cast<int>(ch));
+        entries.append(QVariantMap{
+            {QStringLiteral("peakDb"), level.peak_db},
+            {QStringLiteral("rmsDb"), level.rms_db},
+            {QStringLiteral("holdDb"), level.hold_db},
+            {QStringLiteral("clipped"), level.clipped},
+            // Bar positions are computed here rather than in QML: a front end
+            // that mapped decibels its own way would quietly disagree with
+            // every other reading of the same signal.
+            {QStringLiteral("peak"),
+             ac3::analysis::meter_fraction(level.peak_db, kMeterFloorDb)},
+            {QStringLiteral("rms"), ac3::analysis::meter_fraction(level.rms_db, kMeterFloorDb)},
+            {QStringLiteral("hold"), ac3::analysis::meter_fraction(level.hold_db, kMeterFloorDb)},
+            {QStringLiteral("azimuthDeg"), azimuth.value_or(0.0)},
+            {QStringLiteral("directional"), azimuth.has_value()},
+        });
+    }
+    channel_levels_ = std::move(entries);
+
+    const auto field = ac3::analysis::energy_vector(levels, acmod_);
+    soundfield_ = QVariantMap{
+        {QStringLiteral("azimuthDeg"), field.azimuth_deg},
+        {QStringLiteral("magnitude"), field.magnitude},
+        {QStringLiteral("levelDb"), field.level_db},
+        {QStringLiteral("active"), field.magnitude > 0.0},
+    };
+    emit levelsChanged();
+}
+
+void EncoderController::publishSummary(const ac3::analysis::LevelMeter& meter) {
+    // The exact whole-run figures, not the ballistic tail: once a run is over
+    // there is a right answer, and the display should settle on it.
+    std::vector<ac3::analysis::ChannelLevel> levels(
+        static_cast<std::size_t>(meter.channel_count()));
+    for (std::size_t ch = 0; ch < levels.size(); ++ch) {
+        const auto& stats = meter.summary()[ch];
+        levels[ch].peak_db = stats.peak_db();
+        levels[ch].hold_db = stats.peak_db();
+        levels[ch].rms_db = stats.rms_db();
+        levels[ch].clipped = stats.clipped_samples > 0;
+    }
+    publishLevels(levels);
 }
 
 void EncoderController::refreshOutputDevices() {
@@ -238,8 +337,11 @@ void EncoderController::startRecording(int deviceIndex, const QUrl& url) {
     setRecording(true);
     setBusy(true);
     recorded_seconds_ = 0.0;
-    capture_level_ = 0.0;
     emit recordedSecondsChanged();
+    // Capture is folded to a stereo pair before it reaches the encoder, so
+    // that — not the endpoint's own channel count — is what the meters show.
+    setLayout(ac3::Acmod::k2_0, false);
+    setMetering(true);
     setStatus(QStringLiteral("Recording from %1…").arg(QString::fromStdString(device.name)));
 
     const int bitrate = bitrate_kbps_;
@@ -250,6 +352,7 @@ void EncoderController::startRecording(int deviceIndex, const QUrl& url) {
                                      sample_rate]() {
         ac3::FrameEncoder encoder{
             {.sample_rate = rate, .bitrate_kbps = static_cast<std::uint32_t>(bitrate)}};
+        ac3::analysis::LevelMeter meter{ac3::Acmod::k2_0, false, sample_rate};
         std::ofstream out{path.toStdString(), std::ios::binary};
         if (!out) {
             QMetaObject::invokeMethod(this, [this] {
@@ -257,6 +360,7 @@ void EncoderController::startRecording(int deviceIndex, const QUrl& url) {
                 capture_.reset();
                 setRecording(false);
                 setBusy(false);
+                setMetering(false);
                 setStatus(QStringLiteral("Could not open the output file for writing."));
                 emit encodeFinished(false, status());
             });
@@ -285,15 +389,14 @@ void EncoderController::startRecording(int deviceIndex, const QUrl& url) {
                 break;  // stopped mid-frame; drop the partial frame
             }
 
-            float peak = 0.0f;
             for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
                 const std::size_t base = static_cast<std::size_t>(i) * channels;
                 const float left = interleaved[base];
-                const float right = channels > 1 ? interleaved[base + 1] : left;
                 planar[0][static_cast<std::size_t>(i)] = left;
-                planar[1][static_cast<std::size_t>(i)] = right;
-                peak = std::max({peak, std::abs(left), std::abs(right)});
+                planar[1][static_cast<std::size_t>(i)] =
+                    channels > 1 ? interleaved[base + 1] : left;
             }
+            meter.process(views);
 
             const auto frame = encoder.encode_frame(views);
             if (!frame) {
@@ -303,29 +406,44 @@ void EncoderController::startRecording(int deviceIndex, const QUrl& url) {
                       static_cast<std::streamsize>(frame->size()));
             ++frames;
 
+            // A frame is 32 ms at 48 kHz, so publishing one snapshot per frame
+            // already lands close to 30 Hz without any extra throttling.
             const double seconds = static_cast<double>(frames * ac3::kSamplesPerFrame) /
                                    static_cast<double>(sample_rate);
-            QMetaObject::invokeMethod(this, [this, seconds, peak] {
+            std::vector<ac3::analysis::ChannelLevel> snapshot(meter.levels().begin(),
+                                                              meter.levels().end());
+            QMetaObject::invokeMethod(this, [this, seconds, snapshot = std::move(snapshot)] {
                 recorded_seconds_ = seconds;
-                capture_level_ = static_cast<double>(peak);
                 emit recordedSecondsChanged();
+                publishLevels(snapshot);
             });
         }
         out.close();
 
-        QMetaObject::invokeMethod(this, [this, frames] {
+        std::vector<ac3::analysis::ChannelLevel> totals(
+            static_cast<std::size_t>(meter.channel_count()));
+        for (std::size_t ch = 0; ch < totals.size(); ++ch) {
+            const auto& stats = meter.summary()[ch];
+            totals[ch].peak_db = stats.peak_db();
+            totals[ch].hold_db = stats.peak_db();
+            totals[ch].rms_db = stats.rms_db();
+            totals[ch].clipped = stats.clipped_samples > 0;
+        }
+
+        QMetaObject::invokeMethod(this, [this, frames, totals = std::move(totals)] {
             const auto stats = capture_->stats();
             capture_->stop();
             capture_.reset();
             setRecording(false);
             setBusy(false);
-            capture_level_ = 0.0;
+            setMetering(false);
             setStatus(QStringLiteral("Recorded %1 frames to %2 (%3 dropped, %4 silence-filled)")
                           .arg(frames)
                           .arg(QFileInfo(output_path_).fileName())
                           .arg(stats.frames_dropped)
                           .arg(stats.frames_silence_filled));
             emit recordedSecondsChanged();
+            publishLevels(totals);
             emit encodeFinished(true, status());
         });
     });
@@ -338,6 +456,7 @@ void EncoderController::loadSourceFile(const QUrl& url) {
         source_ready_ = false;
         source_path_ = path;
         source_info_.clear();
+        clearLayout();
         emit sourceChanged();
         setStatus(QStringLiteral("Could not read %1: %2")
                       .arg(QFileInfo(path).fileName(),
@@ -351,24 +470,44 @@ void EncoderController::loadSourceFile(const QUrl& url) {
     const auto rate = wav->sample_rate;
     const double seconds =
         rate > 0 ? static_cast<double>(wav->frame_count()) / static_cast<double>(rate) : 0.0;
+    const auto layout = ac3::io::ac3_layout_for(channels);
 
     QString problem;
-    if (channels != 2) {
-        problem = QStringLiteral("needs 2 channels (this file has %1)").arg(channels);
+    if (!layout) {
+        problem = QStringLiteral("AC-3 has no coding mode for %1 channels (1 to 6 are "
+                                 "supported)")
+                      .arg(channels);
     } else if (!to_sample_rate(rate)) {
         problem = QStringLiteral("sample rate %1 Hz is not legal for AC-3 (need 32, 44.1 or 48 kHz)")
                       .arg(rate);
     }
 
-    source_ = std::make_unique<Source>(Source{std::move(*wav)});
-    source_path_ = path;
-    source_ready_ = problem.isEmpty();
-    source_info_ = QStringLiteral("%1 Hz · %2 channel%3 · %4:%5")
+    if (!layout) {
+        clearLayout();
+    } else {
+        setLayout(layout->acmod, layout->lfe);
+        setMetering(false);
+        // What the file actually holds, shown before a single frame is
+        // encoded: the meters answer "what is in here?" as well as "what is
+        // going out?".
+        ac3::analysis::LevelMeter meter{layout->acmod, layout->lfe, rate};
+        std::vector<std::span<const float>> views(layout->wav_index.size());
+        for (std::size_t ch = 0; ch < views.size(); ++ch) {
+            views[ch] = wav->channels[layout->wav_index[ch]];
+        }
+        meter.process(views);
+        publishSummary(meter);
+    }
+
+    source_info_ = QStringLiteral("%1 Hz · %2 · %3:%4")
                        .arg(rate)
-                       .arg(channels)
-                       .arg(channels == 1 ? QString() : QStringLiteral("s"))
+                       .arg(layout ? layout_name_ : QStringLiteral("%1 channels").arg(channels))
                        .arg(static_cast<int>(seconds) / 60)
                        .arg(static_cast<int>(seconds) % 60, 2, 10, QLatin1Char('0'));
+    source_ = std::make_unique<Source>(
+        Source{std::move(*wav), layout ? *layout : ac3::io::Ac3Layout{}});
+    source_path_ = path;
+    source_ready_ = problem.isEmpty();
     emit sourceChanged();
 
     setStatus(source_ready_ ? QStringLiteral("Ready to encode %1.").arg(QFileInfo(path).fileName())
@@ -400,50 +539,74 @@ void EncoderController::encodeTo(const QUrl& url) {
     setProgress(0.0);
     setStatus(QStringLiteral("Encoding…"));
 
-    const auto rate = *to_sample_rate(source_->wav.sample_rate);
+    const auto layout = source_->layout;
+    const auto sample_rate = source_->wav.sample_rate;
+    const auto rate = *to_sample_rate(sample_rate);
     const int bitrate = bitrate_kbps_;
-    // The WAV payload is copied into the worker so the GUI thread stays free
-    // to swap the loaded source while an encode runs.
-    auto left = source_->wav.channels[0];
-    auto right = source_->wav.channels[1];
+    // The WAV payload is copied into the worker, already permuted into A/52
+    // channel order, so the GUI thread stays free to swap the loaded source
+    // while an encode runs.
+    std::vector<std::vector<float>> planes;
+    planes.reserve(layout.wav_index.size());
+    for (const auto wav_channel : layout.wav_index) {
+        planes.push_back(source_->wav.channels[wav_channel]);
+    }
 
-    std::ignore = QtConcurrent::run([this, path, rate, bitrate, left = std::move(left),
-                                     right = std::move(right)]() mutable {
+    setLayout(layout.acmod, layout.lfe);
+    setMetering(true);
+
+    std::ignore = QtConcurrent::run([this, path, rate, bitrate, layout, sample_rate,
+                                     planes = std::move(planes)]() mutable {
         ac3::FrameEncoder encoder{{.sample_rate = rate,
-                                   .bitrate_kbps = static_cast<std::uint32_t>(bitrate)}};
+                                   .bitrate_kbps = static_cast<std::uint32_t>(bitrate),
+                                   .acmod = layout.acmod,
+                                   .lfe = layout.lfe}};
+        ac3::analysis::LevelMeter meter{layout.acmod, layout.lfe, sample_rate};
         std::ofstream out{path.toStdString(), std::ios::binary};
         if (!out) {
             QMetaObject::invokeMethod(this, [this] {
                 setBusy(false);
+                setMetering(false);
                 setStatus(QStringLiteral("Could not open the output file for writing."));
                 emit encodeFinished(false, status());
             });
             return;
         }
 
-        const std::size_t total = left.size();
-        std::vector<std::vector<float>> block(2, std::vector<float>(ac3::kSamplesPerFrame));
-        std::vector<std::span<const float>> views(2);
+        const std::size_t nchans = planes.size();
+        const std::size_t total = planes.front().size();
+        std::vector<std::vector<float>> block(nchans,
+                                              std::vector<float>(ac3::kSamplesPerFrame));
+        std::vector<std::span<const float>> views(nchans);
+        std::vector<std::span<const float>> metered(nchans);
         std::size_t frames = 0;
         std::uint64_t bytes = 0;
         bool cancelled = false;
+        auto published_at = std::chrono::steady_clock::now() - kPublishInterval;
 
         for (std::size_t start = 0; start < total; start += ac3::kSamplesPerFrame) {
             if (cancel_requested_.load(std::memory_order_relaxed)) {
                 cancelled = true;
                 break;
             }
-            for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
-                const std::size_t at = start + static_cast<std::size_t>(i);
-                block[0][static_cast<std::size_t>(i)] = at < total ? left[at] : 0.0f;
-                block[1][static_cast<std::size_t>(i)] = at < total ? right[at] : 0.0f;
+            // The tail frame is zero-padded to a full 1536 samples; the meter
+            // sees only the real ones, so padding cannot pull the RMS down.
+            const auto valid = std::min<std::size_t>(ac3::kSamplesPerFrame, total - start);
+            for (std::size_t ch = 0; ch < nchans; ++ch) {
+                for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+                    const std::size_t at = start + static_cast<std::size_t>(i);
+                    block[ch][static_cast<std::size_t>(i)] = at < total ? planes[ch][at] : 0.0f;
+                }
+                views[ch] = block[ch];
+                metered[ch] = std::span{block[ch]}.first(valid);
             }
-            views[0] = block[0];
-            views[1] = block[1];
+            meter.process(metered);
+
             const auto frame = encoder.encode_frame(views);
             if (!frame) {
                 QMetaObject::invokeMethod(this, [this] {
                     setBusy(false);
+                    setMetering(false);
                     setStatus(QStringLiteral("Encoder rejected the settings (illegal bitrate)."));
                     emit encodeFinished(false, status());
                 });
@@ -456,14 +619,39 @@ void EncoderController::encodeTo(const QUrl& url) {
 
             const double done = static_cast<double>(start + ac3::kSamplesPerFrame) /
                                 static_cast<double>(total);
-            QMetaObject::invokeMethod(this,
-                                      [this, done] { setProgress(std::min(done, 1.0)); });
+            const auto now = std::chrono::steady_clock::now();
+            if (now - published_at >= kPublishInterval) {
+                published_at = now;
+                std::vector<ac3::analysis::ChannelLevel> snapshot(meter.levels().begin(),
+                                                                  meter.levels().end());
+                QMetaObject::invokeMethod(
+                    this, [this, done, snapshot = std::move(snapshot)] {
+                        setProgress(std::min(done, 1.0));
+                        publishLevels(snapshot);
+                    });
+            } else {
+                QMetaObject::invokeMethod(this,
+                                          [this, done] { setProgress(std::min(done, 1.0)); });
+            }
         }
         out.close();
 
-        QMetaObject::invokeMethod(this, [this, frames, bytes, cancelled] {
+        std::vector<ac3::analysis::ChannelLevel> totals(
+            static_cast<std::size_t>(meter.channel_count()));
+        for (std::size_t ch = 0; ch < totals.size(); ++ch) {
+            const auto& stats = meter.summary()[ch];
+            totals[ch].peak_db = stats.peak_db();
+            totals[ch].hold_db = stats.peak_db();
+            totals[ch].rms_db = stats.rms_db();
+            totals[ch].clipped = stats.clipped_samples > 0;
+        }
+
+        QMetaObject::invokeMethod(this, [this, frames, bytes, cancelled,
+                                         totals = std::move(totals)] {
             setBusy(false);
+            setMetering(false);
             setProgress(cancelled ? 0.0 : 1.0);
+            publishLevels(totals);
             if (cancelled) {
                 setStatus(QStringLiteral("Encode cancelled."));
             } else {

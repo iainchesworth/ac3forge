@@ -101,6 +101,21 @@ alternation disappears), and exponent strategies for all six blocks hoisted into
 frame-level `audfrm`. Currently silence-only — carrying real audio means routing the
 existing encoder's coefficients through this container.
 
+**You can see what every channel is carrying.** `ac3/analysis/` meters audio the way a
+console does — peak with an instant attack and a 20 dB/s fallback, a 1.2 s hold marker, RMS
+over a 300 ms integration — plus exact whole-signal statistics and the Gerzon energy vector
+over the BS.775 ring. Both front ends draw from it, including where a level sits on the bar,
+so a printed figure and a moving needle can never disagree. `ac3cli levels` reports any WAV
+or AC-3 file channel by channel; `encode`, `decode`, `sine` and `orbit` print the same table
+when they finish, and `record` meters live in the terminal. The GUI grows a Channel levels
+card that relabels itself for the active layout (1/0 through 3/2, with or without LFE, named
+per A/52 Table 5.8) beside a soundfield view showing the speaker ring and where the energy
+sits. Feeding those meters meant widening both front ends to 1–6 channel WAV input, with the
+WAV↔A/52 channel permutation now in the library rather than copied into each caller.
+`ac3gui --smoke` and `--smoke-record` drive the file and live-capture paths headlessly and
+report what the meters did, so "the display is wired to the audio" is a checkable claim
+rather than a screenshot.
+
 See [docs/RESEARCH.md](docs/RESEARCH.md) for the research summary, architecture, and
 roadmap.
 
@@ -140,7 +155,7 @@ Configure with `-DAC3FORGE_BUILD_GUI=OFF` to build without Qt.
 ```
 cmake/          FindQt6.cmake (prebuilt-Qt discovery), CompilerWarnings.cmake
 src/lib/        ac3::forge — the whole codec, GUI-free
-  include/ac3/  public headers: core/ encoder/ decoder/ spatial/ sinks/ io/
+  include/ac3/  public headers: core/ encoder/ decoder/ spatial/ analysis/ sinks/ io/
   src/          implementation
 src/cli/        ac3cli — command-line front end
 src/gui/        ac3gui — Qt6 Quick front end (QML module "Ac3Forge")

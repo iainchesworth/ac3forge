@@ -7,6 +7,7 @@ find_package(Catch2 3 CONFIG REQUIRED)
 
 add_executable(ac3tests
     msvc_crt_report.cpp
+    test_analysis.cpp
     test_bitalloc.cpp
     test_bitwriter.cpp
     test_coupling.cpp
