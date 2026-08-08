@@ -1,7 +1,8 @@
 #include "ac3/sinks/passthrough.hpp"
 
-// The Windows passthrough backend. CMake selects this translation unit on
-// Windows and passthrough_stub.cpp everywhere else, so there is no #ifdef.
+// The Windows passthrough backend. CMake compiles this directory's
+// passthrough.cpp on Windows and another platform directory's everywhere
+// else, so there is no #ifdef - the file's path is what says "Windows".
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN

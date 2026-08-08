@@ -29,6 +29,7 @@
 #include "ac3/meta/loudness.hpp"
 #include "ac3/meta/mixing.hpp"
 #include "ac3/oba/atmos.hpp"
+#include "ac3/platform/audio_backend.hpp"
 #include "ac3/sinks/iec61937.hpp"
 #include "ac3/sinks/passthrough.hpp"
 #include "ac3/spatial/spatial.hpp"
@@ -1605,7 +1606,16 @@ int run_play(std::string_view in_path, int device_index) {
     const auto rate = sample_rate_hz(static_cast<ac3::SampleRate>(fscod));
 
     const auto devices = ac3::sinks::enumerate_render_devices(rate);
-    if (!devices || devices->empty()) {
+    // Enumeration failing and enumeration finding nothing are different
+    // answers: the first is the backend saying it could not look, the second
+    // is it looking and seeing no endpoints. Reporting both as "none
+    // available" sent people hunting for a missing sound device when the real
+    // answer was a COM failure.
+    if (!devices) {
+        std::println(stderr, "error: {}", ac3::sinks::describe(devices.error()));
+        return 1;
+    }
+    if (devices->empty()) {
         std::println(stderr, "error: no render endpoints available");
         return 1;
     }
@@ -1722,68 +1732,100 @@ struct Args {
     }
 };
 
+// What a command needs from the machine's audio hardware. Four commands touch
+// it; every other command is file I/O and runs anywhere ac3forge compiles.
+//
+// This is a column in the table rather than a check inside each handler for
+// the same reason min_args is: stated once, beside the command it describes,
+// and read by both dispatch and the usage text so the two cannot disagree
+// about which commands exist here.
+enum class Needs { kNothing, kCapture, kPassthrough };
+
+// The unmet requirement, or nullptr when the platform can satisfy it.
+//
+// Note what this is not: an OS test. main.cpp never asks whether it is on
+// Windows - it asks the one translation unit CMake compiled from
+// src/lib/src/platform/<os>/ what that platform can do, and prints the answer
+// that unit supplied. The day a Unix capture backend lands, capture flips to
+// available in that file alone and 'devices' and 'record' start working here
+// with no change to this file.
+const ac3::platform::Capability* unmet(Needs needs) {
+    const auto& backend = ac3::platform::audio_backend();
+    switch (needs) {
+        case Needs::kNothing: return nullptr;
+        case Needs::kCapture: return backend.capture.available ? nullptr : &backend.capture;
+        case Needs::kPassthrough:
+            return backend.passthrough.available ? nullptr : &backend.passthrough;
+    }
+    return nullptr;
+}
+
 struct Command {
     std::string_view name;
     std::size_t min_args;  // positional count INCLUDING the command itself
     std::string_view spec;
     std::string_view note;
+    Needs needs;
     int (*run)(const Args&);
 };
 
 constexpr std::array<Command, 17> kCommands{{
-    {"silence", 2, "<out.ac3> [seconds] [bitrate_kbps]", "",
+    {"silence", 2, "<out.ac3> [seconds] [bitrate_kbps]", "", Needs::kNothing,
      [](const Args& x) { return run_silence(x.str(1), x.u32(2, 5), x.u32(3, 192)); }},
     {"sine", 2, "<out.ac3> [seconds] [bitrate_kbps] [freq_hz] [amp_pct] [layout]", "",
+     Needs::kNothing,
      [](const Args& x) {
          return run_sine(x.str(1), x.u32(2, 5), x.u32(3, 192), x.u32(4, 1000), x.u32(5, 50),
                          x.str(6, "stereo"), x.couple, x.meta);
      }},
-    {"orbit", 2, "<out.ac3> [seconds] [bitrate_kbps] [orbit_seconds]", "",
+    {"orbit", 2, "<out.ac3> [seconds] [bitrate_kbps] [orbit_seconds]", "", Needs::kNothing,
      [](const Args& x) {
          return run_orbit(x.str(1), x.u32(2, 8), x.u32(3, 448), x.u32(4, 4), x.meta);
      }},
     {"atmos", 2, "<out.ec3> [seconds] [bitrate_kbps] [objects] [orbit_seconds]", "",
+     Needs::kNothing,
      [](const Args& x) {
          return run_atmos(x.str(1), x.u32(2, 8), x.u32(3, 448), x.u32(4, 4), x.u32(5, 6));
      }},
-    {"record", 2, "<out.ac3> [seconds] [bitrate_kbps] [device_index]", "",
+    {"record", 2, "<out.ac3> [seconds] [bitrate_kbps] [device_index]", "", Needs::kCapture,
      [](const Args& x) {
          return run_record(x.str(1), x.u32(2, 5), x.u32(3, 192), x.i32(4, 0));
      }},
-    {"encode", 3, "<in.wav> <out.ac3> [bitrate_kbps] [couple]", "",
+    {"encode", 3, "<in.wav> <out.ac3> [bitrate_kbps] [couple]", "", Needs::kNothing,
      [](const Args& x) {
          return run_encode(x.str(1), x.str(2), x.u32(3, 192), x.couple, x.meta);
      }},
-    {"eac3-silence", 2, "<out.ec3> [seconds] [bitrate_kbps] [layout]", "",
+    {"eac3-silence", 2, "<out.ec3> [seconds] [bitrate_kbps] [layout]", "", Needs::kNothing,
      [](const Args& x) {
          return run_eac3_silence(x.str(1), x.u32(2, 5), x.u32(3, 192), x.str(4, "stereo"),
                                  x.meta);
      }},
     {"eac3-sine", 2,
-     "<out.ec3> [seconds] [bitrate_kbps] [freq_hz] [amp_pct] [layout]", "",
+     "<out.ec3> [seconds] [bitrate_kbps] [freq_hz] [amp_pct] [layout]", "", Needs::kNothing,
      [](const Args& x) {
          return run_eac3_sine(x.str(1), x.u32(2, 5), x.u32(3, 192), x.u32(4, 1000),
                               x.u32(5, 50), x.str(6, "stereo"), x.meta);
      }},
-    {"eac3-encode", 3, "<in.wav> <out.ec3> [bitrate_kbps] [tools]", "",
+    {"eac3-encode", 3, "<in.wav> <out.ec3> [bitrate_kbps] [tools]", "", Needs::kNothing,
      [](const Args& x) {
          return run_eac3_encode(x.str(1), x.str(2), x.u32(3, 192), x.str(4, "none"));
      }},
-    {"decode", 3, "<in.ac3|in.ec3> <out.wav>", "AC-3 or E-AC-3; bsid decides",
+    {"decode", 3, "<in.ac3|in.ec3> <out.wav>", "AC-3 or E-AC-3; bsid decides", Needs::kNothing,
      [](const Args& x) { return run_decode(x.str(1), x.str(2), x.meta); }},
-    {"levels", 2, "<in.wav|in.ac3>", "per-channel peak/RMS report",
+    {"levels", 2, "<in.wav|in.ac3>", "per-channel peak/RMS report", Needs::kNothing,
      [](const Args& x) { return run_levels(x.str(1)); }},
-    {"loudness", 2, "<in.wav>", "BS.1770-4 loudness -> dialnorm",
+    {"loudness", 2, "<in.wav>", "BS.1770-4 loudness -> dialnorm", Needs::kNothing,
      [](const Args& x) { return run_loudness(x.str(1)); }},
-    {"spdif", 3, "<in.ac3> <out.wav>", "IEC 61937 wrap as playable PCM16 WAV",
+    {"spdif", 3, "<in.ac3> <out.wav>", "IEC 61937 wrap as playable PCM16 WAV", Needs::kNothing,
      [](const Args& x) { return run_spdif(x.str(1), x.str(2)); }},
-    {"mkv", 3, "<in.ac3|in.ec3> <out.mkv>", "wrap as a playable Matroska file",
+    {"mkv", 3, "<in.ac3|in.ec3> <out.mkv>", "wrap as a playable Matroska file", Needs::kNothing,
      [](const Args& x) { return run_mkv(x.str(1), x.str(2)); }},
-    {"devices", 1, "", "input and loopback capture endpoints",
+    {"devices", 1, "", "input and loopback capture endpoints", Needs::kCapture,
      [](const Args&) { return run_devices(); }},
-    {"outputs", 1, "", "render endpoints + AC-3 passthrough support",
+    {"outputs", 1, "", "render endpoints + AC-3 passthrough support", Needs::kPassthrough,
      [](const Args&) { return run_outputs(); }},
     {"play", 2, "<in.ac3> [device_index]", "exclusive-mode IEC 61937 passthrough",
+     Needs::kPassthrough,
      // -1, not 0: run_play reads a negative index as "the default endpoint",
      // where 0 names the first one 'outputs' lists and demands passthrough of it.
      [](const Args& x) { return run_play(x.str(1), x.i32(2, -1)); }},
@@ -1795,10 +1837,28 @@ void print_usage() {
     std::println("Usage:");
     for (const auto& c : kCommands) {
         std::string line = std::format("  ac3cli {:<13}{}", c.name, c.spec);
-        if (!c.note.empty()) {
-            line = std::format("{:<62}({})", line, c.note);
+        // A command the platform cannot run is listed, not hidden: hiding it
+        // makes 'ac3cli play' answer "unknown command", which is a lie about
+        // a command that exists and would work elsewhere. The note slot says
+        // so instead, and the reasons follow once below rather than being
+        // repeated on every affected row.
+        const std::string_view note = unmet(c.needs) != nullptr ? "UNAVAILABLE HERE" : c.note;
+        if (!note.empty()) {
+            line = std::format("{:<62}({})", line, note);
         }
         std::println("{}", line);
+    }
+    const auto& backend = ac3::platform::audio_backend();
+    if (!backend.capture.available || !backend.passthrough.available) {
+        std::println("");
+        if (!backend.capture.available) {
+            std::println("UNAVAILABLE HERE: {}.", backend.capture.reason);
+        }
+        if (!backend.passthrough.available) {
+            std::println("UNAVAILABLE HERE: {}.", backend.passthrough.reason);
+        }
+        std::println("Everything else is file I/O and behaves identically on every platform;");
+        std::println("'spdif' in particular reaches a receiver without any audio backend at all.");
     }
     std::println("");
     std::println("");
@@ -1864,6 +1924,22 @@ int main(int argc, char** argv) {
         }
         if (args.size() < c.min_args) {
             std::println(stderr, "error: {} needs {}", c.name, c.spec);
+            return 1;
+        }
+        // Refuse before the handler runs, so a command that cannot work here
+        // says why once, in the platform's own words, instead of failing
+        // partway through with whatever error code the no-backend stub
+        // happened to return. Nothing silently does nothing.
+        if (const auto* missing = unmet(c.needs)) {
+            std::println(stderr, "error: '{}' is unavailable on this platform: {}", c.name,
+                         missing->reason);
+            if (c.needs == Needs::kPassthrough) {
+                // The one live-audio capability with a portable substitute:
+                // same bursts, written to a file instead of an endpoint.
+                std::println(stderr,
+                             "  'ac3cli spdif <in.ac3> <out.wav>' wraps the same IEC 61937 "
+                             "bursts into a WAV that any player will pass through untouched.");
+            }
             return 1;
         }
         return c.run(Args{args, meta, couple_flag});

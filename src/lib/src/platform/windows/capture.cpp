@@ -1,7 +1,8 @@
 #include "ac3/capture/capture.hpp"
 
-// The Windows capture backend. CMake selects this translation unit on
-// Windows and capture_stub.cpp everywhere else, so there is no #ifdef here.
+// The Windows capture backend. CMake compiles this directory's capture.cpp on
+// Windows and another platform directory's everywhere else, so there is no
+// #ifdef here - the file's path is what says "Windows".
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
