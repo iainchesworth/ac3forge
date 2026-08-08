@@ -3,9 +3,20 @@
 Synthesizes stereo program material (tones with vibrato, a sweep, filtered
 noise, correlated near-mono content for rematrixing, tone bursts), encodes it
 with both encoders, decodes both with FFmpeg (the neutral referee), aligns by
-cross-correlation, and reports SNR vs the original per segment and overall.
+cross-correlation, and reports SNR vs the original.
 
-Usage (repo root, after building):  python tools/quality_race.py
+Races (repo root, after building):
+  python tools/quality_race.py ac3      ours vs ffmpeg           (the default)
+  python tools/quality_race.py couple   ours with vs without coupling
+
+The `couple` race scores the two things coupling is supposed to trade off
+against each other, because a single overall SNR hides both. Below the
+coupling frequency it reports SNR: those coefficients are still coded
+normally, so coupling should BUY precision there and a drop means the shared
+channel is eating the bits it was meant to free. Above it it reports level
+error instead of SNR, because a coupled decoder reconstructs that band's
+envelope and not its waveform - and level, per short window, is exactly what
+a coupling scale that changes from block to block gets wrong.
 """
 
 import struct
@@ -20,6 +31,8 @@ BUILD = REPO / "build"
 CLI = BUILD / "dev" / "bin" / "ac3cli.exe"
 RATE = 48000
 SEG = 2 * RATE  # 2 s per segment
+# Bin 109 of the 256-bin MDCT, which is where cplbegf 6 starts coupling.
+CPL_HZ = 109 * (RATE / 512.0)
 
 
 def make_material():
@@ -90,8 +103,8 @@ def run(cmd):
         raise SystemExit(f"command failed: {' '.join(map(str, cmd))}\n{result.stderr}")
 
 
-def aligned_snr(original, decoded):
-    """Align by cross-correlation on a probe window, SNR over the overlap."""
+def align(original, decoded):
+    """Align by cross-correlation on a probe window; return the overlap."""
     probe = original[RATE:RATE + 32768, 0]
     window = decoded[: RATE + 65536, 0]
     corr = np.correlate(window, probe, mode="valid")
@@ -99,38 +112,119 @@ def aligned_snr(original, decoded):
     n = min(len(original), len(decoded) - lag) - 2 * RATE
     o = original[RATE:RATE + n - RATE]
     d = decoded[RATE + lag:RATE + lag + len(o)]
+    return o, d, lag
+
+
+def snr_db(o, d):
     noise = d - o
-    return 10 * np.log10(np.sum(o**2) / max(np.sum(noise**2), 1e-30)), lag
+    return 10 * np.log10(np.sum(o**2) / max(np.sum(noise**2), 1e-30))
 
 
-def main():
-    BUILD.mkdir(exist_ok=True)
-    left, right = make_material()
-    source = BUILD / "race_src.wav"
-    write_wav_f32(source, left, right)
-    original = read_wav_f32(source)
+def aligned_snr(original, decoded):
+    o, d, lag = align(original, decoded)
+    return snr_db(o, d), lag
 
+
+def band_measures(o, d, size=2048):
+    """SNR below the coupling frequency, level error above it.
+
+    Above it a coupled decoder restores the band's envelope rather than its
+    waveform, so a waveform SNR up there measures the tool's premise, not its
+    correctness. The level per short window is the thing that must survive -
+    and the thing a coupling coordinate carrying the wrong block's scale
+    destroys, in exactly the three blocks of six that reuse a coordinate.
+    """
+    hop = size // 2
+    win = np.hanning(size)
+    freqs = np.fft.rfftfreq(size, 1.0 / RATE)
+    low = freqs < CPL_HZ
+    high = ~low
+    low_signal = 0.0
+    low_noise = 0.0
+    pairs = []
+    for start in range(0, len(o) - size, hop):
+        for ch in range(o.shape[1]):
+            spec_o = np.fft.rfft(o[start:start + size, ch] * win)
+            spec_d = np.fft.rfft(d[start:start + size, ch] * win)
+            low_signal += float(np.sum(np.abs(spec_o[low]) ** 2))
+            low_noise += float(np.sum(np.abs(spec_d[low] - spec_o[low]) ** 2))
+            pairs.append((float(np.sum(np.abs(spec_o[high]) ** 2)),
+                          float(np.sum(np.abs(spec_d[high]) ** 2))))
+    # Score only the windows that carry real high-frequency content. A window
+    # 40 dB below the loudest one is inaudible up there, and counting it would
+    # drown the measurement in the near-silence between events.
+    loudest = max((p[0] for p in pairs), default=0.0)
+    errors = [abs(10 * np.log10(max(got, 1e-30) / want))
+              for want, got in pairs if want > loudest * 1e-4]
+    return (10 * np.log10(low_signal / max(low_noise, 1e-30)),
+            float(np.mean(errors)) if errors else float("nan"))
+
+
+def encode_and_decode(source, tag, kbps, couple=False):
+    """Our encoder, then FFmpeg as the neutral decoder."""
+    ac3 = BUILD / f"race_{tag}_{kbps}.ac3"
+    wav = BUILD / f"race_{tag}_{kbps}.wav"
+    cmd = [CLI, "encode", source, ac3, str(kbps)]
+    if couple:
+        cmd.append("couple")
+    run(cmd)
+    run(["ffmpeg", "-v", "error", "-y",
+         "-err_detect", "crccheck+bitstream+buffer+explode",
+         "-i", ac3, "-c:a", "pcm_f32le", wav])
+    return read_wav_f32(wav)
+
+
+def race_ffmpeg(source, original):
     print(f"{'kbps':>5} | {'ours dB':>8} | {'ffmpeg dB':>9} | {'gap':>6}")
     print("-" * 38)
     worst_gap = -1e9
     for kbps in (192, 256, 320, 448):
-        ours_ac3 = BUILD / f"race_ours_{kbps}.ac3"
         ff_ac3 = BUILD / f"race_ff_{kbps}.ac3"
-        run([CLI, "encode", source, ours_ac3, str(kbps)])
+        ff_wav = BUILD / f"race_ff_{kbps}.wav"
         run(["ffmpeg", "-v", "error", "-y", "-i", source, "-c:a", "ac3",
              "-b:a", f"{kbps}k", ff_ac3])
-        ours_wav = BUILD / f"race_ours_{kbps}.wav"
-        ff_wav = BUILD / f"race_ff_{kbps}.wav"
-        run(["ffmpeg", "-v", "error", "-y",
-             "-err_detect", "crccheck+bitstream+buffer+explode",
-             "-i", ours_ac3, "-c:a", "pcm_f32le", ours_wav])
         run(["ffmpeg", "-v", "error", "-y", "-i", ff_ac3, "-c:a", "pcm_f32le", ff_wav])
-        ours_snr, _ = aligned_snr(original, read_wav_f32(ours_wav))
+        ours_snr, _ = aligned_snr(original, encode_and_decode(source, "ours", kbps))
         ff_snr, _ = aligned_snr(original, read_wav_f32(ff_wav))
         gap = ff_snr - ours_snr
         worst_gap = max(worst_gap, gap)
         print(f"{kbps:>5} | {ours_snr:>8.2f} | {ff_snr:>9.2f} | {gap:>+6.2f}")
     print(f"\nworst gap vs ffmpeg: {worst_gap:+.2f} dB (positive = ffmpeg better)")
+
+
+def race_coupling(source, original):
+    print(f"{'kbps':>5} | {'mode':>6} | {'all dB':>7} | "
+          f"{'<10.2k dB':>9} | {'>10.2k err dB':>13}")
+    print("-" * 56)
+    for kbps in (96, 128, 192, 256):
+        scores = {}
+        for mode, couple in (("plain", False), ("couple", True)):
+            decoded = encode_and_decode(source, f"cpl_{mode}", kbps, couple)
+            o, d, _ = align(original, decoded)
+            low_snr, high_err = band_measures(o, d)
+            scores[mode] = (snr_db(o, d), low_snr, high_err)
+            print(f"{kbps:>5} | {mode:>6} | {scores[mode][0]:>7.2f} | "
+                  f"{low_snr:>9.2f} | {high_err:>13.2f}")
+        low_gain = scores["couple"][1] - scores["plain"][1]
+        print(f"{'':>5} | {'delta':>6} | {'':>7} | {low_gain:>+9.2f} | "
+              f"{scores['couple'][2] - scores['plain'][2]:>+13.2f}")
+    print("\nBaseband delta positive = coupling bought precision where it should.")
+    print("Coupled-band error is |level error|, so lower is better either way.")
+
+
+def main():
+    race = sys.argv[1] if len(sys.argv) > 1 else "ac3"
+    if race not in ("ac3", "couple"):
+        raise SystemExit(f"unknown race {race!r}; expected 'ac3' or 'couple'")
+    BUILD.mkdir(exist_ok=True)
+    left, right = make_material()
+    source = BUILD / "race_src.wav"
+    write_wav_f32(source, left, right)
+    original = read_wav_f32(source)
+    if race == "ac3":
+        race_ffmpeg(source, original)
+    else:
+        race_coupling(source, original)
 
 
 if __name__ == "__main__":

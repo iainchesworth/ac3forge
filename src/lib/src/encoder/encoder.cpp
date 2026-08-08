@@ -196,9 +196,9 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
 
     // --- 2. Coupling: form the shared channel and its coordinates ----------
     // Coordinates are sent in blocks 0, 2 and 4 and reused in between
-    // (§8.2.4.1); the coupling channel itself is the plain average the spec's
-    // basic encoder describes, scaled by 1/8 so it cannot overflow, which the
-    // decoder undoes with its matching x8.
+    // (§8.2.4.1); the coupling channel itself is the plain average of the
+    // coupled channels the spec's basic encoder describes (§7.4.1), with the
+    // decoder's x8 living entirely in the coordinates.
     std::array<bool, kBlocksPerFrame> send_coords{};
     std::vector<int> master(static_cast<std::size_t>(kBlocksPerFrame) *
                             static_cast<std::size_t>(std::max(nfchans, 1)));
@@ -218,47 +218,53 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
 
     if (cplinu) {
         std::vector<double> values(static_cast<std::size_t>(ncplsubnd));
+
+        // The decoder computes
+        //     channel = coupling * coordinate * 8,
+        // so storing coupling = sum / K makes the required coordinate r*K/8,
+        // where r = sqrt(E_ch / E_sum) is the band's magnitude ratio. K is
+        // never transmitted - it is folded into the coordinates - which makes
+        // it look like a free parameter. It is not, in two separate ways, and
+        // this encoder measured both of them the hard way.
+        //
+        // Scaling the shared channel UP - normalising each band, or the whole
+        // coupled region, to unit peak - is tempting because it makes every
+        // coordinate small and so unclampable. But §7.2.2 reads psd
+        // ABSOLUTELY, against a fixed hearing threshold: a coupling channel
+        // normalised to full scale is simply the loudest thing in the frame,
+        // and the allocator buys it bits to match. Measured at 128 kbit/s
+        // stereo, that handed the coupling channel 291 of a block's 420
+        // mantissa bits - more per bin than the baseband it was supposed to
+        // be subsidising - and dropped the frame's coarse SNR offset from 27
+        // to 11. Coupling made the encoder run out of bits SOONER than not
+        // coupling at all, while still producing frames that pass every size
+        // and CRC check.
+        //
+        // K must also be constant across the whole frame, not per block.
+        // Coordinates go out in blocks 0, 2 and 4 and are reused in 1, 3 and
+        // 5, so a K carrying anything block-specific reaches the decoder
+        // multiplied by the PREVIOUS block's value: the reusing blocks come
+        // back wrong by the ratio of the two blocks' scales.
+        //
+        // §7.4.1's own answer satisfies both: the coupling channel is the
+        // average of the coupled channels, K = nfchans, so the shared channel
+        // sits at the natural level of one real channel - which is the level
+        // the allocator's model expects - and every block shares one scale.
+        const double scale = static_cast<double>(nfchans);
+
         for (int block = 0; block < kBlocksPerFrame; ++block) {
             send_coords[static_cast<std::size_t>(block)] = block % 2 == 0;
 
             auto& cpl = coeffs_at(cpl_stream, block);
             cpl.fill(0.0);
-
-            // Per-band normalisation. The decoder computes
-            //     channel = coupling * coordinate * 8,
-            // so storing coupling = sum / K makes the required coordinate
-            // r*K/8, where r = sqrt(E_ch / E_sum) is the magnitude ratio.
-            //
-            // A fixed K = 8 (the "divide by 8" of §8.2.5.1) makes the
-            // coordinate equal r, which caps it at the format's 0.96875 and
-            // silently clamps every band where a channel is LOUDER than the
-            // sum - which is exactly what partial cancellation between
-            // channels produces, and is the common case for anti-correlated
-            // stereo. Choosing K = max|sum| over the band instead keeps the
-            // stored coefficients inside [-1, 1] (so the 25-bit fixed-point
-            // conversion never clips) while provably keeping the coordinate
-            // representable: max|sum| <= sqrt(E_sum) for a band, so
-            //     r*K/8 <= sqrt(E_ch)/8 <= sqrt(bins)/8 < 0.96875.
-            // K needs no signalling - it is folded into the coordinates.
-            std::vector<double> band_scale(static_cast<std::size_t>(ncplsubnd), 0.0);
-            for (int bnd = 0; bnd < ncplsubnd; ++bnd) {
-                const int low = cplstrtmant + bnd * coupling::kBinsPerSubBand;
-                const int high = std::min(low + coupling::kBinsPerSubBand, cplendmant);
-                double peak = 0.0;
-                for (int bin = low; bin < high; ++bin) {
-                    double sum = 0.0;
-                    for (int ch = 0; ch < nfchans; ++ch) {
-                        sum += coeffs_at(ch, block)[static_cast<std::size_t>(bin)];
-                    }
-                    cpl[static_cast<std::size_t>(bin)] = sum;  // unscaled for now
-                    peak = std::max(peak, std::abs(sum));
+            // The raw sum for now; the division by `scale` comes after the
+            // coordinates, which are measured against that same raw sum.
+            for (int bin = cplstrtmant; bin < cplendmant; ++bin) {
+                double sum = 0.0;
+                for (int ch = 0; ch < nfchans; ++ch) {
+                    sum += coeffs_at(ch, block)[static_cast<std::size_t>(bin)];
                 }
-                band_scale[static_cast<std::size_t>(bnd)] = peak;
-                if (peak > 0.0) {
-                    for (int bin = low; bin < high; ++bin) {
-                        cpl[static_cast<std::size_t>(bin)] /= peak;
-                    }
-                }
+                cpl[static_cast<std::size_t>(bin)] = sum;
             }
 
             for (int ch = 0; ch < nfchans; ++ch) {
@@ -270,17 +276,13 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                     for (int bin = low; bin < high; ++bin) {
                         const double value =
                             coeffs_at(ch, block)[static_cast<std::size_t>(bin)];
-                        // Against the RAW sum: the stored channel was divided
-                        // by the band scale, which the coordinate re-applies.
-                        const double summed = cpl[static_cast<std::size_t>(bin)] *
-                                              band_scale[static_cast<std::size_t>(bnd)];
+                        const double summed = cpl[static_cast<std::size_t>(bin)];
                         power_ch += value * value;
                         power_sum += summed * summed;
                     }
                     const double ratio =
                         power_sum > 0.0 ? std::sqrt(power_ch / power_sum) : 0.0;
-                    values[static_cast<std::size_t>(bnd)] =
-                        ratio * band_scale[static_cast<std::size_t>(bnd)] / 8.0;
+                    values[static_cast<std::size_t>(bnd)] = ratio * scale / 8.0;
                 }
                 const int chosen = coupling::choose_master(values);
                 master_at(block, ch) = chosen;
@@ -303,6 +305,9 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                         coord_at(block, ch, bnd) = coord_at(block - 1, ch, bnd);
                     }
                 }
+            }
+            for (int bin = cplstrtmant; bin < cplendmant; ++bin) {
+                cpl[static_cast<std::size_t>(bin)] /= scale;
             }
         }
     }
