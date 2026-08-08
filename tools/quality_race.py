@@ -31,8 +31,9 @@ BUILD = REPO / "build"
 CLI = BUILD / "dev" / "bin" / "ac3cli.exe"
 RATE = 48000
 SEG = 2 * RATE  # 2 s per segment
-# Bin 109 of the 256-bin MDCT, which is where cplbegf 6 starts coupling.
-CPL_HZ = 109 * (RATE / 512.0)
+# Bin 85, sub-band 4: the lowest the encoder will ever start coupling, so
+# everything below it is coded per channel whatever the rate.
+CPL_HZ = 85 * (RATE / 512.0)
 
 
 def make_material():
@@ -194,7 +195,7 @@ def race_ffmpeg(source, original):
 
 def race_coupling(source, original):
     print(f"{'kbps':>5} | {'mode':>6} | {'all dB':>7} | "
-          f"{'<10.2k dB':>9} | {'>10.2k err dB':>13}")
+          f"{'<8.0k dB':>9} | {'>8.0k err dB':>13}")
     print("-" * 56)
     for kbps in (96, 128, 192, 256):
         scores = {}

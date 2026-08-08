@@ -33,6 +33,17 @@ std::expected<std::vector<std::byte>, ac3::FrameError> encode_same(
     return encoder.encode_frame(views);
 }
 
+// The coupling geometry the material below is built for: sub-bands 6..14,
+// bins 109..216. The coupling tests pin the encoder to it rather than take
+// its bitrate-aware defaults, so that they keep testing the coupling tool
+// when those defaults move.
+constexpr int kProbeCplBegf = 6;
+constexpr int kProbeCplEndf = 12;
+constexpr int kProbeCplBands = ac3::coupling::sub_band_count(kProbeCplBegf, kProbeCplEndf);
+// The bandwidth code whose last mantissa is the last coupled bin, so an
+// uncoupled frame can be compared with a coupled one over the same spectrum.
+constexpr int kProbeChbwcod = 48;
+
 // Program-like stereo with energy right across the spectrum and a DIFFERENT
 // balance per channel. A single tone tells a working coupling implementation
 // from a broken one about as well as silence does: below the coupling
@@ -52,12 +63,11 @@ std::expected<std::vector<std::byte>, ac3::FrameError> encode_same(
 // to block while those ratios do not.
 std::vector<std::vector<float>> wideband_frame(int channels, std::uint64_t start, double gain = 1.0,
                                                double tremolo = 0.0) {
-    constexpr int kCoupledBands = 9;
     constexpr double kBinHz = 48000.0 / 512.0;
     std::vector<double> tones = {310.0, 1450.0, 5200.0, 8100.0};  // the baseband's share
     std::vector<double> tilt(tones.size(), 1.0);
-    for (int b = 0; b < kCoupledBands; ++b) {
-        tones.push_back((ac3::coupling::start_mant(6) + 12 * b + 6) * kBinHz);
+    for (int b = 0; b < kProbeCplBands; ++b) {
+        tones.push_back((ac3::coupling::start_mant(kProbeCplBegf) + 12 * b + 6) * kBinHz);
         // Real program rolls off across the coupled region, and a flat one
         // would hide the very thing coupling is judged on: what an encoder
         // does with the QUIET top bands. -2 dB a band, applied to both
@@ -116,6 +126,9 @@ std::vector<std::byte> steady_state_frame(const ac3::EncoderConfig& config, int 
 struct BlockZero {
     bool cplinu = false;
     int ncplsubnd = 0;
+    int cplstrtmant = 0;                            // 0 when not coupling
+    int cplendmant = 0;                             // 0 when not coupling
+    int chbw_endmant = 0;                           // 0 when coupling
     std::vector<int> master;                        // one per fbw channel
     std::vector<ac3::coupling::Coordinate> coords;  // [ch][bnd]
     int snroffst = 0;                               // (csnroffst << 4) | fsnroffst
@@ -143,6 +156,8 @@ BlockZero parse_block_zero(std::span<const std::byte> frame) {
         const int cplendf = static_cast<int>(r.read(4));
         cplstrtmant = ac3::coupling::start_mant(cplbegf);
         cplendmant = std::min(ac3::coupling::end_mant(cplendf), 253);
+        out.cplstrtmant = cplstrtmant;
+        out.cplendmant = cplendmant;
         out.ncplsubnd = (cplendmant - cplstrtmant) / ac3::coupling::kBinsPerSubBand;
         r.skip(static_cast<std::size_t>(out.ncplsubnd - 1));  // cplbndstrc
         for (int ch = 0; ch < kNfchans; ++ch) {
@@ -176,6 +191,7 @@ BlockZero parse_block_zero(std::span<const std::byte> frame) {
         for (int ch = 0; ch < kNfchans; ++ch) {
             endmant[static_cast<std::size_t>(ch)] = (static_cast<int>(r.read(6)) + 12) * 3 + 37;
         }
+        out.chbw_endmant = endmant[0];
     }
 
     // Exponents, same order. The coupling channel is always D15, whose group
@@ -303,25 +319,81 @@ TEST_CASE("coupling must not cost more bits than the channels it replaces", "[en
     // reads as full scale. §7.2.2 measures psd absolutely, so the allocator
     // then buys the coupling channel more bits per bin than the baseband it
     // was meant to be subsidising, and the offset collapses. On the E-AC-3
-    // side, where the same mistake was found, that was 27 coarse steps down
-    // to 11 at 128 kbit/s; here it turns a 15-step gain into an 8-step loss.
-    // The frame still decodes, and still passes every size and CRC check,
-    // which is exactly why this needs its own test.
+    // side, where the same mistake was found, csnroffst went from 27 coarse
+    // steps to 11 at 128 kbit/s; here the composite offset goes from 15 steps
+    // above the uncoupled frame to 8 below it. The frame still decodes, and
+    // still passes every size and CRC check, which is exactly why this needs
+    // its own test.
     //
-    // chbwcod 48 puts the uncoupled channels' last mantissa exactly where
-    // coupling ends (bin 216), so both frames code the same spectrum and the
-    // comparison is about the coupling tool alone. Left to the automatic
-    // bandwidth they would not agree - narrower than the coupled region at
-    // 96 kbit/s, wider at 192 - and this would be measuring bandwidth.
+    // Both frames are pinned to the same spectrum - the uncoupled one by
+    // chbwcod, the coupled one by the sub-band range that ends on the same
+    // bin - so this is about the coupling tool and not about how much
+    // bandwidth each one chose to code.
     for (const std::uint32_t kbps : {96u, 128u, 192u}) {
         CAPTURE(kbps);
-        const auto plain = steady_state_frame({.bitrate_kbps = kbps, .chbwcod = 48}, 2);
-        const auto coupled = steady_state_frame({.bitrate_kbps = kbps, .coupling = true}, 2);
+        const auto plain =
+            steady_state_frame({.bitrate_kbps = kbps, .chbwcod = kProbeChbwcod}, 2);
+        const auto coupled = steady_state_frame({.bitrate_kbps = kbps,
+                                                 .coupling = true,
+                                                 .cplbegf = kProbeCplBegf,
+                                                 .cplendf = kProbeCplEndf},
+                                                2);
         const int plain_offset = parse_block_zero(plain).snroffst;
         const int coupled_offset = parse_block_zero(coupled).snroffst;
         CAPTURE(plain_offset, coupled_offset);
         CHECK(coupled_offset >= plain_offset);
     }
+}
+
+TEST_CASE("the coupling band follows the bit rate", "[encoder][coupling]") {
+    // Neither end of the coupled region is a constant. The START rises with
+    // the per-channel rate, because a channel that can afford its own high
+    // band should keep it. The END has to be the bandwidth the frame would
+    // have coded anyway: with every fbw channel coupled, chbwcod is not
+    // transmitted at all, so cplendf IS the bandwidth, and a fixed one would
+    // make coupling a bandwidth decision as well as a cost one. The old fixed
+    // pair (6 and 12) coded 20.3 kHz at every rate - 4.5 kHz more than the
+    // uncoupled encoder would have kept at 96 kbit/s, paid for out of a frame
+    // that could least afford it.
+    int previous_start = 0;
+    for (const std::uint32_t kbps : {96u, 128u, 192u, 256u, 448u}) {
+        CAPTURE(kbps);
+        const auto plain = parse_block_zero(steady_state_frame({.bitrate_kbps = kbps}, 2));
+        const auto coupled =
+            parse_block_zero(steady_state_frame({.bitrate_kbps = kbps, .coupling = true}, 2));
+        REQUIRE(coupled.cplinu);
+        REQUIRE_FALSE(plain.cplinu);
+        CAPTURE(plain.chbw_endmant, coupled.cplstrtmant, coupled.cplendmant);
+
+        // Never wider than the uncoupled bandwidth, and within one sub-band
+        // of it - cplendf can only land on a sub-band edge.
+        CHECK(coupled.cplendmant <= plain.chbw_endmant);
+        CHECK(plain.chbw_endmant - coupled.cplendmant < ac3::coupling::kBinsPerSubBand);
+        // Sub-band 4, bin 85, is the floor: below it coupling is trading away
+        // more waveform detail than the saving is worth.
+        CHECK(coupled.cplstrtmant >= ac3::coupling::start_mant(4));
+        CHECK(coupled.cplstrtmant >= previous_start);  // monotone in the rate
+        CHECK(coupled.ncplsubnd >= 1);
+        previous_start = coupled.cplstrtmant;
+
+        // What the defaults are for: switching coupling on must never leave
+        // the frame worse off than not coupling at all. The old fixed pair
+        // failed this at 96 kbit/s, where it spent 9 sub-bands of coordinates
+        // on 4.5 kHz the uncoupled encoder would have dropped, and the
+        // composite offset came out 14 steps DOWN. Coupling codes at most as
+        // much spectrum as the plain frame here, so this is a floor, not a
+        // like-for-like measurement - "coupling must not cost more bits than
+        // the channels it replaces" is the matched one.
+        CAPTURE(plain.snroffst, coupled.snroffst);
+        CHECK(coupled.snroffst > plain.snroffst);
+    }
+    // And it moves: a 96 kbit/s frame and a 448 kbit/s one must not couple
+    // from the same place, or the rate is not being consulted at all.
+    const auto low = parse_block_zero(
+        steady_state_frame({.bitrate_kbps = 96, .coupling = true}, 2));
+    const auto high = parse_block_zero(
+        steady_state_frame({.bitrate_kbps = 448, .coupling = true}, 2));
+    CHECK(high.cplstrtmant > low.cplstrtmant);
 }
 
 TEST_CASE("a coupling coordinate carries a ratio, not a level", "[encoder][coupling]") {
@@ -336,7 +408,10 @@ TEST_CASE("a coupling coordinate carries a ratio, not a level", "[encoder][coupl
     //
     // Both halves below hold the inter-channel ratios fixed and move only the
     // level, so a coordinate that moves with them is carrying a level.
-    const ac3::EncoderConfig config{.bitrate_kbps = 192, .coupling = true};
+    const ac3::EncoderConfig config{.bitrate_kbps = 192,
+                                    .coupling = true,
+                                    .cplbegf = kProbeCplBegf,
+                                    .cplendf = kProbeCplEndf};
 
     SECTION("turning the whole input down leaves them untouched") {
         // -12 dB is an exact power of two, so a level-free scale reproduces

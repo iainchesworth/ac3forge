@@ -55,6 +55,36 @@ bool needs_new_exponents(std::span<const std::uint8_t> current,
     return diff > 2 * static_cast<long long>(current.size());
 }
 
+// Where coupling should start when the caller does not say. Sub-band 4 - bin
+// 85, 8.0 kHz at 48 kHz - is the floor, because that is roughly where
+// per-channel waveform detail stops being what a listener is hearing. The
+// band edge rises slowly with the PER-CHANNEL rate, since a channel that can
+// afford its own high band should keep it: 5.1 at 448 kbit/s has less to
+// spare per channel than stereo at 256 and couples from lower down.
+//
+// This is a default, not a limit - EncoderConfig::cplbegf overrides it - and
+// it is the same curve the E-AC-3 encoder settled on, over the same sub-band
+// geometry (§7.4.2 and §E2.2.3 number the coupling bands identically).
+int default_cplbegf(std::uint32_t bitrate_kbps, int nfchans) {
+    const int per_channel = static_cast<int>(bitrate_kbps) / std::max(nfchans, 1);
+    return std::clamp(4 + (per_channel - 48) / 24, 4, 10);
+}
+
+// Where coupling should stop. With coupling in use every fbw channel is
+// coupled, so chbwcod is not transmitted at all (§5.4.3.8) and cplendf alone
+// decides the frame's bandwidth. Following the bandwidth the uncoupled path
+// would have chosen keeps coupling a decision about the COST of a band of
+// spectrum rather than a decision about how much of it to code - which the
+// old fixed 12 (20.3 kHz at any rate) was not: at 96 kbit/s stereo it coded
+// 4.5 kHz the uncoupled encoder would have dropped, and paid for the
+// coordinates on top, so coupling came out behind.
+//
+// cplendmant is 37 + 12 * (cplendf + 3), so this rounds DOWN to a sub-band
+// edge: coupling never widens the band, only ever leaves a little of it.
+int default_cplendf(int chbw_endmant) {
+    return std::clamp((chbw_endmant - coupling::kFirstBin) / coupling::kBinsPerSubBand - 3, 0, 15);
+}
+
 // §7.5.2: how many rematrixing bands exist, and where the last one stops.
 // With coupling active the bands cannot reach above where coupling begins.
 int rematrix_band_count(bool cplinu, int cplbegf) {
@@ -100,6 +130,18 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         (void)channel;
     }
 
+    // Bandwidth: explicit config, or a bitrate-aware default. This comes
+    // before the coupling decision because coupling inherits it - see
+    // default_cplendf.
+    int chbwcod = config_.chbwcod;
+    if (chbwcod < 0) {
+        const int per_channel_kbps =
+            static_cast<int>(config_.bitrate_kbps) / std::max(nfchans, 1);
+        chbwcod = std::clamp(per_channel_kbps * 2 / 3, 24, 60);
+    }
+    assert(chbwcod >= 0 && chbwcod <= 60);
+    const int chbw_endmant = ((chbwcod + 12) * 3) + 37;
+
     // --- Coupling decision -------------------------------------------------
     // Coupling needs at least two full-bandwidth channels to share anything.
     const bool cplinu = config_.coupling && nfchans >= 2;
@@ -109,10 +151,16 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     int cplendmant = 0;
     int ncplsubnd = 0;
     if (cplinu) {
-        cplbegf = config_.cplbegf >= 0 ? config_.cplbegf : 6;
-        cplendf = config_.cplendf >= 0 ? config_.cplendf : 12;
-        cplbegf = std::clamp(cplbegf, 0, 15);
+        cplendf = config_.cplendf >= 0 ? config_.cplendf
+                                       : default_cplendf(chbw_endmant);
         cplendf = std::clamp(cplendf, 0, 15);
+        // The default start never runs past the end; an explicit one is
+        // caught by the sub-band count below.
+        cplbegf = config_.cplbegf >= 0
+                      ? config_.cplbegf
+                      : std::min(default_cplbegf(config_.bitrate_kbps, nfchans),
+                                 cplendf + 2);
+        cplbegf = std::clamp(cplbegf, 0, 15);
         // cplendf is read by adding 3, so the coded region must extend past
         // where coupling starts.
         if (coupling::sub_band_count(cplbegf, cplendf) < 1) {
@@ -123,16 +171,8 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         ncplsubnd = (cplendmant - cplstrtmant) / coupling::kBinsPerSubBand;
     }
 
-    // Bandwidth: explicit config, or a bitrate-aware default. Coupled
-    // channels stop at the coupling frequency instead.
-    int chbwcod = config_.chbwcod;
-    if (chbwcod < 0) {
-        const int per_channel_kbps =
-            static_cast<int>(config_.bitrate_kbps) / std::max(nfchans, 1);
-        chbwcod = std::clamp(per_channel_kbps * 2 / 3, 24, 60);
-    }
-    assert(chbwcod >= 0 && chbwcod <= 60);
-    const int fbw_endmant = cplinu ? cplstrtmant : ((chbwcod + 12) * 3) + 37;
+    // Coupled channels stop at the coupling frequency instead.
+    const int fbw_endmant = cplinu ? cplstrtmant : chbw_endmant;
 
     // Stream layout: the fbw channels, the LFE, then the coupling channel as
     // one more stream carrying the shared high band.
