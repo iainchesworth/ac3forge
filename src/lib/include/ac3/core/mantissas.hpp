@@ -5,6 +5,8 @@
 #include <span>
 #include <vector>
 
+#include "ac3/core/bitreader.hpp"
+
 // Mantissa quantization and grouping (A/52 §7.3).
 //
 // Symmetric quantizers for bap 1-5 (3/5/7/11/15 levels, reconstruction
@@ -76,5 +78,29 @@ private:
 // ceil(count/members) codewords per block.
 [[nodiscard]] std::size_t mantissa_bits_per_block(
     std::span<const std::span<const std::uint8_t>> channel_baps);
+
+// The mirror of MantissaBlockWriter: reads ONE audio block's mantissas in
+// bitstream order. A group's codeword arrives at the position of its FIRST
+// member and later members consume nothing, so the reader has to carry the
+// unpacked remainder forward. State is shared across exponent sets within a
+// block and discarded at block end, where the writer's dummy padding sits.
+// AC-3 and E-AC-3 group mantissas identically, so both decoders use this.
+class MantissaBlockReader {
+public:
+    [[nodiscard]] std::uint32_t read(BitReader& reader, int bap);
+
+private:
+    struct Cache {
+        int remaining = 0;
+        std::array<std::uint32_t, 2> values{};
+    };
+
+    [[nodiscard]] static std::uint32_t read_group(Cache& cache, BitReader& reader, int bits,
+                                                  std::uint32_t radix, int members);
+
+    Cache bap1_;
+    Cache bap2_;
+    Cache bap4_;
+};
 
 }  // namespace ac3

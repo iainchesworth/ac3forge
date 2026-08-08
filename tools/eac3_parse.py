@@ -115,18 +115,19 @@ def parse_frame(data, verbose=True):
                 mixdeflen = r.bits(5)
                 r.bits((mixdeflen + 2) * 8)
             if acmod < 2:
-                if r.bits(1):
-                    r.bits(6)        # panmean
-                    r.bits(8)        # paninfo
+                if r.bits(1):        # paninfoe
+                    r.bits(8)        # panmean
+                    r.bits(6)        # paninfo
                 if acmod == 0:
                     if r.bits(1):
-                        r.bits(6); r.bits(8)
-            if numblkscod == 0:
-                r.bits(5)            # blkmixcfginfo[0]
-            else:
-                for _ in range(nblks):
-                    if r.bits(1):
-                        r.bits(5)
+                        r.bits(8); r.bits(6)
+            if r.bits(1):            # frmmixcfginfoe
+                if numblkscod == 0:
+                    r.bits(5)        # blkmixcfginfo[0]
+                else:
+                    for _ in range(nblks):
+                        if r.bits(1):
+                            r.bits(5)
     if r.bits(1):                    # infomdate
         r.bits(3)                    # bsmod
         r.bits(1); r.bits(1)         # copyrightb, origbs
@@ -224,7 +225,10 @@ def parse_frame(data, verbose=True):
                 r.bits(5)
     if numblkscod != 0:
         if r.bits(1):                # blkstrtinfoe
-            nblkstrtbits = (nblks - 1) * (4 + (frmsiz + 1).bit_length())
+            # 2.3.2.27: (numblks - 1) * (4 + ceil(log2(words_per_frame))).
+            # bit_length() is floor(log2) + 1, which is one too many at an
+            # exact power of two.
+            nblkstrtbits = (nblks - 1) * (4 + (frmsiz).bit_length())
             r.bits(nblkstrtbits)
     log(f'audfrm: expstre={expstre} ahte={ahte} snroffststr={snroffststr} '
         f'blkswe={blkswe} dithflage={dithflage} bamode={bamode} '

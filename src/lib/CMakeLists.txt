@@ -25,6 +25,7 @@ target_sources(ac3forge
         src/core/mantissas.cpp
         src/core/mdct.cpp
         src/decoder/decoder.cpp
+        src/decoder/eac3_decoder.cpp
         src/encoder/coupling.cpp
         src/encoder/eac3_frame.cpp
         src/encoder/encoder.cpp

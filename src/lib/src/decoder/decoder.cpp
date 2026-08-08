@@ -15,88 +15,121 @@ namespace ac3 {
 
 namespace {
 
-
-// Read-side §7.3.5 grouping state: the codeword arrives at the position of
-// the group's first member; later members consume nothing. State is shared
-// across channels within a block and discarded at block end (the dummies).
-struct GroupReadState {
-    struct Cache {
-        int remaining = 0;
-        std::array<std::uint32_t, 2> values{};
-    };
-    Cache bap1;
-    Cache bap2;
-    Cache bap4;
-
-    std::uint32_t read_code(BitReader& reader, int bap) {
-        const auto grouped = [&](Cache& cache, int bits, std::uint32_t radix,
-                                 int members) -> std::uint32_t {
-            if (cache.remaining == 0) {
-                std::uint32_t group = reader.read(bits);
-                if (members == 3) {
-                    const std::uint32_t a = group / (radix * radix);
-                    const std::uint32_t b = (group % (radix * radix)) / radix;
-                    const std::uint32_t c = group % radix;
-                    cache.values = {b, c};
-                    cache.remaining = 2;
-                    return a;
-                }
-                const std::uint32_t a = group / 11;
-                cache.values = {group % 11, 0};
-                cache.remaining = 1;
-                return a;
-            }
-            const std::uint32_t next =
-                cache.values[static_cast<std::size_t>(members == 3 ? 2 - cache.remaining
-                                                                   : 1 - cache.remaining)];
-            --cache.remaining;
-            return next;
-        };
-        switch (bap) {
-            case 1: return grouped(bap1, 5, 3, 3);
-            case 2: return grouped(bap2, 7, 5, 3);
-            case 4: return grouped(bap4, 7, 11, 2);
-            default: return reader.read(kBapBits[static_cast<std::size_t>(bap)]);
-        }
+// Byte length of the syncframe at `offset`, whichever generation it is.
+// AC-3 and E-AC-3 both put bsid at bit 40 - deliberately, so that a reader
+// can tell the two apart before committing to a layout - but they express the
+// size completely differently: AC-3 looks frmsizecod up in Table 5.18, while
+// E-AC-3 states the word count outright in the 11-bit frmsiz.
+std::expected<std::size_t, DecodeError> syncframe_bytes(std::span<const std::byte> stream,
+                                                        std::size_t offset) {
+    if (offset + 6 > stream.size()) {
+        return std::unexpected(DecodeError::kTruncated);
     }
-};
+    const auto byte = [&](std::size_t i) {
+        return std::to_integer<std::uint32_t>(stream[offset + i]);
+    };
+    if (byte(0) != 0x0B || byte(1) != 0x77) {
+        return std::unexpected(DecodeError::kBadSyncWord);
+    }
+    const auto bsid = byte(5) >> 3;
+    if (bsid >= eac3::kMinDecodableBsid && bsid <= eac3::kBsid) {
+        const std::size_t frmsiz = ((byte(2) & 0x07) << 8) | byte(3);
+        const std::size_t bytes = (frmsiz + 1) * 2;
+        // frmsiz is free to say anything, including a size that does not even
+        // cover the six header bytes just read. Callers index into the spans
+        // this hands back, so a self-contradictory size is rejected here
+        // rather than becoming a short span someone reads past.
+        if (bytes < 6) {
+            return std::unexpected(DecodeError::kInvalidStream);
+        }
+        return bytes;
+    }
+    if (bsid > 8) {
+        return std::unexpected(DecodeError::kUnsupported);
+    }
+    const auto fscod = byte(4) >> 6;
+    const auto frmsizecod = byte(4) & 0x3F;
+    if (fscod == 3 || frmsizecod > 37) {
+        return std::unexpected(DecodeError::kReservedValue);
+    }
+    const std::uint32_t kbps = kBitratesKbps[frmsizecod >> 1];
+    return *frame_size_bytes(static_cast<SampleRate>(fscod), kbps, (frmsizecod & 1) != 0);
+}
 
 }  // namespace
+
+std::expected<int, DecodeError> stream_bsid(std::span<const std::byte> frame) {
+    if (frame.size() < 6) {
+        return std::unexpected(DecodeError::kTruncated);
+    }
+    return static_cast<int>(std::to_integer<std::uint32_t>(frame[5]) >> 3);
+}
 
 std::expected<std::vector<std::span<const std::byte>>, DecodeError> split_frames(
     std::span<const std::byte> stream) {
     std::vector<std::span<const std::byte>> frames;
     std::size_t offset = 0;
-    while (offset + 5 <= stream.size()) {
-        if (std::to_integer<std::uint8_t>(stream[offset]) != 0x0B ||
-            std::to_integer<std::uint8_t>(stream[offset + 1]) != 0x77) {
-            return std::unexpected(DecodeError::kBadSyncWord);
+    while (offset < stream.size()) {
+        const auto bytes = syncframe_bytes(stream, offset);
+        if (!bytes) {
+            return std::unexpected(bytes.error());
         }
-        const auto byte4 = std::to_integer<std::uint32_t>(stream[offset + 4]);
-        const auto fscod = byte4 >> 6;
-        const auto frmsizecod = byte4 & 0x3F;
-        if (fscod == 3 || frmsizecod > 37) {
-            return std::unexpected(DecodeError::kReservedValue);
-        }
-        const auto sr = static_cast<SampleRate>(fscod);
-        const std::uint32_t kbps = kBitratesKbps[frmsizecod >> 1];
-        const auto bytes = frame_size_bytes(sr, kbps, (frmsizecod & 1) != 0).value();
-        if (offset + bytes > stream.size()) {
+        if (offset + *bytes > stream.size()) {
             return std::unexpected(DecodeError::kTruncated);
         }
-        frames.push_back(stream.subspan(offset, bytes));
-        offset += bytes;
-    }
-    if (offset != stream.size()) {
-        return std::unexpected(DecodeError::kTruncated);
+        frames.push_back(stream.subspan(offset, *bytes));
+        offset += *bytes;
     }
     return frames;
+}
+
+std::expected<std::vector<std::span<const std::byte>>, DecodeError> split_access_units(
+    std::span<const std::byte> stream) {
+    const auto frames = split_frames(stream);
+    if (!frames) {
+        return std::unexpected(frames.error());
+    }
+    // An access unit is its substreams concatenated, so it is delimited rather
+    // than framed: a new one starts wherever an independent substream does,
+    // and everything up to the next one belongs to it.
+    std::vector<std::span<const std::byte>> units;
+    std::size_t start = 0;
+    std::size_t offset = 0;
+    for (const auto& frame : *frames) {
+        const auto strmtyp = static_cast<eac3::StreamType>(
+            std::to_integer<std::uint32_t>(frame[2]) >> 6);
+        const bool begins_unit = strmtyp == eac3::StreamType::kIndependent ||
+                                 strmtyp == eac3::StreamType::kConvertible;
+        if (begins_unit && offset != start) {
+            units.push_back(stream.subspan(start, offset - start));
+            start = offset;
+        }
+        offset += frame.size();
+    }
+    if (offset != start) {
+        units.push_back(stream.subspan(start, offset - start));
+    }
+    // A stream whose very first syncframe is a dependent has lost its parent;
+    // its channels have nothing to extend.
+    if (!units.empty() &&
+        (std::to_integer<std::uint32_t>(units.front()[2]) >> 6) ==
+            static_cast<std::uint32_t>(eac3::StreamType::kDependent)) {
+        return std::unexpected(DecodeError::kInvalidStream);
+    }
+    return units;
 }
 
 std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
     std::span<const std::byte> frame) {
     if (frame.size() < 6) {
         return std::unexpected(DecodeError::kTruncated);
+    }
+    // bsid sits at bit 40 in both generations precisely so it can be read
+    // before anything else is interpreted; every field below means something
+    // different in an Annex E frame, so check it first rather than letting the
+    // AC-3 reading of frmsizecod fail in some incidental way.
+    if (*stream_bsid(frame) > 8) {
+        return std::unexpected(DecodeError::kUnsupported);
     }
     BitReader r{frame};
     if (r.read(16) != kSyncWord) {
@@ -466,7 +499,7 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
         // the coupling channel inserted after the FIRST coupled one, then the
         // LFE. Everything is unpacked before any reconstruction, because
         // decoupling and the rematrix undo both need whole channels.
-        GroupReadState groups_state;
+        MantissaBlockReader mantissa_reader;
         std::vector<std::array<double, 256>> coeffs(max_streams);
         const auto read_stream = [&](int s) {
             const int begin = s == cpl_stream ? cplstrtmant : 0;
@@ -477,7 +510,7 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
                 if (bap_value == 0) {
                     continue;  // silence (dither substitution not implemented)
                 }
-                const auto code = groups_state.read_code(r, bap_value);
+                const auto code = mantissa_reader.read(r, bap_value);
                 const int exp =
                     exps[static_cast<std::size_t>(s)][static_cast<std::size_t>(bin)];
                 coeffs[static_cast<std::size_t>(s)][static_cast<std::size_t>(bin)] =

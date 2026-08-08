@@ -1,7 +1,6 @@
 #pragma once
 
 #include <array>
-#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -9,6 +8,7 @@
 #include <span>
 #include <vector>
 
+#include "ac3/core/eac3_tables.hpp"
 #include "ac3/core/tables.hpp"
 #include "ac3/encoder/silent_frame.hpp"  // FrameError
 
@@ -32,78 +32,12 @@
 
 namespace ac3::eac3 {
 
-inline constexpr int kBsid = 16;
-
-// §E2.3.1.1, Table E2.1. Type 0x2 - an independent substream whose program
-// was previously coded as AC-3 - is deliberately absent: it drags in a
-// blkid/frmsizecod branch nothing here would ever write.
-enum class StreamType : std::uint8_t {
-    kIndependent = 0,  // decodable alone; begins an access unit
-    kDependent = 1,    // extends the independent substream it follows
-};
-
-// §E2.3.1.8, Table E2.5 - the custom channel map. Bit 0 is stored in the MOST
-// significant bit of the 16-bit field ("Bit 0, which indicates the presence of
-// the left channel, is stored in the most significant bit"), so location n has
-// mask 1 << (15 - n). The spec's own worked example - bits 3, 4 and 6 giving
-// Ls, Rs, Lrs, Rrs - is 0x1A00, which only comes out right under that
-// numbering.
-//
-// Six of the sixteen locations name a PAIR of channels rather than one, so a
-// map's population count is not its channel count.
-namespace chanmap {
-
-inline constexpr std::uint16_t kLeft = 0x8000;          // bit 0
-inline constexpr std::uint16_t kCentre = 0x4000;        // bit 1
-inline constexpr std::uint16_t kRight = 0x2000;         // bit 2
-inline constexpr std::uint16_t kLeftSurround = 0x1000;  // bit 3
-inline constexpr std::uint16_t kRightSurround = 0x0800; // bit 4
-inline constexpr std::uint16_t kLcRc = 0x0400;          // bit 5  (pair)
-inline constexpr std::uint16_t kLrsRrs = 0x0200;        // bit 6  (pair)
-inline constexpr std::uint16_t kCs = 0x0100;            // bit 7
-inline constexpr std::uint16_t kTs = 0x0080;            // bit 8
-inline constexpr std::uint16_t kLsdRsd = 0x0040;        // bit 9  (pair)
-inline constexpr std::uint16_t kLwRw = 0x0020;          // bit 10 (pair)
-inline constexpr std::uint16_t kVhlVhr = 0x0010;        // bit 11 (pair)
-inline constexpr std::uint16_t kVhc = 0x0008;           // bit 12
-inline constexpr std::uint16_t kLtsRts = 0x0004;        // bit 13 (pair)
-inline constexpr std::uint16_t kLfe2 = 0x0002;          // bit 14
-inline constexpr std::uint16_t kLfe = 0x0001;           // bit 15
-
-inline constexpr std::uint16_t kPairs =
-    kLcRc | kLrsRrs | kLsdRsd | kLwRw | kVhlVhr | kLtsRts;
-
-// Coded channels a map accounts for. §E2.3.1.8 requires this to equal the
-// channels the substream's acmod and lfeon code, and the coded order to
-// follow the enabled bits from bit 0 downwards.
-[[nodiscard]] constexpr int channel_count(std::uint16_t map) {
-    return std::popcount(map) +
-           std::popcount(static_cast<std::uint16_t>(map & kPairs));
-}
-
-// Canonical 7.1: the dependent replaces the bed's surrounds and adds the two
-// rear surrounds. This is the spec's own example (bits 3, 4, 6 with acmod 2/2).
-inline constexpr std::uint16_t k71Rear = kLeftSurround | kRightSurround | kLrsRrs;
-// 5.1.2: two height channels supplementing an untouched 5.1 bed.
-inline constexpr std::uint16_t k512Height = kVhlVhr;
-// Four ceiling channels - front and rear height. Both are PAIR locations, so
-// two bits account for four channels.
-inline constexpr std::uint16_t kTopQuad = kVhlVhr | kLtsRts;
-
-static_assert(k71Rear == 0x1A00, "Table E2.5 bit 0 must be the MSB");
-static_assert(channel_count(k71Rear) == 4);
-static_assert(channel_count(k512Height) == 2);
-static_assert(channel_count(kTopQuad) == 4);
-
-// A substream codes at most 3/2 plus LFE (Table 5.8), so ONE dependent adds at
-// most five full-bandwidth channels. chanmap does not lift that: §E2.3.1.8
-// requires the locations it names to equal the coded channel count, so a pair
-// bit spends two coded channels rather than conjuring one. Hence 5.1.4 needs
-// four new channels and fits a single dependent, while 7.1.4 needs six and
-// cannot - it is the reason kTopQuad rides beside k71Rear in a second
-// dependent rather than merging into one.
-
-}  // namespace chanmap
+// kBsid, StreamType and the Table E2.5 chanmap live in
+// ac3/core/eac3_tables.hpp: the decoder reads the same fields this writes, and
+// one definition is what keeps the two agreeing on what a bit pattern means.
+// This encoder writes only strmtyp 0x0 and 0x1 - 0x2, an independent substream
+// whose program was previously coded as AC-3, drags in a blkid/frmsizecod
+// branch nothing here would ever emit, so validate() refuses it.
 
 struct FrameConfig {
     SampleRate sample_rate = SampleRate::k48000;

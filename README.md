@@ -93,13 +93,23 @@ probe confirms the envelope really is preserved: a channel carrying a 12 kHz ton
 bit-for-bit untouched. The in-repo decoder does not read coupling yet and refuses such
 streams cleanly rather than producing wrong audio.
 
-**E-AC-3 framing works.** `ac3cli eac3-silence` emits bsid-16 (Dolby Digital Plus) frames
-that FFmpeg identifies as `eac3` and strict-decodes with zero errors, in stereo and 5.1
-across every tested bit rate. E-AC-3 is a different container, not an AC-3 variant: no
-crc1, an arbitrary 11-bit `frmsiz` instead of a size table (so the 44.1 kHz padding
-alternation disappears), and exponent strategies for all six blocks hoisted into a
-frame-level `audfrm`. Currently silence-only — carrying real audio means routing the
-existing encoder's coefficients through this container.
+**E-AC-3 encodes, up to 7.1.4.** `ac3cli eac3-sine` emits bsid-16 (Dolby Digital Plus)
+carrying real audio in stereo, 5.1, 7.1, 5.1.2, 5.1.4 and 7.1.4. E-AC-3 is a different
+container, not an AC-3 variant: no crc1, an arbitrary 11-bit `frmsiz` instead of a size
+table (so the 44.1 kHz padding alternation disappears), and exponent strategies for all
+six blocks hoisted into a frame-level `audfrm`. Layouts wider than 5.1 ride in *dependent
+substreams* beside a self-sufficient 5.1 bed, each with a Table E2.5 `chanmap` saying
+which speakers its channels belong to; per §E3.8.2 the ones that collide with the bed
+replace it and the rest extend the layout.
+
+**And it decodes.** The in-repo decoder now reads bsid 16 — the whole of Tables
+E1.2/E1.3/E1.4, dependent substreams, `chanmap` and the §E3.8.2 render — reaching
+float32-precision PCM parity with FFmpeg (max diff 1.4e-5) on every layout FFmpeg will
+read, and reading FFmpeg's *own* encoder output too. That last part is the point: **7.1.4
+has no external oracle at all.** It needs two dependent substreams, and FFmpeg refuses any
+frame with `substreamid != 0` in `ff_ac3_parse_header` — proven exhaustively across
+hand-rolled MKV, FFmpeg Matroska, MPEG-TS and MP4. A decoder we control is what closes
+that gap, and every later Annex E feature inherits the same self-check.
 
 See [docs/RESEARCH.md](docs/RESEARCH.md) for the research summary, architecture, and
 roadmap.
