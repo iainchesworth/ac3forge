@@ -3,7 +3,9 @@
 # glue only: every codec decision lives in the library.
 #
 # Qt is a PREBUILT dependency discovered by cmake/FindQt6.cmake (which widens
-# CMAKE_PREFIX_PATH to the standard install roots), never a vcpkg port.
+# CMAKE_PREFIX_PATH to the standard install roots on Windows, Linux and
+# macOS), never a vcpkg port. Machines with no Qt kit build the rest of the
+# project with -DAC3FORGE_BUILD_GUI=OFF.
 # ---------------------------------------------------------------------------
 find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 Concurrent)
 
@@ -13,6 +15,26 @@ qt_add_executable(ac3gui
     main.cpp
     encoder_controller.cpp
     encoder_controller.hpp)
+
+# The QML lives in qml/ on disk but belongs at the root of the QML module, so
+# every file is aliased to its bare name. Left alone, Qt lays the module out as
+# <module>/qml/Main.qml, which makes qml/ a second QML root directory - one
+# with no qmldir of its own, so the engine resolving a sibling type from inside
+# it knows nothing of the module's registrations. Theme, below, is exactly the
+# kind of registration that matters. That is what Qt policy QTP0004 warns
+# about; aliasing removes the second root instead of papering over it with a
+# generated qmldir, and keeps working whichever way the policy defaults later.
+set(AC3_QML_FILES
+    qml/Main.qml
+    qml/Theme.qml
+    qml/Card.qml
+    qml/ChannelMeter.qml
+    qml/SoundfieldView.qml)
+
+foreach(qml_file IN LISTS AC3_QML_FILES)
+    get_filename_component(qml_name "${qml_file}" NAME)
+    set_source_files_properties("${qml_file}" PROPERTIES QT_RESOURCE_ALIAS "${qml_name}")
+endforeach()
 
 # The QML module is backed by the executable itself, so qt_add_qml_module
 # embeds the QML and the generated type registrations directly into it - no
@@ -28,12 +50,39 @@ set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 qt_add_qml_module(ac3gui
     URI Ac3Forge
     VERSION 1.0
-    QML_FILES
-        qml/Main.qml
-        qml/Theme.qml
-        qml/Card.qml
-        qml/ChannelMeter.qml
-        qml/SoundfieldView.qml)
+    QML_FILES ${AC3_QML_FILES})
+
+# Qt generates a lot of C++ into this target - moc output, the QML type
+# registrations, the rcc resources and qmlcachegen's AOT-compiled QML - and it
+# all compiles as if it were ours. It is not, and it does not survive the
+# strict set: qmlcachegen emits a bare qsizetype-to-int narrowing for
+# SoundfieldView's `property int lfeIndex: ...indexOf("LFE")`, which
+# -Wconversion rejects under clang-cl and GCC (MSVC's /W4 has no equivalent,
+# which is why this only shows up off the default toolchain). Qt's own headers
+# are already outside the warning set because Qt's package config marks their
+# include directories SYSTEM; generated sources have no include directory to
+# mark, so they are excluded here instead.
+#
+# MSVC is left out: cl has nothing to say about this code under /W4, and /w
+# would only earn a "D9025: overriding '/W4' with '/w'" on every generated file.
+# If a later Qt does emit something cl dislikes, that surfaces as a build
+# failure to look at rather than as silence.
+#
+# This deliberately misses one generated file: AUTOMOC adds
+# ac3gui_autogen/mocs_compilation.cpp at generate time, so it is not in SOURCES
+# to be found here and keeps the full set. That is the outcome we want - moc's
+# own output is clean under these flags, and the file pulls in our headers, so
+# checking it costs nothing and covers something.
+get_target_property(AC3_GUI_SOURCES ac3gui SOURCES)
+foreach(gui_source IN LISTS AC3_GUI_SOURCES)
+    get_source_file_property(gui_source_generated "${gui_source}" TARGET_DIRECTORY ac3gui GENERATED)
+    if(gui_source_generated)
+        set_source_files_properties("${gui_source}"
+            TARGET_DIRECTORY ac3gui
+            PROPERTIES COMPILE_OPTIONS
+                "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-w>")
+    endif()
+endforeach()
 
 target_link_libraries(ac3gui
     PRIVATE
@@ -45,12 +94,25 @@ target_link_libraries(ac3gui
         Qt6::QuickControls2
         Qt6::Concurrent)
 
-set_target_properties(ac3gui PROPERTIES WIN32_EXECUTABLE ON)
+# A GUI app rather than a console one. MACOSX_BUNDLE moves the binary to
+# bin/ac3gui.app/Contents/MacOS/ac3gui, which is where --smoke lives on macOS;
+# both properties are ignored on the platform they do not apply to.
+set_target_properties(ac3gui PROPERTIES
+    WIN32_EXECUTABLE ON
+    MACOSX_BUNDLE ON)
 
 # ---------------------------------------------------------------------------
 # Deploy Qt's runtime DLLs and QML plugins next to the built exe so it runs
 # straight from the build tree. Without this the loader cannot find Qt6Core /
 # Qt6Quick and the QtQuick.Controls imports fail to resolve at startup.
+#
+# Windows only, and not an oversight: ELF and Mach-O builds record the Qt kit's
+# library directory in the binary's RPATH, and Qt then locates its own plugins
+# and QML modules relative to the install prefix it was built with. So the
+# build tree already runs - including under QT_QPA_PLATFORM=offscreen, because
+# the kit's own offscreen plugin is found in place rather than needing to be
+# copied. Shipping the app elsewhere would still want macdeployqt / linuxdeploy;
+# that is a packaging step, not a build one.
 # ---------------------------------------------------------------------------
 if(WIN32)
     get_filename_component(AC3_QT_BIN_DIR "${Qt6_DIR}/../../../bin" ABSOLUTE)
