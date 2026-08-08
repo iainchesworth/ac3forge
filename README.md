@@ -112,6 +112,9 @@ card that relabels itself for the active layout (1/0 through 3/2, with or withou
 per A/52 Table 5.8) beside a soundfield view showing the speaker ring and where the energy
 sits. Feeding those meters meant widening both front ends to 1–6 channel WAV input, with the
 WAV↔A/52 channel permutation now in the library rather than copied into each caller.
+`ac3gui --smoke` and `--smoke-record` drive the file and live-capture paths headlessly and
+report what the meters did, so "the display is wired to the audio" is a checkable claim
+rather than a screenshot.
 
 See [docs/RESEARCH.md](docs/RESEARCH.md) for the research summary, architecture, and
 roadmap.
