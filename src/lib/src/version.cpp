@@ -12,7 +12,7 @@ std::string version_details() {
         "  commit:  {}\n"
         "  branch:  {}\n"
         "  target:  {}{}",
-        version_string,
+        version_full,
         git_describe,
         git_commit_full,
         git_branch,
