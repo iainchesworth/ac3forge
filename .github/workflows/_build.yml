@@ -71,6 +71,12 @@ jobs:
             container: ubuntu:26.04
             preset: linux-gcc
             gcc: true
+            # Also builds and tests the no-ALSA fallback (see the step at the
+            # end). Carried by this leg alone: the switch it covers is in CMake
+            # and in which platform directory gets compiled, neither of which
+            # differs between compilers, so paying for it twice would buy
+            # nothing.
+            alsa_fallback: true
 
           - name: "Linux LLVM (clang)"
             runner: ubuntu-latest
@@ -103,6 +109,13 @@ jobs:
       # silently degrades to a REST tarball download without it. Also installs
       # what the toolchain scripts assume is present (lsb_release,
       # add-apt-repository, curl+gnupg for the apt.llvm.org key path).
+      #
+      # libasound2-dev is the ALSA backend's only dependency, and the reason it
+      # is here rather than left out is that its ABSENCE is not a build
+      # failure: src/lib/CMakeLists.txt would fall back to the no-backend
+      # platform directory and CI would go green having compiled none of
+      # src/lib/src/platform/alsa/. The alsa_fallback step at the end covers
+      # the other half of that switch on purpose.
       - name: Bootstrap container
         if: matrix.container
         run: |
@@ -110,7 +123,7 @@ jobs:
           export DEBIAN_FRONTEND=noninteractive
           apt-get update -qq
           apt-get install -y -qq --no-install-recommends \
-            build-essential ca-certificates cmake curl git gnupg lsb-release \
+            build-essential ca-certificates cmake curl git gnupg libasound2-dev lsb-release \
             ninja-build pkg-config software-properties-common tar unzip wget zip
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -244,3 +257,29 @@ jobs:
           ASAN_OPTIONS: detect_leaks=1
           UBSAN_OPTIONS: print_stacktrace=1
         run: bash scripts/run-codec-matrix.sh "build/config-${{ matrix.preset }}/bin/ac3cli"
+
+      # The other side of the ALSA switch: a Linux machine without libasound's
+      # development headers must still configure, build and pass everything,
+      # falling back to src/lib/src/platform/posix/ - that is the whole point
+      # of the dependency being optional, and it is a claim that rots silently
+      # unless something checks it.
+      #
+      # CMAKE_DISABLE_FIND_PACKAGE_ALSA rather than -DAC3FORGE_WITH_ALSA=OFF,
+      # because OFF skips find_package() altogether: this way the AUTO path
+      # runs and genuinely fails to find ALSA, which is what a machine missing
+      # the package actually does. The assertion afterwards is the point of the
+      # step - without it a mistake that quietly built the ALSA backend anyway
+      # would still go green.
+      - name: Configure, build and test without ALSA
+        if: matrix.alsa_fallback
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --preset config-${{ matrix.preset }} -B build/no-alsa \
+            -DCMAKE_DISABLE_FIND_PACKAGE_ALSA=TRUE 2>&1 | tee /tmp/no-alsa-configure.log
+          grep -q 'Audio backend  : posix' /tmp/no-alsa-configure.log || {
+            echo "::error::ALSA was disabled but the build did not fall back to the posix backend"
+            exit 1
+          }
+          cmake --build build/no-alsa -- -k 0
+          ctest --test-dir build/no-alsa

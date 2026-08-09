@@ -47,6 +47,7 @@ add_executable(ac3tests
     test_analysis.cpp
     test_atmos.cpp
     test_atmos_motion.cpp
+    test_audio_backend.cpp
     test_bitalloc.cpp
     test_bitwriter.cpp
     test_coupling.cpp
@@ -82,6 +83,26 @@ if(MSVC)
     target_sources(ac3tests PRIVATE platform/msvc/crt_report.cpp)
 else()
     target_sources(ac3tests PRIVATE platform/stub/crt_report.cpp)
+endif()
+
+# ---------------------------------------------------------------------------
+# The audio backend's own tests, on the same axis the library selects it on.
+#
+# src/lib/CMakeLists.txt compiles exactly one src/platform/<backend>/ directory
+# and publishes which one; a backend with device-free logic worth testing gets
+# a matching tests/platform/<backend>/ directory here, added only in the build
+# that compiled it. So the suite can never test a backend the library does not
+# contain, and no test source needs to ask which platform it is on.
+#
+# test_audio_backend.cpp above is the other half and is unconditional: it holds
+# the contract EVERY backend keeps, including the one that refuses everything.
+# ---------------------------------------------------------------------------
+if(AC3FORGE_AUDIO_BACKEND STREQUAL "alsa")
+    target_sources(ac3tests PRIVATE platform/alsa/test_alsa_device_names.cpp)
+    # The backend's internal header. Not part of the library's public
+    # interface and deliberately not installed - it is on the include path for
+    # this target only, and only in this configuration.
+    target_include_directories(ac3tests PRIVATE "${AC3FORGE_AUDIO_BACKEND_DIR}")
 endif()
 
 target_include_directories(ac3tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
