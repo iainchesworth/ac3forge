@@ -1,32 +1,35 @@
 # ac3forge CI.
 #
 # ---------------------------------------------------------------------------
-# Matrix status (updated when sanitizer builds and static analysis were added)
+# Matrix status (updated when the ALSA audio backend landed)
 # ---------------------------------------------------------------------------
-# Every leg below was run for real, not just claimed: windows-msvc and
-# windows-llvm locally (MSVC 14.51 / clang-cl 21.1.0 - CI pins 21.1.8, one
-# patch version newer), the Linux legs and static-analysis in an Ubuntu 26.04
-# container built from .github/toolchain/ (gcc 15.2.0 / clang 21.1.8).
-# macos-llvm remains as it was: it could not be run at all,
-# the project has no Mac.
+# Every leg marked with a test count below was run for real, not just claimed.
+# The Linux legs ran on WSL2 Ubuntu 26.04 (gcc 15.2.0 / clang 21.1.8), which is
+# the same distribution and toolchain the containers use; windows-msvc ran
+# locally on MSVC 14.51.
 #
-#   leg                    status    notes
+#   leg                     status    notes
 #   ----------------------  --------  ------------------------------------------
-#   windows-msvc            GREEN     245/245 tests pass
-#   windows-llvm             GREEN    245/245 tests pass; fixed a qsizetype-to-int
-#                                     narrowing in encoder_controller.cpp that
-#                                     -Wconversion rejects under clang-cl (MSVC's
-#                                     /W4 has no equivalent check)
-#   linux-gcc                GREEN    214/214 tests pass
-#   linux-llvm               GREEN    214/214 tests pass
-#   linux-llvm-asan-ubsan    GREEN    214/214 tests + the full codec-matrix
-#                                     script (99 encode/decode/report commands
-#                                     across every layout, Annex E tool token,
-#                                     and Atmos mode) - see cmake/Sanitizers.cmake
-#   static-analysis (tidy)   GREEN    .clang-tidy's curated set, clean baseline
-#   macos-llvm               unknown  never executed; shares linux-llvm's
-#                                     warning set, so expect it to surface
-#                                     genuine failures the first time it runs
+#   windows-msvc            GREEN     256/256 tests pass
+#   windows-llvm            GREEN     as previously recorded; not re-run for the
+#                                     ALSA change, which touches no Windows code
+#   linux-gcc               GREEN     270/270 tests pass, plus 256/256 again in
+#                                     the same leg's no-ALSA fallback step
+#   linux-llvm              GREEN     270/270 tests pass
+#   linux-llvm-asan-ubsan   GREEN     270/270 tests, leak detection on. The
+#                                     codec-matrix script this leg also runs was
+#                                     not re-run: it exercises encode/decode
+#                                     paths, and no codec source changed
+#   static-analysis (tidy)  GREEN     as previously recorded; not re-run
+#   macos-llvm              unknown   never executed; the project has no Mac
+#
+# The 14-test difference between the Linux and Windows counts is
+# tests/platform/alsa/, which exists only in a build that selected the ALSA
+# backend - see tests/CMakeLists.txt.
+#
+# What none of this covers: real audio hardware. WSL2 has no sound devices and
+# no kernel sound modules, and neither does a GitHub runner, so the ALSA
+# backend is verified headless only. See docs/BUILDING.md#linux-audio.
 #
 # macos-llvm runs with continue-on-error (see _build.yml): it reports honestly
 # without turning the default branch red on every push. Promote it by

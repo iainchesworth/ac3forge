@@ -175,10 +175,19 @@ the metadata is. It is covered bit-by-bit instead ([tests/test_drc.cpp](tests/te
 
 ### Portability
 
-Only built and tested with MSVC 14.51 on Windows 11. The codec itself has no platform
-dependency, and `src/lib/CMakeLists.txt` selects stub implementations of capture, passthrough
-and monitor playback off Windows, but no other compiler or OS has been exercised. Treat
-non-Windows as unverified rather than supported.
+Built and tested with MSVC 14.51 on Windows 11, and with gcc 15.2 and clang 21.1 on Ubuntu
+26.04. The codec itself has no platform dependency; the three features that touch sound
+hardware — capture, monitor playback and IEC 61937 passthrough — live in one directory per
+audio subsystem that `src/lib/CMakeLists.txt` picks between, WASAPI on Windows and ALSA on
+Linux, with a no-backend fallback that reports itself unavailable rather than failing to link.
+
+**No Linux audio has been tried against real hardware.** The ALSA backend was verified headless
+(including against ALSA's software `null` device, under ASan+UBSan) because the available Linux
+environment is WSL2, which has no sound devices at all. Nothing has been bitstreamed to an
+actual S/PDIF or HDMI output, and no AV receiver has been asked to lock onto it. See
+[docs/BUILDING.md](docs/BUILDING.md#linux-audio).
+
+macOS gets the no-backend fallback and has never been built at all.
 
 ## Building
 

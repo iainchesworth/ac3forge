@@ -131,6 +131,7 @@ several gigabytes. Substitute your own paths.
 | `AC3FORGE_BUILD_GUI` | `ON` | Build `ac3gui`. Requires Qt. |
 | `AC3FORGE_BUILD_TESTS` | `ON` | Build the Catch2 suite. Requires Catch2 from vcpkg. |
 | `AC3FORGE_BUILD_EXAMPLES` | `ON` | Build `examples/`, and register them as tests. |
+| `AC3FORGE_WITH_ALSA` | `AUTO` | Linux only. `AUTO` builds the ALSA audio backend when libasound's headers are present; `ON` requires them; `OFF` never builds it. See [Linux audio](#linux-audio). |
 
 Building the library and CLI alone, with neither Qt nor vcpkg involved:
 
@@ -141,6 +142,72 @@ cmake --preset debug -DAC3FORGE_BUILD_GUI=OFF -DAC3FORGE_BUILD_TESTS=OFF
 The vcpkg toolchain file is still referenced by the preset, so `VCPKG_ROOT` must still point
 at a checkout — it simply has nothing to install. To build with no vcpkg at all, configure
 without the preset and pass the generator and build type by hand.
+
+## Linux audio
+
+Three of ac3forge's features touch the sound hardware — live capture (`ac3cli devices`,
+`record`), monitor playback (`monitor`), and IEC 61937 bitstream passthrough (`outputs`,
+`play`). Everything else is file I/O and needs no audio stack at all; `ac3cli spdif` in
+particular reaches an AV receiver by writing a WAV, on any machine.
+
+On Linux those three are implemented over **ALSA**, and the dependency is one package:
+
+```bash
+sudo apt-get install libasound2-dev
+```
+
+(`alsa-lib-devel` on Fedora, `alsa-lib` on Arch.) Nothing else is needed: no PipeWire or
+PulseAudio development headers, no vcpkg port, no runtime daemon. Recording from the ALSA
+`default` device goes through PipeWire or PulseAudio automatically wherever one is running,
+because that is what those install themselves as.
+
+The dependency is **optional and detected**. Configure reports which way it went:
+
+```
+-- ALSA 1.2.15.3: live capture, monitor playback and IEC 61937 passthrough enabled
+--   Audio backend  : alsa
+```
+
+Without the headers, configure succeeds anyway and says so; the build then selects
+`src/lib/src/platform/posix/`, whose entry points all return `kNoBackend`, and `ac3cli` marks
+the affected commands `UNAVAILABLE HERE` in its usage rather than pretending they exist. Pass
+`-DAC3FORGE_WITH_ALSA=ON` to turn a missing libasound into a configure error instead, which is
+what a packaging build wants.
+
+### Why ALSA and not PipeWire
+
+Capture and monitor playback are ordinary PCM and every Linux audio API can do them. Passthrough
+is the discriminator, and it is what the whole project is for: sending an AC-3 or E-AC-3
+elementary stream down an S/PDIF or HDMI link so the receiver decodes it.
+
+That is not a "format" on Linux the way it is on Windows. A bitstream is opened as plain 16-bit
+stereo PCM, and what tells the receiver these bytes are Dolby Digital rather than music is the
+IEC 60958 **channel status** travelling beside them — specifically the non-audio bit, AES0
+bit 1. ALSA is where that bit is expressed (as arguments on the device name,
+`iec958:CARD=PCH,DEV=0,AES0=0x06,…`). PulseAudio's `PA_STREAM_PASSTHROUGH` and PipeWire's
+`SPA_MEDIA_SUBTYPE_iec958` are both real, and both end in the same ALSA call made by a daemon
+instead of by us. So ALSA is not merely the lowest common denominator here — it is the layer
+the other two are built on, it is present on every Linux system including ones running no sound
+server at all, and its device string is what gives unmixed access to the hardware.
+
+The cost is coexistence: opening a device directly takes it exclusively, so a running sound
+server has to have released it. That is the same bargain WASAPI exclusive mode strikes on
+Windows, for the same reason — a mixer that resamples or volume-scales a burst stream turns it
+into noise. A PipeWire backend would be a reasonable second one to add (as a sibling directory
+under `src/lib/src/platform/`, selected the same way); it would buy politeness, not capability.
+
+### What has and has not been verified
+
+Verified on WSL2 Ubuntu 26.04 with gcc 15.2 and clang 21.1, in every configuration: with
+libasound present and absent, and under ASan+UBSan with leak detection. The full suite passes
+in all of them. The device-independent halves of the backend — device-name construction,
+channel-status derivation, the negotiation, the render and capture threads, start/stop, and the
+error mapping — were additionally driven end to end against ALSA's software `null` PCM.
+
+**Not verified: any real sound hardware.** WSL2 has no sound devices and no kernel sound
+modules, so nothing here has been played to an actual S/PDIF or HDMI output, and no AV receiver
+has been asked to lock onto the result. Whether a given output accepts a bitstream is
+per-device anyway — `ac3cli outputs` probes each one and says.
 
 ## Qt
 
@@ -192,7 +259,9 @@ Everything in this document was run on:
 
 Result: configure, build and `ctest` all clean, 182/182 tests passing.
 
-No other compiler, OS or Qt version has been tried. `src/lib/CMakeLists.txt` selects stub
-implementations of WASAPI capture and passthrough when `WIN32` is false, so a non-Windows
-build is intended to be possible, but it has not been attempted and should be assumed broken
-until someone tries it.
+The Linux legs of the table above were run separately, on WSL2 Ubuntu 26.04 with gcc 15.2.0 and
+clang 21.1.8 — see [Linux audio](#linux-audio) for what that did and did not prove. macOS has
+never been built: nobody working on this has a Mac. `src/lib/CMakeLists.txt` selects the
+no-backend implementations there, so the codec half is expected to work and the three
+audio-hardware commands are expected to report themselves unavailable, but neither has been
+observed.
