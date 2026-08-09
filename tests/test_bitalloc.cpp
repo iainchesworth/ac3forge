@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <cmath>
 #include <span>
 #include <vector>
 
@@ -21,11 +22,16 @@ TEST_CASE("bit allocation matches the independent Python reference bit-exactly",
         // Single-channel cases, so the frame-wide §7.2.2.1.1 condition is
         // just this channel's offsets - matching what the Python reference
         // assumes when it generates these vectors.
-        const ac3::BitAllocRegion region{.start = c.start,
-                                         .coupling = c.coupling,
-                                         .cplfleak = c.cplfleak,
-                                         .cplsleak = c.cplsleak,
-                                         .snr_all_zero = c.csnroffst == 0 && c.fsnroffst == 0};
+        const ac3::BitAllocRegion region{
+            .start = c.start,
+            .coupling = c.coupling,
+            .cplfleak = c.cplfleak,
+            .cplsleak = c.cplsleak,
+            .snr_all_zero = c.csnroffst == 0 && c.fsnroffst == 0,
+            .delta = {.deltnseg = c.deltnseg,
+                     .deltoffst = c.deltoffst,
+                     .deltlen = c.deltlen,
+                     .deltba = c.deltba}};
         ac3::compute_bit_allocation(exps, static_cast<ac3::SampleRate>(c.fscod), codes,
                                     c.csnroffst, c.fsnroffst, bap, region);
         // Only the allocated region is meaningful; bins below a coupling
@@ -42,6 +48,37 @@ TEST_CASE("snr offset composite formula", "[bitalloc]") {
     STATIC_CHECK(ac3::snr_offset(0, 0) == -960);
     STATIC_CHECK(ac3::snr_offset(15, 0) == 0);
     STATIC_CHECK(ac3::snr_offset(63, 15) == ((48 << 4) + 15) << 2);
+}
+
+TEST_CASE("choose_delta_segments finds a real vs. flat-model divergence", "[bitalloc]") {
+    // exponent = -1 - log2(|c|) (see bitalloc.cpp's own derivation), so this
+    // magnitude is the exact boundary the exponent alone would encode - zero
+    // divergence from the flat model.
+    constexpr int kExp = 10;
+    constexpr int kEnd = 20;
+    const std::vector<std::uint8_t> exps(kEnd, kExp);
+    const double baseline = std::pow(2.0, -1.0 - kExp);
+    std::vector<double> coeffs(kEnd, baseline);
+    // Boost bins 5..9 by exactly one octave: +6 dB, one Table 5.17 step.
+    for (int bin = 5; bin < 10; ++bin) {
+        coeffs[static_cast<std::size_t>(bin)] = baseline * 2.0;
+    }
+    const auto segs = ac3::choose_delta_segments(coeffs, exps, 0);
+    REQUIRE(segs.deltnseg == 1);
+    CHECK(segs.deltoffst[0] == 5);  // bands 0..19 are 1:1 with bins here
+    CHECK(segs.deltlen[0] == 5);
+    CHECK(segs.deltba[0] == 4);  // +6 dB
+}
+
+TEST_CASE("choose_delta_segments is silent when content matches its exponents",
+         "[bitalloc]") {
+    constexpr int kExp = 8;
+    constexpr int kEnd = 30;
+    const std::vector<std::uint8_t> exps(kEnd, kExp);
+    const double baseline = std::pow(2.0, -1.0 - kExp);
+    const std::vector<double> coeffs(kEnd, baseline);
+    const auto segs = ac3::choose_delta_segments(coeffs, exps, 0);
+    CHECK(segs.deltnseg == 0);
 }
 
 TEST_CASE("monotonicity: more snr offset never allocates fewer bits", "[bitalloc]") {

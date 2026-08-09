@@ -1,6 +1,7 @@
 #include "ac3/decoder/decoder.hpp"
 
 #include <algorithm>
+#include <array>
 
 #include "ac3/core/bitalloc.hpp"
 #include "ac3/core/bitreader.hpp"
@@ -397,6 +398,12 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
     std::array<int, kMaxSubstreamChannels> fsnroffst{};
     int csnroffst = 0;
     std::array<bool, 4> rematflg{};
+    // §7.2.2.6, reset to "no segments" at the start of every syncframe like
+    // fsnroffst/codes above, then persisting block to block until
+    // re-transmitted or cleared. Coupling is unsupported here (spxinu/cplinu
+    // already error before this point), so unlike the AC-3 decoder there is
+    // no coupling-channel slot to carry - only the per-fbw-channel deltbae[ch].
+    std::array<DeltaSegments, kMaxSubstreamChannels> delta{};
 
     for (int blk = 0; blk < nblks; ++blk) {
         const auto strategy = [&](int ch) {
@@ -522,7 +529,59 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
         }
         // cplleake is gated on cplinu, which is clear.
         if (frm->dbaflde && r.read(1) != 0) {  // deltbaie
-            return std::unexpected(DecodeError::kUnsupported);
+            // §E2.3.2.9/§5.4.3.49-57: deltbae[ch] per fbw channel only - no
+            // cpldeltbae, since coupling already errors before this point.
+            // The syntax table reads every channel's 2-bit deltbae[ch] code
+            // FIRST, then every channel's segment data - not interleaved per
+            // channel - so all codes are read and validated up front. Bounds
+            // are checked here, before compute_bit_allocation ever sees them,
+            // since deltoffst/deltlen are attacker-controlled and mask[] is
+            // exactly 50 bands wide.
+            std::array<int, eac3::chanmap::kMaxSubstreamFullbw> chcodes{};
+            for (int ch = 0; ch < nfchans; ++ch) {
+                chcodes[static_cast<std::size_t>(ch)] = static_cast<int>(r.read(2));
+                if (chcodes[static_cast<std::size_t>(ch)] == 3) {  // Table 5.16: reserved
+                    return std::unexpected(DecodeError::kReservedValue);
+                }
+                if (blk == 0 && chcodes[static_cast<std::size_t>(ch)] == 0) {
+                    return std::unexpected(DecodeError::kInvalidStream);  // shall not reuse in block 0
+                }
+            }
+            for (int ch = 0; ch < nfchans; ++ch) {
+                const int chcode = chcodes[static_cast<std::size_t>(ch)];
+                if (chcode == 1) {  // new info follows
+                    DeltaSegments segs;
+                    segs.deltnseg = static_cast<int>(r.read(3)) + 1;
+                    int band = 0;
+                    for (int seg = 0; seg < segs.deltnseg; ++seg) {
+                        segs.deltoffst[static_cast<std::size_t>(seg)] =
+                            static_cast<std::uint8_t>(r.read(5));
+                        segs.deltlen[static_cast<std::size_t>(seg)] =
+                            static_cast<std::uint8_t>(r.read(4));
+                        segs.deltba[static_cast<std::size_t>(seg)] =
+                            static_cast<std::uint8_t>(r.read(3));
+                        band += segs.deltoffst[static_cast<std::size_t>(seg)];
+                        const int len = segs.deltlen[static_cast<std::size_t>(seg)];
+                        if (band < 0 || band + len > 50) {
+                            return std::unexpected(DecodeError::kInvalidStream);
+                        }
+                        band += len;
+                    }
+                    delta[static_cast<std::size_t>(ch)] = segs;
+                } else if (chcode == 2) {  // perform no delta alloc
+                    delta[static_cast<std::size_t>(ch)] = {};
+                }
+                // chcode == 0 (reuse): leave delta[ch] exactly as it was.
+            }
+        } else if (blk == 0) {
+            // §5.4.3.47: deltbaie == 0 in block 0 forces "no delta alloc" for
+            // every fbw channel. Reached both when dbaflde is clear (delta[]
+            // is already {} from the frame-start reset, so this is a no-op)
+            // and when dbaflde is set but this frame's first block's deltbaie
+            // reads 0 (where it is the rule that actually matters).
+            for (int ch = 0; ch < nfchans; ++ch) {
+                delta[static_cast<std::size_t>(ch)] = {};
+            }
         }
         if (frm->skipflde && r.read(1) != 0) {  // skiple
             const auto skipl = r.read(9);
@@ -545,11 +604,15 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
             BitAllocCodes channel_codes = codes;
             channel_codes.fgaincod = fgaincod[static_cast<std::size_t>(ch)];
             bap[static_cast<std::size_t>(ch)].assign(static_cast<std::size_t>(end), 0);
+            // delta[ch] for ch == LFE's index is always {} (never written -
+            // §5.4.3.49/E2.3.2.9 bound their deltbae[ch] loop by nfchans, so
+            // the LFE channel has no delta bit allocation field at all).
             compute_bit_allocation(exps[static_cast<std::size_t>(ch)], bsi->sample_rate,
                                    channel_codes, csnroffst,
                                    fsnroffst[static_cast<std::size_t>(ch)],
                                    bap[static_cast<std::size_t>(ch)],
-                                   {.snr_all_zero = snr_all_zero});
+                                   {.snr_all_zero = snr_all_zero,
+                                    .delta = delta[static_cast<std::size_t>(ch)]});
         }
 
         // Mantissas, in coded order: the full-bandwidth channels and then the
