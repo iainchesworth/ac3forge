@@ -242,7 +242,19 @@ int run_smoke(QQmlApplicationEngine& engine, const QString& in_path, const QStri
                          QCoreApplication::exit(passed ? 0 : 1);
                      });
 
-    controller->encodeTo(QUrl::fromLocalFile(out_path));
+    // Posted rather than called straight away: encodeTo() can fail
+    // synchronously (no source above the loudness gate, a routing the source
+    // can't fill) and emit encodeFinished before exec() ever starts.
+    // QCoreApplication::exit() called that early has nothing to exit - no
+    // event loop is on the stack yet - so it only sets the "quit now" flag,
+    // and exec() unconditionally clears that flag the moment it starts. The
+    // process would then run the loop forever with nothing left to end it.
+    // Starting the encode from a zero-delay timer instead guarantees exec()
+    // is already live by the time encodeTo() - and any exit() it triggers -
+    // runs, whether that happens synchronously or on the worker thread.
+    QTimer::singleShot(0, controller, [controller, out_path] {
+        controller->encodeTo(QUrl::fromLocalFile(out_path));
+    });
     return QGuiApplication::exec();
 }
 
