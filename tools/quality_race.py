@@ -16,8 +16,12 @@ Modes:
                one decoder says a stream is readable; agreeing with the
                reference implementation says it is right. Skips gracefully
                when the reference player is not installed.
+  ci         - the CI gate: AC-3 and every E-AC-3 tool variant (stereo and
+               5.1) against a numeric SNR/LSD floor per variant, real
+               non-zero exit on regression. No table to read; see race_ci().
 
 Usage (repo root, after building):  python tools/quality_race.py [mode]
+Set AC3CLI to override the ac3cli binary (see CLI below); CI always does.
 """
 
 import os
@@ -30,7 +34,12 @@ import numpy as np
 
 REPO = Path(__file__).resolve().parent.parent
 BUILD = REPO / "build"
-CLI = BUILD / "dev" / "bin" / "ac3cli.exe"
+# AC3CLI overrides the binary: the "dev" preset this default assumes does not
+# exist (see CMakePresets.json - there is no such preset, only per-platform
+# config-<leg> ones), and there is no ac3cli.exe on Linux at all. CI sets
+# AC3CLI to the leg's real build/config-<preset>/bin/ac3cli; the hardcoded
+# default is left as-is for whatever local workflow it used to match.
+CLI = Path(os.environ.get("AC3CLI", str(BUILD / "dev" / "bin" / "ac3cli.exe")))
 RATE = 48000
 SEG = 2 * RATE  # 2 s per segment
 # Bin 85, sub-band 4: the lowest the encoder will ever start coupling, so
@@ -212,8 +221,14 @@ def decode_scores(original, coded, wav_path, strict=True):
     cmd = ["ffmpeg", "-v", "error", "-y"]
     if strict:
         # Only our own output gets the strict reader: a frame-layout error
-        # shows up here as a CRC failure rather than as quiet noise.
-        cmd += ["-err_detect", "crccheck+bitstream+buffer+explode"]
+        # shows up here as a CRC failure rather than as quiet noise. -xerror
+        # is required alongside -err_detect, not optional: -err_detect alone
+        # only controls what the decoder treats as an error internally
+        # (concealing a bad frame and moving on) - it does not by itself
+        # change ffmpeg's exit code, which run() below is the only thing
+        # checking. -xerror is what turns a detected error into a failing
+        # process and a raised SystemExit here.
+        cmd += ["-xerror", "-err_detect", "crccheck+bitstream+buffer+explode"]
     run(cmd + ["-i", coded, "-c:a", "pcm_f32le", wav_path])
     o, d, _ = align(original, read_wav_f32(wav_path))
     snr = 10 * np.log10(np.sum(o**2) / max(np.sum((d - o) ** 2), 1e-30))
@@ -273,6 +288,99 @@ def race_eac3(original, source, seconds, rates=(96, 128, 192)):
             print(f"{kbps:>5} | {label:<10} | {snr:>7.2f} | {lsd:>6.2f} | "
                   f"{hf:>+6.1f} | {rate:>6.1f}")
         print()
+
+
+# --- CI gate mode ------------------------------------------------------------
+#
+# Everything above prints a table for a human to read. This turns the same
+# measurement - real material (make_material()/make_material_51(), each
+# several real signal types concatenated, decoded from frame 0 onward like
+# every other check here - see CONTRIBUTING.md's "test with real audio, from
+# frame 1 onward"), decoded by FFmpeg (the same independent oracle
+# scripts/run-codec-matrix.sh strict-decodes) - into a numeric floor a CI job
+# can enforce with a real exit code, no table-reading required.
+#
+# The floors are regression tripwires, not targets. They sit well below what
+# tools/quality_race.py's own tables report today (see README.md's own
+# numbers) on purpose: a legitimate encoder change can trade a couple of dB
+# one way for a win elsewhere, and this gate must not fail CI over that. A
+# genuine regression - the kind this exists to catch - collapses a score by
+# many dB, not a fraction of one, so it clears this bar by a wide margin.
+CI_STEREO_KBPS = 192
+CI_51_KBPS = 256
+
+# (min SNR dB, max LSD dB) per E-AC-3 tool variant, one table per material
+# set - 256 kbps split six ways (5.1, decorrelated) is a far tighter
+# per-channel budget than 192 kbps split two ways, so the two regimes score
+# maybe 20+ dB apart on the same variant and cannot share one floor. Measured
+# against a real build (2026-08-09, FFmpeg 8.0.1): stereo/192kbps scored
+# 37-40 dB SNR / 4.3-5.9 dB LSD across every variant; 5.1/256kbps scored
+# 14-15.5 dB SNR / 7.0-8.7 dB LSD. spx/aht/cpl+spx/all trade waveform
+# fidelity for the banded envelope on purpose (see spectral_scores'
+# docstring) - that is why their SNR floors are lower and LSD ceilings
+# higher than "none"/"cpl" rather than every row sharing one bar.
+CI_EAC3_THRESHOLDS = {
+    "stereo": {
+        "none": (28.0, 7.5),
+        "cpl": (28.0, 7.0),
+        "spx": (26.0, 7.0),
+        "aht": (28.0, 8.0),
+        "cpl+spx": (25.0, 7.0),
+        "all": (25.0, 7.5),
+    },
+    "51": {
+        "none": (10.0, 11.0),
+        "cpl": (10.0, 10.0),
+        "spx": (9.0, 9.5),
+        "aht": (10.0, 11.0),
+        "cpl+spx": (9.0, 9.5),
+        "all": (9.0, 10.5),
+    },
+}
+CI_AC3_MIN_SNR_DB = 30.0
+
+
+def gate(name, ok, detail):
+    print(f"  {'PASS' if ok else 'FAIL'}  {name}: {detail}")
+    return ok
+
+
+def race_ci(original, source, original_51, source_51):
+    failures = []
+
+    print(f"=== AC-3 @ {CI_STEREO_KBPS} kbps ===")
+    ac3_path = BUILD / f"ci_ac3_{CI_STEREO_KBPS}.ac3"
+    run([CLI, "encode", source, ac3_path, str(CI_STEREO_KBPS)])
+    snr, _, _ = decode_scores(original, ac3_path, BUILD / "ci_ac3.wav")
+    if not gate(f"ac3 @ {CI_STEREO_KBPS}kbps", snr >= CI_AC3_MIN_SNR_DB,
+                f"SNR {snr:.2f} dB (floor {CI_AC3_MIN_SNR_DB})"):
+        failures.append("ac3")
+
+    for label, source_wav, original_pcm, kbps in (
+        ("stereo", source, original, CI_STEREO_KBPS),
+        ("51", source_51, original_51, CI_51_KBPS),
+    ):
+        print(f"=== E-AC-3 {label} @ {kbps} kbps ===")
+        for variant, tools in EAC3_VARIANTS:
+            coded = BUILD / f"ci_eac3_{label}_{variant}_{kbps}.ec3"
+            cmd = [CLI, "eac3-encode", source_wav, coded, str(kbps)]
+            if tools:
+                cmd.append(tools)
+            run(cmd)
+            snr, lsd, _ = decode_scores(original_pcm, coded,
+                                        BUILD / f"ci_eac3_{label}_{variant}.wav")
+            min_snr, max_lsd = CI_EAC3_THRESHOLDS[label][variant]
+            ok = snr >= min_snr and lsd <= max_lsd
+            if not gate(f"eac3-{label} {variant} @ {kbps}kbps", ok,
+                        f"SNR {snr:.2f} dB (floor {min_snr}), "
+                        f"LSD {lsd:.2f} dB (ceiling {max_lsd})"):
+                failures.append(f"eac3-{label}-{variant}")
+
+    print()
+    if failures:
+        print(f"{len(failures)} CI gate check(s) failed: {', '.join(failures)}")
+        sys.exit(1)
+    print("all CI gate checks passed")
 
 
 DRP = Path(r"C:\Program Files\Dolby\Dolby Reference Player")
@@ -338,7 +446,7 @@ def crosscheck(original, source):
             cmd.append(tools)
         run(cmd)
         ff_wav = BUILD / f"x_{tools}_ff.wav"
-        run(["ffmpeg", "-v", "error", "-y", "-err_detect",
+        run(["ffmpeg", "-v", "error", "-y", "-xerror", "-err_detect",
              "crccheck+bitstream+buffer+explode", "-i", coded,
              "-c:a", "pcm_f32le", ff_wav])
         ff = read_wav_f32(ff_wav)
@@ -451,7 +559,7 @@ def encode_and_decode(source, tag, kbps, couple=False):
     if couple:
         cmd.append("couple")
     run(cmd)
-    run(["ffmpeg", "-v", "error", "-y",
+    run(["ffmpeg", "-v", "error", "-y", "-xerror",
          "-err_detect", "crccheck+bitstream+buffer+explode",
          "-i", ac3, "-c:a", "pcm_f32le", wav])
     return read_wav_f32(wav)
@@ -501,8 +609,13 @@ def main():
         race_coupling(source, original)
     elif which == "ac3":
         race_ac3(original, source, seconds)
+    elif which == "ci":
+        source_51 = BUILD / "race_src51.wav"
+        write_wav_f32(source_51, make_material_51())
+        race_ci(original, source, read_wav_f32(source_51), source_51)
     else:
-        raise SystemExit(f"unknown race '{which}' (ac3 | couple | eac3 | eac3-51 | seam | crosscheck)")
+        raise SystemExit(
+            f"unknown race '{which}' (ac3 | couple | eac3 | eac3-51 | seam | crosscheck | ci)")
 
 
 if __name__ == "__main__":
