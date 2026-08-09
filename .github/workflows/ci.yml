@@ -328,9 +328,11 @@ jobs:
           apt-get update -qq
           apt-get install -y -qq --no-install-recommends \
             build-essential ca-certificates cmake curl git gnupg libasound2-dev lsb-release \
-            ninja-build pkg-config software-properties-common tar unzip wget zip
+            ninja-build pkg-config python3-pip software-properties-common tar unzip wget zip
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install GCC 15
         run: bash .github/toolchain/02-gcc-toolchain.sh
@@ -339,8 +341,12 @@ jobs:
         with:
           vcpkg-commit: "eaca4a577b6b678c6e10252754b6988a61746c19"
 
+      # ubuntu:26.04's python3-pip enforces PEP 668 (no bare `pip install` at
+      # system scope) - --break-system-packages is safe here specifically
+      # because this container is thrown away at the end of the job, unlike a
+      # real machine where that flag risks the system's own Python tooling.
       - name: Install gcovr
-        run: pip install --quiet gcovr
+        run: pip install --quiet --break-system-packages gcovr
 
       - name: Configure
         shell: bash
