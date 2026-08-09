@@ -14,6 +14,11 @@ inline constexpr int version_minor = @AC3FORGE_VERSION_MINOR@;
 inline constexpr int version_patch = @AC3FORGE_VERSION_PATCH@;
 inline constexpr std::string_view version_string = "@AC3FORGE_VERSION@";
 
+// Same as version_string, plus any prerelease suffix from the git tag it was
+// derived from (e.g. "0.2.0-beta.1"). version_string stays bare M.M.P since
+// that is all CMake's project() VERSION field (and CPack) can hold.
+inline constexpr std::string_view version_full = "@AC3FORGE_VERSION_FULL@";
+
 // Git provenance, stamped at build time.
 inline constexpr std::string_view git_commit = "@AC3FORGE_GIT_COMMIT@";
 inline constexpr std::string_view git_commit_full = "@AC3FORGE_GIT_COMMIT_FULL@";

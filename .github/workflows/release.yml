@@ -8,22 +8,21 @@
 # copy, not to reinvent.
 #
 # ---------------------------------------------------------------------------
-# Versioning: the tag is validated against CMakeLists.txt, not derived from it
+# Versioning: the tag IS the version, same as aqualink-automate
 # ---------------------------------------------------------------------------
-# aqualink-automate derives its version FROM the git tag at configure time
-# (cmake/GitVersionDerivation.cmake) - the tag is the only source of truth,
-# and CMakeLists.txt never hardcodes a version at all. ac3forge does the
-# opposite on purpose: `project(ac3forge VERSION ...)` stays the source of
-# truth (see the comment beside it, and cmake/GenerateVersion.cmake's git
-# provenance stamping, which layers ON TOP of that hardcoded version rather
-# than replacing it). Rearchitecting that was judged too large a change to
-# bundle into standing up release automation.
+# cmake/GitVersionDerivation.cmake derives `project(ac3forge VERSION ...)`
+# from the nearest reachable v* git tag at configure time, before project()
+# runs - see that file. Nothing in the tree hardcodes a version to keep in
+# sync with the tag anymore, so `resolve-version` below only validates the
+# tag's own shape (strict SemVer) and provenance (cut from main, not already
+# used) - there is no CMakeLists.txt number left to compare it against.
 #
-# The `resolve-version` job instead enforces that the two stay in sync at
-# release time: it fails fast if the pushed tag's version doesn't match
-# CMakeLists.txt's project() VERSION, rather than silently packaging
-# something mislabelled. Bump CMakeLists.txt (and vcpkg.json - see the
-# comment beside its "version" field) and merge to main BEFORE tagging.
+# `build-packages` threads the resolved tag into _build.yml as both
+# `fetch_depth: 0` (so `git describe` can actually see it) and `version_tag`
+# (a `-DDERIVED_VERSION_OVERRIDE=` override, which is what makes the
+# workflow_dispatch path below stamp correctly: `github-release` only pushes
+# the tag at the very end, after this job has already built, so `git
+# describe` alone would find nothing yet).
 #
 # ---------------------------------------------------------------------------
 # Signing: GPG (human identity) + Sigstore (keyless build provenance)
@@ -125,16 +124,6 @@ jobs:
             is_prerelease="true"
           fi
 
-          # See the file header: the tag does not derive ac3forge's version,
-          # it is checked against it. A mismatch here means someone tagged
-          # before bumping CMakeLists.txt (or forgot vcpkg.json) - fail
-          # before packaging something mislabelled, not after.
-          cmake_version=$(grep -oP '(?<=VERSION )[0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt | head -1)
-          if [ "$bare_version" != "$cmake_version" ]; then
-            echo "::error::tag $version_tag (version $bare_version) does not match CMakeLists.txt's project() VERSION $cmake_version. Bump CMakeLists.txt (and vcpkg.json) to $bare_version and merge to main before tagging."
-            exit 1
-          fi
-
           # Dry runs skip both checks below: no tag is ever pushed or
           # published, so "does the tag already exist" and "is this cut from
           # main" do not apply - and exempting the main-only check is what
@@ -178,6 +167,13 @@ jobs:
     uses: ./.github/workflows/_build.yml
     with:
       do_package: true
+      # Full history + tags: GitVersionDerivation.cmake's `git describe` needs
+      # to see the tag. version_tag also overrides it outright, which matters
+      # specifically for workflow_dispatch - github-release only pushes the
+      # tag at the very end, after this job has already built and packaged,
+      # so `git describe` alone would find nothing (or the previous release).
+      fetch_depth: 0
+      version_tag: ${{ needs.resolve-version.outputs.version_tag }}
 
   # Downloads whatever packages actually got built, signs and attests them,
   # generates an SBOM, and publishes the GitHub Release. Skipped entirely on
