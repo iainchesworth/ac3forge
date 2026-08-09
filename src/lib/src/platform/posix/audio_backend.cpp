@@ -1,12 +1,14 @@
 #include "ac3/platform/audio_backend.hpp"
 
-// Unix: neither capability exists, and that is a decision rather than an
-// oversight. ac3forge's subject is the bitstream - everything that encodes,
-// decodes, measures or wraps AC-3 is file I/O and runs identically here.
-// Live capture would add no coverage the WAV path does not already give, and
-// exclusive-mode IEC 61937 is the expensive half: it needs a device that will
-// accept a non-PCM format under exclusive access, which cannot be verified
-// without the hardware on the other end of an optical or HDMI cable.
+// Unix: none of the three capabilities exist, and that is a decision rather
+// than an oversight. ac3forge's subject is the bitstream - everything that
+// encodes, decodes, measures or wraps AC-3 is file I/O and runs identically
+// here. Live capture would add no coverage the WAV path does not already
+// give, exclusive-mode IEC 61937 is the expensive half (it needs a device
+// that will accept a non-PCM format under exclusive access, unverifiable
+// without hardware on the other end of an optical or HDMI cable), and shared
+// -mode monitor playback needs the same ALSA/PipeWire/CoreAudio integration
+// capture does.
 //
 // 'ac3cli spdif' is the substitute and needs no backend anywhere: it wraps
 // frames into the same IEC 61937 bursts and writes them as a PCM16 WAV, which
@@ -26,6 +28,10 @@ const AudioBackend& audio_backend() {
                         .reason = "this build has no passthrough backend: exclusive-mode "
                                   "IEC 61937 needs direct ALSA hw: access or CoreAudio hog "
                                   "mode, and neither is implemented"},
+        .monitor = {.available = false,
+                   .reason = "this build has no monitor backend: shared-mode PCM playback "
+                             "needs ALSA/PipeWire (Linux) or CoreAudio (macOS), and neither "
+                             "is implemented"},
     };
     return kBackend;
 }

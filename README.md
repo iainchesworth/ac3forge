@@ -71,9 +71,10 @@ substreams, `chanmap`, and the §E3.8.2 render that lays a dependent's channels 
 |---|---|
 | `ac3::io::scan` | Finds access-unit boundaries in a raw elementary stream and reports what it renders, without being told. |
 | `matroska::matroska` | A standalone MKV muxer. Links nothing from `ac3::forge` and knows nothing about AC-3. |
-| `ac3::sinks::iec61937` | S/PDIF burst packing, byte-exact against FFmpeg's `spdif` muxer. |
+| `ac3::sinks::iec61937` | S/PDIF burst packing: AC-3 byte-exact against FFmpeg's `spdif` muxer; E-AC-3 (`Eac3BurstPacker`) verified against FFmpeg's `spdif_header_eac3` and Microsoft's own IEC 61937 documentation (both independently fetched, not recalled — see the limitations below). |
 | `ac3::capture` | WASAPI capture from input endpoints and render endpoints in loopback, through a lock-free SPSC ring. |
-| `ac3::sinks::PassthroughSink` | WASAPI exclusive-mode bitstream output. See the limitations below. |
+| `ac3::sinks::PassthroughSink` | WASAPI exclusive-mode bitstream output, AC-3 or E-AC-3. See the limitations below. |
+| `ac3::sinks::MonitorSink` | WASAPI shared-mode PCM playback: a non-bitstreamed preview/monitor path that decodes what is being encoded and plays it back on an ordinary output. Confirmed against real hardware — see below. |
 | `ac3::analysis` | Peak/RMS metering with console ballistics, and the Gerzon energy vector over the BS.775 ring. |
 
 ## What it does not do
@@ -123,14 +124,35 @@ is unverified.
 | E-AC-3 with cpl / spx / aht | yes | no |
 | E-AC-3 7.1.4 with Annex E tools | no | no |
 
-**Exclusive-mode passthrough has never been confirmed against bitstreaming hardware.** The
-development machine has no S/PDIF or HDMI audio endpoint, so `IsFormatSupported` correctly
-answers no everywhere and the `KSDATAFORMAT_SUBTYPE_IEC61937_DOLBY_DIGITAL` descriptor has
-never been accepted by a real device. What *is* verified: the exclusive-mode path itself works
-(the Realtek endpoint accepts an exclusive PCM format), and the IEC 61937 bursts are
-byte-exact against FFmpeg's `spdif` muxer. A receiver locking on has been confirmed only by
-playing those bursts as a PCM16 WAV through a passthrough output, which is a different code
-path from `PassthroughSink`.
+**Exclusive-mode passthrough — AC-3 and E-AC-3 alike — has never been confirmed against
+bitstreaming hardware.** The development machine has no S/PDIF or HDMI endpoint behind a real
+AV receiver; enumeration during this work also briefly surfaced a monitor's own HDMI audio
+endpoint, which is not a Dolby-capable receiver either and was not used to test bitstreaming.
+`IsFormatSupported` correctly answers no everywhere it has been tried, for both
+`KSDATAFORMAT_SUBTYPE_IEC61937_DOLBY_DIGITAL` and `..._DOLBY_DIGITAL_PLUS`, and neither
+descriptor has been accepted by a real device. What *is* verified: the exclusive-mode path
+itself works (the Realtek endpoint accepts an exclusive PCM format), the AC-3 bursts are
+byte-exact against FFmpeg's `spdif` muxer, and the E-AC-3 burst framing (data type 0x15, the
+24576-byte/4x-carrier-rate burst, multi-syncframe accumulation, `Pd` in bytes not bits) is
+independently verified against both FFmpeg's `spdif_header_eac3` and Microsoft's own
+"Representing Formats for IEC 61937 Transmissions" documentation — fetched live and
+cross-checked against each other, not recalled — plus round-trip and real-audio unit tests
+(`tests/test_iec61937.cpp`). A receiver locking onto AC-3 has been confirmed only by playing
+those bursts as a PCM16 WAV through a passthrough output, a different code path from
+`PassthroughSink`; the same trick now exists for E-AC-3 (`ac3cli spdif`/`monitor`/`live`
+branch on bsid) but has not itself been tried against a receiver either.
+
+**The shared-mode monitor path (`MonitorSink`) *is* confirmed against real hardware.** Unlike
+passthrough it needs no bitstream-capable endpoint — any output works — so
+`ac3cli monitor`/`ac3cli live --monitor` have actually played decoded AC-3 and E-AC-3 (including
+an Atmos stream's 5.1 bed) through this machine's Realtek output in real time, and a live
+microphone capture→encode→monitor session has run end to end. Building this path against real
+hardware surfaced two genuine bugs neither unit tests nor silent/synthetic input would have
+caught: a fixed submit-readiness threshold smaller than an actual chunk let the ring buffer
+silently perform a partial write while reporting failure (corrupting the stream and desyncing
+the submitted/rendered counters), and the live pipeline's Atmos metering step wrote past the
+end of a buffer sized for the object count rather than the bed's fixed six channels. Both are
+fixed; see `src/lib/src/platform/windows/monitor.cpp` and `run_live` in `src/cli/main.cpp`.
 
 **Objects will not decode as objects in Dolby's decoder.** DD+ JOC gates object decoding on a
 keyed, sequence-bound HMAC-SHA-256 tag in the EMDF `protection` field — which the standard
@@ -154,9 +176,9 @@ the metadata is. It is covered bit-by-bit instead ([tests/test_drc.cpp](tests/te
 ### Portability
 
 Only built and tested with MSVC 14.51 on Windows 11. The codec itself has no platform
-dependency, and `src/lib/CMakeLists.txt` selects stub implementations of capture and
-passthrough off Windows, but no other compiler or OS has been exercised. Treat non-Windows as
-unverified rather than supported.
+dependency, and `src/lib/CMakeLists.txt` selects stub implementations of capture, passthrough
+and monitor playback off Windows, but no other compiler or OS has been exercised. Treat
+non-Windows as unverified rather than supported.
 
 ## Building
 
@@ -212,7 +234,7 @@ that the build compiles and `ctest` runs, so none of them can quietly rot.
 
 ## Using the CLI
 
-`ac3cli` has sixteen commands. Run it with no arguments for the full listing.
+`ac3cli` has twenty-one commands. Run it with no arguments for the full listing.
 
 ```bash
 ac3cli encode in.wav out.ac3 448 couple
@@ -230,7 +252,12 @@ ac3cli decode out.ec3 out.wav
 `eac3-silence` take a layout: `stereo | 51 | 71 | 512 | 514 | 714`. Metadata options
 (`drc=`, `heavy`, `dialnorm=auto`, `cmixlev=`, …) follow the positional arguments in any
 order. `atmos`, `orbit`, `levels`, `loudness`, `spdif`, `mkv`, `record`, `devices` and
-`outputs` are documented in the usage text.
+`outputs` are documented in the usage text, as are `play` and `spdif`'s E-AC-3 support, and
+two commands this session added: `monitor` (decode and play a file on an ordinary output —
+the shared-mode preview path) and `live` (capture → encode → optional live monitor and/or
+IEC 61937 passthrough, running continuously and still writing the file `record` always has;
+`live`'s `atmos` mode moves each object's placement every frame from elapsed time, the same
+shape `atmos`'s synthetic orbit demo uses).
 
 `ac3gui` is a Qt Quick front end over the same library: file and live-capture encoding, a plan
 view for dragging objects around the room, a height slider, and channel-level metering.

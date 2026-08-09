@@ -31,6 +31,7 @@ target_sources(ac3forge
         src/meta/mixing.cpp
         src/oba/atmos.cpp
         src/oba/joc.cpp
+        src/oba/motion.cpp
         src/oba/oamd.cpp
         src/sinks/iec61937.cpp
         src/spatial/spatial.cpp)
@@ -42,17 +43,25 @@ target_include_directories(ac3forge
 
 target_compile_features(ac3forge PUBLIC cxx_std_23)
 
-target_link_libraries(ac3forge PRIVATE ac3::warnings)
+# The strict warning set is -Werror, and only MSVC's /W4 /WX has ever had to
+# satisfy it (see .github/workflows/ci.yml on the other legs' warning debt).
+# A fuzz build compiles under Clang today regardless of that debt: it is
+# after undefined behaviour and crashes, not warnings, and fixing ~16
+# pre-existing sign-conversion/double-promotion sites across the codebase is
+# the cross-platform porting task's job, not this one's.
+if(NOT AC3FORGE_BUILD_FUZZERS)
+    target_link_libraries(ac3forge PRIVATE ac3::warnings)
+endif()
 
 # ---------------------------------------------------------------------------
 # The platform tree.
 #
-# Live capture, IEC 61937 passthrough, and the report saying whether either
-# exists are the only OS-specific code in the library. Each is one file of the
-# SAME name under src/platform/<os>/, and CMake compiles exactly one directory
-# of them - so no translation unit ever asks which system it is being built
-# for, and adding a platform means adding a directory rather than editing
-# conditionals scattered through the sources.
+# Live capture, IEC 61937 passthrough, shared-mode monitor playback, and the
+# report saying which of the three exists are the only OS-specific code in
+# the library. Each is one file of the SAME name under src/platform/<os>/, and
+# CMake compiles exactly one directory of them - so no translation unit ever
+# asks which system it is being built for, and adding a platform means adding
+# a directory rather than editing conditionals scattered through the sources.
 #
 # posix/ is the shared Unix implementation; give linux/ or macos/ a file of
 # that name only where the two genuinely diverge, and it overrides for that
@@ -61,7 +70,7 @@ target_link_libraries(ac3forge PRIVATE ac3::warnings)
 if(NOT WIN32 AND NOT LINUX AND NOT APPLE)
     message(FATAL_ERROR
         "ac3forge has no platform directory for this system. Add "
-        "src/lib/src/platform/<os>/{audio_backend,capture,passthrough}.cpp - "
+        "src/lib/src/platform/<os>/{audio_backend,capture,passthrough,monitor}.cpp - "
         "src/lib/src/platform/posix/ is the no-backend implementation and is a "
         "working starting point - then select it here.")
 endif()
@@ -71,7 +80,8 @@ if(WIN32)
         PRIVATE
             src/platform/windows/audio_backend.cpp
             src/platform/windows/capture.cpp
-            src/platform/windows/passthrough.cpp)
+            src/platform/windows/passthrough.cpp
+            src/platform/windows/monitor.cpp)
 
     # How <windows.h> is to be configured wherever it is included: the lean
     # header set, and no min/max macros to collide with <algorithm>. Stated
@@ -88,7 +98,8 @@ if(LINUX)
         PRIVATE
             src/platform/posix/audio_backend.cpp
             src/platform/posix/capture.cpp
-            src/platform/posix/passthrough.cpp)
+            src/platform/posix/passthrough.cpp
+            src/platform/posix/monitor.cpp)
 endif(LINUX)
 
 if(APPLE)
@@ -96,5 +107,6 @@ if(APPLE)
         PRIVATE
             src/platform/posix/audio_backend.cpp
             src/platform/posix/capture.cpp
-            src/platform/posix/passthrough.cpp)
+            src/platform/posix/passthrough.cpp
+            src/platform/posix/monitor.cpp)
 endif(APPLE)
