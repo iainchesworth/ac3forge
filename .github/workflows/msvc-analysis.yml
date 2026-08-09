@@ -1,0 +1,84 @@
+# Windows/MSVC static analysis (/analyze), complementing codeql.yml's Linux
+# GCC-based CodeQL scan. CodeQL here only ever builds the Linux/GCC leg (see
+# codeql.yml's header) - it never sees the windows-msvc build at all, and
+# this repo genuinely ships that leg with the GUI on by default (see
+# CMakePresets.json's windows-msvc preset). A defect /analyze catches that
+# gcc-based CodeQL cannot - SEH, ATL/COM misuse, and other MSVC-specific
+# patterns - would otherwise go unseen. Modelled on aqualink-automate's
+# CodeScanning_MSVCCodeAnalysis job in automated-codescanning.yml.
+name: MSVC Code Analysis
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    # Weekly, offset from the CodeQL cron (Mon 03:17) to avoid runner
+    # contention at the same minute.
+    - cron: "23 3 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: msvc-analysis-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: MSVC Code Analysis
+    runs-on: windows-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # cl.exe, INCLUDE and LIB are not on the default PATH; Ninja does not
+      # set them up itself (unlike MSBuild) - same step _build.yml uses for
+      # every MSVC leg.
+      - name: Setup MSVC environment
+        uses: ./.github/actions/setup-msvc-env
+
+      # windows-msvc defaults AC3FORGE_BUILD_GUI to ON (CMakePresets.json),
+      # and Qt is a prebuilt dependency (cmake/FindQt6.cmake), never a vcpkg
+      # port - see _build.yml's own precedent for this exact install step.
+      - name: Install Qt (prebuilt)
+        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
+        with:
+          version: "6.8.3"
+          cache: true
+
+      - uses: ./.github/actions/setup-vcpkg
+        with:
+          vcpkg-commit: "eaca4a577b6b678c6e10252754b6988a61746c19"
+
+      # QT_ROOT_DIR (set by install-qt-action) is a runner-specific path
+      # cmake/FindQt6.cmake's local search roots do not cover - same override
+      # _build.yml applies for every Windows leg.
+      - name: Configure
+        shell: bash
+        run: cmake --preset config-windows-msvc -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR"
+
+      - name: Build
+        shell: bash
+        run: cmake --build --preset build-windows-msvc -- -k 0
+
+      - name: Run MSVC Code Analysis
+        uses: microsoft/msvc-code-analysis-action@24c285ab36952c9e9182f4b78dfafbac38a7e5ee # v0.1.1
+        id: run-analysis
+        with:
+          cmakeBuildDirectory: ${{ github.workspace }}/build/config-windows-msvc
+          buildConfiguration: Release
+          ruleset: NativeRecommendedRules.ruleset
+          ignoredPaths: ${{ github.workspace }}/tests
+
+      - name: Upload SARIF to GitHub
+        uses: github/codeql-action/upload-sarif@24ea975727876cf496b1eb0c5b36e96e01600b51 # v4.37.0
+        with:
+          sarif_file: ${{ steps.run-analysis.outputs.sarif }}

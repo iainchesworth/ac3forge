@@ -88,7 +88,7 @@ each with a matching `build-<platform>[-debug]` and `test-<platform>[-debug]` pr
 | Windows | clang-cl | `config-windows-llvm[-debug]` | `build-windows-llvm[-debug]` | `test-windows-llvm[-debug]` |
 | Linux | GCC 15 | `config-linux-gcc[-debug]` | `build-linux-gcc[-debug]` | `test-linux-gcc[-debug]` |
 | Linux | Clang 21 | `config-linux-llvm[-debug]` | `build-linux-llvm[-debug]` | `test-linux-llvm[-debug]` |
-| macOS | AppleClang | `config-macos-llvm[-debug]` | `build-macos-llvm[-debug]` | `test-macos-llvm[-debug]` |
+| macOS | Homebrew LLVM | `config-macos-llvm[-debug]` | `build-macos-llvm[-debug]` | `test-macos-llvm[-debug]` |
 
 There is an eleventh configure/build/test trio, Debug-only and not part of the table above
 because it isn't a platform/compiler pair but an instrumented variant of `linux-llvm`:
@@ -413,13 +413,56 @@ real QML channel meters. See [Linux audio](#linux-audio) for what the ALSA verif
 and did not (real hardware), prove.
 
 CI (`.github/workflows/ci.yml`) runs and *requires* windows-msvc, windows-llvm, linux-gcc,
-linux-llvm, linux-llvm-asan-ubsan and static-analysis (clang-tidy) on every push — the two Linux
-legs install the same Qt6/ALSA packages and build/smoke-test the GUI too. Only macos-llvm
-remains experimental (`continue-on-error`).
+linux-llvm, linux-llvm-asan-ubsan, macos-llvm, static-analysis (clang-tidy) and ffmpeg-validate
+on every push — the two Linux legs install the same Qt6/ALSA packages and build/smoke-test the
+GUI too. ffmpeg-validate is a separate, CLI-only linux-llvm build that runs FFmpeg as an
+independent oracle against the full layout/tool/metadata option space (see
+[CONTRIBUTING.md's Oracles section](https://github.com/iainchesworth/ac3forge/blob/main/CONTRIBUTING.md#oracles)) — a different question from the
+[gold-reference gate](#gold-reference-correctness-gate) below, which every leg runs against one
+fixed sample to check output *quality*; ffmpeg-validate instead checks that every option
+combination produces a *structurally correct* stream at all, plus a numeric fidelity floor for
+the Annex E tools the gold-reference gate cannot reach (its own decode side refuses them). No leg
+remains experimental.
 
-No macOS host exists for this project, so `config-macos-llvm`/`config-macos-llvm-debug` have
-never been configured, built or tested — `src/lib/CMakeLists.txt` selects the no-backend audio
-implementations there (same as a Linux machine without `libasound2-dev`), so the codec and GUI
-halves are expected to work and the three audio-hardware commands are expected to report
-themselves unavailable, but none of that has been observed. Treat macOS as unverified until
-someone with a Mac tries it.
+No macOS host exists for this project, so `config-macos-llvm`/`config-macos-llvm-debug` are only
+ever exercised by CI (`macos-latest`, Apple Silicon) — never locally. That CI leg is green:
+configure, build and `ctest` all clean, 256/256 tests passing, using a Homebrew-installed LLVM
+(`cmake/toolchains/macos.llvm.toolchain.cmake` prefers it over Apple's bundled clang) rather than
+a version-pinned one — Homebrew's core `llvm` formula has no versioned sibling the way
+apt.llvm.org or the official Windows installer do, so unlike the other LLVM legs this one tracks
+whatever Homebrew currently ships. The gold-reference correctness gate
+(`scripts/verify-gold-reference.sh` — see [Gold-reference correctness gate](#gold-reference-correctness-gate)
+below) also passes: real SNR numbers from that CI run were 61.81/61.82 dB on macOS, against
+67.84/67.82 dB on Linux and Windows for the same material - a real but modest cross-compiler
+floating-point difference, comfortably clear of the 30 dB gate.
+
+`src/lib/CMakeLists.txt` selects the no-backend audio implementations on macOS (same as a Linux
+machine without `libasound2-dev`), and `AC3FORGE_BUILD_GUI` defaults off there too (no CI leg
+builds `ac3gui` on macOS yet) — so the codec and CLI paths are now verified end to end, but the
+GUI and the three audio-hardware commands remain untested on macOS specifically, same as they
+are everywhere without real hardware or a Qt kit. See [Linux audio](#linux-audio) for the
+general shape of what "verified headless" does and does not prove.
+
+## Gold-reference correctness gate
+
+`scripts/verify-gold-reference.sh` (invoked in CI on every leg except linux-llvm-asan-ubsan,
+which stays diagnostic-only) is the first real implementation of the validation pyramid
+`docs/RESEARCH.md` designed but never wired into CI: encode a fixed, checked-in 5.1 WAV
+(`tests/golden/audio/reference_51.wav`, synthesized once by `tools/gen_gold_reference_wav.py` —
+independent of this codec's own encoder/decoder, not bootstrapped from one of our own encodes),
+strict-decode the result with FFmpeg (`-err_detect crccheck+bitstream+buffer+explode`, checked
+via stderr content rather than exit code — confirmed locally that ffmpeg's own process exits 0
+even on a CRC mismatch), decode it again with ac3cli's own decoder, and assert the two decodes
+agree via `scripts/compare_wav.py`'s delay-compensated SNR (stdlib-only Python, no numpy — every
+CI-hosted runner already ships Python 3, so this needs no new provisioning). The gate is
+perceptual/SNR-based rather than a bit-exact bitstream comparison deliberately: nothing in this
+project verifies that Homebrew LLVM, GCC and MSVC round the codec's floating-point
+pipeline identically, and the real numbers above show they in fact do not, by a small but
+measurable margin.
+
+This is a narrow, cross-platform *quality* check — one sample, two codecs, every OS — not a
+conformance sweep. `tools/check_matrix_coverage.py`, `tools/quality_race.py`'s `ci` mode and the
+rest of the `ffmpeg-validate` CI leg (Linux-only, see [Verified configuration](#verified-configuration)
+above) cover the *correctness* question instead: does every layout, every Annex E tool token and
+every metadata option actually produce a structurally valid, spec-conformant stream, across the
+full option space this gate does not attempt.

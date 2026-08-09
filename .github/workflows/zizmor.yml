@@ -1,0 +1,55 @@
+# Static analysis of the workflow YAML itself (script injection via
+# untrusted inputs, overly-broad permissions, unpinned actions, etc.) -
+# complements CodeQL/OSV-Scanner, which only look at application/dependency
+# code, not the CI pipeline that builds and releases it.
+#
+# Visible-only (continue-on-error on the scan step): findings land in the
+# Security > Code scanning tab but don't block merges. dependency-review.yml
+# is this repo's one blocking check - see docs/branch-protection.md.
+# Modelled on CountdownSolver's .github/workflows/zizmor.yml.
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    - cron: "50 3 * * 1"
+  workflow_dispatch:
+
+env:
+  ZIZMOR_VERSION: "1.27.0"
+
+permissions: {}
+
+concurrency:
+  group: zizmor-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  zizmor:
+    name: Analyze workflows
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+
+      - name: Run zizmor
+        # continue-on-error: findings should surface in the Security tab, not
+        # turn every workflow-touching PR red.
+        continue-on-error: true
+        run: uvx "zizmor@${ZIZMOR_VERSION}" --format=sarif . > results.sarif
+
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@24ea975727876cf496b1eb0c5b36e96e01600b51 # v4.37.0
+        with:
+          sarif_file: results.sarif
+          category: zizmor

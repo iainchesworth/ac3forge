@@ -102,4 +102,5 @@ nav:
       - Releasing: releasing.md
       - History: project/history.md
       - Research: project/research.md
+      - Quality trend: quality-trend.md
       - GUI design brief (superseded): project/gui-design-brief.md
