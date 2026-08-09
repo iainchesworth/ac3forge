@@ -407,6 +407,7 @@ belong on the public site.
 | [docs/gui/](docs/gui/index.md) | Step-by-step `ac3gui` guide, with screenshots |
 | [docs/project/history.md](docs/project/history.md) | How the implementation was built, milestone by milestone |
 | [docs/project/research.md](docs/project/research.md) | The original feasibility research and the decisions that came out of it |
+| [docs/quality-trend.md](docs/quality-trend.md) | Gold-reference SNR history by commit, develop vs. main - the persisted half of `research.md`'s L3/L4 validation pyramid |
 | [fuzz/README.md](fuzz/README.md) | The libFuzzer harnesses: what they cover, how to run them locally |
 | [docs/project/gui-design-brief.md](docs/project/gui-design-brief.md) | Superseded input document for the GUI redesign: current-state inventory at the time, user journeys, open questions |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Conventions, and the validation discipline |
