@@ -28,7 +28,7 @@ depend on them.
 
 | | AC-3 (bsid 8) | E-AC-3 (bsid 16) |
 |---|---|---|
-| Coding modes | 1/0, 2/0, 3/0, 2/1, 3/1, 2/2, 3/2, each with or without LFE | the same, plus 7.1, 5.1.2, 5.1.4 and 7.1.4 through dependent substreams |
+| Coding modes | 1+1 dual mono, 1/0, 2/0, 3/0, 2/1, 3/1, 2/2, 3/2, each with or without LFE (1+1 never carries one) | the same, plus 7.1, 5.1.2, 5.1.4 and 7.1.4 through dependent substreams |
 | Sample rates | 48, 44.1, 32 kHz | 48, 44.1, 32 kHz, plus the `fscod2` half rates 24, 22.05, 16 kHz (Annex E only) |
 | Bit rates | CBR only — the 19 nominal rates of Table 5.18, 32–640 kbps | CBR (the same 19, per substream) or VBR — a quality target with optional min/max kbps bounds, per substream |
 | Transform | long blocks only (512-point MDCT, KBD window) | long blocks only |
@@ -92,10 +92,9 @@ pages, not here. Two gaps are load-bearing enough to flag up front:
     devices at all. Nothing has been bitstreamed to an actual S/PDIF or HDMI output, and no AV
     receiver has been asked to lock onto it.
 
-Also not implemented at all: block switching (short blocks), dual mono (1+1, acmod 0), enhanced
-coupling, and transient pre-noise processing. Variable bit rate is E-AC-3 only — AC-3's frame size
-indexes Table 5.18 rather than stating a word count directly, so it has no equivalent and stays
-CBR.
+Also not implemented at all: block switching (short blocks), enhanced coupling, and transient
+pre-noise processing. Variable bit rate is E-AC-3 only — AC-3's frame size indexes Table 5.18
+rather than stating a word count directly, so it has no equivalent and stays CBR.
 
 ## Where to go next
 

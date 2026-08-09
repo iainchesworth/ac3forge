@@ -56,6 +56,9 @@ struct Bsi {
     int dialnorm = 31;
     bool compre = false;
     std::optional<std::uint16_t> chanmap;
+    // Ch2's own dialnorm/compr, present only when acmod is kDualMono (1+1).
+    std::optional<int> dialnorm2;
+    std::optional<std::uint8_t> compr2;
 };
 
 // Table E1.2's mixing-metadata payload. None of it changes how the audio is
@@ -175,11 +178,6 @@ std::expected<Bsi, DecodeError> parse_bsi(BitReader& r, std::size_t frame_bytes)
     if (bsid < eac3::kMinDecodableBsid || bsid > eac3::kBsid) {
         return std::unexpected(DecodeError::kUnsupported);
     }
-    if (bsi.acmod == Acmod::kDualMono) {
-        // 1+1 is two programs sharing a syncframe, with a second copy of every
-        // metadata item; it has no channel layout to render.
-        return std::unexpected(DecodeError::kUnsupported);
-    }
     bsi.dialnorm = static_cast<int>(r.read(5));
     // §E3.8.5: in a DEPENDENT substream compre marks the last dependent of the
     // program rather than announcing a compression word - though it still
@@ -188,7 +186,15 @@ std::expected<Bsi, DecodeError> parse_bsi(BitReader& r, std::size_t frame_bytes)
     if (bsi.compre) {
         r.skip(8);  // compr
     }
-    // acmod 0x0 is refused above, so dialnorm2/compr2e never apply.
+    // Annex E Table E1.2: unconditional on strmtyp, mirroring the encoder's
+    // own write side - even a dependent substream coding 1+1 would carry it,
+    // though nothing in this repo ever builds one.
+    if (bsi.acmod == Acmod::kDualMono) {
+        bsi.dialnorm2 = static_cast<int>(r.read(5));
+        if (r.read(1) != 0) {  // compr2e
+            bsi.compr2 = static_cast<std::uint8_t>(r.read(8));
+        }
+    }
     if (bsi.strmtyp == StreamType::kDependent && r.read(1) != 0) {  // chanmape
         bsi.chanmap = static_cast<std::uint16_t>(r.read(16));
     }
@@ -377,6 +383,8 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
     out.acmod = bsi->acmod;
     out.lfe = bsi->lfe;
     out.dialnorm = bsi->dialnorm;
+    out.dialnorm2 = bsi->dialnorm2;
+    out.compr2 = bsi->compr2;
     out.numblkscod = bsi->numblkscod;
     out.chanmap = bsi->chanmap;
     out.last_dependent = bsi->strmtyp == StreamType::kDependent && bsi->compre;
@@ -428,7 +436,9 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
         if (r.read(1) != 0) {
             r.skip(8);  // dynrng: parsed, not applied
         }
-        // acmod 0x0 is refused, so dynrng2e never applies.
+        if (bsi->acmod == Acmod::kDualMono && r.read(1) != 0) {
+            r.skip(8);  // dynrng2e -> dynrng2: parsed, not applied - same as dynrng
+        }
 
         // Spectral extension. Block 0's strategy is implied rather than sent.
         const bool spxstre = blk == 0 || r.read(1) != 0;
@@ -709,6 +719,26 @@ std::expected<DecodedAccessUnit, DecodeError> Eac3Decoder::decode_access_unit(
         }
     }
 
+    DecodedAccessUnit out;
+    out.sample_rate = lead.sample_rate;
+    out.acmod = lead.acmod;
+    out.dialnorm = lead.dialnorm;
+    out.substream_count = static_cast<int>(substreams.size());
+
+    // Dual mono has no Table E2.5 location - Ch1 and Ch2 are unrelated
+    // programmes, not directions - and it has no bed/dependent split to make:
+    // 1+1 is always this one lone independent substream. acmod_map() has a
+    // placeholder L/R entry for it purely so channel-count bookkeeping
+    // elsewhere still adds up; consulting
+    // it here would mislabel Ch2 as a right channel, which is exactly the
+    // "not a pair" distinction dual mono exists to preserve. So: pass the
+    // substream's own two channels straight through in coded order, and leave
+    // `layout` empty to say plainly that there is no spatial layout to report.
+    if (lead.acmod == Acmod::kDualMono) {
+        out.channels = lead.channels;
+        return out;
+    }
+
     // §E3.8.2: the bed's locations, then every dependent's unioned in. A
     // dependent's channels that correspond to the independent's REPLACE them;
     // the rest extend the layout.
@@ -716,10 +746,6 @@ std::expected<DecodedAccessUnit, DecodeError> Eac3Decoder::decode_access_unit(
     for (const auto& sub : substreams) {
         occupied = static_cast<std::uint16_t>(occupied | sub.location_map());
     }
-    DecodedAccessUnit out;
-    out.sample_rate = lead.sample_rate;
-    out.dialnorm = lead.dialnorm;
-    out.substream_count = static_cast<int>(substreams.size());
     out.layout = eac3::chanmap::expand(occupied);
     // §E3.8.2 caps a single program at 16 rendered channels.
     if (out.layout.count > 16) {

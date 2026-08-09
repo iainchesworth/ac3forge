@@ -1460,10 +1460,22 @@ TEST_CASE("E-AC-3 rejects configurations it cannot express", "[eac3]") {
           ac3::FrameError::kInvalidBitrate);
     CHECK(ac3::eac3::build_silent_frame({.bitrate_kbps = 192, .dialnorm = 0}).error() ==
           ac3::FrameError::kInvalidDialnorm);
-    // 1+1 needs a second program's metadata throughout; not supported yet.
+    // 1+1 needs Ch2's own dialnorm2 (§E1.2); missing or out of range is
+    // exactly as invalid as Ch1's own dialnorm would be.
     CHECK(ac3::eac3::build_silent_frame(
               {.bitrate_kbps = 192, .acmod = ac3::Acmod::kDualMono})
-              .has_value() == false);
+              .error() == ac3::FrameError::kInvalidDialnorm);
+    CHECK(ac3::eac3::build_silent_frame({.bitrate_kbps = 192,
+                                         .acmod = ac3::Acmod::kDualMono,
+                                         .dialnorm2 = 0})
+              .error() == ac3::FrameError::kInvalidDialnorm);
+}
+
+TEST_CASE("E-AC-3 dual mono builds a valid silent frame once dialnorm2 is set", "[eac3]") {
+    const auto frame = ac3::eac3::build_silent_frame(
+        {.bitrate_kbps = 192, .acmod = ac3::Acmod::kDualMono, .dialnorm2 = 18});
+    REQUIRE(frame.has_value());
+    CHECK(frame->size() == 768);
 }
 
 TEST_CASE("E-AC-3 accepts a bitrate off Table 5.18's nominal list", "[eac3]") {

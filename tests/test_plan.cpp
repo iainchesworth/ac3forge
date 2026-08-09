@@ -118,6 +118,52 @@ TEST_CASE("a replaced bed channel is named apart from the one replacing it") {
     }
 }
 
+TEST_CASE("1+1 dual mono is a plan, not a soundstage", "[dual-mono]") {
+    using ac3::Acmod;
+    using ac3::plan::LayoutId;
+
+    const auto id = ac3::plan::parse_layout("1+1");
+    REQUIRE(id.has_value());
+    CHECK(*id == LayoutId::kDualMono);
+
+    const auto cp = ac3::plan::channel_plan_for(LayoutId::kDualMono);
+    CHECK(cp.bed_acmod == Acmod::kDualMono);
+    CHECK_FALSE(cp.bed_lfe);  // no soundfield, so no subwoofer to put anywhere
+    CHECK(cp.dependents.empty());
+
+    // AC-3 codes acmod 0 directly - no Annex E substream layer needed - so
+    // unlike every wide layout, 1+1 carries on both codecs.
+    CHECK(ac3::plan::carries(ac3::plan::Codec::kAc3, LayoutId::kDualMono));
+    CHECK(ac3::plan::carries(ac3::plan::Codec::kEac3, LayoutId::kDualMono));
+
+    // A 2-channel source is never auto-inferred as dual mono - it stays
+    // ambiguous with plain stereo, so 1+1 has to be asked for by name.
+    const auto inferred = ac3::plan::layout_for_source(2);
+    REQUIRE(inferred.has_value());
+    CHECK(*inferred == LayoutId::kStereo);
+
+    // Routing is the identity: no panning, no downmix, Ch1 stays Ch1.
+    const auto routing = ac3::plan::route(LayoutId::kDualMono, 2,
+                                          ac3::meta::CentreMixLevel::kMinus4_5dB,
+                                          ac3::meta::SurroundMixLevel::kMinus6dB);
+    REQUIRE(routing.has_value());
+    CHECK(routing->is_permutation());
+    CHECK(routing->at(0, 0) == Approx(1.0));
+    CHECK(routing->at(0, 1) == Approx(0.0));
+    CHECK(routing->at(1, 0) == Approx(0.0));
+    CHECK(routing->at(1, 1) == Approx(1.0));
+
+    // Every other source width is refused outright - there is no fold-down or
+    // pan that turns, say, a 5.1 source into two independent programmes.
+    for (const std::size_t channels : {std::size_t{1}, std::size_t{3}, std::size_t{6}}) {
+        INFO("source channels " << channels);
+        CHECK_FALSE(ac3::plan::route(LayoutId::kDualMono, channels,
+                                     ac3::meta::CentreMixLevel::kMinus4_5dB,
+                                     ac3::meta::SurroundMixLevel::kMinus6dB)
+                        .has_value());
+    }
+}
+
 TEST_CASE("every layout name parses back to itself") {
     for (const auto& info : ac3::plan::kLayouts) {
         const auto parsed = ac3::plan::parse_layout(info.name);
@@ -645,6 +691,13 @@ TEST_CASE("no speaker is sent more than full scale") {
     // every coefficient equally, which is what route() has to do too: folding
     // a 5.1.4 source's ceiling into a 7.1.4 bed measured +1.5 dBFS without it.
     for (const auto& info : ac3::plan::kLayouts) {
+        // Dual mono is not a pannable soundstage - route() only ever accepts
+        // an exact 2-channel source for it (Ch1, Ch2, identity) and refuses
+        // every other width by design, which the §7.8.1 normalisation this
+        // test checks has nothing to say about.
+        if (info.id == ac3::plan::LayoutId::kDualMono) {
+            continue;
+        }
         for (const std::size_t channels : {std::size_t{2}, std::size_t{6}, std::size_t{8},
                                            std::size_t{10}, std::size_t{12}}) {
             const auto routing =

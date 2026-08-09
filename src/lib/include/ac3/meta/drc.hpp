@@ -208,6 +208,17 @@ inline constexpr std::string_view kProfileNames =
 // Returns a large negative number for digital silence rather than −inf.
 [[nodiscard]] double level_dbfs(std::span<const std::span<const float>> channels);
 
+// True peak of a single channel, in dBFS. Dual mono (acmod 0) has no downmix
+// to measure — §7.7.2.2 is explicit that compr applies to Ch1's own signal
+// and compr2 to Ch2's, never a mix of the two — so this is what feeds
+// HeavyCompressor::next() for each programme independently. history is the
+// previous frame's last 256 samples of this same channel (the MDCT overlap),
+// for the same reason mono_downmix_peak_dbfs takes one: the frame that has
+// just gone quiet still owns the loud tail sitting in block 0's window. Pass
+// an empty span when there is none to account for.
+[[nodiscard]] double channel_peak_dbfs(std::span<const double> history,
+                                       std::span<const float> samples);
+
 // One dynrng word per audio block. State carries across blocks AND frames:
 // the smoothing filter has no idea where a syncframe boundary is, and it must
 // not, or every 32 ms the gain would jump.

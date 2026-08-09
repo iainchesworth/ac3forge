@@ -3,7 +3,8 @@
 | Header | Contents |
 |---|---|
 | `ac3/core/tables.hpp` | `SampleRate`, `Acmod`, `ExpStrategy`, frame constants, Table 5.18. Nearly everything includes it. |
-| `ac3/core/eac3_tables.hpp` | Annex E: `StreamType`, the Table E2.5 `chanmap` namespace, `Layout`. Also the general channel model: `chanmap::ChannelPlan` (a bed acmod/lfe plus however many dependent chanmaps it takes) and `chanmap::allocate(locations)`, which partitions an arbitrary Table E2.5 location bitmask into one — the algorithm `ac3::plan::LayoutId`'s seven named layouts are now themselves expressed through. |
+| `ac3/core/eac3_tables.hpp` | Annex E: `StreamType`, the Table E2.5 `chanmap` namespace, `Layout`. Also the general channel model: `chanmap::ChannelPlan` (a bed acmod/lfe plus however many dependent chanmaps it takes) and `chanmap::allocate(locations)`, which partitions an arbitrary Table E2.5 location bitmask into one — the algorithm `ac3::plan::LayoutId`'s eight named layouts are now themselves expressed through
+(dual mono's is a special case — see [Encoding AC-3](encoding-ac3.md)). |
 | `ac3/core/bitreader.hpp`, `bitwriter.hpp` | MSB-first bit I/O. |
 | `ac3/core/mdct.hpp`, `window.hpp` | The 512-point MDCT and the KBD window. |
 | `ac3/core/bitalloc.hpp`, `exponents.hpp`, `mantissas.hpp` | The §7.2 allocation model and §7.1/§7.3 coding, shared by encoder and decoder. |

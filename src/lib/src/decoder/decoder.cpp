@@ -27,8 +27,7 @@ std::string_view describe(DecodeError error) {
         case DecodeError::kBadCrc: return "the frame's CRC does not check out";
         case DecodeError::kReservedValue: return "a header field holds a value A/52 reserves";
         case DecodeError::kUnsupported:
-            return "valid AC-3 this decoder does not implement (bsid > 8, dual mono, or block "
-                   "switching)";
+            return "valid AC-3 this decoder does not implement (bsid > 8, or block switching)";
         case DecodeError::kInvalidStream:
             return "the frame contradicts a constraint A/52 requires of it";
     }
@@ -208,9 +207,6 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
     (void)r.read(3);  // bsmod
     const auto acmod_value = r.read(3);
     const auto acmod = static_cast<Acmod>(acmod_value);
-    if (acmod == Acmod::kDualMono) {
-        return std::unexpected(DecodeError::kUnsupported);
-    }
     if ((acmod_value & 0x1) != 0 && acmod != Acmod::k1_0) {
         (void)r.read(2);  // cmixlev
     }
@@ -228,6 +224,16 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
     }
     if (r.read(1) != 0) r.skip(8);   // langcode/langcod
     if (r.read(1) != 0) r.skip(7);   // audprodie: mixlevel + roomtyp
+    std::optional<int> dialnorm2;
+    std::optional<std::uint8_t> compr2;
+    if (acmod == Acmod::kDualMono) {
+        dialnorm2 = static_cast<int>(r.read(5));
+        if (r.read(1) != 0) {  // compr2e
+            compr2 = static_cast<std::uint8_t>(r.read(8));
+        }
+        if (r.read(1) != 0) r.skip(8);  // langcod2e/langcod2
+        if (r.read(1) != 0) r.skip(7);  // audprodi2e: mixlevel2 + roomtyp2
+    }
     (void)r.read(1);                 // copyrightb
     (void)r.read(1);                 // origbs
     if (r.read(1) != 0) r.skip(14);  // timecod1
@@ -248,6 +254,9 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
     out.dialnorm = dialnorm;
     out.compr = compr;
     out.dynrng.fill(meta::kDynrngUnity);
+    out.dialnorm2 = dialnorm2;
+    out.compr2 = compr2;
+    out.dynrng2.fill(meta::kDynrngUnity);
     out.channels.assign(static_cast<std::size_t>(nchans),
                         std::vector<float>(kSamplesPerFrame, 0.0f));
 
@@ -255,6 +264,7 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
     // without one is unity — never the previous frame's value, which is what
     // lets a decoder join a stream mid-programme at the right level.
     std::uint8_t dynrng_word = meta::kDynrngUnity;
+    std::uint8_t dynrng2_word = meta::kDynrngUnity;
 
     // Decode state persisting across blocks. Streams are the fbw channels,
     // then the LFE, then - when coupling is in use - the coupling channel as
@@ -303,6 +313,12 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
             dynrng_word = static_cast<std::uint8_t>(r.read(8));
         }
         out.dynrng[static_cast<std::size_t>(block)] = dynrng_word;
+        if (acmod == Acmod::kDualMono) {
+            if (r.read(1) != 0) {  // dynrng2e
+                dynrng2_word = static_cast<std::uint8_t>(r.read(8));
+            }
+            out.dynrng2[static_cast<std::size_t>(block)] = dynrng2_word;
+        }
 
         // --- coupling strategy (§5.3.3) ---
         if (r.read(1) != 0) {  // cplstre: a new strategy, else the prior one stands
@@ -738,10 +754,15 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
         // Applied to every coded channel including the LFE: §7.7.1 describes a
         // gain change to the audio block, not to a subset of its channels. The
         // coupling channel is skipped because decoupling has already spread it
-        // into the channels above.
-        const double drc = block_gain(config_, dynrng_word, compr);
-        if (drc != 1.0) {
-            for (int ch = 0; ch < nchans; ++ch) {
+        // into the channels above. Dual mono's two channels are independent
+        // programmes, so Ch2 gets its own gain from its own words rather than
+        // sharing Ch1's - applying one programme's compression to the other
+        // would be exactly the cross-talk 1+1 exists to avoid.
+        for (int ch = 0; ch < nchans; ++ch) {
+            const bool second_programme = acmod == Acmod::kDualMono && ch == 1;
+            const double drc = second_programme ? block_gain(config_, dynrng2_word, compr2)
+                                                 : block_gain(config_, dynrng_word, compr);
+            if (drc != 1.0) {
                 for (auto& value : coeffs[static_cast<std::size_t>(ch)]) {
                     value *= drc;
                 }
