@@ -20,9 +20,9 @@ the technical names AC-3 and E-AC-3. Whether the patents reading on these format
 your use is your problem to assess, not something this project resolves.
 
 **Status.** Version 0.2.0. The API is not stable. Green and required in CI on Windows (MSVC,
-clang-cl) and Linux (GCC 15, Clang 21) — CLI and GUI alike on all four — plus an ASan+UBSan leg
-and clang-tidy static analysis; macOS is the one experimental leg, never run anywhere. See
-[Portability](#portability).
+clang-cl) and Linux (GCC 15, Clang 21) — CLI and GUI alike on all four — plus an ASan+UBSan leg,
+clang-tidy static analysis and a line/branch coverage gate over the library; macOS is the one
+experimental leg, never run anywhere. See [Portability](#portability).
 
 ## Contents
 
@@ -190,10 +190,12 @@ fallback (macOS, or Linux without libasound headers) that reports itself unavail
 failing to link. See [Linux audio](docs/BUILDING.md#linux-audio) for the ALSA backend
 specifically.
 
-CI (`.github/workflows/ci.yml`) runs all five platform/compiler legs plus static analysis on
-every push, and requires six of them: windows-msvc, windows-llvm, linux-gcc, linux-llvm,
-linux-llvm-asan-ubsan (AddressSanitizer + UndefinedBehaviorSanitizer, `cmake/Sanitizers.cmake`)
-and static-analysis (clang-tidy, `.clang-tidy`). The two Linux legs install a Qt6 kit and build
+CI (`.github/workflows/ci.yml`) runs all five platform/compiler legs plus static analysis and
+coverage on every push, and requires seven of them: windows-msvc, windows-llvm, linux-gcc,
+linux-llvm, linux-llvm-asan-ubsan (AddressSanitizer + UndefinedBehaviorSanitizer,
+`cmake/Sanitizers.cmake`), static-analysis (clang-tidy, `.clang-tidy`) and coverage (gcovr line/
+branch gate over `src/lib` via the `linux-gcc-coverage` preset, `cmake/Coverage.cmake`). The two
+Linux legs install a Qt6 kit and build
 `ac3gui` too (`-DAC3FORGE_BUILD_GUI=ON`, on top of the preset's own default `OFF`), then run it
 headless via `--smoke`; `linux-llvm-asan-ubsan` stays CLI-only on purpose, to keep a Qt kit out
 of the sanitizer leg's install time. Only macos-llvm remains experimental (`continue-on-error`)
