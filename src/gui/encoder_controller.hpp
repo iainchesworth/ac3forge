@@ -58,21 +58,47 @@ class EncoderController : public QObject {
     // Annex E coding tools or mixmdate group.
     Q_PROPERTY(int codecIndex READ codecIndex WRITE setCodecIndex NOTIFY planChanged)
     Q_PROPERTY(QStringList codecNames READ codecNames CONSTANT)
-    Q_PROPERTY(int layoutIndex READ layoutIndex WRITE setLayoutIndex NOTIFY planChanged)
-    // Only the layouts the current codec can carry, so an unreachable choice
-    // is never offered rather than offered and then refused. The list always
-    // ends with one synthetic "Custom…" entry - not a LayoutId, just the
-    // signal to read customChannels instead - for anything Annex E allows
-    // that has no preset (a full channel-picker is a later design pass; this
-    // is the minimal control that exercises the general allocator at all).
-    Q_PROPERTY(QStringList layoutNames READ layoutNames NOTIFY planChanged)
     Q_PROPERTY(QString layoutDetail READ layoutDetail NOTIFY planChanged)
-    Q_PROPERTY(bool customLayoutSelected READ customLayoutSelected NOTIFY planChanged)
-    // Comma-separated Table E2.5 location names (plan::parse_channels), read
-    // only when customLayoutSelected is true.
-    Q_PROPERTY(QString customChannels READ customChannels WRITE setCustomChannels NOTIFY planChanged)
     Q_PROPERTY(int containerIndex READ containerIndex WRITE setContainerIndex NOTIFY planChanged)
     Q_PROPERTY(QStringList containerNames READ containerNames CONSTANT)
+
+    // ---- the channel model --------------------------------------------------
+    // Tier 1: exactly one bed, always - one of Table 5.8's seven speaker
+    // shapes - plus an independent LFE toggle. Tier 2: additive "extras"
+    // pairs/singles on top. Replaces layoutNames() as a UI concept entirely;
+    // every combination resolves through the same ac3::eac3::chanmap::allocate()
+    // a hand-typed comma list already did, so the picker can never express
+    // something the encoder would then refuse.
+    Q_PROPERTY(int bedIndex READ bedIndex WRITE setBedIndex NOTIFY planChanged)
+    // Seven rows {id, label, channels}, always all seven regardless of codec:
+    // AC-3 disables only the extras, never the bed (plan::carries() already
+    // offers AC-3 mono and stereo, and this must not remove that).
+    Q_PROPERTY(QVariantList bedChoices READ bedChoices CONSTANT)
+    Q_PROPERTY(bool bedLfe READ bedLfe WRITE setBedLfe NOTIFY planChanged)
+    // Five rows {id, label, channels, checked, enabled, reason}: `enabled` is
+    // false when ticking (or, for an already-ticked row, UNticking) would
+    // leave chanmap::allocate() unable to satisfy the result - over the
+    // 16-channel ceiling (A/52 §E3.8.2), no Table 5.8 bed fits, or an LFE2
+    // left with no full-bandwidth companion once its last co-selected extra
+    // is removed. `reason` names which, or the lock reason, for the row to
+    // print next to itself.
+    Q_PROPERTY(QVariantList extrasModel READ extrasModel NOTIFY planChanged)
+    // AC-3 has no dependent substreams at all (Table 5.8 tops out at 3/2 +
+    // LFE), so it leaves every bed shape and the LFE toggle live and disables
+    // only the extras - never the reverse. Object mode locks everything,
+    // including the bed, at a fixed 5.1.
+    Q_PROPERTY(bool extrasLocked READ extrasLocked NOTIFY planChanged)
+    // "<ear-level count>.<LFE count>[.<ceiling count>]", read off the actual
+    // location mask so an unnamed combination still reads honestly - 3/2 +
+    // LFE + LFE2 is "5.2", 3/2 + LFE + rear + both ceiling pairs is "7.1.4".
+    Q_PROPERTY(QString channelShapeName READ channelShapeName NOTIFY planChanged)
+    Q_PROPERTY(int channelBudgetUsed READ channelBudgetUsed NOTIFY planChanged)
+    Q_PROPERTY(int channelBudgetMax READ channelBudgetMax CONSTANT)
+    // plan::format_channels() of the current bed+LFE+extras mask - the
+    // comma-separated Table E2.5 list ac3cli's own [layout] argument takes,
+    // so the command bar can generate a line that actually runs rather than
+    // a friendly name ac3cli has no preset for.
+    Q_PROPERTY(QString channelLocationsText READ channelLocationsText NOTIFY planChanged)
 
     // ---- Annex E coding tools ---------------------------------------------
     Q_PROPERTY(bool toolsAvailable READ toolsAvailable NOTIFY planChanged)
@@ -170,13 +196,21 @@ public:
 
     [[nodiscard]] int codecIndex() const { return static_cast<int>(codec_); }
     [[nodiscard]] QStringList codecNames() const;
-    [[nodiscard]] int layoutIndex() const;
-    [[nodiscard]] QStringList layoutNames() const;
     [[nodiscard]] QString layoutDetail() const;
-    [[nodiscard]] bool customLayoutSelected() const { return custom_layout_; }
-    [[nodiscard]] QString customChannels() const { return custom_channels_text_; }
     [[nodiscard]] int containerIndex() const { return container_index_; }
     [[nodiscard]] QStringList containerNames() const;
+
+    [[nodiscard]] int bedIndex() const;
+    [[nodiscard]] QVariantList bedChoices() const;
+    [[nodiscard]] bool bedLfe() const { return bed_lfe_; }
+    [[nodiscard]] QVariantList extrasModel() const;
+    [[nodiscard]] bool extrasLocked() const {
+        return atmos_enabled_ || codec_ == ac3::plan::Codec::kAc3;
+    }
+    [[nodiscard]] QString channelShapeName() const;
+    [[nodiscard]] int channelBudgetUsed() const;
+    [[nodiscard]] int channelBudgetMax() const { return 16; }
+    [[nodiscard]] QString channelLocationsText() const;
 
     [[nodiscard]] bool toolsAvailable() const {
         return codec_ == ac3::plan::Codec::kEac3 && !atmos_enabled_;
@@ -232,8 +266,8 @@ public:
 
     void setBitrateKbps(int kbps);
     void setCodecIndex(int index);
-    void setLayoutIndex(int index);
-    void setCustomChannels(const QString& text);
+    void setBedIndex(int index);
+    void setBedLfe(bool on);
     void setContainerIndex(int index);
     void setCoupling(bool on);
     void setSpx(bool on);
@@ -260,6 +294,14 @@ public:
     void setObjectSpread(double value);
     void setObjectLfeSend(double value);
 
+    // Refused (silently, same as a bed button or LFE toggle) when locked or
+    // when the result would leave chanmap::allocate() unable to satisfy it.
+    Q_INVOKABLE void toggleExtra(const QString& id);
+    // Sets bed + LFE + extras together - "5.1", "7.1", "5.1.4", "7.1.4" or
+    // "5.2" - the starting points the Format tab's preset buttons offer.
+    // Upgrades AC-3 to E-AC-3 first if the preset needs a dependent substream,
+    // the same way a manual extras tick would otherwise be refused outright.
+    Q_INVOKABLE void applyChannelPreset(const QString& name);
     Q_INVOKABLE void loadSourceFile(const QUrl& url);
     Q_INVOKABLE void encodeTo(const QUrl& url);
     Q_INVOKABLE void cancel();
@@ -311,17 +353,17 @@ private:
 
     // Everything the user has chosen, as the one value ac3cli also builds.
     [[nodiscard]] ac3::plan::Plan currentPlan() const;
-    // Object mode always codes a 5.1 bed, so the layout it reports is that
-    // bed rather than whatever the layout box last showed.
-    [[nodiscard]] ac3::plan::LayoutId effectiveLayout() const;
+    // The bed's own acmod/lfeon plus every selected extra's bits, OR'd
+    // together - what a request to chanmap::allocate() looks like from here.
+    // Object mode overrides this entirely (see currentPlan()), so this never
+    // needs to know about atmos_enabled_ itself.
+    [[nodiscard]] std::uint16_t currentLocationMask() const;
     // currentPlan() resolved to its actual channels - what every display and
-    // routing computation below should read, whether the plan came from a
-    // named layout or a custom selection. Assumes currentPlan() validates,
+    // routing computation below should read. Assumes currentPlan() validates,
     // the way ac3cli's own resolve() does.
     [[nodiscard]] ac3::plan::ChannelPlan effectiveChannelPlan() const;
-    // What the layout box's detail line and the routing summary call this
-    // plan: a named layout's label, "5.1 bed" for object mode, or the parsed
-    // channel list for a custom selection.
+    // What the routing summary calls this plan: "5.1 bed" for object mode,
+    // else the derived shape name (channelShapeName()).
     [[nodiscard]] QString effectiveLabel() const;
 
     // Channels through the plan and out as AC-3 or E-AC-3. One worker for
@@ -384,12 +426,14 @@ private:
     int bitrate_kbps_ = 192;
 
     ac3::plan::Codec codec_ = ac3::plan::Codec::kAc3;
-    ac3::plan::LayoutId layout_ = ac3::plan::LayoutId::kStereo;
-    // Selected via layoutNames' trailing "Custom…" entry. custom_channels_text_
-    // is kept as typed even when it does not yet parse, so a still-in-progress
-    // edit is not silently discarded.
-    bool custom_layout_ = false;
-    QString custom_channels_text_;
+    // Tier 1: the bed and its independent LFE. Defaults to stereo, matching
+    // what a freshly opened window always used to call itself; loading a
+    // source or picking a preset moves it.
+    ac3::Acmod bed_acmod_ = ac3::Acmod::k2_0;
+    bool bed_lfe_ = false;
+    // Tier 2: OR of the selected extras' Table E2.5 bits (kLwRw, kLrsRrs,
+    // kVhlVhr, kLtsRts, kLfe2 - see kExtras in the .cpp).
+    std::uint16_t extras_mask_ = 0;
     ac3::plan::Tools tools_{};
     ac3::plan::Metadata meta_{};
     int container_index_ = 0;

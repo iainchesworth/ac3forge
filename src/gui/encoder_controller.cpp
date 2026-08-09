@@ -60,6 +60,64 @@ constexpr std::array<ac3::meta::ProfileId, 5> kDrcProfiles = {
     ac3::meta::ProfileId::kMusicStandard, ac3::meta::ProfileId::kMusicLight,
     ac3::meta::ProfileId::kSpeech};
 
+// ---------------------------------------------------------------------------
+// The channel model's two tiers. Tier 1 (bed) is Table 5.8's seven speaker
+// shapes, always all seven regardless of codec - AC-3 disables only the
+// extras (see EncoderController::extrasLocked). Tier 2 (extras) is additive
+// Table E2.5 locations on top of the bed.
+//
+// The handoff's own extras table names three ceiling pairs (front/middle/
+// rear). Checked directly against A/52-2018 Table E2.5 (10008-10033 in the
+// spec text): there are only TWO ceiling pairs at all - Vhl/Vhr and Lts/Rts -
+// plus two unpaired height locations (Vhc, Ts) the handoff's curated list
+// does not surface either. "Ceiling middle" is not a real chanmap bit; it is
+// dropped here rather than invented. eac3_tables.hpp's own Location enum and
+// its spec-cited static_asserts already agreed with this before it was
+// double-checked against the spec text directly, which is the point of
+// checking rather than trusting a summary.
+// ---------------------------------------------------------------------------
+
+struct BedInfo {
+    ac3::Acmod acmod;
+    const char* id;  // matches the handoff's own ids: "1/0" .. "3/2"
+};
+
+// In the handoff's own display order.
+constexpr std::array<BedInfo, 7> kBeds{{
+    {ac3::Acmod::k1_0, "1/0"},
+    {ac3::Acmod::k2_0, "2/0"},
+    {ac3::Acmod::k3_0, "3/0"},
+    {ac3::Acmod::k2_1, "2/1"},
+    {ac3::Acmod::k3_1, "3/1"},
+    {ac3::Acmod::k2_2, "2/2"},
+    {ac3::Acmod::k3_2, "3/2"},
+}};
+
+struct ExtraInfo {
+    const char* id;
+    const char* label;
+    std::uint16_t bits;
+};
+
+constexpr std::array<ExtraInfo, 5> kExtras{{
+    {"wide", "Front wide", ac3::eac3::chanmap::kLwRw},
+    {"rear", "Rear surround", ac3::eac3::chanmap::kLrsRrs},
+    {"topf", "Ceiling front", ac3::eac3::chanmap::kVhlVhr},
+    {"topr", "Ceiling rear", ac3::eac3::chanmap::kLtsRts},
+    {"lfe2", "Second LFE", ac3::eac3::chanmap::kLfe2},
+}};
+
+// Space-joined location names for a bed's own full-bandwidth channels, e.g.
+// "L C R Ls Rs" for 3/2 - what the bed button shows beneath its id.
+QString bed_channel_names(ac3::Acmod acmod) {
+    QStringList names;
+    for (const auto location : ac3::eac3::chanmap::expand(
+             ac3::eac3::chanmap::acmod_map(acmod, false))) {
+        names.append(to_qstring(ac3::eac3::chanmap::name(location)));
+    }
+    return names.join(QStringLiteral(" "));
+}
+
 }  // namespace
 
 struct EncoderController::Source {
@@ -89,46 +147,121 @@ QStringList EncoderController::containerNames() const {
     return {QStringLiteral("Elementary stream"), QStringLiteral("Matroska (.mkv)")};
 }
 
-QStringList EncoderController::layoutNames() const {
-    QStringList names;
-    for (const auto& info : plan::kLayouts) {
-        if (plan::carries(codec_, info.id)) {
-            names.append(to_qstring(info.label));
+int EncoderController::bedIndex() const {
+    for (std::size_t i = 0; i < kBeds.size(); ++i) {
+        if (kBeds[i].acmod == bed_acmod_) {
+            return static_cast<int>(i);
         }
-    }
-    names.append(QStringLiteral("Custom…"));
-    return names;
-}
-
-int EncoderController::layoutIndex() const {
-    if (custom_layout_) {
-        return layoutNames().size() - 1;
-    }
-    int index = 0;
-    for (const auto& info : plan::kLayouts) {
-        if (!plan::carries(codec_, info.id)) {
-            continue;
-        }
-        if (info.id == layout_) {
-            return index;
-        }
-        ++index;
     }
     return 0;
+}
+
+QVariantList EncoderController::bedChoices() const {
+    QVariantList out;
+    for (const auto& bed : kBeds) {
+        QVariantMap row;
+        row[QStringLiteral("id")] = QString::fromLatin1(bed.id);
+        row[QStringLiteral("channels")] = bed_channel_names(bed.acmod);
+        out.append(row);
+    }
+    return out;
+}
+
+QVariantList EncoderController::extrasModel() const {
+    QVariantList out;
+    const bool locked = extrasLocked();
+    const auto bed_mask = ac3::eac3::chanmap::acmod_map(bed_acmod_, bed_lfe_);
+    const QString lock_reason = atmos_enabled_ ? QStringLiteral("fixed by object mode")
+                                               : QStringLiteral("Dolby Digital Plus only");
+
+    for (const auto& extra : kExtras) {
+        const bool checked = (extras_mask_ & extra.bits) != 0;
+        const auto tentative = static_cast<std::uint16_t>(
+            checked ? extras_mask_ & ~extra.bits : extras_mask_ | extra.bits);
+        // The single general validity check every control here uses, so the
+        // picker can never express a combination chanmap::allocate() would
+        // then refuse: over the 16-channel ceiling, no Table 5.8 bed fits (not
+        // reachable here, the bed is always one), or - the case that is
+        // reachable - an LFE2 left with no full-bandwidth companion once its
+        // last co-selected extra is the one being unticked.
+        const auto result =
+            ac3::eac3::chanmap::allocate(static_cast<std::uint16_t>(bed_mask | tentative));
+
+        QString reason;
+        if (locked) {
+            reason = lock_reason;
+        } else if (!result) {
+            reason = checked ? QStringLiteral("another extra needs this one")
+                             : to_qstring(ac3::eac3::chanmap::describe(result.error()));
+        }
+
+        QVariantMap row;
+        row[QStringLiteral("id")] = QString::fromLatin1(extra.id);
+        row[QStringLiteral("label")] = QString::fromLatin1(extra.label);
+        row[QStringLiteral("channels")] = ac3::eac3::chanmap::channel_count(extra.bits);
+        row[QStringLiteral("checked")] = checked;
+        row[QStringLiteral("enabled")] = !locked && result.has_value();
+        row[QStringLiteral("reason")] = reason;
+        out.append(row);
+    }
+    return out;
+}
+
+QString EncoderController::channelShapeName() const {
+    using ac3::eac3::chanmap::Location;
+    int ear = 0;
+    int lfe_count = 0;
+    int ceiling = 0;
+    for (const auto location : ac3::eac3::chanmap::expand(currentLocationMask())) {
+        switch (location) {
+            case Location::kLfe:
+            case Location::kLfe2:
+                ++lfe_count;
+                break;
+            case Location::kTs:
+            case Location::kVhl:
+            case Location::kVhr:
+            case Location::kVhc:
+            case Location::kLts:
+            case Location::kRts:
+                ++ceiling;
+                break;
+            default:
+                ++ear;
+                break;
+        }
+    }
+    QString name = QStringLiteral("%1.%2").arg(ear).arg(lfe_count);
+    if (ceiling > 0) {
+        name += QStringLiteral(".%1").arg(ceiling);
+    }
+    return name;
+}
+
+int EncoderController::channelBudgetUsed() const {
+    return ac3::eac3::chanmap::channel_count(currentLocationMask());
+}
+
+QString EncoderController::channelLocationsText() const {
+    return to_qstring(plan::format_channels(currentLocationMask()));
 }
 
 QString EncoderController::layoutDetail() const {
     if (atmos_enabled_) {
         return QStringLiteral("5.1 bed · JOC + OAMD · objects carry the height");
     }
-    if (custom_layout_ && !plan::parse_channels(custom_channels_text_.toStdString())) {
-        return QStringLiteral("Not a recognised channel list - see the layout note below.");
-    }
     const auto cp = effectiveChannelPlan();
     const auto rendered = plan::rendered_channel_count(cp);
     const auto transmitted = static_cast<int>(plan::coded_channels(cp).size());
     const auto dependents = static_cast<int>(cp.dependents.size());
-    if (transmitted == rendered) {
+    // Whether there is only the independent substream is what "one substream"
+    // actually means - dependents == 0, not transmitted == rendered. The two
+    // used to coincide when every dependent came from a hand-picked LayoutId
+    // (7.1's k71Rear duplicates the bed's Ls/Rs into its dependent, so wider-
+    // than-bed always meant transmitted > rendered too), but the general
+    // extras model doesn't duplicate anything: a plain "rear" extra alone can
+    // need a real dependent while still transmitting exactly what it renders.
+    if (dependents == 0) {
         return QStringLiteral("%1 channel%2, one substream")
             .arg(rendered)
             .arg(rendered == 1 ? QString() : QStringLiteral("s"));
@@ -200,54 +333,107 @@ void EncoderController::setCodecIndex(int index) {
         return;
     }
     codec_ = codec;
-    // A layout the new codec cannot carry has to go somewhere: 5.1 is the
-    // widest AC-3 reaches, and silently encoding a narrower stream than the
-    // one asked for would be worse than moving the control.
-    if (!plan::carries(codec_, layout_)) {
-        layout_ = plan::LayoutId::k51;
+    // AC-3 has no dependent substreams at all, so extras that needed one have
+    // to go somewhere: dropping them is what the extras lock itself would
+    // have refused going forward, and leaving them set would silently build a
+    // plan validate() then rejects at encode time instead of here.
+    if (codec_ == plan::Codec::kAc3) {
+        extras_mask_ = 0;
     }
     emit planChanged();
     emit outputChanged();
     refreshRouting();
 }
 
-void EncoderController::setLayoutIndex(int index) {
-    if (busy_) {
+void EncoderController::setBedIndex(int index) {
+    if (busy_ || atmos_enabled_ || index < 0 || index >= static_cast<int>(kBeds.size())) {
         return;
     }
-    if (index == layoutNames().size() - 1) {
-        if (!custom_layout_) {
-            custom_layout_ = true;
-            emit planChanged();
-            refreshRouting();
-        }
+    const auto acmod = kBeds[static_cast<std::size_t>(index)].acmod;
+    if (acmod == bed_acmod_) {
         return;
     }
-    int seen = 0;
-    for (const auto& info : plan::kLayouts) {
-        if (!plan::carries(codec_, info.id)) {
+    bed_acmod_ = acmod;
+    emit planChanged();
+    refreshRouting();
+}
+
+void EncoderController::setBedLfe(bool on) {
+    if (busy_ || atmos_enabled_ || on == bed_lfe_) {
+        return;
+    }
+    bed_lfe_ = on;
+    emit planChanged();
+    refreshRouting();
+}
+
+void EncoderController::toggleExtra(const QString& id) {
+    if (busy_ || extrasLocked()) {
+        return;
+    }
+    for (const auto& extra : kExtras) {
+        if (id != QLatin1String(extra.id)) {
             continue;
         }
-        if (seen++ != index) {
-            continue;
+        const bool checked = (extras_mask_ & extra.bits) != 0;
+        const auto tentative = static_cast<std::uint16_t>(
+            checked ? extras_mask_ & ~extra.bits : extras_mask_ | extra.bits);
+        const auto bed_mask = ac3::eac3::chanmap::acmod_map(bed_acmod_, bed_lfe_);
+        // Refused rather than truncated: over budget, or - unticking an
+        // extra an LFE2 was sharing its substream with - an orphaned LFE2,
+        // are both "this does not fit", not "fit what you can".
+        if (!ac3::eac3::chanmap::allocate(static_cast<std::uint16_t>(bed_mask | tentative))) {
+            return;
         }
-        if (info.id != layout_ || custom_layout_) {
-            layout_ = info.id;
-            custom_layout_ = false;
-            emit planChanged();
-            refreshRouting();
-        }
+        extras_mask_ = tentative;
+        emit planChanged();
+        refreshRouting();
         return;
     }
 }
 
-void EncoderController::setCustomChannels(const QString& text) {
-    if (text == custom_channels_text_ || busy_) {
+void EncoderController::applyChannelPreset(const QString& name) {
+    if (busy_ || atmos_enabled_) {
         return;
     }
-    custom_channels_text_ = text;
-    emit planChanged();
-    refreshRouting();
+    struct Preset {
+        const char* name;
+        bool lfe;
+        std::uint16_t extras;
+    };
+    // Bed is always 3/2 here: every named preset in the handoff's own list is
+    // built on the widest bed. A preset is a starting point for the general
+    // model, not a separate one - see the file comment on kBeds/kExtras for
+    // why this goes through chanmap::allocate() rather than the legacy
+    // LayoutId table (fewer transmitted channels for 7.1/7.1.4 than the old
+    // hand-picked k71Rear/kTopQuad dependents, same rendered speakers).
+    static constexpr std::array<Preset, 5> kPresets{{
+        {"5.1", true, 0},
+        {"7.1", true, ac3::eac3::chanmap::kLrsRrs},
+        {"5.1.4", true,
+         static_cast<std::uint16_t>(ac3::eac3::chanmap::kVhlVhr | ac3::eac3::chanmap::kLtsRts)},
+        {"7.1.4", true,
+         static_cast<std::uint16_t>(ac3::eac3::chanmap::kLrsRrs | ac3::eac3::chanmap::kVhlVhr |
+                                    ac3::eac3::chanmap::kLtsRts)},
+        {"5.2", true, ac3::eac3::chanmap::kLfe2},
+    }};
+    for (const auto& preset : kPresets) {
+        if (name != QLatin1String(preset.name)) {
+            continue;
+        }
+        // A preset needing extras has to bring E-AC-3 with it, the same way a
+        // manual tick would otherwise find the row locked and refuse.
+        if (preset.extras != 0 && codec_ == plan::Codec::kAc3) {
+            codec_ = plan::Codec::kEac3;
+        }
+        bed_acmod_ = ac3::Acmod::k3_2;
+        bed_lfe_ = preset.lfe;
+        extras_mask_ = preset.extras;
+        emit planChanged();
+        emit outputChanged();
+        refreshRouting();
+        return;
+    }
 }
 
 void EncoderController::setContainerIndex(int index) {
@@ -493,25 +679,26 @@ void EncoderController::setObjectLfeSend(double value) {
 // The plan
 // ---------------------------------------------------------------------------
 
-plan::LayoutId EncoderController::effectiveLayout() const {
-    // Object mode always codes a 5.1 bed whatever the layout box last showed:
-    // JOC reconstructs from five channels (§6.3.2.2) and the LFE is outside
-    // the matrix entirely.
-    return atmos_enabled_ ? plan::LayoutId::k51 : layout_;
+std::uint16_t EncoderController::currentLocationMask() const {
+    return static_cast<std::uint16_t>(ac3::eac3::chanmap::acmod_map(bed_acmod_, bed_lfe_) |
+                                      extras_mask_);
 }
 
 plan::Plan EncoderController::currentPlan() const {
     plan::Plan p{.codec = codec_,
-                 .layout = effectiveLayout(),
+                 // Ignored whenever custom_locations is set below (every case
+                 // except object mode); kept a plain 5.1 rather than left
+                 // default-constructed only so a stray read of it before that
+                 // branch runs is never a channel width nothing can carry.
+                 .layout = plan::LayoutId::k51,
                  .bitrate_kbps = static_cast<std::uint32_t>(bitrate_kbps_),
                  .tools = tools_,
                  .meta = meta_};
-    // Object mode always codes its own 5.1 bed (effectiveLayout() already
-    // says so via .layout); a custom selection only applies otherwise, and
-    // only once it actually parses - an in-progress edit falls back to
-    // whatever .layout already holds rather than producing an empty plan.
-    if (custom_layout_ && !atmos_enabled_) {
-        p.custom_locations = plan::parse_channels(custom_channels_text_.toStdString());
+    // Object mode always codes its own 5.1 bed: JOC reconstructs from five
+    // channels (§6.3.2.2) and the LFE is outside the matrix entirely, so the
+    // bed/LFE/extras picker's own state is beside the point while it is on.
+    if (!atmos_enabled_) {
+        p.custom_locations = currentLocationMask();
     }
     if (source_) {
         if (const auto rate = to_sample_rate(source_->wav.sample_rate)) {
@@ -529,13 +716,7 @@ QString EncoderController::effectiveLabel() const {
     if (atmos_enabled_) {
         return QStringLiteral("5.1 bed");
     }
-    if (custom_layout_) {
-        if (const auto mask = plan::parse_channels(custom_channels_text_.toStdString())) {
-            return to_qstring(plan::format_channels(*mask));
-        }
-        return QStringLiteral("(unrecognised channel list)");
-    }
-    return to_qstring(plan::layout(layout_).label);
+    return channelShapeName();
 }
 
 void EncoderController::refreshRouting() {
@@ -1147,14 +1328,25 @@ void EncoderController::loadSourceFile(const QUrl& url) {
                       .arg(to_qstring(plan::describe(plan::PlanError::kNoSourceLayout)));
     }
 
-    // A newly loaded file picks the layout that matches it, which is what a
+    // A newly loaded file picks the bed+extras that match it, which is what a
     // user almost always wants and is the only choice that carries every
     // channel through untouched. Everything else stays where they left it.
     if (const auto natural = plan::layout_for_source(channels)) {
         if (plan::carries(codec_, *natural)) {
-            layout_ = *natural;
-        } else if (!plan::carries(codec_, layout_)) {
-            layout_ = plan::LayoutId::k51;
+            const auto cp = plan::channel_plan_for(*natural);
+            bed_acmod_ = cp.bed_acmod;
+            bed_lfe_ = cp.bed_lfe;
+            extras_mask_ = 0;
+            for (const auto dependent : cp.dependents) {
+                extras_mask_ = static_cast<std::uint16_t>(extras_mask_ | dependent);
+            }
+        } else if (codec_ == plan::Codec::kAc3 && extras_mask_ != 0) {
+            // The natural layout needs extras AC-3 cannot carry, and the
+            // current selection also does - fall back to a plain, always-
+            // legal 5.1 rather than leave an uncarryable one in place.
+            bed_acmod_ = ac3::Acmod::k3_2;
+            bed_lfe_ = true;
+            extras_mask_ = 0;
         }
         emit planChanged();
     }

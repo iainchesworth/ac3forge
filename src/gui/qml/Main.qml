@@ -93,34 +93,42 @@ ApplicationWindow {
 
     // ---- the plan headline and a best-effort CLI line ----------------------
     // Both are read from properties carrying NOTIFY planChanged (codecIndex,
-    // layoutIndex, bitrateKbps), so they stay live even though outputSuffix()
-    // itself is a plain invokable with no notify signal of its own.
+    // channelShapeName, bitrateKbps), so they stay live even though
+    // outputSuffix() itself is a plain invokable with no notify signal of its
+    // own.
     readonly property string planLine: {
         const codec = EncoderController.codecNames[EncoderController.codecIndex] || "";
-        const shape = EncoderController.layoutNames[EncoderController.layoutIndex] || "";
+        const shape = EncoderController.atmosEnabled
+                      ? qsTr("5.1") : EncoderController.channelShapeName;
         return qsTr("%1 · %2 · %3 kbps · .%4")
             .arg(codec).arg(shape).arg(EncoderController.bitrateKbps)
             .arg(EncoderController.outputSuffix());
     }
-    // Placeholder vocabulary: gains --bed/--extras once the channel model
-    // checkpoint replaces --layout, and --paths once objects gain authored
-    // paths. Kept here rather than in C++ so it can be reshaped as those
-    // land without touching the controller's own settings surface.
+    // ac3cli's actual [layout] argument takes either a preset name or this
+    // exact comma-separated Table E2.5 list (plan::parse_channels), so this
+    // is real, pasteable syntax rather than an aspirational one - the
+    // handoff's own "--bed/--extras" sketch does not match ac3cli's actual
+    // (positional) subcommand grammar, which also differs in shape between
+    // 'encode' (AC-3, no tools argument), 'eac3-encode' (E-AC-3) and
+    // 'atmos-encode'. Placeholder vocabulary otherwise: gains --paths once
+    // objects gain authored paths, and does not yet account for the Matroska
+    // container, which ac3cli muxes as a second 'mkv' invocation rather than
+    // an encode-command argument.
     readonly property string cliLine: {
-        const parts = ["ac3cli",
-                       "--codec", EncoderController.codecIndex === 0 ? "ac3" : "eac3",
-                       "--layout", EncoderController.layoutNames[EncoderController.layoutIndex] || "",
-                       "--bitrate", String(EncoderController.bitrateKbps)];
-        if (EncoderController.toolsToken.length > 0) {
-            parts.push("--tools", EncoderController.toolsToken);
-        }
+        const source = EncoderController.sourcePath.length > 0
+                       ? window.baseName(EncoderController.sourcePath) : "<source>";
+        const out = "out." + EncoderController.outputSuffix();
+        const rate = String(EncoderController.bitrateKbps);
         if (EncoderController.atmosEnabled) {
-            parts.push("--objects");
+            return ["ac3cli", "atmos-encode", source, out, rate].join(" ");
         }
-        parts.push(EncoderController.sourcePath.length > 0
-                   ? window.baseName(EncoderController.sourcePath) : "<source>");
-        parts.push("out." + EncoderController.outputSuffix());
-        return parts.join(" ");
+        if (EncoderController.codecIndex === 0) {
+            return ["ac3cli", "encode", source, out, rate,
+                    EncoderController.channelLocationsText].join(" ");
+        }
+        return ["ac3cli", "eac3-encode", source, out, rate,
+                EncoderController.toolsToken.length > 0 ? EncoderController.toolsToken : "none",
+                EncoderController.channelLocationsText].join(" ");
     }
 
     FileDialog {
@@ -607,9 +615,29 @@ ApplicationWindow {
                             Card {
                                 title: qsTr("Format")
 
+                                // Presets are starting points, not the model: they set
+                                // bed + LFE + extras together, but the picker below is
+                                // what the plan actually reads.
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: Theme.gap
+
+                                    Repeater {
+                                        model: ["5.1", "7.1", "5.1.4", "7.1.4", "5.2"]
+                                        delegate: Button {
+                                            required property string modelData
+                                            text: modelData
+                                            enabled: !EncoderController.busy
+                                                     && !EncoderController.atmosEnabled
+                                            onClicked: EncoderController.applyChannelPreset(modelData)
+                                        }
+                                    }
+                                    Item { Layout.fillWidth: true }
+                                }
+
                                 GridLayout {
                                     Layout.fillWidth: true
-                                    columns: 4
+                                    columns: 6
                                     columnSpacing: Theme.gap
                                     rowSpacing: Theme.gap
 
@@ -624,19 +652,6 @@ ApplicationWindow {
                                         model: EncoderController.codecNames
                                         currentIndex: EncoderController.codecIndex
                                         onActivated: EncoderController.codecIndex = currentIndex
-                                    }
-
-                                    Text {
-                                        text: qsTr("Layout")
-                                        color: Theme.text
-                                        font.pixelSize: Theme.fontNormal
-                                    }
-                                    ComboBox {
-                                        Layout.fillWidth: true
-                                        enabled: !EncoderController.busy && !EncoderController.atmosEnabled
-                                        model: EncoderController.layoutNames
-                                        currentIndex: EncoderController.layoutIndex
-                                        onActivated: EncoderController.layoutIndex = currentIndex
                                     }
 
                                     Text {
@@ -669,17 +684,95 @@ ApplicationWindow {
                                     }
                                 }
 
-                                // layoutNames() ends with a synthetic "Custom…" entry - not a
-                                // LayoutId, just the signal to read/write this field instead.
-                                // This is the general allocator's minimal stopgap control; the
-                                // two-tier bed+extras+LFE picker replaces it.
-                                TextField {
+                                Rectangle { Layout.fillWidth: true; height: 2; color: Theme.divider }
+
+                                // ---- the channel model: bed + LFE + extras ------------------
+                                Text {
+                                    text: qsTr("CHANNELS")
+                                    font.pixelSize: 11
+                                    font.letterSpacing: 1
+                                    color: Theme.textMuted
+                                }
+
+                                // Tier 1 - the bed, exactly one, always, plus its
+                                // independent LFE. All seven stay live under AC-3;
+                                // only the extras below are Dolby Digital Plus only.
+                                RowLayout {
                                     Layout.fillWidth: true
-                                    visible: EncoderController.customLayoutSelected
-                                    enabled: !EncoderController.busy && !EncoderController.atmosEnabled
-                                    placeholderText: qsTr("L,C,R,LFE,Vhl,Vhr — comma-separated Table E2.5 locations")
-                                    text: EncoderController.customChannels
-                                    onEditingFinished: EncoderController.customChannels = text
+                                    spacing: 6
+
+                                    Repeater {
+                                        model: EncoderController.bedChoices
+
+                                        delegate: Button {
+                                            required property var modelData
+                                            required property int index
+                                            text: modelData.id
+                                            highlighted: EncoderController.bedIndex === index
+                                            enabled: !EncoderController.busy
+                                                     && !EncoderController.atmosEnabled
+                                            onClicked: EncoderController.bedIndex = index
+
+                                            ToolTip.visible: hovered
+                                            ToolTip.text: modelData.channels
+                                        }
+                                    }
+
+                                    CheckBox {
+                                        text: qsTr("LFE")
+                                        checked: EncoderController.bedLfe
+                                        enabled: !EncoderController.busy
+                                                 && !EncoderController.atmosEnabled
+                                        onToggled: EncoderController.bedLfe = checked
+                                    }
+
+                                    Item { Layout.fillWidth: true }
+
+                                    Text {
+                                        text: EncoderController.channelShapeName
+                                        font.pixelSize: Theme.fontNormal
+                                        font.bold: true
+                                        color: Theme.text
+                                    }
+                                }
+
+                                // Tier 2 - extras, added to the bed. Each is a single
+                                // toggle; a disabled row's tooltip says why (locked,
+                                // over budget, or - the one real cross-extra rule -
+                                // an LFE2 about to be left with no full-bandwidth
+                                // companion once its last partner is unticked).
+                                GridLayout {
+                                    Layout.fillWidth: true
+                                    columns: 3
+                                    columnSpacing: Theme.gap
+                                    rowSpacing: 4
+
+                                    Repeater {
+                                        model: EncoderController.extrasModel
+
+                                        delegate: CheckBox {
+                                            required property var modelData
+                                            text: qsTr("%1 (%2 ch)")
+                                                  .arg(modelData.label).arg(modelData.channels)
+                                            checked: modelData.checked
+                                            enabled: modelData.enabled
+                                            opacity: enabled ? 1.0 : 0.3
+                                            onToggled: EncoderController.toggleExtra(modelData.id)
+
+                                            ToolTip.visible: modelData.reason.length > 0 && hovered
+                                            ToolTip.text: modelData.reason
+                                        }
+                                    }
+                                }
+
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: qsTr("%1 of %2 channel positions used")
+                                          .arg(EncoderController.channelBudgetUsed)
+                                          .arg(EncoderController.channelBudgetMax)
+                                    color: Theme.textMuted
+                                    font.pixelSize: Theme.fontSmall
+                                    font.family: "monospace"
                                 }
 
                                 Text {
