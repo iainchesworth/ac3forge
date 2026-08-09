@@ -21,6 +21,34 @@ ApplicationWindow {
     title: qsTr("ac3forge — AC-3 / E-AC-3 encoder")
     color: Theme.background
 
+    // Fusion draws every standard control - Button, CheckBox, Switch,
+    // Slider, ProgressBar, ComboBox, SpinBox - from these palette roles (see
+    // e.g. QtQuick/Controls/Fusion/impl/SwitchIndicator.qml's
+    // Fusion.buttonColor(control.palette, ...) calls), never from a literal.
+    // Left unset, Fusion falls back to its own default palette regardless of
+    // Theme - the "pale pink on every switch and slider" the handoff calls
+    // out as the single most visible inconsistency today. Setting it here,
+    // on the root window, means every control inherits it unless a control
+    // overrides its own palette.
+    palette.window: Theme.bg
+    palette.windowText: Theme.text
+    palette.base: Theme.surface
+    palette.alternateBase: Theme.neutral100
+    palette.text: Theme.text
+    palette.button: Theme.surface
+    palette.buttonText: Theme.text
+    palette.brightText: Theme.text
+    palette.highlight: Theme.accent
+    palette.highlightedText: Theme.bg
+    palette.light: Theme.neutral100
+    palette.midlight: Theme.neutral200
+    palette.mid: Theme.neutral400
+    palette.dark: Theme.neutral600
+    palette.shadow: Theme.neutral900
+    palette.toolTipBase: Theme.surface
+    palette.toolTipText: Theme.text
+    palette.placeholderText: Theme.textMuted
+
     FileDialog {
         id: openDialog
         title: qsTr("Choose a WAV file")
