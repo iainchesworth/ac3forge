@@ -9,15 +9,16 @@
 # ---------------------------------------------------------------------------
 # On `experimental: true`
 # ---------------------------------------------------------------------------
-# windows-msvc, windows-llvm, linux-gcc, linux-llvm and linux-llvm-asan-ubsan
-# are all proven green now (exact test counts per leg drift as features land -
-# see ci.yml's own status comment rather than trusting a number repeated here;
-# the sanitizer leg also runs the codec-matrix script's full layout/tool/atmos
-# sweep) and required. windows-llvm was the last of these promoted: its real
-# -Werror site (a qsizetype-to-int narrowing in src/gui/encoder_controller.cpp
-# clang-cl's -Wconversion rejects and MSVC's /W4 does not) is fixed. macos-llvm
-# remains experimental: it has never been run at all — this project has no
-# Mac. See the table in ci.yml.
+# Every leg is proven green now (exact test counts per leg drift as features
+# land - see ci.yml's own status comment rather than trusting a number
+# repeated here; the sanitizer leg also runs the codec-matrix script's full
+# layout/tool/atmos sweep) and required. macos-llvm was the last of these
+# promoted: its first-ever real run surfaced a genuine, fully-understood
+# issue (Homebrew's unpinned LLVM formula flagging Catch2's __COUNTER__ usage
+# under -Wc2y-extensions - see cmake/CompilerWarnings.cmake), fixed in one
+# commit, followed by two consecutive clean runs including the gold-reference
+# gate (scripts/verify-gold-reference.sh) at real SNR numbers (60-80s dB) -
+# not just "it compiled." See the table in ci.yml.
 #
 # Experimental legs run with continue-on-error, which reports their real
 # status without making the default branch red on every push. As each one is
@@ -68,6 +69,7 @@ jobs:
             # loudly if that ever stops being a 14.5x toolset.
             msvc: true
             packageable: true
+            gold_reference: true
 
           - name: "Windows LLVM (clang-cl)"
             runner: windows-latest
@@ -75,6 +77,7 @@ jobs:
             msvc: true          # clang-cl targets the MSVC ABI: same headers, same libs
             llvm: true
             packageable: true
+            gold_reference: true
 
           # gui: true builds ac3gui too (the linux-gcc/linux-llvm presets
           # otherwise default AC3FORGE_BUILD_GUI off - see the preset's own
@@ -92,6 +95,7 @@ jobs:
             gui: true
             packageable: true
             alsa_fallback: true
+            gold_reference: true
 
           - name: "Linux LLVM (clang)"
             runner: ubuntu-latest
@@ -100,6 +104,7 @@ jobs:
             llvm: true
             gui: true
             packageable: true
+            gold_reference: true
 
           # AddressSanitizer + UndefinedBehaviorSanitizer (cmake/Sanitizers.cmake),
           # -fno-sanitize-recover=all so a violation fails the job outright. Shares
@@ -118,13 +123,23 @@ jobs:
             llvm: true
             sanitizer: true
 
-          # No Mac is available to the project locally, so CI is the first place
-          # this is exercised at all. Expect it to surface genuine failures.
-          - name: "macOS LLVM (AppleClang)"
+          # No Mac is available to the project locally, so CI remains the only
+          # place this is exercised - proven green (build+test+gold-reference
+          # gate) as of the CI run that landed this comment; see _build.yml's
+          # own header for how that happened. llvm: true pulls in the Homebrew
+          # LLVM install step below - without it,
+          # cmake/toolchains/macos.llvm.toolchain.cmake's find_program still
+          # succeeds (its NAMES list falls back to plain "clang", which
+          # resolves to Apple's system clang via HINTS/PATH), so a bare
+          # runner would not fail to configure - it would silently build with
+          # whatever AppleClang Xcode ships instead of the Homebrew LLVM
+          # every other leg's pinned equivalent aims for.
+          - name: "macOS LLVM (Homebrew)"
             runner: macos-latest
             preset: macos-llvm
-            experimental: true
+            llvm: true
             packageable: true
+            gold_reference: true
 
     steps:
       # Before checkout: the bare ubuntu image has no git, and actions/checkout
@@ -204,6 +219,42 @@ jobs:
           Start-Process -FilePath $exe -ArgumentList '/S' -Wait -NoNewWindow
           "$env:ProgramFiles\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
+      # Homebrew's core "llvm" formula has no versioned sibling the way
+      # apt.llvm.org or the official win64 installer do (there is no "llvm@21"
+      # to pin against), so unlike the Linux/Windows LLVM steps above this
+      # cannot pin an exact build - it installs whatever is current and reports
+      # it via the assert step below. macos.llvm.toolchain.cmake's HINTS
+      # already cover Homebrew's install prefix (/opt/homebrew/opt/llvm on
+      # Apple Silicon, which is what macos-latest runners are), so this alone
+      # is enough for find_program to pick it over Apple's system clang -
+      # PATH is exported too so plain `c++`/`clang++` invocations (the assert
+      # step, ad-hoc debugging) see the same compiler CMake configures with.
+      - name: Install LLVM (macOS)
+        if: matrix.llvm && runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          brew install llvm
+          llvm_prefix="$(brew --prefix llvm)"
+          echo "${llvm_prefix}/bin" >> "$GITHUB_PATH"
+
+      # ffmpeg is the gold-reference gate's decode oracle (see
+      # scripts/verify-gold-reference.sh). Proven first on macOS alone (the
+      # newest, least-trusted leg); gold_reference now covers every packaged
+      # leg except linux-llvm-asan-ubsan, which stays a diagnostic-only build
+      # (see that matrix entry's own comment).
+      - name: Install ffmpeg (Linux)
+        if: matrix.gold_reference && runner.os == 'Linux'
+        run: apt-get install -y -qq --no-install-recommends ffmpeg
+
+      - name: Install ffmpeg (Windows)
+        if: matrix.gold_reference && runner.os == 'Windows'
+        shell: bash
+        run: choco install ffmpeg -y --no-progress
+
+      - name: Install ffmpeg (macOS)
+        if: matrix.gold_reference && runner.os == 'macOS'
+        run: brew install ffmpeg
+
       # cl.exe, INCLUDE and LIB are not on the default PATH, and Ninja does not
       # set them up itself (unlike MSBuild). clang-cl needs them too.
       - name: Setup MSVC environment
@@ -268,6 +319,10 @@ jobs:
                             14.5*) ;;
                             *) echo "::error::expected an MSVC 14.5x toolset, got '${VCToolsVersion:-unset}'"; exit 1 ;;
                           esac ;;
+            # No hard version assert here unlike the other LLVM legs: Homebrew's
+            # llvm formula has no versioned pin to check against (see the
+            # install step's own comment), so this reports whatever it finds
+            # rather than failing a leg that's still proving out its baseline.
             macos-llvm)   c++ --version | head -1 ;;
           esac
 
@@ -325,6 +380,24 @@ jobs:
       - name: Test
         shell: bash
         run: ctest --preset test-${{ matrix.preset }}
+
+      # The gold-reference correctness gate (docs/RESEARCH.md's L3 FFmpeg-
+      # oracle + a lightweight L4 SNR check, wired into CI for the first time
+      # here - see scripts/verify-gold-reference.sh's own header). Proven on
+      # macOS alone first; now every leg has it except linux-llvm-asan-ubsan,
+      # which stays diagnostic-only (same reasoning as its `packageable`
+      # exclusion below - a sanitizer build's job is catching memory/UB
+      # errors, not re-proving codec correctness a plain build already did).
+      - name: Gold reference gate
+        if: matrix.gold_reference
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="build/config-${{ matrix.preset }}/bin/ac3cli"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            bin="${bin}.exe"
+          fi
+          bash scripts/verify-gold-reference.sh "$bin"
 
       # ctest above already covers the codec; this covers the one thing it
       # can't - that ac3gui actually starts, loads its QML, and drives a real
@@ -387,15 +460,14 @@ jobs:
       # Packaging. windows-msvc always packages, on every push, as a
       # continuous smoke test of the packaging path itself - it is the only
       # leg that has ever actually been packaged and inspected end to end.
-      # Every other packageable leg only packages when do_package is set
-      # (release.yml, cutting a real release); the still-experimental
-      # macos-llvm leg fails to package for the same reason it fails to
-      # build - continue-on-error absorbs it, and the release just ships
-      # without that platform's package rather than failing outright.
-      # linux-llvm-asan-ubsan is never packaged at all (not `packageable` -
-      # see the matrix entry): there is no pack-linux-llvm-asan-ubsan preset,
-      # a sanitizer-instrumented debug build is a diagnostic tool, not
-      # something to ship.
+      # Every other packageable leg, including macos-llvm now that it is no
+      # longer experimental, only packages when do_package is set
+      # (release.yml, cutting a real release) - a packaging failure there
+      # blocks like any other leg's would, rather than being absorbed by
+      # continue-on-error. linux-llvm-asan-ubsan is never packaged at all
+      # (not `packageable` - see the matrix entry): there is no
+      # pack-linux-llvm-asan-ubsan preset, a sanitizer-instrumented debug
+      # build is a diagnostic tool, not something to ship.
       #
       # cpack reuses the same build/config-<leg> tree the Configure and Build
       # steps above already produced - pack-<leg> points at the same
