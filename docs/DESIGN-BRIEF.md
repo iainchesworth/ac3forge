@@ -287,6 +287,12 @@ problem**, more than any individual screen.
 
 ## 6. Open questions for the designer
 
+> **Answered.** These eleven questions, plus five later change prompts (dynamic channel counts, real
+> object motion, the basic/advanced split, the live demo scenario, and the channel-picker constraint
+> model), are resolved by [`docs/design/handoff-workbench/README.md`](design/handoff-workbench/README.md)
+> — the two-pane workbench redesign, implemented on `feature/gui-redesign-workbench`. The questions
+> below are kept as a record of what was asked, not as open items.
+
 1. **How should forty controls be organised?** One dense panel, progressive disclosure, a separate
    configuration surface, or presets that can be opened up? This is the main question.
 2. **What is the default level of expertise?** Should Annex E tools and the metadata group be visible
