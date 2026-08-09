@@ -984,8 +984,8 @@ FrameMetadata derive_metadata(const FrameConfig& config,
             const double level = meta::level_dbfs(std::span{block_view});
             // validate() requires dialnorm2 whenever acmod is kDualMono, and
             // dual_mono is exactly that condition, checked above.
-            // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
             out.dynrng2[static_cast<std::size_t>(blk)] =
+                // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
                 (*range2)->next(level, *config.dialnorm2);
         }
     }
