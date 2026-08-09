@@ -786,8 +786,16 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         }
         w.put(any_delta ? 1 : 0, 1);  // deltbaie
         if (any_delta) {
+            // §5.4.3.47's own syntax table sends every stream's 2-bit
+            // cpldeltbae/deltbae[ch] code FIRST, then every stream's segment
+            // data - the two are NOT interleaved per stream.
+            if (cplinu) {
+                w.put(stream_delta(cpl_stream).deltnseg > 0 ? 1u : 2u, 2);  // cpldeltbae
+            }
+            for (int ch = 0; ch < nfchans; ++ch) {
+                w.put(stream_delta(ch).deltnseg > 0 ? 1u : 2u, 2);  // deltbae[ch]
+            }
             const auto emit_segments = [&](const DeltaSegments& segs) {
-                w.put(segs.deltnseg > 0 ? 1u : 2u, 2);  // deltbae: new info / no delta
                 if (segs.deltnseg > 0) {
                     w.put(static_cast<std::uint32_t>(segs.deltnseg - 1), 3);
                     for (int seg = 0; seg < segs.deltnseg; ++seg) {

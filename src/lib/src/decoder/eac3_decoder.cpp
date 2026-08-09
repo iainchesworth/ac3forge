@@ -1,6 +1,7 @@
 #include "ac3/decoder/decoder.hpp"
 
 #include <algorithm>
+#include <array>
 
 #include "ac3/core/bitalloc.hpp"
 #include "ac3/core/bitreader.hpp"
@@ -516,17 +517,24 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
         if (frm->dbaflde && r.read(1) != 0) {  // deltbaie
             // §E2.3.2.9/§5.4.3.49-57: deltbae[ch] per fbw channel only - no
             // cpldeltbae, since coupling already errors before this point.
-            // Bounds are checked here, before compute_bit_allocation ever
-            // sees them, since deltoffst/deltlen are attacker-controlled and
-            // mask[] is exactly 50 bands wide.
+            // The syntax table reads every channel's 2-bit deltbae[ch] code
+            // FIRST, then every channel's segment data - not interleaved per
+            // channel - so all codes are read and validated up front. Bounds
+            // are checked here, before compute_bit_allocation ever sees them,
+            // since deltoffst/deltlen are attacker-controlled and mask[] is
+            // exactly 50 bands wide.
+            std::array<int, eac3::chanmap::kMaxSubstreamFullbw> chcodes{};
             for (int ch = 0; ch < nfchans; ++ch) {
-                const auto chcode = r.read(2);
-                if (chcode == 3) {  // Table 5.16: reserved
+                chcodes[static_cast<std::size_t>(ch)] = static_cast<int>(r.read(2));
+                if (chcodes[static_cast<std::size_t>(ch)] == 3) {  // Table 5.16: reserved
                     return std::unexpected(DecodeError::kReservedValue);
                 }
-                if (blk == 0 && chcode == 0) {  // shall not be reuse in block 0
-                    return std::unexpected(DecodeError::kInvalidStream);
+                if (blk == 0 && chcodes[static_cast<std::size_t>(ch)] == 0) {
+                    return std::unexpected(DecodeError::kInvalidStream);  // shall not reuse in block 0
                 }
+            }
+            for (int ch = 0; ch < nfchans; ++ch) {
+                const int chcode = chcodes[static_cast<std::size_t>(ch)];
                 if (chcode == 1) {  // new info follows
                     DeltaSegments segs;
                     segs.deltnseg = static_cast<int>(r.read(3)) + 1;

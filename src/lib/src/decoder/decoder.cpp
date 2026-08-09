@@ -1,6 +1,7 @@
 #include "ac3/decoder/decoder.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cmath>
 
@@ -548,6 +549,10 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
                 }
                 return segs;
             };
+            // §5.4.3.48-49's own syntax table reads every stream's 2-bit
+            // cpldeltbae/deltbae[ch] code FIRST, then every stream's segment
+            // data - the two are not interleaved per stream, so the codes
+            // must all be read (and validated) before any segment parsing.
             // Table 5.16: 00 reuse, 01 new info follows, 10 no delta, 11
             // reserved. cplcode stays at the "reuse" value when coupling is
             // not in use, so the fbw loop below never touches delta[cpl_stream].
@@ -560,26 +565,31 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
                 if (block == 0 && cplcode == 0) {
                     return std::unexpected(DecodeError::kInvalidStream);
                 }
-                if (cplcode == 1) {
-                    auto segs = parse_segments();
-                    if (!segs) {
-                        return std::unexpected(segs.error());
-                    }
-                    delta[static_cast<std::size_t>(cpl_stream)] = *segs;
-                } else if (cplcode == 2) {
-                    delta[static_cast<std::size_t>(cpl_stream)] = {};
-                }
             }
             // deltbae[ch]: fbw channels only (§5.4.3.49) - the LFE channel has
-            // no delta bit allocation field at all.
+            // no delta bit allocation field at all. AC-3's widest acmod (3/2)
+            // codes 5 full-bandwidth channels.
+            std::array<int, 5> chcodes{};
             for (int ch = 0; ch < nfchans; ++ch) {
-                const auto chcode = r.read(2);
-                if (chcode == 3) {
+                chcodes[static_cast<std::size_t>(ch)] = static_cast<int>(r.read(2));
+                if (chcodes[static_cast<std::size_t>(ch)] == 3) {
                     return std::unexpected(DecodeError::kReservedValue);
                 }
-                if (block == 0 && chcode == 0) {
+                if (block == 0 && chcodes[static_cast<std::size_t>(ch)] == 0) {
                     return std::unexpected(DecodeError::kInvalidStream);
                 }
+            }
+            if (cplinu && cplcode == 1) {
+                auto segs = parse_segments();
+                if (!segs) {
+                    return std::unexpected(segs.error());
+                }
+                delta[static_cast<std::size_t>(cpl_stream)] = *segs;
+            } else if (cplinu && cplcode == 2) {
+                delta[static_cast<std::size_t>(cpl_stream)] = {};
+            }
+            for (int ch = 0; ch < nfchans; ++ch) {
+                const int chcode = chcodes[static_cast<std::size_t>(ch)];
                 if (chcode == 1) {
                     auto segs = parse_segments();
                     if (!segs) {

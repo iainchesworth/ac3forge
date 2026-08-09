@@ -747,8 +747,17 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
             }
             w.put(any_delta ? 1 : 0, 1);  // deltbaie
             if (any_delta) {
+                // §5.4.3.47-57's syntax table sends every stream's 2-bit
+                // cpldeltbae/deltbae[ch] code FIRST, then every stream's
+                // segment data - the two are not interleaved per stream.
+                if (cpl.in_use) {
+                    w.put(payload.chans.back().delta.deltnseg > 0 ? 1u : 2u, 2);  // cpldeltbae
+                }
+                for (int ch = 0; ch < nfchans; ++ch) {
+                    w.put(payload.chans[static_cast<std::size_t>(ch)].delta.deltnseg > 0 ? 1u : 2u,
+                          2);  // deltbae[ch]
+                }
                 const auto emit_segments = [&](const DeltaSegments& segs) {
-                    w.put(segs.deltnseg > 0 ? 1u : 2u, 2);  // deltbae: new info / no delta
                     if (segs.deltnseg > 0) {
                         w.put(static_cast<std::uint32_t>(segs.deltnseg - 1), 3);
                         for (int seg = 0; seg < segs.deltnseg; ++seg) {
