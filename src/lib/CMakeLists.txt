@@ -31,6 +31,7 @@ target_sources(ac3forge
         src/meta/mixing.cpp
         src/oba/atmos.cpp
         src/oba/joc.cpp
+        src/oba/motion.cpp
         src/oba/oamd.cpp
         src/sinks/iec61937.cpp
         src/spatial/spatial.cpp)
