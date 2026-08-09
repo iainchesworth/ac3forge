@@ -274,6 +274,28 @@ QVariantList EncoderController::extrasModel() const {
     return out;
 }
 
+QVariantList EncoderController::objectModel() const {
+    QVariantList out;
+    for (std::size_t i = 0; i < object_configs_.size(); ++i) {
+        const auto& config = object_configs_[i];
+        const auto keyframes = sortedKeyframes(static_cast<int>(i));
+        QVariantMap row;
+        row[QStringLiteral("index")] = static_cast<int>(i);
+        // Objects are the source's own channels, one each, so the honest
+        // name for where one comes from is which channel it is - there is no
+        // richer source layout to name it from once it has become an object.
+        row[QStringLiteral("sourceLabel")] = QStringLiteral("Ch %1").arg(i + 1);
+        row[QStringLiteral("x")] = config.x;
+        row[QStringLiteral("y")] = config.y;
+        row[QStringLiteral("z")] = config.z;
+        row[QStringLiteral("lfeSend")] = config.lfe_send;
+        row[QStringLiteral("hasPath")] = !keyframes.empty();
+        row[QStringLiteral("keyCount")] = static_cast<int>(keyframes.size());
+        out.append(row);
+    }
+    return out;
+}
+
 QString EncoderController::channelShapeName() const {
     using ac3::eac3::chanmap::Location;
     int ear = 0;
@@ -702,44 +724,32 @@ void EncoderController::setAtmosEnabled(bool enabled) {
     refreshRouting();
 }
 
-void EncoderController::setObjectX(double value) {
-    const double clamped = std::clamp(value, 0.0, 1.0);
-    if (object_x_ != clamped) {
-        object_x_ = clamped;
-        emit objectsChanged();
+void EncoderController::setSelectedObjectIndex(int index) {
+    if (index < 0 || index >= object_count_ || index == selected_object_index_) {
+        return;
     }
+    selected_object_index_ = index;
+    emit objectsChanged();
 }
 
-void EncoderController::setObjectY(double value) {
-    const double clamped = std::clamp(value, 0.0, 1.0);
-    if (object_y_ != clamped) {
-        object_y_ = clamped;
-        emit objectsChanged();
+void EncoderController::setObjectPosition(int objectIndex, double x, double y, double z) {
+    if (objectIndex < 0 || objectIndex >= static_cast<int>(object_configs_.size())) {
+        return;
     }
+    auto& config = object_configs_[static_cast<std::size_t>(objectIndex)];
+    config.x = std::clamp(x, 0.0, 1.0);
+    config.y = std::clamp(y, 0.0, 1.0);
+    config.z = std::clamp(z, -1.0, 1.0);
+    emit objectsChanged();
 }
 
-void EncoderController::setObjectZ(double value) {
-    const double clamped = std::clamp(value, -1.0, 1.0);
-    if (object_z_ != clamped) {
-        object_z_ = clamped;
-        emit objectsChanged();
+void EncoderController::setObjectLfeSend(int objectIndex, double value) {
+    if (objectIndex < 0 || objectIndex >= static_cast<int>(object_configs_.size())) {
+        return;
     }
-}
-
-void EncoderController::setObjectSpread(double value) {
-    const double clamped = std::clamp(value, 0.0, 0.5);
-    if (object_spread_ != clamped) {
-        object_spread_ = clamped;
-        emit objectsChanged();
-    }
-}
-
-void EncoderController::setObjectLfeSend(double value) {
-    const double clamped = std::clamp(value, 0.0, 1.0);
-    if (object_lfe_send_ != clamped) {
-        object_lfe_send_ = clamped;
-        emit objectsChanged();
-    }
+    object_configs_[static_cast<std::size_t>(objectIndex)].lfe_send =
+        std::clamp(value, 0.0, 1.0);
+    emit objectsChanged();
 }
 
 void EncoderController::setObjectPathKeyframes(int objectIndex, const QVariantList& keyframes) {
@@ -767,6 +777,101 @@ void EncoderController::clearObjectPath(int objectIndex) {
     if (object_keyframes_.remove(objectIndex)) {
         emit objectsChanged();
     }
+}
+
+std::vector<ac3::oba::Keyframe> EncoderController::sortedKeyframes(int objectIndex) const {
+    const auto found = object_keyframes_.constFind(objectIndex);
+    if (found == object_keyframes_.constEnd()) {
+        return {};
+    }
+    auto keyframes = *found;
+    std::ranges::sort(keyframes, {}, &ac3::oba::Keyframe::time_s);
+    return keyframes;
+}
+
+QVariantList EncoderController::objectKeyframes(int objectIndex) const {
+    QVariantList out;
+    for (const auto& key : sortedKeyframes(objectIndex)) {
+        out.append(QVariantMap{
+            {QStringLiteral("time"), key.time_s},
+            {QStringLiteral("x"), key.position.x},
+            {QStringLiteral("y"), key.position.y},
+            {QStringLiteral("z"), key.position.z},
+            {QStringLiteral("gain"), key.gain},
+            {QStringLiteral("lfeSend"), key.lfe_send},
+        });
+    }
+    return out;
+}
+
+void EncoderController::addObjectKeyframe(int objectIndex, double timeS) {
+    if (objectIndex < 0 || objectIndex >= static_cast<int>(object_configs_.size())) {
+        return;
+    }
+    const auto& config = object_configs_[static_cast<std::size_t>(objectIndex)];
+    auto keyframes = sortedKeyframes(objectIndex);
+    // Same moment, not the same float: two cues a hundredth of a second apart
+    // are not a user trying to nudge one, they are a mis-click.
+    constexpr double kSameInstant = 0.01;
+    const auto existing = std::ranges::find_if(keyframes, [&](const ac3::oba::Keyframe& key) {
+        return std::abs(key.time_s - timeS) < kSameInstant;
+    });
+    ac3::oba::Keyframe key{.time_s = timeS,
+                           .position = {.x = config.x, .y = config.y, .z = config.z},
+                           .gain = 1.0,
+                           .lfe_send = config.lfe_send};
+    if (existing != keyframes.end()) {
+        *existing = key;
+    } else {
+        keyframes.push_back(key);
+    }
+    object_keyframes_[objectIndex] = std::move(keyframes);
+    emit objectsChanged();
+}
+
+void EncoderController::removeObjectKeyframe(int objectIndex, double timeS) {
+    auto keyframes = sortedKeyframes(objectIndex);
+    constexpr double kSameInstant = 0.01;
+    const auto before = keyframes.size();
+    std::erase_if(keyframes, [&](const ac3::oba::Keyframe& key) {
+        return std::abs(key.time_s - timeS) < kSameInstant;
+    });
+    if (keyframes.size() == before) {
+        return;
+    }
+    if (keyframes.empty()) {
+        object_keyframes_.remove(objectIndex);
+    } else {
+        object_keyframes_[objectIndex] = std::move(keyframes);
+    }
+    emit objectsChanged();
+}
+
+QVariantMap EncoderController::evaluateObjectPath(int objectIndex, double timeS) const {
+    QVariantMap out;
+    if (objectIndex < 0 || objectIndex >= static_cast<int>(object_configs_.size())) {
+        return out;
+    }
+    const auto& config = object_configs_[static_cast<std::size_t>(objectIndex)];
+    ac3::oba::Position position{.x = config.x, .y = config.y, .z = config.z};
+    double gain = 1.0;
+    double lfe_send = config.lfe_send;
+
+    const auto keyframes = sortedKeyframes(objectIndex);
+    if (!keyframes.empty()) {
+        if (const auto path = ac3::oba::KeyframePath::create(keyframes)) {
+            const auto placement = path->evaluate(timeS);
+            position = placement.position;
+            gain = placement.gain;
+            lfe_send = placement.lfe_send;
+        }
+    }
+    out[QStringLiteral("x")] = position.x;
+    out[QStringLiteral("y")] = position.y;
+    out[QStringLiteral("z")] = position.z;
+    out[QStringLiteral("gain")] = gain;
+    out[QStringLiteral("lfeSend")] = lfe_send;
+    return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -1014,21 +1119,17 @@ std::vector<bool> EncoderController::fedChannels() const {
         // at the front of the room legitimately leave the surrounds silent,
         // and claiming otherwise would have the display report a fault.
         std::vector<bool> fed(6, false);
-        const auto objects = static_cast<std::size_t>(std::max(object_count_, 1));
-        for (std::size_t i = 0; i < objects; ++i) {
-            const double offset =
-                objects < 2 ? 0.0
-                            : object_spread_ * (2.0 * static_cast<double>(i) /
-                                                    static_cast<double>(objects - 1) - 1.0);
-            const auto gains =
-                ac3::spatial::pan_room(std::clamp(object_x_ + offset, 0.0, 1.0), object_y_);
+        bool any_lfe_send = false;
+        for (const auto& config : object_configs_) {
+            const auto gains = ac3::spatial::pan_room(config.x, config.y);
             for (std::size_t ch = 0; ch < gains.size(); ++ch) {
                 fed[ch] = fed[ch] || gains[ch] != 0.0;
             }
+            any_lfe_send = any_lfe_send || config.lfe_send > 0.0;
         }
         // An object reaches the LFE only through the explicit send: there is
         // no direction that points at it (§6.3.2.2 bypasses it entirely).
-        fed[5] = object_lfe_send_ > 0.0;
+        fed[5] = any_lfe_send;
         return fed;
     }
     if (!source_) {
@@ -1082,6 +1183,44 @@ void EncoderController::setLayout(ac3::Acmod acmod, bool lfe, const QStringList&
     // source's labels would put a number against the wrong channel.
     publishLevels(
         std::vector<ac3::analysis::ChannelLevel>(static_cast<std::size_t>(names.size())));
+}
+
+void EncoderController::refreshObjectConfigs() {
+    const auto count = static_cast<std::size_t>(std::max(object_count_, 0));
+    const auto previous = object_configs_.size();
+    if (count == previous) {
+        return;
+    }
+    // Existing objects keep whatever position they were given; only the
+    // newly-appeared ones need a default, spread out along x rather than
+    // stacked on one point (the design brief's own complaint about the old
+    // single-point-plus-spread model, where six objects "overlap into a
+    // smear").
+    object_configs_.resize(count);
+    for (std::size_t i = previous; i < count; ++i) {
+        const double offset = count < 2 ? 0.0
+                                        : 0.3 * (2.0 * static_cast<double>(i) /
+                                                     static_cast<double>(count - 1) - 1.0);
+        object_configs_[i] = {.x = std::clamp(0.5 + offset, 0.0, 1.0),
+                              .y = 0.15,
+                              .z = 0.0,
+                              .lfe_send = 0.15};
+    }
+    if (selected_object_index_ >= static_cast<int>(count)) {
+        selected_object_index_ = count > 0 ? static_cast<int>(count) - 1 : 0;
+    }
+    // A path for an index the new count no longer has is meaningless - drop
+    // it rather than let it silently reappear if the count later grows back
+    // to cover that index again with motion authored for a different file.
+    QList<int> stale;
+    for (auto it = object_keyframes_.constBegin(); it != object_keyframes_.constEnd(); ++it) {
+        if (it.key() >= static_cast<int>(count)) {
+            stale.append(it.key());
+        }
+    }
+    for (const auto key : stale) {
+        object_keyframes_.remove(key);
+    }
 }
 
 void EncoderController::clearLayout() {
@@ -1511,6 +1650,7 @@ void EncoderController::loadSourceFile(const QUrl& url) {
         source_path_ = path;
         source_info_.clear();
         object_count_ = 0;
+        refreshObjectConfigs();
         clearLayout();
         emit sourceChanged();
         setStatus(QStringLiteral("Could not read %1: %2")
@@ -1566,6 +1706,7 @@ void EncoderController::loadSourceFile(const QUrl& url) {
                        .arg(static_cast<int>(seconds) % 60, 2, 10, QLatin1Char('0'))
                        .arg(channels == 1 ? QString() : QStringLiteral("s"));
     object_count_ = static_cast<int>(std::min<std::size_t>(channels, 15));
+    refreshObjectConfigs();
     source_ = std::make_unique<Source>(Source{std::move(*wav)});
     source_path_ = path;
     source_ready_ = problem.isEmpty();
@@ -1883,11 +2024,12 @@ void EncoderController::encodeObjects(const QString& path,
     const std::size_t nobjects = std::min<std::size_t>(planes.size(), 15);
 
     // Each object gets its own path over time: authored keyframes where the
-    // GUI has been given some (see setObjectPathKeyframes), otherwise the
-    // static point-plus-spread placement below, held constant for the whole
-    // file. Built here, on the GUI thread, and moved into the worker below -
-    // the same timing today's centre/spread/lfe_send capture already relied
-    // on, so nothing about that thread-safety changes.
+    // GUI has been given some (see setObjectPathKeyframes), otherwise its own
+    // static position (see ObjectConfig - independent per object now, not a
+    // shared point plus a spread fan-out), held constant for the whole file.
+    // Built here, on the GUI thread, and moved into the worker below - the
+    // same timing today's per-object capture already relied on, so nothing
+    // about that thread-safety changes.
     std::vector<ac3::oba::ObjectPath> paths;
     paths.reserve(nobjects);
     for (std::size_t i = 0; i < nobjects; ++i) {
@@ -1899,29 +2041,21 @@ void EncoderController::encodeObjects(const QString& path,
                 continue;
             }
         }
-        // Objects that reach the bed by the SAME route are exactly the ones
-        // JOC cannot pull apart again, so they are spread either side of the
-        // chosen point rather than stacked on it. A stereo pair lands at
-        // exactly -/+ spread.
-        const double offset =
-            nobjects < 2 ? 0.0
-                         : object_spread_ * (2.0 * static_cast<double>(i) /
-                                                 static_cast<double>(nobjects - 1) - 1.0);
+        const auto& config = i < object_configs_.size()
+                                 ? object_configs_[i]
+                                 : ObjectConfig{};
         auto fallback = ac3::oba::KeyframePath::create(
             {{.time_s = 0.0,
-              .position = {.x = std::clamp(object_x_ + offset, 0.0, 1.0),
-                           .y = object_y_,
-                           .z = object_z_},
+              .position = {.x = config.x, .y = config.y, .z = config.z},
               // Every object is panned into the SAME five channels, so their
               // contributions add there. At unity apiece a six-channel source
               // put the bed's centre 7 dB over full scale; the inverse-root
               // law is what ac3cli's 'atmos' uses, and it keeps the sum near
               // unity for sources that are not identical.
               .gain = 0.7 / std::sqrt(static_cast<double>(nobjects)),
-              // Shared across the objects for the same reason: the LFE is one
-              // channel, and sending every object at full strength would
-              // pile the whole programme's low end into it.
-              .lfe_send = object_lfe_send_ / std::sqrt(static_cast<double>(nobjects))}});
+              // The LFE is one channel, and sending every object at full
+              // strength would pile the whole programme's low end into it.
+              .lfe_send = config.lfe_send / std::sqrt(static_cast<double>(nobjects))}});
         paths.emplace_back(std::move(*fallback));
     }
 

@@ -170,24 +170,20 @@ class EncoderController : public QObject {
     Q_PROPERTY(double meterFloorDb READ meterFloorDb CONSTANT)
 
     // ---- objects ----------------------------------------------------------
-    // Object mode. Each source channel becomes an object placed around one
-    // point in the room, encoded as a 5.1 E-AC-3 bed with JOC and OAMD beside
-    // it (TS 103 420) rather than as channels.
+    // Object mode. Each source channel becomes an object, encoded as a 5.1
+    // E-AC-3 bed with JOC and OAMD beside it (TS 103 420) rather than as
+    // channels. Placement is per object now, not one shared point plus a
+    // spread fan-out (§6 Q5): spread was standing in for that and is retired.
     Q_PROPERTY(bool atmosEnabled READ atmosEnabled WRITE setAtmosEnabled NOTIFY planChanged)
-    // Room-anchored per §4.2.1: x 0 at the left wall to 1 at the right, y 0 at
-    // the front wall to 1 at the back, z -1 at the floor to +1 at the ceiling.
-    Q_PROPERTY(double objectX READ objectX WRITE setObjectX NOTIFY objectsChanged)
-    Q_PROPERTY(double objectY READ objectY WRITE setObjectY NOTIFY objectsChanged)
-    Q_PROPERTY(double objectZ READ objectZ WRITE setObjectZ NOTIFY objectsChanged)
-    // How far apart the source's channels are spread either side of that
-    // point. Objects that reach the bed by the same route are exactly the ones
-    // JOC cannot separate again, so this is what makes them recoverable.
-    Q_PROPERTY(double objectSpread READ objectSpread WRITE setObjectSpread NOTIFY objectsChanged)
-    // Objects never reach the LFE by panning — there is no direction that
-    // points at it — so this send is the only route, and without it the bed's
-    // LFE is silent however the objects are placed.
-    Q_PROPERTY(double objectLfeSend READ objectLfeSend WRITE setObjectLfeSend NOTIFY objectsChanged)
     Q_PROPERTY(int objectCount READ objectCount NOTIFY sourceChanged)
+    // Which object the room plan, the sliders and the timeline all edit.
+    Q_PROPERTY(int selectedObjectIndex READ selectedObjectIndex WRITE setSelectedObjectIndex NOTIFY objectsChanged)
+    // One row per object: {index, sourceLabel, x, y, z, lfeSend, hasPath,
+    // keyCount} - room-anchored per §4.2.1 (x 0 at the left wall to 1 at the
+    // right, y 0 at the front wall to 1 at the back, z -1 at the floor to +1
+    // at the ceiling). Backs both the room plan's markers and the object
+    // list table, so the two can never disagree about a position.
+    Q_PROPERTY(QVariantList objectModel READ objectModel NOTIFY objectsChanged)
 
 public:
     explicit EncoderController(QObject* parent = nullptr);
@@ -274,12 +270,9 @@ public:
     [[nodiscard]] double meterFloorDb() const { return kMeterFloorDb; }
 
     [[nodiscard]] bool atmosEnabled() const { return atmos_enabled_; }
-    [[nodiscard]] double objectX() const { return object_x_; }
-    [[nodiscard]] double objectY() const { return object_y_; }
-    [[nodiscard]] double objectZ() const { return object_z_; }
-    [[nodiscard]] double objectSpread() const { return object_spread_; }
-    [[nodiscard]] double objectLfeSend() const { return object_lfe_send_; }
     [[nodiscard]] int objectCount() const { return object_count_; }
+    [[nodiscard]] int selectedObjectIndex() const { return selected_object_index_; }
+    [[nodiscard]] QVariantList objectModel() const;
 
     void setBitrateKbps(int kbps);
     void setCodecIndex(int index);
@@ -305,11 +298,7 @@ public:
     void setLfeMix(int value);
     void setDmixIndex(int index);
     void setAtmosEnabled(bool enabled);
-    void setObjectX(double value);
-    void setObjectY(double value);
-    void setObjectZ(double value);
-    void setObjectSpread(double value);
-    void setObjectLfeSend(double value);
+    void setSelectedObjectIndex(int index);
 
     // Refused (silently, same as a bed button or LFE toggle) when locked or
     // when the result would leave chanmap::allocate() unable to satisfy it.
@@ -321,14 +310,34 @@ public:
     Q_INVOKABLE void applyChannelPreset(const QString& name);
     // The minimal authoring hook for genuine per-object motion: an object
     // with authored keyframes here moves along them during encodeObjects
-    // instead of sitting at the static objectX/Y/Z + objectSpread point. Each
-    // entry of `keyframes` is a map with "time", "x", "y", "z", "gain" and
-    // "lfeSend" (the latter two optional). An empty list clears the object's
-    // path, returning it to the static fallback. No QML timeline exists yet
-    // for this - it is deliberately just plumbing, ahead of the GUI design
-    // pass that will decide the real authoring surface.
+    // instead of sitting at its static position. Each entry of `keyframes`
+    // is a map with "time", "x", "y", "z", "gain" and "lfeSend" (the latter
+    // two optional). An empty list clears the object's path, returning it to
+    // the static fallback.
     Q_INVOKABLE void setObjectPathKeyframes(int objectIndex, const QVariantList& keyframes);
     Q_INVOKABLE void clearObjectPath(int objectIndex);
+    // The room plan's drag target and the object list's editable cells - the
+    // static position a path-less object holds for the whole file, or that a
+    // keyframe is captured from (see addObjectKeyframe).
+    Q_INVOKABLE void setObjectPosition(int objectIndex, double x, double y, double z);
+    Q_INVOKABLE void setObjectLfeSend(int objectIndex, double value);
+    // Sorted by time, each {time, x, y, z, gain, lfeSend} - what the motion
+    // timeline draws one lane of. Empty for an object with no authored path.
+    Q_INVOKABLE [[nodiscard]] QVariantList objectKeyframes(int objectIndex) const;
+    // Captures the object's CURRENT static position as a keyframe at time_s,
+    // replacing one already there within 1/100s (float-equality has no
+    // business deciding whether two cues are "the same moment"). The first
+    // keyframe on a path-less object starts the path; setObjectPathKeyframes
+    // is what actually holds it, so this and clearObjectPath are the only two
+    // ways a path's contents change.
+    Q_INVOKABLE void addObjectKeyframe(int objectIndex, double timeS);
+    Q_INVOKABLE void removeObjectKeyframe(int objectIndex, double timeS);
+    // Where an object sits at timeS: along its authored path if it has one,
+    // else its static position, unmoving. What the motion timeline's preview
+    // playhead reads so the room plan animates exactly what encodeObjects()
+    // will actually place - the same ac3::oba::KeyframePath, not a second
+    // interpolation that could disagree with it.
+    Q_INVOKABLE [[nodiscard]] QVariantMap evaluateObjectPath(int objectIndex, double timeS) const;
 
     Q_INVOKABLE void loadSourceFile(const QUrl& url);
     Q_INVOKABLE void encodeTo(const QUrl& url);
@@ -405,6 +414,16 @@ private:
     // because an object is not a speaker feed.
     void encodeObjects(const QString& path, std::vector<std::vector<float>> planes,
                        std::uint32_t sample_rate);
+    // Resizes object_configs_ to object_count_, preserving any object index
+    // that survives the change and spreading newly-added ones out along x
+    // instead of defaulting them all onto the same overlapping point (the
+    // design brief's own complaint about the single-point-plus-spread model).
+    // Called wherever object_count_ is set.
+    void refreshObjectConfigs();
+    // The shared lookup addObjectKeyframe/removeObjectKeyframe/
+    // objectKeyframes/evaluateObjectPath all build on: object_keyframes_'s
+    // entry for this index, sorted by time, or empty if it has none.
+    [[nodiscard]] std::vector<ac3::oba::Keyframe> sortedKeyframes(int objectIndex) const;
 
     // Writes an elementary stream, or muxes Matroska, according to the chosen
     // container. Returns an empty string on success and the reason otherwise.
@@ -489,18 +508,25 @@ private:
     double dialogue_db_ = -20.0;
 
     bool atmos_enabled_ = false;
-    // Straight ahead at ear height, which is where a stereo pair already is.
-    double object_x_ = 0.5;
-    double object_y_ = 0.0;
-    double object_z_ = 0.0;
-    double object_spread_ = 0.15;
-    // Enough that the bed's LFE carries something without the low end of the
-    // programme arriving twice.
-    double object_lfe_send_ = 0.15;
     int object_count_ = 0;
+    int selected_object_index_ = 0;
+    // One static position per object - independent now, not a shared point
+    // plus a spread fan-out. Resized (and freshly spread out, so a loaded
+    // file's objects do not all default onto the same overlapping point) in
+    // refreshObjectConfigs() whenever object_count_ changes.
+    struct ObjectConfig {
+        double x = 0.5;
+        double y = 0.0;
+        double z = 0.0;
+        // Objects never reach the LFE by panning - there is no direction
+        // that points at it - so this send is the only route, and without
+        // it the bed's LFE is silent however the objects are placed.
+        double lfe_send = 0.15;
+    };
+    std::vector<ObjectConfig> object_configs_;
     // Authored motion, keyed by object index. An index absent here (the
-    // common case today) falls back to the static objectX/Y/Z + objectSpread
-    // placement in encodeObjects.
+    // common case) falls back to the object's static ObjectConfig placement
+    // in encodeObjects, held constant for the whole file.
     QHash<int, std::vector<ac3::oba::Keyframe>> object_keyframes_;
 
     QVariantList runs_;

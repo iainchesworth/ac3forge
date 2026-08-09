@@ -1405,8 +1405,42 @@ ApplicationWindow {
 
                         // ---- Objects ---------------------------------------------
                         ColumnLayout {
+                            id: objectsTab
                             Layout.fillWidth: true
                             spacing: Theme.gap
+
+                            // "author" edits object_configs_/keyframes directly via the
+                            // sliders and room plan. "live" has nothing to drive yet -
+                            // real live-driven motion is follow-up work for the capture
+                            // branch - so it just points at Live session instead of
+                            // offering controls that would silently do nothing.
+                            property string driveMode: "author"
+                            property real playheadTime: 0
+                            property bool previewing: false
+                            // objectKeyframes()/evaluateObjectPath() are Q_INVOKABLEs, not
+                            // properties, so nothing marks a binding that calls them as
+                            // depending on objectsChanged. Reading this counter inside
+                            // those bindings gives them something to depend on.
+                            property int objectsRevision: 0
+
+                            readonly property var selectedObj: {
+                                const list = EncoderController.objectModel;
+                                for (let i = 0; i < list.length; ++i) {
+                                    if (list[i].index === EncoderController.selectedObjectIndex) {
+                                        return list[i];
+                                    }
+                                }
+                                return null;
+                            }
+
+                            function formatTime(t) {
+                                return "0:" + t.toFixed(2).padStart(5, "0");
+                            }
+
+                            Connections {
+                                target: EncoderController
+                                function onObjectsChanged() { objectsTab.objectsRevision++; }
+                            }
 
                             Card {
                                 title: qsTr("Dolby Atmos objects")
@@ -1438,18 +1472,29 @@ ApplicationWindow {
                                     // is not the problem. The problem is that the bed is
                                     // always 5.1, so a rate that was generous for the
                                     // source's own layout may not be for six channels.
-                                    Text {
+                                    RowLayout {
                                         visible: EncoderController.atmosEnabled
                                                  && EncoderController.bitrateKbps < 384
-                                        text: qsTr("⚠ the bed is 5.1 — 384 kbps or more")
-                                        color: Theme.bad
-                                        font.pixelSize: Theme.fontSmall
+                                        spacing: Theme.gap
+
+                                        Text {
+                                            text: qsTr("⚠ the bed is 5.1 — 384 kbps or more")
+                                            color: Theme.bad
+                                            font.pixelSize: Theme.fontSmall
+                                        }
+
+                                        Button {
+                                            text: qsTr("Set it")
+                                            enabled: !EncoderController.busy
+                                            onClicked: EncoderController.bitrateKbps = 384
+                                        }
                                     }
                                 }
 
                                 Text {
                                     Layout.fillWidth: true
-                                    text: qsTr("Every source channel becomes an object, spread either side of the point below. They are panned into a 5.1 bed that any decoder can play, and the object positions ride alongside as metadata — so a height is carried even though no bed channel can reproduce it.")
+                                    visible: EncoderController.atmosEnabled
+                                    text: qsTr("Every source channel becomes an object, panned into a 5.1 bed that any decoder can play. The object positions ride alongside as metadata — so a height is carried even though no bed channel can reproduce it, and the LFE send is the only route to that channel, since no direction points at it.")
                                     color: Theme.textMuted
                                     font.pixelSize: Theme.fontSmall
                                     wrapMode: Text.WordWrap
@@ -1458,139 +1503,573 @@ ApplicationWindow {
                                 RowLayout {
                                     Layout.fillWidth: true
                                     visible: EncoderController.atmosEnabled
-                                    spacing: Theme.pad
+                                    spacing: Theme.space6
 
                                     // Plan view of the room: §4.2.1's x to the right, y
                                     // towards the back, listener in the middle.
-                                    Rectangle {
-                                        id: room
-                                        Layout.preferredWidth: 190
-                                        Layout.preferredHeight: 190
-                                        color: Theme.surfaceAlt
-                                        border.color: Theme.border
-                                        border.width: 1
+                                    ColumnLayout {
+                                        Layout.preferredWidth: 340
+                                        Layout.alignment: Qt.AlignTop
+                                        spacing: Theme.space2
 
-                                        Text {
-                                            anchors.horizontalCenter: parent.horizontalCenter
-                                            anchors.top: parent.top
-                                            anchors.topMargin: 4
-                                            text: qsTr("front")
-                                            color: Theme.textMuted
-                                            font.pixelSize: Theme.fontSmall
-                                        }
-
-                                        Rectangle {
-                                            anchors.centerIn: parent
-                                            width: 6
-                                            height: 6
-                                            color: Theme.textMuted
-                                        }
-
-                                        // One marker per object, at the offset the encoder
-                                        // will actually place it: the same even spread
-                                        // either side of the chosen point.
-                                        Repeater {
-                                            model: Math.max(EncoderController.objectCount, 1)
-
-                                            Rectangle {
-                                                required property int index
-
-                                                readonly property int count:
-                                                    Math.max(EncoderController.objectCount, 1)
-                                                readonly property real offset: count < 2
-                                                    ? 0
-                                                    : EncoderController.objectSpread
-                                                      * (2 * index / (count - 1) - 1)
-
-                                                width: 16
-                                                height: 16
-                                                color: Theme.accent
-                                                opacity: 0.9
-                                                x: Math.max(0, Math.min(1, EncoderController.objectX
-                                                                        + offset)) * (room.width - width)
-                                                y: EncoderController.objectY * (room.height - height)
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            Text {
+                                                text: qsTr("ROOM — PLAN")
+                                                color: Theme.neutral600
+                                                font.pixelSize: 10
+                                            }
+                                            Item { Layout.fillWidth: true }
+                                            Text {
+                                                text: qsTr("drag to place")
+                                                color: Theme.neutral600
+                                                font.pixelSize: 10
+                                                font.family: "monospace"
                                             }
                                         }
 
-                                        MouseArea {
-                                            anchors.fill: parent
-                                            enabled: !EncoderController.busy
-                                            onPositionChanged: (mouse) => place(mouse)
-                                            onPressed: (mouse) => place(mouse)
-                                            function place(mouse) {
-                                                EncoderController.objectX = mouse.x / room.width;
-                                                EncoderController.objectY = mouse.y / room.height;
+                                        Rectangle {
+                                            id: room
+                                            Layout.preferredWidth: 340
+                                            Layout.preferredHeight: 300
+                                            color: Theme.neutral100
+                                            border.color: Theme.divider
+                                            border.width: 1
+
+                                            Rectangle {
+                                                anchors.horizontalCenter: parent.horizontalCenter
+                                                anchors.top: parent.top
+                                                anchors.bottom: parent.bottom
+                                                width: 1
+                                                color: Theme.neutral300
+                                            }
+                                            Rectangle {
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                anchors.left: parent.left
+                                                anchors.right: parent.right
+                                                height: 1
+                                                color: Theme.neutral300
+                                            }
+                                            Text {
+                                                anchors.left: parent.left
+                                                anchors.top: parent.top
+                                                anchors.margins: 6
+                                                text: qsTr("front")
+                                                color: Theme.neutral500
+                                                font.pixelSize: 9
+                                            }
+                                            Text {
+                                                anchors.left: parent.left
+                                                anchors.bottom: parent.bottom
+                                                anchors.margins: 6
+                                                text: qsTr("rear")
+                                                color: Theme.neutral500
+                                                font.pixelSize: 9
+                                            }
+
+                                            // Drag moves the SELECTED object; declared before
+                                            // the markers so it sits underneath them and a
+                                            // click precisely on a marker still reaches that
+                                            // marker's own MouseArea instead.
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                enabled: !EncoderController.busy
+                                                         && objectsTab.driveMode === "author"
+                                                         && objectsTab.selectedObj !== null
+                                                onPositionChanged: (mouse) => place(mouse)
+                                                onPressed: (mouse) => place(mouse)
+                                                function place(mouse) {
+                                                    const x = Math.max(0, Math.min(1, mouse.x / room.width));
+                                                    const y = Math.max(0, Math.min(1, mouse.y / room.height));
+                                                    EncoderController.setObjectPosition(
+                                                        objectsTab.selectedObj.index, x, y,
+                                                        objectsTab.selectedObj.z);
+                                                }
+                                            }
+
+                                            Repeater {
+                                                model: EncoderController.objectModel
+
+                                                Rectangle {
+                                                    id: marker
+                                                    required property var modelData
+                                                    readonly property bool isSelected:
+                                                        modelData.index === EncoderController.selectedObjectIndex
+                                                    readonly property var livePos:
+                                                        objectsTab.previewing
+                                                        ? EncoderController.evaluateObjectPath(
+                                                              modelData.index, objectsTab.playheadTime)
+                                                        : null
+
+                                                    width: isSelected ? 18 : 14
+                                                    height: isSelected ? 18 : 14
+                                                    color: isSelected ? Theme.accent : Theme.neutral800
+                                                    border.color: Theme.text
+                                                    border.width: isSelected ? 2 : 0
+                                                    x: (livePos ? livePos.x : modelData.x) * room.width - width / 2
+                                                    y: (livePos ? livePos.y : modelData.y) * room.height - height / 2
+                                                    z: isSelected ? 1 : 0
+
+                                                    Rectangle {
+                                                        visible: marker.isSelected
+                                                        anchors.left: parent.right
+                                                        anchors.leftMargin: 4
+                                                        anchors.verticalCenter: parent.verticalCenter
+                                                        width: chip.implicitWidth + 6
+                                                        height: chip.implicitHeight + 2
+                                                        color: Theme.bg
+
+                                                        Text {
+                                                            id: chip
+                                                            anchors.centerIn: parent
+                                                            text: qsTr("obj %1").arg(marker.modelData.index + 1)
+                                                            color: Theme.text
+                                                            font.pixelSize: 10
+                                                            font.family: "monospace"
+                                                        }
+                                                    }
+
+                                                    MouseArea {
+                                                        anchors.fill: parent
+                                                        onClicked: EncoderController.selectedObjectIndex
+                                                                   = marker.modelData.index
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            spacing: Theme.space3
+
+                                            Repeater {
+                                                model: [
+                                                    { label: "x", value: objectsTab.selectedObj ? objectsTab.selectedObj.x : 0 },
+                                                    { label: "y", value: objectsTab.selectedObj ? objectsTab.selectedObj.y : 0 },
+                                                    { label: "z", value: objectsTab.selectedObj ? objectsTab.selectedObj.z : 0 }
+                                                ]
+
+                                                ColumnLayout {
+                                                    required property var modelData
+                                                    Layout.fillWidth: true
+                                                    spacing: 2
+
+                                                    Text {
+                                                        text: modelData.label
+                                                        color: Theme.neutral600
+                                                        font.pixelSize: 9
+                                                        font.capitalization: Font.AllUppercase
+                                                    }
+                                                    Text {
+                                                        text: modelData.value.toFixed(2)
+                                                        color: Theme.text
+                                                        font.pixelSize: 13
+                                                        font.family: "monospace"
+                                                    }
+                                                }
                                             }
                                         }
                                     }
 
                                     ColumnLayout {
                                         Layout.fillWidth: true
-                                        spacing: Theme.gap
+                                        Layout.alignment: Qt.AlignTop
+                                        spacing: Theme.space2
 
-                                        Text {
-                                            text: qsTr("Height")
-                                            color: Theme.text
-                                            font.pixelSize: Theme.fontNormal
-                                        }
-
-                                        Slider {
+                                        RowLayout {
                                             Layout.fillWidth: true
-                                            from: -1.0
-                                            to: 1.0
-                                            enabled: !EncoderController.busy
-                                            value: EncoderController.objectZ
-                                            onMoved: EncoderController.objectZ = value
+                                            Text {
+                                                text: qsTr("OBJECTS")
+                                                color: Theme.neutral600
+                                                font.pixelSize: 10
+                                            }
+                                            Item { Layout.fillWidth: true }
+                                            SegmentedControl {
+                                                model: [
+                                                    { value: "author", label: qsTr("Author a path") },
+                                                    { value: "live", label: qsTr("Drive it live") }
+                                                ]
+                                                currentValue: objectsTab.driveMode
+                                                onSelected: (value) => objectsTab.driveMode = value
+                                            }
                                         }
 
-                                        Text {
-                                            text: qsTr("Spread")
-                                            color: Theme.text
-                                            font.pixelSize: Theme.fontNormal
-                                        }
-
-                                        Slider {
+                                        Rectangle {
                                             Layout.fillWidth: true
-                                            from: 0.0
-                                            to: 0.5
-                                            enabled: !EncoderController.busy
-                                            value: EncoderController.objectSpread
-                                            onMoved: EncoderController.objectSpread = value
+                                            visible: objectsTab.driveMode === "live"
+                                            color: Theme.accent100
+                                            implicitHeight: liveMsg.implicitHeight + Theme.space3 * 2
+
+                                            Text {
+                                                id: liveMsg
+                                                anchors.fill: parent
+                                                anchors.margins: Theme.space3
+                                                text: qsTr("Live driving needs a monitored capture. Open Live session to drag objects against running audio.")
+                                                color: Theme.accent800
+                                                font.pixelSize: Theme.fontSmall
+                                                wrapMode: Text.WordWrap
+                                            }
                                         }
 
-                                        Text {
-                                            text: qsTr("LFE send")
-                                            color: Theme.text
-                                            font.pixelSize: Theme.fontNormal
-                                        }
-
-                                        Slider {
+                                        // Header row + one row per object, matching the
+                                        // room plan's markers and the sliders below.
+                                        GridLayout {
                                             Layout.fillWidth: true
-                                            from: 0.0
-                                            to: 1.0
-                                            enabled: !EncoderController.busy
-                                            value: EncoderController.objectLfeSend
-                                            onMoved: EncoderController.objectLfeSend = value
+                                            columns: 8
+                                            columnSpacing: Theme.space2
+                                            rowSpacing: 2
+
+                                            Repeater {
+                                                model: [
+                                                    qsTr("Object"), qsTr("Source"), qsTr("x"), qsTr("y"),
+                                                    qsTr("z"), qsTr("Path"), qsTr("LFE"), qsTr("Keys")
+                                                ]
+                                                Text {
+                                                    required property string modelData
+                                                    Layout.fillWidth: true
+                                                    text: modelData
+                                                    color: Theme.neutral600
+                                                    font.pixelSize: 9
+                                                    font.capitalization: Font.AllUppercase
+                                                }
+                                            }
+
+                                            Repeater {
+                                                model: EncoderController.objectModel
+
+                                                Rectangle {
+                                                    id: row
+                                                    required property var modelData
+                                                    Layout.columnSpan: 8
+                                                    Layout.fillWidth: true
+                                                    implicitHeight: rowLayout.implicitHeight + 6
+                                                    color: modelData.index === EncoderController.selectedObjectIndex
+                                                           ? Theme.accent100 : "transparent"
+
+                                                    RowLayout {
+                                                        id: rowLayout
+                                                        anchors.verticalCenter: parent.verticalCenter
+                                                        width: parent.width
+                                                        spacing: Theme.space2
+
+                                                        Text {
+                                                            Layout.fillWidth: true
+                                                            text: row.modelData.index + 1
+                                                            font.family: "monospace"
+                                                            font.pixelSize: Theme.fontSmall
+                                                        }
+                                                        Text {
+                                                            Layout.fillWidth: true
+                                                            text: row.modelData.sourceLabel
+                                                            font.pixelSize: Theme.fontSmall
+                                                        }
+                                                        Text {
+                                                            Layout.fillWidth: true
+                                                            text: row.modelData.x.toFixed(2)
+                                                            font.family: "monospace"
+                                                            font.pixelSize: Theme.fontSmall
+                                                        }
+                                                        Text {
+                                                            Layout.fillWidth: true
+                                                            text: row.modelData.y.toFixed(2)
+                                                            font.family: "monospace"
+                                                            font.pixelSize: Theme.fontSmall
+                                                        }
+                                                        Text {
+                                                            Layout.fillWidth: true
+                                                            text: row.modelData.z.toFixed(2)
+                                                            font.family: "monospace"
+                                                            font.pixelSize: Theme.fontSmall
+                                                        }
+                                                        Text {
+                                                            Layout.fillWidth: true
+                                                            text: row.modelData.hasPath ? qsTr("path") : qsTr("static")
+                                                            font.pixelSize: Theme.fontSmall
+                                                            color: row.modelData.hasPath ? Theme.text : Theme.textMuted
+                                                        }
+                                                        Text {
+                                                            Layout.fillWidth: true
+                                                            text: row.modelData.lfeSend.toFixed(2)
+                                                            font.family: "monospace"
+                                                            font.pixelSize: Theme.fontSmall
+                                                        }
+                                                        Text {
+                                                            Layout.fillWidth: true
+                                                            text: row.modelData.keyCount
+                                                            font.family: "monospace"
+                                                            font.pixelSize: Theme.fontSmall
+                                                        }
+                                                    }
+
+                                                    MouseArea {
+                                                        anchors.fill: parent
+                                                        onClicked: EncoderController.selectedObjectIndex
+                                                                   = row.modelData.index
+                                                    }
+                                                }
+                                            }
                                         }
 
-                                        Text {
-                                            text: qsTr("x %1 · y %2 · z %3 · spread %4 · lfe %5")
-                                                  .arg(EncoderController.objectX.toFixed(2))
-                                                  .arg(EncoderController.objectY.toFixed(2))
-                                                  .arg(EncoderController.objectZ.toFixed(2))
-                                                  .arg(EncoderController.objectSpread.toFixed(2))
-                                                  .arg(EncoderController.objectLfeSend.toFixed(2))
-                                            color: Theme.textMuted
-                                            font.pixelSize: Theme.fontSmall
-                                            font.family: "monospace"
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            Layout.topMargin: Theme.space3
+                                            spacing: Theme.space6
+
+                                            ColumnLayout {
+                                                Layout.fillWidth: true
+                                                spacing: Theme.space2
+
+                                                RowLayout {
+                                                    Layout.fillWidth: true
+                                                    Text {
+                                                        text: qsTr("Height — object %1")
+                                                              .arg((objectsTab.selectedObj
+                                                                    ? objectsTab.selectedObj.index : 0) + 1)
+                                                        color: Theme.neutral600
+                                                        font.pixelSize: 10
+                                                    }
+                                                    Item { Layout.fillWidth: true }
+                                                    Text {
+                                                        text: (objectsTab.selectedObj
+                                                               ? objectsTab.selectedObj.z : 0).toFixed(2)
+                                                        color: Theme.text
+                                                        font.pixelSize: 11
+                                                        font.family: "monospace"
+                                                    }
+                                                }
+                                                Slider {
+                                                    Layout.fillWidth: true
+                                                    from: -1.0
+                                                    to: 1.0
+                                                    enabled: !EncoderController.busy
+                                                             && objectsTab.driveMode === "author"
+                                                             && objectsTab.selectedObj !== null
+                                                    value: objectsTab.selectedObj ? objectsTab.selectedObj.z : 0
+                                                    onMoved: EncoderController.setObjectPosition(
+                                                                 objectsTab.selectedObj.index,
+                                                                 objectsTab.selectedObj.x,
+                                                                 objectsTab.selectedObj.y, value)
+                                                }
+                                            }
+
+                                            ColumnLayout {
+                                                Layout.fillWidth: true
+                                                spacing: Theme.space2
+
+                                                RowLayout {
+                                                    Layout.fillWidth: true
+                                                    Text {
+                                                        text: qsTr("LFE send")
+                                                        color: Theme.neutral600
+                                                        font.pixelSize: 10
+                                                    }
+                                                    Item { Layout.fillWidth: true }
+                                                    Text {
+                                                        text: (objectsTab.selectedObj
+                                                               ? objectsTab.selectedObj.lfeSend : 0).toFixed(2)
+                                                        color: Theme.text
+                                                        font.pixelSize: 11
+                                                        font.family: "monospace"
+                                                    }
+                                                }
+                                                Slider {
+                                                    Layout.fillWidth: true
+                                                    from: 0.0
+                                                    to: 1.0
+                                                    enabled: !EncoderController.busy
+                                                             && objectsTab.driveMode === "author"
+                                                             && objectsTab.selectedObj !== null
+                                                    value: objectsTab.selectedObj ? objectsTab.selectedObj.lfeSend : 0
+                                                    onMoved: EncoderController.setObjectLfeSend(
+                                                                 objectsTab.selectedObj.index, value)
+                                                }
+                                            }
                                         }
 
                                         Text {
                                             Layout.fillWidth: true
-                                            text: qsTr("Height changes the metadata, not the bed — a 5.1 ring has no speakers above it. Spread matters because objects reaching the bed by the same route are exactly the ones JOC cannot pull apart again. The LFE send is the only route to that channel: no direction points at it, so panning never reaches it.")
+                                            text: qsTr("Height changes the metadata, not the bed — a 5.1 ring has no speakers above it. The LFE send is the only route to that channel: no direction points at it, so panning never reaches it.")
                                             color: Theme.textMuted
                                             font.pixelSize: Theme.fontSmall
                                             wrapMode: Text.WordWrap
+                                        }
+                                    }
+                                }
+
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    visible: EncoderController.atmosEnabled
+                                    height: 2
+                                    color: Theme.divider
+                                }
+
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    visible: EncoderController.atmosEnabled
+                                    spacing: Theme.space2
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        Text {
+                                            text: qsTr("MOTION")
+                                            color: Theme.neutral600
+                                            font.pixelSize: 10
+                                        }
+                                        Text {
+                                            text: objectsTab.formatTime(objectsTab.playheadTime)
+                                                  + " / " + objectsTab.formatTime(8)
+                                            color: Theme.textMuted
+                                            font.pixelSize: 11
+                                            font.family: "monospace"
+                                        }
+                                        Item { Layout.fillWidth: true }
+                                        Button {
+                                            text: qsTr("Add key")
+                                            enabled: !EncoderController.busy && objectsTab.selectedObj !== null
+                                            onClicked: EncoderController.addObjectKeyframe(
+                                                           objectsTab.selectedObj.index, objectsTab.playheadTime)
+                                        }
+                                        Button {
+                                            text: objectsTab.previewing ? qsTr("Stop") : qsTr("Preview")
+                                            onClicked: {
+                                                if (objectsTab.previewing) {
+                                                    objectsTab.previewing = false;
+                                                } else {
+                                                    objectsTab.playheadTime = 0;
+                                                    objectsTab.previewing = true;
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    Timer {
+                                        interval: 33
+                                        repeat: true
+                                        running: objectsTab.previewing
+                                        onTriggered: {
+                                            objectsTab.playheadTime += interval / 1000;
+                                            if (objectsTab.playheadTime >= 8) {
+                                                objectsTab.playheadTime = 8;
+                                                objectsTab.previewing = false;
+                                            }
+                                        }
+                                    }
+
+                                    Item {
+                                        id: timelineWrap
+                                        Layout.fillWidth: true
+                                        implicitHeight: timelineColumn.implicitHeight
+
+                                        Rectangle {
+                                            anchors.fill: parent
+                                            color: "transparent"
+                                            border.color: Theme.divider
+                                            border.width: 1
+                                        }
+
+                                        ColumnLayout {
+                                            id: timelineColumn
+                                            width: parent.width
+                                            spacing: 0
+
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                Layout.leftMargin: 70
+                                                Layout.rightMargin: 8
+                                                Layout.topMargin: 5
+                                                Layout.bottomMargin: 5
+
+                                                Repeater {
+                                                    model: 9
+                                                    Text {
+                                                        required property int index
+                                                        Layout.fillWidth: true
+                                                        horizontalAlignment: index === 0 ? Text.AlignLeft
+                                                                             : index === 8 ? Text.AlignRight
+                                                                             : Text.AlignHCenter
+                                                        text: index === 8 ? qsTr("8 s") : String(index)
+                                                        color: Theme.neutral600
+                                                        font.pixelSize: 9
+                                                        font.family: "monospace"
+                                                    }
+                                                }
+                                            }
+
+                                            Rectangle { Layout.fillWidth: true; height: 1; color: Theme.divider }
+
+                                            Repeater {
+                                                model: EncoderController.objectModel
+
+                                                RowLayout {
+                                                    id: laneRow
+                                                    required property var modelData
+                                                    Layout.fillWidth: true
+                                                    spacing: 0
+
+                                                    Text {
+                                                        Layout.preferredWidth: 70
+                                                        Layout.leftMargin: 8
+                                                        text: qsTr("obj %1").arg(laneRow.modelData.index + 1)
+                                                        color: laneRow.modelData.index === EncoderController.selectedObjectIndex
+                                                               ? Theme.text : Theme.neutral700
+                                                        font.pixelSize: 10
+                                                        font.family: "monospace"
+                                                    }
+
+                                                    Rectangle {
+                                                        id: lane
+                                                        Layout.fillWidth: true
+                                                        Layout.preferredHeight: 24
+                                                        readonly property bool isSelected:
+                                                            laneRow.modelData.index === EncoderController.selectedObjectIndex
+                                                        readonly property var keys:
+                                                            (objectsTab.objectsRevision,
+                                                             EncoderController.objectKeyframes(laneRow.modelData.index))
+                                                        color: isSelected ? Theme.accent100 : "transparent"
+
+                                                        Rectangle {
+                                                            anchors.left: parent.left
+                                                            anchors.top: parent.top
+                                                            anchors.bottom: parent.bottom
+                                                            width: 1
+                                                            color: Theme.divider
+                                                        }
+
+                                                        Rectangle {
+                                                            visible: lane.keys.length > 1
+                                                            x: lane.keys.length > 1 ? (lane.keys[0].time / 8) * lane.width : 0
+                                                            width: lane.keys.length > 1
+                                                                   ? Math.max(0, ((lane.keys[lane.keys.length - 1].time
+                                                                                   - lane.keys[0].time) / 8) * lane.width)
+                                                                   : 0
+                                                            y: lane.height / 2
+                                                            height: 1
+                                                            color: lane.isSelected ? Theme.accent400 : Theme.neutral400
+                                                        }
+
+                                                        Repeater {
+                                                            model: lane.keys
+                                                            Rectangle {
+                                                                required property var modelData
+                                                                width: 8
+                                                                height: 8
+                                                                rotation: 45
+                                                                color: lane.isSelected ? Theme.accent : Theme.text
+                                                                x: (modelData.time / 8) * lane.width - width / 2
+                                                                y: lane.height / 2 - height / 2
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        Rectangle {
+                                            x: 70 + (objectsTab.playheadTime / 8) * (timelineWrap.width - 70 - 8)
+                                            y: 0
+                                            width: 2
+                                            height: timelineWrap.height
+                                            color: Theme.accent
                                         }
                                     }
                                 }
