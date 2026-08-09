@@ -26,18 +26,25 @@ ever needed it. `fuzz.yml` installs it as an explicit extra step; a local
 Debian/Ubuntu run needs `apt-get install libclang-rt-21-dev` (or your
 distro's equivalent) before `fuzz/run.sh` will link.
 
-## Why `-Werror` is off for this build
+## `-Werror` is on for this build too
 
-`cmake/CompilerWarnings.cmake` turns on `-Werror`, and only the Windows MSVC
-leg has ever had to satisfy it - the other four (windows-llvm, linux-gcc,
-linux-llvm, macos-llvm) are marked `experimental` in `ci.yml` with a real
-warning-count debt (sign-conversion, double-promotion, and the like) that is
-explicitly scoped to the cross-platform porting task, not this one.
-`AC3FORGE_BUILD_FUZZERS` skips linking `ac3::warnings` into `ac3forge`
-(`src/lib/CMakeLists.txt`) so a fuzz build can proceed under Clang today
-without taking on that unrelated cleanup. This does not relax anything a
-fuzzer would catch: ASan and UBSan still fire on real memory and undefined-
-behaviour bugs regardless of `-Wsign-conversion`.
+This build once opted out of `ac3::warnings`: `AC3FORGE_BUILD_FUZZERS` skipped
+linking it into `ac3forge`, on the stated assumption that the codebase carried
+roughly sixteen sign-conversion and double-promotion sites that only the
+Windows MSVC leg had ever been held to, and that clearing them belonged to the
+cross-platform porting task rather than to fuzzing.
+
+That number was never measured, and it was wrong. Building the harnesses with
+`ac3::warnings` linked in, under Clang 21 with the full set
+(`-Werror -Wconversion -Wsign-conversion -Wdouble-promotion -Wold-style-cast`
+and the rest) alongside ASan/UBSan/libFuzzer, produces **zero** warnings - the
+other legs had gone green in the meantime and taken the debt with them. The
+exemption was removed rather than re-justified, so `ac3forge` now compiles
+under one warning set in every configuration, this one included.
+
+That the set is genuinely live here, and not merely listed on the command
+line, was checked by injecting a deliberate sign-conversion and double-
+promotion into a library source and confirming the fuzz build fails on both.
 
 ## Status at the commit that added this
 
@@ -121,8 +128,8 @@ AC3CLI_BIN=build/config-windows-msvc-debug/bin/ac3cli.exe fuzz/generate-seeds.sh
 ```
 
 (Any *working* `ac3cli` build does - this only needs it to produce valid
-streams, not to run instrumented, so the MSVC leg - the one leg proven clean
-under `-Werror` - is the practical choice today.)
+streams, not to run instrumented. The MSVC leg is the practical choice on a
+Windows host simply because it is the one already built there.)
 
 `fuzz/seeds/` is intentionally small (a few MB) and committed to the repo.
 `fuzz/corpus/` - what a real mutation run *grows* into over its time budget -
@@ -158,12 +165,12 @@ gitignored; `fuzz/run.sh` creates it on demand.
   on-demand deeper run.
 
 `fuzz-short` and `fuzz-nightly` run with `continue-on-error: true`, the same
-convention `ci.yml` uses for its other unproven Clang legs: this is the first
-time the project has asked Clang to build `ac3forge` with `-Werror` off and
-ASan+UBSan+libFuzzer on, and neither job has multiple clean runs behind it
-yet. `fuzz-regress` is cheap enough to make a required branch-protection
-check once it has proven itself - that is a repository setting this file
-cannot declare on its own.
+convention `ci.yml` uses for its other unproven legs: neither has multiple
+clean fuzzing runs behind it yet. That is a question of track record, and it
+is not settled by the build being warnings-clean - a bounded mutation run can
+still surface something on any given night. `fuzz-regress` is cheap enough to
+make a required branch-protection check once it has proven itself - that is a
+repository setting this file cannot declare on its own.
 
 This is a bounded, time-boxed run, not continuous (OSS-Fuzz-style) fuzzing
 infrastructure. That is a deliberate scope decision, not a limitation
