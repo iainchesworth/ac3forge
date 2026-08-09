@@ -111,7 +111,7 @@ run_tolerate_eac3_tool_unsupported() {
 # --- AC-3: every layout sine can address, with and without coupling --------
 # (AC-3 coupling decode is fully implemented - unlike E-AC-3's, see above -
 # commit 8386c8f is the coupling reconstruction this exercises.)
-for layout in mono stereo stereoc 51 51c; do
+for layout in mono stereo stereoc 51 51c 1+1; do
     run sine "ac3_${layout}.ac3" 2 192 1000 80 "$layout"
     run decode "ac3_${layout}.ac3" "ac3_${layout}.wav"
     run_ffmpeg_check "ac3_${layout}.ac3"
@@ -153,7 +153,7 @@ run_ffmpeg_check orbit.ac3
 # eac3-sine takes no tools argument (it never turns coupling/spx/aht on), so
 # every layout round-trips through decode cleanly. FFmpeg reads every one of
 # these EXCEPT 714 (two dependent substreams) - see the header comment.
-for layout in mono stereo 51 71 512 514 714; do
+for layout in mono stereo 51 71 512 514 714 1+1; do
     run eac3-sine "eac3_${layout}.ec3" 2 192 1000 80 "$layout"
     run decode "eac3_${layout}.ec3" "eac3_${layout}.wav"
     if [ "$layout" != "714" ]; then
@@ -226,6 +226,38 @@ for vbr in "q:0.3" "q:0.6,min:96,max:256"; do
     run decode "eac3_vbr_${safe}.ec3" "eac3_vbr_${safe}.wav"
     run_ffmpeg_check "eac3_vbr_${safe}.ec3"
 done
+
+# --- 1+1 dual mono: two independent programmes, both input shapes ----------
+# The sine loops above prove 1+1 round-trips through both codecs at all; this
+# proves the real-audio CLI path both ways a user actually supplies Ch1/Ch2 -
+# one two-channel file, or two mono ones - land the same two programmes.
+# bootstrap_51.wav cannot stand in here the way it does for every layout
+# above: 1+1's routing is a strict identity on exactly two source channels,
+# never a fold-down, so a 6-channel source is refused rather than downmixed.
+run sine bootstrap_11.ac3 3 448 440 70 1+1
+run decode bootstrap_11.ac3 bootstrap_11.wav
+run_ffmpeg_check bootstrap_11.ac3
+# Two genuinely different mono sources, so this also proves the two files
+# land as Ch1/Ch2 rather than one silently winning - not just that the
+# command accepts two paths.
+run sine mono_a.ac3 3 448 440 70 mono
+run decode mono_a.ac3 mono_a.wav
+run sine mono_b.ac3 3 448 660 70 mono
+run decode mono_b.ac3 mono_b.wav
+
+run encode bootstrap_11.wav enc_11.ac3 192 1+1 dialnorm=27 dialnorm2=18
+run decode enc_11.ac3 enc_11.wav
+run_ffmpeg_check enc_11.ac3
+run encode mono_a.wav enc_11_twofile.ac3 192 1+1 mono_b.wav heavy
+run decode enc_11_twofile.ac3 enc_11_twofile.wav
+run_ffmpeg_check enc_11_twofile.ac3
+
+run eac3-encode bootstrap_11.wav eac3enc_11.ec3 192 none 1+1 off dialnorm=27 dialnorm2=18
+run decode eac3enc_11.ec3 eac3enc_11.wav
+run_ffmpeg_check eac3enc_11.ec3
+run eac3-encode mono_a.wav eac3enc_11_twofile.ec3 192 none 1+1 off mono_b.wav heavy
+run decode eac3enc_11_twofile.ec3 eac3enc_11_twofile.wav
+run_ffmpeg_check eac3enc_11_twofile.ec3
 
 # --- Atmos: object counts, orbit rates, both container modes ----------------
 # Always a 5.1 bed (JOC/OAMD ride in the same independent substream's EMDF
