@@ -814,8 +814,8 @@ TEST_CASE("E-AC-3 rejects metadata that cannot legally be carried",
     // marker, so heavy compression cannot ride there.
     auto dependent = base;
     dependent.strmtyp = ac3::eac3::StreamType::kDependent;
-    dependent.chanmap = ac3::eac3::chanmap::kLeftSurround | ac3::eac3::chanmap::kRightSurround |
-                        ac3::eac3::chanmap::kLrsRrs;
+    dependent.chanmap = ac3::eac3::chanmap::kLeftSurroundBit | ac3::eac3::chanmap::kRightSurroundBit |
+                        ac3::eac3::chanmap::kLrsRrsBit;
     dependent.acmod = ac3::Acmod::k2_2;
     dependent.lfe = false;
     dependent.heavy = ac3::meta::HeavyConfig{};

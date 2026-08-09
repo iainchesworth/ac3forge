@@ -49,7 +49,8 @@ int main() {
         const double seconds = frame * ac3::kSamplesPerFrame / 48000.0;
         std::array<ac3::oba::ObjectPlacement, kObjects> placement{};
         for (std::size_t obj = 0; obj < kObjects; ++obj) {
-            const double angle = 2.0 * std::numbers::pi * seconds / (2.0 + obj);
+            const double angle =
+                2.0 * std::numbers::pi * seconds / (2.0 + static_cast<double>(obj));
             placement[obj] = {
                 .position = {.x = 0.5 + 0.45 * std::cos(angle),
                              .y = 0.5 + 0.45 * std::sin(angle),

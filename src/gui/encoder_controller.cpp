@@ -742,6 +742,33 @@ void EncoderController::setObjectLfeSend(double value) {
     }
 }
 
+void EncoderController::setObjectPathKeyframes(int objectIndex, const QVariantList& keyframes) {
+    if (keyframes.isEmpty()) {
+        object_keyframes_.remove(objectIndex);
+        emit objectsChanged();
+        return;
+    }
+    std::vector<ac3::oba::Keyframe> parsed;
+    parsed.reserve(static_cast<std::size_t>(keyframes.size()));
+    for (const auto& entry : keyframes) {
+        const auto map = entry.toMap();
+        parsed.push_back({.time_s = map.value(QStringLiteral("time"), 0.0).toDouble(),
+                          .position = {.x = map.value(QStringLiteral("x"), 0.5).toDouble(),
+                                       .y = map.value(QStringLiteral("y"), 0.5).toDouble(),
+                                       .z = map.value(QStringLiteral("z"), 0.0).toDouble()},
+                          .gain = map.value(QStringLiteral("gain"), 1.0).toDouble(),
+                          .lfe_send = map.value(QStringLiteral("lfeSend"), 0.0).toDouble()});
+    }
+    object_keyframes_[objectIndex] = std::move(parsed);
+    emit objectsChanged();
+}
+
+void EncoderController::clearObjectPath(int objectIndex) {
+    if (object_keyframes_.remove(objectIndex)) {
+        emit objectsChanged();
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The plan
 // ---------------------------------------------------------------------------
@@ -1138,11 +1165,17 @@ void EncoderController::refreshOutputDevices() {
         for (const auto& device : outputs_) {
             // The capability is part of the label: a user staring at a greyed
             // out device deserves to know which of the two reasons applies.
-            const QString capability =
-                device.supports_ac3_passthrough
-                    ? QStringLiteral("AC-3 ready")
-                    : (device.supports_exclusive_pcm ? QStringLiteral("cannot bitstream")
-                                                     : QStringLiteral("no exclusive access"));
+            QString capability;
+            if (device.supports_ac3_passthrough && device.supports_eac3_passthrough) {
+                capability = QStringLiteral("AC-3 + E-AC-3 ready");
+            } else if (device.supports_ac3_passthrough) {
+                capability = QStringLiteral("AC-3 ready");
+            } else if (device.supports_eac3_passthrough) {
+                capability = QStringLiteral("E-AC-3 ready");
+            } else {
+                capability = device.supports_exclusive_pcm ? QStringLiteral("cannot bitstream")
+                                                            : QStringLiteral("no exclusive access");
+            }
             names.append(QStringLiteral("%1  —  %2")
                              .arg(QString::fromStdString(device.name), capability));
         }
@@ -1162,13 +1195,6 @@ void EncoderController::playToReceiver(int deviceIndex) {
         return;
     }
     const auto device = outputs_[static_cast<std::size_t>(deviceIndex)];
-    if (!device.supports_ac3_passthrough) {
-        setStatus(QStringLiteral("\"%1\" will not accept AC-3 over IEC 61937. Only S/PDIF and "
-                                 "HDMI outputs can bitstream, and Dolby Digital must be enabled "
-                                 "for the device in Sound settings.")
-                      .arg(QString::fromStdString(device.name)));
-        return;
-    }
 
     playing_ = true;
     emit playingChanged();
@@ -1186,41 +1212,76 @@ void EncoderController::playToReceiver(int deviceIndex) {
 
         QString message;
         const auto bsid = ac3::stream_bsid(stream);
-        const auto frames = ac3::split_frames(stream);
-        if (bsid && *bsid > 8) {
-            // The IEC 61937 packer emits AC-3 bursts only (data type 1). A
-            // receiver would take an E-AC-3 burst; this packer cannot make one.
-            message = QStringLiteral("That stream is E-AC-3 (bsid %1). Passthrough here wraps "
-                                     "AC-3 bursts only — encode as AC-3 to send it.")
-                          .arg(*bsid);
-        } else if (!frames || frames->empty()) {
-            message = QStringLiteral("That file is not a valid AC-3 stream.");
+        if (!bsid) {
+            message = QStringLiteral("That file is too short to hold a syncframe.");
         } else {
-            const auto fscod = std::to_integer<std::uint32_t>((*frames)[0][4]) >> 6;
-            const auto rate = sample_rate_hz(static_cast<ac3::SampleRate>(fscod));
-            ac3::sinks::PassthroughSink sink;
-            const auto started = sink.start(device.id, rate);
-            if (!started) {
-                const auto why = ac3::sinks::describe(started.error());
-                message = QString::fromUtf8(why.data(), static_cast<qsizetype>(why.size()));
+            const bool eac3 = *bsid > 8;
+            if (eac3 && !device.supports_eac3_passthrough) {
+                message = QStringLiteral(
+                              "\"%1\" will not accept E-AC-3 over IEC 61937. Only S/PDIF and "
+                              "HDMI outputs can bitstream, and Dolby Digital Plus must be "
+                              "enabled for the device in Sound settings.")
+                              .arg(QString::fromStdString(device.name));
+            } else if (!eac3 && !device.supports_ac3_passthrough) {
+                message = QStringLiteral(
+                              "\"%1\" will not accept AC-3 over IEC 61937. Only S/PDIF and "
+                              "HDMI outputs can bitstream, and Dolby Digital must be enabled "
+                              "for the device in Sound settings.")
+                              .arg(QString::fromStdString(device.name));
             } else {
-                for (const auto& frame : *frames) {
-                    const auto burst = ac3::iec61937::wrap_frame(frame);
-                    if (!burst) {
-                        break;
-                    }
-                    while (!sink.submit(*burst)) {
-                        std::this_thread::sleep_for(std::chrono::milliseconds(4));
+                // Access units for E-AC-3, since a dependent substream's
+                // channels only reach the burst alongside the independent
+                // one it extends (see run_play's own comment on this).
+                const auto units =
+                    eac3 ? ac3::split_access_units(stream) : ac3::split_frames(stream);
+                if (!units || units->empty()) {
+                    message = QStringLiteral("That file is not a valid %1 stream.")
+                                  .arg(eac3 ? QStringLiteral("E-AC-3") : QStringLiteral("AC-3"));
+                } else {
+                    const auto rate = sample_rate_hz(static_cast<ac3::SampleRate>(
+                        std::to_integer<std::uint32_t>((*units)[0][4]) >> 6));
+                    ac3::sinks::PassthroughSink sink;
+                    const auto started = sink.start(
+                        device.id, rate,
+                        eac3 ? ac3::sinks::BitstreamFormat::kEac3
+                             : ac3::sinks::BitstreamFormat::kAc3);
+                    if (!started) {
+                        const auto why = ac3::sinks::describe(started.error());
+                        message = QString::fromUtf8(why.data(), static_cast<qsizetype>(why.size()));
+                    } else {
+                        ac3::iec61937::Eac3BurstPacker eac3_packer;
+                        for (const auto& unit : *units) {
+                            std::vector<std::byte> burst;
+                            if (eac3) {
+                                const auto result = eac3_packer.push(unit);
+                                if (!result) {
+                                    break;
+                                }
+                                if (!*result) {
+                                    continue;  // accumulating; nothing to submit yet
+                                }
+                                burst = std::move(**result);
+                            } else {
+                                const auto wrapped = ac3::iec61937::wrap_frame(unit);
+                                if (!wrapped) {
+                                    break;
+                                }
+                                burst = *wrapped;
+                            }
+                            while (!sink.submit(burst)) {
+                                std::this_thread::sleep_for(std::chrono::milliseconds(4));
+                            }
+                        }
+                        while (sink.stats().bursts_rendered < sink.stats().bursts_submitted) {
+                            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                        }
+                        const auto stats = sink.stats();
+                        sink.stop();
+                        message = QStringLiteral("Streamed %1 bursts (%2 underruns).")
+                                      .arg(stats.bursts_rendered)
+                                      .arg(stats.underruns);
                     }
                 }
-                while (sink.stats().bursts_rendered < sink.stats().bursts_submitted) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-                }
-                const auto stats = sink.stats();
-                sink.stop();
-                message = QStringLiteral("Streamed %1 bursts (%2 underruns).")
-                              .arg(stats.bursts_rendered)
-                              .arg(stats.underruns);
             }
         }
 
@@ -1816,9 +1877,53 @@ void EncoderController::encodeObjects(const QString& path,
                                       std::vector<std::vector<float>> planes,
                                       std::uint32_t sample_rate) {
     const auto p = currentPlan();
-    const ac3::oba::Position centre{.x = object_x_, .y = object_y_, .z = object_z_};
-    const double spread = object_spread_;
-    const double lfe_send = object_lfe_send_;
+
+    // TS 103 420 §8.3.2.2 caps a programme at sixteen objects, and the bed's
+    // LFE is one of them.
+    const std::size_t nobjects = std::min<std::size_t>(planes.size(), 15);
+
+    // Each object gets its own path over time: authored keyframes where the
+    // GUI has been given some (see setObjectPathKeyframes), otherwise the
+    // static point-plus-spread placement below, held constant for the whole
+    // file. Built here, on the GUI thread, and moved into the worker below -
+    // the same timing today's centre/spread/lfe_send capture already relied
+    // on, so nothing about that thread-safety changes.
+    std::vector<ac3::oba::ObjectPath> paths;
+    paths.reserve(nobjects);
+    for (std::size_t i = 0; i < nobjects; ++i) {
+        const auto authored = object_keyframes_.constFind(static_cast<int>(i));
+        if (authored != object_keyframes_.constEnd() && !authored->empty()) {
+            auto created = ac3::oba::KeyframePath::create(*authored);
+            if (created) {
+                paths.emplace_back(std::move(*created));
+                continue;
+            }
+        }
+        // Objects that reach the bed by the SAME route are exactly the ones
+        // JOC cannot pull apart again, so they are spread either side of the
+        // chosen point rather than stacked on it. A stereo pair lands at
+        // exactly -/+ spread.
+        const double offset =
+            nobjects < 2 ? 0.0
+                         : object_spread_ * (2.0 * static_cast<double>(i) /
+                                                 static_cast<double>(nobjects - 1) - 1.0);
+        auto fallback = ac3::oba::KeyframePath::create(
+            {{.time_s = 0.0,
+              .position = {.x = std::clamp(object_x_ + offset, 0.0, 1.0),
+                           .y = object_y_,
+                           .z = object_z_},
+              // Every object is panned into the SAME five channels, so their
+              // contributions add there. At unity apiece a six-channel source
+              // put the bed's centre 7 dB over full scale; the inverse-root
+              // law is what ac3cli's 'atmos' uses, and it keeps the sum near
+              // unity for sources that are not identical.
+              .gain = 0.7 / std::sqrt(static_cast<double>(nobjects)),
+              // Shared across the objects for the same reason: the LFE is one
+              // channel, and sending every object at full strength would
+              // pile the whole programme's low end into it.
+              .lfe_send = object_lfe_send_ / std::sqrt(static_cast<double>(nobjects))}});
+        paths.emplace_back(std::move(*fallback));
+    }
 
     // The meters follow the BED, not the source: 5.1 is what comes out and
     // what a legacy decoder hears, whatever the source layout was.
@@ -1831,41 +1936,14 @@ void EncoderController::encodeObjects(const QString& path,
     setLayout(ac3::Acmod::k3_2, true, labels, QStringLiteral("5.1 bed"), coded, fedChannels());
     setMetering(true);
 
-    std::ignore = QtConcurrent::run([this, path, p, sample_rate, centre, spread, lfe_send,
+    std::ignore = QtConcurrent::run([this, path, p, sample_rate, nobjects,
+                                     paths = std::move(paths),
                                      planes = std::move(planes)]() mutable {
-        // TS 103 420 §8.3.2.2 caps a programme at sixteen objects, and the
-        // bed's LFE is one of them.
-        const std::size_t nobjects = std::min<std::size_t>(planes.size(), 15);
         ac3::oba::AtmosEncoder encoder{{.sample_rate = p.sample_rate,
                                         .bitrate_kbps = p.bitrate_kbps,
                                         .dialnorm = p.meta.dialnorm,
                                         .num_bands_idx = 4},
                                        static_cast<int>(nobjects)};
-
-        // Objects that reach the bed by the SAME route are exactly the ones
-        // JOC cannot pull apart again, so they are spread either side of the
-        // chosen point rather than stacked on it. A stereo pair lands at
-        // exactly -/+ spread.
-        std::vector<ac3::oba::ObjectPlacement> placement(nobjects);
-        for (std::size_t i = 0; i < nobjects; ++i) {
-            const double offset =
-                nobjects < 2 ? 0.0
-                             : spread * (2.0 * static_cast<double>(i) /
-                                             static_cast<double>(nobjects - 1) - 1.0);
-            placement[i].position = {.x = std::clamp(centre.x + offset, 0.0, 1.0),
-                                     .y = centre.y,
-                                     .z = centre.z};
-            // Every object is panned into the SAME five channels, so their
-            // contributions add there. At unity apiece a six-channel source
-            // put the bed's centre 7 dB over full scale; the inverse-root law
-            // is what ac3cli's 'atmos' uses, and it keeps the sum near unity
-            // for sources that are not identical.
-            placement[i].gain = 0.7 / std::sqrt(static_cast<double>(nobjects));
-            // Shared across the objects for the same reason: the LFE is one
-            // channel, and sending every object at full strength would pile
-            // the whole programme's low end into it.
-            placement[i].lfe_send = lfe_send / std::sqrt(static_cast<double>(nobjects));
-        }
 
         ac3::analysis::LevelMeter meter{ac3::Acmod::k3_2, true, sample_rate};
 
@@ -1893,6 +1971,14 @@ void EncoderController::encodeObjects(const QString& path,
                 }
                 views[ch] = block[ch];
             }
+            // The placement is the object's position at the END of the
+            // frame - same convention ac3cli's 'atmos' uses, because that is
+            // where OAMD's ramp and the JOC matrix both finish. Re-evaluated
+            // every frame - see tests/test_atmos_motion.cpp; this must stay
+            // inside the loop, not be hoisted above it.
+            const double t = static_cast<double>(start + ac3::kSamplesPerFrame) /
+                             static_cast<double>(sample_rate);
+            const auto placement = ac3::oba::evaluate_placements(paths, t);
             const auto unit = encoder.encode_frame(views, placement);
             if (!unit) {
                 problem = QStringLiteral(

@@ -55,7 +55,7 @@ void normalize(std::array<double, 5>& coeffs) {
     for (const double c : coeffs) {
         sum += c;
     }
-    if (sum <= 1.0 || sum <= 0.0) {
+    if (sum <= 1.0) {
         return;
     }
     for (double& c : coeffs) {

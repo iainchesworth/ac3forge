@@ -111,25 +111,30 @@ static_assert([] {
 // map's population count is not its channel count.
 namespace chanmap {
 
-inline constexpr std::uint16_t kLeft = 0x8000;          // bit 0
-inline constexpr std::uint16_t kCentre = 0x4000;        // bit 1
-inline constexpr std::uint16_t kRight = 0x2000;         // bit 2
-inline constexpr std::uint16_t kLeftSurround = 0x1000;  // bit 3
-inline constexpr std::uint16_t kRightSurround = 0x0800; // bit 4
-inline constexpr std::uint16_t kLcRc = 0x0400;          // bit 5  (pair)
-inline constexpr std::uint16_t kLrsRrs = 0x0200;        // bit 6  (pair)
-inline constexpr std::uint16_t kCs = 0x0100;            // bit 7
-inline constexpr std::uint16_t kTs = 0x0080;            // bit 8
-inline constexpr std::uint16_t kLsdRsd = 0x0040;        // bit 9  (pair)
-inline constexpr std::uint16_t kLwRw = 0x0020;          // bit 10 (pair)
-inline constexpr std::uint16_t kVhlVhr = 0x0010;        // bit 11 (pair)
-inline constexpr std::uint16_t kVhc = 0x0008;           // bit 12
-inline constexpr std::uint16_t kLtsRts = 0x0004;        // bit 13 (pair)
-inline constexpr std::uint16_t kLfe2 = 0x0002;          // bit 14
-inline constexpr std::uint16_t kLfe = 0x0001;           // bit 15
+// "Bit" suffix distinguishes these mask constants from the same-named
+// Location enumerators below - GCC's -Wshadow (unlike Clang's) flags an enum
+// class's enumerators against outer-scope declarations of the same name even
+// though they are never reachable unqualified, so the two vocabularies need
+// distinct spellings to build warning-clean everywhere.
+inline constexpr std::uint16_t kLeftBit = 0x8000;          // bit 0
+inline constexpr std::uint16_t kCentreBit = 0x4000;        // bit 1
+inline constexpr std::uint16_t kRightBit = 0x2000;         // bit 2
+inline constexpr std::uint16_t kLeftSurroundBit = 0x1000;  // bit 3
+inline constexpr std::uint16_t kRightSurroundBit = 0x0800; // bit 4
+inline constexpr std::uint16_t kLcRcBit = 0x0400;          // bit 5  (pair)
+inline constexpr std::uint16_t kLrsRrsBit = 0x0200;        // bit 6  (pair)
+inline constexpr std::uint16_t kCsBit = 0x0100;            // bit 7
+inline constexpr std::uint16_t kTsBit = 0x0080;            // bit 8
+inline constexpr std::uint16_t kLsdRsdBit = 0x0040;        // bit 9  (pair)
+inline constexpr std::uint16_t kLwRwBit = 0x0020;          // bit 10 (pair)
+inline constexpr std::uint16_t kVhlVhrBit = 0x0010;        // bit 11 (pair)
+inline constexpr std::uint16_t kVhcBit = 0x0008;           // bit 12
+inline constexpr std::uint16_t kLtsRtsBit = 0x0004;        // bit 13 (pair)
+inline constexpr std::uint16_t kLfe2Bit = 0x0002;          // bit 14
+inline constexpr std::uint16_t kLfeBit = 0x0001;           // bit 15
 
 inline constexpr std::uint16_t kPairs =
-    kLcRc | kLrsRrs | kLsdRsd | kLwRw | kVhlVhr | kLtsRts;
+    kLcRcBit | kLrsRrsBit | kLsdRsdBit | kLwRwBit | kVhlVhrBit | kLtsRtsBit;
 
 // Coded channels a map accounts for. §E2.3.1.8 requires this to equal the
 // channels the substream's acmod and lfeon code, and the coded order to
@@ -229,27 +234,27 @@ struct Layout {
 // and is rejected before this is ever consulted.
 [[nodiscard]] constexpr std::uint16_t acmod_map(Acmod acmod, bool lfe) {
     constexpr std::array<std::uint16_t, 8> fbw = {
-        kLeft | kRight,                                       // 1+1 (not a layout)
-        kCentre,                                              // 1/0
-        kLeft | kRight,                                       // 2/0
-        kLeft | kCentre | kRight,                             // 3/0
-        kLeft | kRight | kCs,                                 // 2/1
-        kLeft | kCentre | kRight | kCs,                       // 3/1
-        kLeft | kRight | kLeftSurround | kRightSurround,      // 2/2
-        kLeft | kCentre | kRight | kLeftSurround | kRightSurround,  // 3/2
+        kLeftBit | kRightBit,                                             // 1+1 (not a layout)
+        kCentreBit,                                                       // 1/0
+        kLeftBit | kRightBit,                                             // 2/0
+        kLeftBit | kCentreBit | kRightBit,                                // 3/0
+        kLeftBit | kRightBit | kCsBit,                                    // 2/1
+        kLeftBit | kCentreBit | kRightBit | kCsBit,                       // 3/1
+        kLeftBit | kRightBit | kLeftSurroundBit | kRightSurroundBit,      // 2/2
+        kLeftBit | kCentreBit | kRightBit | kLeftSurroundBit | kRightSurroundBit,  // 3/2
     };
     return static_cast<std::uint16_t>(fbw[static_cast<std::uint8_t>(acmod)] |
-                                      (lfe ? kLfe : 0));
+                                      (lfe ? kLfeBit : 0));
 }
 
 // Canonical 7.1: the dependent replaces the bed's surrounds and adds the two
 // rear surrounds. This is the spec's own example (bits 3, 4, 6 with acmod 2/2).
-inline constexpr std::uint16_t k71Rear = kLeftSurround | kRightSurround | kLrsRrs;
+inline constexpr std::uint16_t k71Rear = kLeftSurroundBit | kRightSurroundBit | kLrsRrsBit;
 // 5.1.2: two height channels supplementing an untouched 5.1 bed.
-inline constexpr std::uint16_t k512Height = kVhlVhr;
+inline constexpr std::uint16_t k512Height = kVhlVhrBit;
 // Four ceiling channels - front and rear height. Both are PAIR locations, so
 // two bits account for four channels.
-inline constexpr std::uint16_t kTopQuad = kVhlVhr | kLtsRts;
+inline constexpr std::uint16_t kTopQuad = kVhlVhrBit | kLtsRtsBit;
 
 static_assert(k71Rear == 0x1A00, "Table E2.5 bit 0 must be the MSB");
 static_assert(channel_count(k71Rear) == 4);
@@ -265,8 +270,8 @@ static_assert(expand(k71Rear)[2] == Location::kLrs);
 static_assert(expand(k71Rear)[3] == Location::kRrs);
 static_assert(expand(kTopQuad)[0] == Location::kVhl);
 static_assert(expand(kTopQuad)[3] == Location::kRts);
-static_assert(expand(kLfe)[0] == Location::kLfe);
-static_assert(expand(kLfe2)[0] == Location::kLfe2);
+static_assert(expand(kLfeBit)[0] == Location::kLfe);
+static_assert(expand(kLfe2Bit)[0] == Location::kLfe2);
 static_assert(expand(0xFFFF).count == kMaxChannels);
 
 // An acmod's map has to describe exactly the channels that acmod codes, or a

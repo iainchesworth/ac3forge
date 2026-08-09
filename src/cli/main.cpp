@@ -3,6 +3,7 @@
 #include <charconv>
 #include <chrono>
 #include <cmath>
+#include <exception>
 #include <cstdint>
 #include <cstdio>
 #include <format>
@@ -12,6 +13,7 @@
 #include <optional>
 #include <print>
 #include <span>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -30,8 +32,10 @@
 #include "ac3/meta/loudness.hpp"
 #include "ac3/meta/mixing.hpp"
 #include "ac3/oba/atmos.hpp"
+#include "ac3/oba/motion.hpp"
 #include "ac3/platform/audio_backend.hpp"
 #include "ac3/sinks/iec61937.hpp"
+#include "ac3/sinks/monitor.hpp"
 #include "ac3/sinks/passthrough.hpp"
 #include "ac3/spatial/spatial.hpp"
 #include "matroska/matroska.hpp"
@@ -229,6 +233,7 @@ std::optional<int> measured_dialnorm(const ac3::io::WavData& wav, ac3::SampleRat
                                      ac3::Acmod acmod, bool lfe) {
     ac3::meta::LoudnessMeter meter{rate, acmod, lfe};
     std::vector<std::span<const float>> views;
+    views.reserve(wav.channels.size());
     for (const auto& channel : wav.channels) {
         views.emplace_back(channel);
     }
@@ -255,6 +260,24 @@ bool write_frames(std::string_view path, std::span<const std::vector<std::byte>>
     return true;
 }
 
+// Interleaves `channels` (one vector per decoded channel, AC-3/E-AC-3 coded
+// order) into WAV/Windows speaker order for playback, reading order[i] as
+// which channels[] entry belongs at interleaved position i - the same
+// permutation ac3::io::write_wav_f32 and plan::wav_order/wav_channel_order
+// already produce for exactly this AC-3-order-vs-WAV-order reconciliation
+// (see ac3/io/wav.hpp).
+std::vector<float> interleave_reordered(std::span<const std::vector<float>> channels,
+                                        std::span<const std::size_t> order) {
+    const auto frame_count = channels.empty() ? std::size_t{0} : channels.front().size();
+    std::vector<float> out(frame_count * order.size());
+    for (std::size_t i = 0; i < frame_count; ++i) {
+        for (std::size_t ch = 0; ch < order.size(); ++ch) {
+            out[i * order.size() + ch] = channels[order[ch]][i];
+        }
+    }
+    return out;
+}
+
 std::vector<std::byte> read_all(std::string_view path) {
     std::ifstream in{std::string{path}, std::ios::binary};
     if (!in) {
@@ -267,41 +290,6 @@ std::vector<std::byte> read_all(std::string_view path) {
         bytes[i] = static_cast<std::byte>(static_cast<unsigned char>(raw[i]));
     }
     return bytes;
-}
-
-// Why an AC-3 path turns a wider syntax away. There used to be two of these
-// walls; the decoder's fell when the in-repo E-AC-3 decoder landed, and
-// 'levels' and 'decode' now pick a reader by bsid instead of refusing. This
-// one is real: the packer emits one burst type and that is all IEC 61937
-// data type 1 is.
-constexpr std::string_view kPackerLimit =
-    "the IEC 61937 packer emits AC-3 bursts only (data type 1, one 6144-byte burst per frame)";
-
-// Reports (and returns true) when a stream is a syncframe format nothing here
-// can handle. E-AC-3 shares AC-3's 0x0B77 sync word, so a command that sniffs
-// only the sync word ends up blaming the file for the reader's limits. bsid
-// separates them: Annex E places it at bits 40..44 of the frame, exactly where
-// §5.4.1.1 puts AC-3's, so that a decoder can identify the variant before it
-// has parsed anything else. `limitation` names what actually cannot cope, so
-// the message says why rather than only what.
-//
-// A stream with no sync word at all is passed through untouched: the caller's
-// framer has a better vocabulary for malformed input than a guess made from
-// six bytes.
-bool reject_non_ac3_syntax(std::span<const std::byte> stream, std::string_view path,
-                           std::string_view limitation) {
-    if (stream.size() < 6 || std::to_integer<int>(stream[0]) != 0x0B ||
-        std::to_integer<int>(stream[1]) != 0x77) {
-        return false;
-    }
-    const auto bsid = std::to_integer<unsigned>(stream[5]) >> 3;
-    if (bsid <= 8) {
-        return false;
-    }
-    std::println(stderr, "error: {} is {} (bsid {}); {}", path,
-                 bsid > 10 ? "E-AC-3" : "AC-3 alternate syntax (A/52 Annex D)", bsid,
-                 limitation);
-    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -377,7 +365,7 @@ void print_live_meter(const ac3::analysis::LevelMeter& meter, double seconds) {
     // Without a newline nothing reaches the console on its own: stdout is
     // block-buffered the moment it is redirected, and a meter nobody sees
     // until the run ends is not a meter.
-    std::fflush(stdout);
+    (void)std::fflush(stdout);  // best-effort: a live meter with nothing left to do on failure
 }
 
 int run_silence(std::string_view out_path, std::uint32_t seconds, std::uint32_t bitrate) {
@@ -846,29 +834,33 @@ int run_atmos(std::string_view out_path, std::uint32_t seconds, std::uint32_t bi
     // Distinct tones so the objects are separable in the first place, and a
     // reader with an object renderer can tell which one ended up where.
     std::vector<double> tone_hz(count);
-    std::vector<double> rate(count);
-    std::vector<double> phase(count);
-    std::vector<double> height(count);
+    std::vector<ac3::oba::ObjectPath> paths;
+    paths.reserve(count);
     for (std::size_t i = 0; i < count; ++i) {
         tone_hz[i] = 220.0 * std::pow(2.0, static_cast<double>(i) * 0.45);
         // Rates that are not simple ratios of each other, so the objects do
         // not lock into formation and stay separable.
-        rate[i] = 1.0 / (static_cast<double>(orbit_seconds) * (1.0 + 0.31 * static_cast<double>(i)));
+        const double rate = 1.0 / (static_cast<double>(orbit_seconds) *
+                                   (1.0 + 0.31 * static_cast<double>(i)));
         // Spread around the ring to begin with, or a short clip would show
         // them all bunched in the same quadrant - and objects that share a
         // direction are exactly the ones JOC cannot separate.
-        phase[i] = 2.0 * std::numbers::pi * static_cast<double>(i) /
-                   static_cast<double>(count);
-        height[i] = count == 1 ? 0.5
-                               : -1.0 + 2.0 * static_cast<double>(i) /
-                                            static_cast<double>(count - 1);
+        const double phase = 2.0 * std::numbers::pi * static_cast<double>(i) /
+                             static_cast<double>(count);
+        const double height = count == 1 ? 0.5
+                                         : -1.0 + 2.0 * static_cast<double>(i) /
+                                                      static_cast<double>(count - 1);
+        paths.push_back(ac3::oba::make_orbit_path(
+            rate, phase, height, 0.7 / std::sqrt(static_cast<double>(count)),
+            // Only the lowest object feeds the LFE, and only a little: it is
+            // the one channel JOC never touches.
+            i == 0 ? 0.2 : 0.0));
     }
 
     const std::uint64_t frames = (static_cast<std::uint64_t>(seconds) * 48000 + 1535) / 1536;
     std::vector<std::vector<float>> essences(count,
                                              std::vector<float>(ac3::kSamplesPerFrame));
     std::vector<std::span<const float>> views(count);
-    std::vector<ac3::oba::ObjectPlacement> placement(count);
     std::vector<std::vector<std::byte>> out;
     out.reserve(static_cast<std::size_t>(frames));
 
@@ -878,15 +870,8 @@ int run_atmos(std::string_view out_path, std::uint32_t seconds, std::uint32_t bi
         // because that is where both metadata layers interpolate to: OAMD's
         // ramp and the JOC matrix both finish there.
         const double t = static_cast<double>(n0 + ac3::kSamplesPerFrame) / 48000.0;
+        const auto placement = ac3::oba::evaluate_placements(paths, t);
         for (std::size_t i = 0; i < count; ++i) {
-            const double angle = 2.0 * std::numbers::pi * rate[i] * t + phase[i];
-            placement[i] = {.position = {.x = 0.5 + 0.5 * std::sin(angle),
-                                         .y = 0.5 - 0.5 * std::cos(angle),
-                                         .z = height[i]},
-                            .gain = 0.7 / std::sqrt(static_cast<double>(count)),
-                            // Only the lowest object feeds the LFE, and only a
-                            // little: it is the one channel JOC never touches.
-                            .lfe_send = i == 0 ? 0.2 : 0.0};
             for (int n = 0; n < ac3::kSamplesPerFrame; ++n) {
                 essences[i][static_cast<std::size_t>(n)] = static_cast<float>(
                     std::sin(2.0 * std::numbers::pi * tone_hz[i] *
@@ -928,6 +913,138 @@ int run_atmos(std::string_view out_path, std::uint32_t seconds, std::uint32_t bi
                      "that rejects an unvalidated one ({} objects were panned into the bed)",
                      objects);
     }
+    return 0;
+}
+
+// Parses a hand-authored keyframe file: whitespace-separated columns
+// "object_index time_s x y z gain lfe_send" per line, blank lines and '#'
+// comments (to end of line) skipped. Returns each object's keyframes, indexed
+// by object_index - an object index with no lines simply gets an empty entry.
+std::optional<std::vector<std::vector<ac3::oba::Keyframe>>> parse_path_file(
+    std::string_view path) {
+    std::ifstream in{std::string{path}};
+    if (!in) {
+        std::println(stderr, "error: cannot open {}", path);
+        return std::nullopt;
+    }
+    std::vector<std::vector<ac3::oba::Keyframe>> by_object;
+    std::string line;
+    for (std::size_t lineno = 1; std::getline(in, line); ++lineno) {
+        if (const auto hash = line.find('#'); hash != std::string::npos) {
+            line.resize(hash);
+        }
+        std::istringstream tokens{line};
+        std::size_t object = 0;
+        if (!(tokens >> object)) {
+            continue;  // blank, or comment-only, line
+        }
+        ac3::oba::Keyframe kf;
+        if (!(tokens >> kf.time_s >> kf.position.x >> kf.position.y >> kf.position.z >>
+              kf.gain >> kf.lfe_send)) {
+            std::println(stderr, "error: {}:{}: expected 'object time_s x y z gain lfe_send'",
+                         path, lineno);
+            return std::nullopt;
+        }
+        if (object >= by_object.size()) {
+            by_object.resize(object + 1);
+        }
+        by_object[object].push_back(kf);
+    }
+    return by_object;
+}
+
+// Objects driven by a hand-authored keyframe file rather than the built-in
+// orbit above - the CLI-side proof that ac3::oba's path primitive works end
+// to end from genuinely authored motion, not just a closed-form generator.
+// An object index the file never mentions holds still at room centre, the
+// same fallback the GUI uses for an object with no authored path.
+int run_atmos_path(std::string_view out_path, std::string_view paths_path, std::uint32_t seconds,
+                   std::uint32_t bitrate, std::uint32_t objects_arg, const MetaOptions& meta) {
+    const auto parsed = parse_path_file(paths_path);
+    if (!parsed) {
+        return 1;
+    }
+    const auto objects =
+        objects_arg != 0 ? static_cast<std::size_t>(objects_arg) : parsed->size();
+    if (objects < 1 || objects > 15) {
+        std::println(stderr, "error: 1 to 15 objects (the bed's LFE is the 16th, "
+                             "and TS 103 420 §8.3.2.2 caps the total at 16)");
+        return 1;
+    }
+    if (parsed->size() > objects) {
+        std::println(stderr,
+                     "error: {} has keyframes up to object index {}, more than the {} objects "
+                     "requested",
+                     paths_path, parsed->size() - 1, objects);
+        return 1;
+    }
+
+    std::vector<ac3::oba::ObjectPath> paths;
+    paths.reserve(objects);
+    for (std::size_t i = 0; i < objects; ++i) {
+        if (i < parsed->size() && !(*parsed)[i].empty()) {
+            auto created = ac3::oba::KeyframePath::create((*parsed)[i]);
+            if (!created) {
+                std::println(stderr, "error: object {} has two keyframes at the same time_s", i);
+                return 1;
+            }
+            paths.emplace_back(std::move(*created));
+            continue;
+        }
+        auto fallback = ac3::oba::KeyframePath::create(
+            {{.time_s = 0.0,
+              .position = {.x = 0.5, .y = 0.5, .z = 0.0},
+              .gain = 0.7 / std::sqrt(static_cast<double>(objects)),
+              .lfe_send = 0.0}});
+        paths.emplace_back(std::move(*fallback));
+    }
+
+    ac3::oba::AtmosEncoder encoder{
+        {.bitrate_kbps = bitrate, .dialnorm = meta.p.dialnorm, .num_bands_idx = 4},
+        static_cast<int>(objects)};
+
+    // Distinct tones purely for audibility, same as 'atmos'.
+    std::vector<double> tone_hz(objects);
+    for (std::size_t i = 0; i < objects; ++i) {
+        tone_hz[i] = 220.0 * std::pow(2.0, static_cast<double>(i) * 0.45);
+    }
+
+    const std::uint64_t frames = (static_cast<std::uint64_t>(seconds) * 48000 + 1535) / 1536;
+    std::vector<std::vector<float>> essences(objects,
+                                             std::vector<float>(ac3::kSamplesPerFrame));
+    std::vector<std::span<const float>> views(objects);
+    std::vector<std::vector<std::byte>> out;
+    out.reserve(static_cast<std::size_t>(frames));
+
+    std::uint64_t n0 = 0;
+    for (std::uint64_t f = 0; f < frames; ++f) {
+        const double t = static_cast<double>(n0 + ac3::kSamplesPerFrame) / 48000.0;
+        const auto placement = ac3::oba::evaluate_placements(paths, t);
+        for (std::size_t i = 0; i < objects; ++i) {
+            for (int n = 0; n < ac3::kSamplesPerFrame; ++n) {
+                essences[i][static_cast<std::size_t>(n)] = static_cast<float>(
+                    std::sin(2.0 * std::numbers::pi * tone_hz[i] *
+                             static_cast<double>(n0 + static_cast<std::uint64_t>(n)) / 48000.0));
+            }
+            views[i] = essences[i];
+        }
+        n0 += ac3::kSamplesPerFrame;
+
+        auto unit = encoder.encode_frame(views, placement);
+        if (!unit) {
+            std::println(stderr,
+                         "error: cannot encode {} objects at {} kbps — the metadata and "
+                         "the mantissas share one frame, so try a higher bit rate",
+                         objects, bitrate);
+            return 1;
+        }
+        out.push_back(std::move(unit->bytes));
+    }
+    if (!write_frames(out_path, out)) {
+        return 1;
+    }
+    std::println("wrote {} E-AC-3 access units to {} ({} objects from {})", frames, out_path,
+                 objects, paths_path);
     return 0;
 }
 
@@ -1028,7 +1145,7 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
             }
             views[ch] = block[ch];
         }
-        const auto unit = encoder.encode_frame(views, placement);
+        auto unit = encoder.encode_frame(views, placement);
         if (!unit) {
             std::println(stderr,
                          "error: cannot encode {} objects at {} kbps — the metadata and the "
@@ -1429,8 +1546,8 @@ int run_decode(std::string_view in_path, std::string_view out_path,
         return 1;
     }
     // bsid at bit 40 says which syntax this is, before either is assumed.
-    // decode has no AC-3-only wall to turn E-AC-3 away at; spdif and play
-    // still do, which is why kPackerLimit survives.
+    // spdif and play branch on it the same way now that both packers handle
+    // E-AC-3 (Eac3BurstPacker alongside AC-3's wrap_frame).
     const auto bsid = ac3::stream_bsid(stream);
     if (!bsid) {
         std::println(stderr, "error: {} is too short to hold a syncframe", in_path);
@@ -1486,6 +1603,10 @@ int run_decode(std::string_view in_path, std::string_view out_path,
                            decoded->channels[ch].end());
             views.emplace_back(decoded->channels[ch]);
         }
+        // have_first gates meter.emplace() a few lines up, in this same
+        // iteration on the first pass and an earlier one on every pass
+        // after, so meter is always engaged by the time this line runs.
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         meter->process(views);
     }
     if (!have_first) {
@@ -1514,6 +1635,9 @@ int run_decode(std::string_view in_path, std::string_view out_path,
     } else {
         std::println("          compr  absent");
     }
+    // The have_first check above already returned if the frame loop never
+    // ran, and it is that same loop's first iteration that emplaces meter.
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     print_channel_summary(*meter);
     return 0;
 }
@@ -1551,7 +1675,7 @@ int run_levels_eac3(std::span<const std::byte> stream, std::string_view in_path)
                 stats.peak = std::max(stats.peak, magnitude);
                 stats.sum_squares += magnitude * magnitude;
                 ++stats.samples;
-                if (magnitude >= ac3::analysis::kFullScale) {
+                if (magnitude >= static_cast<double>(ac3::analysis::kFullScale)) {
                     ++stats.clipped_samples;
                 }
             }
@@ -1616,8 +1740,14 @@ int run_levels(std::string_view in_path) {
             for (const auto& channel : decoded->channels) {
                 views.emplace_back(channel);
             }
+            // meter is engaged by the !meter check a few lines up, in this
+            // same iteration on the first pass and an earlier one thereafter.
+            // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
             meter->process(views);
         }
+        // The `!frames || frames->empty()` check above guarantees the loop
+        // ran at least once, and its first iteration always emplaces meter.
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         print_channel_summary(*meter);
         return 0;
     }
@@ -1693,42 +1823,89 @@ int run_loudness(std::string_view in_path) {
 // Wrap a raw AC-3 stream into IEC 61937 bursts inside a PCM16 stereo WAV:
 // played BIT-EXACTLY (volume 100%, no mixing) into an S/PDIF or HDMI output,
 // a receiver locks onto the bursts and lights up "Dolby Digital".
-int run_spdif(std::string_view in_path, std::string_view out_path) {
-    const auto stream = read_all(in_path);
-    if (stream.empty()) {
-        std::println(stderr, "error: cannot read {}", in_path);
-        return 1;
-    }
-    if (reject_non_ac3_syntax(stream, in_path, kPackerLimit)) {
-        return 1;
-    }
+// AC-3 frames wrap one-to-one; an E-AC-3 access unit may need several
+// consecutive ones to fill a burst (Eac3BurstPacker accumulates internally).
+// Shared by run_spdif and run_play so the two cannot disagree about how a
+// stream becomes bursts.
+std::optional<std::vector<std::byte>> wrap_ac3_stream(std::span<const std::byte> stream,
+                                                       std::uint32_t& rate_out) {
     const auto frames = ac3::split_frames(stream);
     if (!frames || frames->empty()) {
-        std::println(stderr, "error: {} is not a valid AC-3 stream", in_path);
-        return 1;
+        return std::nullopt;
     }
     const auto fscod = std::to_integer<std::uint32_t>((*frames)[0][4]) >> 6;
-    const auto rate = sample_rate_hz(static_cast<ac3::SampleRate>(fscod));
+    rate_out = sample_rate_hz(static_cast<ac3::SampleRate>(fscod));
 
     std::vector<std::byte> payload;
     payload.reserve(frames->size() * ac3::iec61937::kBurstBytes);
     for (const auto& frame : *frames) {
         const auto burst = ac3::iec61937::wrap_frame(frame);
         if (!burst) {
-            std::println(stderr, "error: burst wrap failed");
-            return 1;
+            return std::nullopt;
         }
         payload.insert(payload.end(), burst->begin(), burst->end());
     }
-    const auto written = ac3::io::write_wav_pcm16_raw(std::string{out_path}, payload, rate, 2);
+    return payload;
+}
+
+std::optional<std::vector<std::byte>> wrap_eac3_stream(std::span<const std::byte> stream,
+                                                        std::uint32_t& rate_out) {
+    const auto units = ac3::split_access_units(stream);
+    if (!units || units->empty()) {
+        return std::nullopt;
+    }
+    const auto byte4 = std::to_integer<std::uint32_t>((*units)[0][4]);
+    rate_out = sample_rate_hz(static_cast<ac3::SampleRate>(byte4 >> 6));
+
+    std::vector<std::byte> payload;
+    ac3::iec61937::Eac3BurstPacker packer;
+    for (const auto& unit : *units) {
+        const auto burst = packer.push(unit);
+        if (!burst) {
+            return std::nullopt;
+        }
+        if (*burst) {
+            payload.insert(payload.end(), (**burst).begin(), (**burst).end());
+        }
+    }
+    return payload;
+}
+
+int run_spdif(std::string_view in_path, std::string_view out_path) {
+    const auto stream = read_all(in_path);
+    if (stream.empty()) {
+        std::println(stderr, "error: cannot read {}", in_path);
+        return 1;
+    }
+    const auto bsid = ac3::stream_bsid(stream);
+    if (!bsid) {
+        std::println(stderr, "error: {} is too short to hold a syncframe", in_path);
+        return 1;
+    }
+    const bool eac3 = *bsid > 8;
+
+    std::uint32_t content_rate = 0;
+    const auto payload = eac3 ? wrap_eac3_stream(stream, content_rate)
+                              : wrap_ac3_stream(stream, content_rate);
+    if (!payload) {
+        std::println(stderr, "error: {} is not a valid {} stream", in_path,
+                     eac3 ? "E-AC-3" : "AC-3");
+        return 1;
+    }
+    // The WAV carrier itself runs at 4x the content rate for E-AC-3 (Dolby
+    // Digital Plus over IEC 60958/61937 - Microsoft's "Representing Formats
+    // for IEC 61937 Transmissions"), matching WASAPI's make_eac3_format.
+    const auto carrier_rate = eac3 ? content_rate * 4 : content_rate;
+    const auto written =
+        ac3::io::write_wav_pcm16_raw(std::string{out_path}, *payload, carrier_rate, 2);
     if (!written) {
         std::println(stderr, "error: {}", ac3::io::describe(written.error()));
         return 1;
     }
-    std::println("wrapped {} frames into IEC 61937 bursts -> {} ({} Hz carrier)",
-                 frames->size(), out_path, rate);
+    std::println("wrapped {} into IEC 61937 bursts -> {} ({} Hz carrier)",
+                 eac3 ? "E-AC-3 access units" : "AC-3 frames", out_path, carrier_rate);
     std::println("play bit-exactly (100% volume, exclusive/passthrough output) to light up");
-    std::println("a receiver's Dolby Digital indicator.");
+    std::println("a receiver's Dolby Digital{} indicator.", eac3 ? " Plus" : "");
     return 0;
 }
 
@@ -1742,45 +1919,73 @@ int run_outputs() {
         std::println("no active render endpoints found");
         return 0;
     }
-    std::println("{:>3}  {:<9}  {:<9}  {}", "idx", "AC-3", "excl PCM", "name");
+    std::println("{:>3}  {:<9}  {:<9}  {:<9}  {}", "idx", "AC-3", "E-AC-3", "excl PCM", "name");
     for (std::size_t i = 0; i < devices->size(); ++i) {
         const auto& d = (*devices)[i];
-        std::println("{:>3}  {:<9}  {:<9}  {}{}", i, d.supports_ac3_passthrough ? "yes" : "no",
+        std::println("{:>3}  {:<9}  {:<9}  {:<9}  {}{}", i, d.supports_ac3_passthrough ? "yes" : "no",
+                     d.supports_eac3_passthrough ? "yes" : "no",
                      d.supports_exclusive_pcm ? "yes" : "no", d.name,
                      d.is_default ? "  [default]" : "");
     }
     std::println("");
     std::println("AC-3     the endpoint accepted an IEC 61937 AC-3 format in exclusive mode.");
+    std::println("E-AC-3   the same, for Dolby Digital Plus (and Atmos riding inside it - there");
+    std::println("         is no separate passthrough format for Atmos).");
     std::println("excl PCM the same endpoint accepted ordinary 16-bit stereo PCM exclusively.");
     std::println("");
-    std::println("PCM yes + AC-3 no means the device simply cannot bitstream - analog outputs");
-    std::println("cannot; only S/PDIF (TOSLINK/coax) and HDMI can. Enable Dolby Digital under");
-    std::println("Sound > Playback > Properties > Supported Formats for such a device.");
-    std::println("Both no means exclusive mode itself is unavailable (disabled for the device,");
+    std::println("PCM yes + AC-3/E-AC-3 no means the device simply cannot bitstream - analog");
+    std::println("outputs cannot; only S/PDIF (TOSLINK/coax) and HDMI can. Enable Dolby Digital");
+    std::println("under Sound > Playback > Properties > Supported Formats for such a device.");
+    std::println("All no means exclusive mode itself is unavailable (disabled for the device,");
     std::println("or another application currently holds it).");
     return 0;
 }
 
-// Stream an AC-3 file to a receiver in real time via exclusive-mode
+// Stream an AC-3 or E-AC-3 file to a receiver in real time via exclusive-mode
 // IEC 61937. The sink's render thread pulls bursts; this loop keeps it fed.
+// bsid picks the branch: AC-3 wraps one frame per burst, E-AC-3 wraps one
+// access unit at a time through a persistent Eac3BurstPacker, which may hold
+// bytes back until enough have accumulated to fill a burst (see
+// Eac3BurstPacker's own comment on why - Annex E frames can cover as few as
+// one of the six blocks a burst period spans).
 int run_play(std::string_view in_path, int device_index) {
     const auto stream = read_all(in_path);
     if (stream.empty()) {
         std::println(stderr, "error: cannot read {}", in_path);
         return 1;
     }
-    if (reject_non_ac3_syntax(stream, in_path, kPackerLimit)) {
+    const auto bsid = ac3::stream_bsid(stream);
+    if (!bsid) {
+        std::println(stderr, "error: {} is too short to hold a syncframe", in_path);
         return 1;
     }
-    const auto frames = ac3::split_frames(stream);
-    if (!frames || frames->empty()) {
-        std::println(stderr, "error: {} is not a valid AC-3 stream", in_path);
-        return 1;
-    }
-    const auto fscod = std::to_integer<std::uint32_t>((*frames)[0][4]) >> 6;
-    const auto rate = sample_rate_hz(static_cast<ac3::SampleRate>(fscod));
+    const bool eac3 = *bsid > 8;
 
-    const auto devices = ac3::sinks::enumerate_render_devices(rate);
+    std::vector<std::span<const std::byte>> units;
+    std::uint32_t content_rate = 0;
+    if (eac3) {
+        const auto split = ac3::split_access_units(stream);
+        if (!split || split->empty()) {
+            std::println(stderr, "error: {} is not a valid E-AC-3 stream", in_path);
+            return 1;
+        }
+        units = *split;
+        content_rate =
+            sample_rate_hz(static_cast<ac3::SampleRate>(
+                std::to_integer<std::uint32_t>(units[0][4]) >> 6));
+    } else {
+        const auto split = ac3::split_frames(stream);
+        if (!split || split->empty()) {
+            std::println(stderr, "error: {} is not a valid AC-3 stream", in_path);
+            return 1;
+        }
+        units = *split;
+        content_rate =
+            sample_rate_hz(static_cast<ac3::SampleRate>(
+                std::to_integer<std::uint32_t>(units[0][4]) >> 6));
+    }
+
+    const auto devices = ac3::sinks::enumerate_render_devices(content_rate);
     // Enumeration failing and enumeration finding nothing are different
     // answers: the first is the backend saying it could not look, the second
     // is it looking and seeing no endpoints. Reporting both as "none
@@ -1805,32 +2010,52 @@ int run_play(std::string_view in_path, int device_index) {
         const auto& chosen = (*devices)[static_cast<std::size_t>(device_index)];
         device_id = chosen.id;
         device_name = chosen.name;
-        if (!chosen.supports_ac3_passthrough) {
+        const bool supported =
+            eac3 ? chosen.supports_eac3_passthrough : chosen.supports_ac3_passthrough;
+        if (!supported) {
             std::println(stderr,
-                         "error: \"{}\" does not accept AC-3 over IEC 61937 (see 'ac3cli outputs')",
-                         chosen.name);
+                         "error: \"{}\" does not accept {} over IEC 61937 (see 'ac3cli outputs')",
+                         chosen.name, eac3 ? "E-AC-3" : "AC-3");
             return 1;
         }
     }
 
     ac3::sinks::PassthroughSink sink;
-    const auto started = sink.start(device_id, rate);
+    const auto started = sink.start(
+        device_id, content_rate,
+        eac3 ? ac3::sinks::BitstreamFormat::kEac3 : ac3::sinks::BitstreamFormat::kAc3);
     if (!started) {
         std::println(stderr, "error: {}", ac3::sinks::describe(started.error()));
         return 1;
     }
-    std::println("streaming {} frames to \"{}\" ({} Hz carrier)…", frames->size(), device_name,
-                 rate);
+    std::println("streaming {} {} to \"{}\" ({} Hz{})…", units.size(),
+                 eac3 ? "access units" : "frames", device_name, content_rate,
+                 eac3 ? ", carrier 4x that" : " carrier");
 
-    for (const auto& frame : *frames) {
-        const auto burst = ac3::iec61937::wrap_frame(frame);
-        if (!burst) {
-            std::println(stderr, "error: burst wrap failed");
-            return 1;
+    ac3::iec61937::Eac3BurstPacker eac3_packer;
+    for (const auto& unit : units) {
+        std::vector<std::byte> burst;
+        if (eac3) {
+            const auto result = eac3_packer.push(unit);
+            if (!result) {
+                std::println(stderr, "error: burst wrap failed");
+                return 1;
+            }
+            if (!*result) {
+                continue;  // accumulating; nothing to submit yet
+            }
+            burst = std::move(**result);
+        } else {
+            const auto wrapped = ac3::iec61937::wrap_frame(unit);
+            if (!wrapped) {
+                std::println(stderr, "error: burst wrap failed");
+                return 1;
+            }
+            burst = *wrapped;
         }
         // Wait for room rather than racing ahead: the render thread consumes
-        // in real time, one burst per AC-3 frame duration.
-        while (!sink.submit(*burst)) {
+        // in real time, one burst per burst period.
+        while (!sink.submit(burst)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(4));
         }
     }
@@ -1870,6 +2095,426 @@ int run_eac3_silence(std::string_view out_path, std::uint32_t seconds, std::uint
     return 0;
 }
 
+// Decode a file back to PCM and play it on an ordinary (shared-mode, not
+// bitstreamed) output - a sanity-check/preview path, and the offline half of
+// live monitoring ('live's --monitor equivalent works the same way, one
+// access unit at a time as it is produced instead of read from a file).
+// Object metadata (JOC/OAMD) is not applied: the in-repo decoder's E-AC-3
+// scope is A/52 Annex E syntax, not TS 103 420's object layer, so an Atmos
+// file plays its 5.1 bed - exactly what a legacy decoder hears, which is the
+// thing most worth confirming actually sounds right.
+int run_monitor(std::string_view in_path, int device_index) {
+    const auto stream = read_all(in_path);
+    if (stream.empty()) {
+        std::println(stderr, "error: cannot read {}", in_path);
+        return 1;
+    }
+    const auto bsid = ac3::stream_bsid(stream);
+    if (!bsid) {
+        std::println(stderr, "error: {} is too short to hold a syncframe", in_path);
+        return 1;
+    }
+    const bool eac3 = *bsid > 8;
+
+    std::string device_id;
+    std::string device_name = "default endpoint";
+    if (device_index >= 0) {
+        const auto devices = ac3::sinks::enumerate_render_devices();
+        if (!devices) {
+            std::println(stderr, "error: {}", ac3::sinks::describe(devices.error()));
+            return 1;
+        }
+        if (static_cast<std::size_t>(device_index) >= devices->size()) {
+            std::println(stderr, "error: device index {} out of range (see 'ac3cli outputs')",
+                         device_index);
+            return 1;
+        }
+        device_id = (*devices)[static_cast<std::size_t>(device_index)].id;
+        device_name = (*devices)[static_cast<std::size_t>(device_index)].name;
+    }
+
+    ac3::sinks::MonitorSink sink;
+    std::uint64_t units_played = 0;
+    auto play = [&](std::span<const float> interleaved) {
+        while (!sink.submit(interleaved)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(4));
+        }
+    };
+
+    if (eac3) {
+        const auto units = ac3::split_access_units(stream);
+        if (!units || units->empty()) {
+            std::println(stderr, "error: {} is not a valid E-AC-3 stream", in_path);
+            return 1;
+        }
+        ac3::Eac3Decoder decoder;
+        std::vector<std::size_t> order;
+        for (const auto& unit : *units) {
+            const auto decoded = decoder.decode_access_unit(unit);
+            if (!decoded) {
+                std::println(stderr, "error: decode failed (code {})",
+                             static_cast<int>(decoded.error()));
+                return 1;
+            }
+            if (order.empty()) {
+                order = plan::wav_order(
+                    std::span{decoded->layout.items}.first(
+                        static_cast<std::size_t>(decoded->layout.count)));
+                const auto started = sink.start(device_id, sample_rate_hz(decoded->sample_rate),
+                                                static_cast<std::uint16_t>(order.size()));
+                if (!started) {
+                    std::println(stderr, "error: {}", ac3::sinks::describe(started.error()));
+                    return 1;
+                }
+                std::println("monitoring {} ({} channels, {} Hz) on \"{}\"…", in_path,
+                             order.size(), sample_rate_hz(decoded->sample_rate), device_name);
+            }
+            play(interleave_reordered(decoded->channels, order));
+            ++units_played;
+        }
+    } else {
+        const auto frames = ac3::split_frames(stream);
+        if (!frames || frames->empty()) {
+            std::println(stderr, "error: {} is not a valid AC-3 stream", in_path);
+            return 1;
+        }
+        ac3::FrameDecoder decoder;
+        std::vector<std::size_t> order;
+        for (const auto& frame : *frames) {
+            const auto decoded = decoder.decode_frame(frame);
+            if (!decoded) {
+                std::println(stderr, "error: {}: {}", in_path, ac3::describe(decoded.error()));
+                return 1;
+            }
+            if (order.empty()) {
+                order = ac3::io::wav_channel_order(decoded->acmod, decoded->lfe);
+                const auto started = sink.start(device_id, sample_rate_hz(decoded->sample_rate),
+                                                static_cast<std::uint16_t>(order.size()));
+                if (!started) {
+                    std::println(stderr, "error: {}", ac3::sinks::describe(started.error()));
+                    return 1;
+                }
+                std::println("monitoring {} ({} channels, {} Hz) on \"{}\"…", in_path,
+                             order.size(), sample_rate_hz(decoded->sample_rate), device_name);
+            }
+            play(interleave_reordered(decoded->channels, order));
+            ++units_played;
+        }
+    }
+
+    while (sink.stats().frames_rendered < sink.stats().frames_submitted) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    const auto stats = sink.stats();
+    sink.stop();
+    std::println("played {} {}, {} underruns", units_played, eac3 ? "access units" : "frames",
+                 stats.underruns);
+    return 0;
+}
+
+// Live capture -> live encode -> optionally live monitor and/or live IEC
+// 61937 passthrough, running continuously and also writing the encoded
+// access units to a file (so a live session leaves an artifact the way
+// 'record' always has). This is the command 'record' is not: 'record' only
+// ever reaches a file.
+//
+// mode "atmos" additionally moves each object's placement every frame from
+// elapsed wall-clock time, using the same orbiting math run_atmos's
+// synthetic demo uses - the concrete shape a real per-frame live position
+// source (a separate, parallel piece of work) drops into once it lands: swap
+// the orbit-angle expression below for a read of wherever that source keeps
+// its current position, still evaluated fresh every frame inside this same loop.
+int run_live(std::string_view out_path, int capture_device, std::uint32_t seconds,
+            std::uint32_t bitrate, int monitor_device, int passthrough_device,
+            std::string_view mode) {
+    if (mode != "channels" && mode != "atmos") {
+        std::println(stderr, "error: mode is 'channels' (default) or 'atmos'");
+        return 1;
+    }
+    const bool atmos = mode == "atmos";
+
+    const auto devices = ac3::capture::enumerate_devices();
+    if (!devices) {
+        std::println(stderr, "error: {}", ac3::capture::describe(devices.error()));
+        return 1;
+    }
+    if (capture_device < 0 || static_cast<std::size_t>(capture_device) >= devices->size()) {
+        std::println(stderr, "error: capture device index {} out of range (see 'ac3cli devices')",
+                     capture_device);
+        return 1;
+    }
+    const auto& device = (*devices)[static_cast<std::size_t>(capture_device)];
+
+    ac3::SampleRate sr{};
+    switch (device.sample_rate) {
+        case 48000: sr = ac3::SampleRate::k48000; break;
+        case 44100: sr = ac3::SampleRate::k44100; break;
+        case 32000: sr = ac3::SampleRate::k32000; break;
+        default:
+            std::println(stderr,
+                         "error: \"{}\" runs at {} Hz; AC-3/E-AC-3 need 32, 44.1 or 48 kHz",
+                         device.name, device.sample_rate);
+            return 1;
+    }
+
+    ac3::capture::Capture capture;
+    const auto started = capture.start(device.id, device.kind);
+    if (!started) {
+        std::println(stderr, "error: {}", ac3::capture::describe(started.error()));
+        return 1;
+    }
+    const auto channels = capture.channels();
+    const auto rate_hz = capture.sample_rate();
+
+    // Object mode pans every captured channel into the 5.1 bed as its own
+    // object (mirrors encodeObjects/run_atmos_encode); channel mode carries
+    // the first two channels straight through as AC-3 stereo (mirrors
+    // run_record, which this supersedes for anything wanting monitor or
+    // passthrough alongside the file).
+    const std::size_t nobjects = atmos ? std::min<std::size_t>(channels, 15) : 2;
+
+    auto resolve_render_device = [&](int index) -> std::optional<ac3::sinks::RenderDeviceInfo> {
+        if (index < 0) {
+            return ac3::sinks::RenderDeviceInfo{};  // empty id: default endpoint
+        }
+        const auto render_devices = ac3::sinks::enumerate_render_devices(rate_hz);
+        if (!render_devices || static_cast<std::size_t>(index) >= render_devices->size()) {
+            return std::nullopt;
+        }
+        return (*render_devices)[static_cast<std::size_t>(index)];
+    };
+
+    ac3::sinks::MonitorSink monitor_sink;
+    bool monitoring = false;
+    if (monitor_device != -2) {
+        const auto target = resolve_render_device(monitor_device);
+        if (!target) {
+            std::println(stderr, "warning: monitor device index {} out of range; monitoring off",
+                         monitor_device);
+        } else {
+            const auto mstarted = monitor_sink.start(
+                target->id, rate_hz, static_cast<std::uint16_t>(atmos ? 6 : 2));
+            if (!mstarted) {
+                std::println(stderr, "warning: monitor unavailable: {}",
+                             ac3::sinks::describe(mstarted.error()));
+            } else {
+                monitoring = true;
+                std::println("monitoring on \"{}\"", target->name.empty() ? "default endpoint"
+                                                                          : target->name);
+            }
+        }
+    }
+
+    ac3::sinks::PassthroughSink passthrough_sink;
+    bool passing_through = false;
+    if (passthrough_device != -2) {
+        const auto target = resolve_render_device(passthrough_device);
+        const auto format =
+            atmos ? ac3::sinks::BitstreamFormat::kEac3 : ac3::sinks::BitstreamFormat::kAc3;
+        if (!target) {
+            std::println(stderr,
+                         "warning: passthrough device index {} out of range; passthrough off",
+                         passthrough_device);
+        } else if (target->id.empty() ? false
+                                      : (atmos ? !target->supports_eac3_passthrough
+                                              : !target->supports_ac3_passthrough)) {
+            std::println(stderr, "warning: \"{}\" does not accept {} over IEC 61937; "
+                                 "passthrough off",
+                         target->name, atmos ? "E-AC-3" : "AC-3");
+        } else {
+            const auto pstarted = passthrough_sink.start(target->id, rate_hz, format);
+            if (!pstarted) {
+                std::println(stderr, "warning: passthrough unavailable: {}",
+                             ac3::sinks::describe(pstarted.error()));
+            } else {
+                passing_through = true;
+                std::println("passthrough ({}) on \"{}\"", atmos ? "E-AC-3" : "AC-3",
+                             target->name.empty() ? "default endpoint" : target->name);
+            }
+        }
+    }
+
+    ac3::FrameEncoder ac3_encoder{{.sample_rate = sr, .bitrate_kbps = bitrate}};
+    std::optional<ac3::oba::AtmosEncoder> atmos_encoder;
+    if (atmos) {
+        atmos_encoder.emplace(
+            ac3::oba::AtmosConfig{.sample_rate = sr, .bitrate_kbps = bitrate, .num_bands_idx = 4},
+            static_cast<int>(nobjects));
+    }
+    ac3::FrameDecoder ac3_monitor_decoder;
+    ac3::Eac3Decoder eac3_monitor_decoder;
+    ac3::iec61937::Eac3BurstPacker eac3_packer;
+
+    // Object mode meters the 5.1 bed (matching encodeObjects/run_atmos_encode
+    // - what a legacy decoder hears); channel mode meters plain stereo
+    // (matching run_record). Getting this wrong doesn't just mislabel a
+    // column - the wrong acmod also changes how many channels the meter
+    // reports.
+    ac3::analysis::LevelMeter meter = atmos
+                                          ? ac3::analysis::LevelMeter{ac3::Acmod::k3_2, true, rate_hz}
+                                          : ac3::analysis::LevelMeter{ac3::Acmod::k2_0, false, rate_hz};
+    const std::uint64_t target_frames =
+        (static_cast<std::uint64_t>(seconds) * rate_hz + ac3::kSamplesPerFrame - 1) /
+        ac3::kSamplesPerFrame;
+
+    std::vector<float> interleaved(static_cast<std::size_t>(ac3::kSamplesPerFrame) * channels);
+    std::vector<std::vector<float>> block(nobjects, std::vector<float>(ac3::kSamplesPerFrame));
+    std::vector<std::span<const float>> views(nobjects);
+    // Separate from `views`: that vector holds nobjects per-object essence
+    // spans for the encoder, which in channel mode is 2 and in object mode
+    // can be as few as 1 - either can be narrower than the bed's fixed 6
+    // channels metered below, so reusing `views` for both risked (and in an
+    // earlier version of this loop, did) an out-of-bounds write past a
+    // 2-element vector.
+    std::vector<std::span<const float>> bed_views(6);
+    std::vector<ac3::oba::ObjectPlacement> placement(nobjects);
+    std::vector<std::vector<std::byte>> frames;
+    frames.reserve(static_cast<std::size_t>(target_frames));
+
+    std::uint64_t n0 = 0;
+    for (std::uint64_t f = 0; f < target_frames; ++f) {
+        std::size_t filled = 0;
+        while (filled < interleaved.size()) {
+            const auto got = capture.buffer()->read(
+                std::span{interleaved}.subspan(filled, interleaved.size() - filled));
+            filled += got;
+            if (got == 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+        }
+        for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+            const std::size_t base = static_cast<std::size_t>(i) * channels;
+            for (std::size_t ch = 0; ch < nobjects; ++ch) {
+                block[ch][static_cast<std::size_t>(i)] =
+                    ch < channels ? interleaved[base + ch] : 0.0f;
+            }
+        }
+        for (std::size_t ch = 0; ch < nobjects; ++ch) {
+            views[ch] = block[ch];
+        }
+        n0 += ac3::kSamplesPerFrame;
+
+        std::vector<std::byte> unit_bytes;
+        if (atmos) {
+            // Objects orbit at their own rate and start spread around the
+            // ring, matching run_atmos exactly - the position is recomputed
+            // from elapsed time every frame rather than fixed once, which is
+            // the whole point: a real live source reads the same way.
+            const double t = static_cast<double>(n0) / static_cast<double>(rate_hz);
+            for (std::size_t i = 0; i < nobjects; ++i) {
+                const double rate =
+                    1.0 / (6.0 * (1.0 + 0.31 * static_cast<double>(i)));
+                const double phase =
+                    2.0 * std::numbers::pi * static_cast<double>(i) / static_cast<double>(nobjects);
+                const double angle = 2.0 * std::numbers::pi * rate * t + phase;
+                const double height =
+                    nobjects == 1 ? 0.5
+                                 : -1.0 + 2.0 * static_cast<double>(i) /
+                                              static_cast<double>(nobjects - 1);
+                placement[i] = {.position = {.x = 0.5 + 0.5 * std::sin(angle),
+                                             .y = 0.5 - 0.5 * std::cos(angle),
+                                             .z = height},
+                                .gain = 0.7 / std::sqrt(static_cast<double>(nobjects)),
+                                .lfe_send = i == 0 ? 0.2 : 0.0};
+            }
+            const auto unit = atmos_encoder->encode_frame(views, placement);
+            if (!unit) {
+                std::println(stderr, "error: cannot encode {} objects at {} kbps",
+                             nobjects, bitrate);
+                break;
+            }
+            for (std::size_t ch = 0; ch < 6; ++ch) {
+                bed_views[ch] = std::span{atmos_encoder->bed()[ch]};
+            }
+            meter.process(bed_views);
+            unit_bytes = unit->bytes;
+        } else {
+            const auto frame = ac3_encoder.encode_frame(std::span{views}.first(2));
+            if (!frame) {
+                std::println(stderr, "error: bitrate must be a legal AC-3 rate");
+                break;
+            }
+            meter.process(std::span{views}.first(2));
+            unit_bytes = *frame;
+        }
+
+        if (monitoring) {
+            std::optional<std::vector<float>> to_play;
+            if (atmos) {
+                const auto decoded = eac3_monitor_decoder.decode_access_unit(unit_bytes);
+                if (decoded) {
+                    const auto order = plan::wav_order(
+                        std::span{decoded->layout.items}.first(
+                        static_cast<std::size_t>(decoded->layout.count)));
+                    to_play = interleave_reordered(decoded->channels, order);
+                }
+            } else {
+                const auto decoded = ac3_monitor_decoder.decode_frame(unit_bytes);
+                if (decoded) {
+                    const auto order = ac3::io::wav_channel_order(decoded->acmod, decoded->lfe);
+                    to_play = interleave_reordered(decoded->channels, order);
+                }
+            }
+            if (to_play) {
+                while (!monitor_sink.submit(*to_play)) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(4));
+                }
+            }
+        }
+
+        if (passing_through) {
+            if (atmos) {
+                const auto burst = eac3_packer.push(unit_bytes);
+                if (burst && *burst) {
+                    while (!passthrough_sink.submit(**burst)) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(4));
+                    }
+                }
+            } else {
+                const auto burst = ac3::iec61937::wrap_frame(unit_bytes);
+                if (burst) {
+                    while (!passthrough_sink.submit(*burst)) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(4));
+                    }
+                }
+            }
+        }
+
+        frames.push_back(std::move(unit_bytes));
+        print_live_meter(meter, static_cast<double>(frames.size() * ac3::kSamplesPerFrame) /
+                                    rate_hz);
+    }
+    std::println("");
+
+    capture.stop();
+    if (monitoring) {
+        while (monitor_sink.stats().frames_rendered < monitor_sink.stats().frames_submitted) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        monitor_sink.stop();
+    }
+    if (passing_through) {
+        while (passthrough_sink.stats().bursts_rendered <
+               passthrough_sink.stats().bursts_submitted) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        const auto pstats = passthrough_sink.stats();
+        passthrough_sink.stop();
+        std::println("passthrough: {} bursts submitted, {} rendered, {} underruns",
+                     pstats.bursts_submitted, pstats.bursts_rendered, pstats.underruns);
+    }
+    const auto stats = capture.stats();
+    if (!write_frames(out_path, frames)) {
+        return 1;
+    }
+    std::println("wrote {} {} ({} kbps) to {}", frames.size(),
+                 atmos ? "E-AC-3 access units" : "AC-3 frames", bitrate, out_path);
+    std::println("captured {} frames, {} silence-filled, {} dropped", stats.frames_captured,
+                 stats.frames_silence_filled, stats.frames_dropped);
+    print_channel_summary(meter);
+    return 0;
+}
+
 // ---------------------------------------------------------------------------
 // The command table. Every command is one row: its name, how many positional
 // arguments it needs, the argument spec the usage text prints, and the code
@@ -1902,19 +2547,40 @@ struct Args {
     [[nodiscard]] std::uint32_t u32(std::size_t i, std::uint32_t fallback) const {
         return i < a.size() ? parse_u32_or(a[i], fallback) : fallback;
     }
+    // Signed, unlike u32: routing a negative token through parse_u32_or (which
+    // parses unsigned) always fails and silently returns 0 rather than
+    // `fallback` - the wrong answer for the sentinel values several commands
+    // read as "unset" or "default" (e.g. play's device index). from_chars
+    // for a signed int accepts the leading '-' directly, so this parses
+    // the token itself instead of bouncing through the unsigned path.
     [[nodiscard]] int i32(std::size_t i, int fallback) const {
-        return i < a.size() ? static_cast<int>(parse_u32_or(a[i], 0)) : fallback;
+        if (i >= a.size()) {
+            return fallback;
+        }
+        const std::string_view text{a[i]};
+        int value = 0;
+        const auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
+        return ec == std::errc{} && ptr == text.data() + text.size() ? value : fallback;
     }
 };
 
-// What a command needs from the machine's audio hardware. Four commands touch
-// it; every other command is file I/O and runs anywhere ac3forge compiles.
+// What a command needs from the machine's audio hardware. Several commands
+// touch it; every other command is file I/O and runs anywhere ac3forge
+// compiles.
 //
 // This is a column in the table rather than a check inside each handler for
 // the same reason min_args is: stated once, beside the command it describes,
 // and read by both dispatch and the usage text so the two cannot disagree
 // about which commands exist here.
-enum class Needs { kNothing, kCapture, kPassthrough };
+//
+// 'live' needs kCapture, not a new combined category: capture is the one
+// hard requirement (no capture endpoint, no session at all), while its
+// monitor/passthrough legs are soft - unavailable or refused there degrades
+// to a warning and a file-only session, exactly like plugging into a
+// receiver that says no. Only 'monitor' (which does nothing BUT play back)
+// needs kMonitor as a hard gate, the same way 'play'/'outputs' need
+// kPassthrough.
+enum class Needs : std::uint8_t { kNothing, kCapture, kPassthrough, kMonitor };
 
 // The unmet requirement, or nullptr when the platform can satisfy it.
 //
@@ -1931,6 +2597,7 @@ const ac3::platform::Capability* unmet(Needs needs) {
         case Needs::kCapture: return backend.capture.available ? nullptr : &backend.capture;
         case Needs::kPassthrough:
             return backend.passthrough.available ? nullptr : &backend.passthrough;
+        case Needs::kMonitor: return backend.monitor.available ? nullptr : &backend.monitor;
     }
     return nullptr;
 }
@@ -1944,7 +2611,7 @@ struct Command {
     int (*run)(const Args&);
 };
 
-constexpr std::array<Command, 18> kCommands{{
+constexpr std::array<Command, 21> kCommands{{
     {"silence", 2, "<out.ac3> [seconds] [bitrate_kbps]", "", Needs::kNothing,
      [](const Args& x) { return run_silence(x.str(1), x.u32(2, 5), x.u32(3, 192)); }},
     {"sine", 2, "<out.ac3> [seconds] [bitrate_kbps] [freq_hz] [amp_pct] [layout]", "",
@@ -1963,6 +2630,13 @@ constexpr std::array<Command, 18> kCommands{{
          return run_atmos(x.str(1), x.u32(2, 8), x.u32(3, 448), x.u32(4, 4), x.u32(5, 6),
                           x.str(6, "objects"), x.meta);
      }},
+    {"atmos-path", 3, "<out.ec3> <paths.txt> [seconds] [bitrate_kbps] [objects]",
+     "objects driven by an authored keyframe file instead of the built-in orbit",
+     Needs::kNothing,
+     [](const Args& x) {
+         return run_atmos_path(x.str(1), x.str(2), x.u32(3, 8), x.u32(4, 448), x.u32(5, 0),
+                               x.meta);
+     }},
     {"atmos-encode", 3, "<in.wav> <out.ec3> [bitrate_kbps] [objects]",
      "every source channel as an object", Needs::kNothing,
      [](const Args& x) {
@@ -1971,6 +2645,14 @@ constexpr std::array<Command, 18> kCommands{{
     {"record", 2, "<out.ac3> [seconds] [bitrate_kbps] [device_index]", "", Needs::kCapture,
      [](const Args& x) {
          return run_record(x.str(1), x.u32(2, 5), x.u32(3, 192), x.i32(4, 0));
+     }},
+    {"live", 3,
+     "<out.ac3|out.ec3> <capture_device> [seconds] [bitrate_kbps] [monitor_device] "
+     "[passthrough_device] [mode]",
+     "capture -> encode -> live monitor and/or passthrough", Needs::kCapture,
+     [](const Args& x) {
+         return run_live(x.str(1), x.i32(2, 0), x.u32(3, 10), x.u32(4, 192), x.i32(5, -2),
+                         x.i32(6, -2), x.str(7, "channels"));
      }},
     {"encode", 3, "<in.wav> <out.ac3> [bitrate_kbps] [layout]", "", Needs::kNothing,
      [](const Args& x) {
@@ -2004,13 +2686,16 @@ constexpr std::array<Command, 18> kCommands{{
      [](const Args& x) { return run_mkv(x.str(1), x.str(2)); }},
     {"devices", 1, "", "input and loopback capture endpoints", Needs::kCapture,
      [](const Args&) { return run_devices(); }},
-    {"outputs", 1, "", "render endpoints + AC-3 passthrough support", Needs::kPassthrough,
+    {"outputs", 1, "", "render endpoints + AC-3/E-AC-3 passthrough support", Needs::kPassthrough,
      [](const Args&) { return run_outputs(); }},
-    {"play", 2, "<in.ac3> [device_index]", "exclusive-mode IEC 61937 passthrough",
-     Needs::kPassthrough,
+    {"play", 2, "<in.ac3|in.ec3> [device_index]",
+     "exclusive-mode IEC 61937 passthrough; bsid decides AC-3 vs E-AC-3", Needs::kPassthrough,
      // -1, not 0: run_play reads a negative index as "the default endpoint",
      // where 0 names the first one 'outputs' lists and demands passthrough of it.
      [](const Args& x) { return run_play(x.str(1), x.i32(2, -1)); }},
+    {"monitor", 2, "<in.ac3|in.ec3> [device_index]",
+     "decode and play on an ordinary (non-bitstreamed) output", Needs::kMonitor,
+     [](const Args& x) { return run_monitor(x.str(1), x.i32(2, -1)); }},
 }};
 
 void print_usage() {
@@ -2038,7 +2723,8 @@ void print_usage() {
         std::println("{}", line);
     }
     const auto& backend = ac3::platform::audio_backend();
-    if (!backend.capture.available || !backend.passthrough.available) {
+    if (!backend.capture.available || !backend.passthrough.available ||
+        !backend.monitor.available) {
         std::println("");
         if (!backend.capture.available) {
             std::println("UNAVAILABLE HERE — {}.", backend.capture.reason);
@@ -2046,10 +2732,23 @@ void print_usage() {
         if (!backend.passthrough.available) {
             std::println("UNAVAILABLE HERE — {}.", backend.passthrough.reason);
         }
+        if (!backend.monitor.available) {
+            std::println("UNAVAILABLE HERE — {}.", backend.monitor.reason);
+        }
         std::println("Everything else is file I/O and behaves identically on every platform;");
         std::println("'spdif' in particular reaches a receiver without any audio backend at all.");
     }
     std::println("");
+    std::println("live monitor_device/passthrough_device: -2 (default) leaves that leg off,");
+    std::println("       -1 is the default render endpoint, N picks one from 'outputs'.");
+    std::println("       Either or both may run alongside the file this always writes.");
+    std::println("live mode: 'channels' (default) carries stereo straight through; 'atmos'");
+    std::println("       pans every captured channel into a 5.1 bed as its own object, moving");
+    std::println("       it every frame the same way 'atmos' orbits its synthetic ones — the");
+    std::println("       hook a real live position source drops into once one exists.");
+    std::println("monitor/live --monitor play the 5.1 BED of an Atmos-mode stream: the in-repo");
+    std::println("       decoder's E-AC-3 scope is A/52 Annex E syntax, not TS 103 420's object");
+    std::println("       layer, so this is what a legacy decoder hears, not unmixed objects.");
     std::println("");
     std::println("tools:  Annex E coding tools, '+'-joined — {}", plan::kToolsSyntax);
     std::println("        cpl:N / spx:N pin that tool's band edge (e.g. cpl:4+spx:5);");
@@ -2112,7 +2811,7 @@ void print_usage() {
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int run_main(int argc, char** argv) {
     const std::span<char*> raw{argv, static_cast<std::size_t>(argc)};
     // Split the command line into positional arguments and metadata options. An
     // option is a key=value token or one of the three bare flags, so the
@@ -2169,4 +2868,26 @@ int main(int argc, char** argv) {
     std::println(stderr, "error: unknown command '{}'", command);
     print_usage();
     return 1;
+}
+
+// run_main is std::expected-clean throughout; the one realistic exception
+// source left is std::format/std::println itself (std::format_error), which
+// nothing here catches internally. Left uncaught, that unwinds out of main
+// and terminates - a crash with no exit code a script could act on rather
+// than the ordinary "error: ..." this CLI otherwise always prints on
+// failure. This is the one place that catches it. clang-tidy still flags
+// main() itself: it cannot see past this try/catch to know the escape is
+// caught, and reports the one path it cannot fully close by construction -
+// the catch block's own std::println, whose fixed one-argument format string
+// has no realistic way to throw. NOLINTNEXTLINE(bugprone-exception-escape)
+int main(int argc, char** argv) {
+    try {
+        return run_main(argc, argv);
+    } catch (const std::exception& e) {
+        std::println(stderr, "error: unhandled exception: {}", e.what());
+        return 1;
+    } catch (...) {
+        std::println(stderr, "error: unhandled exception of unknown type");
+        return 1;
+    }
 }

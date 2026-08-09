@@ -1,0 +1,74 @@
+# Curated static-analysis set, not clang-tidy's full catalogue: a first pass
+# against a mature codebase with everything on produces mostly undifferentiated
+# noise. Four groups, chosen for what they catch that the compiler warnings in
+# cmake/CompilerWarnings.cmake do not:
+#   bugprone-*       - real defect patterns (use-after-move, dangling
+#                      references, suspicious casts, off-by-one idioms)
+#   clang-analyzer-* - the Clang Static Analyzer's path-sensitive engine
+#                      (null dereference, leaks, dead stores reachable only on
+#                      some paths)
+#   performance-*    - avoidable copies/allocations in hot codec paths
+#   cert-*           - a deliberately narrow CERT C++ subset (see the
+#                      Checks list below); most of cert-* either duplicates a
+#                      bugprone-* check under a different name or targets C
+#                      idioms (atoi, strcpy) this C++23, no-C-string codebase
+#                      does not use, so most of the group is excluded rather
+#                      than fired and ignored.
+#
+# NOT enabled, on purpose:
+#   modernize-*, readability-*, google-*, llvm-*, hicpp-*, fuchsia-*, etc. -
+#   stylistic/opinionated groups that would relitigate this codebase's own
+#   deliberate conventions (see src/lib/'s comment-voice and
+#   abstraction-avoidance patterns) rather than find defects.
+# Three checks excluded from their otherwise-enabled groups, each verified
+# against this codebase's actual output rather than excluded a priori:
+#
+#   bugprone-easily-swappable-parameters - 59 hits, all API-design advice
+#     ("these two int parameters could be swapped by a caller"), not a defect
+#     pattern - fixing it means reordering or wrapping parameters across the
+#     codec's call graph, which is the "broad stylistic churn" this project's
+#     conventions rule out for its own sake.
+#
+#   bugprone-misplaced-widening-cast, bugprone-implicit-widening-of-
+#   multiplication-result - 27 + 7 hits, all `narrow-typed-value * small-
+#   constant` widened to size_t/int for use as an array index or bit count
+#   (spot-checked across core/mdct.cpp, core/exponents.cpp, decoder.cpp,
+#   eac3_decoder.cpp, oba/oamd.cpp). Every operand traces back to either a
+#   loop index bounded by a codec block/group dimension (<=1536) or a
+#   spec-fixed bitstream field width (<=8 bits, so <=255) - the product
+#   cannot approach int/size_t range in this codebase, unlike the general
+#   case these checks exist for. ASan+UBSan's own integer-overflow-adjacent
+#   checks (see cmake/Sanitizers.cmake) already cover the case where a value
+#   escapes its assumed range, which is the more precise tool for exactly
+#   this class of bug - see the coupling-exponent precedent in 8386c8f.
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-misplaced-widening-cast,
+  -bugprone-implicit-widening-of-multiplication-result,
+  clang-analyzer-*,
+  performance-*,
+  cert-dcl21-cpp,
+  cert-dcl50-cpp,
+  cert-dcl58-cpp,
+  cert-env33-c,
+  cert-err33-c,
+  cert-err34-c,
+  cert-err52-cpp,
+  cert-err58-cpp,
+  cert-err60-cpp,
+  cert-flp30-c,
+  cert-mem57-cpp,
+  cert-msc50-cpp,
+  cert-msc51-cpp,
+  cert-oop54-cpp,
+  cert-oop57-cpp,
+  cert-oop58-cpp,
+  cert-pos44-c,
+  cert-pos47-c,
+  cert-str34-c
+
+WarningsAsErrors: ''
+HeaderFilterRegex: 'src/(lib|cli|matroska)/.*'
+FormatStyle: none

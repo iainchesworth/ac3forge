@@ -21,6 +21,11 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(CompilerWarnings)
 
+# Empty unless -DAC3FORGE_SANITIZERS=<comma-list> is set (see the *-asan-ubsan
+# presets in CMakePresets.json); a plain configure is unaffected.
+set(AC3FORGE_SANITIZERS "" CACHE STRING "Comma-separated -fsanitize= value, e.g. address,undefined")
+include(Sanitizers)
+
 # Sources carry spec citations with non-ASCII glyphs (section marks, degrees,
 # arrows). Tell MSVC both the source and execution charsets are UTF-8 so it
 # neither mis-decodes them nor warns; harmless everywhere else.
@@ -36,6 +41,13 @@ option(AC3FORGE_BUILD_TESTS "Build the unit test suite" ON)
 # from a package manager instead of the network (see tests/CMakeLists.txt).
 option(AC3FORGE_FETCH_CATCH2 "Download Catch2 when no local copy is found" ON)
 option(AC3FORGE_BUILD_EXAMPLES "Build the documented library examples" ON)
+# libFuzzer harnesses over ac3::forge's untrusted-input entry points (see
+# fuzz/). Off by default: it needs upstream Clang (GCC and MSVC do not ship
+# libFuzzer) and instruments ac3forge itself with ASan+UBSan, which no other
+# configuration wants paid for. Use fuzz/run.sh rather than this option
+# directly - it configures a dedicated build/fuzz directory with the right
+# compiler.
+option(AC3FORGE_BUILD_FUZZERS "Build libFuzzer harnesses (Clang only; see fuzz/)" OFF)
 
 # NON-CLEAN-ROOM, off by default and NOT tracked on any public branch. src/quarantine
 # is gitignored (and a CI job fails if it is ever committed) because it embeds a key
@@ -84,6 +96,10 @@ endif()
 # enable_testing() to have run.
 if(AC3FORGE_BUILD_EXAMPLES)
     add_subdirectory(examples)
+endif()
+
+if(AC3FORGE_BUILD_FUZZERS)
+    add_subdirectory(fuzz)
 endif()
 
 message(STATUS "ac3forge ${PROJECT_VERSION}")

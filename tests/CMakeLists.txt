@@ -46,6 +46,7 @@ endif()
 add_executable(ac3tests
     test_analysis.cpp
     test_atmos.cpp
+    test_atmos_motion.cpp
     test_bitalloc.cpp
     test_bitwriter.cpp
     test_coupling.cpp
@@ -59,6 +60,7 @@ add_executable(ac3tests
     test_encoder.cpp
     test_exponents.cpp
     test_frame.cpp
+    test_iec61937.cpp
     test_mantissas.cpp
     test_matroska.cpp
     test_mdct.cpp

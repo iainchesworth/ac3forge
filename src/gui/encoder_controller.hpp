@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QHash>
 #include <QObject>
 #include <QString>
 #include <QStringList>
@@ -17,6 +18,7 @@
 #include "ac3/capture/capture.hpp"
 #include "ac3/core/tables.hpp"
 #include "ac3/encoder/plan.hpp"
+#include "ac3/oba/motion.hpp"
 #include "ac3/oba/oamd.hpp"
 #include "ac3/sinks/passthrough.hpp"
 
@@ -317,6 +319,17 @@ public:
     // Upgrades AC-3 to E-AC-3 first if the preset needs a dependent substream,
     // the same way a manual extras tick would otherwise be refused outright.
     Q_INVOKABLE void applyChannelPreset(const QString& name);
+    // The minimal authoring hook for genuine per-object motion: an object
+    // with authored keyframes here moves along them during encodeObjects
+    // instead of sitting at the static objectX/Y/Z + objectSpread point. Each
+    // entry of `keyframes` is a map with "time", "x", "y", "z", "gain" and
+    // "lfeSend" (the latter two optional). An empty list clears the object's
+    // path, returning it to the static fallback. No QML timeline exists yet
+    // for this - it is deliberately just plumbing, ahead of the GUI design
+    // pass that will decide the real authoring surface.
+    Q_INVOKABLE void setObjectPathKeyframes(int objectIndex, const QVariantList& keyframes);
+    Q_INVOKABLE void clearObjectPath(int objectIndex);
+
     Q_INVOKABLE void loadSourceFile(const QUrl& url);
     Q_INVOKABLE void encodeTo(const QUrl& url);
     Q_INVOKABLE void cancel();
@@ -485,6 +498,10 @@ private:
     // programme arriving twice.
     double object_lfe_send_ = 0.15;
     int object_count_ = 0;
+    // Authored motion, keyed by object index. An index absent here (the
+    // common case today) falls back to the static objectX/Y/Z + objectSpread
+    // placement in encodeObjects.
+    QHash<int, std::vector<ac3::oba::Keyframe>> object_keyframes_;
 
     QVariantList runs_;
     int current_run_id_ = -1;
