@@ -142,6 +142,25 @@ TEST_CASE("the layout list a front end prints is the list the parser accepts") {
     }
 }
 
+TEST_CASE("Table E2.5 location lists parse and format symmetrically") {
+    // Every case round-trips through parse_channels/format_channels exactly
+    // as it read - format_channels emits Table E2.5 bit order, so these are
+    // already written in that order.
+    for (const auto* text : {"L,C,R", "L,C,R,LFE", "L,C,R,Vhl,Vhr,LFE",
+                             "L,C,R,Vhc,Lts,Rts,LFE", "Vhc,LFE2,LFE"}) {
+        const auto mask = ac3::plan::parse_channels(text);
+        REQUIRE(mask.has_value());
+        CHECK(ac3::plan::format_channels(*mask) == text);
+    }
+    // Naming only one half of a pair location is not expressible - Table
+    // E2.5 has no bit for Vhl alone.
+    CHECK_FALSE(ac3::plan::parse_channels("L,C,R,Vhl").has_value());
+    CHECK_FALSE(ac3::plan::parse_channels("").has_value());
+    CHECK_FALSE(ac3::plan::parse_channels("Nope").has_value());
+    CHECK_FALSE(ac3::plan::parse_channels("L,C,R,").has_value());  // trailing empty token
+    CHECK_FALSE(ac3::plan::parse_channels("L,L,C,R").has_value());  // L named twice
+}
+
 // ---------------------------------------------------------------------------
 // The Annex E tool token
 // ---------------------------------------------------------------------------
@@ -709,6 +728,114 @@ TEST_CASE("every E-AC-3 layout encodes real audio and decodes back to its speake
             INFO("layout " << info.name << " rendered channel " << ch);
             CHECK(rms(pcm[ch]) > 0.01);
         }
+    }
+}
+
+TEST_CASE("a custom channel selection encodes real audio and decodes back to its speakers") {
+    // L,C,R,LFE,Vhl,Vhr,Lts,Rts: no named layout offers this shape - since
+    // Ls/Rs were never asked for, the bed narrows to 3/0+LFE rather than the
+    // 3/2+LFE every preset uses, with a single dependent carrying all four
+    // ceiling channels. Proving this exercises allocate() itself, not one of
+    // the seven hand-picked presets.
+    constexpr int kFrames = 4;
+    constexpr int kSkipFrames = 2;
+
+    const auto locations = ac3::plan::parse_channels("L,C,R,LFE,Vhl,Vhr,Lts,Rts");
+    REQUIRE(locations.has_value());
+    const ac3::plan::Plan plan{
+        .codec = ac3::plan::Codec::kEac3, .custom_locations = locations, .bitrate_kbps = 448};
+    REQUIRE_FALSE(ac3::plan::validate(plan).has_value());
+
+    const auto cp = ac3::plan::resolve(plan);
+    CHECK(cp.bed_acmod == ac3::Acmod::k3_0);
+    CHECK(cp.bed_lfe);
+    REQUIRE(cp.dependents.size() == 1);
+    const auto rendered = ac3::plan::rendered_channel_count(cp);
+
+    const auto routing =
+        ac3::plan::route(cp, static_cast<std::size_t>(rendered),
+                         ac3::meta::CentreMixLevel::kMinus4_5dB,
+                         ac3::meta::SurroundMixLevel::kMinus6dB);
+    REQUIRE(routing.has_value());
+
+    ac3::eac3::AccessUnitEncoder encoder{ac3::plan::eac3_config(plan)};
+    REQUIRE(static_cast<std::size_t>(encoder.channel_count()) ==
+            ac3::plan::coded_channels(cp).size());
+
+    // §7.3.1 codes seven LFE mantissas and nothing above about 120 Hz, so the
+    // channel that lands there has to be fed something it can carry.
+    int lfe_source = -1;
+    {
+        const auto coded_list = ac3::plan::coded_channels(cp);
+        for (std::size_t c = 0; c < coded_list.size() && lfe_source < 0; ++c) {
+            if (coded_list[c].location != Location::kLfe) {
+                continue;
+            }
+            for (int s = 0; s < routing->source_channels; ++s) {
+                if (routing->at(static_cast<int>(c), s) > 0.0) {
+                    lfe_source = s;
+                    break;
+                }
+            }
+        }
+    }
+
+    const auto nsource = static_cast<std::size_t>(routing->source_channels);
+    std::vector<std::vector<float>> source(nsource, std::vector<float>(ac3::kSamplesPerFrame));
+    std::vector<std::vector<float>> coded(static_cast<std::size_t>(routing->coded_channels),
+                                          std::vector<float>(ac3::kSamplesPerFrame));
+
+    std::vector<std::byte> stream;
+    std::uint64_t n0 = 0;
+    for (int frame = 0; frame < kFrames; ++frame) {
+        std::vector<std::span<const float>> in;
+        for (std::size_t ch = 0; ch < nsource; ++ch) {
+            const double hz = static_cast<int>(ch) == lfe_source
+                                  ? 55.0
+                                  : 400.0 + 233.0 * static_cast<double>(ch);
+            fill_tone(source[ch], hz, 0.35, n0);
+            in.emplace_back(source[ch]);
+        }
+        std::vector<std::span<float>> out;
+        for (auto& channel : coded) {
+            out.emplace_back(channel);
+        }
+        ac3::plan::render(*routing, in, out, ac3::kSamplesPerFrame);
+
+        std::vector<std::span<const float>> encoded;
+        for (const auto& channel : coded) {
+            encoded.emplace_back(channel);
+        }
+        const auto unit = encoder.encode_access_unit(encoded);
+        REQUIRE(unit.has_value());
+        stream.insert(stream.end(), unit->bytes.begin(), unit->bytes.end());
+        n0 += ac3::kSamplesPerFrame;
+    }
+
+    const auto units = ac3::split_access_units(stream);
+    REQUIRE(units.has_value());
+    REQUIRE(units->size() == kFrames);
+
+    ac3::Eac3Decoder decoder;
+    std::vector<std::vector<float>> pcm;
+    for (int frame = 0; frame < kFrames; ++frame) {
+        const auto decoded = decoder.decode_access_unit((*units)[static_cast<std::size_t>(frame)]);
+        REQUIRE(decoded.has_value());
+        CHECK(static_cast<int>(decoded->channels.size()) == rendered);
+        if (frame < kSkipFrames) {
+            continue;
+        }
+        if (pcm.empty()) {
+            pcm.resize(decoded->channels.size());
+        }
+        for (std::size_t ch = 0; ch < decoded->channels.size(); ++ch) {
+            pcm[ch].insert(pcm[ch].end(), decoded->channels[ch].begin(),
+                           decoded->channels[ch].end());
+        }
+    }
+    for (std::size_t ch = 0; ch < pcm.size(); ++ch) {
+        INFO("rendered channel " << ch);
+        CHECK(rms(pcm[ch]) > 0.01);
     }
 }
 

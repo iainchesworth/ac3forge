@@ -669,6 +669,19 @@ ApplicationWindow {
                                     }
                                 }
 
+                                // layoutNames() ends with a synthetic "Custom…" entry - not a
+                                // LayoutId, just the signal to read/write this field instead.
+                                // This is the general allocator's minimal stopgap control; the
+                                // two-tier bed+extras+LFE picker replaces it.
+                                TextField {
+                                    Layout.fillWidth: true
+                                    visible: EncoderController.customLayoutSelected
+                                    enabled: !EncoderController.busy && !EncoderController.atmosEnabled
+                                    placeholderText: qsTr("L,C,R,LFE,Vhl,Vhr — comma-separated Table E2.5 locations")
+                                    text: EncoderController.customChannels
+                                    onEditingFinished: EncoderController.customChannels = text
+                                }
+
                                 Text {
                                     Layout.fillWidth: true
                                     text: EncoderController.layoutDetail

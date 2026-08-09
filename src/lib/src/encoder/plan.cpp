@@ -20,52 +20,27 @@ using Location = eac3::chanmap::Location;
     return location == Location::kLfe || location == Location::kLfe2;
 }
 
-// The chanmap each dependent substream of a layout carries. Taken from the
-// masks in eac3_tables.hpp rather than restated, so the channels this file
-// routes audio into are by construction the ones the encoder will code.
-[[nodiscard]] std::vector<std::uint16_t> dependent_masks(LayoutId id) {
-    switch (id) {
-        case LayoutId::kMono:
-        case LayoutId::kStereo:
-        case LayoutId::k51:
-            return {};
-        case LayoutId::k71:
-            return {eac3::chanmap::k71Rear};
-        case LayoutId::k512:
-            return {eac3::chanmap::k512Height};
-        case LayoutId::k514:
-            return {eac3::chanmap::kTopQuad};
-        case LayoutId::k714:
-            return {eac3::chanmap::k71Rear, eac3::chanmap::kTopQuad};
-    }
-    return {};
-}
-
 // The independent substream's channels, in AC-3 coded order (Table 5.8) with
-// the LFE last.
-[[nodiscard]] std::vector<Location> bed_locations(LayoutId id) {
-    switch (id) {
-        case LayoutId::kMono:
-            return {Location::kCentre};
-        case LayoutId::kStereo:
-            return {Location::kLeft, Location::kRight};
-        default:
-            return {Location::kLeft,          Location::kCentre,
-                    Location::kRight,         Location::kLeftSurround,
-                    Location::kRightSurround, Location::kLfe};
-    }
+// the LFE last. This IS acmod_map/expand: Table E2.5's first five bits agree
+// with Table 5.8's coded order by construction (acmod_map's own static_assert
+// already proves the count agrees for every acmod), so a bed never needs its
+// own hand-written location list.
+[[nodiscard]] std::vector<Location> bed_locations(const ChannelPlan& plan) {
+    const auto expanded =
+        eac3::chanmap::expand(eac3::chanmap::acmod_map(plan.bed_acmod, plan.bed_lfe));
+    return {expanded.begin(), expanded.end()};
 }
 
 // What a decoder ends up with: the bed, with each dependent's channels either
 // replacing a bed channel of the same location or appended as a new one. The
 // LFE is kept last, where every layout in this project puts it.
-[[nodiscard]] std::vector<Location> rendered_locations(LayoutId id) {
-    auto out = bed_locations(id);
+[[nodiscard]] std::vector<Location> rendered_locations(const ChannelPlan& plan) {
+    auto out = bed_locations(plan);
     const bool lfe = !out.empty() && is_lfe(out.back());
     if (lfe) {
         out.pop_back();
     }
-    for (const auto mask : dependent_masks(id)) {
+    for (const auto mask : plan.dependents) {
         const auto expanded = eac3::chanmap::expand(mask);
         for (const auto location : expanded) {
             if (std::ranges::find(out, location) == out.end()) {
@@ -77,6 +52,15 @@ using Location = eac3::chanmap::Location;
         out.push_back(Location::kLfe);
     }
     return out;
+}
+
+// The named-layout callers below only ever want channel_plan_for(id)'s
+// answer; keeping these two overloads spares them writing that out.
+[[nodiscard]] std::vector<Location> bed_locations(LayoutId id) {
+    return bed_locations(channel_plan_for(id));
+}
+[[nodiscard]] std::vector<Location> rendered_locations(LayoutId id) {
+    return rendered_locations(channel_plan_for(id));
 }
 
 // --- geometry ---------------------------------------------------------------
@@ -292,10 +276,18 @@ constexpr std::array<Location, 17> kWavSpeakerOrder = {
 // its own side only, while a pairwise pan bleeds it across both. So the spec's
 // coefficients are used wherever they are defined - which is wherever the
 // source fits an acmod - and the panner handles everything else.
-[[nodiscard]] bool fold_down(std::span<const Location> source, LayoutId target,
+[[nodiscard]] bool fold_down(std::span<const Location> source, const ChannelPlan& target,
                              meta::CentreMixLevel clev, meta::SurroundMixLevel slev,
                              Routing& out) {
-    if (target != LayoutId::kMono && target != LayoutId::kStereo) {
+    // Fold-down only has an answer (§7.8) when the whole target IS the bed
+    // and the bed is mono or stereo - a target with any dependent, or an LFE
+    // channel neither mono nor stereo layouts ever carried, has no entry.
+    if (!target.dependents.empty() || target.bed_lfe) {
+        return false;
+    }
+    const bool mono = target.bed_acmod == Acmod::k1_0;
+    const bool stereo = target.bed_acmod == Acmod::k2_0;
+    if (!mono && !stereo) {
         return false;
     }
     const auto source_layout = io::ac3_layout_for(source.size());
@@ -303,26 +295,26 @@ constexpr std::array<Location, 17> kWavSpeakerOrder = {
         return false;  // §7.8 is defined per acmod; a wider source has no entry
     }
     const int fbw = fullbw_channel_count(source_layout->acmod);
-    if (fbw <= (target == LayoutId::kMono ? 1 : 2)) {
+    if (fbw <= (mono ? 1 : 2)) {
         return false;  // nothing to fold; the panner's identity is fine
     }
 
     const double c = meta::coefficient(clev);
     const double s = meta::coefficient(slev);
-    if (target == LayoutId::kMono) {
-        const auto mono = meta::mono_downmix(source_layout->acmod, c, s);
+    if (mono) {
+        const auto mono_gains = meta::mono_downmix(source_layout->acmod, c, s);
         for (int k = 0; k < fbw; ++k) {
             const auto wav = source_layout->wav_index[static_cast<std::size_t>(k)];
-            out.gain[wav] = mono[static_cast<std::size_t>(k)];
+            out.gain[wav] = mono_gains[static_cast<std::size_t>(k)];
         }
         return true;
     }
-    const auto stereo = meta::stereo_downmix(source_layout->acmod, c, s);
+    const auto stereo_gains = meta::stereo_downmix(source_layout->acmod, c, s);
     for (int k = 0; k < fbw; ++k) {
         const auto wav = source_layout->wav_index[static_cast<std::size_t>(k)];
-        out.gain[wav] = stereo.left[static_cast<std::size_t>(k)];
+        out.gain[wav] = stereo_gains.left[static_cast<std::size_t>(k)];
         out.gain[static_cast<std::size_t>(out.source_channels) + wav] =
-            stereo.right[static_cast<std::size_t>(k)];
+            stereo_gains.right[static_cast<std::size_t>(k)];
     }
     return true;
 }
@@ -372,13 +364,110 @@ std::string layout_names(Codec codec) {
     return out;
 }
 
-std::vector<CodedChannel> coded_channels(LayoutId id) {
+ChannelPlan channel_plan_for(LayoutId id) {
+    switch (id) {
+        case LayoutId::kMono:
+            return {.bed_acmod = Acmod::k1_0, .bed_lfe = false, .dependents = {}};
+        case LayoutId::kStereo:
+            return {.bed_acmod = Acmod::k2_0, .bed_lfe = false, .dependents = {}};
+        case LayoutId::k51:
+            return {.bed_acmod = Acmod::k3_2, .bed_lfe = true, .dependents = {}};
+        case LayoutId::k71:
+            return {.bed_acmod = Acmod::k3_2,
+                    .bed_lfe = true,
+                    .dependents = {eac3::chanmap::k71Rear}};
+        case LayoutId::k512:
+            return {.bed_acmod = Acmod::k3_2,
+                    .bed_lfe = true,
+                    .dependents = {eac3::chanmap::k512Height}};
+        case LayoutId::k514:
+            return {.bed_acmod = Acmod::k3_2,
+                    .bed_lfe = true,
+                    .dependents = {eac3::chanmap::kTopQuad}};
+        case LayoutId::k714:
+            return {.bed_acmod = Acmod::k3_2,
+                    .bed_lfe = true,
+                    .dependents = {eac3::chanmap::k71Rear, eac3::chanmap::kTopQuad}};
+    }
+    return {};
+}
+
+std::optional<std::uint16_t> parse_channels(std::string_view text) {
+    if (text.empty()) {
+        return std::nullopt;
+    }
+    std::vector<Location> wanted;
+    while (!text.empty()) {
+        const auto split = text.find(',');
+        // A trailing separator with nothing after it means a location was
+        // meant and did not survive whatever produced the string - the same
+        // reasoning parse_tools already applies to '+'.
+        if (split != std::string_view::npos && split + 1 == text.size()) {
+            return std::nullopt;
+        }
+        const auto token = text.substr(0, split);
+        if (token.empty()) {
+            return std::nullopt;
+        }
+        const auto location = eac3::chanmap::parse_location(token);
+        if (!location) {
+            return std::nullopt;
+        }
+        wanted.push_back(*location);
+        text = split == std::string_view::npos ? std::string_view{} : text.substr(split + 1);
+    }
+
+    // Every Table E2.5 bit, so a pair location can be checked as a whole:
+    // both members present sets the bit, one alone is rejected rather than
+    // silently dropped or silently completed.
+    constexpr std::array<std::uint16_t, 16> kBits = {
+        eac3::chanmap::kLeft,     eac3::chanmap::kCentre,   eac3::chanmap::kRight,
+        eac3::chanmap::kLeftSurround, eac3::chanmap::kRightSurround, eac3::chanmap::kLcRc,
+        eac3::chanmap::kLrsRrs,   eac3::chanmap::kCs,       eac3::chanmap::kTs,
+        eac3::chanmap::kLsdRsd,   eac3::chanmap::kLwRw,     eac3::chanmap::kVhlVhr,
+        eac3::chanmap::kVhc,      eac3::chanmap::kLtsRts,   eac3::chanmap::kLfe2,
+        eac3::chanmap::kLfe,
+    };
+    std::uint16_t mask = 0;
+    for (const auto bit : kBits) {
+        const auto expanded = eac3::chanmap::expand(bit);
+        const auto present = static_cast<int>(std::ranges::count_if(
+            expanded, [&](Location loc) { return std::ranges::find(wanted, loc) != wanted.end(); }));
+        if (present == 0) {
+            continue;
+        }
+        if (present != expanded.count) {
+            return std::nullopt;  // named one half of a pair location, not both
+        }
+        mask = static_cast<std::uint16_t>(mask | bit);
+    }
+    // Catches a name repeated in `text`: it would otherwise vanish silently,
+    // since the bit it belongs to is already accounted for by its first
+    // appearance.
+    if (eac3::chanmap::channel_count(mask) != static_cast<int>(wanted.size())) {
+        return std::nullopt;
+    }
+    return mask;
+}
+
+std::string format_channels(std::uint16_t locations) {
+    std::string out;
+    for (const auto location : eac3::chanmap::expand(locations)) {
+        if (!out.empty()) {
+            out += ',';
+        }
+        out += eac3::chanmap::name(location);
+    }
+    return out;
+}
+
+std::vector<CodedChannel> coded_channels(const ChannelPlan& plan) {
     std::vector<CodedChannel> out;
-    for (const auto location : bed_locations(id)) {
+    for (const auto location : bed_locations(plan)) {
         out.push_back({.location = location, .bed = true, .substream = 0});
     }
     int substream = 1;
-    for (const auto mask : dependent_masks(id)) {
+    for (const auto mask : plan.dependents) {
         for (const auto location : eac3::chanmap::expand(mask)) {
             out.push_back({.location = location, .bed = false, .substream = substream});
         }
@@ -387,8 +476,12 @@ std::vector<CodedChannel> coded_channels(LayoutId id) {
     return out;
 }
 
-std::vector<std::string> coded_channel_names(LayoutId id) {
-    const auto coded = coded_channels(id);
+std::vector<CodedChannel> coded_channels(LayoutId id) {
+    return coded_channels(channel_plan_for(id));
+}
+
+std::vector<std::string> coded_channel_names(const ChannelPlan& plan) {
+    const auto coded = coded_channels(plan);
     std::vector<std::string> out;
     out.reserve(coded.size());
     for (const auto& channel : coded) {
@@ -409,16 +502,20 @@ std::vector<std::string> coded_channel_names(LayoutId id) {
     return out;
 }
 
-Acmod bed_acmod(LayoutId id) {
-    switch (id) {
-        case LayoutId::kMono: return Acmod::k1_0;
-        case LayoutId::kStereo: return Acmod::k2_0;
-        default: return Acmod::k3_2;
-    }
+std::vector<std::string> coded_channel_names(LayoutId id) {
+    return coded_channel_names(channel_plan_for(id));
 }
 
-bool bed_lfe(LayoutId id) {
-    return id != LayoutId::kMono && id != LayoutId::kStereo;
+Acmod bed_acmod(LayoutId id) { return channel_plan_for(id).bed_acmod; }
+
+bool bed_lfe(LayoutId id) { return channel_plan_for(id).bed_lfe; }
+
+int rendered_channel_count(const ChannelPlan& plan) {
+    std::uint16_t occupied = eac3::chanmap::acmod_map(plan.bed_acmod, plan.bed_lfe);
+    for (const auto mask : plan.dependents) {
+        occupied |= mask;
+    }
+    return eac3::chanmap::expand(occupied).count;
 }
 
 std::vector<std::size_t> wav_order(std::span<const eac3::chanmap::Location> locations) {
@@ -586,18 +683,28 @@ meta::MixMetadata mix_metadata(const Metadata& options) {
 std::string_view describe(PlanError error) {
     switch (error) {
         case PlanError::kLayoutNeedsEac3:
-            return "that layout needs dependent substreams, which only E-AC-3 has "
+            return "that channel selection needs dependent substreams, which only E-AC-3 has "
                    "(AC-3 codes nothing wider than 3/2 + LFE)";
         case PlanError::kBitrateNotLegal:
             return "AC-3 takes only the 19 nominal rates of Table 5.18";
         case PlanError::kNoSourceLayout:
             return "no standard speaker layout has that many channels";
+        case PlanError::kInvalidChannels:
+            return "that channel selection is not one A/52 Annex E can express";
     }
     return "";
 }
 
 std::optional<PlanError> validate(const Plan& plan) {
-    if (!carries(plan.codec, plan.layout)) {
+    if (plan.custom_locations) {
+        const auto allocated = eac3::chanmap::allocate(*plan.custom_locations);
+        if (!allocated) {
+            return PlanError::kInvalidChannels;
+        }
+        if (plan.codec == Codec::kAc3 && !allocated->dependents.empty()) {
+            return PlanError::kLayoutNeedsEac3;
+        }
+    } else if (!carries(plan.codec, plan.layout)) {
         return PlanError::kLayoutNeedsEac3;
     }
     // E-AC-3 signals frmsiz directly, so any rate is expressible there; AC-3
@@ -608,16 +715,23 @@ std::optional<PlanError> validate(const Plan& plan) {
     return std::nullopt;
 }
 
+ChannelPlan resolve(const Plan& plan) {
+    if (plan.custom_locations) {
+        return eac3::chanmap::allocate(*plan.custom_locations).value_or(ChannelPlan{});
+    }
+    return channel_plan_for(plan.layout);
+}
+
 EncoderConfig ac3_config(const Plan& plan) {
-    const auto acmod = bed_acmod(plan.layout);
+    const auto cp = resolve(plan);
     return {.sample_rate = plan.sample_rate,
             .bitrate_kbps = plan.bitrate_kbps,
             .dialnorm = plan.meta.dialnorm,
-            .acmod = acmod,
-            .lfe = bed_lfe(plan.layout),
+            .acmod = cp.bed_acmod,
+            .lfe = cp.bed_lfe,
             // Coupling shares coefficients between full-bandwidth channels
             // (§7.4), so a mono programme has nothing to share it with.
-            .coupling = plan.tools.coupling && fullbw_channel_count(acmod) >= 2,
+            .coupling = plan.tools.coupling && fullbw_channel_count(cp.bed_acmod) >= 2,
             .cplbegf = plan.tools.cplbegf,
             .drc = plan.meta.drc,
             .heavy = plan.meta.heavy,
@@ -641,12 +755,13 @@ void apply_tools(const Tools& tools, eac3::FrameConfig& config) {
 }  // namespace
 
 eac3::AccessUnitConfig eac3_config(const Plan& plan) {
+    const auto cp = resolve(plan);
     eac3::AccessUnitConfig out;
     auto& independent = out.independent;
     independent.sample_rate = plan.sample_rate;
     independent.bitrate_kbps = plan.bitrate_kbps;
-    independent.acmod = bed_acmod(plan.layout);
-    independent.lfe = bed_lfe(plan.layout);
+    independent.acmod = cp.bed_acmod;
+    independent.lfe = cp.bed_lfe;
     independent.dialnorm = plan.meta.dialnorm;
     independent.drc = plan.meta.drc;
     independent.heavy = plan.meta.heavy;
@@ -658,15 +773,17 @@ eac3::AccessUnitConfig eac3_config(const Plan& plan) {
     // A dependent gets its own slice of the rate rather than a share of the
     // independent's - substreams occupy one frame period, not one frame.
     const std::uint32_t dependent_kbps = plan.bitrate_kbps / 2;
-    for (const auto mask : dependent_masks(plan.layout)) {
+    for (const auto mask : cp.dependents) {
         eac3::FrameConfig dependent{};
         dependent.sample_rate = plan.sample_rate;
         dependent.bitrate_kbps = dependent_kbps;
-        // A chanmap names the channels, so the acmod only has to code the
-        // right NUMBER of them: two locations mean 2/0, four mean 2/2.
-        dependent.acmod =
-            eac3::chanmap::channel_count(mask) <= 2 ? Acmod::k2_0 : Acmod::k2_2;
         dependent.chanmap = mask;
+        // `mask` came from a ChannelPlan that channel_plan_for/allocate()
+        // already built to satisfy exactly one (acmod, lfeon) - it cannot
+        // fail here.
+        const auto fit = eac3::chanmap::acmod_for_chanmap(mask);
+        dependent.acmod = fit->first;
+        dependent.lfe = fit->second;
         apply_tools(plan.tools, dependent);
         out.dependents.push_back(dependent);
     }
@@ -702,7 +819,7 @@ bool Routing::is_permutation() const {
     return true;
 }
 
-std::optional<Routing> route(LayoutId target, std::size_t wav_channels,
+std::optional<Routing> route(const ChannelPlan& target, std::size_t wav_channels,
                              meta::CentreMixLevel clev, meta::SurroundMixLevel slev) {
     if (wav_channels == 0) {
         return std::nullopt;
@@ -712,7 +829,7 @@ std::optional<Routing> route(LayoutId target, std::size_t wav_channels,
     // channels, and a user who picked 7.1 for an eight-channel file has said
     // which one it is.
     std::vector<Location> source;
-    if (wav_channels == static_cast<std::size_t>(layout(target).rendered)) {
+    if (wav_channels == static_cast<std::size_t>(rendered_channel_count(target))) {
         source = in_wav_order(rendered_locations(target));
     } else {
         const auto generic = generic_wav_layout(wav_channels);
@@ -847,6 +964,11 @@ std::optional<Routing> route(LayoutId target, std::size_t wav_channels,
         }
     }
     return out;
+}
+
+std::optional<Routing> route(LayoutId target, std::size_t wav_channels,
+                             meta::CentreMixLevel clev, meta::SurroundMixLevel slev) {
+    return route(channel_plan_for(target), wav_channels, clev, slev);
 }
 
 void render(const Routing& routing, std::span<const std::span<const float>> source,

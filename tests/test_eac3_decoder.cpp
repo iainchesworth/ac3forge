@@ -295,6 +295,48 @@ TEST_CASE("7.1.4 decodes to twelve channels with the ceiling quad in place",
     }
 }
 
+TEST_CASE("a programme can carry LFE and LFE2 as two distinct channels", "[eac3][decoder]") {
+    using ac3::Acmod;
+    namespace cm = ac3::eac3::chanmap;
+    // LFE2 needs a full-bandwidth companion in its own substream (acmod
+    // always contributes at least one full-bandwidth channel - see
+    // chanmap::allocate/acmod_for_chanmap); Vhc plays that role here. The
+    // bed carries its own LFE via lfeon as always, so the programme ends up
+    // with two independent LFE-type channels. 60 Hz and 150 Hz sit in
+    // different LFE coefficient bins (kLfeEndmant caps the LFE channel at
+    // seven bins of ~93.75 Hz each), so both survive its restricted
+    // bandwidth and stay distinguishable from each other.
+    const LayoutCase layout{
+        .name = "5.1 + Vhc + LFE2",
+        .config = {.independent = bed(640),
+                   .dependents = {{.bitrate_kbps = 320,
+                                   .acmod = Acmod::k1_0,
+                                   .lfe = true,
+                                   .chanmap = static_cast<std::uint16_t>(cm::kVhc | cm::kLfe2)}}},
+        .tones = {1000.0, 800.0, 1200.0, 600.0, 1400.0, 60.0, 2000.0, 150.0},
+        .speakers = {{Location::kLeft, 1000.0},
+                     {Location::kCentre, 800.0},
+                     {Location::kRight, 1200.0},
+                     {Location::kLeftSurround, 600.0},
+                     {Location::kRightSurround, 1400.0},
+                     {Location::kVhc, 2000.0},
+                     {Location::kLfe2, 150.0},
+                     {Location::kLfe, 60.0}}};
+
+    const auto rt = round_trip(layout, 4);
+    REQUIRE(rt.rendered.size() == layout.speakers.size());
+    REQUIRE(rt.layout.count == static_cast<int>(layout.speakers.size()));
+    REQUIRE(rt.substreams == 2);
+    for (std::size_t ch = 0; ch < layout.speakers.size(); ++ch) {
+        CAPTURE(ch, ac3::eac3::chanmap::name(layout.speakers[ch].location));
+        // Rendered order is Table E2.5's bit order (LFE2 at bit 14, before
+        // LFE at bit 15), so this also proves LFE2 is not silently aliased
+        // onto the bed's own LFE slot.
+        CHECK(rt.layout[static_cast<int>(ch)] == layout.speakers[ch].location);
+        CHECK(std::abs(dominant_freq_hz(rt.rendered[ch]) - layout.speakers[ch].tone_hz) < 10.0);
+    }
+}
+
 TEST_CASE("E-AC-3 round trips are near-transparent in every channel", "[eac3][decoder]") {
     // Real audio from frame 1 onward is the only input that can detect a
     // frame-layout error: with silence every bap is zero, so a stray bit lands

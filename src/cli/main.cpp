@@ -398,36 +398,18 @@ int run_silence(std::string_view out_path, std::uint32_t seconds, std::uint32_t 
 // One tone per CODED channel, for the synthetic generators. The frequencies
 // are deliberately spread and deliberately not harmonics of one another, so a
 // channel that lands in the wrong speaker is measurable rather than merely
-// suspected. The bed's values are mirrored in tests/test_eac3_decoder.cpp and
-// must not drift from them; a dependent's are chosen apart from the bed's for
-// the same reason - identical ones could not tell §E3.8.2's overwrite
-// happening apart from the dependent being ignored altogether.
-std::vector<double> layout_tones(plan::LayoutId id) {
-    const std::vector<double> bed = {1000.0, 800.0, 1200.0, 600.0, 1400.0, 60.0};
-    const std::vector<double> rear = {500.0, 1600.0, 400.0, 1800.0};
-    const std::vector<double> top = {2000.0, 2400.0, 2800.0, 3200.0};
-    std::vector<double> out;
-    switch (id) {
-        case plan::LayoutId::kMono: return {1000.0};
-        case plan::LayoutId::kStereo: return {1000.0, 1000.0};
-        case plan::LayoutId::k51: return bed;
-        case plan::LayoutId::k71:
-            out = bed;
-            out.insert(out.end(), rear.begin(), rear.end());
-            return out;
-        case plan::LayoutId::k512:
-            out = bed;
-            out.insert(out.end(), top.begin(), top.begin() + 2);
-            return out;
-        case plan::LayoutId::k514:
-            out = bed;
-            out.insert(out.end(), top.begin(), top.end());
-            return out;
-        case plan::LayoutId::k714:
-            out = bed;
-            out.insert(out.end(), rear.begin(), rear.end());
-            out.insert(out.end(), top.begin(), top.end());
-            return out;
+// suspected. One tone per CODED channel (coded_channels().size(), not the
+// smaller rendered count) - a bed channel a dependent replaces still needs
+// its own frequency, or nothing here could tell §E3.8.2's overwrite
+// happening apart from the dependent being ignored altogether. The specific
+// numbers mean nothing beyond being far enough apart to tell channels apart
+// by ear; test_eac3_decoder.cpp's per-layout round trips pick their own
+// frequencies independently rather than mirroring these.
+std::vector<double> layout_tones(const plan::ChannelPlan& cp) {
+    const auto coded = plan::coded_channels(cp);
+    std::vector<double> out(coded.size());
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        out[i] = 200.0 + 137.0 * static_cast<double>(i);
     }
     return out;
 }
@@ -453,22 +435,45 @@ std::uint64_t frame_count(std::uint32_t seconds) {
            ac3::kSamplesPerFrame;
 }
 
-// Reports a bad layout token against the set the codec can actually carry, so
-// asking AC-3 for 7.1.4 says which of the two things is wrong.
-std::optional<plan::LayoutId> layout_or_error(std::string_view name, plan::Codec codec) {
-    const auto id = plan::parse_layout(name);
-    if (!id) {
+// Sets `plan`'s channels from `name` and writes a human-readable label for
+// it into `label`, reporting a bad token against the set the codec can
+// actually carry (so asking AC-3 for 7.1.4 says which of the two things is
+// wrong) or false on anything neither a named layout nor a channel list
+// accepts. Tried in that order: a name recognised by parse_layout wins, so a
+// custom list can never shadow one of the seven presets.
+bool resolve_layout(std::string_view name, plan::Codec codec, plan::Plan& plan, std::string& label) {
+    if (const auto id = ac3::plan::parse_layout(name)) {
+        if (!ac3::plan::carries(codec, *id)) {
+            std::println(stderr, "error: {} cannot carry {} - {}", ac3::plan::codec_label(codec),
+                         ac3::plan::layout(*id).label,
+                         ac3::plan::describe(ac3::plan::PlanError::kLayoutNeedsEac3));
+            return false;
+        }
+        plan.layout = *id;
+        plan.custom_locations = std::nullopt;
+        label = std::string(ac3::plan::layout(*id).label);
+        return true;
+    }
+    const auto custom = ac3::plan::parse_channels(name);
+    if (!custom) {
         std::println(stderr, "error: unknown layout '{}' ({})", name,
-                     plan::layout_names(codec));
-        return std::nullopt;
+                     ac3::plan::layout_names(codec));
+        return false;
     }
-    if (!plan::carries(codec, *id)) {
-        std::println(stderr, "error: {} cannot carry {} - {}", plan::codec_label(codec),
-                     plan::layout(*id).label,
-                     plan::describe(plan::PlanError::kLayoutNeedsEac3));
-        return std::nullopt;
+    const auto allocated = ac3::eac3::chanmap::allocate(*custom);
+    if (!allocated) {
+        std::println(stderr, "error: channel selection '{}' is invalid - {}", name,
+                     ac3::eac3::chanmap::describe(allocated.error()));
+        return false;
     }
-    return id;
+    if (codec == ac3::plan::Codec::kAc3 && !allocated->dependents.empty()) {
+        std::println(stderr, "error: {} cannot carry '{}' - {}", ac3::plan::codec_label(codec),
+                     name, ac3::plan::describe(ac3::plan::PlanError::kLayoutNeedsEac3));
+        return false;
+    }
+    plan.custom_locations = *custom;
+    label = ac3::plan::format_channels(*custom);
+    return true;
 }
 
 int run_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_t bitrate,
@@ -479,23 +484,21 @@ int run_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_t bit
     // is not silently ignored here.
     const bool couple = couple_flag || (!layout.empty() && layout.back() == 'c');
     const std::string_view base = couple ? layout.substr(0, layout.size() - 1) : layout;
-    const auto id = layout_or_error(base, plan::Codec::kAc3);
-    if (!id) {
+
+    plan::Plan p{.codec = plan::Codec::kAc3, .bitrate_kbps = bitrate, .meta = meta.p};
+    std::string label;
+    if (!resolve_layout(base, plan::Codec::kAc3, p, label)) {
         return 1;
     }
-
-    plan::Plan p{.codec = plan::Codec::kAc3,
-                 .layout = *id,
-                 .bitrate_kbps = bitrate,
-                 .meta = meta.p};
     p.tools.coupling = couple;
     const auto config = plan::ac3_config(p);
+    const auto cp = plan::resolve(p);
 
     // A one- or two-channel layout is the frequency-sweep case the freq_hz
     // argument exists for; anything wider gets a tone per speaker instead,
     // because one frequency in six channels cannot show where it ended up.
-    auto tone_hz = layout_tones(*id);
-    if (plan::layout(*id).rendered <= 2) {
+    auto tone_hz = layout_tones(cp);
+    if (plan::rendered_channel_count(cp) <= 2) {
         std::ranges::fill(tone_hz, static_cast<double>(freq_hz));
     }
 
@@ -525,8 +528,7 @@ int run_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_t bit
     if (!write_frames(out_path, frames)) {
         return 1;
     }
-    std::println("wrote {} {} frames ({} kbps) to {}", count, plan::layout(*id).label,
-                 bitrate, out_path);
+    std::println("wrote {} {} frames ({} kbps) to {}", count, label, bitrate, out_path);
     print_channel_summary(meter);
     return 0;
 }
@@ -608,18 +610,16 @@ int run_mkv(std::string_view in_path, std::string_view out_path) {
 int run_eac3_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_t bitrate,
                   std::uint32_t freq_hz, std::uint32_t amplitude_pct, std::string_view layout,
                   const MetaOptions& meta) {
-    const auto id = layout_or_error(layout, plan::Codec::kEac3);
-    if (!id) {
+    plan::Plan p{.codec = plan::Codec::kEac3, .bitrate_kbps = bitrate, .meta = meta.p};
+    std::string label;
+    if (!resolve_layout(layout, plan::Codec::kEac3, p, label)) {
         return 1;
     }
-    const plan::Plan p{.codec = plan::Codec::kEac3,
-                       .layout = *id,
-                       .bitrate_kbps = bitrate,
-                       .meta = meta.p};
     const auto config = plan::eac3_config(p);
+    const auto cp = plan::resolve(p);
 
-    auto tone_hz = layout_tones(*id);
-    if (plan::layout(*id).rendered <= 2) {
+    auto tone_hz = layout_tones(cp);
+    if (plan::rendered_channel_count(cp) <= 2) {
         std::ranges::fill(tone_hz, static_cast<double>(freq_hz));
     }
     ac3::eac3::AccessUnitEncoder encoder{config};
@@ -649,8 +649,7 @@ int run_eac3_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_
     }
     std::println("wrote {} E-AC-3 {} access units ({} coded channels, {} substreams, "
                  "bsid 16) to {}",
-                 count, plan::layout(*id).label, nchans, config.dependents.size() + 1,
-                 out_path);
+                 count, label, nchans, config.dependents.size() + 1, out_path);
     return 0;
 }
 
@@ -682,7 +681,7 @@ std::optional<ac3::SampleRate> wav_sample_rate(std::uint32_t hz, std::string_vie
 
 // A source's channels routed onto a plan's coded channels, or a diagnosis.
 std::optional<plan::Routing> routing_or_error(const plan::Plan& p, std::size_t channels) {
-    auto routing = plan::route(p.layout, channels, p.meta.cmixlev, p.meta.surmixlev);
+    auto routing = plan::route(plan::resolve(p), channels, p.meta.cmixlev, p.meta.surmixlev);
     if (!routing) {
         std::println(stderr, "error: {} channels - {}", channels,
                      plan::describe(plan::PlanError::kNoSourceLayout));
@@ -693,12 +692,14 @@ std::optional<plan::Routing> routing_or_error(const plan::Plan& p, std::size_t c
 
 // Says what the routing did, so a run that quietly left half a layout silent
 // is visible rather than something to be discovered later on the meters.
-void print_routing(const plan::Plan& p, const plan::Routing& routing) {
+// `label` is whatever resolve_layout printed for this plan - a named
+// layout's label, or the channel list a custom selection was parsed from.
+void print_routing(const plan::Plan& p, const plan::Routing& routing, std::string_view label) {
     if (routing.is_permutation()) {
-        std::println("  source carried directly into {}", plan::layout(p.layout).label);
+        std::println("  source carried directly into {}", label);
         return;
     }
-    const auto names = plan::coded_channel_names(p.layout);
+    const auto names = plan::coded_channel_names(plan::resolve(p));
     std::string silent;
     for (int c = 0; c < routing.coded_channels; ++c) {
         bool fed = false;
@@ -710,8 +711,7 @@ void print_routing(const plan::Plan& p, const plan::Routing& routing) {
             silent += names[static_cast<std::size_t>(c)];
         }
     }
-    std::println("  {} source channels rendered onto {}", routing.source_channels,
-                 plan::layout(p.layout).label);
+    std::println("  {} source channels rendered onto {}", routing.source_channels, label);
     if (!silent.empty()) {
         std::println("  silent (the source carries nothing that belongs there): {}", silent);
     }
@@ -732,31 +732,32 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
     if (!sr) {
         return 1;
     }
-    // An unnamed layout follows the source, which is what this command did
-    // before it could be told otherwise.
-    std::optional<plan::LayoutId> id;
+    plan::Plan p{.codec = plan::Codec::kEac3,
+                 .sample_rate = *sr,
+                 .bitrate_kbps = bitrate,
+                 .meta = meta.p};
+    std::string label;
     if (layout.empty()) {
-        id = plan::layout_for_source(wav->channels.size());
+        // An unnamed layout follows the source, which is what this command
+        // did before it could be told otherwise.
+        const auto id = plan::layout_for_source(wav->channels.size());
         if (!id) {
             std::println(stderr, "error: {} channels - {}", wav->channels.size(),
                          plan::describe(plan::PlanError::kNoSourceLayout));
             return 1;
         }
-    } else if (id = layout_or_error(layout, plan::Codec::kEac3); !id) {
+        p.layout = *id;
+        label = std::string(plan::layout(*id).label);
+    } else if (!resolve_layout(layout, plan::Codec::kEac3, p, label)) {
         return 1;
     }
 
-    plan::Plan p{.codec = plan::Codec::kEac3,
-                 .layout = *id,
-                 .sample_rate = *sr,
-                 .bitrate_kbps = bitrate,
-                 .meta = meta.p};
     if (!tools_or_error(tools, p.tools)) {
         return 1;
     }
+    const auto cp = plan::resolve(p);
     if (p.meta.measure_dialnorm) {
-        const auto measured = measured_dialnorm(*wav, *sr, plan::bed_acmod(*id),
-                                                plan::bed_lfe(*id));
+        const auto measured = measured_dialnorm(*wav, *sr, cp.bed_acmod, cp.bed_lfe);
         if (!measured) {
             std::println(stderr, "error: no audio above the -70 LKFS absolute gate; "
                                  "pass dialnorm=<1..31> explicitly");
@@ -808,9 +809,9 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
     }
     std::println("encoded {} E-AC-3 access units ({} kbps, {} Hz, {}, {} coded channels, "
                  "tools: {}) to {}",
-                 frames.size(), bitrate, wav->sample_rate, plan::layout(*id).label, nchans,
+                 frames.size(), bitrate, wav->sample_rate, label, nchans,
                  plan::format_tools(p.tools), out_path);
-    print_routing(p, *routing);
+    print_routing(p, *routing, label);
     return 0;
 }
 
@@ -1260,12 +1261,16 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
     if (!sr) {
         return 1;
     }
-    // An unnamed layout follows the source, which is what this command did
-    // before it could be told otherwise. Naming one is how a stereo file
-    // reaches a 5.1 stream, or a 5.1 file gets folded down per §7.8.
-    std::optional<plan::LayoutId> id;
+    plan::Plan p{.codec = plan::Codec::kAc3,
+                 .sample_rate = *sr,
+                 .bitrate_kbps = bitrate,
+                 .meta = meta.p};
+    std::string label;
     if (layout.empty()) {
-        id = plan::layout_for_source(wav->channels.size());
+        // An unnamed layout follows the source, which is what this command
+        // did before it could be told otherwise. Naming one is how a stereo
+        // file reaches a 5.1 stream, or a 5.1 file gets folded down per §7.8.
+        const auto id = plan::layout_for_source(wav->channels.size());
         if (!id || !plan::carries(plan::Codec::kAc3, *id)) {
             std::println(stderr,
                          "error: encode handles 1 to 6 channels ({} given); no AC-3 coding "
@@ -1273,15 +1278,11 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
                          wav->channels.size());
             return 1;
         }
-    } else if (id = layout_or_error(layout, plan::Codec::kAc3); !id) {
+        p.layout = *id;
+        label = std::string(plan::layout(*id).label);
+    } else if (!resolve_layout(layout, plan::Codec::kAc3, p, label)) {
         return 1;
     }
-
-    plan::Plan p{.codec = plan::Codec::kAc3,
-                 .layout = *id,
-                 .sample_rate = *sr,
-                 .bitrate_kbps = bitrate,
-                 .meta = meta.p};
     p.tools.coupling = couple;
     if (const auto bad = plan::validate(p)) {
         std::println(stderr, "error: {}", plan::describe(*bad));
@@ -1296,8 +1297,8 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
     // gets the OUTPUT layout, because the BS.1770 channel weighting depends on
     // which coded positions are surrounds.
     if (p.meta.measure_dialnorm) {
-        const auto measured =
-            measured_dialnorm(*wav, *sr, plan::bed_acmod(*id), plan::bed_lfe(*id));
+        const auto cp = plan::resolve(p);
+        const auto measured = measured_dialnorm(*wav, *sr, cp.bed_acmod, cp.bed_lfe);
         if (!measured) {
             std::println(stderr,
                          "error: no audio above the -70 LKFS absolute gate; "
@@ -1360,7 +1361,7 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
     std::println("encoded {} frames ({} kbps, {} Hz, {}) to {}", frames.size(), bitrate,
                  wav->sample_rate, ac3::analysis::layout_name(config.acmod, config.lfe),
                  out_path);
-    print_routing(p, *routing);
+    print_routing(p, *routing, label);
     print_channel_summary(meter);
     return 0;
 }
@@ -1847,14 +1848,11 @@ int run_play(std::string_view in_path, int device_index) {
 
 int run_eac3_silence(std::string_view out_path, std::uint32_t seconds, std::uint32_t bitrate,
                      std::string_view layout, const MetaOptions& meta) {
-    const auto id = layout_or_error(layout, plan::Codec::kEac3);
-    if (!id) {
+    plan::Plan p{.codec = plan::Codec::kEac3, .bitrate_kbps = bitrate, .meta = meta.p};
+    std::string label;
+    if (!resolve_layout(layout, plan::Codec::kEac3, p, label)) {
         return 1;
     }
-    const plan::Plan p{.codec = plan::Codec::kEac3,
-                       .layout = *id,
-                       .bitrate_kbps = bitrate,
-                       .meta = meta.p};
     const auto unit = ac3::eac3::build_silent_access_unit(plan::eac3_config(p));
     if (!unit) {
         std::println(stderr, "error: invalid E-AC-3 configuration");
@@ -1868,8 +1866,7 @@ int run_eac3_silence(std::string_view out_path, std::uint32_t seconds, std::uint
     }
     std::println("wrote {} silent E-AC-3 {} access units ({} substreams, "
                  "{} bytes each, bsid 16) to {}",
-                 count, plan::layout(*id).label, unit->substream_count(), unit->bytes.size(),
-                 out_path);
+                 count, label, unit->substream_count(), unit->bytes.size(), out_path);
     return 0;
 }
 
@@ -2078,12 +2075,20 @@ void print_usage() {
         std::println("        {} renders {} speakers from {} coded channels", info.name,
                      info.rendered, info.transmitted);
     }
-    std::println("        For 'sine' and 'eac3-sine' each speaker gets its own tone");
-    std::println("        (L 1000, C 800, R 1200, Ls 600, Rs 1400, LFE 60 Hz); append 'c'");
-    std::println("        to a 'sine' layout (stereoc, 51c) to enable channel coupling.");
+    std::println("        For 'sine' and 'eac3-sine' each speaker gets its own tone; append");
+    std::println("        'c' to a 'sine' layout (stereoc, 51c) to enable channel coupling.");
     std::println("        For 'encode' and 'eac3-encode' it names the OUTPUT layout: a");
     std::println("        source narrower than it leaves the channels it lacks silent, and");
     std::println("        a wider one folds down per §7.8 using cmixlev/surmixlev.");
+    std::println("");
+    std::println("        [layout] also takes a comma-separated Table E2.5 location list");
+    std::println("        instead of one of the names above, for anything Annex E allows");
+    std::println("        that has no preset: e.g. L,C,R,LFE,Vhl,Vhr or L,C,R,LFE,LFE2,Vhc.");
+    std::println("        AC-3 accepts one too, as long as it needs no dependent substream");
+    std::println("        (e.g. L,R,Cs or L,C,R,Cs - Table 5.8 modes no preset names).");
+    std::println("        Locations: L C R Ls Rs Lc Rc Lrs Rrs Cs Ts Lsd Rsd Lw Rw Vhl Vhr");
+    std::println("        Vhc Lts Rts LFE2 LFE - a paired location (Lc/Rc, Lrs/Rrs, Lsd/Rsd,");
+    std::println("        Lw/Rw, Vhl/Vhr, Lts/Rts) must be given both halves.");
     std::println("");
     std::println("atmos: objects orbit the room at different heights and rates;");
     std::println("       atmos-encode makes each channel of a real file an object instead.");
