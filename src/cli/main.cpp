@@ -311,7 +311,7 @@ bool prepare_dual_mono_source(ac3::io::WavData& wav, std::string_view layout,
                      wav.channels.size());
         return false;
     }
-    const auto second = ac3::io::read_wav(std::string{in2_path});
+    auto second = ac3::io::read_wav(std::string{in2_path});
     if (!second) {
         std::println(stderr, "error: {}: {}", in2_path, ac3::io::describe(second.error()));
         return false;

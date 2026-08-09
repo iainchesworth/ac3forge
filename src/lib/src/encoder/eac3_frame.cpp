@@ -982,6 +982,9 @@ FrameMetadata derive_metadata(const FrameConfig& config,
             block_view[0] = channels[1].subspan(
                 static_cast<std::size_t>(blk) * kSamplesPerBlock, kSamplesPerBlock);
             const double level = meta::level_dbfs(std::span{block_view});
+            // validate() requires dialnorm2 whenever acmod is kDualMono, and
+            // dual_mono is exactly that condition, checked above.
+            // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
             out.dynrng2[static_cast<std::size_t>(blk)] =
                 (*range2)->next(level, *config.dialnorm2);
         }
@@ -1010,6 +1013,9 @@ FrameMetadata derive_metadata(const FrameConfig& config,
     if (dual_mono && heavy2 && *heavy2) {
         const double peak2 =
             meta::channel_peak_dbfs(std::span<const double>(history[1]), channels[1]);
+        // validate() requires dialnorm2 whenever acmod is kDualMono, and
+        // dual_mono is exactly that condition, checked above.
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         out.compr2 = (*heavy2)->next(peak2, *config.dialnorm2);
     }
     return out;
