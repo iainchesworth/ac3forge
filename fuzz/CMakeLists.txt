@@ -50,9 +50,16 @@ add_custom_target(ac3forge_fuzzers)
 # on top of what it already inherited from ac3::forge above: that flag links
 # libFuzzer's runtime and its LLVMFuzzerTestOneInput-driven main, which must
 # exist exactly once per executable and never inside the library itself.
+#
+# ac3::warnings is named explicitly rather than inherited: ac3forge links it
+# PRIVATE, as every first-party target does, so it governs that library's own
+# translation units and stops there. Without this the harness sources would be
+# the one corner of the project compiling without the strict set - and a
+# harness is exactly where a sloppy size_t-to-int narrowing would quietly
+# reshape the input a fuzzer thinks it is passing in.
 function(ac3forge_add_fuzzer name)
     add_executable(${name} "${name}.cpp")
-    target_link_libraries(${name} PRIVATE ac3::forge)
+    target_link_libraries(${name} PRIVATE ac3::forge ac3::warnings)
     target_compile_options(${name} PRIVATE -fsanitize=fuzzer)
     target_link_options(${name} PRIVATE -fsanitize=fuzzer)
     set_target_properties(${name} PROPERTIES
