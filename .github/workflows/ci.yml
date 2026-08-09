@@ -305,6 +305,107 @@ jobs:
       persist_quality_trend: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') }}
       quality_trend_branch: ${{ github.ref_name }}
 
+  # FFmpeg as an independent oracle (CONTRIBUTING.md's "Oracles" list, #2),
+  # automated - previously a manual/developer-only practice. Builds ac3cli
+  # only (linux-llvm preset; no GUI, and build-and-test already covers
+  # ctest), then runs three layers against it, all against FFmpeg and all
+  # already exiting non-zero on their own failure - this job's only new work
+  # is wiring them up, pinning FFmpeg, and gating on the result. Answers a
+  # different question from _build.yml's gold-reference gate (every leg,
+  # one fixed sample, ac3cli's own decoder vs FFmpeg's - output *quality* and
+  # cross-platform reproducibility): this leg checks that every layout,
+  # Annex E tool token and metadata option in the encoder's surface produces
+  # a structurally valid stream at all - output *correctness* across the
+  # full option space, which one fixed sample can never exercise:
+  #   - conformance: scripts/run-codec-matrix.sh's FFmpeg strict-decode
+  #     additions, across the layout/tool/metadata matrix. Skips 7.1.4 and
+  #     7.1.4+Annex-E-tool combinations on purpose - see the script's own
+  #     header comment and README.md's Verification gaps table for why no
+  #     oracle exists for either.
+  #   - metadata: tools/check_drc.py (dynrng/compr/downmix/dialnorm) and
+  #     tools/check_coupling.py + check_coupling_level.py (coupling envelope
+  #     and absolute level), all discriminating checks that compare a decode
+  #     which applies the metadata against one that doesn't.
+  #   - fidelity: tools/quality_race.py's `ci` mode, a numeric SNR/LSD floor
+  #     per E-AC-3 tool variant (stereo and 5.1) plus AC-3, set well below
+  #     today's measured numbers (README.md's own SNR table) so it trips on
+  #     a genuine regression without chasing normal drift.
+  #   - coverage: tools/check_matrix_coverage.py, a different question from
+  #     the three layers above - not "is the output correct" but "does
+  #     anything exercise this at all". Reads the CLI's own canonical option
+  #     lists (usage text, and the "unknown layout"/"unknown tool set" error
+  #     messages a bad argument hits) and fails if a layout, Annex E tool
+  #     token or command the CLI accepts today is never mentioned in
+  #     run-codec-matrix.sh - so a new option landing in the library without
+  #     a matching matrix entry fails CI instead of shipping unvalidated.
+  #     Caught exactly this for real while this job was being built: E-AC-3
+  #     VBR support landed with zero matrix coverage, on this same branch.
+  # FFmpeg is pinned to the exact ubuntu:26.04 archive build so its behaviour
+  # cannot silently drift out from under the codec-matrix decodes or the
+  # fidelity floors above - the same discipline this project already applies
+  # to the vcpkg commit and the LLVM/GCC versions.
+  ffmpeg-validate:
+    name: FFmpeg Validate
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    container: ubuntu:26.04
+    steps:
+      - name: Bootstrap container
+        run: |
+          set -eu
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends \
+            build-essential ca-certificates cmake curl git gnupg lsb-release \
+            ninja-build pkg-config python3-pip software-properties-common \
+            tar unzip wget zip \
+            ffmpeg=7:8.0.1-3ubuntu2
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install LLVM 21
+        run: bash .github/toolchain/03-llvm-toolchain.sh
+
+      - uses: ./.github/actions/setup-vcpkg
+        with:
+          vcpkg-commit: "eaca4a577b6b678c6e10252754b6988a61746c19"
+
+      - name: Install numpy
+        run: pip install --quiet --break-system-packages numpy
+
+      - name: Report ffmpeg version
+        run: ffmpeg -version | head -1
+
+      - name: Configure
+        run: cmake --preset config-linux-llvm
+
+      - name: Build ac3cli
+        run: cmake --build --preset build-linux-llvm --target ac3cli -- -k 0
+
+      - name: Codec matrix against the FFmpeg oracle
+        run: bash scripts/run-codec-matrix.sh build/config-linux-llvm/bin/ac3cli
+
+      - name: Metadata checks against FFmpeg (dynrng, compr, downmix, dialnorm)
+        run: python3 tools/check_drc.py --cli build/config-linux-llvm/bin/ac3cli
+
+      - name: Coupling checks against FFmpeg (envelope and absolute level)
+        env:
+          AC3CLI: build/config-linux-llvm/bin/ac3cli
+        run: |
+          python3 tools/check_coupling.py
+          python3 tools/check_coupling_level.py
+
+      - name: Fidelity gate against FFmpeg (SNR/LSD floors)
+        env:
+          AC3CLI: build/config-linux-llvm/bin/ac3cli
+        run: python3 tools/quality_race.py ci
+
+      - name: Matrix coverage (every CLI option is exercised somewhere)
+        run: python3 tools/check_matrix_coverage.py --cli build/config-linux-llvm/bin/ac3cli
+
   # Branch protection points at this one check rather than at each matrix leg,
   # so adding or renaming a leg does not need the protection rule updated.
   # Experimental legs cannot reach it: continue-on-error means the reusable
@@ -312,7 +413,7 @@ jobs:
   ci-status:
     name: CI Status
     if: always()
-    needs: [ branch-name, no-quarantine, changes, platform-macros, static-analysis, build-and-test ]
+    needs: [ branch-name, no-quarantine, changes, platform-macros, static-analysis, build-and-test, ffmpeg-validate ]
     runs-on: ubuntu-latest
     steps:
       - name: Gate on required job results
@@ -326,12 +427,14 @@ jobs:
           # 'skipped' on a docs-only change, which is a pass, not a failure.
           R_TIDY: ${{ needs.static-analysis.result }}
           R_BUILD: ${{ needs.build-and-test.result }}
+          R_FFMPEG: ${{ needs.ffmpeg-validate.result }}
         run: |
           set -euo pipefail
           fail=0
           for pair in "branch-name:$R_BRANCH" "no-quarantine:$R_QUARANTINE" \
                       "changes:$R_CHANGES" "platform-macros:$R_MACROS" \
-                      "static-analysis:$R_TIDY" "build-and-test:$R_BUILD"; do
+                      "static-analysis:$R_TIDY" "build-and-test:$R_BUILD" \
+                      "ffmpeg-validate:$R_FFMPEG"; do
             job="${pair%%:*}"; result="${pair#*:}"
             echo "  $job: $result"
             if [ "$result" = "failure" ] || [ "$result" = "cancelled" ]; then
