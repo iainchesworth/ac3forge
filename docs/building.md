@@ -100,6 +100,18 @@ about all eleven. There are also six `ci-<platform>` `workflowPresets` (Release 
 asan-ubsan one, which is Debug-only) that chain configure→build→test in one
 `cmake --workflow --preset ci-windows-msvc` call; that is exactly what CI itself runs.
 
+There is a twelfth trio, `config-linux-gcc-coverage` / `build-linux-gcc-coverage` /
+`test-linux-gcc-coverage`, the same shape as the asan-ubsan one: an instrumented variant of
+`linux-gcc`, Debug-only, not a platform/compiler pair. It inherits a `coverage` fragment setting
+`AC3FORGE_ENABLE_COVERAGE=ON` (see `cmake/Coverage.cmake`, GCC/Clang's `--coverage` gcov
+instrumentation; other compilers just warn and skip it) plus `AC3FORGE_BUILD_CLI=OFF` and
+`AC3FORGE_BUILD_EXAMPLES=OFF` — `ac3cli` and the seven `examples/` executables also link the
+now-instrumented `ac3::forge`, and turning them off avoids having to wire `ac3::coverage` into
+them too just to resolve its gcov runtime symbols at link time for targets nobody is measuring
+coverage of anyway. `.github/workflows/ci.yml`'s `coverage` job runs `gcovr` over `src/lib/*`
+after `ctest` and gates on line/branch percentage — see that job's own comment for the current
+thresholds and why they sit below the measured baseline.
+
 Anything machine-specific belongs in `CMakeUserPresets.json`, which is gitignored. The pattern
 is a hidden `local` preset carrying the paths, inherited alongside the checked-in fragments:
 
@@ -151,6 +163,7 @@ platform/compiler fragment matches your machine.
 | `AC3FORGE_BUILD_EXAMPLES` | `ON` | Build `examples/`, and register them as tests. |
 | `AC3FORGE_WITH_ALSA` | `AUTO` | Linux only. `AUTO` builds the ALSA audio backend when libasound's headers are present; `ON` requires them; `OFF` never builds it. See [Linux audio](#linux-audio). |
 | `AC3FORGE_SANITIZERS` | empty | Comma-separated `-fsanitize=` value, e.g. `address,undefined` — see `cmake/Sanitizers.cmake`. Empty is a no-op; GCC/Clang only, MSVC is a configure error. Set via the `-asan-ubsan` preset above rather than by hand. |
+| `AC3FORGE_ENABLE_COVERAGE` | `OFF` | `--coverage` gcov instrumentation over every target it's linked into — see `cmake/Coverage.cmake`. Off is a no-op; GCC/Clang only, other compilers get a configure-time warning and no instrumentation. Set via the `-coverage` preset above rather than by hand. |
 | `AC3FORGE_BUILD_FUZZERS` | `OFF` | Build the libFuzzer harnesses under `fuzz/`. Clang only (GCC and MSVC ship no libFuzzer); use `fuzz/run.sh` rather than this option directly — it configures a dedicated `build/fuzz` with the right compiler. See [`fuzz/README.md`](https://github.com/iainchesworth/ac3forge/blob/main/fuzz/README.md). |
 | `AC3FORGE_QUARANTINE_SIGNER` | `OFF` | Non-clean-room, local-only. Requires a gitignored `src/quarantine/` overlay that is never committed (a CI job fails the build if it ever is) and embeds a key extracted from Dolby's binary. A normal build neither sees nor references it — listed here only because the option itself is public in `CMakeLists.txt`. |
 
@@ -412,17 +425,21 @@ also runs clean headless (`QT_QPA_PLATFORM=offscreen`), encoding real audio and 
 real QML channel meters. See [Linux audio](#linux-audio) for what the ALSA verification did,
 and did not (real hardware), prove.
 
-CI (`.github/workflows/ci.yml`) runs and *requires* windows-msvc, windows-llvm, linux-gcc,
-linux-llvm, linux-llvm-asan-ubsan, macos-llvm, static-analysis (clang-tidy) and ffmpeg-validate
-on every push — the two Linux legs install the same Qt6/ALSA packages and build/smoke-test the
-GUI too. ffmpeg-validate is a separate, CLI-only linux-llvm build that runs FFmpeg as an
-independent oracle against the full layout/tool/metadata option space (see
+linux-llvm, linux-llvm-asan-ubsan, macos-llvm, static-analysis (clang-tidy), coverage (gcovr over
+`src/lib`, via `config-linux-gcc-coverage`) and ffmpeg-validate on every push — the two Linux legs
+install the same Qt6/ALSA packages and build/smoke-test the GUI too. ffmpeg-validate is a
+separate, CLI-only linux-llvm build that runs FFmpeg as an independent oracle against the full
+layout/tool/metadata option space (see
 [CONTRIBUTING.md's Oracles section](https://github.com/iainchesworth/ac3forge/blob/main/CONTRIBUTING.md#oracles)) — a different question from the
 [gold-reference gate](#gold-reference-correctness-gate) below, which every leg runs against one
 fixed sample to check output *quality*; ffmpeg-validate instead checks that every option
 combination produces a *structurally correct* stream at all, plus a numeric fidelity floor for
 the Annex E tools the gold-reference gate cannot reach (its own decode side refuses them). No leg
 remains experimental.
+
+The coverage job's own gate — 81.3% line / 72.0% branch measured on a real GitHub Actions run,
+80%/70% required — uses the same GCC 15 pin as the other Linux legs; see the `coverage` row in
+`ci.yml`'s own status comment.
 
 No macOS host exists for this project, so `config-macos-llvm`/`config-macos-llvm-debug` are only
 ever exercised by CI (`macos-latest`, Apple Silicon) — never locally. That CI leg is green:

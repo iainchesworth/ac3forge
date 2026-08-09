@@ -125,9 +125,11 @@ void skip_informational_metadata(BitReader& r, const Bsi& bsi) {
     }
     if (r.read(1) != 0) r.skip(5 + 2 + 1);  // mixlevel, roomtyp, adconvtyp
     if (acmod == 0x0 && r.read(1) != 0) r.skip(5 + 2 + 1);
-    // sourcefscod is gated on fscod < 0x3, which always holds here: the half
-    // sample rates are refused before this is reached.
-    r.skip(1);
+    // §E2.3.2.6: sourcefscod is present only when fscod != 0x3 - a fscod2
+    // frame never carries it at all.
+    if (!is_reduced_rate(bsi.sample_rate)) {
+        r.skip(1);
+    }
 }
 
 std::expected<Bsi, DecodeError> parse_bsi(BitReader& r, std::size_t frame_bytes) {
@@ -147,16 +149,28 @@ std::expected<Bsi, DecodeError> parse_bsi(BitReader& r, std::size_t frame_bytes)
     }
     const auto fscod = r.read(2);
     if (fscod == 0x3) {
-        // fscod2 selects 24, 22.05 or 16 kHz. The core's SampleRate has no
-        // room for them and every table it indexes is three columns wide.
-        return std::unexpected(DecodeError::kUnsupported);
+        // §E2.3.1.3: fscod2 replaces numblkscod outright when it is used - a
+        // reduced-rate frame is implicitly always six blocks, so numblkscod's
+        // bits are never sent. Modelling that as numblkscod == 0x3 (rather
+        // than adding a parallel "six blocks, no field" flag) means every
+        // downstream numblkscod check below - which is really asking "is this
+        // the always-six-blocks case?" - keeps working unmodified.
+        const auto fscod2 = r.read(2);
+        const auto rate = sample_rate_from_fscod2(fscod2);
+        if (!rate) {
+            return std::unexpected(DecodeError::kReservedValue);
+        }
+        bsi.sample_rate = *rate;
+        bsi.numblkscod = 0x3;
+    } else {
+        bsi.sample_rate = static_cast<SampleRate>(fscod);
+        // Table E2.4. Fewer than six blocks shortens the syncframe and flips
+        // four of Table E1.2/E1.3's implied values, all of which fall out of
+        // nblks below. Nothing in this repo emits it and neither does
+        // FFmpeg's encoder, so unlike the six-block path it is spec-derived
+        // rather than measured.
+        bsi.numblkscod = static_cast<int>(r.read(2));
     }
-    bsi.sample_rate = static_cast<SampleRate>(fscod);
-    // Table E2.4. Fewer than six blocks shortens the syncframe and flips four
-    // of Table E1.2/E1.3's implied values, all of which fall out of nblks
-    // below. Nothing in this repo emits it and neither does FFmpeg's encoder,
-    // so unlike the six-block path it is spec-derived rather than measured.
-    bsi.numblkscod = static_cast<int>(r.read(2));
     bsi.acmod = static_cast<Acmod>(r.read(3));
     bsi.lfe = r.read(1) != 0;
     const auto bsid = static_cast<int>(r.read(5));

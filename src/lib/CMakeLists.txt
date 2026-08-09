@@ -44,6 +44,7 @@ set(AC3FORGE_BUILD_TARGET "${AC3FORGE_BUILD_OS} ${AC3FORGE_BUILD_ARCH} (${AC3FOR
 
 # Generate once at configure time so the header exists for the first build.
 set(AC3FORGE_VERSION "${PROJECT_VERSION}")
+set(AC3FORGE_VERSION_FULL "${PROJECT_VERSION_FULL}")
 set(SRC "${AC3FORGE_VERSION_TEMPLATE}")
 set(DST "${AC3FORGE_VERSION_HEADER}")
 set(WORKDIR "${PROJECT_SOURCE_DIR}")
@@ -56,6 +57,7 @@ add_custom_target(ac3forge_version ALL
     BYPRODUCTS "${AC3FORGE_VERSION_HEADER}"
     COMMAND "${CMAKE_COMMAND}"
         "-DAC3FORGE_VERSION=${PROJECT_VERSION}"
+        "-DAC3FORGE_VERSION_FULL=${PROJECT_VERSION_FULL}"
         "-DAC3FORGE_BUILD_TARGET=${AC3FORGE_BUILD_TARGET}"
         "-DSRC=${AC3FORGE_VERSION_TEMPLATE}"
         "-DDST=${AC3FORGE_VERSION_HEADER}"
@@ -106,7 +108,7 @@ target_include_directories(ac3forge
 
 target_compile_features(ac3forge PUBLIC cxx_std_23)
 
-target_link_libraries(ac3forge PRIVATE ac3::warnings)
+target_link_libraries(ac3forge PRIVATE ac3::warnings ac3::coverage)
 
 # ---------------------------------------------------------------------------
 # The platform tree.

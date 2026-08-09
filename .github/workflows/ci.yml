@@ -45,6 +45,15 @@
 #                                     exercises encode/decode paths, and no
 #                                     codec source changed
 #   static-analysis (tidy)   GREEN    .clang-tidy's curated set, clean baseline
+#   coverage                 GREEN    81.3% line / 72.0% branch over src/lib
+#                                     (ac3::forge only), gated at 80%/70% -
+#                                     real GitHub Actions run (gcc 15.2.0,
+#                                     ubuntu:26.04 container). A prior WSL2
+#                                     measurement came back a couple of points
+#                                     higher on both axes - close but not
+#                                     identical, and this real-CI number is
+#                                     the one to trust. See the job's own
+#                                     comment for why the gate sits below it
 #   macos-llvm               GREEN    256/256 tests pass (real GitHub Actions
 #                                     run, not WSL2/local - this project has
 #                                     no Mac). First-ever run hit one genuine,
@@ -283,6 +292,94 @@ jobs:
             -warnings-as-errors='*' \
             'src/(lib|cli|matroska)/.*\.cpp'
 
+  # ac3tests coverage over ac3::forge (src/lib only - the library is what was
+  # asked for; src/cli, src/gui and src/matroska are out of scope and unmeasured).
+  # config-linux-gcc-coverage (CMakePresets.json) builds just the library and
+  # its test suite - AC3FORGE_BUILD_CLI/EXAMPLES are off there specifically so
+  # ac3cli and the seven example executables, which also link the now-instrumented
+  # ac3::forge, don't need ac3::coverage wired into them too just to resolve its
+  # gcov runtime symbols at link time (see cmake/Coverage.cmake).
+  #
+  # --fail-under-line 80 / --fail-under-branch 70 are deliberately NOT the
+  # 80/80 gate a sibling project (CountdownSolver) uses for the same setup:
+  # this job's own first real GitHub Actions run (gcc 15.2.0, matching the
+  # linux-gcc leg's pin) came back 81.3% line / 72.0% branch, and block
+  # switching, delta bit allocation, half sample rate and dual mono support
+  # are all landing on this project right now (see docs/RESEARCH.md's own
+  # status). Both thresholds sit a few points under that measured baseline on
+  # purpose, so ordinary in-flight churn does not immediately trip the gate,
+  # while a real coverage regression still fails the job. Raise both as the
+  # suite's own coverage grows rather than leaving the headroom in place
+  # indefinitely.
+  #
+  # A pre-merge WSL2 measurement on the same toolchain pin came back a couple
+  # of points higher on both axes (close, not identical - environment-
+  # specific gcov/header-instantiation differences are expected); the real
+  # hosted run above is the number this gate is actually calibrated against.
+  coverage:
+    name: Coverage (Linux, GCC)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    container: ubuntu:26.04
+    steps:
+      - name: Bootstrap container
+        run: |
+          set -eu
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends \
+            build-essential ca-certificates cmake curl git gnupg libasound2-dev lsb-release \
+            ninja-build pkg-config python3-pip software-properties-common tar unzip wget zip
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install GCC 15
+        run: bash .github/toolchain/02-gcc-toolchain.sh
+
+      - uses: ./.github/actions/setup-vcpkg
+        with:
+          vcpkg-commit: "eaca4a577b6b678c6e10252754b6988a61746c19"
+
+      # ubuntu:26.04's python3-pip enforces PEP 668 (no bare `pip install` at
+      # system scope) - --break-system-packages is safe here specifically
+      # because this container is thrown away at the end of the job, unlike a
+      # real machine where that flag risks the system's own Python tooling.
+      - name: Install gcovr
+        run: pip install --quiet --break-system-packages gcovr
+
+      - name: Configure
+        shell: bash
+        run: cmake --preset config-linux-gcc-coverage
+
+      - name: Build
+        shell: bash
+        run: cmake --build --preset build-linux-gcc-coverage -- -k 0
+
+      - name: Test
+        shell: bash
+        run: ctest --preset test-linux-gcc-coverage
+
+      - name: Coverage report + gate
+        shell: bash
+        run: >
+          gcovr --root . --filter 'src/lib/.*'
+          --gcov-executable gcov-15
+          --exclude-throw-branches --exclude-unreachable-branches
+          --gcov-ignore-errors=no_working_dir_found
+          --object-directory build/config-linux-gcc-coverage
+          --print-summary --html-details build/coverage.html
+          --fail-under-line 80 --fail-under-branch 70
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-report
+          path: build/coverage*.html
+
   build-and-test:
     name: Build & Test
     needs: changes
@@ -413,7 +510,7 @@ jobs:
   ci-status:
     name: CI Status
     if: always()
-    needs: [ branch-name, no-quarantine, changes, platform-macros, static-analysis, build-and-test, ffmpeg-validate ]
+    needs: [ branch-name, no-quarantine, changes, platform-macros, static-analysis, coverage, build-and-test, ffmpeg-validate ]
     runs-on: ubuntu-latest
     steps:
       - name: Gate on required job results
@@ -426,6 +523,7 @@ jobs:
           R_MACROS: ${{ needs.platform-macros.result }}
           # 'skipped' on a docs-only change, which is a pass, not a failure.
           R_TIDY: ${{ needs.static-analysis.result }}
+          R_COVERAGE: ${{ needs.coverage.result }}
           R_BUILD: ${{ needs.build-and-test.result }}
           R_FFMPEG: ${{ needs.ffmpeg-validate.result }}
         run: |
@@ -433,8 +531,8 @@ jobs:
           fail=0
           for pair in "branch-name:$R_BRANCH" "no-quarantine:$R_QUARANTINE" \
                       "changes:$R_CHANGES" "platform-macros:$R_MACROS" \
-                      "static-analysis:$R_TIDY" "build-and-test:$R_BUILD" \
-                      "ffmpeg-validate:$R_FFMPEG"; do
+                      "static-analysis:$R_TIDY" "coverage:$R_COVERAGE" \
+                      "build-and-test:$R_BUILD" "ffmpeg-validate:$R_FFMPEG"; do
             job="${pair%%:*}"; result="${pair#*:}"
             echo "  $job: $result"
             if [ "$result" = "failure" ] || [ "$result" = "cancelled" ]; then

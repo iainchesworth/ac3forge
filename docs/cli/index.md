@@ -18,8 +18,10 @@ ac3cli
 ac3cli --version
 ```
 
-Prints the semantic version plus git provenance — commit, branch, and a dirty flag — stamped in
-at build time by `cmake/GenerateVersion.cmake`:
+Prints the semantic version plus git provenance — commit, branch, and a dirty flag. The version
+itself is derived from the nearest reachable `v*` git tag at configure time (see
+[Releasing](../releasing.md) and `cmake/GitVersionDerivation.cmake`); the rest is
+stamped in at build time by `cmake/GenerateVersion.cmake`:
 
 ```
 ac3forge 0.2.0

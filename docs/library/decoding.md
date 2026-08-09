@@ -67,7 +67,7 @@ decoder as a check on the encoder: a test can assert on the `dynrng` words the e
 
 What both decoders refuse, cleanly, rather than mis-decoding: block switching, delta bit
 allocation. The E-AC-3 decoder additionally refuses Annex E coupling, spectral extension, AHT,
-transient pre-noise processing, and `fscod2` half sample rates.
+and transient pre-noise processing.
 
 Dual mono (`acmod` 0, "1+1") decodes on both: it's two independent single-channel programmes
 sharing one syncframe rather than a channel layout, so `DecodedFrame`/`DecodedSubstream` carry a
@@ -76,6 +76,10 @@ from its own words — Ch2 is never affected by Ch1's compression or vice versa.
 `Eac3Decoder::decode_access_unit`'s `layout` comes back empty for it (`DecodedAccessUnit::acmod ==
 kDualMono`), since there's no Table E2.5 location for "the second programme" to render onto — the
 two channels come back in coded order (Ch1, Ch2) instead.
+
+`fscod2` (the Annex E half sample rates — 24, 22.05, 16 kHz) is decoded like any other rate: the
+reduced rate reuses the same bit-allocation tables as its double-rate parent (§E2.3.1.4), so
+nothing else about decoding changes.
 
 ---
 
