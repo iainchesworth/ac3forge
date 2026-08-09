@@ -112,12 +112,31 @@ E-AC-3 can describe larger layouts too — 7.1 and beyond — described in the n
 
 ## Bitrate
 
-ac3forge encodes **CBR** (constant bit rate) only — no variable bit rate. Every frame of a
-given stream spends the same number of bits, chosen from the 19 nominal rates the standard
-defines, from 32 kbps up to 640 kbps. As with any lossy compressed format, the general rule
-holds: a higher bitrate means more bits are spent describing each second of audio, which
-generally means better quality, at the cost of a larger file or a bigger slice of a broadcast
-pipe's bandwidth.
+**AC-3 is CBR (constant bit rate) only.** Every frame of an AC-3 stream spends the same number
+of bits, chosen from the 19 nominal rates the standard defines, from 32 kbps up to 640 kbps —
+`frmsizecod` is a lookup into that fixed table, so there is no way to say anything else. As with
+any lossy compressed format, the general rule holds: a higher bitrate means more bits are spent
+describing each second of audio, which generally means better quality, at the cost of a larger
+file or a bigger slice of a broadcast pipe's bandwidth.
+
+**E-AC-3 additionally supports VBR (variable bit rate).** Unlike AC-3, E-AC-3 states its frame
+size directly (`frmsiz`, an 11-bit word count) rather than indexing a table, so nothing stops a
+frame from being a different size than the one before it. ac3forge's E-AC-3 encoder can use this
+either way:
+
+- **CBR** (the default): every frame is sized from a fixed `bitrate_kbps`, same as AC-3.
+- **VBR**: a *quality* target (0–1) replaces the fixed rate, and each frame's size follows how
+  much the content actually needs — a quiet passage produces a smaller frame than a busy one at
+  the same quality. Optional `min_kbps`/`max_kbps` bounds cap how far that can drift, the way
+  `-b`/`-B` bound LAME's own VBR mode.
+
+Quality is encoder-relative, not a perceptual scale that means the same thing across encoders —
+and it is **not linear in bit cost**: masking-model bit allocation spends roughly twice the bits
+for a fixed step up in precision, so cost rises steeply in the top part of the quality range. A
+high quality with no `max_kbps` bound will often ask for more bits than any legal E-AC-3 frame
+can hold at all for ordinary multi-channel material, and the encoder reports that plainly rather
+than silently truncating — pairing a high quality with a `max_kbps` ceiling is the normal way to
+use it. AC-3 has no equivalent: its frame size cannot vary at all.
 
 ## What E-AC-3 adds over AC-3
 

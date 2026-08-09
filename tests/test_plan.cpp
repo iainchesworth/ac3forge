@@ -227,6 +227,18 @@ TEST_CASE("AC-3 takes only the Table 5.18 rates") {
     CHECK_FALSE(ac3::plan::validate(plan).has_value());
 }
 
+TEST_CASE("VBR is refused to AC-3 rather than silently ignored") {
+    ac3::plan::Plan plan{.codec = ac3::plan::Codec::kAc3,
+                         .vbr = ac3::eac3::VbrConfig{.quality = 0.5}};
+    const auto error = ac3::plan::validate(plan);
+    REQUIRE(error.has_value());
+    CHECK(*error == ac3::plan::PlanError::kVbrNeedsEac3);
+    // AC-3's frame size indexes Table 5.18 rather than stating a word count
+    // directly, so unlike bitrate legality this has no per-rate escape.
+    plan.codec = ac3::plan::Codec::kEac3;
+    CHECK_FALSE(ac3::plan::validate(plan).has_value());
+}
+
 TEST_CASE("validate refuses a custom channel selection Annex E cannot express") {
     namespace cm = ac3::eac3::chanmap;
     // No front coverage at all: no Table 5.8 acmod has anything to anchor a
@@ -304,6 +316,45 @@ TEST_CASE("7.1.4 asks for two dependent substreams carrying the right channels")
     // its own slice of the rate rather than a share of the independent's.
     CHECK(config.dependents[0].bitrate_kbps == 320);
     CHECK(config.independent.bitrate_kbps == 640);
+}
+
+TEST_CASE("eac3_config halves a plan's VBR bounds for each dependent, not its quality") {
+    ac3::plan::Plan plan{.codec = ac3::plan::Codec::kEac3,
+                         .layout = ac3::plan::LayoutId::k714,
+                         .bitrate_kbps = 640,
+                         .vbr = ac3::eac3::VbrConfig{.quality = 0.6,
+                                                     .min_kbps = 200,
+                                                     .max_kbps = 640,
+                                                     .nominal_kbps = 300}};
+    const auto config = ac3::plan::eac3_config(plan);
+    REQUIRE(config.dependents.size() == 2);
+    REQUIRE(config.independent.vbr.has_value());
+    CHECK(config.independent.vbr->quality == 0.6);
+    CHECK(config.independent.vbr->min_kbps == 200);
+    CHECK(config.independent.vbr->max_kbps == 640);
+    CHECK(config.independent.vbr->nominal_kbps == 300);
+    // Substreams occupy one frame period, not one frame, so a dependent gets
+    // its own slice of the rate range too - the same rule its bitrate_kbps
+    // already follows. Quality is not a rate quantity, so it carries over.
+    for (const auto& dependent : config.dependents) {
+        REQUIRE(dependent.vbr.has_value());
+        CHECK(dependent.vbr->quality == 0.6);
+        CHECK(dependent.vbr->min_kbps == 100);
+        CHECK(dependent.vbr->max_kbps == 320);
+        CHECK(dependent.vbr->nominal_kbps == 150);
+    }
+}
+
+TEST_CASE("a plan with no VBR config leaves every substream's vbr unset") {
+    const ac3::plan::Plan plan{.codec = ac3::plan::Codec::kEac3,
+                               .layout = ac3::plan::LayoutId::k714,
+                               .bitrate_kbps = 640};
+    const auto config = ac3::plan::eac3_config(plan);
+    REQUIRE(config.dependents.size() == 2);
+    CHECK_FALSE(config.independent.vbr.has_value());
+    for (const auto& dependent : config.dependents) {
+        CHECK_FALSE(dependent.vbr.has_value());
+    }
 }
 
 TEST_CASE("the mixmdate group is written only when it is asked for") {
