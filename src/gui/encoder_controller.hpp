@@ -42,6 +42,14 @@ class EncoderController : public QObject {
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
     Q_PROPERTY(double progress READ progress NOTIFY progressChanged)
+    // Encoding is a job with a history, not a modal moment: one entry per
+    // file encode (not a live recording, which already has its own elapsed-
+    // time readout), newest first. Each is {id, filename, bitrateKbps,
+    // durationText, status ("encoding"|"done"|"failed"|"cancelled"),
+    // sizeText, detail}. There is at most one "encoding" entry at a time
+    // (busy_ gates a new run), and its live progress is read off the
+    // existing `progress` property rather than duplicated per entry.
+    Q_PROPERTY(QVariantList runs READ runs NOTIFY runsChanged)
     Q_PROPERTY(int bitrateKbps READ bitrateKbps WRITE setBitrateKbps NOTIFY planChanged)
     Q_PROPERTY(QVariantList bitrates READ bitrates NOTIFY planChanged)
     Q_PROPERTY(QStringList captureDevices READ captureDevices NOTIFY captureDevicesChanged)
@@ -190,6 +198,7 @@ public:
     [[nodiscard]] QString status() const { return status_; }
     [[nodiscard]] bool busy() const { return busy_; }
     [[nodiscard]] double progress() const { return progress_; }
+    [[nodiscard]] QVariantList runs() const { return runs_; }
     [[nodiscard]] int bitrateKbps() const { return bitrate_kbps_; }
     [[nodiscard]] QVariantList bitrates() const;
     [[nodiscard]] QStringList captureDevices() const { return capture_devices_; }
@@ -333,6 +342,7 @@ signals:
     void statusChanged();
     void busyChanged();
     void progressChanged();
+    void runsChanged();
     // One signal for every encoding decision. They are read together by the
     // summary lines and gate each other besides - the codec decides which
     // layouts exist, which decides whether the tools apply - so splitting them
@@ -391,6 +401,15 @@ private:
 
     void setStatus(const QString& text);
     void setBusy(bool busy);
+    // Adds a new "encoding" entry to runs_ and remembers its id, so the
+    // encodeFinished this run eventually emits (there are several call
+    // sites; a run is always started right after setBusy(true) rather than
+    // duplicated at each one) knows which entry to settle.
+    void startRun(const QString& path);
+    // Connected to encodeFinished in the constructor. A run whose message
+    // mentions cancellation reads "cancelled" rather than "failed" - the
+    // same text setStatus() already shows, not a second judgement of it.
+    void finishRun(bool ok, const QString& message);
     void setProgress(double value);
     void setRecording(bool recording);
     void setMetering(bool metering);
@@ -466,6 +485,10 @@ private:
     // programme arriving twice.
     double object_lfe_send_ = 0.15;
     int object_count_ = 0;
+
+    QVariantList runs_;
+    int current_run_id_ = -1;
+    int next_run_id_ = 1;
 
     bool playing_ = false;
     QStringList capture_devices_;

@@ -1,6 +1,7 @@
 #include "encoder_controller.hpp"
 
 #include <QFileInfo>
+#include <QRegularExpression>
 #include <QtConcurrent/QtConcurrentRun>
 
 #include <iterator>
@@ -186,6 +187,11 @@ struct EncoderController::Source {
 };
 
 EncoderController::EncoderController(QObject* parent) : QObject(parent) {
+    // Every encodeFinished emission (there are several call sites, one per
+    // early-exit failure plus the two workers' own completions) settles
+    // whichever run startRun() most recently opened, without each site
+    // having to say so itself.
+    connect(this, &EncoderController::encodeFinished, this, &EncoderController::finishRun);
     refreshCaptureDevices();
     refreshOutputDevices();
     refreshRouting();
@@ -895,6 +901,60 @@ void EncoderController::setBusy(bool busy) {
     emit busyChanged();
 }
 
+void EncoderController::startRun(const QString& path) {
+    double seconds = 0.0;
+    if (source_ && source_->wav.sample_rate > 0) {
+        seconds = static_cast<double>(source_->wav.frame_count()) /
+                  static_cast<double>(source_->wav.sample_rate);
+    }
+    QVariantMap run;
+    run[QStringLiteral("id")] = next_run_id_;
+    run[QStringLiteral("filename")] = QFileInfo(path).fileName();
+    run[QStringLiteral("bitrateKbps")] = bitrate_kbps_;
+    run[QStringLiteral("durationText")] =
+        QStringLiteral("%1:%2")
+            .arg(static_cast<int>(seconds) / 60)
+            .arg(static_cast<int>(seconds) % 60, 2, 10, QLatin1Char('0'));
+    run[QStringLiteral("status")] = QStringLiteral("encoding");
+    run[QStringLiteral("sizeText")] = QString();
+    run[QStringLiteral("detail")] = QString();
+    // Newest first, matching the run strip's own reading order.
+    runs_.prepend(run);
+    current_run_id_ = next_run_id_;
+    ++next_run_id_;
+    emit runsChanged();
+}
+
+void EncoderController::finishRun(bool ok, const QString& message) {
+    if (current_run_id_ < 0) {
+        return;
+    }
+    for (auto& variant : runs_) {
+        auto run = variant.toMap();
+        if (run.value(QStringLiteral("id")).toInt() != current_run_id_) {
+            continue;
+        }
+        // The same text setStatus() already put on screen for a cancelled
+        // run - read back rather than re-decided, so the run chip and the
+        // status line that preceded it can never disagree about which of
+        // the three this was.
+        const bool cancelled = message.contains(QStringLiteral("cancelled"), Qt::CaseInsensitive);
+        run[QStringLiteral("status")] = ok ? QStringLiteral("done")
+                                       : (cancelled ? QStringLiteral("cancelled")
+                                                    : QStringLiteral("failed"));
+        run[QStringLiteral("detail")] = message;
+        static const QRegularExpression kSizePattern(QStringLiteral(R"(\(([0-9.]+ [KMG]B)\))"));
+        const auto match = kSizePattern.match(message);
+        if (match.hasMatch()) {
+            run[QStringLiteral("sizeText")] = match.captured(1);
+        }
+        variant = run;
+        break;
+    }
+    current_run_id_ = -1;
+    emit runsChanged();
+}
+
 void EncoderController::setProgress(double value) {
     if (qFuzzyCompare(value + 1.0, progress_ + 1.0)) {
         return;
@@ -1554,6 +1614,7 @@ void EncoderController::encodeTo(const QUrl& url) {
     emit outputChanged();
 
     cancel_requested_.store(false, std::memory_order_relaxed);
+    startRun(path);
     setBusy(true);
     setProgress(0.0);
     setStatus(QStringLiteral("Encoding…"));

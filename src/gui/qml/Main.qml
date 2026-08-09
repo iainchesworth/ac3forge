@@ -78,6 +78,32 @@ ApplicationWindow {
     // Defaults to "coded" so the meters keep showing every transmitted
     // channel unless asked otherwise - what the app has always done.
     property string meterMode: "coded"
+
+    // ---- the panel banner: one of the three feedback homes -----------------
+    // Field-level messages sit next to the control they concern (layoutDetail,
+    // routingSummary, the object bit-rate warning...) and the run strip covers
+    // anything about a specific run; this is the third - a banner at the top
+    // of the panel that caused the problem. -1 means "show whichever run most
+    // recently failed"; a run's own Details button points the banner at it
+    // explicitly, and Dismiss remembers that id so it does not reappear.
+    property int bannerRunId: -1
+    // The run whose banner Dismiss was clicked on, so dismissing run 12's
+    // failure does not also suppress the banner the NEXT failure deserves.
+    property int dismissedRunId: -1
+    readonly property var bannerRun: {
+        const runs = EncoderController.runs;
+        let candidate = null;
+        if (bannerRunId >= 0) {
+            for (const run of runs) {
+                if (run.id === bannerRunId) { candidate = run; break; }
+            }
+        } else {
+            for (const run of runs) {
+                if (run.status === "failed") { candidate = run; break; }
+            }
+        }
+        return candidate && candidate.id !== dismissedRunId ? candidate : null;
+    }
     readonly property var tabOrder: ["format", "coding", "meta", "objects"]
     readonly property var visibleTabs: {
         const tabs = [{ key: "format", label: qsTr("Format") }];
@@ -582,6 +608,67 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 spacing: 0
+
+                // ---- the panel banner: a failed run, named and explained -------
+                Rectangle {
+                    Layout.fillWidth: true
+                    visible: window.bannerRun !== null
+                    color: Theme.accent100
+                    implicitHeight: bannerContent.implicitHeight + 28
+
+                    Rectangle {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        height: 2
+                        color: Theme.accent
+                    }
+
+                    RowLayout {
+                        id: bannerContent
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.margins: 14
+                        spacing: 12
+
+                        Text {
+                            text: "⚠"
+                            color: Theme.accent700
+                            font.pixelSize: 16
+                            Layout.alignment: Qt.AlignTop
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 3
+
+                            Text {
+                                text: window.bannerRun
+                                      ? qsTr("Run %1 stopped — %2")
+                                        .arg(window.bannerRun.id).arg(window.bannerRun.filename)
+                                      : ""
+                                color: Theme.accent800
+                                font.bold: true
+                                font.pixelSize: 14
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: window.bannerRun ? window.bannerRun.detail : ""
+                                color: Theme.accent900
+                                font.pixelSize: 13
+                                wrapMode: Text.WordWrap
+                            }
+                        }
+                        Button {
+                            text: qsTr("Dismiss")
+                            Layout.alignment: Qt.AlignTop
+                            onClicked: {
+                                window.dismissedRunId = window.bannerRun.id;
+                                window.bannerRunId = -1;
+                            }
+                        }
+                    }
+                }
 
                 // ---- plan strip -----------------------------------------------
                 RowLayout {
@@ -1479,9 +1566,9 @@ ApplicationWindow {
                 Rectangle { Layout.fillWidth: true; height: 2; color: Theme.divider }
 
                 // ---- runs --------------------------------------------------------
-                // A history of past runs (README §6 Q9) needs run-tracking state the
-                // controller does not carry yet; this shows only the current run
-                // until that lands with the runs/feedback checkpoint.
+                // Encoding is a job with a history, not a modal moment: one chip per
+                // past run plus whichever is in flight, newest first, scrolling
+                // horizontally rather than replacing itself every time.
                 RowLayout {
                     Layout.fillWidth: true
                     Layout.preferredHeight: 34
@@ -1497,49 +1584,93 @@ ApplicationWindow {
                     }
                     Rectangle { Layout.preferredWidth: 1; Layout.fillHeight: true; color: Theme.divider }
 
-                    RowLayout {
+                    ScrollView {
                         Layout.fillWidth: true
-                        Layout.leftMargin: 16
-                        Layout.rightMargin: 16
-                        spacing: 10
+                        Layout.fillHeight: true
+                        contentWidth: runStrip.implicitWidth
+                        ScrollBar.vertical.policy: ScrollBar.AlwaysOff
 
-                        Rectangle {
-                            width: 8
-                            height: 8
-                            visible: EncoderController.busy
-                            color: Theme.accent
+                        RowLayout {
+                            id: runStrip
+                            height: parent.height
+                            spacing: 0
+
+                            Repeater {
+                                model: EncoderController.runs
+
+                                delegate: RowLayout {
+                                    required property var modelData
+                                    readonly property bool encoding: modelData.status === "encoding"
+                                    readonly property bool failed: modelData.status === "failed"
+
+                                    Layout.leftMargin: 16
+                                    spacing: 8
+
+                                    Rectangle {
+                                        width: 8
+                                        height: 8
+                                        color: encoding || failed ? Theme.accent : Theme.neutral400
+                                    }
+                                    Text {
+                                        font.family: "monospace"
+                                        font.pixelSize: 12
+                                        color: Theme.text
+                                        text: encoding
+                                              ? qsTr("%1 · %2 · %3 kbps · %4%")
+                                                .arg(modelData.id).arg(modelData.filename)
+                                                .arg(modelData.bitrateKbps)
+                                                .arg(Math.round(EncoderController.progress * 100))
+                                              : qsTr("%1 · %2 · %3 kbps · %4%5")
+                                                .arg(modelData.id).arg(modelData.filename)
+                                                .arg(modelData.bitrateKbps).arg(modelData.durationText)
+                                                .arg(modelData.sizeText.length > 0
+                                                     ? " · " + modelData.sizeText : "")
+                                    }
+                                    ProgressBar {
+                                        visible: encoding
+                                        Layout.preferredWidth: 90
+                                        Layout.preferredHeight: 5
+                                        from: 0
+                                        to: 1
+                                        value: EncoderController.progress
+                                    }
+                                    Button {
+                                        visible: encoding
+                                        text: qsTr("Cancel")
+                                        flat: true
+                                        onClicked: EncoderController.cancel()
+                                    }
+                                    Button {
+                                        visible: failed
+                                        text: qsTr("Details")
+                                        flat: true
+                                        onClicked: {
+                                            window.bannerRunId = modelData.id;
+                                            if (window.dismissedRunId === modelData.id) {
+                                                window.dismissedRunId = -1;
+                                            }
+                                        }
+                                    }
+                                    Rectangle {
+                                        Layout.preferredWidth: 1
+                                        Layout.fillHeight: true
+                                        Layout.topMargin: 8
+                                        Layout.bottomMargin: 8
+                                        Layout.leftMargin: 8
+                                        color: Theme.divider
+                                    }
+                                }
+                            }
+
+                            Text {
+                                visible: EncoderController.runs.length === 0
+                                Layout.leftMargin: 16
+                                text: EncoderController.status
+                                font.family: "monospace"
+                                font.pixelSize: 12
+                                color: Theme.textMuted
+                            }
                         }
-                        Text {
-                            visible: EncoderController.busy
-                            text: qsTr("encoding · %1%").arg(Math.round(EncoderController.progress * 100))
-                            font.family: "monospace"
-                            font.pixelSize: 12
-                            color: Theme.text
-                        }
-                        ProgressBar {
-                            visible: EncoderController.busy
-                            Layout.preferredWidth: 90
-                            Layout.preferredHeight: 5
-                            from: 0
-                            to: 1
-                            value: EncoderController.progress
-                        }
-                        Button {
-                            visible: EncoderController.busy
-                            text: qsTr("Cancel")
-                            flat: true
-                            onClicked: EncoderController.cancel()
-                        }
-                        Text {
-                            visible: !EncoderController.busy
-                            Layout.fillWidth: true
-                            text: EncoderController.status
-                            font.family: "monospace"
-                            font.pixelSize: 12
-                            color: Theme.textMuted
-                            elide: Text.ElideRight
-                        }
-                        Item { Layout.fillWidth: true; visible: EncoderController.busy }
                     }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: Theme.divider }
