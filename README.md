@@ -1,5 +1,18 @@
 # ac3forge
 
+<!-- Build & code health -->
+[![CI](https://github.com/iainchesworth/ac3forge/actions/workflows/ci.yml/badge.svg)](https://github.com/iainchesworth/ac3forge/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/iainchesworth/ac3forge/actions/workflows/codeql.yml/badge.svg)](https://github.com/iainchesworth/ac3forge/actions/workflows/codeql.yml)
+[![MSVC Code Analysis](https://github.com/iainchesworth/ac3forge/actions/workflows/msvc-analysis.yml/badge.svg)](https://github.com/iainchesworth/ac3forge/actions/workflows/msvc-analysis.yml)
+[![OSV-Scanner](https://github.com/iainchesworth/ac3forge/actions/workflows/osv-scanner.yml/badge.svg)](https://github.com/iainchesworth/ac3forge/actions/workflows/osv-scanner.yml)
+[![Zizmor](https://github.com/iainchesworth/ac3forge/actions/workflows/zizmor.yml/badge.svg)](https://github.com/iainchesworth/ac3forge/actions/workflows/zizmor.yml)
+<!-- Supply chain & project meta -->
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/iainchesworth/ac3forge/badge)](https://scorecard.dev/viewer/?uri=github.com/iainchesworth/ac3forge)
+[![Latest release](https://img.shields.io/github/v/release/iainchesworth/ac3forge?include_prereleases&sort=semver)](https://github.com/iainchesworth/ac3forge/releases/latest)
+[![Docs](https://img.shields.io/badge/docs-published-2f7d7b)](https://iainchesworth.github.io/ac3forge/)
+[![C++23](https://img.shields.io/badge/C%2B%2B-23-blue)](docs/building.md)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+
 A clean-room AC-3 and E-AC-3 encoder and decoder in C++23, implemented from the published
 standards. It turns PCM — or mono sources placed and moved in 3D space — into AC-3, E-AC-3,
 or E-AC-3 with Joint Object Coding elementary streams, and reads those streams back.
@@ -19,10 +32,11 @@ affiliated with, endorsed by, or certified by Dolby Laboratories. Code and docum
 the technical names AC-3 and E-AC-3. Whether the patents reading on these formats matter for
 your use is your problem to assess, not something this project resolves.
 
-**Status.** Version 0.2.0. The API is not stable. Green and required in CI on Windows (MSVC,
-clang-cl) and Linux (GCC 15, Clang 21) — CLI and GUI alike on all four — plus an ASan+UBSan leg
-and clang-tidy static analysis; macOS is the one experimental leg, never run anywhere. See
-[Portability](#portability).
+**Status.** The API is not stable — no release has been tagged yet, so the Latest release badge
+above reads empty; once one lands, that badge is the current version, not this paragraph. Green
+and required in CI on Windows (MSVC, clang-cl) and Linux (GCC 15, Clang 21) — CLI and GUI alike
+on all four — plus an ASan+UBSan leg and clang-tidy static analysis; macOS is the one
+experimental leg, never run anywhere. See [Portability](#portability).
 
 ## Contents
 

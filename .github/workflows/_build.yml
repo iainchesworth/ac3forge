@@ -37,6 +37,14 @@ on:
         description: "Package every packageable matrix leg (best-effort), not just windows-msvc. Set by release.yml."
         type: boolean
         default: false
+      version_tag:
+        description: "Resolved v* tag, threaded into configure as DERIVED_VERSION_OVERRIDE so the build stamps it deterministically. Empty in CI -> `git describe` (see GitVersionDerivation.cmake)."
+        type: string
+        default: ""
+      fetch_depth:
+        description: "checkout fetch-depth (0 for releases so `git describe`/cut-from-main see full history + tags; 1 for ordinary CI, which accepts the 0.0.0-dev fallback)."
+        type: number
+        default: 1
 
 permissions:
   contents: read
@@ -179,6 +187,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: ${{ inputs.fetch_depth }}
 
       # ---------------------------------------------------------------------
       # Toolchains
@@ -351,6 +360,16 @@ jobs:
       #     hasn't installed Qt still builds everything else.
       - name: Configure
         shell: bash
+        # VERSION_TAG_INPUT goes through env:, not straight into the script
+        # text, for the same reason release.yml's resolve-version job does -
+        # inputs.version_tag is attacker-reachable via workflow_dispatch and
+        # substituted directly it would be shell CODE, not data (zizmor:
+        # template-injection). Empty by default (ordinary CI): GitVersionDerivation.cmake
+        # then falls through to `git describe`, which finds nothing on this
+        # leg's shallow checkout and stamps 0.0.0-dev - expected, see the
+        # `fetch_depth` input's description above.
+        env:
+          VERSION_TAG_INPUT: ${{ inputs.version_tag }}
         run: |
           set -euo pipefail
           extra_args=()
@@ -359,6 +378,9 @@ jobs:
           fi
           if [ "${{ matrix.gui }}" = "true" ]; then
             extra_args+=(-DAC3FORGE_BUILD_GUI=ON)
+          fi
+          if [ -n "$VERSION_TAG_INPUT" ]; then
+            extra_args+=(-DDERIVED_VERSION_OVERRIDE="$VERSION_TAG_INPUT")
           fi
           # Not "${extra_args[@]}" unguarded: macOS's /bin/bash is stuck on
           # 3.2 (GPLv2 was the last version Apple could ship), and 3.2's
