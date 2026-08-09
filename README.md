@@ -15,8 +15,8 @@ affiliated with, endorsed by, or certified by Dolby Laboratories. Code and docum
 the technical names AC-3 and E-AC-3. Whether the patents reading on these formats matter for
 your use is your problem to assess, not something this project resolves.
 
-**Status.** Version 0.2.0. The API is not stable. Built and tested only with MSVC on Windows;
-see [Portability](#portability).
+**Status.** Version 0.2.0. The API is not stable. Built and tested on Windows (MSVC, clang-cl)
+and Linux (GCC, Clang), CLI and GUI alike; see [Portability](#portability).
 
 ## Contents
 
@@ -175,28 +175,34 @@ the metadata is. It is covered bit-by-bit instead ([tests/test_drc.cpp](tests/te
 
 ### Portability
 
-Only built and tested with MSVC 14.51 on Windows 11. The codec itself has no platform
-dependency, and `src/lib/CMakeLists.txt` selects stub implementations of capture, passthrough
-and monitor playback off Windows, but no other compiler or OS has been exercised. Treat
-non-Windows as unverified rather than supported.
+Built and tested with MSVC 14.51 and clang-cl on Windows 11, and with GCC 15 and Clang 21 on
+Linux (Ubuntu 26.04) — CLI and GUI on every one of those four. The codec itself has no platform
+dependency; `src/lib/CMakeLists.txt` selects stub implementations of WASAPI capture, passthrough
+and monitor playback off Windows, since those features are inherently Windows-specific audio
+APIs, not because the rest of the codebase needs Windows. No macOS host exists for this project,
+so `macos-llvm` remains unverified. See [docs/BUILDING.md](docs/BUILDING.md)'s
+[Verified configuration](docs/BUILDING.md#verified-configuration) for exact toolchain versions.
 
 ## Building
 
-Requirements: Visual Studio 2026 (MSVC), CMake ≥ 3.28, Ninja, a
-[vcpkg](https://github.com/microsoft/vcpkg) checkout with `VCPKG_ROOT` set (it supplies
-Catch2, and nothing else), and — for the GUI only — a prebuilt Qt 6.5+ kit. Qt is never taken
-from vcpkg.
+Requirements: CMake ≥ 3.28, Ninja, a [vcpkg](https://github.com/microsoft/vcpkg) checkout with
+`VCPKG_ROOT` set (it supplies Catch2, and nothing else), and — for the GUI only — a prebuilt
+Qt 6.5+ kit. Qt is never taken from vcpkg. On Windows that means Visual Studio 2026 (MSVC) or
+clang-cl; on Linux, GCC ≥ 15 or Clang ≥ 21.
 
 From a **Developer PowerShell for VS 2026**, so that `cl.exe` is on `PATH`:
 
 ```bash
-cmake --preset debug && cmake --build --preset debug && ctest --preset debug
+cmake --preset config-windows-msvc-debug && cmake --build --preset build-windows-msvc-debug && ctest --preset test-windows-msvc-debug
 ```
 
-The presets do not pin a compiler, so running them from an ordinary shell picks up whatever is
-first on `PATH` — which is how you get a wall of unrelated errors from a different toolchain.
-[docs/BUILDING.md](docs/BUILDING.md) covers that failure, building without Qt, and the
-machine-local preset pattern.
+On Linux, substitute the `config-linux-gcc-debug` / `build-linux-gcc-debug` /
+`test-linux-gcc-debug` presets (or `-llvm-` for Clang); the GUI is opt-in there via
+`-DAC3FORGE_BUILD_GUI=ON` rather than on by default. The presets do not pin a compiler, so
+running them from an ordinary shell picks up whatever is first on `PATH` — which is how you get
+a wall of unrelated errors from a different toolchain. [docs/BUILDING.md](docs/BUILDING.md)
+covers that failure, building without Qt, the Linux GUI opt-in, and the machine-local preset
+pattern.
 
 ## Using the library
 
@@ -302,7 +308,7 @@ sounds better, and no listening test has been run.
 The test suite is 182 ctest entries: 175 Catch2 unit tests plus the seven example programs.
 
 ```bash
-ctest --preset debug
+ctest --preset test-windows-msvc-debug
 ```
 
 ## Repository layout

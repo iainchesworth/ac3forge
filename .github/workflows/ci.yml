@@ -1,7 +1,7 @@
 # ac3forge CI.
 #
 # ---------------------------------------------------------------------------
-# Matrix status (updated when sanitizer builds and static analysis were added)
+# Matrix status (updated when linux-gcc/linux-llvm picked up the GUI)
 # ---------------------------------------------------------------------------
 # Every leg below was run for real, not just claimed: windows-msvc and
 # windows-llvm locally (MSVC 14.51 / clang-cl 21.1.0 - CI pins 21.1.8, one
@@ -10,6 +10,18 @@
 # macos-llvm remains as it was: it could not be run at all,
 # the project has no Mac.
 #
+# linux-gcc and linux-llvm now install Qt6 and build+smoke-test ac3gui too
+# (see _build.yml's `gui: true` matrix entries, the Qt6 install step, and the
+# headless `ac3gui --smoke` step after Test) - previously CLI-only. That
+# addition is verified for real, but on a native WSL2 Ubuntu 26.04 box, not
+# yet through an actual GitHub Actions run: fresh configure + build + full
+# ctest on both compilers using the exact same qt6-base-dev/qt6-declarative-dev
+# packages _build.yml now installs, 245/245 - matching windows-msvc/
+# windows-llvm exactly, up from 214/214 CLI-only - plus the same `ac3gui
+# --smoke` command under QT_QPA_PLATFORM=offscreen _build.yml now runs,
+# passing on both. The rows below marked GREEN* should be read as "confirmed
+# on WSL2, pending this branch's first real CI run" until that run lands.
+#
 #   leg                    status    notes
 #   ----------------------  --------  ------------------------------------------
 #   windows-msvc            GREEN     245/245 tests pass
@@ -17,16 +29,24 @@
 #                                     narrowing in encoder_controller.cpp that
 #                                     -Wconversion rejects under clang-cl (MSVC's
 #                                     /W4 has no equivalent check)
-#   linux-gcc                GREEN    214/214 tests pass
-#   linux-llvm               GREEN    214/214 tests pass
+#   linux-gcc                GREEN*   245/245 tests pass incl. GUI (was 214/214
+#                                     CLI-only) - see the WSL2 note above
+#   linux-llvm                GREEN*  245/245 tests pass incl. GUI (was 214/214
+#                                     CLI-only) - see the WSL2 note above
 #   linux-llvm-asan-ubsan    GREEN    214/214 tests + the full codec-matrix
 #                                     script (99 encode/decode/report commands
 #                                     across every layout, Annex E tool token,
-#                                     and Atmos mode) - see cmake/Sanitizers.cmake
+#                                     and Atmos mode) - see cmake/Sanitizers.cmake.
+#                                     Still CLI-only by design, to keep a Qt kit
+#                                     out of the sanitizer leg's install time -
+#                                     see _build.yml.
 #   static-analysis (tidy)   GREEN    .clang-tidy's curated set, clean baseline
 #   macos-llvm               unknown  never executed; shares linux-llvm's
 #                                     warning set, so expect it to surface
 #                                     genuine failures the first time it runs
+#
+# * Confirmed on WSL2, not yet on an actual GitHub Actions run - see the note
+#   above. Drop the asterisk once this branch's CI confirms it there too.
 #
 # macos-llvm runs with continue-on-error (see _build.yml): it reports honestly
 # without turning the default branch red on every push. Promote it by

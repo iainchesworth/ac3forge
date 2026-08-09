@@ -66,17 +66,26 @@ jobs:
             msvc: true          # clang-cl targets the MSVC ABI: same headers, same libs
             llvm: true
 
+          # gui: true builds ac3gui too (the linux-gcc/linux-llvm presets
+          # otherwise default AC3FORGE_BUILD_GUI off - see the preset's own
+          # description in CMakePresets.json) and smoke-tests it headlessly
+          # after Test, below. Left off the ASan+UBSan leg deliberately: that
+          # leg's job is the sanitizer sweep over the codec, and a Qt kit
+          # would add install time without adding sanitizer coverage - the
+          # GUI is already covered here on the plain GCC/LLVM legs.
           - name: "Linux GCC"
             runner: ubuntu-latest
             container: ubuntu:26.04
             preset: linux-gcc
             gcc: true
+            gui: true
 
           - name: "Linux LLVM (clang)"
             runner: ubuntu-latest
             container: ubuntu:26.04
             preset: linux-llvm
             llvm: true
+            gui: true
 
           # AddressSanitizer + UndefinedBehaviorSanitizer (cmake/Sanitizers.cmake),
           # -fno-sanitize-recover=all so a violation fails the job outright. Shares
@@ -112,6 +121,19 @@ jobs:
           apt-get install -y -qq --no-install-recommends \
             build-essential ca-certificates cmake curl git gnupg lsb-release \
             ninja-build pkg-config software-properties-common tar unzip wget zip
+
+      # Qt is a prebuilt dependency (cmake/FindQt6.cmake), never a vcpkg port -
+      # see that file's own header. qt6-declarative-dev-tools/qt6-base-dev-tools
+      # pull in qmlcachegen and the other build-time QML tooling
+      # qt_add_qml_module needs; without them the GUI configure step fails
+      # rather than quietly building without AOT-compiled QML.
+      - name: Install Qt6 (Linux GUI)
+        if: matrix.gui
+        run: |
+          set -eu
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get install -y -qq --no-install-recommends \
+            qt6-base-dev qt6-base-dev-tools qt6-declarative-dev qt6-declarative-dev-tools
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -218,7 +240,9 @@ jobs:
       # `cmake --preset config-<leg>` locally reproduces CI exactly.
       - name: Configure
         shell: bash
-        run: cmake --preset config-${{ matrix.preset }}
+        run: >
+          cmake --preset config-${{ matrix.preset }}
+          ${{ matrix.gui && '-DAC3FORGE_BUILD_GUI=ON' || '' }}
 
       # -k 0 so a first-time port sees every diagnostic in one run rather than
       # one-per-push. Warnings are errors on every compiler
@@ -230,6 +254,24 @@ jobs:
       - name: Test
         shell: bash
         run: ctest --preset test-${{ matrix.preset }}
+
+      # ctest above already covers the codec; this covers the one thing it
+      # can't - that ac3gui actually starts, loads its QML, and drives a real
+      # encode through the Qt event loop. offscreen needs no display, so it
+      # runs the same in this container as it does on a workstation. See
+      # docs/BUILDING.md's Linux section for why the qmlshapesplugin /
+      # labsmodelsplugin / qmlfolderlistmodelplugin CMake warnings during
+      # Configure, above, don't affect this.
+      - name: Smoke test ac3gui (headless)
+        if: matrix.gui
+        shell: bash
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: >
+          build/config-${{ matrix.preset }}/bin/ac3gui --smoke
+          fuzz/seeds/fuzz_wav_read/roundtrip-stereo.wav
+          "${RUNNER_TEMP}/ac3gui-smoke.ac3"
+          "${RUNNER_TEMP}/ac3gui-smoke.png"
 
       # Sanitizers only catch what actually executes. ctest's cases exercise
       # encoder/decoder logic in isolation; this drives the real CLI across
