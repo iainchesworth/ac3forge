@@ -59,7 +59,7 @@ experimental. See [Portability](#portability).
 | | AC-3 (bsid 8) | E-AC-3 (bsid 16) |
 |---|---|---|
 | Coding modes | 1/0, 2/0, 3/0, 2/1, 3/1, 2/2, 3/2, each with or without LFE | the same, plus 7.1, 5.1.2, 5.1.4 and 7.1.4 through dependent substreams |
-| Sample rates | 48, 44.1, 32 kHz | 48, 44.1, 32 kHz |
+| Sample rates | 48, 44.1, 32 kHz | 48, 44.1, 32 kHz, plus the `fscod2` half rates 24, 22.05, 16 kHz (§E2.3.1.3 — Annex E only, no AC-3 counterpart) |
 | Bit rates | CBR only — the 19 nominal rates of Table 5.18, 32–640 kbps | CBR (the same 19, per substream) or VBR — a quality target with optional min/max kbps bounds, per substream |
 | Transform | long blocks only (512-point MDCT, KBD window) | long blocks only |
 | Exponents | D15 / D25 / D45, strategy chosen per block from the reuse span (§8.2.8) | frame-level, Table E2.10 code 0: D15 in block 0, reused for the other five |
@@ -108,7 +108,6 @@ substreams, `chanmap`, and the §E3.8.2 render that lays a dependent's channels 
 | Block switching (short blocks) | Transients smear. FFmpeg's AC-3 encoder has never used short blocks either, so this is conventional rather than unusual, but it is still a gap. |
 | Dual mono (1+1, acmod 0) | Refused by the encoder and the decoder. It is two programmes sharing a syncframe, with a second copy of every metadata item, and it has no channel layout to render. |
 | Delta bit allocation | Encoder never emits it; decoder refuses a stream carrying it. |
-| E-AC-3 half sample rates (`fscod2`: 24, 22.05, 16 kHz) | Refused. Every table the core indexes is three columns wide. |
 | Enhanced coupling, transient pre-noise processing | Recognised by the decoder and refused, rather than mis-decoded. |
 | Variable bit rate on AC-3 | `frmsizecod` indexes Table 5.18 rather than stating a word count directly, so AC-3 has no free frame size to vary at all and stays CBR. E-AC-3 supports VBR — see [Encoding E-AC-3](docs/library/encoding-eac3.md#variable-bit-rate-frameconfigvbr). |
 
@@ -145,6 +144,20 @@ is unverified.
 | E-AC-3 7.1.4 (two dependents) | no | yes |
 | E-AC-3 with cpl / spx / aht | yes | no |
 | E-AC-3 7.1.4 with Annex E tools | no | no |
+| E-AC-3 `fscod2` half rates (24/22.05/16 kHz) | header only | yes |
+
+**`fscod2` audio content has no external decode oracle at all — not even Dolby's own.**
+`ffprobe` walks every syncframe of a reduced-rate stream correctly (frame count, exact byte
+size, exact spacing, and `sample_rate` all confirmed against all three rates), so the framing
+and header are cross-checked externally. But actually decoding the audio is refused by both
+real-world implementations available here: FFmpeg's E-AC-3 decoder (`Not yet implemented in
+FFmpeg, patches welcome`) and, more surprisingly, Dolby's own Reference Player — `dlbac3parse`
+reports `No valid frames found before end of stream` on a stream `ffprobe` reads frame-by-frame
+without complaint — using the same pipeline (`tools/quality_race.py`'s `dolby_decode`) that
+decodes a normal-rate stream from this encoder without issue. `fscod2` appears to be a coding
+tool whose own reference implementation does not support it. So the coded audio is verified
+only by this project's own encoder/decoder round trip and the independent Python parser
+(`tools/eac3_parse.py`).
 
 **Exclusive-mode passthrough — AC-3 and E-AC-3 alike — has never been confirmed against
 bitstreaming hardware.** The development machine has no S/PDIF or HDMI endpoint behind a real

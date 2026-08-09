@@ -101,9 +101,15 @@ def parse_frame(data, verbose=True):
     frmsiz = r.bits(11)
     fscod = r.bits(2)
     if fscod == 3:
-        r.bits(2)                    # fscod2
+        # Sec E2.3.1.3: fscod2 replaces numblkscod outright - a reduced-rate
+        # frame is implicitly always six blocks. Sec E2.3.1.4: the reduced
+        # rate reuses the SAME bit-allocation tables as its fscod == fscod2
+        # double-rate parent, so fscod2's own value already is the family
+        # index bit_alloc() below needs.
+        fscod_family = r.bits(2)      # fscod2
         numblkscod = 3
     else:
+        fscod_family = fscod
         numblkscod = r.bits(2)
     acmod = r.bits(3)
     lfeon = r.bits(1)
@@ -233,7 +239,8 @@ def parse_frame(data, verbose=True):
             r.bits(addbsil * 8)
 
     log(f'bsi: strmtyp={strmtyp} substreamid={substreamid} frmsiz={frmsiz} '
-        f'fscod={fscod} numblkscod={numblkscod} acmod={acmod} lfeon={lfeon} '
+        f'fscod={fscod}{" fscod2=" + str(fscod_family) if fscod == 3 else ""} '
+        f'numblkscod={numblkscod} acmod={acmod} lfeon={lfeon} '
         f'dialnorm={dialnorm}  -> {r.pos} bits')
     if compr is not None:
         # In a DEPENDENT substream compre is the end-of-programme marker
@@ -625,7 +632,7 @@ def parse_frame(data, verbose=True):
         per_region = []
         mant_start = r.pos
         for e, begin, end, fgain, fsnr, is_cpl, aht in regions:
-            bap = bit_alloc(e[:end], fscod, codes['sdcycod'], codes['fdcycod'],
+            bap = bit_alloc(e[:end], fscod_family, codes['sdcycod'], codes['fdcycod'],
                             codes['sgaincod'], codes['dbpbcod'], codes['floorcod'],
                             fgain, csnroffst, fsnr, start=begin, coupling=is_cpl,
                             cplfleak=cplfleak, cplsleak=cplsleak, high_efficiency=aht)
@@ -698,7 +705,8 @@ def parse_frame(data, verbose=True):
             emdf = parse_emdf(data, aux_start, auxdatal, log)
 
     return r.pos, total_bits, {'strmtyp': strmtyp, 'substreamid': substreamid,
-                               'fscod': fscod, 'numblkscod': numblkscod,
+                               'fscod': fscod, 'fscod_family': fscod_family,
+                               'numblkscod': numblkscod,
                                'acmod': acmod, 'lfeon': lfeon, 'chanmap': chanmap,
                                'dialnorm': dialnorm, 'compr': compr,
                                'mixmdate': mix or None, 'dynrng': dynrng_blocks,
@@ -936,7 +944,7 @@ def main():
         if strmtyp == 0:
             parent = info
         elif parent is not None:
-            for field in ('fscod', 'numblkscod'):
+            for field in ('fscod', 'fscod_family', 'numblkscod'):
                 if info[field] != parent[field]:
                     print(f'   MISMATCH {field}: {info[field]} vs parent {parent[field]}')
                     ok = False
