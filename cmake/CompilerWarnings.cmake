@@ -72,9 +72,17 @@ endif()
 # ac3::warnings - so a warning in a file nobody here wrote becomes a build
 # failure under -Werror. It is not ours to fix, so it is not ours to warn
 # about: see how src/gui/CMakeLists.txt applies this to the generated sources.
-# ---------------------------------------------------------------------------
+#
+# Empty on real MSVC, deliberately - not "/w". cl has nothing to say about
+# this generated code under /W4 to begin with (unlike clang-cl and GCC, which
+# do reject some of it - see src/gui/CMakeLists.txt for the specific warning),
+# so adding /w on top of the target's own /W4 achieves nothing except a
+# "D9025: overriding '/W4' with '/w'" on every generated file - a warning
+# about the build, appearing on every build, to suppress warnings that were
+# never going to fire. A caller that appends an empty COMPILE_OPTIONS entry
+# gets a harmless no-op, which is exactly what real MSVC should get here.
 if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
-    set(AC3_WARNINGS_OFF_FLAG "/w")
+    set(AC3_WARNINGS_OFF_FLAG "")
 else()
     # clang-cl accepts the GNU spelling too, so this covers every non-cl case.
     set(AC3_WARNINGS_OFF_FLAG "-w")

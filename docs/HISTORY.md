@@ -210,6 +210,102 @@ lookups, so the bit-packing has a second opinion.
 One gap found here and still open: FFmpeg's Annex E header parser skips the compression word,
 so E-AC-3 `compr` has no external oracle and is covered bit-by-bit instead.
 
+## Live monitor, E-AC-3/Atmos passthrough, and the live pipeline
+
+Capture→encode already ran live (`EncoderController::startRecording`, `ac3cli record`), but
+only ever reached a file, and `PassthroughSink`/`ac3::iec61937::wrap_frame` understood AC-3
+bursts only — `playToReceiver` and `ac3cli play` refused anything with `bsid > 8` outright.
+Three pieces closed that: `ac3::sinks::MonitorSink` (shared-mode WASAPI playback, a
+non-bitstreamed preview path), `ac3::iec61937::Eac3BurstPacker` plus a second WASAPI
+exclusive-mode format (`make_eac3_format`, `KSDATAFORMAT_SUBTYPE_IEC61937_DOLBY_DIGITAL_PLUS`)
+for E-AC-3/Atmos passthrough, and `ac3cli live` wiring capture → encode → both, continuously,
+with `live --atmos` moving each object's placement every frame from elapsed time — the same
+per-frame-recompute shape `atmos`'s synthetic orbit demo already used, now with room for a real
+live position source to read from instead of a formula once one exists.
+
+The E-AC-3 burst framing was deliberately not guessed from AC-3's shape. Two primary sources
+were fetched live and cross-checked against each other: FFmpeg's `spdif_header_eac3`
+(`libavformat/spdifenc.c`) and Microsoft's own "Representing Formats for IEC 61937
+Transmissions" documentation, which includes a worked Dolby Digital Plus example. They agree:
+data type `0x15` with no extra bits in `Pc` (unlike AC-3's `bsmod`); a burst fixed at 24576
+bytes (4x AC-3's), matching WASAPI's own requirement that the carrier clock run at 4x the
+content rate for DD+; `Pd` (length) in **bytes**, not bits, unlike AC-3 — confirmed directly
+from the source (`ctx->length_code = ctx->hd_buf_filled`, no `<<3`) and sanity-checked against
+TrueHD/DTS-HD doing the same for the same reason (bits would overflow the 16-bit field at these
+rates); and — the detail that would silently drop channels if missed — the unit fed to the
+packer has to be a whole *access unit* (`ac3::split_access_units`), not a lone syncframe, or a
+dependent substream's channels never reach the receiver. `tests/test_iec61937.cpp` is new (the
+AC-3 packer had no dedicated tests before this either) and covers both, including real
+multi-frame audio and hand-built multi-syncframe accumulation; the `Pd`-in-bits and
+burst-size-6144 bugs were both deliberately reintroduced and confirmed to fail the suite before
+being reverted.
+
+Building the monitor path against real hardware — not just unit tests — found two real bugs
+neither would have caught. `MonitorSink::submit()` gated a write on a fixed ~20 ms readiness
+threshold smaller than an actual chunk (~32 ms, one AC-3/E-AC-3 frame); `RingBuffer::write()`
+then silently performed a *partial* write while `submit()` still reported failure, so the
+caller retried the same chunk, duplicating bytes that had already landed and desynchronising
+the submitted/rendered counters from what was actually queued. `ac3cli live --atmos` separately
+wrote a bed-metering step into the same `views` vector the encoder read object essences from,
+sized to the object count (as few as one) rather than the bed's fixed six channels — an
+out-of-bounds heap write, surfacing as a crash partway through an otherwise-successful session.
+Both are fixed (see `MonitorSink::submit` in `src/lib/src/platform/windows/monitor.cpp` and
+`run_live`'s `bed_views` in `src/cli/main.cpp`).
+
+What that hardware testing did and did not confirm, precisely: `MonitorSink` played real
+microphone capture and real decoded AC-3/E-AC-3 (including an Atmos stream's 5.1 bed) through
+this machine's Realtek output in real time, end to end, including a live capture→encode→monitor
+session. Exclusive-mode E-AC-3 passthrough did not get the same confirmation — this machine has
+no S/PDIF/HDMI endpoint behind a real AV receiver, so `IsFormatSupported` was exercised (and
+correctly answers no everywhere available) but no receiver has locked onto either the existing
+AC-3 burst or the new E-AC-3 one. See the [README](../README.md#verification-gaps) for the full
+account.
+
+## The ALSA backend
+
+Live capture, monitor playback and IEC 61937 passthrough had been WASAPI-only, gated behind
+`WIN32` with a no-backend stub everywhere else. `src/lib/src/platform/alsa/` gives Linux a real
+implementation of all three, selected by `src/lib/CMakeLists.txt` when libasound's headers are
+present (`AC3FORGE_WITH_ALSA=AUTO` by default; `ON` makes their absence a configure error, `OFF`
+forces the no-backend fallback) — optional and detected, not a hard new dependency. Capture and
+monitor playback are ordinary PCM and any Linux audio API could do them; passthrough is why ALSA
+specifically: the IEC 60958 non-audio bit that tells a receiver these bytes are Dolby Digital
+rather than music is expressed as ALSA device-name arguments (`iec958:CARD=...,AES0=0x06,...`),
+and PulseAudio's and PipeWire's own passthrough paths both end in that same ALSA call made by a
+daemon instead of by this code — so ALSA is the layer underneath, not the lowest common
+denominator above it. Verified on WSL2 Ubuntu 26.04 (gcc 15.2, clang 21.1) with and without
+libasound present, and under ASan+UBSan with leak detection, including the device-independent
+halves (device-name construction, channel-status derivation) driven against ALSA's software
+`null` PCM. Not verified: any real sound hardware — WSL2 has none. See
+[docs/BUILDING.md](BUILDING.md#linux-audio).
+
+## Per-object Atmos motion
+
+Objects had always been placed once per encode and stayed there — `AtmosEncoder::encode_frame`
+already took a fresh `ObjectPlacement` every call, but nothing generated a *sequence* of them.
+`ac3/oba/motion.hpp` adds that layer without touching `AtmosEncoder` itself: `KeyframePath`
+linearly interpolates an authored `std::vector<Keyframe>` (position, gain, LFE send per point,
+holding at the ends rather than extrapolating), `OrbitPath` is the same closed-form circular
+orbit the `atmos`/`live --atmos` demos already computed, and `ObjectPath` (a
+`std::variant` of the two) plus `evaluate_placements()` turn either into the
+`std::span<const ObjectPlacement>` `encode_frame` wants at a given instant. `ac3cli atmos-path`
+takes an authored keyframe file; `live --atmos` evaluates an orbit fresh every frame from
+elapsed wall-clock time, described in its own doc comment as the shape a future real live
+position source drops into.
+
+## The general E-AC-3 channel model
+
+`ac3::plan::LayoutId` only ever named one of seven hand-picked combinations Table E2.5 can
+express. `ac3::eac3::chanmap::ChannelPlan` and `chanmap::allocate(locations)` (new in
+`eac3_tables.hpp`/`.cpp`) solve the general problem underneath: given an arbitrary bitmask of
+Table E2.5 locations, pick the widest Table 5.8 acmod whose own channels are all in the request
+as the bed, then bin-pack whatever is left into as many ≤5-full-bandwidth-channel dependents as
+it takes (LFE2 held back and placed last, since it needs a full-bandwidth companion in its own
+substream). The seven named layouts are now a convenience shortcut for a specific plan rather
+than a separate system — `ac3::plan::channel_plan_for(id)` is a one-line lookup into the same
+`ChannelPlan` a caller can otherwise build directly via `Plan::custom_locations` and
+`parse_channels`/`format_channels` for a channel set no named layout covers.
+
 ## Since
 
 - The Matroska muxer (`src/matroska/`), deliberately independent of `ac3::forge`.
@@ -217,3 +313,11 @@ so E-AC-3 `compr` has no external oracle and is covered bit-by-bit instead.
   from the bitstream rather than being told.
 - `ac3cli` dispatch moved to a single command table, so an argv index cannot be quietly wrong.
 - This documentation, and the `examples/` targets behind it.
+- AddressSanitizer + UndefinedBehaviorSanitizer (`cmake/Sanitizers.cmake`, the
+  `linux-llvm-asan-ubsan` preset) and clang-tidy (`.clang-tidy`, a curated `bugprone-*` /
+  `clang-analyzer-*` / `performance-*` / narrow `cert-*` set) both promoted to required,
+  green CI legs.
+- libFuzzer harnesses (`fuzz/`) over every untrusted-input entry point — `scan`, both decoders,
+  WAV reading — Clang-only and off by default (`AC3FORGE_BUILD_FUZZERS`); see
+  [`fuzz/README.md`](../fuzz/README.md). Runs on every push (`fuzz-regress`, seed/regression
+  replay only) and nightly (`fuzz-nightly`, bounded mutation).

@@ -296,7 +296,7 @@ TEST_CASE("coupling produces valid frames across configurations", "[encoder][cou
     // Coupling needs >= 2 fbw channels; sweep the sub-band range including
     // the extremes, where the coded region is widest and narrowest.
     for (const auto acmod : {Acmod::k2_0, Acmod::k3_2}) {
-        for (const auto [begf, endf] : {std::pair{6, 12}, std::pair{0, 15}, std::pair{12, 2}}) {
+        for (const auto& [begf, endf] : {std::pair{6, 12}, std::pair{0, 15}, std::pair{12, 2}}) {
             for (const std::uint32_t kbps : {192u, 384u}) {
                 CAPTURE(static_cast<int>(acmod), begf, endf, kbps);
                 ac3::FrameEncoder encoder{{.bitrate_kbps = kbps,

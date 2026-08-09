@@ -7,7 +7,7 @@ Every command here has been run on the configuration described under
 
 | | Version | Notes |
 |---|---|---|
-| MSVC | Visual Studio 2026 | C++23. `std::expected`, `std::print` and deducing-`this` are all used. |
+| A compiler | MSVC (VS 2026), clang-cl 21, GCC 15, or Clang 21 | C++23. `std::expected`, `std::print` and deducing-`this` are all used. One [preset](#presets) per compiler; all four are required, green CI legs — see [Portability](../README.md#portability). |
 | CMake | ≥ 3.28 | `cmake_minimum_required(VERSION 3.28...4.3)`. |
 | Ninja | any recent | The presets hard-code the Ninja generator. |
 | vcpkg | any recent | Supplies Catch2, and nothing else. Needed only when tests are on. |
@@ -85,10 +85,15 @@ each with a matching `build-<platform>[-debug]` and `test-<platform>[-debug]` pr
 | Linux | Clang 21 | `config-linux-llvm[-debug]` | `build-linux-llvm[-debug]` | `test-linux-llvm[-debug]` |
 | macOS | AppleClang | `config-macos-llvm[-debug]` | `build-macos-llvm[-debug]` | `test-macos-llvm[-debug]` |
 
-Only Windows/MSVC is verified — see [Portability](../README.md#portability) for what CI says
-about the rest. There are also five `ci-<platform>` `workflowPresets` (Release only, no `-debug`
-variant) that chain configure→build→test in one `cmake --workflow --preset ci-windows-msvc`
-call; that is exactly what CI itself runs.
+There is an eleventh configure/build/test trio, Debug-only and not part of the table above
+because it isn't a platform/compiler pair but an instrumented variant of `linux-llvm`:
+`config-linux-llvm-asan-ubsan` / `build-linux-llvm-asan-ubsan` / `test-linux-llvm-asan-ubsan`,
+which inherits `linux-llvm` plus a `sanitize-asan-ubsan` fragment setting
+`AC3FORGE_SANITIZERS=address,undefined` (see `cmake/Sanitizers.cmake`; MSVC is rejected outright,
+so this only exists for GCC/Clang). See [Portability](../README.md#portability) for what CI says
+about all eleven. There are also six `ci-<platform>` `workflowPresets` (Release except for the
+asan-ubsan one, which is Debug-only) that chain configure→build→test in one
+`cmake --workflow --preset ci-windows-msvc` call; that is exactly what CI itself runs.
 
 Anything machine-specific belongs in `CMakeUserPresets.json`, which is gitignored. The pattern
 is a hidden `local` preset carrying the paths, inherited alongside the checked-in fragments:
@@ -118,6 +123,13 @@ is a hidden `local` preset carrying the paths, inherited alongside the checked-i
 }
 ```
 
+`debug` alone has no generator or binary directory — those live on the hidden `core` preset,
+and the compiler selection on a platform preset (`windows-msvc` here; see the table below for
+the others). Missing either from `dev`'s `inherits` list still configures, but silently: CMake
+falls back to its platform default generator (Visual Studio, on this machine) and an in-source
+binary directory instead of `build/dev`, which is a mess to notice and worse to undo. Inherit
+all four.
+
 That keeps vcpkg's working directories off the system drive, which matters because they run to
 several gigabytes. Substitute your own paths, and swap `windows-msvc` for whichever
 platform/compiler fragment matches your machine.
@@ -131,6 +143,10 @@ platform/compiler fragment matches your machine.
 | `AC3FORGE_BUILD_TESTS` | `ON` | Build the Catch2 suite. Requires Catch2. |
 | `AC3FORGE_FETCH_CATCH2` | `ON` | When no local Catch2 3 is found (vcpkg, a distro package, an explicit `CMAKE_PREFIX_PATH`), fetch and build v3.15.3 from source via `FetchContent` instead of failing. Turn off to insist on a package-manager copy — see `tests/CMakeLists.txt`. Irrelevant when `AC3FORGE_BUILD_TESTS` is off. |
 | `AC3FORGE_BUILD_EXAMPLES` | `ON` | Build `examples/`, and register them as tests. |
+| `AC3FORGE_WITH_ALSA` | `AUTO` | Linux only. `AUTO` builds the ALSA audio backend when libasound's headers are present; `ON` requires them; `OFF` never builds it. See [Linux audio](#linux-audio). |
+| `AC3FORGE_SANITIZERS` | empty | Comma-separated `-fsanitize=` value, e.g. `address,undefined` — see `cmake/Sanitizers.cmake`. Empty is a no-op; GCC/Clang only, MSVC is a configure error. Set via the `-asan-ubsan` preset above rather than by hand. |
+| `AC3FORGE_BUILD_FUZZERS` | `OFF` | Build the libFuzzer harnesses under `fuzz/`. Clang only (GCC and MSVC ship no libFuzzer); use `fuzz/run.sh` rather than this option directly — it configures a dedicated `build/fuzz` with the right compiler. See [`fuzz/README.md`](../fuzz/README.md). |
+| `AC3FORGE_QUARANTINE_SIGNER` | `OFF` | Non-clean-room, local-only. Requires a gitignored `src/quarantine/` overlay that is never committed (a CI job fails the build if it ever is) and embeds a key extracted from Dolby's binary. A normal build neither sees nor references it — listed here only because the option itself is public in `CMakeLists.txt`. |
 
 Building the library and CLI alone, with neither Qt nor vcpkg involved:
 
@@ -142,6 +158,72 @@ The vcpkg toolchain file is still referenced by the preset, so `VCPKG_ROOT` must
 at a checkout — it simply has nothing to install. To build with no vcpkg at all, configure
 without the preset and pass the generator and build type by hand.
 
+## Linux audio
+
+Three of ac3forge's features touch the sound hardware — live capture (`ac3cli devices`,
+`record`), monitor playback (`monitor`), and IEC 61937 bitstream passthrough (`outputs`,
+`play`). Everything else is file I/O and needs no audio stack at all; `ac3cli spdif` in
+particular reaches an AV receiver by writing a WAV, on any machine.
+
+On Linux those three are implemented over **ALSA**, and the dependency is one package:
+
+```bash
+sudo apt-get install libasound2-dev
+```
+
+(`alsa-lib-devel` on Fedora, `alsa-lib` on Arch.) Nothing else is needed: no PipeWire or
+PulseAudio development headers, no vcpkg port, no runtime daemon. Recording from the ALSA
+`default` device goes through PipeWire or PulseAudio automatically wherever one is running,
+because that is what those install themselves as.
+
+The dependency is **optional and detected**. Configure reports which way it went:
+
+```
+-- ALSA 1.2.15.3: live capture, monitor playback and IEC 61937 passthrough enabled
+--   Audio backend  : alsa
+```
+
+Without the headers, configure succeeds anyway and says so; the build then selects
+`src/lib/src/platform/posix/`, whose entry points all return `kNoBackend`, and `ac3cli` marks
+the affected commands `UNAVAILABLE HERE` in its usage rather than pretending they exist. Pass
+`-DAC3FORGE_WITH_ALSA=ON` to turn a missing libasound into a configure error instead, which is
+what a packaging build wants.
+
+### Why ALSA and not PipeWire
+
+Capture and monitor playback are ordinary PCM and every Linux audio API can do them. Passthrough
+is the discriminator, and it is what the whole project is for: sending an AC-3 or E-AC-3
+elementary stream down an S/PDIF or HDMI link so the receiver decodes it.
+
+That is not a "format" on Linux the way it is on Windows. A bitstream is opened as plain 16-bit
+stereo PCM, and what tells the receiver these bytes are Dolby Digital rather than music is the
+IEC 60958 **channel status** travelling beside them — specifically the non-audio bit, AES0
+bit 1. ALSA is where that bit is expressed (as arguments on the device name,
+`iec958:CARD=PCH,DEV=0,AES0=0x06,…`). PulseAudio's `PA_STREAM_PASSTHROUGH` and PipeWire's
+`SPA_MEDIA_SUBTYPE_iec958` are both real, and both end in the same ALSA call made by a daemon
+instead of by us. So ALSA is not merely the lowest common denominator here — it is the layer
+the other two are built on, it is present on every Linux system including ones running no sound
+server at all, and its device string is what gives unmixed access to the hardware.
+
+The cost is coexistence: opening a device directly takes it exclusively, so a running sound
+server has to have released it. That is the same bargain WASAPI exclusive mode strikes on
+Windows, for the same reason — a mixer that resamples or volume-scales a burst stream turns it
+into noise. A PipeWire backend would be a reasonable second one to add (as a sibling directory
+under `src/lib/src/platform/`, selected the same way); it would buy politeness, not capability.
+
+### What has and has not been verified
+
+Verified on WSL2 Ubuntu 26.04 with gcc 15.2 and clang 21.1, in every configuration: with
+libasound present and absent, and under ASan+UBSan with leak detection. The full suite passes
+in all of them. The device-independent halves of the backend — device-name construction,
+channel-status derivation, the negotiation, the render and capture threads, start/stop, and the
+error mapping — were additionally driven end to end against ALSA's software `null` PCM.
+
+**Not verified: any real sound hardware.** WSL2 has no sound devices and no kernel sound
+modules, so nothing here has been played to an actual S/PDIF or HDMI output, and no AV receiver
+has been asked to lock onto the result. Whether a given output accepts a bitstream is
+per-device anyway — `ac3cli outputs` probes each one and says.
+
 ## Qt
 
 Qt is a **prebuilt dependency and never a vcpkg port**. Building Qt from source through vcpkg
@@ -149,12 +231,14 @@ takes hours and produces a kit that is harder to debug against than the official
 
 `cmake/FindQt6.cmake` widens `CMAKE_PREFIX_PATH` to the usual prebuilt-kit install roots — on
 Windows `C:/Qt`, `%USERPROFILE%/Qt`, `D:/Qt`; on Linux and macOS `~/Qt`, `/opt/Qt`, Homebrew and
-MacPorts prefixes, and so on — newest kit first, and then defers to Qt's own config package. The
-Linux/macOS search exists for future use: every Linux and macOS preset currently forces
-`AC3FORGE_BUILD_GUI=OFF` regardless (see [Portability](../README.md#portability)), so today this
-only matters on Windows. If your kit is somewhere else, say so explicitly and it wins over the
-search — the project's own `-DAC3FORGE_QT_ROOT=` (or the `AC3FORGE_QT_ROOT`, `QT_ROOT_DIR` or
-`QTDIR` environment variables) is the preferred way:
+MacPorts prefixes, and so on — newest kit first, and then defers to Qt's own config package. Every
+Linux and macOS preset still forces `AC3FORGE_BUILD_GUI=OFF` by default — pass
+`-DAC3FORGE_BUILD_GUI=ON` explicitly on a machine that has Qt 6.5+, which is verified to work on
+Linux (`ac3gui` builds and passes its headless `--smoke` run against Ubuntu 26.04's Qt 6.10; CI
+does not turn it on, since its containers carry no Qt kit) but has never been tried on macOS. See
+[Portability](../README.md#portability). If your kit is somewhere else, say so explicitly and it
+wins over the search — the project's own `-DAC3FORGE_QT_ROOT=` (or the `AC3FORGE_QT_ROOT`,
+`QT_ROOT_DIR` or `QTDIR` environment variables) is the preferred way:
 
 ```bash
 cmake --preset config-windows-msvc-debug -DAC3FORGE_QT_ROOT=D:/Qt/6.8.3/msvc2022_64
@@ -196,11 +280,14 @@ Everything in this document was run on:
 | FFmpeg | 8.0.1 |
 | Python | 3.14.6 |
 
-Result: configure, build and `ctest` all clean, 182/182 tests passing.
+Result: configure, build and `ctest` all clean, 256/256 tests passing.
 
-No other compiler, OS or Qt version has been tried *here*. `src/lib/CMakeLists.txt` selects stub
-implementations of WASAPI capture and passthrough when `WIN32` is false, so a non-Windows build
-is intended to be possible, and presets exist for it (see [Presets](#presets)), but only CI has
-ever run one — and as of this writing every leg but windows-msvc fails there too, on strict
-warnings rather than a codec bug. See [Portability](../README.md#portability) for the current
-per-leg status. Assume non-Windows broken until a leg goes green.
+The Linux legs of the table above were verified separately, on WSL2 Ubuntu 26.04 with gcc 15.2.0
+and clang 21.1.8 (270/270 there — the extra 14 are `tests/platform/alsa/`, built only when the
+ALSA backend is selected) — see [Linux audio](#linux-audio) for what that did and did not prove.
+CI (`.github/workflows/ci.yml`) now runs and *requires* windows-msvc, windows-llvm, linux-gcc,
+linux-llvm, linux-llvm-asan-ubsan and static-analysis (clang-tidy) on every push; only
+macos-llvm remains experimental (`continue-on-error`) — it has never been run anywhere, on CI or
+otherwise, because the project has no Mac. `src/lib/CMakeLists.txt` selects the no-backend
+platform directory there, so the codec half is expected to work and the three audio-hardware
+commands are expected to report themselves unavailable, but neither has been observed.

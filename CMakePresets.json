@@ -64,7 +64,7 @@
     {
       "name": "linux-gcc",
       "hidden": true,
-      "description": "Linux/GCC 15 toolchain selection. The GUI is off: cmake/FindQt6.cmake only knows the Windows prebuilt-kit layout so far, and a preset that cannot find Qt should say so by not asking for it rather than by failing to configure.",
+      "description": "Linux/GCC 15 toolchain selection. The GUI is off because a Qt kit is not assumed present, NOT because it cannot be built: cmake/FindQt6.cmake resolves Linux kits fine (distro packages land on CMake's own prefixes, and relocated / aqtinstall kits are searched under ~/Qt, /opt/Qt and friends), and ac3gui builds under both Linux presets and passes its headless --smoke run against Ubuntu 26.04's Qt 6.10. Add -DAC3FORGE_BUILD_GUI=ON on a machine that has Qt 6.5+; a preset that cannot find Qt should still say so by not asking for it rather than by failing to configure.",
       "cacheVariables": {
         "VCPKG_TARGET_TRIPLET": "x64-linux-gcc",
         "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/linux.gcc.toolchain.cmake",
@@ -104,6 +104,15 @@
         "type": "equals",
         "lhs": "${hostSystemName}",
         "rhs": "Darwin"
+      }
+    },
+
+    {
+      "name": "sanitize-asan-ubsan",
+      "hidden": true,
+      "description": "AddressSanitizer + UndefinedBehaviorSanitizer, fatal on first violation (-fno-sanitize-recover=all in cmake/Sanitizers.cmake) rather than logging and continuing. Deliberately does NOT add -fsanitize=integer's unsigned-integer-overflow check: this codec relies on intentional unsigned wraparound (CRC16, ring-buffer indices, the splice counter), and blanket-enabling it drowns real findings in expected wraparound. Signed overflow and out-of-range shifts - the precedent bug's own category (commit 8386c8f) - are already part of the default 'undefined' set.",
+      "cacheVariables": {
+        "AC3FORGE_SANITIZERS": "address,undefined"
       }
     },
 
@@ -156,6 +165,11 @@
       "name": "config-macos-llvm-debug",
       "inherits": [ "debug", "macos-llvm", "core" ],
       "displayName": "macOS LLVM Debug"
+    },
+    {
+      "name": "config-linux-llvm-asan-ubsan",
+      "inherits": [ "debug", "linux-llvm", "sanitize-asan-ubsan", "core" ],
+      "displayName": "Linux LLVM ASan+UBSan"
     }
   ],
 
@@ -209,6 +223,11 @@
       "name": "build-macos-llvm-debug",
       "configurePreset": "config-macos-llvm-debug",
       "displayName": "macOS LLVM Debug"
+    },
+    {
+      "name": "build-linux-llvm-asan-ubsan",
+      "configurePreset": "config-linux-llvm-asan-ubsan",
+      "displayName": "Linux LLVM ASan+UBSan"
     }
   ],
 
@@ -282,6 +301,17 @@
       "displayName": "macOS LLVM Debug Tests",
       "output": { "outputOnFailure": true },
       "execution": { "noTestsAction": "error", "stopOnFailure": false }
+    },
+    {
+      "name": "test-linux-llvm-asan-ubsan",
+      "configurePreset": "config-linux-llvm-asan-ubsan",
+      "displayName": "Linux LLVM ASan+UBSan Tests",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error", "stopOnFailure": false },
+      "environment": {
+        "ASAN_OPTIONS": "detect_leaks=1",
+        "UBSAN_OPTIONS": "print_stacktrace=1"
+      }
     }
   ],
 
@@ -329,6 +359,15 @@
         { "type": "configure", "name": "config-macos-llvm" },
         { "type": "build", "name": "build-macos-llvm" },
         { "type": "test", "name": "test-macos-llvm" }
+      ]
+    },
+    {
+      "name": "ci-linux-llvm-asan-ubsan",
+      "displayName": "Linux LLVM ASan+UBSan CI (configure, build, test)",
+      "steps": [
+        { "type": "configure", "name": "config-linux-llvm-asan-ubsan" },
+        { "type": "build", "name": "build-linux-llvm-asan-ubsan" },
+        { "type": "test", "name": "test-linux-llvm-asan-ubsan" }
       ]
     }
   ]

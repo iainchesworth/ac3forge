@@ -782,7 +782,14 @@ std::expected<void, FrameError> validate(const FrameConfig& config) {
     if (config.dialnorm < 1 || config.dialnorm > 31) {
         return std::unexpected(FrameError::kInvalidDialnorm);
     }
-    if (!is_valid_bitrate(config.bitrate_kbps)) {
+    // §E2.3.1.3: frmsiz is an arbitrary 11-bit word count rather than an
+    // index into Table 5.18 the way AC-3's frmsizecod is, so unlike AC-3 any
+    // bitrate that lands on a legal word count is expressible here - not
+    // only the 19 nominal Table 5.18 rates. bitrate_kbps == 0 gives
+    // frame_words() == 0, which is not a syncframe at all; past
+    // kMaxFrameWords the word count overflows frmsiz's 11 bits.
+    const auto words = frame_words(config.sample_rate, config.bitrate_kbps);
+    if (words < 1 || words > kMaxFrameWords) {
         return std::unexpected(FrameError::kInvalidBitrate);
     }
     // 1+1 needs a second program's metadata throughout; out of scope here.
@@ -1507,10 +1514,10 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                                        aht_bin_bits(hebap));
                         continue;
                     }
-                    const int mantissa_bits = aht_mantissa_bits(hebap);
+                    const int hebap_mantissa_bits = aht_mantissa_bits(hebap);
                     for (std::size_t j = 0; j < kBlocksPerFrameSize; ++j) {
                         const auto code =
-                            aht_quantize_mantissa(values[j], mantissa_bits,
+                            aht_quantize_mantissa(values[j], hebap_mantissa_bits,
                                                   plan.aht_gain[at]);
                         writer.add_raw(code.code, code.bits);
                         if (code.escape_bits > 0) {
@@ -1765,6 +1772,18 @@ std::expected<std::vector<FrameConfig>, FrameError> substream_configs(
         if (const auto ok = validate(sub); !ok) {
             return std::unexpected(ok.error());
         }
+    }
+    // §E3.8.2 caps a single programme at 16 rendered channels. Each
+    // substream's own chanmap-vs-acmod/lfeon agreement is checked above; this
+    // is the aggregate the per-substream check cannot see, mirroring the
+    // decoder's own union-and-count at decode time (eac3_decoder.cpp).
+    std::uint16_t occupied = 0;
+    for (const auto& sub : out) {
+        occupied = static_cast<std::uint16_t>(
+            occupied | (sub.chanmap ? *sub.chanmap : chanmap::acmod_map(sub.acmod, sub.lfe)));
+    }
+    if (chanmap::expand(occupied).count > 16) {
+        return std::unexpected(FrameError::kTooManyChannels);
     }
     return out;
 }

@@ -3,8 +3,12 @@
 #include <array>
 #include <bit>
 #include <cstdint>
+#include <expected>
 #include <iterator>
+#include <optional>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include "ac3/core/tables.hpp"
 
@@ -107,25 +111,30 @@ static_assert([] {
 // map's population count is not its channel count.
 namespace chanmap {
 
-inline constexpr std::uint16_t kLeft = 0x8000;          // bit 0
-inline constexpr std::uint16_t kCentre = 0x4000;        // bit 1
-inline constexpr std::uint16_t kRight = 0x2000;         // bit 2
-inline constexpr std::uint16_t kLeftSurround = 0x1000;  // bit 3
-inline constexpr std::uint16_t kRightSurround = 0x0800; // bit 4
-inline constexpr std::uint16_t kLcRc = 0x0400;          // bit 5  (pair)
-inline constexpr std::uint16_t kLrsRrs = 0x0200;        // bit 6  (pair)
-inline constexpr std::uint16_t kCs = 0x0100;            // bit 7
-inline constexpr std::uint16_t kTs = 0x0080;            // bit 8
-inline constexpr std::uint16_t kLsdRsd = 0x0040;        // bit 9  (pair)
-inline constexpr std::uint16_t kLwRw = 0x0020;          // bit 10 (pair)
-inline constexpr std::uint16_t kVhlVhr = 0x0010;        // bit 11 (pair)
-inline constexpr std::uint16_t kVhc = 0x0008;           // bit 12
-inline constexpr std::uint16_t kLtsRts = 0x0004;        // bit 13 (pair)
-inline constexpr std::uint16_t kLfe2 = 0x0002;          // bit 14
-inline constexpr std::uint16_t kLfe = 0x0001;           // bit 15
+// "Bit" suffix distinguishes these mask constants from the same-named
+// Location enumerators below - GCC's -Wshadow (unlike Clang's) flags an enum
+// class's enumerators against outer-scope declarations of the same name even
+// though they are never reachable unqualified, so the two vocabularies need
+// distinct spellings to build warning-clean everywhere.
+inline constexpr std::uint16_t kLeftBit = 0x8000;          // bit 0
+inline constexpr std::uint16_t kCentreBit = 0x4000;        // bit 1
+inline constexpr std::uint16_t kRightBit = 0x2000;         // bit 2
+inline constexpr std::uint16_t kLeftSurroundBit = 0x1000;  // bit 3
+inline constexpr std::uint16_t kRightSurroundBit = 0x0800; // bit 4
+inline constexpr std::uint16_t kLcRcBit = 0x0400;          // bit 5  (pair)
+inline constexpr std::uint16_t kLrsRrsBit = 0x0200;        // bit 6  (pair)
+inline constexpr std::uint16_t kCsBit = 0x0100;            // bit 7
+inline constexpr std::uint16_t kTsBit = 0x0080;            // bit 8
+inline constexpr std::uint16_t kLsdRsdBit = 0x0040;        // bit 9  (pair)
+inline constexpr std::uint16_t kLwRwBit = 0x0020;          // bit 10 (pair)
+inline constexpr std::uint16_t kVhlVhrBit = 0x0010;        // bit 11 (pair)
+inline constexpr std::uint16_t kVhcBit = 0x0008;           // bit 12
+inline constexpr std::uint16_t kLtsRtsBit = 0x0004;        // bit 13 (pair)
+inline constexpr std::uint16_t kLfe2Bit = 0x0002;          // bit 14
+inline constexpr std::uint16_t kLfeBit = 0x0001;           // bit 15
 
 inline constexpr std::uint16_t kPairs =
-    kLcRc | kLrsRrs | kLsdRsd | kLwRw | kVhlVhr | kLtsRts;
+    kLcRcBit | kLrsRrsBit | kLsdRsdBit | kLwRwBit | kVhlVhrBit | kLtsRtsBit;
 
 // Coded channels a map accounts for. §E2.3.1.8 requires this to equal the
 // channels the substream's acmod and lfeon code, and the coded order to
@@ -225,27 +234,27 @@ struct Layout {
 // and is rejected before this is ever consulted.
 [[nodiscard]] constexpr std::uint16_t acmod_map(Acmod acmod, bool lfe) {
     constexpr std::array<std::uint16_t, 8> fbw = {
-        kLeft | kRight,                                       // 1+1 (not a layout)
-        kCentre,                                              // 1/0
-        kLeft | kRight,                                       // 2/0
-        kLeft | kCentre | kRight,                             // 3/0
-        kLeft | kRight | kCs,                                 // 2/1
-        kLeft | kCentre | kRight | kCs,                       // 3/1
-        kLeft | kRight | kLeftSurround | kRightSurround,      // 2/2
-        kLeft | kCentre | kRight | kLeftSurround | kRightSurround,  // 3/2
+        kLeftBit | kRightBit,                                             // 1+1 (not a layout)
+        kCentreBit,                                                       // 1/0
+        kLeftBit | kRightBit,                                             // 2/0
+        kLeftBit | kCentreBit | kRightBit,                                // 3/0
+        kLeftBit | kRightBit | kCsBit,                                    // 2/1
+        kLeftBit | kCentreBit | kRightBit | kCsBit,                       // 3/1
+        kLeftBit | kRightBit | kLeftSurroundBit | kRightSurroundBit,      // 2/2
+        kLeftBit | kCentreBit | kRightBit | kLeftSurroundBit | kRightSurroundBit,  // 3/2
     };
     return static_cast<std::uint16_t>(fbw[static_cast<std::uint8_t>(acmod)] |
-                                      (lfe ? kLfe : 0));
+                                      (lfe ? kLfeBit : 0));
 }
 
 // Canonical 7.1: the dependent replaces the bed's surrounds and adds the two
 // rear surrounds. This is the spec's own example (bits 3, 4, 6 with acmod 2/2).
-inline constexpr std::uint16_t k71Rear = kLeftSurround | kRightSurround | kLrsRrs;
+inline constexpr std::uint16_t k71Rear = kLeftSurroundBit | kRightSurroundBit | kLrsRrsBit;
 // 5.1.2: two height channels supplementing an untouched 5.1 bed.
-inline constexpr std::uint16_t k512Height = kVhlVhr;
+inline constexpr std::uint16_t k512Height = kVhlVhrBit;
 // Four ceiling channels - front and rear height. Both are PAIR locations, so
 // two bits account for four channels.
-inline constexpr std::uint16_t kTopQuad = kVhlVhr | kLtsRts;
+inline constexpr std::uint16_t kTopQuad = kVhlVhrBit | kLtsRtsBit;
 
 static_assert(k71Rear == 0x1A00, "Table E2.5 bit 0 must be the MSB");
 static_assert(channel_count(k71Rear) == 4);
@@ -261,8 +270,8 @@ static_assert(expand(k71Rear)[2] == Location::kLrs);
 static_assert(expand(k71Rear)[3] == Location::kRrs);
 static_assert(expand(kTopQuad)[0] == Location::kVhl);
 static_assert(expand(kTopQuad)[3] == Location::kRts);
-static_assert(expand(kLfe)[0] == Location::kLfe);
-static_assert(expand(kLfe2)[0] == Location::kLfe2);
+static_assert(expand(kLfeBit)[0] == Location::kLfe);
+static_assert(expand(kLfe2Bit)[0] == Location::kLfe2);
 static_assert(expand(0xFFFF).count == kMaxChannels);
 
 // An acmod's map has to describe exactly the channels that acmod codes, or a
@@ -287,6 +296,66 @@ static_assert([] {
 // four new channels and fits a single dependent, while 7.1.4 needs six and
 // cannot - it is the reason kTopQuad rides beside k71Rear in a second
 // dependent rather than merging into one.
+
+// --- dynamic channel allocation ---------------------------------------------
+//
+// A fixed LayoutId only ever hand-picks a few of the combinations Table E2.5
+// can express. The general problem underneath - partition an arbitrary set of
+// desired locations into a bed and however many dependents it takes - is what
+// this section solves, so a caller can ask for anything the format allows
+// rather than one of a short hand-picked list.
+
+// Table 5.8 caps a single acmod at 3/2: five full-bandwidth channels, never
+// six, whether or not the substream also carries an LFE-type channel.
+inline constexpr int kMaxSubstreamFullbw = 5;
+
+// The acmod field always contributes at least one full-bandwidth channel
+// (Table 5.8's narrowest mode, 1/0, is one channel; there is no zero-channel
+// acmod), so an all-LFE-type substream can never exist: a substream carrying
+// LFE2 must also carry at least one real speaker channel. Adding lfeon's one
+// LFE-type slot to kMaxSubstreamFullbw is the widest a substream ever gets.
+inline constexpr int kMaxSubstreamChannels = kMaxSubstreamFullbw + 1;
+
+enum class AllocationError : std::uint8_t {
+    kTooManyChannels,  // §E3.8.2: the request needs more than 16 rendered channels
+    kNoBedFit,         // no Table 5.8 acmod's own channels are a subset of the request
+    kOrphanLfe2,       // LFE2 was requested with no full-bandwidth channel left to share its substream
+};
+
+[[nodiscard]] std::string_view describe(AllocationError error);
+
+// The Table 5.8 acmod/lfeon that code exactly the channels `mask` names, or
+// nullopt if no combination does - which happens only when `mask` asks for
+// zero full-bandwidth channels (an LFE-type location with no companion) or
+// more than five. Two acmods can share a full-bandwidth count (3/1 and 2/2
+// both code four), so a fixed preference (documented at the definition)
+// breaks the tie; existing named layouts are built to agree with that choice,
+// so this is not a free-standing decision, it is what they already assume.
+[[nodiscard]] std::optional<std::pair<Acmod, bool>> acmod_for_chanmap(std::uint16_t mask);
+
+// The inverse of name(): the Table E2.5 location a display name (as name()
+// prints it, e.g. "Ls", "LFE2") stands for, or nullopt for anything else.
+[[nodiscard]] std::optional<Location> parse_location(std::string_view name);
+
+// A concrete, general E-AC-3 channel plan: the independent substream's own
+// acmod/lfeon (Table 5.8 - only a dependent may carry a custom chanmap, so
+// the bed is never anything but one of its eight modes), and the chanmap each
+// dependent carries, in transmission order.
+struct ChannelPlan {
+    Acmod bed_acmod = Acmod::k2_0;
+    bool bed_lfe = false;
+    std::vector<std::uint16_t> dependents;
+};
+
+// Partitions `locations` - every Table E2.5 location the whole programme
+// should render - into a bed and however many dependents the remainder
+// needs. The bed is the WIDEST Table 5.8 acmod whose own locations are all
+// present in `locations`: only a dependent may customise its channel map, so
+// the bed can never be asked to render a location outside the eight Table 5.8
+// shapes, and among those that fit, the widest one leaves the least for
+// dependents to carry. Everything `locations` asks for that the bed cannot
+// express is packed into dependents of at most kMaxSubstreamChannels each.
+[[nodiscard]] std::expected<ChannelPlan, AllocationError> allocate(std::uint16_t locations);
 
 }  // namespace chanmap
 

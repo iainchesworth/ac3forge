@@ -118,6 +118,36 @@ inline constexpr std::array<LayoutInfo, 7> kLayouts{{
     return codec == Codec::kEac3 || layout(id).dependents == 0;
 }
 
+// --- the general channel model -----------------------------------------------
+//
+// A LayoutId only ever names one of the combinations below. This is the
+// general form underneath: a bed acmod/lfe plus however many dependent
+// chanmaps it takes to render an arbitrary set of Table E2.5 locations
+// (ac3::eac3::chanmap::allocate does the actual partitioning). Every function
+// below that used to take only a LayoutId now also takes a ChannelPlan
+// directly, and the LayoutId overload is a one-line lookup into it - so a
+// named layout is a convenience shortcut for a specific plan, not a separate
+// system.
+using ChannelPlan = eac3::chanmap::ChannelPlan;
+using ChannelPlanError = eac3::chanmap::AllocationError;
+
+// The plan a named layout has always built: its bed's acmod/lfe and its
+// dependents' chanmaps, unchanged from what LayoutId's own hand-picked
+// constants (k71Rear, kTopQuad, k512Height) already gave it.
+[[nodiscard]] ChannelPlan channel_plan_for(LayoutId id);
+
+// Table E2.5 location names, comma-separated ("L,C,R,LFE,Vhl,Vhr"), as an
+// alternative to a named layout for whatever combination the format allows
+// but no LayoutId names. A pair location (Lc/Rc, Lrs/Rrs, Lsd/Rsd, Lw/Rw,
+// Vhl/Vhr, Lts/Rts) must name both members - Table E2.5 has no bit for one
+// alone. Returns nullopt on an unrecognised name, an unpaired pair member, or
+// an empty list.
+[[nodiscard]] std::optional<std::uint16_t> parse_channels(std::string_view text);
+
+// The inverse, in Table E2.5 bit order. Round-trips through parse_channels,
+// the way format_tools/parse_tools already do for coding tools.
+[[nodiscard]] std::string format_channels(std::uint16_t locations);
+
 // One coded channel of one substream, in transmission order.
 struct CodedChannel {
     eac3::chanmap::Location location;
@@ -130,19 +160,26 @@ struct CodedChannel {
     int substream;
 };
 
-// Every coded channel of a layout, in the order encode_access_unit() wants
-// them. Size is layout(id).transmitted.
+// Every coded channel of a plan, in the order encode_access_unit() wants
+// them. For a named layout, size is layout(id).transmitted.
+[[nodiscard]] std::vector<CodedChannel> coded_channels(const ChannelPlan& plan);
 [[nodiscard]] std::vector<CodedChannel> coded_channels(LayoutId id);
 
 // Names for those channels, for meters and reports. A bed channel a dependent
 // replaces is marked, because otherwise a 7.1 display shows "Ls" twice with
 // different levels and no way to tell which is which.
+[[nodiscard]] std::vector<std::string> coded_channel_names(const ChannelPlan& plan);
 [[nodiscard]] std::vector<std::string> coded_channel_names(LayoutId id);
 
-// The independent substream's own coding mode - the layout a decoder that
+// The independent substream's own coding mode - the plan a decoder that
 // ignores every dependent would play.
 [[nodiscard]] Acmod bed_acmod(LayoutId id);
 [[nodiscard]] bool bed_lfe(LayoutId id);
+
+// Every distinct location the plan renders, bed and dependents combined -
+// what layout(id).rendered counts for a named layout, generalised to any
+// plan.
+[[nodiscard]] int rendered_channel_count(const ChannelPlan& plan);
 
 // Speaker locations reordered into the order a WAV file interleaves them
 // (WAVE_FORMAT_EXTENSIBLE: FL FR FC LFE BL BR ...): entry i is the index in
@@ -219,6 +256,10 @@ struct Metadata {
 struct Plan {
     Codec codec = Codec::kAc3;
     LayoutId layout = LayoutId::kStereo;
+    // A caller-built alternative to `layout`: when set, this OVERRIDES
+    // `layout` entirely and the plan targets exactly these Table E2.5
+    // locations (ac3::eac3::chanmap::allocate) instead of a named preset.
+    std::optional<std::uint16_t> custom_locations = std::nullopt;
     SampleRate sample_rate = SampleRate::k48000;
     std::uint32_t bitrate_kbps = 192;
     Tools tools{};
@@ -226,12 +267,20 @@ struct Plan {
 };
 
 enum class PlanError : std::uint8_t {
-    kLayoutNeedsEac3,   // an immersive layout asked of AC-3
+    kLayoutNeedsEac3,   // an immersive layout (or channel selection) asked of AC-3
     kBitrateNotLegal,   // AC-3 takes only the 19 Table 5.18 rates
     kNoSourceLayout,    // no standard speaker layout has that many channels
+    kInvalidChannels,   // custom_locations is not a channel selection allocate() can satisfy
 };
 
 [[nodiscard]] std::string_view describe(PlanError error);
+
+// The plan's channel plan: custom_locations resolved through allocate() if
+// set, else channel_plan_for(layout). Every function below that consumes a
+// Plan's channels goes through this, so a custom selection and a named
+// layout are built exactly the same way. Assumes `plan` already passed
+// validate(), the way ac3_config/eac3_config already assume a valid bitrate.
+[[nodiscard]] ChannelPlan resolve(const Plan& plan);
 
 // AC-3 only; the caller has already checked carries(). Coupling comes from
 // tools.coupling, which is the one Annex E selector A/52 §7.4 also defines for
@@ -274,6 +323,9 @@ struct Routing {
 // delivers. The downmix levels matter because folding a wide source into a
 // narrow layout is §7.8's job, not a panner's, and §7.8 is defined in terms of
 // exactly these two levels.
+[[nodiscard]] std::optional<Routing> route(const ChannelPlan& target, std::size_t wav_channels,
+                                           meta::CentreMixLevel clev,
+                                           meta::SurroundMixLevel slev);
 [[nodiscard]] std::optional<Routing> route(LayoutId target, std::size_t wav_channels,
                                            meta::CentreMixLevel clev,
                                            meta::SurroundMixLevel slev);

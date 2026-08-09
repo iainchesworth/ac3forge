@@ -38,7 +38,7 @@ struct SilentFrameConfig {
     bool pad441 = false;
 };
 
-enum class FrameError {
+enum class FrameError : std::uint8_t {
     kInvalidBitrate,
     kInvalidDialnorm,
     // A substream's strmtyp/substreamid is out of range, an access unit has
@@ -48,6 +48,10 @@ enum class FrameError {
     // The channel locations a chanmap names do not add up to the channels the
     // substream's acmod and lfeon actually code (A/52 §E2.3.1.8).
     kInvalidChannelMap,
+    // The bed and its dependents together render more than sixteen distinct
+    // Table E2.5 locations - the whole-programme ceiling A/52 §E3.8.2 states,
+    // which no single substream's own chanmap check can catch.
+    kTooManyChannels,
     // A mixing-metadata field would go out as a reserved code (Tables D2.4 and
     // D2.6 reserve three of the eight surround levels) or out of range.
     kInvalidMixLevel,

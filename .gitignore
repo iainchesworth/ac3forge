@@ -22,3 +22,10 @@ docs/spec/
 # here means it cannot be staged onto an integration branch by accident; a CI
 # "no quarantine on main" check backs this up.
 src/quarantine/
+
+# Grown fuzzing corpus and crash artifacts (fuzz/run.sh): reproducible from
+# fuzz/seeds/ plus a mutation budget, and can grow large. What must survive a
+# fix - the minimized input that proved a bug - lives in fuzz/regressions/
+# instead, which IS tracked.
+fuzz/corpus/
+fuzz/artifacts/

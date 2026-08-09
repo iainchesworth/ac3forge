@@ -1,0 +1,164 @@
+# ac3forge fuzzing. Three jobs over the same libFuzzer harnesses in fuzz/:
+#
+#   fuzz-regress   Replays fuzz/seeds/ and fuzz/regressions/ with -runs=0 (no
+#                  mutation) - a correctness gate: every regression corpus
+#                  entry must still not crash. Seconds, not minutes; runs on
+#                  every push/PR to main/develop and is NOT experimental - a
+#                  regression here means a fixed bug came back.
+#   fuzz-short     A bounded mutation budget (60s/target, ~4 minutes total),
+#                  push only, so pull requests are not slowed by it.
+#   fuzz-nightly   A longer bounded mutation budget (10 min/target by default)
+#                  on a daily schedule, plus workflow_dispatch for an
+#                  on-demand deeper run with a custom budget.
+#
+# This is a bounded, time-boxed run, not continuous (OSS-Fuzz-style) fuzzing
+# infrastructure - see fuzz/README.md.
+#
+# All three run in the same ubuntu:26.04 + LLVM 21 container ci.yml's
+# linux-llvm leg uses. The harnesses build under the same strict `ac3::warnings`
+# set (-Werror included) as every other target - the fuzz build used to be the
+# one exception, on the assumption it carried a sign-conversion/double-promotion
+# debt, but a recount found zero such sites and the exemption was removed.
+# fuzz-short and fuzz-nightly stay marked experimental on their own merits:
+# neither has multiple clean fuzzing runs behind it yet, which is a question of
+# track record rather than of anything the compiler can check. Promote one by
+# deleting its `continue-on-error: true` line.
+#
+# Deliberately its own workflow rather than folded into ci.yml's build-and-test
+# matrix or its ci-status gate: fuzz-regress is cheap enough to make required
+# in branch protection once it has proven itself, but that is a repository
+# setting, not something this file can declare on its own.
+name: Fuzz
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    # 03:17 UTC - an off-the-hour time so a future second scheduled workflow
+    # does not contend with this one for the same runner-queue instant.
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      seconds_per_target:
+        description: "Mutation budget per harness, in seconds"
+        type: number
+        default: 600
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz-regress:
+    name: Fuzz Regress (seeds + regression corpus, no mutation)
+    runs-on: ubuntu-latest
+    container: ubuntu:26.04
+    steps:
+      - name: Bootstrap container
+        run: |
+          set -eu
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends \
+            build-essential ca-certificates cmake curl git gnupg lsb-release \
+            ninja-build pkg-config software-properties-common tar unzip wget zip
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install LLVM 21
+        run: bash .github/toolchain/03-llvm-toolchain.sh
+
+      # 03-llvm-toolchain.sh installs the compiler only - none of ci.yml's
+      # other Clang legs link a sanitizer or libFuzzer, so none of them have
+      # ever needed the runtime archives. This is fuzzing's own dependency.
+      - name: Install sanitizer + libFuzzer runtime archives
+        run: apt-get install -y -qq --no-install-recommends libclang-rt-21-dev
+
+      - name: Replay seeds + regression corpus (no mutation)
+        run: bash fuzz/run.sh regress
+
+  fuzz-short:
+    name: Fuzz Short (bounded mutation, push only)
+    if: github.event_name == 'push'
+    needs: fuzz-regress
+    runs-on: ubuntu-latest
+    container: ubuntu:26.04
+    continue-on-error: true  # experimental - see the header comment
+    env:
+      AC3FORGE_FUZZ_SECONDS: 60
+    steps:
+      - name: Bootstrap container
+        run: |
+          set -eu
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends \
+            build-essential ca-certificates cmake curl git gnupg lsb-release \
+            ninja-build pkg-config software-properties-common tar unzip wget zip
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install LLVM 21
+        run: bash .github/toolchain/03-llvm-toolchain.sh
+
+      # 03-llvm-toolchain.sh installs the compiler only - none of ci.yml's
+      # other Clang legs link a sanitizer or libFuzzer, so none of them have
+      # ever needed the runtime archives. This is fuzzing's own dependency.
+      - name: Install sanitizer + libFuzzer runtime archives
+        run: apt-get install -y -qq --no-install-recommends libclang-rt-21-dev
+
+      - name: Fuzz (bounded mutation budget)
+        run: bash fuzz/run.sh run
+
+      - name: Upload crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-short-artifacts
+          path: fuzz/artifacts/
+          if-no-files-found: ignore
+
+  fuzz-nightly:
+    name: Fuzz Nightly (deeper bounded mutation)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    container: ubuntu:26.04
+    continue-on-error: true  # experimental - see the header comment
+    env:
+      AC3FORGE_FUZZ_SECONDS: ${{ github.event.inputs.seconds_per_target || 600 }}
+    steps:
+      - name: Bootstrap container
+        run: |
+          set -eu
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends \
+            build-essential ca-certificates cmake curl git gnupg lsb-release \
+            ninja-build pkg-config software-properties-common tar unzip wget zip
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install LLVM 21
+        run: bash .github/toolchain/03-llvm-toolchain.sh
+
+      # 03-llvm-toolchain.sh installs the compiler only - none of ci.yml's
+      # other Clang legs link a sanitizer or libFuzzer, so none of them have
+      # ever needed the runtime archives. This is fuzzing's own dependency.
+      - name: Install sanitizer + libFuzzer runtime archives
+        run: apt-get install -y -qq --no-install-recommends libclang-rt-21-dev
+
+      - name: Fuzz (deeper bounded mutation budget)
+        run: bash fuzz/run.sh run
+
+      - name: Upload crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-nightly-artifacts
+          path: fuzz/artifacts/
+          if-no-files-found: ignore

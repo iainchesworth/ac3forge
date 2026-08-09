@@ -31,7 +31,7 @@ namespace matroska {
 inline constexpr std::string_view kCodecEac3 = "A_EAC3";
 inline constexpr std::string_view kCodecAc3 = "A_AC3";
 
-enum class MuxError {
+enum class MuxError : std::uint8_t {
     kNoFrames,
     kInvalidTrack,   // zero/negative channels or sample rate, or an empty codec id
     kFrameTooLarge,  // a single frame beyond what one SimpleBlock can carry

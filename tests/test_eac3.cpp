@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -849,15 +850,207 @@ TEST_CASE("chanmap counts paired locations as two channels", "[eac3]") {
     // Six of the sixteen Table E2.5 locations name a pair, so population count
     // is not channel count - and the two disagreeing is a wrong-speaker bug
     // that parses perfectly.
-    CHECK(channel_count(kLeft) == 1);
-    CHECK(channel_count(kLfe) == 1);
-    CHECK(channel_count(kLrsRrs) == 2);
-    CHECK(channel_count(kVhlVhr) == 2);
-    CHECK(channel_count(static_cast<std::uint16_t>(kLeft | kCentre | kRight)) == 3);
+    CHECK(channel_count(kLeftBit) == 1);
+    CHECK(channel_count(kLfeBit) == 1);
+    CHECK(channel_count(kLrsRrsBit) == 2);
+    CHECK(channel_count(kVhlVhrBit) == 2);
+    CHECK(channel_count(static_cast<std::uint16_t>(kLeftBit | kCentreBit | kRightBit)) == 3);
     // Bit 0 is the MSB, which is the only numbering under which the spec's
     // example (bits 3, 4, 6 with acmod 2/2) comes to four channels.
     CHECK(k71Rear == 0x1A00);
     CHECK(channel_count(k71Rear) == 4);
+}
+
+namespace {
+// A pair location gets exactly one bit in Table E2.5 (kLcRc, not separate
+// kLc/kRc bits), so "Lc without Rc" cannot even be SPELLED as the
+// std::uint16_t chanmap::allocate() and the rest of this header take - there
+// is no bit position for one alone. Proven at compile time rather than by a
+// runtime rejection test, because there is no runtime call this API could
+// receive that would name half a pair: the type itself has nowhere to put
+// it. (The higher-level string API, plan::parse_channels, accepts individual
+// location NAMES before it ever reaches this type - that boundary is where a
+// runtime check belongs, and test_plan.cpp's parse_channels test covers it.)
+using namespace ac3::eac3::chanmap;
+static_assert(std::popcount(kLcRcBit) == 1 && channel_count(kLcRcBit) == 2);
+static_assert(std::popcount(kLrsRrsBit) == 1 && channel_count(kLrsRrsBit) == 2);
+static_assert(std::popcount(kLsdRsdBit) == 1 && channel_count(kLsdRsdBit) == 2);
+static_assert(std::popcount(kLwRwBit) == 1 && channel_count(kLwRwBit) == 2);
+static_assert(std::popcount(kVhlVhrBit) == 1 && channel_count(kVhlVhrBit) == 2);
+static_assert(std::popcount(kLtsRtsBit) == 1 && channel_count(kLtsRtsBit) == 2);
+}  // namespace
+
+TEST_CASE("acmod_for_chanmap picks the acmod that codes exactly the mask's channels", "[eac3]") {
+    using namespace ac3::eac3::chanmap;
+    // Full-bandwidth-only masks: each count picks the Table 5.8 acmod with
+    // exactly that many full-bandwidth channels (never dual mono).
+    CHECK(acmod_for_chanmap(kCentreBit) == std::pair{ac3::Acmod::k1_0, false});
+    CHECK(acmod_for_chanmap(kLcRcBit) == std::pair{ac3::Acmod::k2_0, false});  // pair: 2 channels
+    CHECK(acmod_for_chanmap(static_cast<std::uint16_t>(kLeftBit | kCentreBit | kRightBit)) ==
+          std::pair{ac3::Acmod::k3_0, false});
+    // Four is a genuine tie (3/1 and 2/2 both code four full-bandwidth
+    // channels) - the named layouts (k71Rear, kTopQuad) already assume 2/2
+    // wins, so this pins that choice rather than leaving it to whichever the
+    // search order hits first by accident.
+    CHECK(acmod_for_chanmap(k71Rear) == std::pair{ac3::Acmod::k2_2, false});
+    CHECK(acmod_for_chanmap(kTopQuad) == std::pair{ac3::Acmod::k2_2, false});
+    CHECK(acmod_for_chanmap(static_cast<std::uint16_t>(kLeftBit | kCentreBit | kRightBit |
+                                                        kLeftSurroundBit | kRightSurroundBit)) ==
+          std::pair{ac3::Acmod::k3_2, false});
+
+    // An LFE-type location subtracts one from the full-bandwidth budget
+    // lfeon needs to supply - LFE and LFE2 are interchangeable here, since
+    // both come from the same one-bit lfeon slot.
+    CHECK(acmod_for_chanmap(static_cast<std::uint16_t>(kCentreBit | kLfeBit)) ==
+          std::pair{ac3::Acmod::k1_0, true});
+    CHECK(acmod_for_chanmap(static_cast<std::uint16_t>(kCentreBit | kLfe2Bit)) ==
+          std::pair{ac3::Acmod::k1_0, true});
+
+    // No acmod codes zero full-bandwidth channels (Table 5.8's narrowest, 1/0,
+    // is already one) or more than five (3/2), so an LFE-type location with no
+    // companion, and a request for six or more, both have no answer.
+    CHECK_FALSE(acmod_for_chanmap(kLfeBit).has_value());
+    CHECK_FALSE(acmod_for_chanmap(kLfe2Bit).has_value());
+    // lfeon is a single bit: a substream can never carry LFE and LFE2 at once,
+    // however much room the full-bandwidth side would otherwise leave.
+    CHECK_FALSE(acmod_for_chanmap(static_cast<std::uint16_t>(kCentreBit | kLfeBit | kLfe2Bit)).has_value());
+}
+
+TEST_CASE("allocate partitions an arbitrary channel set into a bed and dependents", "[eac3]") {
+    using namespace ac3::eac3::chanmap;
+
+    // A plain 5.1 request needs no dependent at all.
+    {
+        const auto plan = allocate(static_cast<std::uint16_t>(
+            kLeftBit | kCentreBit | kRightBit | kLeftSurroundBit | kRightSurroundBit | kLfeBit));
+        REQUIRE(plan.has_value());
+        CHECK(plan->bed_acmod == ac3::Acmod::k3_2);
+        CHECK(plan->bed_lfe);
+        CHECK(plan->dependents.empty());
+    }
+
+    // A request the bed cannot fully cover packs the remainder into a
+    // dependent - Vhl/Vhr here, exactly what k512Height already names.
+    {
+        const auto plan = allocate(static_cast<std::uint16_t>(
+            kLeftBit | kCentreBit | kRightBit | kLeftSurroundBit | kRightSurroundBit | kLfeBit | kVhlVhrBit));
+        REQUIRE(plan.has_value());
+        CHECK(plan->bed_acmod == ac3::Acmod::k3_2);
+        REQUIRE(plan->dependents.size() == 1);
+        CHECK(plan->dependents[0] == kVhlVhrBit);
+    }
+
+    // No Ls/Rs in the request at all: the bed narrows to whatever Table 5.8
+    // shape actually fits (3/0 here), rather than defaulting to 3/2 and
+    // leaving Ls/Rs to a dependent that was never asked for.
+    {
+        const auto plan = allocate(static_cast<std::uint16_t>(kLeftBit | kCentreBit | kRightBit | kLfeBit));
+        REQUIRE(plan.has_value());
+        CHECK(plan->bed_acmod == ac3::Acmod::k3_0);
+        CHECK(plan->dependents.empty());
+    }
+
+    // Three pair locations with no LFE need six full-bandwidth channels -
+    // impossible for one dependent, since Table 5.8 caps a single acmod at
+    // five, whether or not it also carries an LFE-type channel. The packer
+    // has to open a second dependent rather than (incorrectly) filling one to
+    // six - this is the exact boundary a first version of the allocator got
+    // wrong, jamming all three pairs into one dependent and producing a
+    // chanmap no acmod could code.
+    {
+        const auto plan = allocate(static_cast<std::uint16_t>(
+            kLeftBit | kCentreBit | kRightBit | kLeftSurroundBit | kRightSurroundBit | kLfeBit | kLcRcBit | kLrsRrsBit |
+            kLsdRsdBit));
+        REQUIRE(plan.has_value());
+        REQUIRE(plan->dependents.size() == 2);
+        for (const auto dependent : plan->dependents) {
+            CHECK(channel_count(dependent) <= kMaxSubstreamFullbw);
+            CHECK(acmod_for_chanmap(dependent).has_value());
+        }
+        CHECK(channel_count(plan->dependents[0]) + channel_count(plan->dependents[1]) == 6);
+    }
+
+    // LFE2 needs a full-bandwidth companion in its OWN substream (acmod
+    // always contributes at least one) - here it rides with Vhc.
+    {
+        const auto plan = allocate(static_cast<std::uint16_t>(
+            kLeftBit | kCentreBit | kRightBit | kLeftSurroundBit | kRightSurroundBit | kLfeBit | kVhcBit | kLfe2Bit));
+        REQUIRE(plan.has_value());
+        REQUIRE(plan->dependents.size() == 1);
+        CHECK(plan->dependents[0] == static_cast<std::uint16_t>(kVhcBit | kLfe2Bit));
+    }
+
+    // LFE2 with nothing left to share a substream with is unsatisfiable: the
+    // bed already claims every other location the request named.
+    {
+        const auto plan = allocate(static_cast<std::uint16_t>(
+            kLeftBit | kCentreBit | kRightBit | kLeftSurroundBit | kRightSurroundBit | kLfeBit | kLfe2Bit));
+        REQUIRE_FALSE(plan.has_value());
+        CHECK(plan.error() == AllocationError::kOrphanLfe2);
+    }
+
+    // §E3.8.2: sixteen rendered channels is the whole-programme ceiling.
+    // Seventeen is refused outright, before any partitioning is attempted.
+    {
+        const auto locations = static_cast<std::uint16_t>(
+            kLeftBit | kCentreBit | kRightBit | kLeftSurroundBit | kRightSurroundBit | kLfeBit | kLcRcBit | kLrsRrsBit |
+            kLsdRsdBit | kLwRwBit | kVhlVhrBit | kVhcBit);
+        REQUIRE(channel_count(locations) == 17);
+        const auto plan = allocate(locations);
+        REQUIRE_FALSE(plan.has_value());
+        CHECK(plan.error() == AllocationError::kTooManyChannels);
+    }
+
+    // A request with no front coverage at all matches no Table 5.8 acmod -
+    // there is no "surrounds only" mode for a bed to fall back to.
+    {
+        const auto plan = allocate(kLrsRrsBit);
+        REQUIRE_FALSE(plan.has_value());
+        CHECK(plan.error() == AllocationError::kNoBedFit);
+    }
+}
+
+TEST_CASE("allocate refuses a request no Table 5.8 mode can anchor a bed on",
+          "[eac3]") {
+    using namespace ac3::eac3::chanmap;
+    // bed_for() takes the WIDEST acmod whose own set is a SUBSET of the
+    // request, and Table 5.8's narrowest mode is exactly {C} - so ANY request
+    // containing Centre always matches at least 1/0. The only way to fail is
+    // a request with no Centre AND not both Left and Right together: nothing
+    // in Table 5.8 codes L or R alone, or a surround without its own front
+    // pair. This covers both the "ceiling/extras only" and the "incomplete
+    // front shape" ways a request can fail that test.
+    for (const auto locations : {
+             kLeftBit,                                                   // L alone
+             kRightBit,                                                   // R alone
+             static_cast<std::uint16_t>(kLeftBit | kLeftSurroundBit),    // L+Ls, no R
+             static_cast<std::uint16_t>(kRightBit | kRightSurroundBit),  // R+Rs, no L
+             kVhlVhrBit,   // ceiling only, no front channel at all
+             kLcRcBit,     // Lc/Rc only - aux locations Table 5.8 never names
+         }) {
+        CAPTURE(locations);
+        const auto plan = allocate(locations);
+        REQUIRE_FALSE(plan.has_value());
+        CHECK(plan.error() == AllocationError::kNoBedFit);
+    }
+
+    // C + R with no L LOOKS just as incomplete as the cases above, but is
+    // not: chanmap lets a dependent's coded channel carry any location
+    // regardless of what the bed's own acmod would naturally mean, so this
+    // is bed=1/0 (mono, C only) plus a one-channel dependent explicitly
+    // labelled R - odd content, but a legal bitstream (§E2.3.1.8 only checks
+    // that the dependent's chanmap population matches ITS OWN acmod's coded
+    // count, never that it matches the bed). Proving this does NOT get
+    // refused matters as much as the rejections above: over-refusing a
+    // request the format can actually carry would be its own bug.
+    {
+        const auto plan = allocate(static_cast<std::uint16_t>(kCentreBit | kRightBit));
+        REQUIRE(plan.has_value());
+        CHECK(plan->bed_acmod == ac3::Acmod::k1_0);
+        CHECK_FALSE(plan->bed_lfe);
+        REQUIRE(plan->dependents.size() == 1);
+        CHECK(plan->dependents[0] == kRightBit);
+    }
 }
 
 TEST_CASE("E-AC-3 access unit concatenates its substreams", "[eac3]") {
@@ -948,19 +1141,28 @@ TEST_CASE("E-AC-3 rejects substream layouts it cannot express", "[eac3]") {
     // and lfeon code. A decoder would not fail on this - it would just put
     // audio in the wrong speakers - so the encoder has to refuse it.
     auto wrong = seven_one();
-    wrong.dependents[0].chanmap = ac3::eac3::chanmap::kLrsRrs;  // 2, not 4
+    wrong.dependents[0].chanmap = ac3::eac3::chanmap::kLrsRrsBit;  // 2, not 4
     CHECK(ac3::eac3::build_silent_access_unit(wrong).error() ==
+          ac3::FrameError::kInvalidChannelMap);
+
+    // The reverse direction: a chanmap naming MORE channels than acmod codes
+    // is exactly as wrong as naming fewer - E2.3.1.8 requires the two to
+    // agree exactly, not merely "chanmap covers what acmod needs".
+    auto over = seven_one();
+    over.dependents[0].chanmap = static_cast<std::uint16_t>(
+        ac3::eac3::chanmap::k71Rear | ac3::eac3::chanmap::kCsBit);  // 5, not 4
+    CHECK(ac3::eac3::build_silent_access_unit(over).error() ==
           ac3::FrameError::kInvalidChannelMap);
 
     // Only a dependent substream may carry one.
     CHECK(ac3::eac3::build_silent_frame(
-              {.chanmap = ac3::eac3::chanmap::kLeft})
+              {.chanmap = ac3::eac3::chanmap::kLeftBit})
               .error() == ac3::FrameError::kInvalidSubstream);
 
     // E2.3.1.2: eight dependents per independent substream, no more.
     AccessUnitConfig crowded;
     crowded.dependents.assign(
-        9, {.bitrate_kbps = 32, .chanmap = ac3::eac3::chanmap::kLwRw});
+        9, {.bitrate_kbps = 32, .chanmap = ac3::eac3::chanmap::kLwRwBit});
     CHECK(ac3::eac3::build_silent_access_unit(crowded).error() ==
           ac3::FrameError::kInvalidSubstream);
 
@@ -969,7 +1171,7 @@ TEST_CASE("E-AC-3 rejects substream layouts it cannot express", "[eac3]") {
     AccessUnitConfig mixed;
     mixed.dependents.push_back({.sample_rate = ac3::SampleRate::k32000,
                                 .bitrate_kbps = 96,
-                                .chanmap = ac3::eac3::chanmap::kLwRw});
+                                .chanmap = ac3::eac3::chanmap::kLwRwBit});
     CHECK(ac3::eac3::build_silent_access_unit(mixed).error() ==
           ac3::FrameError::kInvalidSubstream);
 
@@ -980,8 +1182,87 @@ TEST_CASE("E-AC-3 rejects substream layouts it cannot express", "[eac3]") {
           ac3::FrameError::kInvalidSubstream);
 }
 
+TEST_CASE("E-AC-3 does not reject two substreams that claim the same location",
+          "[eac3]") {
+    // §E2.3.1.8's chanmap check, and the one above it, only ever look at ONE
+    // substream at a time - nothing compares a dependent's chanmap against
+    // its SIBLINGS'. So two dependents both naming Vhc is not caught here at
+    // all: §E3.8.2 says the later substream simply overwrites the earlier one
+    // at decode time (proven with real, distinguishable audio in
+    // test_eac3_decoder.cpp). This test is the ENCODER's half of that
+    // contract: building such an access unit must succeed, not fail, and the
+    // aggregate sixteen-channel ceiling (kTooManyChannels) must count the
+    // shared location once, not once per substream that claims it.
+    using ac3::eac3::AccessUnitConfig;
+    using ac3::eac3::FrameConfig;
+    namespace cm = ac3::eac3::chanmap;
+
+    const FrameConfig claim_vhc{
+        .bitrate_kbps = 32, .acmod = ac3::Acmod::k1_0, .chanmap = cm::kVhcBit};
+    const AccessUnitConfig config{
+        .independent = {.bitrate_kbps = 448, .acmod = ac3::Acmod::k3_2, .lfe = true},
+        .dependents = {claim_vhc, claim_vhc}};
+    const auto unit = ac3::eac3::build_silent_access_unit(config);
+    REQUIRE(unit.has_value());
+    CHECK(unit->substream_count() == 3);
+
+    // A sharper version of the same point: three dependents that all claim
+    // the SAME five locations would sum to 6 + 5*3 = 21 if the ceiling check
+    // added every substream's count up rather than unioning the locations -
+    // past sixteen - but the programme only ever renders 6 + 5 = 11 distinct
+    // locations, so it has to be accepted.
+    const FrameConfig claim_five{
+        .bitrate_kbps = 256,
+        .acmod = ac3::Acmod::k3_2,
+        .chanmap = static_cast<std::uint16_t>(cm::kLcRcBit | cm::kLrsRrsBit | cm::kCsBit)};
+    AccessUnitConfig triple;
+    triple.independent = config.independent;
+    triple.dependents = {claim_five, claim_five, claim_five};
+    const auto triple_unit = ac3::eac3::build_silent_access_unit(triple);
+    REQUIRE(triple_unit.has_value());
+    CHECK(triple_unit->substream_count() == 4);
+}
+
+TEST_CASE("E-AC-3 rejects an access unit that renders more than sixteen channels", "[eac3]") {
+    using ac3::eac3::AccessUnitConfig;
+    namespace cm = ac3::eac3::chanmap;
+
+    // Bed (6) plus two five-channel dependents plus a one-channel dependent,
+    // every location distinct from the bed's and from each other, sums to
+    // seventeen rendered channels - past §E3.8.2's ceiling, even though each
+    // substream's OWN chanmap-vs-acmod/lfeon count agrees (kInvalidChannelMap
+    // already covers that) and there are well under eight dependents. Only an
+    // aggregate, whole-access-unit check catches this.
+    const AccessUnitConfig config{
+        .independent = {.bitrate_kbps = 448, .acmod = ac3::Acmod::k3_2, .lfe = true},
+        .dependents = {{.bitrate_kbps = 448,
+                        .acmod = ac3::Acmod::k3_2,
+                        .chanmap = static_cast<std::uint16_t>(cm::kLcRcBit | cm::kLrsRrsBit | cm::kCsBit)},
+                       {.bitrate_kbps = 448,
+                        .acmod = ac3::Acmod::k3_2,
+                        .chanmap = static_cast<std::uint16_t>(cm::kLsdRsdBit | cm::kLwRwBit | cm::kTsBit)},
+                       {.bitrate_kbps = 32, .acmod = ac3::Acmod::k1_0, .chanmap = cm::kVhcBit}}};
+    CHECK(ac3::eac3::build_silent_access_unit(config).error() ==
+          ac3::FrameError::kTooManyChannels);
+
+    // The same access unit minus its one-channel dependent renders exactly
+    // sixteen (6 + 5 + 5) and must be accepted - the ceiling is sixteen, not
+    // "fewer than seventeen minus one".
+    auto sixteen = config;
+    sixteen.dependents.pop_back();
+    CHECK(ac3::eac3::build_silent_access_unit(sixteen).has_value());
+}
+
 TEST_CASE("E-AC-3 rejects configurations it cannot express", "[eac3]") {
-    CHECK(ac3::eac3::build_silent_frame({.bitrate_kbps = 100}).error() ==
+    // §E2.3.1.3: frmsiz is an arbitrary 11-bit word count, not an index into
+    // Table 5.18 the way AC-3's frmsizecod is - so unlike AC-3, a bitrate
+    // only has to land on a legal word count, not one of the 19 nominal
+    // rates (see "E-AC-3 accepts a bitrate off Table 5.18's nominal list"
+    // below). 0 gives frame_words() == 0, which is not a syncframe at all;
+    // something past kMaxFrameWords overflows the 11-bit field.
+    CHECK(ac3::eac3::build_silent_frame({.bitrate_kbps = 0}).error() ==
+          ac3::FrameError::kInvalidBitrate);
+    CHECK(ac3::eac3::build_silent_frame({.bitrate_kbps = 2000}).error() ==
           ac3::FrameError::kInvalidBitrate);
     CHECK(ac3::eac3::build_silent_frame({.bitrate_kbps = 192, .dialnorm = 0}).error() ==
           ac3::FrameError::kInvalidDialnorm);
@@ -989,4 +1270,24 @@ TEST_CASE("E-AC-3 rejects configurations it cannot express", "[eac3]") {
     CHECK(ac3::eac3::build_silent_frame(
               {.bitrate_kbps = 192, .acmod = ac3::Acmod::kDualMono})
               .has_value() == false);
+}
+
+TEST_CASE("E-AC-3 accepts a bitrate off Table 5.18's nominal list", "[eac3]") {
+    // 100 kbps is not one of Table 5.18's 19 values, but E-AC-3 does not
+    // index that table - it lands on a perfectly legal 200-word frame
+    // (frame_words(k48000, 100) == 200), so it has to work. Real audio, not
+    // silence: an all-zero frame proves the syntax packs, not that a real
+    // SNR search actually fits the budget this bitrate gives it.
+    REQUIRE(ac3::eac3::frame_words(ac3::SampleRate::k48000, 100) == 200);
+    ac3::eac3::FrameEncoder encoder{{.bitrate_kbps = 100}};
+    std::uint64_t n = 0;
+    for (int f = 0; f < 3; ++f) {
+        auto pcm = tone_frame(2, n);
+        n += ac3::kSamplesPerFrame;
+        const std::vector<std::span<const float>> views{pcm[0], pcm[1]};
+        const auto frame = encoder.encode_frame(views);
+        REQUIRE(frame.has_value());
+        CHECK(frame->size() == 400);  // 200 words
+        CHECK(ac3::crc16(std::span{*frame}.subspan(2)) == 0x0000);
+    }
 }

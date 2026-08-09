@@ -6,17 +6,19 @@
 # ---------------------------------------------------------------------------
 # On `experimental: true`
 # ---------------------------------------------------------------------------
-# Only windows-msvc has ever been built, so it is the only leg proven green
-# (175/175 tests at the commit that added this file). The other four fail during
-# compilation, all for the same reason: cmake/CompilerWarnings.cmake turns on a
-# strict GNU-style warning set with -Werror, and no non-MSVC compiler has ever
-# had to satisfy it. The failures are in the codec sources, not in this
-# workflow — see the table in ci.yml.
+# windows-msvc, windows-llvm, linux-gcc, linux-llvm and linux-llvm-asan-ubsan
+# are all proven green now (245/245 tests each, the last two also against the
+# codec-matrix script's full layout/tool/atmos sweep for the sanitizer leg)
+# and required. windows-llvm was the last of these promoted: its real
+# -Werror site (a qsizetype-to-int narrowing in src/gui/encoder_controller.cpp
+# clang-cl's -Wconversion rejects and MSVC's /W4 does not) is fixed. macos-llvm
+# remains experimental: it has never been run at all — this project has no
+# Mac. See the table in ci.yml.
 #
-# Those legs therefore run with continue-on-error, which reports their real
+# Experimental legs run with continue-on-error, which reports their real
 # status without making the default branch red on every push. As each one is
-# fixed, delete its `experimental: true` line; the leg then blocks like
-# windows-msvc does. That one-line change is the whole promotion process.
+# fixed, delete its `experimental: true` line; the leg then blocks like the
+# others do. That one-line change is the whole promotion process.
 name: Reusable Build
 
 on:
@@ -63,21 +65,37 @@ jobs:
             preset: windows-llvm
             msvc: true          # clang-cl targets the MSVC ABI: same headers, same libs
             llvm: true
-            experimental: true
 
           - name: "Linux GCC"
             runner: ubuntu-latest
             container: ubuntu:26.04
             preset: linux-gcc
             gcc: true
-            experimental: true
+            # Also builds and tests the no-ALSA fallback (see the step at the
+            # end). Carried by this leg alone: the switch it covers is in CMake
+            # and in which platform directory gets compiled, neither of which
+            # differs between compilers, so paying for it twice would buy
+            # nothing.
+            alsa_fallback: true
 
           - name: "Linux LLVM (clang)"
             runner: ubuntu-latest
             container: ubuntu:26.04
             preset: linux-llvm
             llvm: true
-            experimental: true
+
+          # AddressSanitizer + UndefinedBehaviorSanitizer (cmake/Sanitizers.cmake),
+          # -fno-sanitize-recover=all so a violation fails the job outright. Shares
+          # the Linux LLVM container/toolchain; `sanitizer: true` additionally runs
+          # the codec-matrix step below, since ctest's 200+ cases alone do not
+          # reach every layout/tool/atmos code path a sanitizer needs to see
+          # execute to be worth anything.
+          - name: "Linux LLVM ASan+UBSan"
+            runner: ubuntu-latest
+            container: ubuntu:26.04
+            preset: linux-llvm-asan-ubsan
+            llvm: true
+            sanitizer: true
 
           # No Mac is available to the project locally, so CI is the first place
           # this is exercised at all. Expect it to surface genuine failures.
@@ -91,6 +109,13 @@ jobs:
       # silently degrades to a REST tarball download without it. Also installs
       # what the toolchain scripts assume is present (lsb_release,
       # add-apt-repository, curl+gnupg for the apt.llvm.org key path).
+      #
+      # libasound2-dev is the ALSA backend's only dependency, and the reason it
+      # is here rather than left out is that its ABSENCE is not a build
+      # failure: src/lib/CMakeLists.txt would fall back to the no-backend
+      # platform directory and CI would go green having compiled none of
+      # src/lib/src/platform/alsa/. The alsa_fallback step at the end covers
+      # the other half of that switch on purpose.
       - name: Bootstrap container
         if: matrix.container
         run: |
@@ -98,7 +123,7 @@ jobs:
           export DEBIAN_FRONTEND=noninteractive
           apt-get update -qq
           apt-get install -y -qq --no-install-recommends \
-            build-essential ca-certificates cmake curl git gnupg lsb-release \
+            build-essential ca-certificates cmake curl git gnupg libasound2-dev lsb-release \
             ninja-build pkg-config software-properties-common tar unzip wget zip
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -179,7 +204,8 @@ jobs:
           case "${{ matrix.preset }}" in
             linux-gcc)    g++ --version | head -1
                           g++ --version | head -1 | grep -q ' 15\.' || { echo "::error::expected g++ 15"; exit 1; } ;;
-            linux-llvm)   clang++ --version | head -1
+            linux-llvm|linux-llvm-asan-ubsan)
+                          clang++ --version | head -1
                           clang++ --version | head -1 | grep -qE 'version 21\.' || { echo "::error::expected clang 21"; exit 1; } ;;
             windows-llvm) clang-cl --version | head -1
                           clang-cl --version | head -1 | grep -qE 'version 21\.' || { echo "::error::expected clang-cl 21"; exit 1; } ;;
@@ -217,3 +243,43 @@ jobs:
       - name: Test
         shell: bash
         run: ctest --preset test-${{ matrix.preset }}
+
+      # Sanitizers only catch what actually executes. ctest's cases exercise
+      # encoder/decoder logic in isolation; this drives the real CLI across
+      # every layout, every Annex E tool token, both Atmos container modes and
+      # the metadata options, so the sanitizer sees code paths a unit test
+      # would not reach on its own. ASAN_OPTIONS/UBSAN_OPTIONS mirror what the
+      # ctest preset already sets for the Test step above.
+      - name: Codec matrix (sanitizer build)
+        if: matrix.sanitizer
+        shell: bash
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+          UBSAN_OPTIONS: print_stacktrace=1
+        run: bash scripts/run-codec-matrix.sh "build/config-${{ matrix.preset }}/bin/ac3cli"
+
+      # The other side of the ALSA switch: a Linux machine without libasound's
+      # development headers must still configure, build and pass everything,
+      # falling back to src/lib/src/platform/posix/ - that is the whole point
+      # of the dependency being optional, and it is a claim that rots silently
+      # unless something checks it.
+      #
+      # CMAKE_DISABLE_FIND_PACKAGE_ALSA rather than -DAC3FORGE_WITH_ALSA=OFF,
+      # because OFF skips find_package() altogether: this way the AUTO path
+      # runs and genuinely fails to find ALSA, which is what a machine missing
+      # the package actually does. The assertion afterwards is the point of the
+      # step - without it a mistake that quietly built the ALSA backend anyway
+      # would still go green.
+      - name: Configure, build and test without ALSA
+        if: matrix.alsa_fallback
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --preset config-${{ matrix.preset }} -B build/no-alsa \
+            -DCMAKE_DISABLE_FIND_PACKAGE_ALSA=TRUE 2>&1 | tee /tmp/no-alsa-configure.log
+          grep -q 'Audio backend  : posix' /tmp/no-alsa-configure.log || {
+            echo "::error::ALSA was disabled but the build did not fall back to the posix backend"
+            exit 1
+          }
+          cmake --build build/no-alsa -- -k 0
+          ctest --test-dir build/no-alsa

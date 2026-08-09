@@ -4,11 +4,12 @@ An input document for a design pass over the ac3forge desktop application. It de
 application is for, what it shows today, how people move through it, and what still has to be
 accommodated. It does not propose a design.
 
-**Which version this describes.** The GUI recently gained most of the codec surface it had been
-missing, on branch `claude/youthful-hermann-549468` (commit `dcaca85`, "Both front ends reach the
-whole codec"), merged since. This brief describes **that** version, because it is the one a
-designer works from — it is a substantially different and much larger interface than the
-seven-card build that came before it. Every screenshot here is of that build.
+**Which version this describes.** The GUI gained most of the codec surface it had been missing in
+"Both front ends reach the whole codec" (`dcaca85`), merged since. This brief describes that
+build — a substantially larger interface than the earlier seven-card version — and predates the
+live-audio commands (`live`, `monitor`) and per-object Atmos motion covered elsewhere in these
+docs, neither of which is wired into the GUI yet. Every screenshot here is of the build described
+above.
 
 ---
 
@@ -269,7 +270,10 @@ problem**, more than any individual screen.
   primitives; there is no web layer. Note that restyling standard controls means either overriding the
   Fusion palette or supplying custom control styles — today neither is done.
 - **Desktop, Windows first.** Mouse and keyboard, resizable window, 720 × 560 minimum. Live capture
-  and receiver passthrough are WASAPI-based and Windows-specific.
+  and receiver passthrough go through `ac3::capture`/`ac3::sinks`, which is WASAPI on Windows and
+  ALSA on Linux behind the same API — no longer Windows-exclusive at the library level, though
+  `ac3gui` itself is still built only on Windows by default (it does build and run on Linux with
+  `-DAC3FORGE_BUILD_GUI=ON` and a Qt kit; see [Portability](../README.md#portability)).
 - **Light and dark themes.** Only dark exists today. Both are required, which means colour decisions
   must survive inversion — particularly the meter colours, where green/amber/red carry meaning.
 - **Real-time metering.** The controller publishes a level snapshot about 30 times a second (one per
@@ -287,6 +291,14 @@ problem**, more than any individual screen.
 ---
 
 ## 6. Open questions for the designer
+
+> **Answered.** These eleven questions, plus five later change prompts (dynamic channel counts, real
+> object motion, the basic/advanced split, the live demo scenario, and the channel-picker constraint
+> model), are resolved by [`docs/design/handoff-workbench/README.md`](design/handoff-workbench/README.md)
+> — the two-pane workbench redesign, spec'd and prototyped on `feature/gui-redesign-workbench`. That
+> prototype is a static HTML/CSS reference for an implementing engineer to build from, explicitly not
+> production code; `src/gui/qml/Main.qml` here is still the nine-card layout Section 2 describes. The
+> questions below are kept as a record of what was asked, not as open items.
 
 1. **How should forty controls be organised?** One dense panel, progressive disclosure, a separate
    configuration surface, or presets that can be opened up? This is the main question.
