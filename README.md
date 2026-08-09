@@ -130,11 +130,18 @@ is unverified.
 | E-AC-3 7.1.4 with Annex E tools | no | no |
 | E-AC-3 `fscod2` half rates (24/22.05/16 kHz) | header only | yes |
 
-**`fscod2` audio content has no FFmpeg oracle either.** `ffprobe` reads the header correctly —
-confirmed byte-exact against `sample_rate` for all three rates — but FFmpeg's own E-AC-3
-decoder refuses to decode the audio itself (`Not yet implemented in FFmpeg, patches welcome`).
-So the header layout is cross-checked externally; the coded audio is verified only by this
-project's own encoder/decoder round trip and the independent Python parser (`tools/eac3_parse.py`).
+**`fscod2` audio content has no external decode oracle at all — not even Dolby's own.**
+`ffprobe` walks every syncframe of a reduced-rate stream correctly (frame count, exact byte
+size, exact spacing, and `sample_rate` all confirmed against all three rates), so the framing
+and header are cross-checked externally. But actually decoding the audio is refused by both
+real-world implementations available here: FFmpeg's E-AC-3 decoder (`Not yet implemented in
+FFmpeg, patches welcome`) and, more surprisingly, Dolby's own Reference Player — `dlbac3parse`
+reports `No valid frames found before end of stream` on a stream `ffprobe` reads frame-by-frame
+without complaint — using the same pipeline (`tools/quality_race.py`'s `dolby_decode`) that
+decodes a normal-rate stream from this encoder without issue. `fscod2` appears to be a coding
+tool whose own reference implementation does not support it. So the coded audio is verified
+only by this project's own encoder/decoder round trip and the independent Python parser
+(`tools/eac3_parse.py`).
 
 **Exclusive-mode passthrough — AC-3 and E-AC-3 alike — has never been confirmed against
 bitstreaming hardware.** The development machine has no S/PDIF or HDMI endpoint behind a real
