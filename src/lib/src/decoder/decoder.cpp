@@ -1,6 +1,7 @@
 #include "ac3/decoder/decoder.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cmath>
 
@@ -26,8 +27,7 @@ std::string_view describe(DecodeError error) {
         case DecodeError::kBadCrc: return "the frame's CRC does not check out";
         case DecodeError::kReservedValue: return "a header field holds a value A/52 reserves";
         case DecodeError::kUnsupported:
-            return "valid AC-3 this decoder does not implement (bsid > 8, block "
-                   "switching or delta bit allocation)";
+            return "valid AC-3 this decoder does not implement (bsid > 8, or block switching)";
         case DecodeError::kInvalidStream:
             return "the frame contradicts a constraint A/52 requires of it";
     }
@@ -276,6 +276,11 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
     std::vector<int> fgaincod(max_streams, base_codes.fgaincod);
     int csnroffst = 0;
     std::vector<int> fsnroffst(max_streams, 0);
+    // §7.2.2.6: per-stream delta bit allocation, reset to "no segments" at the
+    // start of every syncframe (the spec's own recommended initialization),
+    // then persisting block to block exactly like base_codes/fsnroffst above
+    // until re-transmitted or explicitly cleared.
+    std::vector<DeltaSegments> delta(max_streams);
     std::array<bool, 4> rematflg{};
 
     // Coupling state (§7.4). All of it persists until re-transmitted.
@@ -535,7 +540,91 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
             }
         }
         if (r.read(1) != 0) {  // deltbaie
-            return std::unexpected(DecodeError::kUnsupported);
+            // §5.4.3.48-57: a segment set is (deltnseg+1) triples of
+            // (deltoffst, deltlen, deltba); bounds are checked here, before
+            // compute_bit_allocation ever sees them, since deltoffst/deltlen
+            // are attacker-controlled and mask[] is exactly 50 bands wide.
+            const auto parse_segments =
+                [&r]() -> std::expected<DeltaSegments, DecodeError> {
+                DeltaSegments segs;
+                segs.deltnseg = static_cast<int>(r.read(3)) + 1;
+                int band = 0;
+                for (int seg = 0; seg < segs.deltnseg; ++seg) {
+                    segs.deltoffst[static_cast<std::size_t>(seg)] =
+                        static_cast<std::uint8_t>(r.read(5));
+                    segs.deltlen[static_cast<std::size_t>(seg)] =
+                        static_cast<std::uint8_t>(r.read(4));
+                    segs.deltba[static_cast<std::size_t>(seg)] =
+                        static_cast<std::uint8_t>(r.read(3));
+                    band += segs.deltoffst[static_cast<std::size_t>(seg)];
+                    const int len = segs.deltlen[static_cast<std::size_t>(seg)];
+                    if (band < 0 || band + len > 50) {
+                        return std::unexpected(DecodeError::kInvalidStream);
+                    }
+                    band += len;
+                }
+                return segs;
+            };
+            // §5.4.3.48-49's own syntax table reads every stream's 2-bit
+            // cpldeltbae/deltbae[ch] code FIRST, then every stream's segment
+            // data - the two are not interleaved per stream, so the codes
+            // must all be read (and validated) before any segment parsing.
+            // Table 5.16: 00 reuse, 01 new info follows, 10 no delta, 11
+            // reserved. cplcode stays at the "reuse" value when coupling is
+            // not in use, so the fbw loop below never touches delta[cpl_stream].
+            int cplcode = 0;
+            if (cplinu) {
+                cplcode = static_cast<int>(r.read(2));
+                if (cplcode == 3) {
+                    return std::unexpected(DecodeError::kReservedValue);
+                }
+                if (block == 0 && cplcode == 0) {
+                    return std::unexpected(DecodeError::kInvalidStream);
+                }
+            }
+            // deltbae[ch]: fbw channels only (§5.4.3.49) - the LFE channel has
+            // no delta bit allocation field at all. AC-3's widest acmod (3/2)
+            // codes 5 full-bandwidth channels.
+            std::array<int, 5> chcodes{};
+            for (int ch = 0; ch < nfchans; ++ch) {
+                chcodes[static_cast<std::size_t>(ch)] = static_cast<int>(r.read(2));
+                if (chcodes[static_cast<std::size_t>(ch)] == 3) {
+                    return std::unexpected(DecodeError::kReservedValue);
+                }
+                if (block == 0 && chcodes[static_cast<std::size_t>(ch)] == 0) {
+                    return std::unexpected(DecodeError::kInvalidStream);
+                }
+            }
+            if (cplinu && cplcode == 1) {
+                auto segs = parse_segments();
+                if (!segs) {
+                    return std::unexpected(segs.error());
+                }
+                delta[static_cast<std::size_t>(cpl_stream)] = *segs;
+            } else if (cplinu && cplcode == 2) {
+                delta[static_cast<std::size_t>(cpl_stream)] = {};
+            }
+            for (int ch = 0; ch < nfchans; ++ch) {
+                const int chcode = chcodes[static_cast<std::size_t>(ch)];
+                if (chcode == 1) {
+                    auto segs = parse_segments();
+                    if (!segs) {
+                        return std::unexpected(segs.error());
+                    }
+                    delta[static_cast<std::size_t>(ch)] = *segs;
+                } else if (chcode == 2) {
+                    delta[static_cast<std::size_t>(ch)] = {};
+                }
+            }
+        } else if (block == 0) {
+            // §5.4.3.47: deltbaie == 0 in block 0 forces "no delta alloc" for
+            // the coupling channel (if any) and every fbw channel.
+            if (cplinu) {
+                delta[static_cast<std::size_t>(cpl_stream)] = {};
+            }
+            for (int ch = 0; ch < nfchans; ++ch) {
+                delta[static_cast<std::size_t>(ch)] = {};
+            }
         }
         if (r.read(1) != 0) {  // skiple
             const auto skipl = r.read(9);
@@ -564,7 +653,8 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
                                         .coupling = is_cpl,
                                         .cplfleak = cplfleak,
                                         .cplsleak = cplsleak,
-                                        .snr_all_zero = snr_all_zero};
+                                        .snr_all_zero = snr_all_zero,
+                                        .delta = delta[static_cast<std::size_t>(s)]};
             bap[static_cast<std::size_t>(s)].assign(static_cast<std::size_t>(end), 0);
             compute_bit_allocation(exps[static_cast<std::size_t>(s)], sample_rate, codes,
                                    csnroffst, fsnroffst[static_cast<std::size_t>(s)],

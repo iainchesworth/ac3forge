@@ -18,16 +18,17 @@
 // IMDCT with the encoder core).
 //
 // AC-3 scope (bsid <= 8): any acmod 0/0..3/2 plus LFE, long blocks,
-// D15/D25/D45/reuse exponents, full bit allocation, mantissa ungrouping,
-// coupling (strategy, banded coordinates, phase flags and leak parameters)
-// and 2/0 rematrixing. acmod 0 (1+1 dual mono) is two independent
-// programmes sharing one syncframe — Ch2's dialnorm2/compr2/dynrng2 are
-// parsed and reported alongside Ch1's, and each programme's §7.7 gain is
-// applied to its own channel only. Deliberately unsupported (clean errors,
-// not wrong audio): block switching, delta bit allocation. dynrng words are
-// parsed but not applied; bap-0 bins reconstruct as zero regardless of
-// dithflag (the spec lets the dither sequence be "any reasonably random
-// sequence"; zeros keep decode parity deterministic).
+// D15/D25/D45/reuse exponents, full bit allocation including delta bit
+// allocation (§7.2.2.6), mantissa ungrouping, coupling (strategy, banded
+// coordinates, phase flags and leak parameters) and 2/0 rematrixing.
+// acmod 0 (1+1 dual mono) is two independent programmes sharing one
+// syncframe — Ch2's dialnorm2/compr2/dynrng2 are parsed and reported
+// alongside Ch1's, and each programme's §7.7 gain is applied to its own
+// channel only. Deliberately unsupported (clean errors, not wrong audio):
+// block switching. dynrng words are parsed but not applied; bap-0 bins
+// reconstruct as zero regardless of dithflag (the spec lets the dither
+// sequence be "any reasonably random sequence"; zeros keep decode parity
+// deterministic).
 //
 // E-AC-3 scope (Annex E, bsid 11-16): the whole of Tables E1.2/E1.3/E1.4 as
 // syntax — every metadata payload is walked correctly whether or not its

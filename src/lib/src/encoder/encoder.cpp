@@ -100,6 +100,11 @@ struct ExponentRun {
     EncodedExponents fbw;                  // fbw and LFE channels
     EncodedCouplingExponents cpl;          // the coupling channel
     std::vector<std::uint8_t> decoded;     // the decoder-mirror exponents
+    // §7.2.2.6: computed once per run (like `decoded` above) from the real
+    // coefficients of every block the run spans, rather than per block - a
+    // run already shares one exponent set and one bit allocation across its
+    // blocks, so its delta correction is constant across them too.
+    DeltaSegments delta;
 };
 
 struct StreamPlan {
@@ -573,6 +578,43 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                 entry.fbw = encode_exponents(raw, strategy);
                 decode_exponents(entry.fbw.absolute, entry.fbw.groups, strategy, entry.decoded);
             }
+            // §7.2.2.6: compare this run's shared exponent-derived masking
+            // curve against one built from the real coefficients. `raw`
+            // above (and hence this run's exponents) is the MIN exponent
+            // across the run's blocks per bin, i.e. driven by whichever
+            // block has the LARGEST magnitude there - so the comparison
+            // needs that same per-bin max, not an average, or it would
+            // measure the (intentional) gap between "loudest block" and
+            // "typical block" instead of real quantization error and bias
+            // toward spurious cuts on any run spanning more than one block.
+            // LFE is excluded: §5.4.3.49's deltbae[ch] loop is bounded by
+            // nfchans, so LFE has no delta bit allocation field to carry one
+            // in at all - computing and applying one here anyway would let
+            // the encoder's own allocation diverge from what the decoder,
+            // which never receives it, would ever reconstruct.
+            //
+            // Delta is skipped entirely whenever coupling is in use this
+            // frame - not just for the coupling channel itself - deliberately
+            // narrowing this first cut's scope: the coupling channel is a
+            // synthesized average of the coupled channels rather than a real
+            // recorded signal, and even leaving ONLY the fbw channels' own
+            // narrow below-cplstrtmant region eligible, the extra side-info
+            // overhead was enough to break the tightest coupling scenarios
+            // (128 kbit/s 5.1, exactly the case coupling exists to rescue).
+            // Getting a coupling-aware version of this heuristic right needs
+            // more care than this phase has room for.
+            if (!is_lfe && !is_cpl && !cplinu) {
+                std::vector<double> peak_mag(static_cast<std::size_t>(end), 0.0);
+                for (int block = first; block < last; ++block) {
+                    const auto& c = coeffs_at(s, block);
+                    for (int bin = begin; bin < end; ++bin) {
+                        peak_mag[static_cast<std::size_t>(bin)] =
+                            std::max(peak_mag[static_cast<std::size_t>(bin)],
+                                    std::abs(c[static_cast<std::size_t>(bin)]));
+                    }
+                }
+                entry.delta = choose_delta_segments(peak_mag, entry.decoded, begin);
+            }
             for (int block = first; block < last; ++block) {
                 p.run_of_block[static_cast<std::size_t>(block)] = static_cast<int>(run);
             }
@@ -784,12 +826,55 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                 w.put(static_cast<std::uint32_t>(cplsleak), 3);
             }
         }
-        w.put(0, 1);  // deltbaie
+        // §5.4.3.47-57: this encoder never reuses ('00') a previous block's
+        // delta state - it always resends fresh ('01') when a run wants a
+        // correction, or says '10' (no delta) otherwise - so deltbaie itself
+        // only needs to be 1 when at least one stream has something to say
+        // this block.
+        const auto stream_delta = [&](int s) -> const DeltaSegments& {
+            const auto& p = plan[static_cast<std::size_t>(s)];
+            return p.runs[static_cast<std::size_t>(
+                              p.run_of_block[static_cast<std::size_t>(block)])]
+                .delta;
+        };
+        bool any_delta = cplinu && stream_delta(cpl_stream).deltnseg > 0;
+        for (int ch = 0; ch < nfchans && !any_delta; ++ch) {
+            any_delta = stream_delta(ch).deltnseg > 0;
+        }
+        w.put(any_delta ? 1 : 0, 1);  // deltbaie
+        if (any_delta) {
+            // §5.4.3.47's own syntax table sends every stream's 2-bit
+            // cpldeltbae/deltbae[ch] code FIRST, then every stream's segment
+            // data - the two are NOT interleaved per stream.
+            if (cplinu) {
+                w.put(stream_delta(cpl_stream).deltnseg > 0 ? 1u : 2u, 2);  // cpldeltbae
+            }
+            for (int ch = 0; ch < nfchans; ++ch) {
+                w.put(stream_delta(ch).deltnseg > 0 ? 1u : 2u, 2);  // deltbae[ch]
+            }
+            const auto emit_segments = [&](const DeltaSegments& segs) {
+                if (segs.deltnseg > 0) {
+                    w.put(static_cast<std::uint32_t>(segs.deltnseg - 1), 3);
+                    for (int seg = 0; seg < segs.deltnseg; ++seg) {
+                        const auto i = static_cast<std::size_t>(seg);
+                        w.put(static_cast<std::uint32_t>(segs.deltoffst[i]), 5);
+                        w.put(static_cast<std::uint32_t>(segs.deltlen[i]), 4);
+                        w.put(static_cast<std::uint32_t>(segs.deltba[i]), 3);
+                    }
+                }
+            };
+            if (cplinu) {
+                emit_segments(stream_delta(cpl_stream));
+            }
+            for (int ch = 0; ch < nfchans; ++ch) {
+                emit_segments(stream_delta(ch));
+            }
+        }
     };
 
     // --- 8. Measure the side information -----------------------------------
-    std::uint32_t side_bits = 16 + 16 + 2 + 6;  // syncinfo
-    {
+    const auto measure_side_bits = [&] {
+        std::uint32_t bits = 16 + 16 + 2 + 6;  // syncinfo
         std::uint32_t bsi = 25;
         if (has_three_front(config_.acmod)) bsi += 2;  // cmixlev
         if (has_surround(config_.acmod)) bsi += 2;     // surmixlev
@@ -799,15 +884,37 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
             bsi += 5 + 1 + 1 + 1;  // dialnorm2, compr2e, langcod2e, audprodi2e
             if (config_.heavy) bsi += 8;  // compr2
         }
-        side_bits += bsi;
-    }
-    {
+        bits += bsi;
         BitWriter counter;
         for (int block = 0; block < kBlocksPerFrame; ++block) {
             emit_block_side_info(counter, block);
             counter.put(0, 1);  // skiple, always present
         }
-        side_bits += static_cast<std::uint32_t>(counter.bit_count());
+        bits += static_cast<std::uint32_t>(counter.bit_count());
+        return bits;
+    };
+    std::uint32_t side_bits = measure_side_bits();
+
+    // §7.2.2.6: delta bit allocation is a pure quality refinement, never
+    // load-bearing - a run's own code saying "no delta" is always legal - so
+    // its side-info cost must never be the reason an otherwise-fittable frame
+    // is refused. Cleared and re-measured, lazily, only if the budget check
+    // below would otherwise fail on it - generalizing the coupling exclusion
+    // above (§7.2.2.6's own scope note) from "coupling active" to "would not
+    // otherwise fit".
+    if (side_bits + detail::kTailBits > total_bits) {
+        bool any_delta = false;
+        for (auto& p : plan) {
+            for (auto& run : p.runs) {
+                if (run.delta.deltnseg > 0) {
+                    any_delta = true;
+                    run.delta = {};
+                }
+            }
+        }
+        if (any_delta) {
+            side_bits = measure_side_bits();
+        }
     }
     if (side_bits + detail::kTailBits > total_bits) {
         // The chosen configuration cannot fit its own headers at this rate.
@@ -829,12 +936,13 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
             auto& p = plan[static_cast<std::size_t>(s)];
             // Every stream shares one fsnroffst here, so the frame-wide
             // §7.2.2.1.1 condition reduces to the composite being zero.
-            const BitAllocRegion region{.start = stream_start(s),
-                                        .coupling = s == cpl_stream,
-                                        .cplfleak = cplfleak,
-                                        .cplsleak = cplsleak,
-                                        .snr_all_zero = composite == 0};
             for (std::size_t run = 0; run < p.runs.size(); ++run) {
+                const BitAllocRegion region{.start = stream_start(s),
+                                            .coupling = s == cpl_stream,
+                                            .cplfleak = cplfleak,
+                                            .cplsleak = cplsleak,
+                                            .snr_all_zero = composite == 0,
+                                            .delta = p.runs[run].delta};
                 auto& bap = run_bap[static_cast<std::size_t>(s)][run];
                 bap.assign(p.runs[run].decoded.size(), 0);
                 compute_bit_allocation(p.runs[run].decoded, config_.sample_rate, codes,

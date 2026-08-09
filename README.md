@@ -65,6 +65,7 @@ gold-reference *quality* gate, and a dedicated Linux FFmpeg-validation leg check
 | Transform | long blocks only (512-point MDCT, KBD window) | long blocks only |
 | Exponents | D15 / D25 / D45, strategy chosen per block from the reuse span (§8.2.8) | frame-level, Table E2.10 code 0: D15 in block 0, reused for the other five |
 | Coupling | yes (§7.4), begin and end frequencies auto or pinned | yes (§E3.3) |
+| Delta bit allocation | automatic (§7.2.2.6), like rematrixing below — no toggle | automatic, same as AC-3 |
 | Rematrixing | yes, 2/0 (§7.5.3 minimum-power rule) | no — the syntax is written, the flags are always zero |
 | Annex E tools | — | spectral extension (§E3.6), adaptive hybrid transform with GAQ (§E3.4) |
 | Objects | panned to a 5.1 bed (no metadata survives) | OAMD + JOC in an EMDF container (TS 103 420) |
@@ -72,6 +73,16 @@ gold-reference *quality* gate, and a dedicated Linux FFmpeg-validation leg check
 At 44.1 kHz, CBR needs non-integral frame sizes; the AC-3 encoder alternates between the two
 Table 5.18 lengths on a Bresenham accumulator so the long-run rate is exact. E-AC-3 signals
 `frmsiz` directly and needs no such alternation.
+
+**Delta bit allocation's scope**: the encoder compares the coarse exponent-only masking curve
+§7.2.2.2-7.2.2.5 derive against one built from the real, pre-quantization coefficient magnitude,
+and corrects bands where the two clearly diverge (at least a full 6 dB Table 5.17 step). It is
+skipped for the LFE channel (no such field exists for it) and, for now, for every channel
+whenever coupling is in use that frame — the coupling channel is a synthesized average rather
+than a real recorded signal, and even leaving only the coupled channels' own narrow
+below-`cplstrtmant` region eligible measurably narrowed coupling's usual cost advantage and broke
+its tightest scenarios (128 kbit/s 5.1). The decoder accepts delta bit allocation on the coupling
+channel from any other encoder; this project's own just doesn't emit it yet.
 
 ### Metadata
 
@@ -108,7 +119,6 @@ substreams, `chanmap`, and the §E3.8.2 render that lays a dependent's channels 
 |---|---|
 | Block switching (short blocks) | Transients smear. FFmpeg's AC-3 encoder has never used short blocks either, so this is conventional rather than unusual, but it is still a gap. |
 | Dual mono (1+1, acmod 0) | Refused by the encoder and the decoder. It is two programmes sharing a syncframe, with a second copy of every metadata item, and it has no channel layout to render. |
-| Delta bit allocation | Encoder never emits it; decoder refuses a stream carrying it. |
 | Enhanced coupling, transient pre-noise processing | Recognised by the decoder and refused, rather than mis-decoded. |
 | Variable bit rate on AC-3 | `frmsizecod` indexes Table 5.18 rather than stating a word count directly, so AC-3 has no free frame size to vary at all and stays CBR. E-AC-3 supports VBR — see [Encoding E-AC-3](docs/library/encoding-eac3.md#variable-bit-rate-frameconfigvbr). |
 
