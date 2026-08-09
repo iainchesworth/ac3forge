@@ -65,9 +65,14 @@ decoder as a check on the encoder: a test can assert on the `dynrng` words the e
 | `drc_scale` | 0.0 | §7.7.1 partial compression. 0 ignores `dynrng`; 1 applies it as encoded. A/52 says a consumer decoder should default to applying it — this one defaults to 0 because a reference that silently rescales its output is not a reference. |
 | `heavy_compression` | `false` | §7.7.2: prefer `compr` where it exists, falling back on `dynrng` for syncframes that carry none. |
 
-What both decoders refuse, cleanly, rather than mis-decoding: block switching, delta bit
-allocation, dual mono. The E-AC-3 decoder additionally refuses Annex E coupling, spectral
-extension, AHT, transient pre-noise processing, and `fscod2` half sample rates.
+What both decoders refuse, cleanly, rather than mis-decoding: block switching, dual mono. The
+E-AC-3 decoder additionally refuses Annex E coupling, spectral extension, AHT, transient
+pre-noise processing, and `fscod2` half sample rates.
+
+Delta bit allocation (§7.2.2.6) is decoded like any other transmitted parameter: both decoders
+carry per-channel state across a syncframe's blocks and apply it to the masking curve before
+computing `bap`. Neither encoder emits it on the coupling channel yet (see the library's
+[encoding](encoding-ac3.md) pages), but both decoders accept it there from any stream that does.
 
 ---
 

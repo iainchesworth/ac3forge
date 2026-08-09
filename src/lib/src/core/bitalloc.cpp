@@ -3,7 +3,10 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <cmath>
 #include <cstdlib>
+#include <optional>
+#include <vector>
 
 #include "ac3/core/aht_tables.hpp"
 #include "ac3/core/bitalloc_tables.hpp"
@@ -41,6 +44,57 @@ int calc_lowcomp(int a, int b0, int b1, int bin) {
         a = std::max(0, a - 128);
     }
     return a;
+}
+
+// §7.2.2.3: bands psd[] (indexed from bin `start` through `end`) into a
+// 50-wide per-band array via log-addition. Factored out so the encoder-only
+// real-coefficient curve (choose_delta_segments, below) is computed with
+// arithmetic identical to the exponent-derived one compute_bit_allocation
+// uses, which is what keeps the two directly comparable in the same units.
+std::array<int, 50> band_psd(std::span<const int> psd, int start, int end) {
+    std::array<int, 50> bndpsd{};
+    int j = start;
+    int k = kMaskTab[static_cast<std::size_t>(start)];
+    int lastbin = 0;
+    do {
+        lastbin = std::min(
+            kBandStart[static_cast<std::size_t>(k)] + kBandSize[static_cast<std::size_t>(k)], end);
+        bndpsd[static_cast<std::size_t>(k)] = psd[static_cast<std::size_t>(j)];
+        ++j;
+        for (int i = j; i < lastbin; ++i) {
+            bndpsd[static_cast<std::size_t>(k)] =
+                logadd(bndpsd[static_cast<std::size_t>(k)], psd[static_cast<std::size_t>(j)]);
+            ++j;
+        }
+        ++k;
+    } while (end > lastbin);
+    return bndpsd;
+}
+
+// A run of consecutive absolute bands sharing one Table 5.17 deltba code.
+struct DeltaRun {
+    int band = 0;
+    int length = 0;
+    int code = 0;
+};
+
+// The inverse of §7.2.2.6's `delta = (code>=4 ? code-3 : code-4) << 7`: the
+// nearest code correcting `diff` units of mask[], or nullopt when |diff| is
+// under half a step - not worth spending a segment on.
+std::optional<int> delta_code_for(int diff) {
+    // Require a full Table 5.17 step (128 units, 6 dB) before spending a
+    // segment, rather than rounding to the nearest one: a "nearest step"
+    // threshold fires on roughly half of all bins even for ordinary
+    // quantization residue, which measurably narrowed coupling's usual cost
+    // advantage over independent per-channel coding without a matching
+    // quality win to show for it.
+    if (diff >= 128) {
+        return std::clamp(diff / 128 + 3, 4, 7);
+    }
+    if (diff <= -128) {
+        return std::clamp(4 - (-diff) / 128, 0, 3);
+    }
+    return std::nullopt;
 }
 
 }  // namespace
@@ -88,25 +142,7 @@ void compute_bit_allocation(std::span<const std::uint8_t> exps, SampleRate sampl
     }
 
     // §7.2.2.3: banded integration via log-addition.
-    std::array<int, 50> bndpsd{};
-    {
-        int j = kStart;
-        int k = kMaskTab[static_cast<std::size_t>(kStart)];
-        int lastbin = 0;
-        do {
-            lastbin = std::min(kBandStart[static_cast<std::size_t>(k)] +
-                                   kBandSize[static_cast<std::size_t>(k)],
-                               end);
-            bndpsd[static_cast<std::size_t>(k)] = psd[static_cast<std::size_t>(j)];
-            ++j;
-            for (int i = j; i < lastbin; ++i) {
-                bndpsd[static_cast<std::size_t>(k)] =
-                    logadd(bndpsd[static_cast<std::size_t>(k)], psd[static_cast<std::size_t>(j)]);
-                ++j;
-            }
-            ++k;
-        } while (end > lastbin);
-    }
+    const std::array<int, 50> bndpsd = band_psd(psd, kStart, end);
 
     // §7.2.2.4: excitation function. Two shapes: fbw/LFE channels start at
     // band 0 and run the lowcomp low-frequency compensation, the coupling
@@ -188,7 +224,25 @@ void compute_bit_allocation(std::span<const std::uint8_t> exps, SampleRate sampl
             std::max(excite[static_cast<std::size_t>(bin)], hth[static_cast<std::size_t>(bin)]);
     }
 
-    // §7.2.2.6: delta bit allocation not in use (deltbaie = 0).
+    // §7.2.2.6: delta bit allocation. mask[]/psd[] units are 128 per exponent
+    // step, which is exactly one Table 5.17 6 dB step, so `delta` below is
+    // added directly with no unit conversion. `region.delta.deltnseg == 0`
+    // (the default) makes this a no-op, matching the spec's own recommended
+    // reset state.
+    {
+        int band = 0;
+        for (int seg = 0; seg < region.delta.deltnseg; ++seg) {
+            band += region.delta.deltoffst[static_cast<std::size_t>(seg)];
+            const int code = region.delta.deltba[static_cast<std::size_t>(seg)];
+            const int delta = (code >= 4 ? code - 3 : code - 4) << 7;
+            const int len = region.delta.deltlen[static_cast<std::size_t>(seg)];
+            assert(band >= 0 && band + len <= 50);
+            for (int k = 0; k < len; ++k) {
+                mask[static_cast<std::size_t>(band)] += delta;
+                ++band;
+            }
+        }
+    }
 
     // §7.2.2.7: bap computation. The snroffset/floor/truncation order is
     // normative: subtract snroffset, subtract floor, clamp at zero, truncate
@@ -221,6 +275,105 @@ void compute_bit_allocation(std::span<const std::uint8_t> exps, SampleRate sampl
             ++j;
         } while (end > lastbin);
     }
+}
+
+DeltaSegments choose_delta_segments(std::span<const double> coefficients,
+                                    std::span<const std::uint8_t> exps, int start) {
+    assert(coefficients.size() == exps.size());
+    const int end = static_cast<int>(exps.size());
+    assert(end >= 1 && end <= 253);
+    assert(start >= 0 && start < end);
+
+    // Two psd curves in identical units: the flat one compute_bit_allocation
+    // itself would build from exps alone, and one built from the real
+    // pre-quantization coefficient magnitude. Table 5.17's 128-units-per-6dB
+    // step is exactly one exponent step (§7.2.2.2's psd = 3072 - exp<<7), so
+    // exponent = -1 - log2(|c|) gives real_psd = 3200 + 128*log2(|c|).
+    std::array<int, 253> psd{};
+    std::array<int, 253> real_psd{};
+    for (int bin = start; bin < end; ++bin) {
+        const auto i = static_cast<std::size_t>(bin);
+        psd[i] = 3072 - (exps[i] << 7);
+        const double magnitude = std::abs(static_cast<double>(coefficients[i]));
+        real_psd[i] = magnitude > 0.0
+                          ? static_cast<int>(std::lround(3200.0 + 128.0 * std::log2(magnitude)))
+                          : psd[i];  // silence: nothing to correct
+    }
+
+    const std::array<int, 50> bndpsd = band_psd(psd, start, end);
+    const std::array<int, 50> real_bndpsd = band_psd(real_psd, start, end);
+    const int bndstrt = kMaskTab[static_cast<std::size_t>(start)];
+    const int bndend = kMaskTab[static_cast<std::size_t>(end - 1)] + 1;
+
+    // Merge bands whose correction rounds to the same code into runs, so
+    // adjacent agreement costs one segment instead of one per band.
+    std::vector<DeltaRun> runs;
+    for (int band = bndstrt; band < bndend; ++band) {
+        const auto b = static_cast<std::size_t>(band);
+        const auto code = delta_code_for(real_bndpsd[b] - bndpsd[b]);
+        if (!code) {
+            continue;
+        }
+        if (!runs.empty() && runs.back().band + runs.back().length == band &&
+            runs.back().code == *code) {
+            ++runs.back().length;
+        } else {
+            runs.push_back({.band = band, .length = 1, .code = *code});
+        }
+    }
+    if (runs.empty()) {
+        return {};
+    }
+    // §5.4.3.54/E2.3.2.9: at most 8 segments (3-bit deltnseg field + 1). Keep
+    // the largest-magnitude corrections when more runs qualify.
+    if (runs.size() > 8) {
+        std::ranges::nth_element(runs, runs.begin() + 8, std::ranges::greater{},
+                                 [](const DeltaRun& r) { return std::abs(2 * r.code - 7); });
+        runs.resize(8);
+        std::ranges::sort(runs, {}, &DeltaRun::band);
+    }
+
+    // Encode each run as (offset, length, code). deltoffst is 5 bits (max
+    // 31): a wider gap is bridged with inert (deltlen == 0) filler segments
+    // that only advance the cursor. deltlen is 4 bits (max 15): a longer run
+    // splits into consecutive zero-offset chunks of the same code. Either can
+    // push the total past the 8-segment cap in rare cases (a correction
+    // stranded far past band 31, or one spanning most of the spectrum) - the
+    // segment-count truncation above already prioritised by magnitude, so
+    // this second, band-order-driven cutoff only ever bites the tail of an
+    // already-large run and is documented rather than silently mis-encoded.
+    DeltaSegments out;
+    int cursor = 0;
+    for (const auto& run : runs) {
+        int band = run.band;
+        int remaining = run.length;
+        while (remaining > 0) {
+            while (band - cursor > 31) {
+                if (out.deltnseg >= 8) {
+                    return out;
+                }
+                out.deltoffst[static_cast<std::size_t>(out.deltnseg)] = 31;
+                out.deltlen[static_cast<std::size_t>(out.deltnseg)] = 0;
+                out.deltba[static_cast<std::size_t>(out.deltnseg)] = 4;  // inert: deltlen == 0
+                ++out.deltnseg;
+                cursor += 31;
+            }
+            if (out.deltnseg >= 8) {
+                return out;
+            }
+            const int len = std::min(remaining, 15);
+            out.deltoffst[static_cast<std::size_t>(out.deltnseg)] =
+                static_cast<std::uint8_t>(band - cursor);
+            out.deltlen[static_cast<std::size_t>(out.deltnseg)] = static_cast<std::uint8_t>(len);
+            out.deltba[static_cast<std::size_t>(out.deltnseg)] =
+                static_cast<std::uint8_t>(run.code);
+            ++out.deltnseg;
+            cursor = band + len;
+            band += len;
+            remaining -= len;
+        }
+    }
+    return out;
 }
 
 }  // namespace ac3

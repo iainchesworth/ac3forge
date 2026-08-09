@@ -57,7 +57,6 @@ constexpr BitAllocCodes kBamode0Codes{.sdcycod = 2,
                                       .floorcod = 7,
                                       .fgaincod = 4};  // frmfgaincode == 0 (§8.2.12)
 constexpr int kFrmfgaincode = 0;   // fgaincod defaults to 0x4, matching AC-3
-constexpr int kDbaflde = 0;        // no delta bit allocation
 // Padding goes through auxbits. AC-3 cannot do that - §5.5 confines its aux
 // field to the final 3/8 of the frame, to protect the crc1-at-5/8 checkpoint -
 // but E-AC-3 has no crc1 and Annex E states no equivalent constraint, so
@@ -132,6 +131,13 @@ struct ChannelPlan {
     // decoder's reconstruction once they are packed.
     std::vector<std::array<double, kBlocksPerFrameSize>> aht_coeffs;
     std::vector<std::uint8_t> aht_gain;  // per bin: 1, 2 or 4
+    // §7.2.2.6: computed once per frame (like `decoded` above, since Table
+    // E2.10 code 0 gives this stream one exponent set for all six blocks
+    // anyway) from the real coefficients, EXCEPT for an AHT stream - its
+    // actual coded quantity is the AHT-transformed coefficient, not the raw
+    // MDCT bin, so measuring the raw bin against it would compare the wrong
+    // signal; left at its default (no segments) rather than risk that.
+    DeltaSegments delta;
 };
 
 // The whole-frame mantissa cost of one AHT stream under a given gain mode,
@@ -355,6 +361,14 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
     const auto& cpl = payload.cpl;
     const auto& spx = payload.spx;
     const int skipflde = metadata.empty() ? 0 : 1;
+    // §E2.3.2.9: dbaflde is an all-or-nothing per-frame contract - once any
+    // stream wants a correction, every block must carry the full delta bit
+    // allocation syntax, including blocks with nothing to say (deltbaie = 0
+    // there, not an absent field).
+    bool dbaflde = false;
+    for (const auto& plan : payload.chans) {
+        dbaflde = dbaflde || plan.delta.deltnseg > 0;
+    }
 
     w.put(kSyncWord, 16);
 
@@ -452,7 +466,7 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
     w.put(kDithflage, 1);
     w.put(kBamode, 1);
     w.put(kFrmfgaincode, 1);
-    w.put(kDbaflde, 1);
+    w.put(dbaflde ? 1 : 0, 1);
     w.put(static_cast<std::uint32_t>(skipflde), 1);
     w.put(spx.atten ? 1 : 0, 1);  // spxattene
 
@@ -720,10 +734,43 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
                 w.put(static_cast<std::uint32_t>(cpl.sleak), 3);
             }
         }
-        // dbaflde == 0: no delta allocation. The skip field, when switched on,
-        // sits here - after the delta bit allocation fields and before the
-        // mantissas. Getting that order wrong does not fail to parse; it
-        // shifts every mantissa in the block, which comes back as noise.
+        // §E2.3.2.9/§5.4.3.47-57: present in every block once dbaflde is set,
+        // even a block with nothing to say (deltbaie = 0). This encoder never
+        // reuses ('00') a previous block's state - the correction is computed
+        // once per frame (see ChannelPlan::delta), so every block that wants
+        // one resends the identical segments as fresh ('01') info; a channel
+        // with none says '10' (no delta).
+        if (dbaflde) {
+            bool any_delta = cpl.in_use && payload.chans.back().delta.deltnseg > 0;
+            for (int ch = 0; ch < nfchans && !any_delta; ++ch) {
+                any_delta = payload.chans[static_cast<std::size_t>(ch)].delta.deltnseg > 0;
+            }
+            w.put(any_delta ? 1 : 0, 1);  // deltbaie
+            if (any_delta) {
+                const auto emit_segments = [&](const DeltaSegments& segs) {
+                    w.put(segs.deltnseg > 0 ? 1u : 2u, 2);  // deltbae: new info / no delta
+                    if (segs.deltnseg > 0) {
+                        w.put(static_cast<std::uint32_t>(segs.deltnseg - 1), 3);
+                        for (int seg = 0; seg < segs.deltnseg; ++seg) {
+                            const auto i = static_cast<std::size_t>(seg);
+                            w.put(static_cast<std::uint32_t>(segs.deltoffst[i]), 5);
+                            w.put(static_cast<std::uint32_t>(segs.deltlen[i]), 4);
+                            w.put(static_cast<std::uint32_t>(segs.deltba[i]), 3);
+                        }
+                    }
+                };
+                if (cpl.in_use) {
+                    emit_segments(payload.chans.back().delta);
+                }
+                for (int ch = 0; ch < nfchans; ++ch) {
+                    emit_segments(payload.chans[static_cast<std::size_t>(ch)].delta);
+                }
+            }
+        }
+        // The skip field, when switched on, sits here - after the delta bit
+        // allocation fields and before the mantissas. Getting that order
+        // wrong does not fail to parse; it shifts every mantissa in the
+        // block, which comes back as noise.
         if (skipflde != 0) {
             put_skip_field(w, blk == kMetadataBlock ? metadata
                                                     : std::span<const std::byte>{});
@@ -1251,6 +1298,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         auto& plan = payload.chans[static_cast<std::size_t>(s)];
         plan.start = stream_start(s);
         plan.endmant = stream_end(s);
+        const bool is_lfe = config_.lfe && s == nfchans;
         const auto span = static_cast<std::size_t>(plan.endmant - plan.start);
         std::vector<std::uint8_t> raw(span, kMaxExponent);
         std::vector<std::uint8_t> axis_exps(span, 0);
@@ -1314,6 +1362,42 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
             decode_exponents(plan.coded.absolute, plan.coded.groups, ExpStrategy::kD15,
                              plan.decoded);
         }
+        // §7.2.2.6: one exponent set covers all six blocks here (Table E2.10
+        // code 0). `raw` above is the MIN exponent across those six blocks
+        // per bin - driven by whichever block has the LARGEST magnitude
+        // there - so the comparison needs that same per-bin max, not an
+        // average, or it would measure the (intentional) gap between
+        // "loudest block" and "typical block" instead of real quantization
+        // error and bias toward spurious cuts. See the ChannelPlan::delta
+        // comment for why AHT streams skip this.
+        // LFE is excluded too: §E2.3.2.9's deltbae[ch] loop is bounded by
+        // nfchans, so LFE has no delta bit allocation field to carry one in -
+        // computing and applying one anyway would let the encoder's own
+        // allocation diverge from what a decoder, which never receives it,
+        // would reconstruct.
+        //
+        // Delta is skipped entirely whenever coupling is in use this frame -
+        // not just for the coupling channel itself - deliberately narrowing
+        // this first cut's scope: the coupling channel is a synthesized
+        // average of the coupled channels rather than a real recorded
+        // signal, and even leaving ONLY the fbw channels' own narrow
+        // below-cplstrtmant region eligible, the extra side-info overhead
+        // was enough to break the tightest coupling scenarios (128 kbit/s
+        // 5.1, exactly the case coupling exists to rescue). Getting a
+        // coupling-aware version of this heuristic right needs more care
+        // than this phase has room for.
+        if (!plan.aht && !is_lfe && !cpl.in_use) {
+            std::vector<double> peak_mag(static_cast<std::size_t>(plan.endmant), 0.0);
+            for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
+                const auto& c = coeffs_at(s, blk);
+                for (int bin = plan.start; bin < plan.endmant; ++bin) {
+                    peak_mag[static_cast<std::size_t>(bin)] =
+                        std::max(peak_mag[static_cast<std::size_t>(bin)],
+                                std::abs(c[static_cast<std::size_t>(bin)]));
+                }
+            }
+            plan.delta = choose_delta_segments(peak_mag, plan.decoded, plan.start);
+        }
         plan.bap.assign(static_cast<std::size_t>(plan.endmant), 0);
         if (plan.aht) {
             // The mantissas the quantizers see, normalised by each bin's own
@@ -1375,7 +1459,8 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                                         .cplfleak = cpl.fleak,
                                         .cplsleak = cpl.sleak,
                                         .snr_all_zero = composite == 0,
-                                        .high_efficiency = plan.aht};
+                                        .high_efficiency = plan.aht,
+                                        .delta = plan.delta};
             compute_bit_allocation(plan.decoded, config_.sample_rate, kBamode0Codes,
                                    composite >> 4, composite & 15, plan.bap, region);
             if (plan.aht) {

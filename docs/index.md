@@ -34,6 +34,7 @@ depend on them.
 | Transform | long blocks only (512-point MDCT, KBD window) | long blocks only |
 | Exponents | D15 / D25 / D45, strategy chosen per block from the reuse span (§8.2.8) | frame-level, Table E2.10 code 0: D15 in block 0, reused for the other five |
 | Coupling | yes (§7.4), begin and end frequencies auto or pinned | yes (§E3.3) |
+| Delta bit allocation | automatic (§7.2.2.6), like rematrixing below — no toggle | automatic, same as AC-3 |
 | Rematrixing | yes, 2/0 (§7.5.3 minimum-power rule) | no — the syntax is written, the flags are always zero |
 | Annex E tools | — | spectral extension (§E3.6), adaptive hybrid transform with GAQ (§E3.4) |
 | Objects | panned to a 5.1 bed (no metadata survives) | OAMD + JOC in an EMDF container (TS 103 420) |
@@ -91,8 +92,8 @@ pages, not here. Two gaps are load-bearing enough to flag up front:
     devices at all. Nothing has been bitstreamed to an actual S/PDIF or HDMI output, and no AV
     receiver has been asked to lock onto it.
 
-Also not implemented at all: block switching (short blocks), dual mono (1+1, acmod 0), delta bit
-allocation, E-AC-3 half sample rates (`fscod2`: 24, 22.05, 16 kHz), enhanced coupling, transient
+Also not implemented at all: block switching (short blocks), dual mono (1+1, acmod 0),
+E-AC-3 half sample rates (`fscod2`: 24, 22.05, 16 kHz), enhanced coupling, transient
 pre-noise processing, and variable bit rate — CBR only.
 
 ## Where to go next

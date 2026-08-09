@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <span>
 
@@ -14,8 +15,8 @@
 // Scope: fbw, LFE and coupling channels — the coupling channel enters higher
 // up the spectrum and seeds its leak state from cplfleak/cplsleak instead of
 // running lowcomp (§7.2.2.4), which BitAllocRegion below selects. Delta bit
-// allocation (§7.2.2.6) is the one path not implemented; neither the encoder
-// emits it nor the decoder accepts it.
+// allocation (§7.2.2.6) lets an encoder nudge the masking curve this routine
+// derives from exponents alone, in either direction, per band.
 
 namespace ac3 {
 
@@ -40,6 +41,18 @@ struct BitAllocCodes {
     return (((csnroffst - 15) << 4) + fsnroffst) << 2;
 }
 
+// §7.2.2.6: a resolved set of delta bit allocation segments for ONE channel
+// (or the coupling channel) — the spec's cpldelt*/delt*[ch] pair collapses to
+// this one shape because a compute_bit_allocation() call already represents
+// exactly one such channel. deltnseg == 0 means no segments: the spec's own
+// recommended reset state ("perform no delta alloc" / absent).
+struct DeltaSegments {
+    int deltnseg = 0;                          // 1..8 segments when > 0
+    std::array<std::uint8_t, 8> deltoffst{};   // 5-bit band offsets (Table 5.3/E1.3)
+    std::array<std::uint8_t, 8> deltlen{};     // 4-bit band lengths
+    std::array<std::uint8_t, 8> deltba{};      // 3-bit adjustment codes (Table 5.17)
+};
+
 // Where the allocation starts, and - for the coupling channel - the leak
 // state the spec seeds instead of running the low-frequency lowcomp path.
 struct BitAllocRegion {
@@ -62,6 +75,9 @@ struct BitAllocRegion {
     // pointer in 0..19 rather than 0..15, and it means something different:
     // 1-7 select vector quantisers, 8-19 scalar ones.
     bool high_efficiency = false;
+    // §7.2.2.6: this call's delta segments (see DeltaSegments above) — the
+    // caller picks whichever of cpldelt*/delt*[ch] belongs to this channel.
+    DeltaSegments delta{};
 };
 
 // §7.2.2.2-7.2.2.7 for one channel. exps are the DECODED exponents (the
@@ -72,5 +88,24 @@ struct BitAllocRegion {
 void compute_bit_allocation(std::span<const std::uint8_t> exps, SampleRate sample_rate,
                             const BitAllocCodes& codes, int csnroffst, int fsnroffst,
                             std::span<std::uint8_t> bap, const BitAllocRegion& region = {});
+
+// §7.2.2.6, encoder side. compute_bit_allocation()'s masking curve is built
+// only from the quantized exponent (psd[bin] = 3072 - exps[bin]<<7 — exactly
+// 128 units, one Table 5.17 delta step, per exponent step), which discards
+// where the real coefficient sits within that exponent's range. This compares
+// that flat curve against one built from the real, pre-quantization
+// coefficient magnitudes the encoder still has at this point, and returns the
+// delta segments that correct the gap: merged into contiguous runs, quantized
+// to the nearest Table 5.17 code, capped at the spec's 8-segment limit
+// (largest-magnitude runs kept if more would qualify).
+//
+// `coefficients` and `exps` are the same channel, same length, both indexed
+// from bin 0 exactly like compute_bit_allocation's own `exps`/`bap`; `start`
+// is that call's BitAllocRegion::start (0 for fbw/LFE, cplstrtmant for
+// coupling) — the segments this returns are meant to populate that same
+// region's `delta` field.
+[[nodiscard]] DeltaSegments choose_delta_segments(std::span<const double> coefficients,
+                                                  std::span<const std::uint8_t> exps,
+                                                  int start);
 
 }  // namespace ac3
