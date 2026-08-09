@@ -1254,7 +1254,15 @@ TEST_CASE("E-AC-3 rejects an access unit that renders more than sixteen channels
 }
 
 TEST_CASE("E-AC-3 rejects configurations it cannot express", "[eac3]") {
-    CHECK(ac3::eac3::build_silent_frame({.bitrate_kbps = 100}).error() ==
+    // §E2.3.1.3: frmsiz is an arbitrary 11-bit word count, not an index into
+    // Table 5.18 the way AC-3's frmsizecod is - so unlike AC-3, a bitrate
+    // only has to land on a legal word count, not one of the 19 nominal
+    // rates (see "E-AC-3 accepts a bitrate off Table 5.18's nominal list"
+    // below). 0 gives frame_words() == 0, which is not a syncframe at all;
+    // something past kMaxFrameWords overflows the 11-bit field.
+    CHECK(ac3::eac3::build_silent_frame({.bitrate_kbps = 0}).error() ==
+          ac3::FrameError::kInvalidBitrate);
+    CHECK(ac3::eac3::build_silent_frame({.bitrate_kbps = 2000}).error() ==
           ac3::FrameError::kInvalidBitrate);
     CHECK(ac3::eac3::build_silent_frame({.bitrate_kbps = 192, .dialnorm = 0}).error() ==
           ac3::FrameError::kInvalidDialnorm);
@@ -1262,4 +1270,24 @@ TEST_CASE("E-AC-3 rejects configurations it cannot express", "[eac3]") {
     CHECK(ac3::eac3::build_silent_frame(
               {.bitrate_kbps = 192, .acmod = ac3::Acmod::kDualMono})
               .has_value() == false);
+}
+
+TEST_CASE("E-AC-3 accepts a bitrate off Table 5.18's nominal list", "[eac3]") {
+    // 100 kbps is not one of Table 5.18's 19 values, but E-AC-3 does not
+    // index that table - it lands on a perfectly legal 200-word frame
+    // (frame_words(k48000, 100) == 200), so it has to work. Real audio, not
+    // silence: an all-zero frame proves the syntax packs, not that a real
+    // SNR search actually fits the budget this bitrate gives it.
+    REQUIRE(ac3::eac3::frame_words(ac3::SampleRate::k48000, 100) == 200);
+    ac3::eac3::FrameEncoder encoder{{.bitrate_kbps = 100}};
+    std::uint64_t n = 0;
+    for (int f = 0; f < 3; ++f) {
+        auto pcm = tone_frame(2, n);
+        n += ac3::kSamplesPerFrame;
+        const std::vector<std::span<const float>> views{pcm[0], pcm[1]};
+        const auto frame = encoder.encode_frame(views);
+        REQUIRE(frame.has_value());
+        CHECK(frame->size() == 400);  // 200 words
+        CHECK(ac3::crc16(std::span{*frame}.subspan(2)) == 0x0000);
+    }
 }

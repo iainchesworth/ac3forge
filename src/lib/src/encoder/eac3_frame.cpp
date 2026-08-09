@@ -782,7 +782,14 @@ std::expected<void, FrameError> validate(const FrameConfig& config) {
     if (config.dialnorm < 1 || config.dialnorm > 31) {
         return std::unexpected(FrameError::kInvalidDialnorm);
     }
-    if (!is_valid_bitrate(config.bitrate_kbps)) {
+    // §E2.3.1.3: frmsiz is an arbitrary 11-bit word count rather than an
+    // index into Table 5.18 the way AC-3's frmsizecod is, so unlike AC-3 any
+    // bitrate that lands on a legal word count is expressible here - not
+    // only the 19 nominal Table 5.18 rates. bitrate_kbps == 0 gives
+    // frame_words() == 0, which is not a syncframe at all; past
+    // kMaxFrameWords the word count overflows frmsiz's 11 bits.
+    const auto words = frame_words(config.sample_rate, config.bitrate_kbps);
+    if (words < 1 || words > kMaxFrameWords) {
         return std::unexpected(FrameError::kInvalidBitrate);
     }
     // 1+1 needs a second program's metadata throughout; out of scope here.
