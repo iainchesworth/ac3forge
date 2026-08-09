@@ -288,6 +288,22 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     uses: ./.github/workflows/_build.yml
+    # contents: write is only actually used by _build.yml's quality-trend job
+    # (persist_quality_trend gates it to direct develop/main pushes below);
+    # every other job in that reusable workflow keeps the workflow-level
+    # `contents: read` it already declares - a callee job's own `permissions:`
+    # can only narrow what the caller grants here, never widen it, so this is
+    # the one place that ceiling has to be raised.
+    permissions:
+      contents: write
+    with:
+      # Computed here, not inside _build.yml: github.event_name/github.ref
+      # reflect the reusable workflow's own call context once inside it, and
+      # this caller site is the unambiguous place to ask "is this a direct
+      # push to develop or main" - see persist_quality_trend's own
+      # description in _build.yml.
+      persist_quality_trend: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') }}
+      quality_trend_branch: ${{ github.ref_name }}
 
   # Branch protection points at this one check rather than at each matrix leg,
   # so adding or renaming a leg does not need the protection rule updated.
