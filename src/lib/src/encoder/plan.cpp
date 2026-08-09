@@ -55,10 +55,7 @@ using Location = eac3::chanmap::Location;
 }
 
 // The named-layout callers below only ever want channel_plan_for(id)'s
-// answer; keeping these two overloads spares them writing that out.
-[[nodiscard]] std::vector<Location> bed_locations(LayoutId id) {
-    return bed_locations(channel_plan_for(id));
-}
+// answer; keeping this overload spares them writing that out.
 [[nodiscard]] std::vector<Location> rendered_locations(LayoutId id) {
     return rendered_locations(channel_plan_for(id));
 }
@@ -442,12 +439,12 @@ std::optional<std::uint16_t> parse_channels(std::string_view text) {
     // both members present sets the bit, one alone is rejected rather than
     // silently dropped or silently completed.
     constexpr std::array<std::uint16_t, 16> kBits = {
-        eac3::chanmap::kLeft,     eac3::chanmap::kCentre,   eac3::chanmap::kRight,
-        eac3::chanmap::kLeftSurround, eac3::chanmap::kRightSurround, eac3::chanmap::kLcRc,
-        eac3::chanmap::kLrsRrs,   eac3::chanmap::kCs,       eac3::chanmap::kTs,
-        eac3::chanmap::kLsdRsd,   eac3::chanmap::kLwRw,     eac3::chanmap::kVhlVhr,
-        eac3::chanmap::kVhc,      eac3::chanmap::kLtsRts,   eac3::chanmap::kLfe2,
-        eac3::chanmap::kLfe,
+        eac3::chanmap::kLeftBit,     eac3::chanmap::kCentreBit,   eac3::chanmap::kRightBit,
+        eac3::chanmap::kLeftSurroundBit, eac3::chanmap::kRightSurroundBit, eac3::chanmap::kLcRcBit,
+        eac3::chanmap::kLrsRrsBit,   eac3::chanmap::kCsBit,       eac3::chanmap::kTsBit,
+        eac3::chanmap::kLsdRsdBit,   eac3::chanmap::kLwRwBit,     eac3::chanmap::kVhlVhrBit,
+        eac3::chanmap::kVhcBit,      eac3::chanmap::kLtsRtsBit,   eac3::chanmap::kLfe2Bit,
+        eac3::chanmap::kLfeBit,
     };
     std::uint16_t mask = 0;
     for (const auto bit : kBits) {
@@ -1008,7 +1005,7 @@ void render(const Routing& routing, std::span<const std::span<const float>> sour
             const auto in = source[static_cast<std::size_t>(s)];
             const auto n = std::min(samples, in.size());
             for (std::size_t i = 0; i < n; ++i) {
-                out[i] += static_cast<float>(gain * in[i]);
+                out[i] += static_cast<float>(gain * static_cast<double>(in[i]));
             }
         }
     }

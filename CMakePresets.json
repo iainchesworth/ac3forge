@@ -108,6 +108,15 @@
     },
 
     {
+      "name": "sanitize-asan-ubsan",
+      "hidden": true,
+      "description": "AddressSanitizer + UndefinedBehaviorSanitizer, fatal on first violation (-fno-sanitize-recover=all in cmake/Sanitizers.cmake) rather than logging and continuing. Deliberately does NOT add -fsanitize=integer's unsigned-integer-overflow check: this codec relies on intentional unsigned wraparound (CRC16, ring-buffer indices, the splice counter), and blanket-enabling it drowns real findings in expected wraparound. Signed overflow and out-of-range shifts - the precedent bug's own category (commit 8386c8f) - are already part of the default 'undefined' set.",
+      "cacheVariables": {
+        "AC3FORGE_SANITIZERS": "address,undefined"
+      }
+    },
+
+    {
       "name": "config-windows-msvc",
       "inherits": [ "release", "windows-msvc", "core" ],
       "displayName": "Windows MSVC Release"
@@ -156,6 +165,11 @@
       "name": "config-macos-llvm-debug",
       "inherits": [ "debug", "macos-llvm", "core" ],
       "displayName": "macOS LLVM Debug"
+    },
+    {
+      "name": "config-linux-llvm-asan-ubsan",
+      "inherits": [ "debug", "linux-llvm", "sanitize-asan-ubsan", "core" ],
+      "displayName": "Linux LLVM ASan+UBSan"
     }
   ],
 
@@ -209,6 +223,11 @@
       "name": "build-macos-llvm-debug",
       "configurePreset": "config-macos-llvm-debug",
       "displayName": "macOS LLVM Debug"
+    },
+    {
+      "name": "build-linux-llvm-asan-ubsan",
+      "configurePreset": "config-linux-llvm-asan-ubsan",
+      "displayName": "Linux LLVM ASan+UBSan"
     }
   ],
 
@@ -282,6 +301,17 @@
       "displayName": "macOS LLVM Debug Tests",
       "output": { "outputOnFailure": true },
       "execution": { "noTestsAction": "error", "stopOnFailure": false }
+    },
+    {
+      "name": "test-linux-llvm-asan-ubsan",
+      "configurePreset": "config-linux-llvm-asan-ubsan",
+      "displayName": "Linux LLVM ASan+UBSan Tests",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error", "stopOnFailure": false },
+      "environment": {
+        "ASAN_OPTIONS": "detect_leaks=1",
+        "UBSAN_OPTIONS": "print_stacktrace=1"
+      }
     }
   ],
 
@@ -329,6 +359,15 @@
         { "type": "configure", "name": "config-macos-llvm" },
         { "type": "build", "name": "build-macos-llvm" },
         { "type": "test", "name": "test-macos-llvm" }
+      ]
+    },
+    {
+      "name": "ci-linux-llvm-asan-ubsan",
+      "displayName": "Linux LLVM ASan+UBSan CI (configure, build, test)",
+      "steps": [
+        { "type": "configure", "name": "config-linux-llvm-asan-ubsan" },
+        { "type": "build", "name": "build-linux-llvm-asan-ubsan" },
+        { "type": "test", "name": "test-linux-llvm-asan-ubsan" }
       ]
     }
   ]

@@ -25,7 +25,7 @@
 
 namespace ac3::sinks {
 
-enum class PassthroughError {
+enum class PassthroughError : std::uint8_t {
     kNoBackend,             // built without a platform passthrough backend
     kComFailure,
     kDeviceNotFound,
