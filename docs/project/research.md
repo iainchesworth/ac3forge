@@ -107,7 +107,7 @@ C++23 toolchain reality (verified): `std::expected`, `std::print`, `std::countl_
 - **L2 — In-repo minimal decoder:** encode→decode in-process; cross-check against FFmpeg FATE AC-3 sample streams; fuzz target (`/fsanitize=fuzzer`).
 - **L3 — FFmpeg oracle** (every commit, seconds). Critical verified finding: **FFmpeg does not check AC-3 CRCs by default.** The meaningful command is:
   `ffmpeg -v error -err_detect crccheck+bitstream+buffer+explode -i out.ac3 -f wav out.wav` (pass = exit 0, empty stderr), plus `ffprobe -of json -show_streams -show_frames` assertions, across a rate×bitrate×acmod matrix. Second opinion: a52dec (MSYS2). Pin dialnorm=−31 and decode with `-drc_scale 0` so metadata never pollutes PCM comparisons.
-- **L4 — Perceptual** (nightly): delay-compensated stddev/PSNR vs input with per-bitrate regression thresholds (exactly how FFmpeg's own FATE validates its encoder); race `ffmpeg -c:a ac3` at matched bitrates; GstPEAQ/ViSQOL as trend lines.
+- **L4 — Perceptual** (nightly): delay-compensated stddev/PSNR vs input with per-bitrate regression thresholds (exactly how FFmpeg's own FATE validates its encoder); race `ffmpeg -c:a ac3` at matched bitrates; GstPEAQ/ViSQOL as trend lines. A lightweight version of this — delay-compensated SNR against FFmpeg's own decode, on every gold-reference-gated CI push rather than nightly — is wired in and trended at [Quality trend](../quality-trend.md).
 - **L5 — Real hardware** (manual): IEC 61937-wrapped frames over WASAPI exclusive → TOSLINK/HDMI. The "spdif-WAV" trick validates the packer before any WASAPI code exists: wrap the burst stream in a WAV header, play it bit-exact, watch the receiver light up. Hardware decoders are the strictest test we will ever meet.
 
 ## 8. Roadmap
