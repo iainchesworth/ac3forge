@@ -102,7 +102,7 @@ QStringList EncoderController::layoutNames() const {
 
 int EncoderController::layoutIndex() const {
     if (custom_layout_) {
-        return layoutNames().size() - 1;
+        return static_cast<int>(layoutNames().size()) - 1;
     }
     int index = 0;
     for (const auto& info : plan::kLayouts) {

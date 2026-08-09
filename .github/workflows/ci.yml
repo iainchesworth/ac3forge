@@ -3,17 +3,20 @@
 # ---------------------------------------------------------------------------
 # Matrix status (updated when sanitizer builds and static analysis were added)
 # ---------------------------------------------------------------------------
-# Every leg below was run for real, not just claimed: windows-msvc locally
-# (MSVC 14.51), the Linux legs and static-analysis in an Ubuntu 26.04
+# Every leg below was run for real, not just claimed: windows-msvc and
+# windows-llvm locally (MSVC 14.51 / clang-cl 21.1.0 - CI pins 21.1.8, one
+# patch version newer), the Linux legs and static-analysis in an Ubuntu 26.04
 # container built from .github/toolchain/ (gcc 15.2.0 / clang 21.1.8).
-# windows-llvm and macos-llvm remain as they were: windows-llvm still fails
-# under -Werror (nobody has ported it), and macOS could not be run at all —
+# macos-llvm remains as it was: it could not be run at all,
 # the project has no Mac.
 #
 #   leg                    status    notes
 #   ----------------------  --------  ------------------------------------------
-#   windows-msvc            GREEN     214/214 tests pass
-#   windows-llvm             red      17 sites: sign-conversion, double-promotion
+#   windows-msvc            GREEN     245/245 tests pass
+#   windows-llvm             GREEN    245/245 tests pass; fixed a qsizetype-to-int
+#                                     narrowing in encoder_controller.cpp that
+#                                     -Wconversion rejects under clang-cl (MSVC's
+#                                     /W4 has no equivalent check)
 #   linux-gcc                GREEN    214/214 tests pass
 #   linux-llvm               GREEN    214/214 tests pass
 #   linux-llvm-asan-ubsan    GREEN    214/214 tests + the full codec-matrix
@@ -22,12 +25,12 @@
 #                                     and Atmos mode) - see cmake/Sanitizers.cmake
 #   static-analysis (tidy)   GREEN    .clang-tidy's curated set, clean baseline
 #   macos-llvm               unknown  never executed; shares linux-llvm's
-#                                     warning set, so expect at least the same
-#                                     failures as windows-llvm
+#                                     warning set, so expect it to surface
+#                                     genuine failures the first time it runs
 #
-# windows-llvm and macos-llvm run with continue-on-error (see _build.yml):
-# they report honestly without turning the default branch red on every push.
-# Promote a leg by deleting its `experimental: true` line in _build.yml.
+# macos-llvm runs with continue-on-error (see _build.yml): it reports honestly
+# without turning the default branch red on every push. Promote it by
+# deleting its `experimental: true` line in _build.yml.
 name: CI
 
 on:

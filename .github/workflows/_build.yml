@@ -6,13 +6,14 @@
 # ---------------------------------------------------------------------------
 # On `experimental: true`
 # ---------------------------------------------------------------------------
-# windows-msvc, linux-gcc, linux-llvm and linux-llvm-asan-ubsan are all proven
-# green now (214/214 tests each, the last two also against the codec-matrix
-# script's full layout/tool/atmos sweep for the sanitizer leg) and required.
-# windows-llvm and macos-llvm remain experimental: the former still has real
-# -Werror sites (sign-conversion, double-promotion) nobody has ported yet, and
-# the latter has never been run at all — this project has no Mac. See the
-# table in ci.yml.
+# windows-msvc, windows-llvm, linux-gcc, linux-llvm and linux-llvm-asan-ubsan
+# are all proven green now (245/245 tests each, the last two also against the
+# codec-matrix script's full layout/tool/atmos sweep for the sanitizer leg)
+# and required. windows-llvm was the last of these promoted: its real
+# -Werror site (a qsizetype-to-int narrowing in src/gui/encoder_controller.cpp
+# clang-cl's -Wconversion rejects and MSVC's /W4 does not) is fixed. macos-llvm
+# remains experimental: it has never been run at all — this project has no
+# Mac. See the table in ci.yml.
 #
 # Experimental legs run with continue-on-error, which reports their real
 # status without making the default branch red on every push. As each one is
@@ -64,7 +65,6 @@ jobs:
             preset: windows-llvm
             msvc: true          # clang-cl targets the MSVC ABI: same headers, same libs
             llvm: true
-            experimental: true
 
           - name: "Linux GCC"
             runner: ubuntu-latest
