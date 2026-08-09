@@ -20,6 +20,13 @@ runs:
     # reset to the pin so a rebuild months from now installs the same Catch2.
     - name: Clone and bootstrap vcpkg
       shell: bash
+      # inputs.vcpkg-commit read through env: rather than interpolated
+      # straight into the script text - every caller today passes a literal
+      # SHA, but a value substituted directly into a run: block is shell CODE,
+      # not data, so this closes that off rather than relying on every future
+      # caller staying literal (zizmor: template-injection).
+      env:
+        VCPKG_COMMIT: ${{ inputs.vcpkg-commit }}
       run: |
         set -euo pipefail
         VCPKG_DIR="${RUNNER_TEMP}/vcpkg"
@@ -27,7 +34,7 @@ runs:
           git clone https://github.com/microsoft/vcpkg.git "$VCPKG_DIR"
         fi
         git -C "$VCPKG_DIR" fetch --tags origin
-        git -C "$VCPKG_DIR" checkout --force "${{ inputs.vcpkg-commit }}"
+        git -C "$VCPKG_DIR" checkout --force "$VCPKG_COMMIT"
         if [ "$RUNNER_OS" = "Windows" ]; then
           "$VCPKG_DIR/bootstrap-vcpkg.bat" -disableMetrics
           echo "VCPKG_ROOT=$(cygpath -w "$VCPKG_DIR")" >> "$GITHUB_ENV"
