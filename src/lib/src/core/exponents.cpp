@@ -63,7 +63,11 @@ EncodedExponents encode_exponents(std::span<const std::uint8_t> raw, ExpStrategy
     // NOLINTNEXTLINE(clang-analyzer-core.DivideZero)
     const int real_diffs = (endmant - 1 + group_size - 1) / group_size;
     assert(real_diffs <= diff_count);
-    std::vector<int> pre(static_cast<std::size_t>(diff_count) + 1);
+    // Clamped before the cast: a negative count would wrap through size_t and
+    // the +1 would land back on an empty vector. The asserts above rule that
+    // out for every legal caller, but they compile out under NDEBUG, and the
+    // pre[0] store below would then write through a null data pointer.
+    std::vector<int> pre(static_cast<std::size_t>(std::max(diff_count, 0)) + 1);
     pre[0] = std::min<int>(raw[0], kMaxAbsoluteExponent);  // §7.1.2 4-bit cap
     for (int i = 0; i < real_diffs; ++i) {
         const int begin = 1 + i * group_size;
@@ -121,6 +125,13 @@ EncodedCouplingExponents encode_coupling_exponents(std::span<const std::uint8_t>
     // ExpStrategy::kReuse, which no caller of this function ever passes.
     // NOLINTNEXTLINE(clang-analyzer-core.DivideZero)
     const int ngrps = count / (3 * group_size);
+    // A coupling range shorter than one whole group carries nothing to encode.
+    // The asserts above rule it out for every legal caller, but they compile
+    // out under NDEBUG, and a zero group count sizes pre at one element - which
+    // the pre[1] read below is already past the end of.
+    if (ngrps <= 0) {
+        return {};
+    }
     const int diff_count = ngrps * 3;
 
     // pre[0] is the absolute reference (even, 0..24); pre[1 + i] covers the
