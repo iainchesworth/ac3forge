@@ -60,9 +60,17 @@ class EncoderController : public QObject {
     Q_PROPERTY(QStringList codecNames READ codecNames CONSTANT)
     Q_PROPERTY(int layoutIndex READ layoutIndex WRITE setLayoutIndex NOTIFY planChanged)
     // Only the layouts the current codec can carry, so an unreachable choice
-    // is never offered rather than offered and then refused.
+    // is never offered rather than offered and then refused. The list always
+    // ends with one synthetic "Custom…" entry - not a LayoutId, just the
+    // signal to read customChannels instead - for anything Annex E allows
+    // that has no preset (a full channel-picker is a later design pass; this
+    // is the minimal control that exercises the general allocator at all).
     Q_PROPERTY(QStringList layoutNames READ layoutNames NOTIFY planChanged)
     Q_PROPERTY(QString layoutDetail READ layoutDetail NOTIFY planChanged)
+    Q_PROPERTY(bool customLayoutSelected READ customLayoutSelected NOTIFY planChanged)
+    // Comma-separated Table E2.5 location names (plan::parse_channels), read
+    // only when customLayoutSelected is true.
+    Q_PROPERTY(QString customChannels READ customChannels WRITE setCustomChannels NOTIFY planChanged)
     Q_PROPERTY(int containerIndex READ containerIndex WRITE setContainerIndex NOTIFY planChanged)
     Q_PROPERTY(QStringList containerNames READ containerNames CONSTANT)
 
@@ -165,6 +173,8 @@ public:
     [[nodiscard]] int layoutIndex() const;
     [[nodiscard]] QStringList layoutNames() const;
     [[nodiscard]] QString layoutDetail() const;
+    [[nodiscard]] bool customLayoutSelected() const { return custom_layout_; }
+    [[nodiscard]] QString customChannels() const { return custom_channels_text_; }
     [[nodiscard]] int containerIndex() const { return container_index_; }
     [[nodiscard]] QStringList containerNames() const;
 
@@ -223,6 +233,7 @@ public:
     void setBitrateKbps(int kbps);
     void setCodecIndex(int index);
     void setLayoutIndex(int index);
+    void setCustomChannels(const QString& text);
     void setContainerIndex(int index);
     void setCoupling(bool on);
     void setSpx(bool on);
@@ -303,6 +314,15 @@ private:
     // Object mode always codes a 5.1 bed, so the layout it reports is that
     // bed rather than whatever the layout box last showed.
     [[nodiscard]] ac3::plan::LayoutId effectiveLayout() const;
+    // currentPlan() resolved to its actual channels - what every display and
+    // routing computation below should read, whether the plan came from a
+    // named layout or a custom selection. Assumes currentPlan() validates,
+    // the way ac3cli's own resolve() does.
+    [[nodiscard]] ac3::plan::ChannelPlan effectiveChannelPlan() const;
+    // What the layout box's detail line and the routing summary call this
+    // plan: a named layout's label, "5.1 bed" for object mode, or the parsed
+    // channel list for a custom selection.
+    [[nodiscard]] QString effectiveLabel() const;
 
     // Channels through the plan and out as AC-3 or E-AC-3. One worker for
     // both: they differ only in which encoder object runs, and everything
@@ -365,6 +385,11 @@ private:
 
     ac3::plan::Codec codec_ = ac3::plan::Codec::kAc3;
     ac3::plan::LayoutId layout_ = ac3::plan::LayoutId::kStereo;
+    // Selected via layoutNames' trailing "Custom…" entry. custom_channels_text_
+    // is kept as typed even when it does not yet parse, so a still-in-progress
+    // edit is not silently discarded.
+    bool custom_layout_ = false;
+    QString custom_channels_text_;
     ac3::plan::Tools tools_{};
     ac3::plan::Metadata meta_{};
     int container_index_ = 0;
