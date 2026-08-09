@@ -42,6 +42,10 @@ include(CompilerWarnings)
 set(AC3FORGE_SANITIZERS "" CACHE STRING "Comma-separated -fsanitize= value, e.g. address,undefined")
 include(Sanitizers)
 
+# ac3::coverage, off unless -DAC3FORGE_ENABLE_COVERAGE=ON (see the
+# linux-gcc-coverage preset in CMakePresets.json); a plain configure is unaffected.
+include(Coverage)
+
 # Sources carry spec citations with non-ASCII glyphs (section marks, degrees,
 # arrows). Tell MSVC both the source and execution charsets are UTF-8 so it
 # neither mis-decodes them nor warns; harmless everywhere else.

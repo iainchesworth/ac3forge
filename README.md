@@ -36,9 +36,10 @@ your use is your problem to assess, not something this project resolves.
 above reads empty; once one lands, that badge is the current version, not this paragraph. Green
 and required in CI on Windows (MSVC, clang-cl), Linux (GCC 15, Clang 21) and macOS (Homebrew
 LLVM) — CLI and GUI alike on the first four, CLI only on macOS — plus an ASan+UBSan leg,
-clang-tidy static analysis, a per-platform gold-reference *quality* gate, and a dedicated Linux
-FFmpeg-validation leg checking output *correctness* across the full option space. No leg remains
-experimental. See [Portability](#portability).
+clang-tidy static analysis, a line/branch coverage gate over the library, a per-platform
+gold-reference *quality* gate, and a dedicated Linux FFmpeg-validation leg checking output
+*correctness* across the full option space. No leg remains experimental. See
+[Portability](#portability).
 
 ## Contents
 
@@ -219,13 +220,14 @@ fallback (macOS, or Linux without libasound headers) that reports itself unavail
 failing to link. See [Linux audio](docs/BUILDING.md#linux-audio) for the ALSA backend
 specifically.
 
-CI (`.github/workflows/ci.yml`) runs all six platform/compiler legs plus static analysis and
-FFmpeg validation on every push, and requires eight jobs: windows-msvc, windows-llvm, linux-gcc,
-linux-llvm, linux-llvm-asan-ubsan (AddressSanitizer + UndefinedBehaviorSanitizer,
-`cmake/Sanitizers.cmake`), macos-llvm, static-analysis (clang-tidy, `.clang-tidy`) and
-ffmpeg-validate. No leg remains experimental — macos-llvm was the last promoted, once a real
-GitHub Actions run (this project has no Mac) confirmed 256/256 tests and the gold-reference gate
-both green.
+CI (`.github/workflows/ci.yml`) runs all six platform/compiler legs plus static analysis,
+coverage and FFmpeg validation on every push, and requires nine jobs: windows-msvc, windows-llvm,
+linux-gcc, linux-llvm, linux-llvm-asan-ubsan (AddressSanitizer + UndefinedBehaviorSanitizer,
+`cmake/Sanitizers.cmake`), macos-llvm, static-analysis (clang-tidy, `.clang-tidy`), coverage
+(gcovr line/branch gate over `src/lib` via the `linux-gcc-coverage` preset,
+`cmake/Coverage.cmake`) and ffmpeg-validate. No leg remains experimental — macos-llvm was the
+last promoted, once a real GitHub Actions run (this project has no Mac) confirmed 256/256 tests
+and the gold-reference gate both green.
 
 ffmpeg-validate is a separate, CLI-only linux-llvm build that runs `scripts/run-codec-matrix.sh`'s
 FFmpeg strict-decode checks, `tools/check_drc.py`, `tools/check_coupling.py`/
