@@ -4,17 +4,18 @@
 
 // What this build can do with the machine's audio hardware.
 //
-// Capture and passthrough are the only parts of ac3forge that are not pure
-// file I/O, and they are the only parts a platform can fail to provide. That
-// makes "is this available here?" a question with a per-platform answer, and
-// under the no-#ifdef rule a per-platform answer is a file in a platform
-// directory - not a conditional at the call site.
+// Capture, passthrough and monitor playback are the only parts of ac3forge
+// that are not pure file I/O, and they are the only parts a platform can fail
+// to provide. That makes "is this available here?" a question with a
+// per-platform answer, and under the no-#ifdef rule a per-platform answer is
+// a file in a platform directory - not a conditional at the call site.
 //
 // Exactly one src/platform/<os>/audio_backend.cpp is compiled, chosen by
-// CMake alongside that platform's capture.cpp and passthrough.cpp, so this
-// report can never disagree with the implementations it describes. Callers
-// read it as data: the CLI marks its usage listing from it and refuses the
-// four live-audio commands before running them, without naming an OS.
+// CMake alongside that platform's capture.cpp, passthrough.cpp and
+// monitor.cpp, so this report can never disagree with the implementations it
+// describes. Callers read it as data: the CLI marks its usage listing from it
+// and refuses the live-audio commands before running them, without naming an
+// OS.
 
 namespace ac3::platform {
 
@@ -39,6 +40,13 @@ struct AudioBackend {
     // accept a non-PCM format. A platform gaining one and not the other is
     // the expected order, not an edge case.
     Capability passthrough;
+    // Enumerating render endpoints and playing ordinary shared-mode PCM to
+    // one: ac3::sinks::MonitorSink, behind the CLI's 'monitor' and 'live
+    // --monitor'. Closer in difficulty to capture than to passthrough (no
+    // exclusive-mode format negotiation), but kept as its own flag for the
+    // same reason capture and passthrough are separate: a platform can gain
+    // this without gaining bitstreamed passthrough, or vice versa.
+    Capability monitor;
 };
 
 [[nodiscard]] const AudioBackend& audio_backend();

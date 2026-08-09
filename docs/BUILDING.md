@@ -104,7 +104,7 @@ is a hidden `local` preset carrying the paths, inherited alongside a checked-in 
         "VCPKG_INSTALL_OPTIONS": "--x-buildtrees-root=D:/vcpkg-buildtrees;--x-packages-root=D:/vcpkg-packages"
       }
     },
-    { "name": "dev", "inherits": [ "local", "debug" ] }
+    { "name": "dev", "inherits": [ "local", "debug", "windows-msvc", "core" ] }
   ],
   "buildPresets": [ { "name": "dev", "configurePreset": "dev" } ],
   "testPresets": [
@@ -112,6 +112,13 @@ is a hidden `local` preset carrying the paths, inherited alongside a checked-in 
   ]
 }
 ```
+
+`debug` alone has no generator or binary directory — those live on the hidden `core` preset,
+and the compiler selection on a platform preset (`windows-msvc` here; see the table below for
+the others). Missing either from `dev`'s `inherits` list still configures, but silently: CMake
+falls back to its platform default generator (Visual Studio, on this machine) and an in-source
+binary directory instead of `build/dev`, which is a mess to notice and worse to undo. Inherit
+all four.
 
 That keeps vcpkg's working directories off the system drive, which matters because they run to
 several gigabytes. Substitute your own paths.

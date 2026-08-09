@@ -60,6 +60,7 @@ add_executable(ac3tests
     test_encoder.cpp
     test_exponents.cpp
     test_frame.cpp
+    test_iec61937.cpp
     test_mantissas.cpp
     test_matroska.cpp
     test_mdct.cpp

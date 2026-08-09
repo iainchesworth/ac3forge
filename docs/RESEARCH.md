@@ -124,7 +124,7 @@ C++23 toolchain reality (verified): `std::expected`, `std::print`, `std::countl_
 | 7 | Quality layer: exponent-strategy search, rematrixing, bandwidth tuning | PSNR/PEAQ trend approaches FFmpeg at 256–448 kbps |
 | 8 | Spatial layer: scene + VBAP + bed mixer → WAV sink, then AC-3 sink (parallelizable from week 1) | Moving source renders smoothly; gains match libear |
 | 9 | IEC 61937 packer + spdif-WAV receiver test | A real receiver lights "Dolby Digital" from a bit-exact WAV |
-| 10 | Live: capture (miniaudio loopback) + WASAPI-exclusive passthrough sink | The software "DD-Live" moment; ~70–100 ms end-to-end budget |
+| 10 | Live: capture (WASAPI loopback) + WASAPI-exclusive passthrough sink | The software "DD-Live" moment; ~70–100 ms end-to-end budget — **done for AC-3 file capture and live encode; E-AC-3/Atmos passthrough, a shared-mode monitor path (`MonitorSink`), and `ac3cli live` (capture→encode→live monitor and/or passthrough, continuously) landed later — see [HISTORY.md](HISTORY.md#live-monitor-e-ac-3atmos-passthrough-and-the-live-pipeline). Still unconfirmed against real bitstreaming hardware; see the [README](../README.md#verification-gaps).** |
 | 11 | Coupling (optional quality work at low bitrates) | Parity at ≤192 kbps 5.1 |
 | 12 | Minimal E-AC-3 (bsid-16) | Strict FFmpeg decode; real-device HDMI/eARC test |
 | 13 | E-AC-3 7.1/SPX/AHT · IAMF sink prototype | As appetite allows |
