@@ -63,6 +63,22 @@ else()
         "$<$<OR:$<CXX_COMPILER_ID:GNU>,$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>>:${AC3_GNU_CLANG_WARNINGS}>")
 endif()
 
+# -Wpedantic on a sufficiently new Clang (first seen on macOS via Homebrew's
+# unpinned `llvm` formula, which tracks upstream head rather than the 21.1.8
+# every other leg pins - see _build.yml's "Install LLVM (macOS)" step) flags
+# Catch2's TEST_CASE/INFO macros for using __COUNTER__, which -Wc2y-extensions
+# treats as a C2y-only construct even in C++. The "third-party headers are
+# SYSTEM-included so warnings never fire on them" rule above does not save
+# this: Clang attributes a macro's pedantic diagnostics to the *expansion
+# site* (our test .cpp) rather than the system header the macro is defined
+# in, so every TEST_CASE call across the whole suite trips it. Not ours to
+# fix - it is Catch2's own macro body - so not ours to warn about, matching
+# the rationale immediately below for generated Qt sources. Both GCC and
+# older Clang silently accept an unrecognized -Wno-* flag (only positive -W
+# flags warn as "unknown-warning-option"), so this needs no version guard.
+target_compile_options(ac3_warnings INTERFACE
+    "$<$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>>:-Wno-c2y-extensions>")
+
 # ---------------------------------------------------------------------------
 # AC3_WARNINGS_OFF_FLAG - switches every warning off for one source file.
 #

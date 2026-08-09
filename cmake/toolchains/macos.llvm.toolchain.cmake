@@ -9,8 +9,11 @@
 # availability in Apple's libc++ is gated on the deployment target. Where an
 # LLVM libc++ is found it is used in place of the SDK's for exactly that reason.
 #
-# NOTE: this file is written from the aqualink-automate reference and has NOT
-# been executed on a Mac - there is no macOS host in this project's setup.
+# NOTE: written from the aqualink-automate reference; this project still has
+# no local macOS host, but CI (.github/workflows/_build.yml's macos-llvm leg,
+# on macos-latest/Apple Silicon) has run this for real and found the Homebrew
+# LLVM it's written to find - see docs/BUILDING.md's Verified configuration
+# section for the actual numbers.
 #------------------------------------------------------------------------------
 
 message(STATUS "Configuring macOS Toolchain (LLVM/Clang Variant)")

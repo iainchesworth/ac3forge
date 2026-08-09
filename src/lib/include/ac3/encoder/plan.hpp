@@ -225,6 +225,22 @@ inline constexpr std::string_view kToolsSyntax =
 // vocabulary the command line takes. Round-trips through parse_tools.
 [[nodiscard]] std::string format_tools(const Tools& tools);
 
+// --- variable bit rate -------------------------------------------------------
+
+inline constexpr std::string_view kVbrSyntax =
+    "off | q:0..1[,min:kbps][,max:kbps] - E-AC-3 only";
+
+// "off" or empty clears `out` (CBR); "q:<quality>" turns VBR on, optionally
+// followed by ",min:<kbps>" and/or ",max:<kbps>" in either order. Returns
+// false on anything unrecognised, out of range, or with min above max,
+// leaving `out` partially written - the same reject-rather-than-continue
+// rule parse_tools follows, for the same reason.
+[[nodiscard]] bool parse_vbr(std::string_view text, std::optional<eac3::VbrConfig>& out);
+
+// The inverse, so a front end can show what it is about to do in the same
+// vocabulary the command line takes. Round-trips through parse_vbr.
+[[nodiscard]] std::string format_vbr(const std::optional<eac3::VbrConfig>& vbr);
+
 // --- dynamic range, loudness and downmix metadata ---------------------------
 
 // The whole §7.7 / §7.8 / Table E1.2 group a front end collects. Everything
@@ -264,6 +280,13 @@ struct Plan {
     std::uint32_t bitrate_kbps = 192;
     Tools tools{};
     Metadata meta{};
+    // E-AC-3 only: a quality target (with optional min/max kbps bounds)
+    // replaces bitrate_kbps-driven CBR sizing. AC-3 has no free-form frame
+    // size to vary (frmsizecod indexes Table 5.18), so validate() rejects
+    // this alongside Codec::kAc3 the same way it rejects an immersive layout
+    // there. Shared across every substream eac3_config() builds, the same
+    // way tools/meta already are.
+    std::optional<eac3::VbrConfig> vbr = std::nullopt;
 };
 
 enum class PlanError : std::uint8_t {
@@ -271,6 +294,7 @@ enum class PlanError : std::uint8_t {
     kBitrateNotLegal,   // AC-3 takes only the 19 Table 5.18 rates
     kNoSourceLayout,    // no standard speaker layout has that many channels
     kInvalidChannels,   // custom_locations is not a channel selection allocate() can satisfy
+    kVbrNeedsEac3,      // vbr was set alongside Codec::kAc3
 };
 
 [[nodiscard]] std::string_view describe(PlanError error);

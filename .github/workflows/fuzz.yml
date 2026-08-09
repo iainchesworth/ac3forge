@@ -69,6 +69,8 @@ jobs:
             ninja-build pkg-config software-properties-common tar unzip wget zip
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install LLVM 21
         run: bash .github/toolchain/03-llvm-toolchain.sh
@@ -102,6 +104,8 @@ jobs:
             ninja-build pkg-config software-properties-common tar unzip wget zip
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install LLVM 21
         run: bash .github/toolchain/03-llvm-toolchain.sh
@@ -117,7 +121,7 @@ jobs:
 
       - name: Upload crashing inputs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: fuzz-short-artifacts
           path: fuzz/artifacts/
@@ -142,6 +146,8 @@ jobs:
             ninja-build pkg-config software-properties-common tar unzip wget zip
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install LLVM 21
         run: bash .github/toolchain/03-llvm-toolchain.sh
@@ -157,7 +163,7 @@ jobs:
 
       - name: Upload crashing inputs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: fuzz-nightly-artifacts
           path: fuzz/artifacts/

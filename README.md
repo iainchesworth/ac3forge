@@ -44,7 +44,7 @@ experimental leg, never run anywhere. See [Portability](#portability).
 |---|---|---|
 | Coding modes | 1/0, 2/0, 3/0, 2/1, 3/1, 2/2, 3/2, each with or without LFE | the same, plus 7.1, 5.1.2, 5.1.4 and 7.1.4 through dependent substreams |
 | Sample rates | 48, 44.1, 32 kHz | 48, 44.1, 32 kHz |
-| Bit rates | the 19 nominal rates of Table 5.18, 32–640 kbps | the same 19, per substream |
+| Bit rates | CBR only — the 19 nominal rates of Table 5.18, 32–640 kbps | CBR (the same 19, per substream) or VBR — a quality target with optional min/max kbps bounds, per substream |
 | Transform | long blocks only (512-point MDCT, KBD window) | long blocks only |
 | Exponents | D15 / D25 / D45, strategy chosen per block from the reuse span (§8.2.8) | frame-level, Table E2.10 code 0: D15 in block 0, reused for the other five |
 | Coupling | yes (§7.4), begin and end frequencies auto or pinned | yes (§E3.3) |
@@ -94,7 +94,7 @@ substreams, `chanmap`, and the §E3.8.2 render that lays a dependent's channels 
 | Delta bit allocation | Encoder never emits it; decoder refuses a stream carrying it. |
 | E-AC-3 half sample rates (`fscod2`: 24, 22.05, 16 kHz) | Refused. Every table the core indexes is three columns wide. |
 | Enhanced coupling, transient pre-noise processing | Recognised by the decoder and refused, rather than mis-decoded. |
-| Variable bit rate | CBR only. |
+| Variable bit rate on AC-3 | `frmsizecod` indexes Table 5.18 rather than stating a word count directly, so AC-3 has no free frame size to vary at all and stays CBR. E-AC-3 supports VBR — see [Encoding E-AC-3](docs/library/encoding-eac3.md#variable-bit-rate-frameconfigvbr). |
 
 ### Verification gaps
 
