@@ -11,6 +11,7 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <vector>
 
@@ -20,6 +21,7 @@
 #include "ac3/encoder/plan.hpp"
 #include "ac3/oba/motion.hpp"
 #include "ac3/oba/oamd.hpp"
+#include "ac3/sinks/monitor.hpp"
 #include "ac3/sinks/passthrough.hpp"
 
 // The QObject facade the QML layer talks to. All codec and capture work
@@ -185,6 +187,40 @@ class EncoderController : public QObject {
     // list table, so the two can never disagree about a position.
     Q_PROPERTY(QVariantList objectModel READ objectModel NOTIFY objectsChanged)
 
+    // ---- live session -------------------------------------------------------
+    // Capture, encode and (optionally) monitor+passthrough all running at
+    // once, as opposed to startRecording (capture+encode+file only) or
+    // playToReceiver (an already-encoded file's bytes, no live capture at
+    // all). Distinct from `busy` even though it also sets busy_ - `busy`
+    // gates every other operation the way it always has, and `liveActive`
+    // is what the Live session tab itself needs to know.
+    Q_PROPERTY(bool liveActive READ liveActive NOTIFY liveActiveChanged)
+    Q_PROPERTY(bool liveMonitoring READ liveMonitoring NOTIFY liveActiveChanged)
+    Q_PROPERTY(bool livePassthrough READ livePassthrough NOTIFY liveActiveChanged)
+    Q_PROPERTY(bool liveWritingToDisk READ liveWritingToDisk NOTIFY liveActiveChanged)
+    // What the receiver leg can actually carry, and whether that is less than
+    // the main encode plan. Object mode is always a gap: TS 103 420's JOC
+    // layer plays as its 5.1 bed on any real decoder we have tried, ours
+    // included (see docs - the decoder's object gate is keyed, and forging
+    // that key is deliberately not done), so a live Atmos session is never
+    // heard as Atmos on the other end, independent of what the receiver
+    // device itself supports.
+    Q_PROPERTY(QString liveReceiverPlanText READ liveReceiverPlanText NOTIFY liveActiveChanged)
+    Q_PROPERTY(bool liveGap READ liveGap NOTIFY liveActiveChanged)
+    // Set for a couple of seconds right after the passthrough endpoint opens
+    // - a real exclusive-mode stream open, which is exactly when a physical
+    // receiver drops its lock and re-negotiates.
+    Q_PROPERTY(bool liveReconnecting READ liveReconnecting NOTIFY liveReconnectingChanged)
+    Q_PROPERTY(double liveRunningSeconds READ liveRunningSeconds NOTIFY liveStatsChanged)
+    Q_PROPERTY(qint64 liveFramesEncoded READ liveFramesEncoded NOTIFY liveStatsChanged)
+    Q_PROPERTY(qint64 liveFramesDropped READ liveFramesDropped NOTIFY liveStatsChanged)
+    Q_PROPERTY(quint64 liveUnderruns READ liveUnderruns NOTIFY liveStatsChanged)
+    // A computed lower bound (two frame periods: one to fill the capture
+    // buffer, one to encode and hand off), not a measurement - neither sink
+    // reports an end-to-end figure. Zero when nothing is running, since there
+    // is nothing to estimate yet.
+    Q_PROPERTY(double liveLatencyMs READ liveLatencyMs NOTIFY liveActiveChanged)
+
 public:
     explicit EncoderController(QObject* parent = nullptr);
     ~EncoderController() override;
@@ -274,6 +310,19 @@ public:
     [[nodiscard]] int selectedObjectIndex() const { return selected_object_index_; }
     [[nodiscard]] QVariantList objectModel() const;
 
+    [[nodiscard]] bool liveActive() const { return live_active_; }
+    [[nodiscard]] bool liveMonitoring() const { return live_monitoring_; }
+    [[nodiscard]] bool livePassthrough() const { return live_passthrough_; }
+    [[nodiscard]] bool liveWritingToDisk() const { return live_writing_to_disk_; }
+    [[nodiscard]] QString liveReceiverPlanText() const { return live_receiver_plan_text_; }
+    [[nodiscard]] bool liveGap() const { return live_gap_; }
+    [[nodiscard]] bool liveReconnecting() const { return live_reconnecting_; }
+    [[nodiscard]] double liveRunningSeconds() const { return live_running_seconds_; }
+    [[nodiscard]] qint64 liveFramesEncoded() const { return live_frames_encoded_; }
+    [[nodiscard]] qint64 liveFramesDropped() const { return live_frames_dropped_; }
+    [[nodiscard]] quint64 liveUnderruns() const { return live_underruns_; }
+    [[nodiscard]] double liveLatencyMs() const { return live_latency_ms_; }
+
     void setBitrateKbps(int kbps);
     void setCodecIndex(int index);
     void setBedIndex(int index);
@@ -351,6 +400,19 @@ public:
     Q_INVOKABLE void stopRecording();
     Q_INVOKABLE void refreshOutputDevices();
     Q_INVOKABLE void playToReceiver(int deviceIndex);
+    // Starts a continuous capture -> encode session: unlike startRecording,
+    // frames never wait for a stop to reach a sink - each is optionally
+    // handed to a MonitorSink (decoded back for an honest preview of what
+    // was just encoded, not the raw input) and a PassthroughSink (bitstreamed
+    // to the receiver) as it is produced, and only optionally also
+    // accumulated for a `writeToDisk` file at the end. `receiverDeviceIndex`
+    // indexes outputDevices(); -1 means no passthrough this run. Refused
+    // (silently, same convention as every other start-a-thing entry point)
+    // while anything else is busy.
+    Q_INVOKABLE void startLiveSession(int captureDeviceIndex, bool monitor,
+                                      int receiverDeviceIndex, bool writeToDisk,
+                                      const QUrl& fileUrl);
+    Q_INVOKABLE void stopLiveSession();
     // Where a level sits on the meter scale, for the QML that draws the
     // gridline labels. The bars themselves get their positions in
     // channelLevels; this exists so the ticks cannot disagree with them.
@@ -381,6 +443,9 @@ signals:
     void levelsChanged();
     void meteringChanged();
     void encodeFinished(bool ok, const QString& message);
+    void liveActiveChanged();
+    void liveStatsChanged();
+    void liveReconnectingChanged();
 
 private:
     struct Source;
@@ -424,6 +489,21 @@ private:
     // objectKeyframes/evaluateObjectPath all build on: object_keyframes_'s
     // entry for this index, sorted by time, or empty if it has none.
     [[nodiscard]] std::vector<ac3::oba::Keyframe> sortedKeyframes(int objectIndex) const;
+
+    struct ObjectConfig;
+    // The live session worker. One function for both channel and object mode
+    // (mirrors ac3cli's own `live` command, which combines them the same way)
+    // rather than split like encodeChannels/encodeObjects: almost everything
+    // here - capture, monitor, passthrough, the disk-write, the live counters
+    // - is identical between the two, and only the "turn source samples into
+    // one encoded unit" step differs.
+    void runLiveSession(ac3::capture::DeviceInfo device, bool monitor, bool passthrough,
+                        bool write_to_disk, QString file_path);
+    // A snapshot of object_configs_ that setObjectPosition/setObjectLfeSend
+    // also keep current, guarded by live_object_mutex_ - the one piece of
+    // state the live worker thread and the GUI thread genuinely touch
+    // concurrently (dragging the room while a live Atmos session runs).
+    [[nodiscard]] std::vector<ObjectConfig> liveObjectSnapshot() const;
 
     // Writes an elementary stream, or muxes Matroska, according to the chosen
     // container. Returns an empty string on success and the reason otherwise.
@@ -557,4 +637,35 @@ private:
     std::unique_ptr<ac3::capture::Capture> capture_;
     std::atomic_bool cancel_requested_{false};
     std::atomic_bool stop_recording_{false};
+
+    // ---- live session --------------------------------------------------
+    // stop_live_ is the only piece of this state the worker thread reads;
+    // everything else it only ever touches through a QMetaObject::invokeMethod
+    // back onto the GUI thread (the same discipline startRecording's worker
+    // already follows), so plain members are safe even though a background
+    // thread is what makes them change.
+    std::atomic_bool stop_live_{false};
+    bool live_active_ = false;
+    bool live_monitoring_ = false;
+    bool live_passthrough_ = false;
+    bool live_writing_to_disk_ = false;
+    QString live_receiver_plan_text_;
+    bool live_gap_ = false;
+    bool live_reconnecting_ = false;
+    double live_running_seconds_ = 0.0;
+    qint64 live_frames_encoded_ = 0;
+    qint64 live_frames_dropped_ = 0;
+    quint64 live_underruns_ = 0;
+    double live_latency_ms_ = 0.0;
+    // Genuinely shared with the live worker thread (dragging the Live
+    // session's room, or the Objects tab's, while a live Atmos session is
+    // running): every read and write goes through live_object_mutex_.
+    mutable std::mutex live_object_mutex_;
+    std::vector<ObjectConfig> live_object_snapshot_;
+    // Opened and (via the worker's final invokeMethod) closed on the GUI
+    // thread, matching capture_'s own convention - only buffer()/submit()/
+    // stats() are called from the worker while a session runs.
+    std::unique_ptr<ac3::capture::Capture> live_capture_;
+    std::unique_ptr<ac3::sinks::MonitorSink> live_monitor_sink_;
+    std::unique_ptr<ac3::sinks::PassthroughSink> live_passthrough_sink_;
 };

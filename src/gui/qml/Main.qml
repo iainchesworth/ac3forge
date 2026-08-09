@@ -104,7 +104,7 @@ ApplicationWindow {
         }
         return candidate && candidate.id !== dismissedRunId ? candidate : null;
     }
-    readonly property var tabOrder: ["format", "coding", "meta", "objects"]
+    readonly property var tabOrder: ["format", "coding", "meta", "objects", "session"]
     readonly property var visibleTabs: {
         const tabs = [{ key: "format", label: qsTr("Format") }];
         if (advanced) {
@@ -112,6 +112,12 @@ ApplicationWindow {
             tabs.push({ key: "meta", label: qsTr("Metadata") });
         }
         tabs.push({ key: "objects", label: qsTr("Objects") });
+        // Only exists to be jumped into, the way the handoff's own prototype
+        // only shows it once something is actually running - a tab for a
+        // session that is not there yet has nothing to show.
+        if (EncoderController.liveActive) {
+            tabs.push({ key: "session", label: qsTr("Live session") });
+        }
         return tabs;
     }
     onAdvancedChanged: {
@@ -119,6 +125,17 @@ ApplicationWindow {
         // rather than showing an empty panel.
         if (!advanced && (currentTab === "coding" || currentTab === "meta")) {
             currentTab = "format";
+        }
+    }
+
+    Connections {
+        target: EncoderController
+        function onLiveActiveChanged() {
+            if (EncoderController.liveActive) {
+                currentTab = "session";
+            } else if (currentTab === "session") {
+                currentTab = "format";
+            }
         }
     }
 
@@ -185,6 +202,15 @@ ApplicationWindow {
         title: qsTr("Record to a file")
         fileMode: FileDialog.SaveFile
         onAccepted: EncoderController.startRecording(deviceBox.currentIndex, selectedFile)
+    }
+
+    FileDialog {
+        id: liveSessionDialog
+        title: qsTr("Save the live take")
+        fileMode: FileDialog.SaveFile
+        onAccepted: EncoderController.startLiveSession(
+                        deviceBox.currentIndex, liveMonitorCheck.checked,
+                        liveReceiverBox.currentIndex - 1, true, selectedFile)
     }
 
     function openSaveDialog(dialog, name) {
@@ -376,6 +402,58 @@ ApplicationWindow {
                             color: Theme.text
                             font.pixelSize: Theme.fontNormal
                             font.family: "monospace"
+                        }
+
+                        Rectangle { Layout.fillWidth: true; height: 1; color: Theme.divider
+                                   visible: EncoderController.captureSupported
+                                            && !EncoderController.liveActive }
+
+                        // A live session keeps capturing and encoding after
+                        // Record… would have finished writing a fixed take:
+                        // every frame optionally goes to a monitor speaker
+                        // and a bitstreamed receiver as it is produced, not
+                        // just to a file at the end.
+                        RowLayout {
+                            Layout.fillWidth: true
+                            visible: EncoderController.captureSupported
+                                     && !EncoderController.liveActive
+                            spacing: Theme.gap
+
+                            CheckBox {
+                                id: liveMonitorCheck
+                                text: qsTr("Monitor")
+                                checked: true
+                                enabled: !EncoderController.busy
+                            }
+
+                            ComboBox {
+                                id: liveReceiverBox
+                                Layout.fillWidth: true
+                                enabled: !EncoderController.busy
+                                model: [qsTr("No passthrough")].concat(EncoderController.outputDevices)
+                            }
+
+                            CheckBox {
+                                id: liveWriteCheck
+                                text: qsTr("Also write to disk")
+                                enabled: !EncoderController.busy
+                            }
+
+                            Button {
+                                text: qsTr("Start live session…")
+                                enabled: EncoderController.captureSupported && !EncoderController.busy
+                                onClicked: {
+                                    if (liveWriteCheck.checked) {
+                                        window.openSaveDialog(liveSessionDialog,
+                                                              "live." + EncoderController.outputSuffix());
+                                    } else {
+                                        EncoderController.startLiveSession(
+                                            deviceBox.currentIndex, liveMonitorCheck.checked,
+                                            liveReceiverBox.currentIndex - 1, false,
+                                            "");
+                                    }
+                                }
+                            }
                         }
 
                         Text {
@@ -2070,6 +2148,336 @@ ApplicationWindow {
                                             width: 2
                                             height: timelineWrap.height
                                             color: Theme.accent
+                                        }
+                                    }
+                                }
+                            }
+
+                            Item { Layout.fillHeight: true }
+                        }
+
+                        // ---- Live session ------------------------------------------
+                        // Only ever shown while EncoderController.liveActive - a session
+                        // that has not started has nothing here to show, which is why
+                        // this tab does not exist in visibleTabs until then.
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.gap
+
+                            Rectangle {
+                                Layout.fillWidth: true
+                                visible: EncoderController.liveReconnecting
+                                color: Theme.accent100
+                                implicitHeight: reconnectMsg.implicitHeight + Theme.space3 * 2
+
+                                Text {
+                                    id: reconnectMsg
+                                    anchors.fill: parent
+                                    anchors.margins: Theme.space3
+                                    text: qsTr("Renegotiating with the receiver. It is re-locking to the new bitstream format — expect a second of silence.")
+                                    color: Theme.accent800
+                                    font.pixelSize: Theme.fontSmall
+                                    wrapMode: Text.WordWrap
+                                }
+                            }
+
+                            Card {
+                                title: qsTr("Live session")
+
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: Theme.space6
+
+                                    Button {
+                                        text: qsTr("Stop session")
+                                        highlighted: true
+                                        onClicked: EncoderController.stopLiveSession()
+                                    }
+
+                                    ColumnLayout {
+                                        spacing: 2
+                                        Text { text: qsTr("RUNNING"); color: Theme.neutral600; font.pixelSize: 10 }
+                                        Text {
+                                            text: {
+                                                const s = EncoderController.liveRunningSeconds;
+                                                const m = Math.floor(s / 60);
+                                                const rem = s - m * 60;
+                                                return m + ":" + rem.toFixed(1).padStart(4, "0");
+                                            }
+                                            color: Theme.text
+                                            font.pixelSize: 15
+                                            font.family: "monospace"
+                                        }
+                                    }
+                                    ColumnLayout {
+                                        spacing: 2
+                                        Text { text: qsTr("FRAMES"); color: Theme.neutral600; font.pixelSize: 10 }
+                                        Text {
+                                            text: EncoderController.liveFramesEncoded
+                                            color: Theme.text
+                                            font.pixelSize: 15
+                                            font.family: "monospace"
+                                        }
+                                    }
+                                    ColumnLayout {
+                                        spacing: 2
+                                        Text { text: qsTr("DROPPED"); color: Theme.neutral600; font.pixelSize: 10 }
+                                        Text {
+                                            text: EncoderController.liveFramesDropped
+                                            color: EncoderController.liveFramesDropped > 0 ? Theme.bad : Theme.text
+                                            font.pixelSize: 15
+                                            font.family: "monospace"
+                                        }
+                                    }
+
+                                    Item { Layout.fillWidth: true }
+
+                                    CheckBox {
+                                        text: qsTr("Also writing the take to disk")
+                                        checked: EncoderController.liveWritingToDisk
+                                        enabled: false
+                                    }
+                                }
+                            }
+
+                            Card {
+                                title: qsTr("Chain")
+
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 0
+
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        Text { text: qsTr("CAPTURE"); color: Theme.neutral600; font.pixelSize: 10 }
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: qsTr("Capture device")
+                                            color: Theme.text
+                                            font.pixelSize: Theme.fontNormal
+                                            wrapMode: Text.WordWrap
+                                        }
+                                    }
+                                    Text {
+                                        text: "→"
+                                        color: Theme.neutral500
+                                        font.pixelSize: 18
+                                        Layout.leftMargin: Theme.space2
+                                        Layout.rightMargin: Theme.space2
+                                    }
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        Text { text: qsTr("LIVE ENCODE"); color: Theme.neutral600; font.pixelSize: 10 }
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: window.planLine
+                                            color: Theme.text
+                                            font.pixelSize: Theme.fontNormal
+                                            wrapMode: Text.WordWrap
+                                        }
+                                    }
+                                    Text {
+                                        text: "→"
+                                        color: Theme.neutral500
+                                        font.pixelSize: 18
+                                        Layout.leftMargin: Theme.space2
+                                        Layout.rightMargin: Theme.space2
+                                    }
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        Text { text: qsTr("RECEIVER LEG"); color: Theme.neutral600; font.pixelSize: 10 }
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: EncoderController.liveReceiverPlanText
+                                            color: Theme.text
+                                            font.pixelSize: Theme.fontNormal
+                                            wrapMode: Text.WordWrap
+                                        }
+                                    }
+                                }
+                            }
+
+                            Rectangle {
+                                Layout.fillWidth: true
+                                visible: EncoderController.liveGap
+                                color: Theme.accent100
+                                implicitHeight: gapMsg.implicitHeight + Theme.space3 * 2
+
+                                Text {
+                                    id: gapMsg
+                                    anchors.fill: parent
+                                    anchors.margins: Theme.space3
+                                    text: qsTr("Everything past what the receiver leg carries — the extra channels, every object move — is visible on the meters and the soundfield but not audible on the amplifier.")
+                                    color: Theme.accent800
+                                    font.pixelSize: Theme.fontSmall
+                                    wrapMode: Text.WordWrap
+                                }
+                            }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: Theme.space6
+
+                                Card {
+                                    visible: EncoderController.atmosEnabled
+                                    Layout.preferredWidth: 340
+                                    title: qsTr("Live room")
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        Text {
+                                            text: qsTr("drag to move")
+                                            color: Theme.neutral600
+                                            font.pixelSize: 10
+                                            font.family: "monospace"
+                                        }
+                                        Item { Layout.fillWidth: true }
+                                        Text {
+                                            text: qsTr("latency %1 ms").arg(EncoderController.liveLatencyMs.toFixed(0))
+                                            color: Theme.neutral600
+                                            font.pixelSize: 10
+                                            font.family: "monospace"
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        id: liveRoom
+                                        Layout.preferredWidth: 320
+                                        Layout.preferredHeight: 320
+                                        color: Theme.neutral100
+                                        border.color: Theme.divider
+                                        border.width: 1
+
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            enabled: EncoderController.liveActive
+                                            onPositionChanged: (mouse) => place(mouse)
+                                            onPressed: (mouse) => place(mouse)
+                                            function place(mouse) {
+                                                const list = EncoderController.objectModel;
+                                                const sel = EncoderController.selectedObjectIndex;
+                                                let selected = null;
+                                                for (let i = 0; i < list.length; ++i) {
+                                                    if (list[i].index === sel) { selected = list[i]; break; }
+                                                }
+                                                if (!selected) {
+                                                    return;
+                                                }
+                                                const x = Math.max(0, Math.min(1, mouse.x / liveRoom.width));
+                                                const y = Math.max(0, Math.min(1, mouse.y / liveRoom.height));
+                                                EncoderController.setObjectPosition(selected.index, x, y, selected.z);
+                                            }
+                                        }
+
+                                        Repeater {
+                                            model: EncoderController.objectModel
+                                            Rectangle {
+                                                required property var modelData
+                                                readonly property bool isSelected:
+                                                    modelData.index === EncoderController.selectedObjectIndex
+                                                width: isSelected ? 18 : 14
+                                                height: isSelected ? 18 : 14
+                                                color: isSelected ? Theme.accent : Theme.neutral800
+                                                x: modelData.x * liveRoom.width - width / 2
+                                                y: modelData.y * liveRoom.height - height / 2
+
+                                                MouseArea {
+                                                    anchors.fill: parent
+                                                    onClicked: EncoderController.selectedObjectIndex = modelData.index
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    Layout.alignment: Qt.AlignTop
+                                    spacing: Theme.gap
+
+                                    Card {
+                                        title: qsTr("Current layout")
+
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: EncoderController.atmosEnabled
+                                                  ? qsTr("Atmos objects over a 5.1 bed")
+                                                  : EncoderController.channelShapeName
+                                            color: Theme.text
+                                            font.pixelSize: Theme.fontNormal
+                                        }
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: qsTr("Fixed for this run — change it from the Format tab and start a new session for it to take effect.")
+                                            color: Theme.textMuted
+                                            font.pixelSize: Theme.fontSmall
+                                            wrapMode: Text.WordWrap
+                                        }
+                                    }
+
+                                    Card {
+                                        title: qsTr("Receiver reports")
+
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            Text {
+                                                Layout.preferredWidth: 80
+                                                text: qsTr("Receiver")
+                                                color: Theme.neutral600
+                                                font.pixelSize: 10
+                                            }
+                                            Text {
+                                                Layout.fillWidth: true
+                                                text: EncoderController.liveReceiverPlanText
+                                                color: Theme.text
+                                                font.pixelSize: Theme.fontNormal
+                                                wrapMode: Text.WordWrap
+                                            }
+                                        }
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            Text {
+                                                Layout.preferredWidth: 80
+                                                text: qsTr("Lock")
+                                                color: Theme.neutral600
+                                                font.pixelSize: 10
+                                            }
+                                            Text {
+                                                text: !EncoderController.livePassthrough ? qsTr("no passthrough")
+                                                      : EncoderController.liveReconnecting ? qsTr("re-locking")
+                                                      : qsTr("locked")
+                                                color: EncoderController.liveReconnecting ? Theme.bad : Theme.text
+                                                font.pixelSize: Theme.fontNormal
+                                            }
+                                        }
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            Text {
+                                                Layout.preferredWidth: 80
+                                                text: qsTr("Underruns")
+                                                color: Theme.neutral600
+                                                font.pixelSize: 10
+                                            }
+                                            Text {
+                                                text: EncoderController.liveUnderruns
+                                                color: EncoderController.liveUnderruns > 0 ? Theme.bad : Theme.text
+                                                font.pixelSize: Theme.fontNormal
+                                                font.family: "monospace"
+                                            }
+                                        }
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            Text {
+                                                Layout.preferredWidth: 80
+                                                text: qsTr("Monitor")
+                                                color: Theme.neutral600
+                                                font.pixelSize: 10
+                                            }
+                                            Text {
+                                                text: EncoderController.liveMonitoring ? qsTr("on") : qsTr("off")
+                                                color: Theme.text
+                                                font.pixelSize: Theme.fontNormal
+                                            }
                                         }
                                     }
                                 }

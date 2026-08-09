@@ -2,6 +2,7 @@
 
 #include <QFileInfo>
 #include <QRegularExpression>
+#include <QTimer>
 #include <QtConcurrent/QtConcurrentRun>
 
 #include <iterator>
@@ -178,6 +179,24 @@ bool is_ceiling_location(ac3::eac3::chanmap::Location location) {
         default:
             return false;
     }
+}
+
+// Interleaves `channels` (one vector per decoded channel, AC-3/E-AC-3 coded
+// order) into WAV/Windows speaker order for playback, reading order[i] as
+// which channels[] entry belongs at interleaved position i - the same
+// permutation plan::wav_order/ac3::io::wav_channel_order already produce for
+// exactly this AC-3-order-vs-playback-order reconciliation (mirrors
+// ac3cli's run_live, which monitors a live session the same way).
+std::vector<float> interleave_reordered(std::span<const std::vector<float>> channels,
+                                        std::span<const std::size_t> order) {
+    const auto frame_count = channels.empty() ? std::size_t{0} : channels.front().size();
+    std::vector<float> out(frame_count * order.size());
+    for (std::size_t i = 0; i < frame_count; ++i) {
+        for (std::size_t ch = 0; ch < order.size(); ++ch) {
+            out[i * order.size() + ch] = channels[order[ch]][i];
+        }
+    }
+    return out;
 }
 
 }  // namespace
@@ -740,6 +759,15 @@ void EncoderController::setObjectPosition(int objectIndex, double x, double y, d
     config.x = std::clamp(x, 0.0, 1.0);
     config.y = std::clamp(y, 0.0, 1.0);
     config.z = std::clamp(z, -1.0, 1.0);
+    {
+        // Kept current even when nothing is live: cheaper than branching on
+        // liveActive from the GUI thread, and the worker only ever reads this
+        // when it is actually running.
+        std::lock_guard lock(live_object_mutex_);
+        if (objectIndex < static_cast<int>(live_object_snapshot_.size())) {
+            live_object_snapshot_[static_cast<std::size_t>(objectIndex)] = config;
+        }
+    }
     emit objectsChanged();
 }
 
@@ -747,9 +775,20 @@ void EncoderController::setObjectLfeSend(int objectIndex, double value) {
     if (objectIndex < 0 || objectIndex >= static_cast<int>(object_configs_.size())) {
         return;
     }
-    object_configs_[static_cast<std::size_t>(objectIndex)].lfe_send =
-        std::clamp(value, 0.0, 1.0);
+    auto& config = object_configs_[static_cast<std::size_t>(objectIndex)];
+    config.lfe_send = std::clamp(value, 0.0, 1.0);
+    {
+        std::lock_guard lock(live_object_mutex_);
+        if (objectIndex < static_cast<int>(live_object_snapshot_.size())) {
+            live_object_snapshot_[static_cast<std::size_t>(objectIndex)] = config;
+        }
+    }
     emit objectsChanged();
+}
+
+std::vector<EncoderController::ObjectConfig> EncoderController::liveObjectSnapshot() const {
+    std::lock_guard lock(live_object_mutex_);
+    return live_object_snapshot_;
 }
 
 void EncoderController::setObjectPathKeyframes(int objectIndex, const QVariantList& keyframes) {
@@ -1428,6 +1467,472 @@ void EncoderController::playToReceiver(int deviceIndex) {
             playing_ = false;
             emit playingChanged();
             setStatus(message);
+        });
+    });
+}
+
+void EncoderController::stopLiveSession() {
+    stop_live_.store(true, std::memory_order_relaxed);
+}
+
+void EncoderController::startLiveSession(int captureDeviceIndex, bool monitor,
+                                         int receiverDeviceIndex, bool writeToDisk,
+                                         const QUrl& fileUrl) {
+    if (busy_ || recording_ || live_active_) {
+        return;
+    }
+    if (captureDeviceIndex < 0 ||
+        static_cast<std::size_t>(captureDeviceIndex) >= devices_.size()) {
+        setStatus(QStringLiteral("Choose a capture device first."));
+        return;
+    }
+    const auto device = devices_[static_cast<std::size_t>(captureDeviceIndex)];
+    if (!to_sample_rate(device.sample_rate)) {
+        setStatus(QStringLiteral("\"%1\" runs at %2 Hz; AC-3/E-AC-3 need 32, 44.1 or 48 kHz.")
+                      .arg(QString::fromStdString(device.name))
+                      .arg(device.sample_rate));
+        return;
+    }
+
+    auto p = currentPlan();
+    p.sample_rate = *to_sample_rate(device.sample_rate);
+    if (const auto bad = plan::validate(p)) {
+        setStatus(to_qstring(plan::describe(*bad)));
+        return;
+    }
+
+    const bool want_passthrough = receiverDeviceIndex >= 0;
+    ac3::sinks::RenderDeviceInfo receiver{};
+    if (want_passthrough) {
+        if (static_cast<std::size_t>(receiverDeviceIndex) >= outputs_.size()) {
+            setStatus(QStringLiteral("Choose a receiver device first."));
+            return;
+        }
+        receiver = outputs_[static_cast<std::size_t>(receiverDeviceIndex)];
+    }
+
+    QString path;
+    if (writeToDisk) {
+        path = fileUrl.isLocalFile() ? fileUrl.toLocalFile() : fileUrl.toString();
+        if (path.isEmpty()) {
+            setStatus(QStringLiteral("Choose where to save the take first."));
+            return;
+        }
+    }
+
+    live_capture_ = std::make_unique<ac3::capture::Capture>();
+    const auto started = live_capture_->start(device.id, device.kind);
+    if (!started) {
+        const auto why = ac3::capture::describe(started.error());
+        live_capture_.reset();
+        setStatus(QStringLiteral("Could not open \"%1\": %2")
+                      .arg(QString::fromStdString(device.name),
+                           QString::fromUtf8(why.data(), static_cast<qsizetype>(why.size()))));
+        return;
+    }
+
+    // §8.3.2.2's decoder-side object gate means nobody downstream ever hears
+    // our objects AS objects (see docs/design's own note on this - the real
+    // decoder's gate is keyed, and forging that key is deliberately not
+    // done), so an Atmos session's receiver leg is always just its 5.1 bed,
+    // independent of what the device itself can bitstream.
+    const bool eac3 = atmos_enabled_ || p.codec == plan::Codec::kEac3;
+    const auto format =
+        eac3 ? ac3::sinks::BitstreamFormat::kEac3 : ac3::sinks::BitstreamFormat::kAc3;
+    bool passthrough_ok = false;
+    if (want_passthrough) {
+        const bool supports = eac3 ? receiver.supports_eac3_passthrough
+                                   : receiver.supports_ac3_passthrough;
+        if (!supports) {
+            live_receiver_plan_text_ =
+                QStringLiteral("\"%1\" cannot bitstream %2 over IEC 61937.")
+                    .arg(QString::fromStdString(receiver.name),
+                         eac3 ? QStringLiteral("E-AC-3") : QStringLiteral("AC-3"));
+        } else {
+            auto psink = std::make_unique<ac3::sinks::PassthroughSink>();
+            const auto pstarted = psink->start(receiver.id, device.sample_rate, format);
+            if (!pstarted) {
+                const auto why = ac3::sinks::describe(pstarted.error());
+                live_receiver_plan_text_ =
+                    QStringLiteral("\"%1\" would not open: %2")
+                        .arg(QString::fromStdString(receiver.name),
+                             QString::fromUtf8(why.data(), static_cast<qsizetype>(why.size())));
+            } else {
+                passthrough_ok = true;
+                live_passthrough_sink_ = std::move(psink);
+                live_receiver_plan_text_ =
+                    atmos_enabled_
+                        ? QStringLiteral("Dolby Digital Plus · 5.1 bed only · %1")
+                              .arg(QString::fromStdString(receiver.name))
+                        : QStringLiteral("%1 · %2 · %3")
+                              .arg(eac3 ? QStringLiteral("Dolby Digital Plus")
+                                        : QStringLiteral("Dolby Digital"))
+                              .arg(channelShapeName(), QString::fromStdString(receiver.name));
+            }
+        }
+    } else {
+        live_receiver_plan_text_ = QStringLiteral("No passthrough this session.");
+    }
+    live_gap_ = want_passthrough && (!passthrough_ok || atmos_enabled_);
+
+    bool monitor_ok = false;
+    if (monitor) {
+        auto msink = std::make_unique<ac3::sinks::MonitorSink>();
+        const auto mstarted = msink->start(
+            std::string{}, device.sample_rate,
+            static_cast<std::uint16_t>(atmos_enabled_ ? 6 : plan::coded_channels(
+                                                              effectiveChannelPlan()).size()));
+        if (mstarted) {
+            monitor_ok = true;
+            live_monitor_sink_ = std::move(msink);
+        }
+    }
+
+    if (atmos_enabled_) {
+        // A live session has no loaded file to size object_configs_ from -
+        // loadSourceFile is what normally does that. The capture device's
+        // channel count plays the same role here, so the Live room and the
+        // Objects tab have something to show/drag for a capture-only session
+        // that never opened a file at all.
+        const int nobjects = std::min<int>(static_cast<int>(device.channels), 15);
+        if (object_count_ != nobjects) {
+            object_count_ = nobjects;
+            refreshObjectConfigs();
+            emit sourceChanged();
+        }
+    }
+
+    {
+        std::lock_guard lock(live_object_mutex_);
+        live_object_snapshot_ = object_configs_;
+    }
+
+    stop_live_.store(false, std::memory_order_relaxed);
+    live_active_ = true;
+    live_monitoring_ = monitor_ok;
+    live_passthrough_ = passthrough_ok;
+    live_writing_to_disk_ = writeToDisk;
+    live_running_seconds_ = 0.0;
+    live_frames_encoded_ = 0;
+    live_frames_dropped_ = 0;
+    live_underruns_ = 0;
+    live_latency_ms_ =
+        2000.0 * static_cast<double>(ac3::kSamplesPerFrame) / static_cast<double>(device.sample_rate);
+    setBusy(true);
+    setStatus(QStringLiteral("Live session running from %1…")
+                  .arg(QString::fromStdString(device.name)));
+    emit liveActiveChanged();
+    emit liveStatsChanged();
+
+    if (passthrough_ok) {
+        // A freshly opened exclusive-mode stream is exactly when a physical
+        // receiver drops lock to re-negotiate - the mockup's own copy quotes
+        // "expect a second of silence", so the banner clears on the same
+        // timescale.
+        live_reconnecting_ = true;
+        emit liveReconnectingChanged();
+        QTimer::singleShot(1500, this, [this] {
+            live_reconnecting_ = false;
+            emit liveReconnectingChanged();
+        });
+    }
+
+    runLiveSession(device, monitor_ok, passthrough_ok, writeToDisk, path);
+}
+
+void EncoderController::runLiveSession(ac3::capture::DeviceInfo device, bool monitor,
+                                       bool passthrough, bool write_to_disk, QString file_path) {
+    auto p = currentPlan();
+    p.sample_rate = *to_sample_rate(device.sample_rate);
+    const bool atmos = atmos_enabled_;
+    const bool eac3 = atmos || p.codec == plan::Codec::kEac3;
+
+    std::optional<plan::ChannelPlan> cp;
+    std::optional<plan::Routing> routing;
+    if (!atmos) {
+        cp = effectiveChannelPlan();
+        routing = plan::route(*cp, device.channels, p.meta.cmixlev, p.meta.surmixlev);
+        if (!routing) {
+            live_capture_.reset();
+            live_monitor_sink_.reset();
+            live_passthrough_sink_.reset();
+            live_active_ = false;
+            setBusy(false);
+            emit liveActiveChanged();
+            setStatus(to_qstring(plan::describe(plan::PlanError::kNoSourceLayout)));
+            emit encodeFinished(false, status());
+            return;
+        }
+        const auto coded = plan::coded_channels(*cp);
+        const auto names = plan::coded_channel_names(*cp);
+        QStringList labels;
+        for (const auto& name : names) {
+            labels.append(QString::fromStdString(name));
+        }
+        setLayout(cp->bed_acmod, cp->bed_lfe, labels, effectiveLabel(), coded, fedChannels());
+    } else {
+        const auto coded = plan::coded_channels(plan::LayoutId::k51);
+        const auto names = plan::coded_channel_names(plan::LayoutId::k51);
+        QStringList labels;
+        for (const auto& name : names) {
+            labels.append(QString::fromStdString(name));
+        }
+        setLayout(ac3::Acmod::k3_2, true, labels, QStringLiteral("5.1 bed"), coded,
+                 fedChannels());
+    }
+    setMetering(true);
+
+    const std::size_t nobjects = atmos ? std::min<std::size_t>(device.channels, 15) : 0;
+    const std::size_t channels = device.channels;
+    const std::uint32_t sample_rate = device.sample_rate;
+
+    std::ignore = QtConcurrent::run([this, p, atmos, eac3, cp = std::move(cp),
+                                     routing = std::move(routing), nobjects, channels,
+                                     sample_rate, monitor, passthrough, write_to_disk,
+                                     file_path]() mutable {
+        ac3::FrameEncoder ac3_encoder{plan::ac3_config(p)};
+        ac3::eac3::AccessUnitEncoder eac3_encoder{plan::eac3_config(p)};
+        std::optional<ac3::oba::AtmosEncoder> atmos_encoder;
+        if (atmos) {
+            atmos_encoder.emplace(
+                ac3::oba::AtmosConfig{.sample_rate = p.sample_rate,
+                                      .bitrate_kbps = p.bitrate_kbps,
+                                      .dialnorm = p.meta.dialnorm,
+                                      .num_bands_idx = 4},
+                static_cast<int>(nobjects));
+        }
+        ac3::FrameDecoder ac3_monitor_decoder;
+        ac3::Eac3Decoder eac3_monitor_decoder;
+        ac3::iec61937::Eac3BurstPacker eac3_packer;
+
+        ac3::analysis::LevelMeter meter =
+            atmos ? ac3::analysis::LevelMeter{ac3::Acmod::k3_2, true, sample_rate}
+                  : ac3::analysis::LevelMeter{cp->bed_acmod, cp->bed_lfe, sample_rate,
+                                             routing->coded_channels};
+
+        std::vector<float> interleaved(static_cast<std::size_t>(ac3::kSamplesPerFrame) *
+                                       channels);
+        std::vector<std::vector<float>> object_block(
+            std::max<std::size_t>(nobjects, 1), std::vector<float>(ac3::kSamplesPerFrame, 0.0f));
+        std::vector<std::span<const float>> object_views(std::max<std::size_t>(nobjects, 1));
+        std::vector<ac3::oba::ObjectPlacement> placement(std::max<std::size_t>(nobjects, 1));
+        std::vector<std::span<const float>> bed_views(6);
+
+        const std::size_t coded_count =
+            atmos ? 6 : static_cast<std::size_t>(routing->coded_channels);
+        std::vector<std::vector<float>> chan_source(
+            atmos ? 0 : static_cast<std::size_t>(routing->source_channels),
+            std::vector<float>(ac3::kSamplesPerFrame, 0.0f));
+        std::vector<std::vector<float>> chan_block(coded_count,
+                                                   std::vector<float>(ac3::kSamplesPerFrame, 0.0f));
+        std::vector<std::span<const float>> chan_in;
+        std::vector<std::span<float>> chan_out;
+        std::vector<std::span<const float>> chan_views;
+        for (auto& channel : chan_source) {
+            chan_in.emplace_back(channel);
+        }
+        for (auto& channel : chan_block) {
+            chan_out.emplace_back(channel);
+            chan_views.emplace_back(channel);
+        }
+
+        std::vector<std::vector<std::byte>> frames;
+        std::uint64_t n0 = 0;
+        auto published_at = std::chrono::steady_clock::now() - kPublishInterval;
+
+        while (!stop_live_.load(std::memory_order_relaxed)) {
+            std::size_t filled = 0;
+            while (filled < interleaved.size() &&
+                   !stop_live_.load(std::memory_order_relaxed)) {
+                const auto got = live_capture_->buffer()->read(
+                    std::span{interleaved}.subspan(filled, interleaved.size() - filled));
+                filled += got;
+                if (got == 0) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                }
+            }
+            if (filled < interleaved.size()) {
+                break;  // stopped mid-frame; drop the partial frame
+            }
+            n0 += static_cast<std::uint64_t>(ac3::kSamplesPerFrame);
+
+            std::vector<std::byte> unit_bytes;
+            if (atmos) {
+                for (std::size_t ch = 0; ch < nobjects; ++ch) {
+                    for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+                        const std::size_t base = static_cast<std::size_t>(i) * channels;
+                        object_block[ch][static_cast<std::size_t>(i)] =
+                            ch < channels ? interleaved[base + ch] : 0.0f;
+                    }
+                    object_views[ch] = object_block[ch];
+                }
+                const auto snapshot = liveObjectSnapshot();
+                for (std::size_t i = 0; i < nobjects; ++i) {
+                    const auto& config = i < snapshot.size() ? snapshot[i] : ObjectConfig{};
+                    placement[i] = {
+                        .position = {.x = config.x, .y = config.y, .z = config.z},
+                        .gain = 0.7 / std::sqrt(static_cast<double>(nobjects)),
+                        .lfe_send = config.lfe_send / std::sqrt(static_cast<double>(nobjects))};
+                }
+                const auto unit = atmos_encoder->encode_frame(
+                    std::span{object_views}.first(nobjects),
+                    std::span{placement}.first(nobjects));
+                if (!unit) {
+                    break;
+                }
+                for (std::size_t ch = 0; ch < 6; ++ch) {
+                    bed_views[ch] = std::span{atmos_encoder->bed()[ch]};
+                }
+                meter.process(bed_views);
+                unit_bytes = unit->bytes;
+            } else {
+                for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+                    const std::size_t base = static_cast<std::size_t>(i) * channels;
+                    for (std::size_t ch = 0; ch < chan_source.size(); ++ch) {
+                        chan_source[ch][static_cast<std::size_t>(i)] =
+                            ch < channels ? interleaved[base + ch] : 0.0f;
+                    }
+                }
+                plan::render(*routing, chan_in, chan_out, ac3::kSamplesPerFrame);
+                meter.process(chan_views);
+                if (eac3) {
+                    const auto unit = eac3_encoder.encode_access_unit(chan_views);
+                    if (!unit) {
+                        break;
+                    }
+                    unit_bytes = unit->bytes;
+                } else {
+                    const auto frame = ac3_encoder.encode_frame(chan_views);
+                    if (!frame) {
+                        break;
+                    }
+                    unit_bytes = *frame;
+                }
+            }
+
+            if (monitor) {
+                std::optional<std::vector<float>> to_play;
+                if (eac3) {
+                    const auto decoded = eac3_monitor_decoder.decode_access_unit(unit_bytes);
+                    if (decoded) {
+                        const auto order = plan::wav_order(std::span{decoded->layout.items}.first(
+                            static_cast<std::size_t>(decoded->layout.count)));
+                        to_play = interleave_reordered(decoded->channels, order);
+                    }
+                } else {
+                    const auto decoded = ac3_monitor_decoder.decode_frame(unit_bytes);
+                    if (decoded) {
+                        const auto order =
+                            ac3::io::wav_channel_order(decoded->acmod, decoded->lfe);
+                        to_play = interleave_reordered(decoded->channels, order);
+                    }
+                }
+                if (to_play) {
+                    while (!live_monitor_sink_->submit(*to_play) &&
+                          !stop_live_.load(std::memory_order_relaxed)) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(4));
+                    }
+                }
+            }
+
+            if (passthrough) {
+                std::optional<std::vector<std::byte>> burst;
+                if (eac3) {
+                    const auto packed = eac3_packer.push(unit_bytes);
+                    if (packed && *packed) {
+                        burst = std::move(**packed);
+                    }
+                } else {
+                    const auto wrapped = ac3::iec61937::wrap_frame(unit_bytes);
+                    if (wrapped) {
+                        burst = *wrapped;
+                    }
+                }
+                if (burst) {
+                    while (!live_passthrough_sink_->submit(*burst) &&
+                          !stop_live_.load(std::memory_order_relaxed)) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(4));
+                    }
+                }
+            }
+
+            if (write_to_disk) {
+                frames.push_back(unit_bytes);
+            }
+
+            const auto now = std::chrono::steady_clock::now();
+            if (now - published_at >= kPublishInterval) {
+                published_at = now;
+                const double seconds =
+                    static_cast<double>(n0) / static_cast<double>(sample_rate);
+                const auto dropped = live_capture_->stats().frames_dropped;
+                const auto underruns = passthrough ? live_passthrough_sink_->stats().underruns
+                                                   : std::uint64_t{0};
+                std::vector<ac3::analysis::ChannelLevel> snapshot(meter.levels().begin(),
+                                                                  meter.levels().end());
+                const auto encoded = static_cast<qint64>(n0 / ac3::kSamplesPerFrame);
+                QMetaObject::invokeMethod(
+                    this, [this, seconds, dropped, underruns, encoded,
+                          snapshot = std::move(snapshot)] {
+                        live_running_seconds_ = seconds;
+                        live_frames_encoded_ = encoded;
+                        live_frames_dropped_ = static_cast<qint64>(dropped);
+                        live_underruns_ = underruns;
+                        emit liveStatsChanged();
+                        publishLevels(snapshot);
+                    });
+            }
+        }
+
+        QString problem;
+        if (write_to_disk) {
+            problem = writeOutput(file_path, frames, sample_rate,
+                                  static_cast<int>(coded_count));
+        }
+
+        std::vector<ac3::analysis::ChannelLevel> totals(
+            static_cast<std::size_t>(meter.channel_count()));
+        for (std::size_t ch = 0; ch < totals.size(); ++ch) {
+            const auto& stats = meter.summary()[ch];
+            totals[ch].peak_db = stats.peak_db();
+            totals[ch].hold_db = stats.peak_db();
+            totals[ch].rms_db = stats.rms_db();
+            totals[ch].clipped = stats.clipped_samples > 0;
+        }
+
+        const auto count = frames.size();
+        QMetaObject::invokeMethod(this, [this, count, problem, write_to_disk,
+                                         totals = std::move(totals)] {
+            const auto capture_stats = live_capture_->stats();
+            live_capture_->stop();
+            live_capture_.reset();
+            if (live_monitor_sink_) {
+                live_monitor_sink_->stop();
+                live_monitor_sink_.reset();
+            }
+            if (live_passthrough_sink_) {
+                live_passthrough_sink_->stop();
+                live_passthrough_sink_.reset();
+            }
+            live_active_ = false;
+            live_reconnecting_ = false;
+            setBusy(false);
+            setMetering(false);
+            publishLevels(totals);
+            if (!problem.isEmpty()) {
+                setStatus(problem);
+            } else if (write_to_disk) {
+                setStatus(QStringLiteral("Live session ended - wrote %1 frames (%2 dropped).")
+                              .arg(count)
+                              .arg(capture_stats.frames_dropped));
+            } else {
+                setStatus(QStringLiteral("Live session ended (%1 dropped, nothing written to "
+                                         "disk).")
+                              .arg(capture_stats.frames_dropped));
+            }
+            emit liveActiveChanged();
+            emit liveReconnectingChanged();
+            emit encodeFinished(problem.isEmpty(), status());
         });
     });
 }
