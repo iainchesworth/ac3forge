@@ -129,6 +129,11 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     if (!index) {
         return std::unexpected(FrameError::kInvalidBitrate);
     }
+    // fscod2 is an Annex E (E-AC-3) concept; classic AC-3 has no frmsizecod
+    // row for a reduced rate.
+    if (is_reduced_rate(config_.sample_rate)) {
+        return std::unexpected(FrameError::kInvalidBitrate);
+    }
     if (config_.dialnorm < 1 || config_.dialnorm > 31) {
         return std::unexpected(FrameError::kInvalidDialnorm);
     }

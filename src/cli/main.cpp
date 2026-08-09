@@ -657,20 +657,24 @@ bool vbr_or_error(std::string_view text, std::optional<ac3::eac3::VbrConfig>& ou
     return false;
 }
 
-// A WAV's rate as an fscod, or a diagnosis. Shared because every encode path
-// asks the same question and A/52 Table 5.6 has the same three answers for
-// all of them.
-std::optional<ac3::SampleRate> wav_sample_rate(std::uint32_t hz, std::string_view codec) {
+// A WAV's rate as an fscod (or, for E-AC-3, fscod2), or a diagnosis. Shared
+// because every encode path asks the same question. Classic AC-3 has only
+// A/52 Table 5.6's three rates; E-AC-3 additionally accepts the three Annex E
+// fscod2 half rates (24/22.05/16 kHz), which have no AC-3 counterpart at all.
+std::optional<ac3::SampleRate> wav_sample_rate(std::uint32_t hz, std::string_view codec,
+                                               bool eac3) {
     switch (hz) {
         case 48000: return ac3::SampleRate::k48000;
         case 44100: return ac3::SampleRate::k44100;
         case 32000: return ac3::SampleRate::k32000;
-        default:
-            std::println(stderr,
-                         "error: sample rate {} is not legal for {} (need 32/44.1/48 kHz)", hz,
-                         codec);
-            return std::nullopt;
+        case 24000: if (eac3) return ac3::SampleRate::k24000; break;
+        case 22050: if (eac3) return ac3::SampleRate::k22050; break;
+        case 16000: if (eac3) return ac3::SampleRate::k16000; break;
+        default: break;
     }
+    std::println(stderr, "error: sample rate {} is not legal for {} (need {})", hz, codec,
+                eac3 ? "32/44.1/48 kHz, or 16/22.05/24 kHz" : "32/44.1/48 kHz");
+    return std::nullopt;
 }
 
 // A source's channels routed onto a plan's coded channels, or a diagnosis.
@@ -722,7 +726,7 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
         std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(wav.error()));
         return 1;
     }
-    const auto sr = wav_sample_rate(wav->sample_rate, "E-AC-3");
+    const auto sr = wav_sample_rate(wav->sample_rate, "E-AC-3", true);
     if (!sr) {
         return 1;
     }
@@ -1092,7 +1096,7 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
         std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(wav.error()));
         return 1;
     }
-    const auto sr = wav_sample_rate(wav->sample_rate, "E-AC-3");
+    const auto sr = wav_sample_rate(wav->sample_rate, "E-AC-3", true);
     if (!sr) {
         return 1;
     }
@@ -1405,7 +1409,7 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
         std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(wav.error()));
         return 1;
     }
-    const auto sr = wav_sample_rate(wav->sample_rate, "AC-3");
+    const auto sr = wav_sample_rate(wav->sample_rate, "AC-3", false);
     if (!sr) {
         return 1;
     }

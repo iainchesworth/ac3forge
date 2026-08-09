@@ -376,8 +376,16 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
     w.put(static_cast<std::uint32_t>(config.strmtyp), 2);
     w.put(static_cast<std::uint32_t>(config.substreamid), 3);
     w.put(words - 1, 11);  // frmsiz is words - 1
-    w.put(static_cast<std::uint32_t>(config.sample_rate), 2);  // fscod (not 0x3)
-    w.put(3, 2);  // numblkscod: six blocks per syncframe
+    // §E2.3.1.3: fscod2 replaces numblkscod when a rate is one of the three
+    // Annex E-only reduced rates - the block count is then implicitly always
+    // six, so numblkscod's bits are never sent in that case.
+    if (is_reduced_rate(config.sample_rate)) {
+        w.put(0x3, 2);                                                // fscod
+        w.put(static_cast<std::uint32_t>(fscod_family(config.sample_rate)), 2);  // fscod2
+    } else {
+        w.put(static_cast<std::uint32_t>(config.sample_rate), 2);  // fscod (not 0x3)
+        w.put(3, 2);  // numblkscod: six blocks per syncframe
+    }
     w.put(static_cast<std::uint32_t>(config.acmod), 3);
     w.put(config.lfe ? 1 : 0, 1);
     w.put(kBsid, 5);

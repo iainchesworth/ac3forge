@@ -66,13 +66,17 @@ decoder as a check on the encoder: a test can assert on the `dynrng` words the e
 | `heavy_compression` | `false` | §7.7.2: prefer `compr` where it exists, falling back on `dynrng` for syncframes that carry none. |
 
 What both decoders refuse, cleanly, rather than mis-decoding: block switching, dual mono. The
-E-AC-3 decoder additionally refuses Annex E coupling, spectral extension, AHT, transient
-pre-noise processing, and `fscod2` half sample rates.
+E-AC-3 decoder additionally refuses Annex E coupling, spectral extension, AHT, and transient
+pre-noise processing.
 
 Delta bit allocation (§7.2.2.6) is decoded like any other transmitted parameter: both decoders
 carry per-channel state across a syncframe's blocks and apply it to the masking curve before
 computing `bap`. Neither encoder emits it on the coupling channel yet (see the library's
 [encoding](encoding-ac3.md) pages), but both decoders accept it there from any stream that does.
+
+`fscod2` (the Annex E half sample rates — 24, 22.05, 16 kHz) is decoded like any other rate: the
+reduced rate reuses the same bit-allocation tables as its double-rate parent (§E2.3.1.4), so
+nothing else about decoding changes.
 
 ---
 

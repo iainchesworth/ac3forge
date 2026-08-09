@@ -800,6 +800,8 @@ std::string_view describe(PlanError error) {
             return "no standard speaker layout has that many channels";
         case PlanError::kInvalidChannels:
             return "that channel selection is not one A/52 Annex E can express";
+        case PlanError::kSampleRateNeedsEac3:
+            return "24, 22.05 and 16 kHz (fscod2) only exist in E-AC-3; AC-3 has no such field";
         case PlanError::kVbrNeedsEac3:
             return "variable bit rate needs E-AC-3 - AC-3's frame size indexes Table 5.18 "
                    "and cannot vary freely";
@@ -823,6 +825,10 @@ std::optional<PlanError> validate(const Plan& plan) {
     // indexes Table 5.18 and cannot say anything else.
     if (plan.codec == Codec::kAc3 && !is_valid_bitrate(plan.bitrate_kbps)) {
         return PlanError::kBitrateNotLegal;
+    }
+    // fscod2 is an Annex E field with no AC-3 counterpart at all.
+    if (plan.codec == Codec::kAc3 && is_reduced_rate(plan.sample_rate)) {
+        return PlanError::kSampleRateNeedsEac3;
     }
     if (plan.vbr && plan.codec == Codec::kAc3) {
         return PlanError::kVbrNeedsEac3;
