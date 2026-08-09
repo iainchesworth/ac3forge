@@ -43,15 +43,7 @@ target_include_directories(ac3forge
 
 target_compile_features(ac3forge PUBLIC cxx_std_23)
 
-# The strict warning set is -Werror, and only MSVC's /W4 /WX has ever had to
-# satisfy it (see .github/workflows/ci.yml on the other legs' warning debt).
-# A fuzz build compiles under Clang today regardless of that debt: it is
-# after undefined behaviour and crashes, not warnings, and fixing ~16
-# pre-existing sign-conversion/double-promotion sites across the codebase is
-# the cross-platform porting task's job, not this one's.
-if(NOT AC3FORGE_BUILD_FUZZERS)
-    target_link_libraries(ac3forge PRIVATE ac3::warnings)
-endif()
+target_link_libraries(ac3forge PRIVATE ac3::warnings)
 
 # ---------------------------------------------------------------------------
 # The platform tree.

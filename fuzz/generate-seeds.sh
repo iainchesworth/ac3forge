@@ -6,12 +6,11 @@
 # actually produce, so a fuzzer's mutations start from "almost valid" rather
 # than from nothing.
 #
-# Needs a built ac3cli. Any working configuration will do (this generates
-# plain valid streams, not instrumented ones, so it does not need Clang or
-# sanitizers - only the platform-proven-green Windows MSVC leg is used in
-# practice, since the other legs currently fail to build clean under -Werror;
-# see src/lib/CMakeLists.txt's AC3FORGE_BUILD_FUZZERS guard for the same
-# issue on the fuzz harnesses themselves).
+# Needs a built ac3cli. Any working configuration will do: this generates
+# plain valid streams, not instrumented ones, so it needs neither Clang nor
+# sanitizers. The Windows MSVC leg is what gets used in practice, for no
+# better reason than that it is the one already built on the development
+# host - every other leg builds clean too.
 #
 #   AC3CLI_BIN=build/config-windows-msvc-debug/bin/ac3cli.exe fuzz/generate-seeds.sh
 #

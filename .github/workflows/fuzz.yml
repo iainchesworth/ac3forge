@@ -15,12 +15,14 @@
 # infrastructure - see fuzz/README.md.
 #
 # All three run in the same ubuntu:26.04 + LLVM 21 container ci.yml's
-# linux-llvm leg uses. fuzz-short and fuzz-nightly are marked experimental for
-# the same reason that leg is (see ci.yml's header): this is the first time
-# this project has asked Clang to build ac3forge with -Werror off and
-# ASan+UBSan+libFuzzer on (see AC3FORGE_BUILD_FUZZERS in src/lib/CMakeLists.txt
-# and fuzz/CMakeLists.txt), and neither job has multiple clean runs behind it
-# yet. Promote one by deleting its `continue-on-error: true` line.
+# linux-llvm leg uses. The harnesses build under the same strict `ac3::warnings`
+# set (-Werror included) as every other target - the fuzz build used to be the
+# one exception, on the assumption it carried a sign-conversion/double-promotion
+# debt, but a recount found zero such sites and the exemption was removed.
+# fuzz-short and fuzz-nightly stay marked experimental on their own merits:
+# neither has multiple clean fuzzing runs behind it yet, which is a question of
+# track record rather than of anything the compiler can check. Promote one by
+# deleting its `continue-on-error: true` line.
 #
 # Deliberately its own workflow rather than folded into ci.yml's build-and-test
 # matrix or its ci-status gate: fuzz-regress is cheap enough to make required
