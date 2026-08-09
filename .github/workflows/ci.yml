@@ -159,7 +159,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docs_re='^(docs/|LICENSE$|.*\.md$)'
+          docs_re='^(docs/|LICENSE$|mkdocs\.yml$|requirements-docs\.txt$|\.github/workflows/docs\.yml$|.*\.md$)'
 
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             files=$(gh api --paginate "repos/$REPO/pulls/${{ github.event.pull_request.number }}/files" --jq '.[].filename')
