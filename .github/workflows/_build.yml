@@ -120,9 +120,17 @@ jobs:
 
           # No Mac is available to the project locally, so CI is the first place
           # this is exercised at all. Expect it to surface genuine failures.
-          - name: "macOS LLVM (AppleClang)"
+          # llvm: true pulls in the Homebrew LLVM install step below - without
+          # it, cmake/toolchains/macos.llvm.toolchain.cmake's find_program still
+          # succeeds (its NAMES list falls back to plain "clang", which resolves
+          # to Apple's system clang via HINTS/PATH), so a bare runner would not
+          # fail to configure - it would silently build with whatever AppleClang
+          # Xcode ships instead of the Homebrew LLVM every other leg's pinned
+          # equivalent aims for.
+          - name: "macOS LLVM (Homebrew)"
             runner: macos-latest
             preset: macos-llvm
+            llvm: true
             experimental: true
             packageable: true
 
@@ -204,6 +212,24 @@ jobs:
           Start-Process -FilePath $exe -ArgumentList '/S' -Wait -NoNewWindow
           "$env:ProgramFiles\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
+      # Homebrew's core "llvm" formula has no versioned sibling the way
+      # apt.llvm.org or the official win64 installer do (there is no "llvm@21"
+      # to pin against), so unlike the Linux/Windows LLVM steps above this
+      # cannot pin an exact build - it installs whatever is current and reports
+      # it via the assert step below. macos.llvm.toolchain.cmake's HINTS
+      # already cover Homebrew's install prefix (/opt/homebrew/opt/llvm on
+      # Apple Silicon, which is what macos-latest runners are), so this alone
+      # is enough for find_program to pick it over Apple's system clang -
+      # PATH is exported too so plain `c++`/`clang++` invocations (the assert
+      # step, ad-hoc debugging) see the same compiler CMake configures with.
+      - name: Install LLVM (macOS)
+        if: matrix.llvm && runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          brew install llvm
+          llvm_prefix="$(brew --prefix llvm)"
+          echo "${llvm_prefix}/bin" >> "$GITHUB_PATH"
+
       # cl.exe, INCLUDE and LIB are not on the default PATH, and Ninja does not
       # set them up itself (unlike MSBuild). clang-cl needs them too.
       - name: Setup MSVC environment
@@ -268,6 +294,10 @@ jobs:
                             14.5*) ;;
                             *) echo "::error::expected an MSVC 14.5x toolset, got '${VCToolsVersion:-unset}'"; exit 1 ;;
                           esac ;;
+            # No hard version assert here unlike the other LLVM legs: Homebrew's
+            # llvm formula has no versioned pin to check against (see the
+            # install step's own comment), so this reports whatever it finds
+            # rather than failing a leg that's still proving out its baseline.
             macos-llvm)   c++ --version | head -1 ;;
           esac
 
