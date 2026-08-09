@@ -234,7 +234,7 @@ TEST_CASE("validate refuses a custom channel selection Annex E cannot express") 
     // test_eac3.cpp - collapses to this one PlanError at the Plan layer).
     {
         const ac3::plan::Plan plan{
-            .codec = ac3::plan::Codec::kEac3, .custom_locations = cm::kLrsRrs, .bitrate_kbps = 448};
+            .codec = ac3::plan::Codec::kEac3, .custom_locations = cm::kLrsRrsBit, .bitrate_kbps = 448};
         const auto error = ac3::plan::validate(plan);
         REQUIRE(error.has_value());
         CHECK(*error == ac3::plan::PlanError::kInvalidChannels);
@@ -255,8 +255,9 @@ TEST_CASE("validate refuses a custom channel selection Annex E cannot express") 
     // ceiling.
     {
         const auto locations = static_cast<std::uint16_t>(
-            cm::kLeft | cm::kCentre | cm::kRight | cm::kLeftSurround | cm::kRightSurround |
-            cm::kLfe | cm::kLcRc | cm::kLrsRrs | cm::kLsdRsd | cm::kLwRw | cm::kVhlVhr | cm::kVhc);
+            cm::kLeftBit | cm::kCentreBit | cm::kRightBit | cm::kLeftSurroundBit |
+            cm::kRightSurroundBit | cm::kLfeBit | cm::kLcRcBit | cm::kLrsRrsBit | cm::kLsdRsdBit |
+            cm::kLwRwBit | cm::kVhlVhrBit | cm::kVhcBit);
         REQUIRE(cm::channel_count(locations) == 17);
         const ac3::plan::Plan plan{
             .codec = ac3::plan::Codec::kEac3, .custom_locations = locations, .bitrate_kbps = 448};
@@ -272,8 +273,8 @@ TEST_CASE("validate refuses a custom channel selection that needs a dependent on
     // only satisfy with a dependent (anything past 3/2+LFE) is off-limits to
     // it - the same rule carries() already states for named layouts.
     const auto locations = static_cast<std::uint16_t>(
-        cm::kLeft | cm::kCentre | cm::kRight | cm::kLeftSurround | cm::kRightSurround | cm::kLfe |
-        cm::kVhlVhr);
+        cm::kLeftBit | cm::kCentreBit | cm::kRightBit | cm::kLeftSurroundBit |
+        cm::kRightSurroundBit | cm::kLfeBit | cm::kVhlVhrBit);
     const ac3::plan::Plan plan{
         .codec = ac3::plan::Codec::kAc3, .custom_locations = locations, .bitrate_kbps = 384};
     const auto error = ac3::plan::validate(plan);

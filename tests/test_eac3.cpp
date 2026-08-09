@@ -872,12 +872,12 @@ namespace {
 // location NAMES before it ever reaches this type - that boundary is where a
 // runtime check belongs, and test_plan.cpp's parse_channels test covers it.)
 using namespace ac3::eac3::chanmap;
-static_assert(std::popcount(kLcRc) == 1 && channel_count(kLcRc) == 2);
-static_assert(std::popcount(kLrsRrs) == 1 && channel_count(kLrsRrs) == 2);
-static_assert(std::popcount(kLsdRsd) == 1 && channel_count(kLsdRsd) == 2);
-static_assert(std::popcount(kLwRw) == 1 && channel_count(kLwRw) == 2);
-static_assert(std::popcount(kVhlVhr) == 1 && channel_count(kVhlVhr) == 2);
-static_assert(std::popcount(kLtsRts) == 1 && channel_count(kLtsRts) == 2);
+static_assert(std::popcount(kLcRcBit) == 1 && channel_count(kLcRcBit) == 2);
+static_assert(std::popcount(kLrsRrsBit) == 1 && channel_count(kLrsRrsBit) == 2);
+static_assert(std::popcount(kLsdRsdBit) == 1 && channel_count(kLsdRsdBit) == 2);
+static_assert(std::popcount(kLwRwBit) == 1 && channel_count(kLwRwBit) == 2);
+static_assert(std::popcount(kVhlVhrBit) == 1 && channel_count(kVhlVhrBit) == 2);
+static_assert(std::popcount(kLtsRtsBit) == 1 && channel_count(kLtsRtsBit) == 2);
 }  // namespace
 
 TEST_CASE("acmod_for_chanmap picks the acmod that codes exactly the mask's channels", "[eac3]") {
@@ -1021,12 +1021,12 @@ TEST_CASE("allocate refuses a request no Table 5.8 mode can anchor a bed on",
     // pair. This covers both the "ceiling/extras only" and the "incomplete
     // front shape" ways a request can fail that test.
     for (const auto locations : {
-             kLeft,                                                // L alone
-             kRight,                                                // R alone
-             static_cast<std::uint16_t>(kLeft | kLeftSurround),    // L+Ls, no R
-             static_cast<std::uint16_t>(kRight | kRightSurround),  // R+Rs, no L
-             kVhlVhr,   // ceiling only, no front channel at all
-             kLcRc,     // Lc/Rc only - aux locations Table 5.8 never names
+             kLeftBit,                                                   // L alone
+             kRightBit,                                                   // R alone
+             static_cast<std::uint16_t>(kLeftBit | kLeftSurroundBit),    // L+Ls, no R
+             static_cast<std::uint16_t>(kRightBit | kRightSurroundBit),  // R+Rs, no L
+             kVhlVhrBit,   // ceiling only, no front channel at all
+             kLcRcBit,     // Lc/Rc only - aux locations Table 5.8 never names
          }) {
         CAPTURE(locations);
         const auto plan = allocate(locations);
@@ -1044,12 +1044,12 @@ TEST_CASE("allocate refuses a request no Table 5.8 mode can anchor a bed on",
     // refused matters as much as the rejections above: over-refusing a
     // request the format can actually carry would be its own bug.
     {
-        const auto plan = allocate(static_cast<std::uint16_t>(kCentre | kRight));
+        const auto plan = allocate(static_cast<std::uint16_t>(kCentreBit | kRightBit));
         REQUIRE(plan.has_value());
         CHECK(plan->bed_acmod == ac3::Acmod::k1_0);
         CHECK_FALSE(plan->bed_lfe);
         REQUIRE(plan->dependents.size() == 1);
-        CHECK(plan->dependents[0] == kRight);
+        CHECK(plan->dependents[0] == kRightBit);
     }
 }
 
@@ -1150,7 +1150,7 @@ TEST_CASE("E-AC-3 rejects substream layouts it cannot express", "[eac3]") {
     // agree exactly, not merely "chanmap covers what acmod needs".
     auto over = seven_one();
     over.dependents[0].chanmap = static_cast<std::uint16_t>(
-        ac3::eac3::chanmap::k71Rear | ac3::eac3::chanmap::kCs);  // 5, not 4
+        ac3::eac3::chanmap::k71Rear | ac3::eac3::chanmap::kCsBit);  // 5, not 4
     CHECK(ac3::eac3::build_silent_access_unit(over).error() ==
           ac3::FrameError::kInvalidChannelMap);
 
@@ -1198,7 +1198,7 @@ TEST_CASE("E-AC-3 does not reject two substreams that claim the same location",
     namespace cm = ac3::eac3::chanmap;
 
     const FrameConfig claim_vhc{
-        .bitrate_kbps = 32, .acmod = ac3::Acmod::k1_0, .chanmap = cm::kVhc};
+        .bitrate_kbps = 32, .acmod = ac3::Acmod::k1_0, .chanmap = cm::kVhcBit};
     const AccessUnitConfig config{
         .independent = {.bitrate_kbps = 448, .acmod = ac3::Acmod::k3_2, .lfe = true},
         .dependents = {claim_vhc, claim_vhc}};
@@ -1214,7 +1214,7 @@ TEST_CASE("E-AC-3 does not reject two substreams that claim the same location",
     const FrameConfig claim_five{
         .bitrate_kbps = 256,
         .acmod = ac3::Acmod::k3_2,
-        .chanmap = static_cast<std::uint16_t>(cm::kLcRc | cm::kLrsRrs | cm::kCs)};
+        .chanmap = static_cast<std::uint16_t>(cm::kLcRcBit | cm::kLrsRrsBit | cm::kCsBit)};
     AccessUnitConfig triple;
     triple.independent = config.independent;
     triple.dependents = {claim_five, claim_five, claim_five};
