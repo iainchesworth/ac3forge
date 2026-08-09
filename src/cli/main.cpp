@@ -12,6 +12,7 @@
 #include <optional>
 #include <print>
 #include <span>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -30,6 +31,7 @@
 #include "ac3/meta/loudness.hpp"
 #include "ac3/meta/mixing.hpp"
 #include "ac3/oba/atmos.hpp"
+#include "ac3/oba/motion.hpp"
 #include "ac3/platform/audio_backend.hpp"
 #include "ac3/sinks/iec61937.hpp"
 #include "ac3/sinks/passthrough.hpp"
@@ -840,29 +842,33 @@ int run_atmos(std::string_view out_path, std::uint32_t seconds, std::uint32_t bi
     // Distinct tones so the objects are separable in the first place, and a
     // reader with an object renderer can tell which one ended up where.
     std::vector<double> tone_hz(count);
-    std::vector<double> rate(count);
-    std::vector<double> phase(count);
-    std::vector<double> height(count);
+    std::vector<ac3::oba::ObjectPath> paths;
+    paths.reserve(count);
     for (std::size_t i = 0; i < count; ++i) {
         tone_hz[i] = 220.0 * std::pow(2.0, static_cast<double>(i) * 0.45);
         // Rates that are not simple ratios of each other, so the objects do
         // not lock into formation and stay separable.
-        rate[i] = 1.0 / (static_cast<double>(orbit_seconds) * (1.0 + 0.31 * static_cast<double>(i)));
+        const double rate = 1.0 / (static_cast<double>(orbit_seconds) *
+                                   (1.0 + 0.31 * static_cast<double>(i)));
         // Spread around the ring to begin with, or a short clip would show
         // them all bunched in the same quadrant - and objects that share a
         // direction are exactly the ones JOC cannot separate.
-        phase[i] = 2.0 * std::numbers::pi * static_cast<double>(i) /
-                   static_cast<double>(count);
-        height[i] = count == 1 ? 0.5
-                               : -1.0 + 2.0 * static_cast<double>(i) /
-                                            static_cast<double>(count - 1);
+        const double phase = 2.0 * std::numbers::pi * static_cast<double>(i) /
+                             static_cast<double>(count);
+        const double height = count == 1 ? 0.5
+                                         : -1.0 + 2.0 * static_cast<double>(i) /
+                                                      static_cast<double>(count - 1);
+        paths.push_back(ac3::oba::make_orbit_path(
+            rate, phase, height, 0.7 / std::sqrt(static_cast<double>(count)),
+            // Only the lowest object feeds the LFE, and only a little: it is
+            // the one channel JOC never touches.
+            i == 0 ? 0.2 : 0.0));
     }
 
     const std::uint64_t frames = (static_cast<std::uint64_t>(seconds) * 48000 + 1535) / 1536;
     std::vector<std::vector<float>> essences(count,
                                              std::vector<float>(ac3::kSamplesPerFrame));
     std::vector<std::span<const float>> views(count);
-    std::vector<ac3::oba::ObjectPlacement> placement(count);
     std::vector<std::vector<std::byte>> out;
     out.reserve(static_cast<std::size_t>(frames));
 
@@ -872,15 +878,8 @@ int run_atmos(std::string_view out_path, std::uint32_t seconds, std::uint32_t bi
         // because that is where both metadata layers interpolate to: OAMD's
         // ramp and the JOC matrix both finish there.
         const double t = static_cast<double>(n0 + ac3::kSamplesPerFrame) / 48000.0;
+        const auto placement = ac3::oba::evaluate_placements(paths, t);
         for (std::size_t i = 0; i < count; ++i) {
-            const double angle = 2.0 * std::numbers::pi * rate[i] * t + phase[i];
-            placement[i] = {.position = {.x = 0.5 + 0.5 * std::sin(angle),
-                                         .y = 0.5 - 0.5 * std::cos(angle),
-                                         .z = height[i]},
-                            .gain = 0.7 / std::sqrt(static_cast<double>(count)),
-                            // Only the lowest object feeds the LFE, and only a
-                            // little: it is the one channel JOC never touches.
-                            .lfe_send = i == 0 ? 0.2 : 0.0};
             for (int n = 0; n < ac3::kSamplesPerFrame; ++n) {
                 essences[i][static_cast<std::size_t>(n)] = static_cast<float>(
                     std::sin(2.0 * std::numbers::pi * tone_hz[i] *
@@ -912,6 +911,138 @@ int run_atmos(std::string_view out_path, std::uint32_t seconds, std::uint32_t bi
                      "that rejects an unvalidated one ({} objects were panned into the bed)",
                      objects);
     }
+    return 0;
+}
+
+// Parses a hand-authored keyframe file: whitespace-separated columns
+// "object_index time_s x y z gain lfe_send" per line, blank lines and '#'
+// comments (to end of line) skipped. Returns each object's keyframes, indexed
+// by object_index - an object index with no lines simply gets an empty entry.
+std::optional<std::vector<std::vector<ac3::oba::Keyframe>>> parse_path_file(
+    std::string_view path) {
+    std::ifstream in{std::string{path}};
+    if (!in) {
+        std::println(stderr, "error: cannot open {}", path);
+        return std::nullopt;
+    }
+    std::vector<std::vector<ac3::oba::Keyframe>> by_object;
+    std::string line;
+    for (std::size_t lineno = 1; std::getline(in, line); ++lineno) {
+        if (const auto hash = line.find('#'); hash != std::string::npos) {
+            line.resize(hash);
+        }
+        std::istringstream tokens{line};
+        std::size_t object = 0;
+        if (!(tokens >> object)) {
+            continue;  // blank, or comment-only, line
+        }
+        ac3::oba::Keyframe kf;
+        if (!(tokens >> kf.time_s >> kf.position.x >> kf.position.y >> kf.position.z >>
+              kf.gain >> kf.lfe_send)) {
+            std::println(stderr, "error: {}:{}: expected 'object time_s x y z gain lfe_send'",
+                         path, lineno);
+            return std::nullopt;
+        }
+        if (object >= by_object.size()) {
+            by_object.resize(object + 1);
+        }
+        by_object[object].push_back(kf);
+    }
+    return by_object;
+}
+
+// Objects driven by a hand-authored keyframe file rather than the built-in
+// orbit above - the CLI-side proof that ac3::oba's path primitive works end
+// to end from genuinely authored motion, not just a closed-form generator.
+// An object index the file never mentions holds still at room centre, the
+// same fallback the GUI uses for an object with no authored path.
+int run_atmos_path(std::string_view out_path, std::string_view paths_path, std::uint32_t seconds,
+                   std::uint32_t bitrate, std::uint32_t objects_arg, const MetaOptions& meta) {
+    const auto parsed = parse_path_file(paths_path);
+    if (!parsed) {
+        return 1;
+    }
+    const auto objects =
+        objects_arg != 0 ? static_cast<std::size_t>(objects_arg) : parsed->size();
+    if (objects < 1 || objects > 15) {
+        std::println(stderr, "error: 1 to 15 objects (the bed's LFE is the 16th, "
+                             "and TS 103 420 §8.3.2.2 caps the total at 16)");
+        return 1;
+    }
+    if (parsed->size() > objects) {
+        std::println(stderr,
+                     "error: {} has keyframes up to object index {}, more than the {} objects "
+                     "requested",
+                     paths_path, parsed->size() - 1, objects);
+        return 1;
+    }
+
+    std::vector<ac3::oba::ObjectPath> paths;
+    paths.reserve(objects);
+    for (std::size_t i = 0; i < objects; ++i) {
+        if (i < parsed->size() && !(*parsed)[i].empty()) {
+            auto created = ac3::oba::KeyframePath::create((*parsed)[i]);
+            if (!created) {
+                std::println(stderr, "error: object {} has two keyframes at the same time_s", i);
+                return 1;
+            }
+            paths.emplace_back(std::move(*created));
+            continue;
+        }
+        auto fallback = ac3::oba::KeyframePath::create(
+            {{.time_s = 0.0,
+              .position = {.x = 0.5, .y = 0.5, .z = 0.0},
+              .gain = 0.7 / std::sqrt(static_cast<double>(objects)),
+              .lfe_send = 0.0}});
+        paths.emplace_back(std::move(*fallback));
+    }
+
+    ac3::oba::AtmosEncoder encoder{
+        {.bitrate_kbps = bitrate, .dialnorm = meta.p.dialnorm, .num_bands_idx = 4},
+        static_cast<int>(objects)};
+
+    // Distinct tones purely for audibility, same as 'atmos'.
+    std::vector<double> tone_hz(objects);
+    for (std::size_t i = 0; i < objects; ++i) {
+        tone_hz[i] = 220.0 * std::pow(2.0, static_cast<double>(i) * 0.45);
+    }
+
+    const std::uint64_t frames = (static_cast<std::uint64_t>(seconds) * 48000 + 1535) / 1536;
+    std::vector<std::vector<float>> essences(objects,
+                                             std::vector<float>(ac3::kSamplesPerFrame));
+    std::vector<std::span<const float>> views(objects);
+    std::vector<std::vector<std::byte>> out;
+    out.reserve(static_cast<std::size_t>(frames));
+
+    std::uint64_t n0 = 0;
+    for (std::uint64_t f = 0; f < frames; ++f) {
+        const double t = static_cast<double>(n0 + ac3::kSamplesPerFrame) / 48000.0;
+        const auto placement = ac3::oba::evaluate_placements(paths, t);
+        for (std::size_t i = 0; i < objects; ++i) {
+            for (int n = 0; n < ac3::kSamplesPerFrame; ++n) {
+                essences[i][static_cast<std::size_t>(n)] = static_cast<float>(
+                    std::sin(2.0 * std::numbers::pi * tone_hz[i] *
+                             static_cast<double>(n0 + static_cast<std::uint64_t>(n)) / 48000.0));
+            }
+            views[i] = essences[i];
+        }
+        n0 += ac3::kSamplesPerFrame;
+
+        auto unit = encoder.encode_frame(views, placement);
+        if (!unit) {
+            std::println(stderr,
+                         "error: cannot encode {} objects at {} kbps — the metadata and "
+                         "the mantissas share one frame, so try a higher bit rate",
+                         objects, bitrate);
+            return 1;
+        }
+        out.push_back(std::move(unit->bytes));
+    }
+    if (!write_frames(out_path, out)) {
+        return 1;
+    }
+    std::println("wrote {} E-AC-3 access units to {} ({} objects from {})", frames, out_path,
+                 objects, paths_path);
     return 0;
 }
 
@@ -1932,7 +2063,7 @@ struct Command {
     int (*run)(const Args&);
 };
 
-constexpr std::array<Command, 18> kCommands{{
+constexpr std::array<Command, 19> kCommands{{
     {"silence", 2, "<out.ac3> [seconds] [bitrate_kbps]", "", Needs::kNothing,
      [](const Args& x) { return run_silence(x.str(1), x.u32(2, 5), x.u32(3, 192)); }},
     {"sine", 2, "<out.ac3> [seconds] [bitrate_kbps] [freq_hz] [amp_pct] [layout]", "",
@@ -1950,6 +2081,13 @@ constexpr std::array<Command, 18> kCommands{{
      [](const Args& x) {
          return run_atmos(x.str(1), x.u32(2, 8), x.u32(3, 448), x.u32(4, 4), x.u32(5, 6),
                           x.str(6, "objects"), x.meta);
+     }},
+    {"atmos-path", 3, "<out.ec3> <paths.txt> [seconds] [bitrate_kbps] [objects]",
+     "objects driven by an authored keyframe file instead of the built-in orbit",
+     Needs::kNothing,
+     [](const Args& x) {
+         return run_atmos_path(x.str(1), x.str(2), x.u32(3, 8), x.u32(4, 448), x.u32(5, 0),
+                               x.meta);
      }},
     {"atmos-encode", 3, "<in.wav> <out.ec3> [bitrate_kbps] [objects]",
      "every source channel as an object", Needs::kNothing,
