@@ -7,9 +7,10 @@
 # On `experimental: true`
 # ---------------------------------------------------------------------------
 # windows-msvc, windows-llvm, linux-gcc, linux-llvm and linux-llvm-asan-ubsan
-# are all proven green now (245/245 tests each, the last two also against the
-# codec-matrix script's full layout/tool/atmos sweep for the sanitizer leg)
-# and required. windows-llvm was the last of these promoted: its real
+# are all proven green now (exact test counts per leg drift as features land -
+# see ci.yml's own status comment rather than trusting a number repeated here;
+# the sanitizer leg also runs the codec-matrix script's full layout/tool/atmos
+# sweep) and required. windows-llvm was the last of these promoted: its real
 # -Werror site (a qsizetype-to-int narrowing in src/gui/encoder_controller.cpp
 # clang-cl's -Wconversion rejects and MSVC's /W4 does not) is fixed. macos-llvm
 # remains experimental: it has never been run at all — this project has no
@@ -66,16 +67,20 @@ jobs:
             msvc: true          # clang-cl targets the MSVC ABI: same headers, same libs
             llvm: true
 
+          # gui: true builds ac3gui too (the linux-gcc/linux-llvm presets
+          # otherwise default AC3FORGE_BUILD_GUI off - see the preset's own
+          # description in CMakePresets.json) and smoke-tests it headlessly
+          # after Test, below. alsa_fallback: true additionally builds and
+          # tests the no-ALSA fallback (see the step at the end). Both are
+          # carried by this leg alone rather than doubled on linux-llvm too:
+          # neither switch (Qt present/absent, ALSA present/absent) differs
+          # between compilers, so paying for either twice would buy nothing.
           - name: "Linux GCC"
             runner: ubuntu-latest
             container: ubuntu:26.04
             preset: linux-gcc
             gcc: true
-            # Also builds and tests the no-ALSA fallback (see the step at the
-            # end). Carried by this leg alone: the switch it covers is in CMake
-            # and in which platform directory gets compiled, neither of which
-            # differs between compilers, so paying for it twice would buy
-            # nothing.
+            gui: true
             alsa_fallback: true
 
           - name: "Linux LLVM (clang)"
@@ -83,6 +88,7 @@ jobs:
             container: ubuntu:26.04
             preset: linux-llvm
             llvm: true
+            gui: true
 
           # AddressSanitizer + UndefinedBehaviorSanitizer (cmake/Sanitizers.cmake),
           # -fno-sanitize-recover=all so a violation fails the job outright. Shares
@@ -125,6 +131,19 @@ jobs:
           apt-get install -y -qq --no-install-recommends \
             build-essential ca-certificates cmake curl git gnupg libasound2-dev lsb-release \
             ninja-build pkg-config software-properties-common tar unzip wget zip
+
+      # Qt is a prebuilt dependency (cmake/FindQt6.cmake), never a vcpkg port -
+      # see that file's own header. qt6-declarative-dev-tools/qt6-base-dev-tools
+      # pull in qmlcachegen and the other build-time QML tooling
+      # qt_add_qml_module needs; without them the GUI configure step fails
+      # rather than quietly building without AOT-compiled QML.
+      - name: Install Qt6 (Linux GUI)
+        if: matrix.gui
+        run: |
+          set -eu
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get install -y -qq --no-install-recommends \
+            qt6-base-dev qt6-base-dev-tools qt6-declarative-dev qt6-declarative-dev-tools
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -231,7 +250,9 @@ jobs:
       # `cmake --preset config-<leg>` locally reproduces CI exactly.
       - name: Configure
         shell: bash
-        run: cmake --preset config-${{ matrix.preset }}
+        run: >
+          cmake --preset config-${{ matrix.preset }}
+          ${{ matrix.gui && '-DAC3FORGE_BUILD_GUI=ON' || '' }}
 
       # -k 0 so a first-time port sees every diagnostic in one run rather than
       # one-per-push. Warnings are errors on every compiler
@@ -243,6 +264,24 @@ jobs:
       - name: Test
         shell: bash
         run: ctest --preset test-${{ matrix.preset }}
+
+      # ctest above already covers the codec; this covers the one thing it
+      # can't - that ac3gui actually starts, loads its QML, and drives a real
+      # encode through the Qt event loop. offscreen needs no display, so it
+      # runs the same in this container as it does on a workstation. See
+      # docs/BUILDING.md's Linux section for why the qmlshapesplugin /
+      # labsmodelsplugin / qmlfolderlistmodelplugin CMake warnings during
+      # Configure, above, don't affect this.
+      - name: Smoke test ac3gui (headless)
+        if: matrix.gui
+        shell: bash
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: >
+          build/config-${{ matrix.preset }}/bin/ac3gui --smoke
+          fuzz/seeds/fuzz_wav_read/roundtrip-stereo.wav
+          "${RUNNER_TEMP}/ac3gui-smoke.ac3"
+          "${RUNNER_TEMP}/ac3gui-smoke.png"
 
       # Sanitizers only catch what actually executes. ctest's cases exercise
       # encoder/decoder logic in isolation; this drives the real CLI across

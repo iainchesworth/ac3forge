@@ -1,35 +1,66 @@
 # ac3forge CI.
 #
 # ---------------------------------------------------------------------------
-# Matrix status (updated when the ALSA audio backend landed)
+# Matrix status (updated when linux-gcc/linux-llvm picked up the GUI, merged
+# with the ALSA audio backend that landed on develop in the meantime)
 # ---------------------------------------------------------------------------
-# Every leg marked with a test count below was run for real, not just claimed.
-# The Linux legs ran on WSL2 Ubuntu 26.04 (gcc 15.2.0 / clang 21.1.8), which is
-# the same distribution and toolchain the containers use; windows-msvc ran
-# locally on MSVC 14.51.
+# linux-gcc and linux-llvm were run for real by this merge itself: fresh
+# configure + build + full ctest on WSL2 Ubuntu 26.04 (gcc 15.2.0 / clang
+# 21.1.8) with both the GUI and ALSA present together - the exact package list
+# _build.yml now installs (qt6-base-dev/-tools, qt6-declarative-dev/-tools,
+# libasound2-dev) - plus the same leg's no-ALSA-fallback step, plus the
+# headless `ac3gui --smoke` command _build.yml runs after Test. None of that
+# has gone through an actual GitHub Actions run yet, since this is the first
+# push combining the GUI and ALSA work; rows marked GREEN* should be read as
+# "confirmed on WSL2, pending this branch's first real CI run" until that run
+# lands. windows-msvc/windows-llvm's 256/256 and linux-llvm-asan-ubsan's
+# 270/270 are carried over from before this merge (MSVC 14.51 locally, and the
+# commit that landed the ALSA backend, respectively) - not re-run here, but
+# the 256 baseline is corroborated independently by this merge's own
+# no-ALSA-fallback measurement, which landed on the same number.
 #
 #   leg                     status    notes
 #   ----------------------  --------  ------------------------------------------
 #   windows-msvc            GREEN     256/256 tests pass
-#   windows-llvm            GREEN     as previously recorded; not re-run for the
-#                                     ALSA change, which touches no Windows code
-#   linux-gcc               GREEN     270/270 tests pass, plus 256/256 again in
-#                                     the same leg's no-ALSA fallback step
-#   linux-llvm              GREEN     270/270 tests pass
-#   linux-llvm-asan-ubsan   GREEN     270/270 tests, leak detection on. The
-#                                     codec-matrix script this leg also runs was
-#                                     not re-run: it exercises encode/decode
-#                                     paths, and no codec source changed
-#   static-analysis (tidy)  GREEN     as previously recorded; not re-run
-#   macos-llvm              unknown   never executed; the project has no Mac
+#   windows-llvm             GREEN    256/256 tests pass; fixed a qsizetype-to-int
+#                                     narrowing in encoder_controller.cpp that
+#                                     -Wconversion rejects under clang-cl (MSVC's
+#                                     /W4 has no equivalent check). Not re-run
+#                                     for the ALSA change, which touches no
+#                                     Windows code - see the note below on why
+#                                     the count still moved
+#   linux-gcc                GREEN*   270/270 tests incl. GUI and ALSA both,
+#                                     plus 256/256 again in the same leg's
+#                                     no-ALSA fallback step - see the WSL2 note
+#                                     above
+#   linux-llvm                GREEN*  270/270 tests incl. GUI and ALSA both -
+#                                     see the WSL2 note above
+#   linux-llvm-asan-ubsan    GREEN    270/270 tests (as reported when the ALSA
+#                                     backend landed; not independently re-run
+#                                     for this merge), leak detection on. Still
+#                                     CLI-only by design, to keep a Qt kit out
+#                                     of the sanitizer leg's install time - see
+#                                     _build.yml. The codec-matrix script this
+#                                     leg also runs was not re-run either: it
+#                                     exercises encode/decode paths, and no
+#                                     codec source changed
+#   static-analysis (tidy)   GREEN    .clang-tidy's curated set, clean baseline
+#   macos-llvm               unknown  never executed; shares linux-llvm's
+#                                     warning set, so expect it to surface
+#                                     genuine failures the first time it runs
 #
-# The 14-test difference between the Linux and Windows counts is
-# tests/platform/alsa/, which exists only in a build that selected the ALSA
-# backend - see tests/CMakeLists.txt.
+# GUI does not gate any ctest entry - it only adds the separate ac3gui build
+# target - so the true baseline (no ALSA, GUI on or off, doesn't matter) is
+# 256/256 everywhere, confirmed directly by this merge's own linux-gcc
+# no-ALSA-fallback run. AC3FORGE_WITH_ALSA's tests/platform/alsa/ (see
+# tests/CMakeLists.txt) accounts for the 270-256=14 gap on top of that.
 #
 # What none of this covers: real audio hardware. WSL2 has no sound devices and
 # no kernel sound modules, and neither does a GitHub runner, so the ALSA
 # backend is verified headless only. See docs/BUILDING.md#linux-audio.
+#
+# * Confirmed on WSL2, not yet on an actual GitHub Actions run - see the note
+#   above. Drop the asterisk once this branch's CI confirms it there too.
 #
 # macos-llvm runs with continue-on-error (see _build.yml): it reports honestly
 # without turning the default branch red on every push. Promote it by
