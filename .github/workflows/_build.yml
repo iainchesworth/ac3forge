@@ -554,7 +554,15 @@ jobs:
     permissions:
       contents: write
     steps:
+      # persist-credentials: false - this checkout is only ever read from
+      # (scripts/append-quality-history.py, `git show` on this commit); the
+      # "Prepare quality-history checkout" step below pushes through its own
+      # explicitly-scoped remote instead, so leaving actions/checkout's token
+      # persisted in this working tree's git config would just be an unused,
+      # avoidable credential sitting around for the rest of the job.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Download gold-reference results
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -591,21 +599,33 @@ jobs:
 
       - name: Append quality-trend history
         shell: bash
+        env:
+          # Env, not interpolated straight into the script: zizmor's
+          # template-injection audit treats a reusable workflow's own
+          # `inputs.*` as untrusted regardless of what this particular caller
+          # happens to pass - an env var is substituted by the shell, not
+          # textually spliced into the script by the runner before bash ever
+          # parses it, which is what actually closes the injection risk.
+          BRANCH: ${{ inputs.quality_trend_branch }}
+          COMMIT_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           # The commit's own recorded date, not date -u/Date.now() - see
           # append-quality-history.py's own header on why this is passed in
           # rather than read from the clock.
-          commit_date="$(git show -s --format=%cI "${{ github.sha }}")"
+          commit_date="$(git show -s --format=%cI "$COMMIT_SHA")"
           python3 scripts/append-quality-history.py \
             --results-dir results \
             --history-dir history \
-            --branch "${{ inputs.quality_trend_branch }}" \
-            --commit "${{ github.sha }}" \
+            --branch "$BRANCH" \
+            --commit "$COMMIT_SHA" \
             --commit-date "$commit_date"
 
       - name: Commit and push quality-history update
         shell: bash
+        env:
+          BRANCH: ${{ inputs.quality_trend_branch }}
+          COMMIT_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           cd history
@@ -613,6 +633,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes to commit."
           else
-            git commit -q -m "Quality trend: ${{ inputs.quality_trend_branch }}@${{ github.sha }}"
+            git commit -q -m "Quality trend: ${BRANCH}@${COMMIT_SHA}"
             git push -q origin quality-history
           fi
