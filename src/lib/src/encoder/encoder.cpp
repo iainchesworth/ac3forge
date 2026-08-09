@@ -11,6 +11,7 @@
 #include "ac3/core/mantissas.hpp"
 #include "ac3/core/mdct.hpp"
 #include "ac3/encoder/coupling.hpp"
+#include "ac3/encoder/transient.hpp"
 
 namespace ac3 {
 
@@ -116,6 +117,11 @@ FrameEncoder::FrameEncoder(const EncoderConfig& config) : config_(config) {
     if (config_.heavy) {
         heavy_.emplace(*config_.heavy, config_.sample_rate);
     }
+    const int nfchans = fullbw_channel_count(config_.acmod);
+    transient_detectors_.reserve(static_cast<std::size_t>(nfchans));
+    for (int i = 0; i < nfchans; ++i) {
+        transient_detectors_.emplace_back(config_.sample_rate);
+    }
 }
 
 std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
@@ -183,9 +189,38 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     assert(chbwcod >= 0 && chbwcod <= 60);
     const int chbw_endmant = ((chbwcod + 12) * 3) + 37;
 
+    // --- Block switching (§8.2.2/§7.9) --------------------------------------
+    // Decided before the coupling decision below, because §8.2.4.1's basic-
+    // encoder guidance excludes a block-switched channel from coupling, and
+    // this codebase's coupling is frame-wide all-or-nothing rather than a
+    // per-channel toggle (emit_block_side_info below sends chincpl as
+    // unconditionally 1 for every fbw channel) - so the only way to honour
+    // that exclusion without inventing bitstream machinery this phase has no
+    // room for is to leave coupling off for the WHOLE frame whenever any
+    // eligible channel switches, rather than just that one channel.
+    std::vector<std::array<bool, kBlocksPerFrame>> blksw(static_cast<std::size_t>(nfchans));
+    bool any_switched = false;
+    for (int ch = 0; ch < nfchans; ++ch) {
+        for (int block = 0; block < kBlocksPerFrame; ++block) {
+            std::array<double, 512> time{};
+            for (int n = 0; n < 512; ++n) {
+                const int pos = block * 256 - 256 + n;
+                time[static_cast<std::size_t>(n)] =
+                    pos < 0 ? history_[static_cast<std::size_t>(ch)]
+                                      [static_cast<std::size_t>(pos + 256)]
+                            : static_cast<double>(
+                                  channels[static_cast<std::size_t>(ch)]
+                                          [static_cast<std::size_t>(pos)]);
+            }
+            const bool sw = transient_detectors_[static_cast<std::size_t>(ch)].detect(time);
+            blksw[static_cast<std::size_t>(ch)][static_cast<std::size_t>(block)] = sw;
+            any_switched = any_switched || sw;
+        }
+    }
+
     // --- Coupling decision -------------------------------------------------
     // Coupling needs at least two full-bandwidth channels to share anything.
-    const bool cplinu = config_.coupling && nfchans >= 2;
+    const bool cplinu = config_.coupling && nfchans >= 2 && !any_switched;
     int cplbegf = 0;
     int cplendf = 0;
     int cplstrtmant = 0;
@@ -270,7 +305,24 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
             }
             std::array<double, 512> windowed{};
             apply_analysis_window(time, windowed);
-            mdct512_forward(windowed, coeffs_at(ch, block));
+            if (ch < nfchans && blksw[static_cast<std::size_t>(ch)][static_cast<std::size_t>(block)]) {
+                // §7.9.2: the two half-block transforms are interleaved
+                // bin-by-bin into one ordinary 256-coefficient set - from
+                // here on, exponent/bitalloc/mantissa code cannot tell this
+                // block apart from a long one.
+                const std::span<const double, 512> full(windowed);
+                std::array<double, 128> first{};
+                std::array<double, 128> second{};
+                mdct256_forward_first(full.first<256>(), first);
+                mdct256_forward_second(full.last<256>(), second);
+                auto& out = coeffs_at(ch, block);
+                for (int k = 0; k < 128; ++k) {
+                    out[static_cast<std::size_t>(2 * k)] = first[static_cast<std::size_t>(k)];
+                    out[static_cast<std::size_t>(2 * k + 1)] = second[static_cast<std::size_t>(k)];
+                }
+            } else {
+                mdct512_forward(windowed, coeffs_at(ch, block));
+            }
         }
         for (int n = 0; n < 256; ++n) {
             history_[static_cast<std::size_t>(ch)][static_cast<std::size_t>(n)] =
@@ -484,7 +536,17 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
             for (int block = 1; block < kBlocksPerFrame; ++block) {
                 const auto& current = block_exps[static_cast<std::size_t>(s) * kBlocksPerFrame +
                                                  static_cast<std::size_t>(block)];
-                if (needs_new_exponents(current, *reference)) {
+                // §7.9's block-switched block is isolated into its own
+                // single-block run on both sides - entering forces a
+                // boundary here, leaving forces one at the next block -
+                // which strategy_for_span(1) below then resolves to D45
+                // automatically, matching §8.2.2's "a channel that is
+                // block-switched uses the D45 exponent strategy."
+                const bool switch_boundary =
+                    s < nfchans &&
+                    (blksw[static_cast<std::size_t>(s)][static_cast<std::size_t>(block)] ||
+                     blksw[static_cast<std::size_t>(s)][static_cast<std::size_t>(block - 1)]);
+                if (needs_new_exponents(current, *reference) || switch_boundary) {
                     starts.push_back(block);
                     reference = &current;
                 }
@@ -558,7 +620,8 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     const auto emit_block_side_info = [&](BitWriter& w, int block) {
         const bool first = block == 0;
         for (int ch = 0; ch < nfchans; ++ch) {
-            w.put(0, 1);  // blksw
+            w.put(blksw[static_cast<std::size_t>(ch)][static_cast<std::size_t>(block)] ? 1 : 0,
+                  1);  // blksw
         }
         for (int ch = 0; ch < nfchans; ++ch) {
             w.put(0, 1);  // dithflag
