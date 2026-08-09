@@ -132,7 +132,7 @@ Ranked by how much they prove. Prefer the strongest one available for what you a
    - **The gold-reference gate** (`scripts/verify-gold-reference.sh`, every platform leg):
      *quality* and cross-platform reproducibility on one fixed sample - does ac3cli's own decoder
      agree with FFmpeg's, by SNR, on every compiler this project builds with. See
-     [docs/BUILDING.md](docs/BUILDING.md#gold-reference-correctness-gate).
+     [docs/building.md](https://github.com/iainchesworth/ac3forge/blob/main/docs/building.md#gold-reference-correctness-gate).
 
    The same job also runs `tools/check_matrix_coverage.py`, which asks a different question: not
    "is the output correct" but "does anything exercise this at all". It reads the CLI's own
