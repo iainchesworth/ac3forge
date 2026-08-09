@@ -37,11 +37,31 @@ option(AC3FORGE_BUILD_TESTS "Build the unit test suite" ON)
 option(AC3FORGE_FETCH_CATCH2 "Download Catch2 when no local copy is found" ON)
 option(AC3FORGE_BUILD_EXAMPLES "Build the documented library examples" ON)
 
+# NON-CLEAN-ROOM, off by default and NOT tracked on any public branch. src/quarantine
+# is gitignored (and a CI job fails if it is ever committed) because it embeds a key
+# extracted from Dolby's binary. When this option is ON *and* the local overlay is
+# present, ac3cli gains an optional EMDF-protection signer for its Atmos output. A
+# normal build neither sees nor references it.
+option(AC3FORGE_QUARANTINE_SIGNER
+    "Build the RE-derived (non-clean-room, local-only) EMDF Atmos protection signer" OFF)
+
 # ---------------------------------------------------------------------------
 # Targets
 # ---------------------------------------------------------------------------
 # The library holds the entire codec and spatial engine and is GUI-free.
 add_subdirectory(src/lib)
+
+# Quarantined, RE-derived signer overlay (off by default; local-only, gitignored).
+# After src/lib so it can reuse the codec's parsing primitives; before src/cli so
+# ac3cli can link it.
+if(AC3FORGE_QUARANTINE_SIGNER)
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/quarantine/CMakeLists.txt")
+        message(FATAL_ERROR
+            "AC3FORGE_QUARANTINE_SIGNER=ON but src/quarantine/ is absent. It is a "
+            "local-only overlay (never committed); drop it in before enabling this.")
+    endif()
+    add_subdirectory(src/quarantine)
+endif()
 
 # A standalone container writer, kept apart from the codec on purpose: it
 # depends on nothing of ac3::forge and knows nothing about AC-3.

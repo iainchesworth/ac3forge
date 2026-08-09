@@ -36,6 +36,11 @@
 #include "ac3/spatial/spatial.hpp"
 #include "matroska/matroska.hpp"
 
+#ifdef AC3FORGE_QUARANTINE_SIGNER
+// Optional, non-clean-room overlay (src/quarantine is gitignored / local only).
+#include "quarantine/emdf_atmos_signer.hpp"
+#endif
+
 namespace {
 
 namespace plan = ac3::plan;
@@ -900,6 +905,16 @@ int run_atmos(std::string_view out_path, std::uint32_t seconds, std::uint32_t bi
         }
         out.push_back(std::move(unit->bytes));
     }
+#ifdef AC3FORGE_QUARANTINE_SIGNER
+    // Optional, non-clean-room: sign the EMDF protection field so a Dolby
+    // decoder accepts the objects as Atmos. Off unless AC3FORGE_SIGN is set.
+    // Provided by the local src/quarantine overlay; never on a public branch.
+    if (ac3::quarantine::sign_requested()) {
+        int signed_count = 0;
+        for (auto& unit : out) signed_count += ac3::quarantine::sign_atmos_stream(unit);
+        std::println("  signed {} frames with the (RE-derived) EMDF protection MAC", signed_count);
+    }
+#endif
     if (!write_frames(out_path, out)) {
         return 1;
     }
