@@ -364,6 +364,15 @@ ApplicationWindow {
                         }
                     }
 
+                    TextField {
+                        Layout.fillWidth: true
+                        visible: EncoderController.customLayoutSelected
+                        enabled: !EncoderController.busy && !EncoderController.atmosEnabled
+                        placeholderText: qsTr("L,C,R,LFE,Vhl,Vhr — comma-separated Table E2.5 locations")
+                        text: EncoderController.customChannels
+                        onEditingFinished: EncoderController.customChannels = text
+                    }
+
                     Text {
                         Layout.fillWidth: true
                         text: EncoderController.layoutDetail

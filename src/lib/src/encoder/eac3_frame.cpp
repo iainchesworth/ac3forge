@@ -1766,6 +1766,18 @@ std::expected<std::vector<FrameConfig>, FrameError> substream_configs(
             return std::unexpected(ok.error());
         }
     }
+    // §E3.8.2 caps a single programme at 16 rendered channels. Each
+    // substream's own chanmap-vs-acmod/lfeon agreement is checked above; this
+    // is the aggregate the per-substream check cannot see, mirroring the
+    // decoder's own union-and-count at decode time (eac3_decoder.cpp).
+    std::uint16_t occupied = 0;
+    for (const auto& sub : out) {
+        occupied = static_cast<std::uint16_t>(
+            occupied | (sub.chanmap ? *sub.chanmap : chanmap::acmod_map(sub.acmod, sub.lfe)));
+    }
+    if (chanmap::expand(occupied).count > 16) {
+        return std::unexpected(FrameError::kTooManyChannels);
+    }
     return out;
 }
 

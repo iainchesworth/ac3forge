@@ -96,10 +96,14 @@ QStringList EncoderController::layoutNames() const {
             names.append(to_qstring(info.label));
         }
     }
+    names.append(QStringLiteral("Custom…"));
     return names;
 }
 
 int EncoderController::layoutIndex() const {
+    if (custom_layout_) {
+        return layoutNames().size() - 1;
+    }
     int index = 0;
     for (const auto& info : plan::kLayouts) {
         if (!plan::carries(codec_, info.id)) {
@@ -114,22 +118,28 @@ int EncoderController::layoutIndex() const {
 }
 
 QString EncoderController::layoutDetail() const {
-    const auto& info = plan::layout(effectiveLayout());
     if (atmos_enabled_) {
         return QStringLiteral("5.1 bed · JOC + OAMD · objects carry the height");
     }
-    if (info.transmitted == info.rendered) {
+    if (custom_layout_ && !plan::parse_channels(custom_channels_text_.toStdString())) {
+        return QStringLiteral("Not a recognised channel list - see the layout note below.");
+    }
+    const auto cp = effectiveChannelPlan();
+    const auto rendered = plan::rendered_channel_count(cp);
+    const auto transmitted = static_cast<int>(plan::coded_channels(cp).size());
+    const auto dependents = static_cast<int>(cp.dependents.size());
+    if (transmitted == rendered) {
         return QStringLiteral("%1 channel%2, one substream")
-            .arg(info.rendered)
-            .arg(info.rendered == 1 ? QString() : QStringLiteral("s"));
+            .arg(rendered)
+            .arg(rendered == 1 ? QString() : QStringLiteral("s"));
     }
     // Where the two differ, say why: a dependent that REPLACES a bed channel
     // spends coded channels a listener never counts.
     return QStringLiteral("%1 speakers from %2 coded channels · %3 dependent substream%4")
-        .arg(info.rendered)
-        .arg(info.transmitted)
-        .arg(info.dependents)
-        .arg(info.dependents == 1 ? QString() : QStringLiteral("s"));
+        .arg(rendered)
+        .arg(transmitted)
+        .arg(dependents)
+        .arg(dependents == 1 ? QString() : QStringLiteral("s"));
 }
 
 QVariantList EncoderController::bitrates() const {
@@ -202,6 +212,17 @@ void EncoderController::setCodecIndex(int index) {
 }
 
 void EncoderController::setLayoutIndex(int index) {
+    if (busy_) {
+        return;
+    }
+    if (index == layoutNames().size() - 1) {
+        if (!custom_layout_) {
+            custom_layout_ = true;
+            emit planChanged();
+            refreshRouting();
+        }
+        return;
+    }
     int seen = 0;
     for (const auto& info : plan::kLayouts) {
         if (!plan::carries(codec_, info.id)) {
@@ -210,13 +231,23 @@ void EncoderController::setLayoutIndex(int index) {
         if (seen++ != index) {
             continue;
         }
-        if (info.id != layout_ && !busy_) {
+        if (info.id != layout_ || custom_layout_) {
             layout_ = info.id;
+            custom_layout_ = false;
             emit planChanged();
             refreshRouting();
         }
         return;
     }
+}
+
+void EncoderController::setCustomChannels(const QString& text) {
+    if (text == custom_channels_text_ || busy_) {
+        return;
+    }
+    custom_channels_text_ = text;
+    emit planChanged();
+    refreshRouting();
 }
 
 void EncoderController::setContainerIndex(int index) {
@@ -475,6 +506,13 @@ plan::Plan EncoderController::currentPlan() const {
                  .bitrate_kbps = static_cast<std::uint32_t>(bitrate_kbps_),
                  .tools = tools_,
                  .meta = meta_};
+    // Object mode always codes its own 5.1 bed (effectiveLayout() already
+    // says so via .layout); a custom selection only applies otherwise, and
+    // only once it actually parses - an in-progress edit falls back to
+    // whatever .layout already holds rather than producing an empty plan.
+    if (custom_layout_ && !atmos_enabled_) {
+        p.custom_locations = plan::parse_channels(custom_channels_text_.toStdString());
+    }
     if (source_) {
         if (const auto rate = to_sample_rate(source_->wav.sample_rate)) {
             p.sample_rate = *rate;
@@ -483,9 +521,26 @@ plan::Plan EncoderController::currentPlan() const {
     return p;
 }
 
+plan::ChannelPlan EncoderController::effectiveChannelPlan() const {
+    return plan::resolve(currentPlan());
+}
+
+QString EncoderController::effectiveLabel() const {
+    if (atmos_enabled_) {
+        return QStringLiteral("5.1 bed");
+    }
+    if (custom_layout_) {
+        if (const auto mask = plan::parse_channels(custom_channels_text_.toStdString())) {
+            return to_qstring(plan::format_channels(*mask));
+        }
+        return QStringLiteral("(unrecognised channel list)");
+    }
+    return to_qstring(plan::layout(layout_).label);
+}
+
 void EncoderController::refreshRouting() {
     const auto p = currentPlan();
-    const auto& info = plan::layout(p.layout);
+    const auto label = effectiveLabel();
 
     if (atmos_enabled_) {
         routing_summary_ =
@@ -498,13 +553,13 @@ void EncoderController::refreshRouting() {
     }
 
     if (!source_) {
-        routing_summary_ =
-            QStringLiteral("%1 · %2").arg(to_qstring(info.label), layoutDetail());
+        routing_summary_ = QStringLiteral("%1 · %2").arg(label, layoutDetail());
         emit routingChanged();
         return;
     }
 
-    const auto routing = plan::route(p.layout, source_->wav.channels.size(), p.meta.cmixlev,
+    const auto cp = effectiveChannelPlan();
+    const auto routing = plan::route(cp, source_->wav.channels.size(), p.meta.cmixlev,
                                      p.meta.surmixlev);
     if (!routing) {
         routing_summary_ = QStringLiteral("%1 source channels — %2")
@@ -518,7 +573,7 @@ void EncoderController::refreshRouting() {
     if (routing->is_permutation()) {
         routing_summary_ = QStringLiteral("The source is already %1; every channel is "
                                           "carried straight through.")
-                               .arg(to_qstring(info.label));
+                               .arg(label);
         emit routingChanged();
         return;
     }
@@ -526,7 +581,7 @@ void EncoderController::refreshRouting() {
     // Naming the silent channels is the whole point of this line: a layout the
     // source cannot fill is a legitimate thing to ask for, but only if it is
     // obvious that is what is happening.
-    const auto names = plan::coded_channel_names(p.layout);
+    const auto names = plan::coded_channel_names(cp);
     QStringList silent;
     for (int c = 0; c < routing->coded_channels; ++c) {
         bool fed = false;
@@ -540,7 +595,7 @@ void EncoderController::refreshRouting() {
     routing_summary_ =
         QStringLiteral("%1 source channels rendered onto %2.")
             .arg(routing->source_channels)
-            .arg(to_qstring(info.label));
+            .arg(label);
     if (!silent.isEmpty()) {
         routing_summary_ +=
             QStringLiteral("  Silent (the source carries nothing that belongs there): %1")
@@ -622,7 +677,8 @@ void EncoderController::setMetering(bool metering) {
 
 std::vector<bool> EncoderController::fedChannels() const {
     const auto p = currentPlan();
-    const auto count = static_cast<std::size_t>(plan::layout(p.layout).transmitted);
+    const auto cp = effectiveChannelPlan();
+    const auto count = plan::coded_channels(cp).size();
     if (atmos_enabled_) {
         // Which bed channels the objects reach depends on where they are, so
         // it is answered by panning them exactly as the encoder will. Objects
@@ -649,7 +705,7 @@ std::vector<bool> EncoderController::fedChannels() const {
     if (!source_) {
         return std::vector<bool>(count, true);
     }
-    const auto routing = plan::route(p.layout, source_->wav.channels.size(), p.meta.cmixlev,
+    const auto routing = plan::route(cp, source_->wav.channels.size(), p.meta.cmixlev,
                                      p.meta.surmixlev);
     if (!routing) {
         return std::vector<bool>(count, true);
@@ -885,8 +941,9 @@ void EncoderController::startRecording(int deviceIndex, const QUrl& url) {
     // layout is selected, in whichever codec.
     plan::Plan p = currentPlan();
     p.sample_rate = *rate;
-    const auto layout = effectiveLayout();
-    auto routing = plan::route(layout, device.channels, p.meta.cmixlev, p.meta.surmixlev);
+    const auto cp = effectiveChannelPlan();
+    const auto label = effectiveLabel();
+    auto routing = plan::route(cp, device.channels, p.meta.cmixlev, p.meta.surmixlev);
     if (!routing) {
         setStatus(QStringLiteral("\"%1\" delivers %2 channels — %3")
                       .arg(QString::fromStdString(device.name))
@@ -920,7 +977,7 @@ void EncoderController::startRecording(int deviceIndex, const QUrl& url) {
     recorded_seconds_ = 0.0;
     emit recordedSecondsChanged();
 
-    const auto names = plan::coded_channel_names(layout);
+    const auto names = plan::coded_channel_names(cp);
     QStringList labels;
     std::vector<bool> fed(names.size(), false);
     for (const auto& name : names) {
@@ -931,8 +988,7 @@ void EncoderController::startRecording(int deviceIndex, const QUrl& url) {
             fed[static_cast<std::size_t>(c)] = routing->at(c, s) != 0.0;
         }
     }
-    setLayout(plan::bed_acmod(layout), plan::bed_lfe(layout), labels,
-              to_qstring(plan::layout(layout).label), fed);
+    setLayout(cp.bed_acmod, cp.bed_lfe, labels, label, fed);
     setMetering(true);
     setStatus(QStringLiteral("Recording from %1…").arg(QString::fromStdString(device.name)));
 
@@ -941,12 +997,12 @@ void EncoderController::startRecording(int deviceIndex, const QUrl& url) {
     const bool eac3 = p.codec == plan::Codec::kEac3;
 
     std::ignore = QtConcurrent::run([this, path, p, routing = *routing, channels, sample_rate,
-                                     layout, eac3]() {
+                                     cp, eac3]() {
         const auto coded = static_cast<std::size_t>(routing.coded_channels);
         ac3::FrameEncoder ac3_encoder{plan::ac3_config(p)};
         ac3::eac3::AccessUnitEncoder eac3_encoder{plan::eac3_config(p)};
-        ac3::analysis::LevelMeter meter{plan::bed_acmod(layout), plan::bed_lfe(layout),
-                                        sample_rate, static_cast<int>(coded)};
+        ac3::analysis::LevelMeter meter{cp.bed_acmod, cp.bed_lfe, sample_rate,
+                                        static_cast<int>(coded)};
 
         std::vector<std::vector<std::byte>> frames;
         std::vector<float> interleaved(static_cast<std::size_t>(ac3::kSamplesPerFrame) *
@@ -1020,7 +1076,7 @@ void EncoderController::startRecording(int deviceIndex, const QUrl& url) {
         }
 
         const QString problem =
-            writeOutput(path, frames, sample_rate, plan::layout(layout).rendered);
+            writeOutput(path, frames, sample_rate, plan::rendered_channel_count(cp));
 
         std::vector<ac3::analysis::ChannelLevel> totals(
             static_cast<std::size_t>(meter.channel_count()));
@@ -1232,9 +1288,9 @@ void EncoderController::encodeChannels(const QString& path,
                                        std::vector<std::vector<float>> planes,
                                        std::uint32_t sample_rate) {
     auto p = currentPlan();
-    const auto layout = p.layout;
-    const auto routing =
-        plan::route(layout, planes.size(), p.meta.cmixlev, p.meta.surmixlev);
+    const auto cp = plan::resolve(p);
+    const auto label = effectiveLabel();
+    const auto routing = plan::route(cp, planes.size(), p.meta.cmixlev, p.meta.surmixlev);
     if (!routing) {
         setBusy(false);
         setStatus(to_qstring(plan::describe(plan::PlanError::kNoSourceLayout)));
@@ -1247,8 +1303,7 @@ void EncoderController::encodeChannels(const QString& path,
     // here rather than per frame. The layout it measures is the OUTPUT's,
     // because the channel weighting depends on which positions are surrounds.
     if (p.meta.measure_dialnorm) {
-        ac3::meta::LoudnessMeter loudness{p.sample_rate, plan::bed_acmod(layout),
-                                          plan::bed_lfe(layout)};
+        ac3::meta::LoudnessMeter loudness{p.sample_rate, cp.bed_acmod, cp.bed_lfe};
         std::vector<std::span<const float>> views;
         for (const auto& channel : planes) {
             views.emplace_back(channel);
@@ -1265,23 +1320,22 @@ void EncoderController::encodeChannels(const QString& path,
         }
     }
 
-    const auto names = plan::coded_channel_names(layout);
+    const auto names = plan::coded_channel_names(cp);
     QStringList labels;
     for (const auto& name : names) {
         labels.append(QString::fromStdString(name));
     }
-    setLayout(plan::bed_acmod(layout), plan::bed_lfe(layout), labels,
-              to_qstring(plan::layout(layout).label), fedChannels());
+    setLayout(cp.bed_acmod, cp.bed_lfe, labels, label, fedChannels());
     setMetering(true);
 
     const bool eac3 = p.codec == plan::Codec::kEac3;
-    std::ignore = QtConcurrent::run([this, path, p, routing = *routing, layout, sample_rate,
-                                     eac3, planes = std::move(planes)]() mutable {
+    std::ignore = QtConcurrent::run([this, path, p, routing = *routing, cp, sample_rate,
+                                     eac3, label, planes = std::move(planes)]() mutable {
         const auto coded = static_cast<std::size_t>(routing.coded_channels);
         ac3::FrameEncoder ac3_encoder{plan::ac3_config(p)};
         ac3::eac3::AccessUnitEncoder eac3_encoder{plan::eac3_config(p)};
-        ac3::analysis::LevelMeter meter{plan::bed_acmod(layout), plan::bed_lfe(layout),
-                                        sample_rate, static_cast<int>(coded)};
+        ac3::analysis::LevelMeter meter{cp.bed_acmod, cp.bed_lfe, sample_rate,
+                                        static_cast<int>(coded)};
 
         const std::size_t total = planes.front().size();
         std::vector<std::vector<float>> source(planes.size(),
@@ -1366,7 +1420,7 @@ void EncoderController::encodeChannels(const QString& path,
         }
 
         if (problem.isEmpty() && !cancelled) {
-            problem = writeOutput(path, frames, sample_rate, plan::layout(layout).rendered);
+            problem = writeOutput(path, frames, sample_rate, plan::rendered_channel_count(cp));
         }
 
         std::vector<ac3::analysis::ChannelLevel> totals(
@@ -1380,7 +1434,6 @@ void EncoderController::encodeChannels(const QString& path,
         }
 
         const auto count = frames.size();
-        const auto label = plan::layout(layout).label;
         QMetaObject::invokeMethod(this, [this, count, bytes, cancelled, problem, label, eac3,
                                          totals = std::move(totals)] {
             setBusy(false);
@@ -1394,9 +1447,8 @@ void EncoderController::encodeChannels(const QString& path,
             } else {
                 setStatus(QStringLiteral("Wrote %1 %2 %3 (%4 KB) to %5")
                               .arg(count)
-                              .arg(to_qstring(label),
-                                   eac3 ? QStringLiteral("access units")
-                                        : QStringLiteral("frames"))
+                              .arg(label, eac3 ? QStringLiteral("access units")
+                                                : QStringLiteral("frames"))
                               .arg(bytes / 1024)
                               .arg(QFileInfo(output_path_).fileName()));
             }

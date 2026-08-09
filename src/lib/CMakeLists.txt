@@ -12,6 +12,7 @@ target_sources(ac3forge
     PRIVATE
         src/analysis/levels.cpp
         src/core/bitalloc.cpp
+        src/core/eac3_tables.cpp
         src/core/exponents.cpp
         src/core/mantissas.cpp
         src/core/mdct.cpp

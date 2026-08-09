@@ -3,8 +3,12 @@
 #include <array>
 #include <bit>
 #include <cstdint>
+#include <expected>
 #include <iterator>
+#include <optional>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include "ac3/core/tables.hpp"
 
@@ -287,6 +291,66 @@ static_assert([] {
 // four new channels and fits a single dependent, while 7.1.4 needs six and
 // cannot - it is the reason kTopQuad rides beside k71Rear in a second
 // dependent rather than merging into one.
+
+// --- dynamic channel allocation ---------------------------------------------
+//
+// A fixed LayoutId only ever hand-picks a few of the combinations Table E2.5
+// can express. The general problem underneath - partition an arbitrary set of
+// desired locations into a bed and however many dependents it takes - is what
+// this section solves, so a caller can ask for anything the format allows
+// rather than one of a short hand-picked list.
+
+// Table 5.8 caps a single acmod at 3/2: five full-bandwidth channels, never
+// six, whether or not the substream also carries an LFE-type channel.
+inline constexpr int kMaxSubstreamFullbw = 5;
+
+// The acmod field always contributes at least one full-bandwidth channel
+// (Table 5.8's narrowest mode, 1/0, is one channel; there is no zero-channel
+// acmod), so an all-LFE-type substream can never exist: a substream carrying
+// LFE2 must also carry at least one real speaker channel. Adding lfeon's one
+// LFE-type slot to kMaxSubstreamFullbw is the widest a substream ever gets.
+inline constexpr int kMaxSubstreamChannels = kMaxSubstreamFullbw + 1;
+
+enum class AllocationError : std::uint8_t {
+    kTooManyChannels,  // §E3.8.2: the request needs more than 16 rendered channels
+    kNoBedFit,         // no Table 5.8 acmod's own channels are a subset of the request
+    kOrphanLfe2,       // LFE2 was requested with no full-bandwidth channel left to share its substream
+};
+
+[[nodiscard]] std::string_view describe(AllocationError error);
+
+// The Table 5.8 acmod/lfeon that code exactly the channels `mask` names, or
+// nullopt if no combination does - which happens only when `mask` asks for
+// zero full-bandwidth channels (an LFE-type location with no companion) or
+// more than five. Two acmods can share a full-bandwidth count (3/1 and 2/2
+// both code four), so a fixed preference (documented at the definition)
+// breaks the tie; existing named layouts are built to agree with that choice,
+// so this is not a free-standing decision, it is what they already assume.
+[[nodiscard]] std::optional<std::pair<Acmod, bool>> acmod_for_chanmap(std::uint16_t mask);
+
+// The inverse of name(): the Table E2.5 location a display name (as name()
+// prints it, e.g. "Ls", "LFE2") stands for, or nullopt for anything else.
+[[nodiscard]] std::optional<Location> parse_location(std::string_view name);
+
+// A concrete, general E-AC-3 channel plan: the independent substream's own
+// acmod/lfeon (Table 5.8 - only a dependent may carry a custom chanmap, so
+// the bed is never anything but one of its eight modes), and the chanmap each
+// dependent carries, in transmission order.
+struct ChannelPlan {
+    Acmod bed_acmod = Acmod::k2_0;
+    bool bed_lfe = false;
+    std::vector<std::uint16_t> dependents;
+};
+
+// Partitions `locations` - every Table E2.5 location the whole programme
+// should render - into a bed and however many dependents the remainder
+// needs. The bed is the WIDEST Table 5.8 acmod whose own locations are all
+// present in `locations`: only a dependent may customise its channel map, so
+// the bed can never be asked to render a location outside the eight Table 5.8
+// shapes, and among those that fit, the widest one leaves the least for
+// dependents to carry. Everything `locations` asks for that the bed cannot
+// express is packed into dependents of at most kMaxSubstreamChannels each.
+[[nodiscard]] std::expected<ChannelPlan, AllocationError> allocate(std::uint16_t locations);
 
 }  // namespace chanmap
 

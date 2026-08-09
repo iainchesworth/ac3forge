@@ -860,6 +860,136 @@ TEST_CASE("chanmap counts paired locations as two channels", "[eac3]") {
     CHECK(channel_count(k71Rear) == 4);
 }
 
+TEST_CASE("acmod_for_chanmap picks the acmod that codes exactly the mask's channels", "[eac3]") {
+    using namespace ac3::eac3::chanmap;
+    // Full-bandwidth-only masks: each count picks the Table 5.8 acmod with
+    // exactly that many full-bandwidth channels (never dual mono).
+    CHECK(acmod_for_chanmap(kCentre) == std::pair{ac3::Acmod::k1_0, false});
+    CHECK(acmod_for_chanmap(kLcRc) == std::pair{ac3::Acmod::k2_0, false});  // pair: 2 channels
+    CHECK(acmod_for_chanmap(static_cast<std::uint16_t>(kLeft | kCentre | kRight)) ==
+          std::pair{ac3::Acmod::k3_0, false});
+    // Four is a genuine tie (3/1 and 2/2 both code four full-bandwidth
+    // channels) - the named layouts (k71Rear, kTopQuad) already assume 2/2
+    // wins, so this pins that choice rather than leaving it to whichever the
+    // search order hits first by accident.
+    CHECK(acmod_for_chanmap(k71Rear) == std::pair{ac3::Acmod::k2_2, false});
+    CHECK(acmod_for_chanmap(kTopQuad) == std::pair{ac3::Acmod::k2_2, false});
+    CHECK(acmod_for_chanmap(static_cast<std::uint16_t>(kLeft | kCentre | kRight |
+                                                        kLeftSurround | kRightSurround)) ==
+          std::pair{ac3::Acmod::k3_2, false});
+
+    // An LFE-type location subtracts one from the full-bandwidth budget
+    // lfeon needs to supply - LFE and LFE2 are interchangeable here, since
+    // both come from the same one-bit lfeon slot.
+    CHECK(acmod_for_chanmap(static_cast<std::uint16_t>(kCentre | kLfe)) ==
+          std::pair{ac3::Acmod::k1_0, true});
+    CHECK(acmod_for_chanmap(static_cast<std::uint16_t>(kCentre | kLfe2)) ==
+          std::pair{ac3::Acmod::k1_0, true});
+
+    // No acmod codes zero full-bandwidth channels (Table 5.8's narrowest, 1/0,
+    // is already one) or more than five (3/2), so an LFE-type location with no
+    // companion, and a request for six or more, both have no answer.
+    CHECK_FALSE(acmod_for_chanmap(kLfe).has_value());
+    CHECK_FALSE(acmod_for_chanmap(kLfe2).has_value());
+    // lfeon is a single bit: a substream can never carry LFE and LFE2 at once,
+    // however much room the full-bandwidth side would otherwise leave.
+    CHECK_FALSE(acmod_for_chanmap(static_cast<std::uint16_t>(kCentre | kLfe | kLfe2)).has_value());
+}
+
+TEST_CASE("allocate partitions an arbitrary channel set into a bed and dependents", "[eac3]") {
+    using namespace ac3::eac3::chanmap;
+
+    // A plain 5.1 request needs no dependent at all.
+    {
+        const auto plan = allocate(static_cast<std::uint16_t>(
+            kLeft | kCentre | kRight | kLeftSurround | kRightSurround | kLfe));
+        REQUIRE(plan.has_value());
+        CHECK(plan->bed_acmod == ac3::Acmod::k3_2);
+        CHECK(plan->bed_lfe);
+        CHECK(plan->dependents.empty());
+    }
+
+    // A request the bed cannot fully cover packs the remainder into a
+    // dependent - Vhl/Vhr here, exactly what k512Height already names.
+    {
+        const auto plan = allocate(static_cast<std::uint16_t>(
+            kLeft | kCentre | kRight | kLeftSurround | kRightSurround | kLfe | kVhlVhr));
+        REQUIRE(plan.has_value());
+        CHECK(plan->bed_acmod == ac3::Acmod::k3_2);
+        REQUIRE(plan->dependents.size() == 1);
+        CHECK(plan->dependents[0] == kVhlVhr);
+    }
+
+    // No Ls/Rs in the request at all: the bed narrows to whatever Table 5.8
+    // shape actually fits (3/0 here), rather than defaulting to 3/2 and
+    // leaving Ls/Rs to a dependent that was never asked for.
+    {
+        const auto plan = allocate(static_cast<std::uint16_t>(kLeft | kCentre | kRight | kLfe));
+        REQUIRE(plan.has_value());
+        CHECK(plan->bed_acmod == ac3::Acmod::k3_0);
+        CHECK(plan->dependents.empty());
+    }
+
+    // Three pair locations with no LFE need six full-bandwidth channels -
+    // impossible for one dependent, since Table 5.8 caps a single acmod at
+    // five, whether or not it also carries an LFE-type channel. The packer
+    // has to open a second dependent rather than (incorrectly) filling one to
+    // six - this is the exact boundary a first version of the allocator got
+    // wrong, jamming all three pairs into one dependent and producing a
+    // chanmap no acmod could code.
+    {
+        const auto plan = allocate(static_cast<std::uint16_t>(
+            kLeft | kCentre | kRight | kLeftSurround | kRightSurround | kLfe | kLcRc | kLrsRrs |
+            kLsdRsd));
+        REQUIRE(plan.has_value());
+        REQUIRE(plan->dependents.size() == 2);
+        for (const auto dependent : plan->dependents) {
+            CHECK(channel_count(dependent) <= kMaxSubstreamFullbw);
+            CHECK(acmod_for_chanmap(dependent).has_value());
+        }
+        CHECK(channel_count(plan->dependents[0]) + channel_count(plan->dependents[1]) == 6);
+    }
+
+    // LFE2 needs a full-bandwidth companion in its OWN substream (acmod
+    // always contributes at least one) - here it rides with Vhc.
+    {
+        const auto plan = allocate(static_cast<std::uint16_t>(
+            kLeft | kCentre | kRight | kLeftSurround | kRightSurround | kLfe | kVhc | kLfe2));
+        REQUIRE(plan.has_value());
+        REQUIRE(plan->dependents.size() == 1);
+        CHECK(plan->dependents[0] == static_cast<std::uint16_t>(kVhc | kLfe2));
+    }
+
+    // LFE2 with nothing left to share a substream with is unsatisfiable: the
+    // bed already claims every other location the request named.
+    {
+        const auto plan = allocate(static_cast<std::uint16_t>(
+            kLeft | kCentre | kRight | kLeftSurround | kRightSurround | kLfe | kLfe2));
+        REQUIRE_FALSE(plan.has_value());
+        CHECK(plan.error() == AllocationError::kOrphanLfe2);
+    }
+
+    // §E3.8.2: sixteen rendered channels is the whole-programme ceiling.
+    // Seventeen is refused outright, before any partitioning is attempted.
+    {
+        const auto locations = static_cast<std::uint16_t>(
+            kLeft | kCentre | kRight | kLeftSurround | kRightSurround | kLfe | kLcRc | kLrsRrs |
+            kLsdRsd | kLwRw | kVhlVhr | kVhc);
+        REQUIRE(channel_count(locations) == 17);
+        const auto plan = allocate(locations);
+        REQUIRE_FALSE(plan.has_value());
+        CHECK(plan.error() == AllocationError::kTooManyChannels);
+    }
+
+    // A request with no front coverage at all matches no Table 5.8 acmod -
+    // there is no "surrounds only" mode for a bed to fall back to.
+    {
+        const auto plan = allocate(kLrsRrs);
+        REQUIRE_FALSE(plan.has_value());
+        CHECK(plan.error() == AllocationError::kNoBedFit);
+    }
+}
+
 TEST_CASE("E-AC-3 access unit concatenates its substreams", "[eac3]") {
     const auto unit = ac3::eac3::build_silent_access_unit(seven_one());
     REQUIRE(unit.has_value());
@@ -978,6 +1108,36 @@ TEST_CASE("E-AC-3 rejects substream layouts it cannot express", "[eac3]") {
     headless.independent.strmtyp = StreamType::kDependent;
     CHECK(ac3::eac3::build_silent_access_unit(headless).error() ==
           ac3::FrameError::kInvalidSubstream);
+}
+
+TEST_CASE("E-AC-3 rejects an access unit that renders more than sixteen channels", "[eac3]") {
+    using ac3::eac3::AccessUnitConfig;
+    namespace cm = ac3::eac3::chanmap;
+
+    // Bed (6) plus two five-channel dependents plus a one-channel dependent,
+    // every location distinct from the bed's and from each other, sums to
+    // seventeen rendered channels - past §E3.8.2's ceiling, even though each
+    // substream's OWN chanmap-vs-acmod/lfeon count agrees (kInvalidChannelMap
+    // already covers that) and there are well under eight dependents. Only an
+    // aggregate, whole-access-unit check catches this.
+    const AccessUnitConfig config{
+        .independent = {.bitrate_kbps = 448, .acmod = ac3::Acmod::k3_2, .lfe = true},
+        .dependents = {{.bitrate_kbps = 448,
+                        .acmod = ac3::Acmod::k3_2,
+                        .chanmap = static_cast<std::uint16_t>(cm::kLcRc | cm::kLrsRrs | cm::kCs)},
+                       {.bitrate_kbps = 448,
+                        .acmod = ac3::Acmod::k3_2,
+                        .chanmap = static_cast<std::uint16_t>(cm::kLsdRsd | cm::kLwRw | cm::kTs)},
+                       {.bitrate_kbps = 32, .acmod = ac3::Acmod::k1_0, .chanmap = cm::kVhc}}};
+    CHECK(ac3::eac3::build_silent_access_unit(config).error() ==
+          ac3::FrameError::kTooManyChannels);
+
+    // The same access unit minus its one-channel dependent renders exactly
+    // sixteen (6 + 5 + 5) and must be accepted - the ceiling is sixteen, not
+    // "fewer than seventeen minus one".
+    auto sixteen = config;
+    sixteen.dependents.pop_back();
+    CHECK(ac3::eac3::build_silent_access_unit(sixteen).has_value());
 }
 
 TEST_CASE("E-AC-3 rejects configurations it cannot express", "[eac3]") {
