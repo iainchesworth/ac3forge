@@ -101,11 +101,11 @@ struct ExtraInfo {
 };
 
 constexpr std::array<ExtraInfo, 5> kExtras{{
-    {"wide", "Front wide", ac3::eac3::chanmap::kLwRw},
-    {"rear", "Rear surround", ac3::eac3::chanmap::kLrsRrs},
-    {"topf", "Ceiling front", ac3::eac3::chanmap::kVhlVhr},
-    {"topr", "Ceiling rear", ac3::eac3::chanmap::kLtsRts},
-    {"lfe2", "Second LFE", ac3::eac3::chanmap::kLfe2},
+    {"wide", "Front wide", ac3::eac3::chanmap::kLwRwBit},
+    {"rear", "Rear surround", ac3::eac3::chanmap::kLrsRrsBit},
+    {"topf", "Ceiling front", ac3::eac3::chanmap::kVhlVhrBit},
+    {"topr", "Ceiling rear", ac3::eac3::chanmap::kLtsRtsBit},
+    {"lfe2", "Second LFE", ac3::eac3::chanmap::kLfe2Bit},
 }};
 
 // Space-joined location names for a bed's own full-bandwidth channels, e.g.
@@ -476,13 +476,13 @@ void EncoderController::applyChannelPreset(const QString& name) {
     // hand-picked k71Rear/kTopQuad dependents, same rendered speakers).
     static constexpr std::array<Preset, 5> kPresets{{
         {"5.1", true, 0},
-        {"7.1", true, ac3::eac3::chanmap::kLrsRrs},
+        {"7.1", true, ac3::eac3::chanmap::kLrsRrsBit},
         {"5.1.4", true,
-         static_cast<std::uint16_t>(ac3::eac3::chanmap::kVhlVhr | ac3::eac3::chanmap::kLtsRts)},
+         static_cast<std::uint16_t>(ac3::eac3::chanmap::kVhlVhrBit | ac3::eac3::chanmap::kLtsRtsBit)},
         {"7.1.4", true,
-         static_cast<std::uint16_t>(ac3::eac3::chanmap::kLrsRrs | ac3::eac3::chanmap::kVhlVhr |
-                                    ac3::eac3::chanmap::kLtsRts)},
-        {"5.2", true, ac3::eac3::chanmap::kLfe2},
+         static_cast<std::uint16_t>(ac3::eac3::chanmap::kLrsRrsBit | ac3::eac3::chanmap::kVhlVhrBit |
+                                    ac3::eac3::chanmap::kLtsRtsBit)},
+        {"5.2", true, ac3::eac3::chanmap::kLfe2Bit},
     }};
     for (const auto& preset : kPresets) {
         if (name != QLatin1String(preset.name)) {
