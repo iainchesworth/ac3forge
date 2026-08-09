@@ -2031,11 +2031,11 @@ void EncoderController::startRecording(int deviceIndex, const QUrl& url) {
 
     std::ignore = QtConcurrent::run([this, path, p, routing = *routing, channels, sample_rate,
                                      cp, eac3]() {
-        const auto coded = static_cast<std::size_t>(routing.coded_channels);
+        const auto coded_count = static_cast<std::size_t>(routing.coded_channels);
         ac3::FrameEncoder ac3_encoder{plan::ac3_config(p)};
         ac3::eac3::AccessUnitEncoder eac3_encoder{plan::eac3_config(p)};
         ac3::analysis::LevelMeter meter{cp.bed_acmod, cp.bed_lfe, sample_rate,
-                                        static_cast<int>(coded)};
+                                        static_cast<int>(coded_count)};
 
         std::vector<std::vector<std::byte>> frames;
         std::vector<float> interleaved(static_cast<std::size_t>(ac3::kSamplesPerFrame) *
@@ -2043,7 +2043,7 @@ void EncoderController::startRecording(int deviceIndex, const QUrl& url) {
         std::vector<std::vector<float>> source(
             static_cast<std::size_t>(routing.source_channels),
             std::vector<float>(ac3::kSamplesPerFrame, 0.0f));
-        std::vector<std::vector<float>> block(coded,
+        std::vector<std::vector<float>> block(coded_count,
                                               std::vector<float>(ac3::kSamplesPerFrame, 0.0f));
         std::vector<std::span<const float>> in;
         std::vector<std::span<float>> out;
@@ -2386,21 +2386,21 @@ void EncoderController::encodeChannels(const QString& path,
     const bool eac3 = p.codec == plan::Codec::kEac3;
     std::ignore = QtConcurrent::run([this, path, p, routing = *routing, cp, sample_rate,
                                      eac3, label, planes = std::move(planes)]() mutable {
-        const auto coded = static_cast<std::size_t>(routing.coded_channels);
+        const auto coded_count = static_cast<std::size_t>(routing.coded_channels);
         ac3::FrameEncoder ac3_encoder{plan::ac3_config(p)};
         ac3::eac3::AccessUnitEncoder eac3_encoder{plan::eac3_config(p)};
         ac3::analysis::LevelMeter meter{cp.bed_acmod, cp.bed_lfe, sample_rate,
-                                        static_cast<int>(coded)};
+                                        static_cast<int>(coded_count)};
 
         const std::size_t total = planes.front().size();
         std::vector<std::vector<float>> source(planes.size(),
                                                std::vector<float>(ac3::kSamplesPerFrame));
-        std::vector<std::vector<float>> block(coded,
+        std::vector<std::vector<float>> block(coded_count,
                                               std::vector<float>(ac3::kSamplesPerFrame));
         std::vector<std::span<const float>> in;
         std::vector<std::span<float>> out;
         std::vector<std::span<const float>> views;
-        std::vector<std::span<const float>> metered(coded);
+        std::vector<std::span<const float>> metered(coded_count);
         for (auto& channel : source) {
             in.emplace_back(channel);
         }
@@ -2430,7 +2430,7 @@ void EncoderController::encodeChannels(const QString& path,
                 }
             }
             plan::render(routing, in, out, ac3::kSamplesPerFrame);
-            for (std::size_t ch = 0; ch < coded; ++ch) {
+            for (std::size_t ch = 0; ch < coded_count; ++ch) {
                 metered[ch] = std::span{block[ch]}.first(valid);
             }
             meter.process(metered);
