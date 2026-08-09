@@ -8,11 +8,16 @@
 #     without needing to reconfigure.
 #
 # Required variables:
-#   AC3FORGE_VERSION  - the semver string, e.g. "0.2.0"
-#   SRC                - path to version.hpp.in
-#   DST                - path to the generated version.hpp
-#   WORKDIR            - repository root (for running git)
-#   GIT_EXECUTABLE     - path to git (optional; falls back to "unknown" fields)
+#   AC3FORGE_VERSION       - the semver string, e.g. "0.2.0"
+#   AC3FORGE_BUILD_TARGET  - "<OS> <arch> (<compiler> <version>)", computed by
+#                            src/lib/CMakeLists.txt from CMAKE_SYSTEM_NAME/
+#                            CMAKE_SYSTEM_PROCESSOR/CMAKE_CXX_COMPILER_ID,
+#                            which this script (run standalone via `cmake -P`
+#                            for the build-time restamp) has no access to.
+#   SRC                     - path to version.hpp.in
+#   DST                     - path to the generated version.hpp
+#   WORKDIR                 - repository root (for running git)
+#   GIT_EXECUTABLE          - path to git (optional; falls back to "unknown" fields)
 # ---------------------------------------------------------------------------
 
 # Split the semver string into components for the numeric constants.

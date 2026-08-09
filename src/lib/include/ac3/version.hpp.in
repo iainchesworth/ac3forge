@@ -21,6 +21,11 @@ inline constexpr std::string_view git_describe = "@AC3FORGE_GIT_DESCRIBE@";
 inline constexpr std::string_view git_branch = "@AC3FORGE_GIT_BRANCH@";
 inline constexpr bool git_dirty = @AC3FORGE_GIT_DIRTY@;
 
+// OS/architecture/compiler this binary was built for, e.g. "Linux x86_64
+// (Clang 21.1.8)". Computed by src/lib/CMakeLists.txt from the toolchain
+// CMake itself configured, not read back from predefined compiler macros.
+inline constexpr std::string_view build_target = "@AC3FORGE_BUILD_TARGET@";
+
 // A multi-line, human-readable version + build-provenance block, suitable for
 // `--version` output or an About dialog.
 [[nodiscard]] std::string version_details();

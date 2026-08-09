@@ -303,7 +303,17 @@ jobs:
           if [ "${{ matrix.gui }}" = "true" ]; then
             extra_args+=(-DAC3FORGE_BUILD_GUI=ON)
           fi
-          cmake --preset config-${{ matrix.preset }} "${extra_args[@]}"
+          # Not "${extra_args[@]}" unguarded: macOS's /bin/bash is stuck on
+          # 3.2 (GPLv2 was the last version Apple could ship), and 3.2's
+          # `set -u` treats expanding a zero-element array as an unbound
+          # variable - fixed upstream in bash 4.4, but not on this runner.
+          # ${#extra_args[@]} (a length, not an element expansion) does not
+          # trip the same bug on either version.
+          if [ ${#extra_args[@]} -eq 0 ]; then
+            cmake --preset config-${{ matrix.preset }}
+          else
+            cmake --preset config-${{ matrix.preset }} "${extra_args[@]}"
+          fi
 
       # -k 0 so a first-time port sees every diagnostic in one run rather than
       # one-per-push. Warnings are errors on every compiler

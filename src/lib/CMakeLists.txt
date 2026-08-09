@@ -11,6 +11,37 @@ find_package(Git QUIET)
 set(AC3FORGE_VERSION_TEMPLATE "${CMAKE_CURRENT_SOURCE_DIR}/include/ac3/version.hpp.in")
 set(AC3FORGE_VERSION_HEADER "${CMAKE_CURRENT_BINARY_DIR}/generated/ac3/version.hpp")
 
+# OS/architecture/compiler this binary is built for, for version_details()'s
+# --version/About-dialog output. Computed here (CMake already knows all three
+# from the toolchain it configured) rather than read back with predefined
+# macros at compile time, so version.cpp needs no #ifdef - see the platform
+# tree note below and scripts/check-platform-macros.ps1.
+if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    set(AC3FORGE_BUILD_OS "macOS")
+else()
+    set(AC3FORGE_BUILD_OS "${CMAKE_SYSTEM_NAME}")
+endif()
+
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
+    set(AC3FORGE_BUILD_ARCH "x86_64")
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$")
+    set(AC3FORGE_BUILD_ARCH "arm64")
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86|i686|X86)$")
+    set(AC3FORGE_BUILD_ARCH "x86")
+else()
+    set(AC3FORGE_BUILD_ARCH "${CMAKE_SYSTEM_PROCESSOR}")
+endif()
+
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    set(AC3FORGE_BUILD_COMPILER "GCC ${CMAKE_CXX_COMPILER_VERSION}")
+else()
+    # AppleClang, Clang and MSVC already spell their own CMAKE_CXX_COMPILER_ID
+    # the way version_details() wants it.
+    set(AC3FORGE_BUILD_COMPILER "${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
+endif()
+
+set(AC3FORGE_BUILD_TARGET "${AC3FORGE_BUILD_OS} ${AC3FORGE_BUILD_ARCH} (${AC3FORGE_BUILD_COMPILER})")
+
 # Generate once at configure time so the header exists for the first build.
 set(AC3FORGE_VERSION "${PROJECT_VERSION}")
 set(SRC "${AC3FORGE_VERSION_TEMPLATE}")
@@ -25,6 +56,7 @@ add_custom_target(ac3forge_version ALL
     BYPRODUCTS "${AC3FORGE_VERSION_HEADER}"
     COMMAND "${CMAKE_COMMAND}"
         "-DAC3FORGE_VERSION=${PROJECT_VERSION}"
+        "-DAC3FORGE_BUILD_TARGET=${AC3FORGE_BUILD_TARGET}"
         "-DSRC=${AC3FORGE_VERSION_TEMPLATE}"
         "-DDST=${AC3FORGE_VERSION_HEADER}"
         "-DGIT_EXECUTABLE=${GIT_EXECUTABLE}"
