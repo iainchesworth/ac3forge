@@ -94,7 +94,7 @@
     {
       "name": "macos-llvm",
       "hidden": true,
-      "description": "macOS (Apple Silicon)/LLVM 21 toolchain selection. UNVERIFIED: this project has no macOS host, so these presets have never been configured, built or tested. GUI off for the same reason as linux-gcc.",
+      "description": "macOS (Apple Silicon)/Homebrew LLVM toolchain selection. Verified via CI only (this project has no local macOS host) - see docs/BUILDING.md's Verified configuration section. GUI off for the same reason as linux-gcc.",
       "cacheVariables": {
         "VCPKG_TARGET_TRIPLET": "arm64-macos-llvm",
         "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/macos.llvm.toolchain.cmake",

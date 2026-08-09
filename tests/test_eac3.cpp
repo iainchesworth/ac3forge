@@ -118,6 +118,26 @@ std::vector<std::vector<float>> tone_frame(int channels, std::uint64_t start) {
     return pcm;
 }
 
+// A genuinely QUIET frame - low overall level, not just spectrally simple.
+// bit-allocation cost tracks signal level more than spectral shape, so
+// pairing this with wideband_frame (below) is what actually gives VBR's
+// rate control something reliably cheaper to react to; tone_frame's own 0.5
+// amplitude is loud enough to cost about as much as wideband_frame despite
+// being a single tone.
+std::vector<std::vector<float>> quiet_frame(int channels, std::uint64_t start) {
+    std::vector<std::vector<float>> pcm(
+        static_cast<std::size_t>(channels),
+        std::vector<float>(static_cast<std::size_t>(ac3::kSamplesPerFrame)));
+    for (auto& channel : pcm) {
+        for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+            const auto n = static_cast<double>(start + static_cast<std::uint64_t>(i));
+            channel[static_cast<std::size_t>(i)] =
+                static_cast<float>(0.02 * std::sin(2.0 * std::numbers::pi * 1000.0 * n / 48000.0));
+        }
+    }
+    return pcm;
+}
+
 // Program-like material with energy right across the spectrum and a DIFFERENT
 // balance per channel. A pure tone would make coupling a no-op - there is
 // nothing above the coupling frequency to share - and identical channels
@@ -165,6 +185,33 @@ std::vector<std::byte> steady_state_frame(const ac3::eac3::FrameConfig& config, 
         last = std::move(*frame);
     }
     return last;
+}
+
+// One FrameEncoder, fed a caller-chosen sequence of busy (wideband_frame) or
+// quiet (tone_frame) content, returning every produced frame's byte size.
+// tone_frame concentrates its energy in one band, so most of the spectrum
+// sits near the masking floor and the allocator spends little on it;
+// wideband_frame spreads real energy across five widely separated bands with
+// a different balance per channel, which costs far more at the same
+// quality. The two shapes exist so VBR has something to visibly react to.
+std::vector<std::size_t> vbr_frame_sizes(const ac3::eac3::FrameConfig& config,
+                                         std::span<const bool> busy_per_frame) {
+    ac3::eac3::FrameEncoder encoder{config};
+    std::vector<std::size_t> sizes;
+    std::uint64_t n = 0;
+    for (const bool busy : busy_per_frame) {
+        auto pcm = busy ? wideband_frame(2, n) : quiet_frame(2, n);
+        n += ac3::kSamplesPerFrame;
+        std::vector<std::span<const float>> views;
+        for (const auto& channel : pcm) {
+            views.emplace_back(channel);
+        }
+        const auto frame = encoder.encode_frame(views);
+        REQUIRE(frame.has_value());
+        CHECK(ac3::crc16(std::span{*frame}.subspan(2)) == 0x0000);
+        sizes.push_back(frame->size());
+    }
+    return sizes;
 }
 
 }  // namespace
@@ -832,6 +879,100 @@ TEST_CASE("E-AC-3 encodes every supported layout", "[eac3]") {
     CHECK(ac3::crc16(std::span{*frame}.subspan(2)) == 0x0000);
 }
 
+TEST_CASE("E-AC-3 VBR frame size tracks content complexity", "[eac3][vbr]") {
+    // Runs of two per content type, comparing only the SECOND frame of each
+    // run: the first frame after any transition has its block-0 MDCT window
+    // straddling the previous run's differently-loud tail (50% overlap), so
+    // its own cost is contaminated by a splice transient neither run's
+    // steady-state content actually has - the same reason steady_state_frame
+    // elsewhere in this file only keeps its LAST encoded frame.
+    // 0.4 is comfortably inside the range wideband_frame's two channels stay
+    // under the format's own frame-size ceiling without a max_kbps bound -
+    // masking-model bit cost rises steeply above roughly half of the quality
+    // range (see VbrConfig::quality's own comment), so this is deliberately
+    // not a "high" quality value.
+    const std::array<bool, 6> pattern{true, true, false, false, true, true};
+    const auto sizes = vbr_frame_sizes(
+        {.bitrate_kbps = 192, .vbr = ac3::eac3::VbrConfig{.quality = 0.4}}, pattern);
+    CHECK(sizes[1] > sizes[3]);  // steady busy vs steady quiet
+    CHECK(sizes[5] > sizes[3]);  // steady busy vs steady quiet, again
+}
+
+TEST_CASE("E-AC-3 VBR respects an explicit max_kbps ceiling", "[eac3][vbr]") {
+    // Quality 1.0 against wideband content asks for far more than a tight
+    // ceiling can hold, so the bounded fallback search must engage on every
+    // frame and pin the size to the ceiling rather than exceed it.
+    const std::array<bool, 4> pattern{true, true, true, true};
+    constexpr std::uint32_t kMaxKbps = 96;
+    const auto sizes = vbr_frame_sizes(
+        {.bitrate_kbps = 192,
+         .vbr = ac3::eac3::VbrConfig{.quality = 1.0, .max_kbps = kMaxKbps}},
+        pattern);
+    const auto ceiling_bytes = ac3::eac3::frame_words(ac3::SampleRate::k48000, kMaxKbps) * 2;
+    bool any_pinned = false;
+    for (std::size_t i = 1; i < sizes.size(); ++i) {  // skip the warm-up frame
+        CHECK(sizes[i] <= ceiling_bytes);
+        any_pinned = any_pinned || sizes[i] == ceiling_bytes;
+    }
+    CHECK(any_pinned);
+}
+
+TEST_CASE("E-AC-3 VBR respects an explicit min_kbps floor", "[eac3][vbr]") {
+    // A low quality target on quiet content asks for almost nothing; the
+    // floor must still be met, and finish_frame's own padding must not
+    // disturb the checksum vbr_frame_sizes already verifies per frame.
+    const std::array<bool, 3> pattern{false, false, false};
+    constexpr std::uint32_t kMinKbps = 128;
+    const auto sizes = vbr_frame_sizes(
+        {.bitrate_kbps = 192,
+         .vbr = ac3::eac3::VbrConfig{.quality = 0.05, .min_kbps = kMinKbps}},
+        pattern);
+    const auto floor_bytes = ac3::eac3::frame_words(ac3::SampleRate::k48000, kMinKbps) * 2;
+    for (const auto size : sizes) {
+        CHECK(size >= floor_bytes);
+    }
+}
+
+TEST_CASE("E-AC-3 VBR size is monotonic in quality", "[eac3][vbr]") {
+    // Same content, no bounds, two separate encoders: a higher quality
+    // target must never produce a SMALLER frame than a lower one - the one
+    // property that would silently invert if the quality-to-composite
+    // mapping direction were ever wrong. Both values stay well under the
+    // range where wideband_frame's bit cost approaches the format's own
+    // ceiling (see VbrConfig::quality's own comment on that steepness).
+    const std::array<bool, 3> pattern{true, true, true};
+    const auto low = vbr_frame_sizes(
+        {.bitrate_kbps = 192, .vbr = ac3::eac3::VbrConfig{.quality = 0.2}}, pattern);
+    const auto high = vbr_frame_sizes(
+        {.bitrate_kbps = 192, .vbr = ac3::eac3::VbrConfig{.quality = 0.5}}, pattern);
+    CHECK(high.back() >= low.back());
+}
+
+TEST_CASE("E-AC-3 VBR pinned to CBR bounds reproduces CBR output exactly", "[eac3][vbr]") {
+    // quality=1.0 with min_kbps == max_kbps == 192 forces the same fallback
+    // search plain CBR runs, budgeted against the same 192 kbps ceiling - the
+    // cheapest guard that the bounds-fallback path does not quietly diverge
+    // from ordinary CBR rate control.
+    ac3::eac3::FrameEncoder cbr_encoder{{.bitrate_kbps = 192}};
+    ac3::eac3::FrameEncoder vbr_encoder{
+        {.bitrate_kbps = 192,
+         .vbr = ac3::eac3::VbrConfig{.quality = 1.0, .min_kbps = 192, .max_kbps = 192}}};
+    std::uint64_t n = 0;
+    for (int f = 0; f < 3; ++f) {
+        auto pcm = wideband_frame(2, n);
+        n += ac3::kSamplesPerFrame;
+        std::vector<std::span<const float>> views;
+        for (const auto& channel : pcm) {
+            views.emplace_back(channel);
+        }
+        const auto cbr_frame = cbr_encoder.encode_frame(views);
+        const auto vbr_frame = vbr_encoder.encode_frame(views);
+        REQUIRE(cbr_frame.has_value());
+        REQUIRE(vbr_frame.has_value());
+        CHECK(*cbr_frame == *vbr_frame);
+    }
+}
+
 namespace {
 
 // The canonical 7.1 access unit: a self-sufficient 5.1 bed plus a dependent
@@ -841,6 +982,19 @@ ac3::eac3::AccessUnitConfig seven_one() {
             .dependents = {{.bitrate_kbps = 224,
                             .acmod = ac3::Acmod::k2_2,
                             .chanmap = ac3::eac3::chanmap::k71Rear}}};
+}
+
+// The same access unit with VBR turned on for every substream, sharing one
+// quality target the way Tools/Metadata already share across substreams in
+// plan.cpp's eac3_config() - see Stage 2. 0.2 keeps six- and four-channel
+// wideband content well under the per-substream frame-size ceiling; see
+// VbrConfig::quality's own note on how steeply bit cost rises above roughly
+// half of the quality range.
+ac3::eac3::AccessUnitConfig seven_one_vbr() {
+    auto cfg = seven_one();
+    cfg.independent.vbr = ac3::eac3::VbrConfig{.quality = 0.2};
+    cfg.dependents[0].vbr = ac3::eac3::VbrConfig{.quality = 0.2};
+    return cfg;
 }
 
 }  // namespace
@@ -1130,6 +1284,46 @@ TEST_CASE("E-AC-3 access unit carries real audio in every substream", "[eac3]") 
             CHECK(frame_snr_offset(unit->substream(1)) < 1023);
         }
     }
+}
+
+TEST_CASE("E-AC-3 VBR access unit lets every substream size vary on its own",
+          "[eac3][vbr]") {
+    ac3::eac3::AccessUnitEncoder encoder{seven_one_vbr()};
+    const auto nchans = static_cast<std::size_t>(encoder.channel_count());
+    REQUIRE(nchans == 10);
+
+    // Runs of two per content type, across all ten coded channels, so both
+    // substreams see the same shift in complexity at the same time. Only the
+    // SECOND frame of each run is compared - the first has its block-0 MDCT
+    // window straddling the previous run's differently-loud tail, which
+    // contaminates its cost with a splice transient neither steady-state
+    // signal actually has (see the single-substream version of this test).
+    const std::array<bool, 6> busy{true, true, false, false, true, true};
+    std::vector<std::size_t> sub0_sizes;
+    std::vector<std::size_t> sub1_sizes;
+    std::uint64_t n = 0;
+    for (const bool b : busy) {
+        auto source = b ? wideband_frame(static_cast<int>(nchans), n)
+                        : quiet_frame(static_cast<int>(nchans), n);
+        n += ac3::kSamplesPerFrame;
+        std::vector<std::span<const float>> views;
+        for (const auto& channel : source) {
+            views.emplace_back(channel);
+        }
+        const auto unit = encoder.encode_access_unit(views);
+        REQUIRE(unit.has_value());
+        REQUIRE(unit->substream_count() == 2);
+        CHECK(ac3::crc16(unit->substream(0).subspan(2)) == 0x0000);
+        CHECK(ac3::crc16(unit->substream(1).subspan(2)) == 0x0000);
+        sub0_sizes.push_back(unit->substream(0).size());
+        sub1_sizes.push_back(unit->substream(1).size());
+    }
+    // Steady busy (index 1) vs steady quiet (index 3) vs steady busy again
+    // (index 5).
+    CHECK(sub0_sizes[1] > sub0_sizes[3]);
+    CHECK(sub1_sizes[1] > sub1_sizes[3]);
+    CHECK(sub0_sizes[5] > sub0_sizes[3]);
+    CHECK(sub1_sizes[5] > sub1_sizes[3]);
 }
 
 TEST_CASE("E-AC-3 rejects substream layouts it cannot express", "[eac3]") {

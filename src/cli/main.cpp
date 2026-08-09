@@ -736,6 +736,15 @@ bool tools_or_error(std::string_view text, plan::Tools& out) {
     return false;
 }
 
+// As above, for the vbr argument.
+bool vbr_or_error(std::string_view text, std::optional<ac3::eac3::VbrConfig>& out) {
+    if (plan::parse_vbr(text, out)) {
+        return true;
+    }
+    std::println(stderr, "error: unrecognised vbr setting '{}' ({})", text, plan::kVbrSyntax);
+    return false;
+}
+
 // A WAV's rate as an fscod, or a diagnosis. Shared because every encode path
 // asks the same question and A/52 Table 5.6 has the same three answers for
 // all of them.
@@ -795,7 +804,8 @@ void print_routing(const plan::Plan& p, const plan::Routing& routing, std::strin
 // decisions, which is what the Annex E tools are judged on.
 int run_eac3_encode(std::string_view in_path, std::string_view out_path,
                     std::uint32_t bitrate, std::string_view tools, std::string_view layout,
-                    const MetaOptions& meta, std::string_view in2_path = {}) {
+                    std::string_view vbr, const MetaOptions& meta,
+                    std::string_view in2_path = {}) {
     auto wav = ac3::io::read_wav(std::string{in_path});
     if (!wav) {
         std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(wav.error()));
@@ -829,6 +839,9 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
     }
 
     if (!tools_or_error(tools, p.tools)) {
+        return 1;
+    }
+    if (!vbr_or_error(vbr, p.vbr)) {
         return 1;
     }
     const auto cp = plan::resolve(p);
@@ -892,10 +905,35 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
     if (!write_frames(out_path, frames)) {
         return 1;
     }
-    std::println("encoded {} E-AC-3 access units ({} kbps, {} Hz, {}, {} coded channels, "
-                 "tools: {}) to {}",
-                 frames.size(), bitrate, wav->sample_rate, label, nchans,
-                 plan::format_tools(p.tools), out_path);
+    if (p.vbr) {
+        // bitrate_kbps is only the nominal reference vbr's tool heuristics
+        // used, not a target - what a VBR run actually spent is the sizes it
+        // produced, so that is what gets reported instead of one number.
+        std::size_t min_bytes = frames.empty() ? 0 : frames.front().size();
+        std::size_t max_bytes = 0;
+        std::size_t total_bytes = 0;
+        for (const auto& frame : frames) {
+            min_bytes = std::min(min_bytes, frame.size());
+            max_bytes = std::max(max_bytes, frame.size());
+            total_bytes += frame.size();
+        }
+        const double mean_bytes = frames.empty() ? 0.0
+                                                  : static_cast<double>(total_bytes) /
+                                                        static_cast<double>(frames.size());
+        const double mean_kbps = mean_bytes * 8.0 * static_cast<double>(wav->sample_rate) /
+                                 (1000.0 * ac3::kSamplesPerFrame);
+        std::println("encoded {} E-AC-3 access units (vbr {}, {} Hz, {}, {} coded channels, "
+                     "tools: {}) to {}",
+                     frames.size(), plan::format_vbr(p.vbr), wav->sample_rate, label, nchans,
+                     plan::format_tools(p.tools), out_path);
+        std::println("  access unit size: {}-{} bytes, {:.0f} bytes mean (~{:.0f} kbps mean)",
+                     min_bytes, max_bytes, mean_bytes, mean_kbps);
+    } else {
+        std::println("encoded {} E-AC-3 access units ({} kbps, {} Hz, {}, {} coded channels, "
+                     "tools: {}) to {}",
+                     frames.size(), bitrate, wav->sample_rate, label, nchans,
+                     plan::format_tools(p.tools), out_path);
+    }
     print_routing(p, *routing, label);
     return 0;
 }
@@ -2816,11 +2854,12 @@ constexpr std::array<Command, 21> kCommands{{
          return run_eac3_sine(x.str(1), x.u32(2, 5), x.u32(3, 192), x.u32(4, 1000),
                               x.u32(5, 50), x.str(6, "stereo"), x.meta);
      }},
-    {"eac3-encode", 3, "<in.wav> <out.ec3> [bitrate_kbps] [tools] [layout] [in2.wav]",
+    {"eac3-encode", 3,
+     "<in.wav> <out.ec3> [bitrate_kbps] [tools] [layout] [vbr] [in2.wav]",
      "in2.wav: layout 1+1's Ch2, when Ch1 is a separate mono file", Needs::kNothing,
      [](const Args& x) {
          return run_eac3_encode(x.str(1), x.str(2), x.u32(3, 192), x.str(4, "none"), x.str(5),
-                                x.meta, x.str(6));
+                                x.str(6, "off"), x.meta, x.str(7));
      }},
     {"decode", 3, "<in.ac3|in.ec3> <out.wav>", "AC-3 or E-AC-3; bsid decides", Needs::kNothing,
      [](const Args& x) { return run_decode(x.str(1), x.str(2), x.meta); }},
@@ -2903,6 +2942,13 @@ void print_usage() {
     std::println("        cpl:N / spx:N pin that tool's band edge (e.g. cpl:4+spx:5);");
     std::println("        aht:N pins the GAQ mode — aht:0 is AHT with GAQ switched off;");
     std::println("        atten:N pins the SPX notch depth, noatten removes it");
+    std::println("");
+    std::println("vbr (eac3-encode only): {}", plan::kVbrSyntax);
+    std::println("        quality is encoder-relative, not a fixed target — bit cost rises");
+    std::println("        steeply above roughly half the range, so a high quality with no");
+    std::println("        max bound will often refuse real programme material outright;");
+    std::println("        bitrate_kbps still matters in vbr mode — it feeds the same");
+    std::println("        coupling/spx frequency defaults it always has, not a target rate");
     std::println("atmos: objects orbit the room at different heights and rates,");
     std::println("       encoded as a 5.1 E-AC-3 bed with JOC + OAMD side data");
     std::println("       (TS 103 420). FFmpeg reports \"Dolby Digital Plus + Dolby Atmos\".");

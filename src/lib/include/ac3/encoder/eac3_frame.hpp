@@ -41,9 +41,57 @@ namespace ac3::eac3 {
 // whose program was previously coded as AC-3, drags in a blkid/frmsizecod
 // branch nothing here would ever emit, so validate() refuses it.
 
+// Variable bit rate: instead of fixing the frame's word count and searching
+// for the best quality that fits it (CBR's rate control, see FrameConfig's
+// own comment below), fix the quality and let the word count follow the
+// content. Only meaningful for E-AC-3: AC-3's frame size is a lookup into
+// Table 5.18 (frmsizecod), not a free word count, so it has no equivalent.
+struct VbrConfig {
+    // [0, 1]: linearly maps onto the encoder's own composite SNR-offset
+    // search space (composite = round(quality * 1023)). This is not a
+    // perceptual or cross-encoder quality scale - it is exactly as
+    // meaningful as the search space is, which is to say it is monotonic in
+    // "how good" for THIS encoder and nothing more, the same caveat every
+    // encoder's own CRF/-V knob carries.
+    //
+    // The search space is NOT linear in bit cost - masking-model allocators
+    // spend roughly twice the bits for a fixed step up in SNR margin, so bit
+    // cost rises steeply in the top third or so of this range. For ordinary
+    // multi-channel programme material that means a high quality with no
+    // max_kbps bound will often demand more bits than any legal E-AC-3 frame
+    // can hold at all (encode_frame then reports FrameError::kInvalidBitrate
+    // rather than silently truncating) - pair a high quality with max_kbps
+    // unless the content is known to be quiet or sparse.
+    double quality = 0.5;
+
+    // Optional hard bounds, same unit and meaning as FrameConfig::bitrate_kbps:
+    // the chosen word count is clamped so the frame's own rate never leaves
+    // [min_kbps, max_kbps]. std::nullopt on either side means unbounded there.
+    std::optional<std::uint32_t> min_kbps = std::nullopt;
+    // When the quality target would need more words than max_kbps allows,
+    // the encoder falls back to the same binary search CBR uses, budgeted
+    // against max_kbps instead of a fixed target - so a bounded VBR frame is
+    // never worse than "the best CBR could do at that ceiling".
+    std::optional<std::uint32_t> max_kbps = std::nullopt;
+
+    // Drives the coupling/spx begin-frequency heuristics (default_cplbegf,
+    // default_spxbegf) in place of bitrate_kbps, which VBR has nothing fixed
+    // to offer them. std::nullopt resolves to max_kbps if set, else
+    // kVbrDefaultNominalKbps - a caller who wants exactly today's CBR tool
+    // behaviour at some quality supplies the same number they would have
+    // passed as bitrate_kbps.
+    std::optional<std::uint32_t> nominal_kbps = std::nullopt;
+};
+
+inline constexpr std::uint32_t kVbrDefaultNominalKbps = 192;
+
 struct FrameConfig {
     SampleRate sample_rate = SampleRate::k48000;
     std::uint32_t bitrate_kbps = 192;
+    // std::nullopt: CBR, sized from bitrate_kbps (frame_words() below). Set:
+    // VBR: bitrate_kbps still serves as the AHT/decoder fallback rate and
+    // stays whatever the caller last had it at, but is ignored for sizing.
+    std::optional<VbrConfig> vbr = std::nullopt;
     Acmod acmod = Acmod::k2_0;
     bool lfe = false;
     int dialnorm = 31;
@@ -259,6 +307,10 @@ struct AccessUnit {
 
 // Words in a whole access unit. bitrate_kbps is PER SUBSTREAM - the substreams
 // share one frame period, not one frame - so the total is the sum.
+//
+// CBR only. Under VBR the word count follows the content, so it cannot be
+// known before a frame is actually encoded - callers must not call this when
+// any substream's FrameConfig::vbr is set.
 [[nodiscard]] std::uint32_t access_unit_words(const AccessUnitConfig& config);
 
 // TS 103 420 §8.2 fixes which substream carries the container: the LAST

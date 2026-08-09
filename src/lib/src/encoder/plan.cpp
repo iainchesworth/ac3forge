@@ -662,6 +662,97 @@ std::string format_tools(const Tools& tools) {
     return out.empty() ? std::string{"none"} : out;
 }
 
+// --- variable bit rate -------------------------------------------------------
+
+namespace {
+
+[[nodiscard]] bool parse_unit_double(std::string_view text, double& out) {
+    double value = 0.0;
+    const auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (ec != std::errc{} || ptr != text.data() + text.size() || value < 0.0 || value > 1.0) {
+        return false;
+    }
+    out = value;
+    return true;
+}
+
+[[nodiscard]] bool parse_kbps(std::string_view text, std::uint32_t& out) {
+    unsigned value = 0;
+    const auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
+    // 0 kbps is not a legal bound in either direction - frame_words() gives
+    // it zero words, which is not a syncframe at all.
+    if (ec != std::errc{} || ptr != text.data() + text.size() || value == 0) {
+        return false;
+    }
+    out = static_cast<std::uint32_t>(value);
+    return true;
+}
+
+}  // namespace
+
+bool parse_vbr(std::string_view text, std::optional<eac3::VbrConfig>& out) {
+    if (text.empty() || text == "off") {
+        out = std::nullopt;
+        return true;
+    }
+    if (!text.starts_with("q:")) {
+        return false;
+    }
+    text = text.substr(2);
+    eac3::VbrConfig vbr;
+    {
+        const auto comma = text.find(',');
+        if (!parse_unit_double(text.substr(0, comma), vbr.quality)) {
+            return false;
+        }
+        text = comma == std::string_view::npos ? std::string_view{} : text.substr(comma + 1);
+    }
+    while (!text.empty()) {
+        const auto split = text.find(',');
+        // A separator with nothing after it means a field was meant and did
+        // not survive whatever produced the string - the same rule
+        // parse_tools applies to its own trailing '+'.
+        if (split != std::string_view::npos && split + 1 == text.size()) {
+            return false;
+        }
+        const auto token = text.substr(0, split);
+        std::uint32_t kbps = 0;
+        if (token.starts_with("min:")) {
+            if (!parse_kbps(token.substr(4), kbps)) {
+                return false;
+            }
+            vbr.min_kbps = kbps;
+        } else if (token.starts_with("max:")) {
+            if (!parse_kbps(token.substr(4), kbps)) {
+                return false;
+            }
+            vbr.max_kbps = kbps;
+        } else {
+            return false;
+        }
+        text = split == std::string_view::npos ? std::string_view{} : text.substr(split + 1);
+    }
+    if (vbr.min_kbps && vbr.max_kbps && *vbr.min_kbps > *vbr.max_kbps) {
+        return false;
+    }
+    out = vbr;
+    return true;
+}
+
+std::string format_vbr(const std::optional<eac3::VbrConfig>& vbr) {
+    if (!vbr) {
+        return "off";
+    }
+    std::string out = "q:" + std::to_string(vbr->quality);
+    if (vbr->min_kbps) {
+        out += ",min:" + std::to_string(*vbr->min_kbps);
+    }
+    if (vbr->max_kbps) {
+        out += ",max:" + std::to_string(*vbr->max_kbps);
+    }
+    return out;
+}
+
 // --- metadata ---------------------------------------------------------------
 
 namespace {
@@ -713,6 +804,9 @@ std::string_view describe(PlanError error) {
             return "no standard speaker layout has that many channels";
         case PlanError::kInvalidChannels:
             return "that channel selection is not one A/52 Annex E can express";
+        case PlanError::kVbrNeedsEac3:
+            return "variable bit rate needs E-AC-3 - AC-3's frame size indexes Table 5.18 "
+                   "and cannot vary freely";
     }
     return "";
 }
@@ -733,6 +827,9 @@ std::optional<PlanError> validate(const Plan& plan) {
     // indexes Table 5.18 and cannot say anything else.
     if (plan.codec == Codec::kAc3 && !is_valid_bitrate(plan.bitrate_kbps)) {
         return PlanError::kBitrateNotLegal;
+    }
+    if (plan.vbr && plan.codec == Codec::kAc3) {
+        return PlanError::kVbrNeedsEac3;
     }
     return std::nullopt;
 }
@@ -777,6 +874,23 @@ void apply_tools(const Tools& tools, eac3::FrameConfig& config) {
     config.gaqmod = tools.gaqmod;
 }
 
+// A dependent's share of the plan's VBR bounds, halved the same way its
+// bitrate_kbps already is below - substreams occupy one frame period, not
+// one frame, so each gets its own slice of whatever rate range the plan
+// asked for. quality is not a rate quantity, so it carries over unchanged.
+eac3::VbrConfig halve_vbr_bounds(eac3::VbrConfig vbr) {
+    if (vbr.min_kbps) {
+        *vbr.min_kbps /= 2;
+    }
+    if (vbr.max_kbps) {
+        *vbr.max_kbps /= 2;
+    }
+    if (vbr.nominal_kbps) {
+        *vbr.nominal_kbps /= 2;
+    }
+    return vbr;
+}
+
 }  // namespace
 
 eac3::AccessUnitConfig eac3_config(const Plan& plan) {
@@ -797,6 +911,7 @@ eac3::AccessUnitConfig eac3_config(const Plan& plan) {
         independent.mixing = mix_metadata(plan.meta);
     }
     apply_tools(plan.tools, independent);
+    independent.vbr = plan.vbr;
 
     // A dependent gets its own slice of the rate rather than a share of the
     // independent's - substreams occupy one frame period, not one frame.
@@ -814,6 +929,9 @@ eac3::AccessUnitConfig eac3_config(const Plan& plan) {
         dependent.acmod = fit.first;
         dependent.lfe = fit.second;
         apply_tools(plan.tools, dependent);
+        if (plan.vbr) {
+            dependent.vbr = halve_vbr_bounds(*plan.vbr);
+        }
         out.dependents.push_back(dependent);
     }
     return out;

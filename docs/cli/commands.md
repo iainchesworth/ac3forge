@@ -18,7 +18,7 @@ Usage:
   ac3cli encode       <in.wav> <out.ac3> [bitrate_kbps] [layout] [in2.wav] (in2.wav: layout 1+1's Ch2, when Ch1 is a separate mono file)
   ac3cli eac3-silence <out.ec3> [seconds] [bitrate_kbps] [layout]
   ac3cli eac3-sine    <out.ec3> [seconds] [bitrate_kbps] [freq_hz] [amp_pct] [layout]
-  ac3cli eac3-encode  <in.wav> <out.ec3> [bitrate_kbps] [tools] [layout] [in2.wav] (in2.wav: layout 1+1's Ch2, when Ch1 is a separate mono file)
+  ac3cli eac3-encode  <in.wav> <out.ec3> [bitrate_kbps] [tools] [layout] [vbr] [in2.wav] (in2.wav: layout 1+1's Ch2, when Ch1 is a separate mono file)
   ac3cli decode       <in.ac3|in.ec3> <out.wav>               (AC-3 or E-AC-3; bsid decides)
   ac3cli levels       <in.wav|in.ac3|in.ec3>                  (per-channel peak/RMS report)
   ac3cli loudness     <in.wav>                                (BS.1770-4 loudness -> dialnorm)
@@ -57,7 +57,7 @@ coded channels of a 7.1.4 layout.
 | Command | What it does |
 |---|---|
 | `encode` | WAV → AC-3. Without `[layout]`, follows the source channel count (1→mono, 2→stereo, 3–6→5.1, 8→7.1, 10→5.1.4, 12→7.1.4). |
-| `eac3-encode` | WAV → E-AC-3, with the Annex E `tools:` token available (see [Metadata options](metadata-options.md)) |
+| `eac3-encode` | WAV → E-AC-3, with the Annex E `tools:` token and an optional `vbr:` token available (see [Metadata options](metadata-options.md)) |
 | `atmos-encode` | WAV → E-AC-3 Atmos, every source channel becomes its own object |
 
 ```bash
@@ -123,4 +123,4 @@ one exists.
 ## Next
 
 [Metadata options](metadata-options.md) — the options every encoding command in this table
-accepts after its positional arguments, plus the full `layout` and `tools:` grammars.
+accepts after its positional arguments, plus the full `layout`, `tools:` and `vbr` grammars.
