@@ -64,7 +64,7 @@
     {
       "name": "linux-gcc",
       "hidden": true,
-      "description": "Linux/GCC 15 toolchain selection. The GUI is off: cmake/FindQt6.cmake only knows the Windows prebuilt-kit layout so far, and a preset that cannot find Qt should say so by not asking for it rather than by failing to configure.",
+      "description": "Linux/GCC 15 toolchain selection. The GUI is off because a Qt kit is not assumed present, NOT because it cannot be built: cmake/FindQt6.cmake resolves Linux kits fine (distro packages land on CMake's own prefixes, and relocated / aqtinstall kits are searched under ~/Qt, /opt/Qt and friends), and ac3gui builds under both Linux presets and passes its headless --smoke run against Ubuntu 26.04's Qt 6.10. Add -DAC3FORGE_BUILD_GUI=ON on a machine that has Qt 6.5+; a preset that cannot find Qt should still say so by not asking for it rather than by failing to configure.",
       "cacheVariables": {
         "VCPKG_TARGET_TRIPLET": "x64-linux-gcc",
         "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/linux.gcc.toolchain.cmake",
