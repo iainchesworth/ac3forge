@@ -335,6 +335,36 @@ TEST_CASE("a source that already is the layout is carried rather than rendered")
     }
 }
 
+TEST_CASE("side surrounds, rear surrounds and discrete sides route without "
+          "silently colliding") {
+    // Regression test for direction_of() (plan.cpp): it used to place Ls/Rs
+    // at the same azimuth as Lsd/Rsd whenever Lrs/Rrs were ALSO requested,
+    // and Ts at the same azimuth as Vhc unconditionally. chanmap::allocate()
+    // happily accepts all of these together - they are independently legal
+    // Table E2.5 locations - but the ring panner cannot tell two same-azimuth
+    // targets apart, so route() silently sent one of them zero gain with no
+    // error anywhere. is_permutation() is the precise tool for this: a
+    // collision leaves some coded channel with no full-gain source at all
+    // (or two channels splitting one source), so a broken direction_of()
+    // fails this exact check, not just a spot-checked frequency.
+    const auto locations =
+        ac3::plan::parse_channels("L,C,R,Ls,Rs,Lrs,Rrs,Cs,Ts,Lsd,Rsd,Vhc,LFE");
+    REQUIRE(locations.has_value());
+    const ac3::plan::Plan plan{
+        .codec = ac3::plan::Codec::kEac3, .custom_locations = locations, .bitrate_kbps = 640};
+    REQUIRE_FALSE(ac3::plan::validate(plan).has_value());
+
+    const auto cp = ac3::plan::resolve(plan);
+    const auto rendered = ac3::plan::rendered_channel_count(cp);
+    REQUIRE(rendered == 13);
+
+    const auto routing = ac3::plan::route(cp, static_cast<std::size_t>(rendered),
+                                          ac3::meta::CentreMixLevel::kMinus4_5dB,
+                                          ac3::meta::SurroundMixLevel::kMinus6dB);
+    REQUIRE(routing.has_value());
+    CHECK(routing->is_permutation());
+}
+
 TEST_CASE("stereo in and stereo out is the identity") {
     const auto routing = ac3::plan::route(ac3::plan::LayoutId::kStereo, 2,
                                           ac3::meta::CentreMixLevel::kMinus4_5dB,
