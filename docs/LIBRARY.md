@@ -475,6 +475,7 @@ right and not the same as sending code 31.
 | `ac3/encoder/eac3_frame.hpp` | `FrameConfig`, `FrameEncoder`, `AccessUnitConfig`, `AccessUnitEncoder`, `AccessUnit`. |
 | `ac3/encoder/silent_frame.hpp` | `FrameError`, and pure-syntax silent frames. |
 | `ac3/encoder/coupling.hpp`, `eac3_tools.hpp` | Coupling, spectral extension, AHT. |
+| `ac3/encoder/plan.hpp` | `ac3::plan` — `Plan`, `Codec`, `LayoutId`, `Tools`, `Metadata`, `Routing`. The layout table, Annex E tool tokens, metadata defaults and source-to-coded-channel routing, shared by `ac3cli` and `ac3gui` so the two front ends cannot disagree about what a layout or a tools token means. |
 | `ac3/decoder/decoder.hpp` | `FrameDecoder`, `Eac3Decoder`, `split_frames`, `split_access_units`, `stream_bsid`. |
 | `ac3/io/elementary.hpp` | `scan`, `ScannedStream`. |
 | `ac3/io/wav.hpp` | WAV read/write (PCM16 and float32) and the WAV↔Table 5.8 permutation. |
@@ -484,5 +485,6 @@ right and not the same as sending code 31.
 | `ac3/emdf/emdf.hpp` | The TS 102 366 Annex H container. |
 | `ac3/sinks/iec61937.hpp`, `passthrough.hpp` | S/PDIF burst packing; WASAPI exclusive-mode output. |
 | `ac3/capture/capture.hpp`, `ring_buffer.hpp` | WASAPI capture, and the lock-free SPSC ring behind it. |
+| `ac3/platform/audio_backend.hpp` | `ac3::platform::audio_backend()` — whether capture and passthrough are available at all on this build's platform, and why not when they aren't. Backs the CLI's `UNAVAILABLE HERE` messaging for `devices`, `record`, `outputs` and `play`. |
 | `ac3/analysis/levels.hpp` | Peak/RMS metering and the Gerzon energy vector. |
 | `matroska/matroska.hpp` | `mux`, `AudioTrack`, `MuxOptions`. |

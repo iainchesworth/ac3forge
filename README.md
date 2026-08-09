@@ -15,8 +15,9 @@ affiliated with, endorsed by, or certified by Dolby Laboratories. Code and docum
 the technical names AC-3 and E-AC-3. Whether the patents reading on these formats matter for
 your use is your problem to assess, not something this project resolves.
 
-**Status.** Version 0.2.0. The API is not stable. Built and tested only with MSVC on Windows;
-see [Portability](#portability).
+**Status.** Version 0.2.0. The API is not stable. Proven — configured, built and the full test
+suite green, as CI's one required check — only on Windows/MSVC. CI also attempts Windows/clang-cl
+and two Linux legs as non-blocking experimental targets; see [Portability](#portability).
 
 ## Contents
 
@@ -153,10 +154,21 @@ the metadata is. It is covered bit-by-bit instead ([tests/test_drc.cpp](tests/te
 
 ### Portability
 
-Only built and tested with MSVC 14.51 on Windows 11. The codec itself has no platform
-dependency, and `src/lib/CMakeLists.txt` selects stub implementations of capture and
-passthrough off Windows, but no other compiler or OS has been exercised. Treat non-Windows as
-unverified rather than supported.
+Locally verified only on Windows/MSVC 14.51 (Windows 11). The codec itself has no platform
+dependency — `CMakePresets.json` carries configure/build/test presets for Windows (MSVC,
+clang-cl), Linux (GCC 15, Clang 21) and macOS (AppleClang on Apple Silicon), and
+`src/lib/CMakeLists.txt` selects stub implementations of capture and passthrough off Windows —
+but CI is presently the only place the other four legs run at all. windows-msvc is the one
+required, blocking check; the rest run `continue-on-error` and are currently red, all for the
+same reason: `cmake/CompilerWarnings.cmake` turns on a strict warning set with `-Werror` that
+only MSVC's `/W4 /WX` has so far had to satisfy. That is porting work, not a codec defect — see
+the status table and promotion note at the top of
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml). macOS has never run anywhere but that CI
+leg; the project has no Mac. The GUI stays Windows-only for now regardless of leg colour: every
+Linux and macOS preset forces `AC3FORGE_BUILD_GUI=OFF`. `cmake/FindQt6.cmake` already knows how
+to find a prebuilt Qt kit on Linux and macOS too, but nothing has yet built or run `ac3gui` on
+either — that is separate, not-yet-done work from turning the option back on. Treat every
+non-Windows leg as unverified rather than supported.
 
 ## Building
 
@@ -165,15 +177,16 @@ Requirements: Visual Studio 2026 (MSVC), CMake ≥ 3.28, Ninja, a
 Catch2, and nothing else), and — for the GUI only — a prebuilt Qt 6.5+ kit. Qt is never taken
 from vcpkg.
 
-From a **Developer PowerShell for VS 2026**, so that `cl.exe` is on `PATH`:
-
 ```bash
-cmake --preset debug && cmake --build --preset debug && ctest --preset debug
+cmake --preset config-windows-msvc-debug
+cmake --build --preset build-windows-msvc-debug
+ctest --preset test-windows-msvc-debug
 ```
 
-The presets do not pin a compiler, so running them from an ordinary shell picks up whatever is
-first on `PATH` — which is how you get a wall of unrelated errors from a different toolchain.
-[docs/BUILDING.md](docs/BUILDING.md) covers that failure, building without Qt, and the
+The Windows presets pin their own compiler — chainloading a toolchain file that finds MSVC via
+`vswhere` and imports its build environment if a Developer PowerShell hasn't already set one up
+— so this works from an ordinary shell as well as a Developer one.
+[docs/BUILDING.md](docs/BUILDING.md) covers the full preset list, building without Qt, and the
 machine-local preset pattern.
 
 ## Using the library
@@ -212,7 +225,7 @@ that the build compiles and `ctest` runs, so none of them can quietly rot.
 
 ## Using the CLI
 
-`ac3cli` has sixteen commands. Run it with no arguments for the full listing.
+`ac3cli` has eighteen commands. Run it with no arguments for the full listing.
 
 ```bash
 ac3cli encode in.wav out.ac3 448 couple
@@ -229,8 +242,9 @@ ac3cli decode out.ec3 out.wav
 `encode` takes 1–6 channel WAVs and picks the `acmod` to match. `eac3-sine` and
 `eac3-silence` take a layout: `stereo | 51 | 71 | 512 | 514 | 714`. Metadata options
 (`drc=`, `heavy`, `dialnorm=auto`, `cmixlev=`, …) follow the positional arguments in any
-order. `atmos`, `orbit`, `levels`, `loudness`, `spdif`, `mkv`, `record`, `devices` and
-`outputs` are documented in the usage text.
+order. `silence`, `sine`, `atmos`, `atmos-encode`, `orbit`, `eac3-encode`, `levels`,
+`loudness`, `spdif`, `mkv`, `record`, `devices`, `outputs` and `play` are documented in the
+usage text.
 
 `ac3gui` is a Qt Quick front end over the same library: file and live-capture encoding, a plan
 view for dragging objects around the room, a height slider, and channel-level metering.
@@ -275,16 +289,17 @@ sounds better, and no listening test has been run.
 The test suite is 182 ctest entries: 175 Catch2 unit tests plus the seven example programs.
 
 ```bash
-ctest --preset debug
+ctest --preset test-windows-msvc-debug
 ```
 
 ## Repository layout
 
 ```
-cmake/          FindQt6.cmake (prebuilt-Qt discovery), CompilerWarnings.cmake
+cmake/          FindQt6.cmake (prebuilt-Qt discovery), CompilerWarnings.cmake,
+                toolchains/ (one per platform/compiler preset), vcpkg/triplets/ (overlays)
 src/lib/        ac3::forge — the whole codec, GUI-free
   include/ac3/  the public API: core/ encoder/ decoder/ meta/ spatial/ oba/
-                emdf/ analysis/ sinks/ io/ capture/
+                emdf/ analysis/ sinks/ io/ capture/ platform/
   src/          implementation
 src/matroska/   matroska::matroska — a standalone MKV muxer, no ac3::forge dependency
 src/cli/        ac3cli — command-line front end
@@ -310,6 +325,7 @@ beside it. [docs/BUILDING.md](docs/BUILDING.md) has the details.
 | [docs/LIBRARY.md](docs/LIBRARY.md) | The public API, with compiled examples |
 | [docs/HISTORY.md](docs/HISTORY.md) | How the implementation was built, milestone by milestone |
 | [docs/RESEARCH.md](docs/RESEARCH.md) | The original feasibility research and the decisions that came out of it |
+| [docs/DESIGN-BRIEF.md](docs/DESIGN-BRIEF.md) | Input document for a GUI design pass: current-state inventory, user journeys, open questions |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Conventions, and the validation discipline |
 
 ## Licence

@@ -6,9 +6,9 @@ accommodated. It does not propose a design.
 
 **Which version this describes.** The GUI recently gained most of the codec surface it had been
 missing, on branch `claude/youthful-hermann-549468` (commit `dcaca85`, "Both front ends reach the
-whole codec"). That work is finished but not yet merged to `master`. This brief describes **that**
-version, because it is the one a designer will be working from — it is a substantially different and
-much larger interface than the seven-card `master` build. Every screenshot here is of that build.
+whole codec"), merged since. This brief describes **that** version, because it is the one a
+designer works from — it is a substantially different and much larger interface than the
+seven-card build that came before it. Every screenshot here is of that build.
 
 ---
 
