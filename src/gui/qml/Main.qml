@@ -985,9 +985,38 @@ ApplicationWindow {
                                 }
                             }
 
-                            // ---- passthrough --------------------------------------------
+                            // ---- loudness: Basic only ------------------------------------
+                            // Advanced moves this onto Metadata instead, alongside Downmix,
+                            // so it is never shown twice - same LoudnessGroup component
+                            // either way.
+                            Card {
+                                title: qsTr("Loudness")
+                                visible: !window.advanced
+
+                                LoudnessGroup {}
+
+                                Text {
+                                    Layout.topMargin: 2
+                                    text: qsTr("Coding tools and broadcast metadata →")
+                                    color: Theme.accent
+                                    font.pixelSize: Theme.fontSmall
+
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: window.advanced = true
+                                    }
+                                }
+                            }
+
+                            // ---- passthrough: Advanced only ------------------------------
+                            // Not in the Basic/Advanced section's own list of what Basic
+                            // shows (source, codec, channel picker, bit rate, output path
+                            // and container, Loudness, Objects) - a receiver endpoint is a
+                            // codec-developer concern, not a mix-encoding one.
                             Card {
                                 title: qsTr("Passthrough to a receiver")
+                                visible: window.advanced
 
                                 RowLayout {
                                     Layout.fillWidth: true
@@ -1154,95 +1183,73 @@ ApplicationWindow {
                         }
 
                         // ---- Metadata (Advanced only) -----------------------------
-                        ColumnLayout {
+                        // Two columns: Loudness + Downmix on the left, Heavy
+                        // compression + Mixing metadata on the right. Loudness
+                        // lives here rather than on Format because Advanced is
+                        // active - LoudnessGroup itself is the same component
+                        // Format uses in Basic, never both at once.
+                        RowLayout {
                             Layout.fillWidth: true
-                            spacing: Theme.gap
+                            Layout.alignment: Qt.AlignTop
+                            spacing: 40
 
-                            Card {
-                                title: qsTr("Dynamic range and metadata")
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                Layout.alignment: Qt.AlignTop
+                                spacing: Theme.gap
 
-                                GridLayout {
-                                    Layout.fillWidth: true
-                                    columns: 4
-                                    columnSpacing: Theme.gap
-                                    rowSpacing: Theme.gap
+                                Card {
+                                    title: qsTr("Loudness")
+                                    LoudnessGroup {}
+                                }
 
-                                    Text {
-                                        text: qsTr("DRC profile")
-                                        color: Theme.text
-                                        font.pixelSize: Theme.fontNormal
-                                    }
-                                    ComboBox {
+                                Card {
+                                    title: qsTr("Downmix")
+
+                                    GridLayout {
                                         Layout.fillWidth: true
-                                        enabled: !EncoderController.busy
-                                        model: EncoderController.drcNames
-                                        currentIndex: EncoderController.drcIndex
-                                        onActivated: EncoderController.drcIndex = currentIndex
-                                    }
+                                        columns: 2
+                                        columnSpacing: Theme.gap
+                                        rowSpacing: Theme.gap
 
-                                    Text {
-                                        text: qsTr("dialnorm")
-                                        color: Theme.text
-                                        font.pixelSize: Theme.fontNormal
-                                    }
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        spacing: Theme.gap
-
-                                        SpinBox {
-                                            from: 1
-                                            to: 31
-                                            enabled: !EncoderController.busy
-                                                     && !EncoderController.measureDialnorm
-                                            value: EncoderController.dialnorm
-                                            onValueModified: EncoderController.dialnorm = value
+                                        Text {
+                                            text: qsTr("Centre downmix")
+                                            color: Theme.text
+                                            font.pixelSize: Theme.fontNormal
                                         }
-                                        CheckBox {
-                                            text: qsTr("measure")
+                                        ComboBox {
+                                            Layout.fillWidth: true
                                             enabled: !EncoderController.busy
-                                            checked: EncoderController.measureDialnorm
-                                            onToggled: EncoderController.measureDialnorm = checked
+                                            model: EncoderController.cmixNames
+                                            currentIndex: EncoderController.cmixIndex
+                                            onActivated: EncoderController.cmixIndex = currentIndex
                                         }
-                                    }
 
-                                    Text {
-                                        text: qsTr("Centre downmix")
-                                        color: Theme.text
-                                        font.pixelSize: Theme.fontNormal
-                                    }
-                                    ComboBox {
-                                        Layout.fillWidth: true
-                                        enabled: !EncoderController.busy
-                                        model: EncoderController.cmixNames
-                                        currentIndex: EncoderController.cmixIndex
-                                        onActivated: EncoderController.cmixIndex = currentIndex
-                                    }
-
-                                    Text {
-                                        text: qsTr("Surround downmix")
-                                        color: Theme.text
-                                        font.pixelSize: Theme.fontNormal
-                                    }
-                                    ComboBox {
-                                        Layout.fillWidth: true
-                                        enabled: !EncoderController.busy
-                                        model: EncoderController.surmixNames
-                                        currentIndex: EncoderController.surmixIndex
-                                        onActivated: EncoderController.surmixIndex = currentIndex
+                                        Text {
+                                            text: qsTr("Surround downmix")
+                                            color: Theme.text
+                                            font.pixelSize: Theme.fontNormal
+                                        }
+                                        ComboBox {
+                                            Layout.fillWidth: true
+                                            enabled: !EncoderController.busy
+                                            model: EncoderController.surmixNames
+                                            currentIndex: EncoderController.surmixIndex
+                                            onActivated: EncoderController.surmixIndex = currentIndex
+                                        }
                                     }
                                 }
 
-                                Text {
-                                    Layout.fillWidth: true
-                                    text: qsTr("dialnorm says where dialogue sits below full scale (§5.4.2.8). Measuring derives it from BS.1770-4 gated loudness over the whole programme; getting it wrong is not cosmetic, since a levelled system plays the difference.")
-                                    color: Theme.textMuted
-                                    font.pixelSize: Theme.fontSmall
-                                    wrapMode: Text.WordWrap
-                                }
+                                Item { Layout.fillHeight: true }
+                            }
 
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    spacing: Theme.gap
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                Layout.alignment: Qt.AlignTop
+                                spacing: Theme.gap
+
+                                Card {
+                                    title: qsTr("Heavy compression")
 
                                     CheckBox {
                                         text: qsTr("Heavy compression")
@@ -1251,62 +1258,79 @@ ApplicationWindow {
                                         onToggled: EncoderController.heavy = checked
                                     }
 
-                                    Text {
-                                        text: qsTr("ceiling")
-                                        color: Theme.textMuted
-                                        font.pixelSize: Theme.fontSmall
+                                    // The indent rule replaces injecting controls
+                                    // into the middle of the column: a sub-group
+                                    // reads as one whether it is showing or not.
+                                    RowLayout {
+                                        Layout.fillWidth: true
                                         visible: EncoderController.heavy
-                                    }
-                                    // Counted in tenths of a decibel: the default ceiling
-                                    // is -0.5 dBFS, and a whole-number box would show it
-                                    // as 0 and write that back — throwing away exactly the
-                                    // headroom §7.7.2 exists to reserve.
-                                    SpinBox {
-                                        from: -200
-                                        to: 0
-                                        stepSize: 5
-                                        enabled: !EncoderController.busy
-                                        visible: EncoderController.heavy
-                                        value: Math.round(EncoderController.ceilingDb * 10)
-                                        textFromValue: (value) => (value / 10).toFixed(1) + " dBFS"
-                                        valueFromText: (text) => Math.round(parseFloat(text) * 10)
-                                        onValueModified: EncoderController.ceilingDb = value / 10
-                                    }
+                                        spacing: Theme.gap
 
-                                    Text {
-                                        text: qsTr("dialogue at")
-                                        color: Theme.textMuted
-                                        font.pixelSize: Theme.fontSmall
-                                        visible: EncoderController.heavy
-                                    }
-                                    SpinBox {
-                                        from: -40
-                                        to: -5
-                                        enabled: !EncoderController.busy
-                                        visible: EncoderController.heavy
-                                        value: Math.round(EncoderController.dialogueDb)
-                                        textFromValue: (value) => value + " dBFS"
-                                        valueFromText: (text) => parseInt(text)
-                                        onValueModified: EncoderController.dialogueDb = value
-                                    }
+                                        Rectangle { Layout.preferredWidth: 2; Layout.fillHeight: true; color: Theme.accent200 }
 
-                                    Item { Layout.fillWidth: true }
-                                }
+                                        ColumnLayout {
+                                            Layout.fillWidth: true
+                                            Layout.leftMargin: 8
+                                            spacing: Theme.gap
 
-                                Text {
-                                    Layout.fillWidth: true
-                                    text: qsTr("Heavy compression (§7.7.2) is a peak ceiling in the mono downmix at syncframe resolution — an assurance for links that overmodulate, not the subjectively pleasing reduction dynrng provides.")
-                                    color: Theme.textMuted
-                                    font.pixelSize: Theme.fontSmall
-                                    wrapMode: Text.WordWrap
-                                    visible: EncoderController.heavy
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                spacing: Theme.gap
+
+                                                Text {
+                                                    text: qsTr("ceiling")
+                                                    color: Theme.textMuted
+                                                    font.pixelSize: Theme.fontSmall
+                                                }
+                                                // Counted in tenths of a decibel: the default
+                                                // ceiling is -0.5 dBFS, and a whole-number box
+                                                // would show it as 0 and write that back —
+                                                // throwing away exactly the headroom §7.7.2
+                                                // exists to reserve.
+                                                SpinBox {
+                                                    from: -200
+                                                    to: 0
+                                                    stepSize: 5
+                                                    enabled: !EncoderController.busy
+                                                    value: Math.round(EncoderController.ceilingDb * 10)
+                                                    textFromValue: (value) => (value / 10).toFixed(1) + " dBFS"
+                                                    valueFromText: (text) => Math.round(parseFloat(text) * 10)
+                                                    onValueModified: EncoderController.ceilingDb = value / 10
+                                                }
+
+                                                Text {
+                                                    text: qsTr("dialogue at")
+                                                    color: Theme.textMuted
+                                                    font.pixelSize: Theme.fontSmall
+                                                }
+                                                SpinBox {
+                                                    from: -40
+                                                    to: -5
+                                                    enabled: !EncoderController.busy
+                                                    value: Math.round(EncoderController.dialogueDb)
+                                                    textFromValue: (value) => value + " dBFS"
+                                                    valueFromText: (text) => parseInt(text)
+                                                    onValueModified: EncoderController.dialogueDb = value
+                                                }
+
+                                                Item { Layout.fillWidth: true }
+                                            }
+
+                                            Text {
+                                                Layout.fillWidth: true
+                                                text: qsTr("Heavy compression (§7.7.2) is a peak ceiling in the mono downmix at syncframe resolution — an assurance for links that overmodulate, not the subjectively pleasing reduction dynrng provides.")
+                                                color: Theme.textMuted
+                                                font.pixelSize: Theme.fontSmall
+                                                wrapMode: Text.WordWrap
+                                            }
+                                        }
+                                    }
                                 }
 
                                 // ---- mixing metadata: E-AC-3 only ------------------------
-                                RowLayout {
-                                    Layout.fillWidth: true
+                                Card {
+                                    title: qsTr("Mixing metadata")
                                     visible: EncoderController.mixmetaAvailable
-                                    spacing: Theme.gap
 
                                     CheckBox {
                                         text: qsTr("Mixing metadata")
@@ -1315,54 +1339,68 @@ ApplicationWindow {
                                         onToggled: EncoderController.mixmeta = checked
                                     }
 
-                                    Text {
-                                        text: qsTr("preferred downmix")
-                                        color: Theme.textMuted
-                                        font.pixelSize: Theme.fontSmall
+                                    RowLayout {
+                                        Layout.fillWidth: true
                                         visible: EncoderController.mixmeta
-                                    }
-                                    ComboBox {
-                                        enabled: !EncoderController.busy
-                                        visible: EncoderController.mixmeta
-                                        model: EncoderController.dmixNames
-                                        currentIndex: EncoderController.dmixIndex
-                                        onActivated: EncoderController.dmixIndex = currentIndex
-                                    }
+                                        spacing: Theme.gap
 
-                                    Text {
-                                        text: qsTr("LFE mix")
-                                        color: Theme.textMuted
-                                        font.pixelSize: Theme.fontSmall
-                                        visible: EncoderController.mixmeta
-                                    }
-                                    SpinBox {
-                                        from: -1
-                                        to: 31
-                                        enabled: !EncoderController.busy
-                                        visible: EncoderController.mixmeta
-                                        value: EncoderController.lfeMix
-                                        // §E2.3.1.11: the level in dB is 10 - the code, so
-                                        // 0 is the +10 dB §7.8 calls ideal.
-                                        textFromValue: (value) => value < 0
-                                                       ? qsTr("off") : (10 - value) + " dB"
-                                        valueFromText: (text) => text === qsTr("off") ? -1 : parseInt(text)
-                                        onValueModified: EncoderController.lfeMix = value
-                                    }
+                                        Rectangle { Layout.preferredWidth: 2; Layout.fillHeight: true; color: Theme.accent200 }
 
-                                    Item { Layout.fillWidth: true }
+                                        ColumnLayout {
+                                            Layout.fillWidth: true
+                                            Layout.leftMargin: 8
+                                            spacing: Theme.gap
+
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                spacing: Theme.gap
+
+                                                Text {
+                                                    text: qsTr("preferred downmix")
+                                                    color: Theme.textMuted
+                                                    font.pixelSize: Theme.fontSmall
+                                                }
+                                                ComboBox {
+                                                    enabled: !EncoderController.busy
+                                                    model: EncoderController.dmixNames
+                                                    currentIndex: EncoderController.dmixIndex
+                                                    onActivated: EncoderController.dmixIndex = currentIndex
+                                                }
+
+                                                Text {
+                                                    text: qsTr("LFE mix")
+                                                    color: Theme.textMuted
+                                                    font.pixelSize: Theme.fontSmall
+                                                }
+                                                SpinBox {
+                                                    from: -1
+                                                    to: 31
+                                                    enabled: !EncoderController.busy
+                                                    value: EncoderController.lfeMix
+                                                    // §E2.3.1.11: the level in dB is 10 - the
+                                                    // code, so 0 is the +10 dB §7.8 calls ideal.
+                                                    textFromValue: (value) => value < 0
+                                                                   ? qsTr("off") : (10 - value) + " dB"
+                                                    valueFromText: (text) => text === qsTr("off") ? -1 : parseInt(text)
+                                                    onValueModified: EncoderController.lfeMix = value
+                                                }
+
+                                                Item { Layout.fillWidth: true }
+                                            }
+
+                                            Text {
+                                                Layout.fillWidth: true
+                                                text: qsTr("E-AC-3 dropped bsi's two coarse levels and carries a richer group inside mixmdate instead (Table E1.2), including an LFE mix level AC-3 has no way to express. \"Off\" is a decision in its own right: LFE mixing disabled, not merely turned down.")
+                                                color: Theme.textMuted
+                                                font.pixelSize: Theme.fontSmall
+                                                wrapMode: Text.WordWrap
+                                            }
+                                        }
+                                    }
                                 }
 
-                                Text {
-                                    Layout.fillWidth: true
-                                    text: qsTr("E-AC-3 dropped bsi's two coarse levels and carries a richer group inside mixmdate instead (Table E1.2), including an LFE mix level AC-3 has no way to express. \"Off\" is a decision in its own right: LFE mixing disabled, not merely turned down.")
-                                    color: Theme.textMuted
-                                    font.pixelSize: Theme.fontSmall
-                                    wrapMode: Text.WordWrap
-                                    visible: EncoderController.mixmetaAvailable && EncoderController.mixmeta
-                                }
+                                Item { Layout.fillHeight: true }
                             }
-
-                            Item { Layout.fillHeight: true }
                         }
 
                         // ---- Objects ---------------------------------------------

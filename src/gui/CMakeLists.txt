@@ -30,7 +30,8 @@ set(AC3_QML_FILES
     qml/Card.qml
     qml/ChannelMeter.qml
     qml/SoundfieldView.qml
-    qml/SegmentedControl.qml)
+    qml/SegmentedControl.qml
+    qml/LoudnessGroup.qml)
 
 foreach(qml_file IN LISTS AC3_QML_FILES)
     get_filename_component(qml_name "${qml_file}" NAME)
