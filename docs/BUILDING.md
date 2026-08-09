@@ -12,6 +12,7 @@ Every command here has been run on the configuration described under
 | Ninja | any recent | The presets hard-code the Ninja generator. |
 | vcpkg | any recent | Supplies Catch2, and nothing else. Needed only when tests are on. |
 | Qt | 6.5+ prebuilt | GUI only. **Never from vcpkg** — see [Qt](#qt). |
+| ALSA (`libasound2-dev`) | any recent | Linux only, optional. Live capture/monitor/passthrough — see [Linux audio](#linux-audio). |
 | Python 3 + numpy | 3.11+ | Only for `tools/`; not part of the build. |
 | FFmpeg CLI | 8.x | Only for validation scripts; not part of the build. |
 
@@ -32,8 +33,12 @@ cmake --build --preset build-windows-msvc-debug
 ctest --preset test-windows-msvc-debug
 ```
 
-Swap `-debug` off all three preset names for a Release build, or `msvc` for `llvm` to build
-with clang-cl instead (experimental — see [Presets](#presets)).
+Drop `-debug` from all three preset names for a Release build, or swap `msvc` for `llvm` to
+build with clang-cl instead. The `ci-windows-msvc` workflow preset runs the same three steps in
+one command: `cmake --workflow --preset ci-windows-msvc` (Release only — the workflow presets in
+`CMakePresets.json` don't have `-debug` variants).
+
+See [Building on Linux](#building-on-linux) below for the equivalent on GCC/Clang.
 
 ## The compiler is pinned, not PATH-found
 
@@ -124,8 +129,9 @@ is a hidden `local` preset carrying the paths, inherited alongside the checked-i
 ```
 
 `debug` alone has no generator or binary directory — those live on the hidden `core` preset,
-and the compiler selection on a platform preset (`windows-msvc` here; see the table below for
-the others). Missing either from `dev`'s `inherits` list still configures, but silently: CMake
+and the compiler selection on a platform preset (`windows-msvc` here; `linux-gcc`, `linux-llvm`
+and `macos-llvm` are the others — see `CMakePresets.json`). Missing either from `dev`'s
+`inherits` list still configures, but silently: CMake
 falls back to its platform default generator (Visual Studio, on this machine) and an in-source
 binary directory instead of `build/dev`, which is a mess to notice and worse to undo. Inherit
 all four.
@@ -139,7 +145,7 @@ platform/compiler fragment matches your machine.
 | Option | Default | Effect |
 |---|---|---|
 | `AC3FORGE_BUILD_CLI` | `ON` | Build `ac3cli`. |
-| `AC3FORGE_BUILD_GUI` | `ON` | Build `ac3gui`. Requires Qt. |
+| `AC3FORGE_BUILD_GUI` | `ON` on the two Windows presets, `OFF` on Linux and macOS | Build `ac3gui`. Requires Qt. Off by default outside Windows because a Qt kit isn't assumed present there — see [Building on Linux](#building-on-linux). |
 | `AC3FORGE_BUILD_TESTS` | `ON` | Build the Catch2 suite. Requires Catch2. |
 | `AC3FORGE_FETCH_CATCH2` | `ON` | When no local Catch2 3 is found (vcpkg, a distro package, an explicit `CMAKE_PREFIX_PATH`), fetch and build v3.15.3 from source via `FetchContent` instead of failing. Turn off to insist on a package-manager copy — see `tests/CMakeLists.txt`. Irrelevant when `AC3FORGE_BUILD_TESTS` is off. |
 | `AC3FORGE_BUILD_EXAMPLES` | `ON` | Build `examples/`, and register them as tests. |
@@ -158,7 +164,67 @@ The vcpkg toolchain file is still referenced by the preset, so `VCPKG_ROOT` must
 at a checkout — it simply has nothing to install. To build with no vcpkg at all, configure
 without the preset and pass the generator and build type by hand.
 
-## Linux audio
+## Building on Linux
+
+`config-linux-gcc` and `config-linux-llvm` (each with a `-debug` variant, same as the Windows
+presets) are GCC 15 and Clang 21 respectively. They do **not** share the `debug`/`release` bare
+names used elsewhere in this document — there is no `cmake --preset debug` on any platform; see
+[Presets](#presets) above.
+
+```bash
+export VCPKG_ROOT=/path/to/vcpkg
+cmake --preset config-linux-gcc-debug
+cmake --build --preset build-linux-gcc-debug
+ctest --preset test-linux-gcc-debug
+```
+
+Substitute `linux-llvm` for `linux-gcc` to build with Clang instead. `VCPKG_ROOT` works the same
+way as on Windows: it must point at a vcpkg checkout for the toolchain file the preset
+references, even though (as on Windows) it supplies nothing but Catch2. This project's own
+convention keeps that checkout under `/opt/vcpkg`, but any path works — there is nothing
+Linux-specific about vcpkg here.
+
+### GUI on Linux
+
+Both Linux presets default `AC3FORGE_BUILD_GUI` to `OFF`. That is not because the GUI cannot be
+built on Linux — `cmake/FindQt6.cmake` resolves a Linux Qt kit the same way it resolves a
+Windows one (distro packages land on CMake's own prefixes; relocated or `aqtinstall` kits are
+searched under `~/Qt`, `/opt/Qt` and friends), and `ac3gui` builds clean and passes its headless
+`--smoke` run under both Linux presets. It defaults off because, unlike on Windows/macOS, a Qt
+kit is not assumed to be present on every Linux machine that builds this project — see
+`linux-gcc`'s own `description` in `CMakePresets.json`. Opt in explicitly once Qt is installed:
+
+```bash
+cmake --preset config-linux-gcc-debug -DAC3FORGE_BUILD_GUI=ON
+```
+
+Qt 6.5+ is required, same as everywhere else. On Debian/Ubuntu:
+
+```bash
+sudo apt install qt6-base-dev qt6-base-dev-tools qt6-declarative-dev qt6-declarative-dev-tools
+```
+
+Other distros need the equivalent Qt6 base + declarative (QML/Quick) development packages;
+package names vary (Fedora's are `qt6-qtbase-devel` / `qt6-qtdeclarative-devel`, for example).
+
+**The `qmlshapesplugin` / `labsmodelsplugin` / `qmlfolderlistmodelplugin` CMake warnings.**
+Configuring with the GUI on prints warnings that these — and, in fact, every other built-in
+QML plugin `ac3gui` transitively touches through `QtQuick.Controls` (its styles, dialogs,
+layouts, and so on) — "will not be linked", because the `Qt6::<name>plugin` CMake target each
+would need does not exist. This is a property of how Ubuntu's apt-packaged Qt6 is built, not of
+this project: the official Qt installer exports a static-link CMake target for every built-in
+plugin so a fully self-contained executable can embed them, but a distro's dynamically-linked
+Qt6 package does not need that and does not export it. It does **not** mean the plugins are
+missing. Confirmed on Ubuntu 26.04's Qt 6.10: the `.so` files are installed at the normal QML
+import path with valid `qmldir` files, and the QML engine loads them from there at runtime the
+same way it loads every other Qt Quick module, independent of whether CMake could statically
+link them in. `ac3gui`'s own QML never imports `Qt.labs.*` or `QtQuick.Shapes` directly — the
+three named in the warning are pulled in transitively by `QtQuick.Dialogs`' non-native
+fallback implementation, which backs `Main.qml`'s `FileDialog`s only when no native/portal
+dialog is available, and which a headless `--smoke` run (verified with
+`QT_LOGGING_RULES=qt.qml.import.debug=true`) never even requests. Safe to ignore.
+
+### Linux audio
 
 Three of ac3forge's features touch the sound hardware — live capture (`ac3cli devices`,
 `record`), monitor playback (`monitor`), and IEC 61937 bitstream passthrough (`outputs`,
@@ -189,7 +255,7 @@ the affected commands `UNAVAILABLE HERE` in its usage rather than pretending the
 `-DAC3FORGE_WITH_ALSA=ON` to turn a missing libasound into a configure error instead, which is
 what a packaging build wants.
 
-### Why ALSA and not PipeWire
+#### Why ALSA and not PipeWire
 
 Capture and monitor playback are ordinary PCM and every Linux audio API can do them. Passthrough
 is the discriminator, and it is what the whole project is for: sending an AC-3 or E-AC-3
@@ -211,7 +277,7 @@ Windows, for the same reason — a mixer that resamples or volume-scales a burst
 into noise. A PipeWire backend would be a reasonable second one to add (as a sibling directory
 under `src/lib/src/platform/`, selected the same way); it would buy politeness, not capability.
 
-### What has and has not been verified
+#### What has and has not been verified
 
 Verified on WSL2 Ubuntu 26.04 with gcc 15.2 and clang 21.1, in every configuration: with
 libasound present and absent, and under ASan+UBSan with leak detection. The full suite passes
@@ -234,8 +300,8 @@ Windows `C:/Qt`, `%USERPROFILE%/Qt`, `D:/Qt`; on Linux and macOS `~/Qt`, `/opt/Q
 MacPorts prefixes, and so on — newest kit first, and then defers to Qt's own config package. Every
 Linux and macOS preset still forces `AC3FORGE_BUILD_GUI=OFF` by default — pass
 `-DAC3FORGE_BUILD_GUI=ON` explicitly on a machine that has Qt 6.5+, which is verified to work on
-Linux (`ac3gui` builds and passes its headless `--smoke` run against Ubuntu 26.04's Qt 6.10; CI
-does not turn it on, since its containers carry no Qt kit) but has never been tried on macOS. See
+Linux both locally (see [GUI on Linux](#gui-on-linux) above) and in CI, which installs a Qt6 kit
+and turns the flag on for both `linux-gcc` and `linux-llvm`. macOS has never been tried. See
 [Portability](../README.md#portability). If your kit is somewhere else, say so explicitly and it
 wins over the search — the project's own `-DAC3FORGE_QT_ROOT=` (or the `AC3FORGE_QT_ROOT`,
 `QT_ROOT_DIR` or `QTDIR` environment variables) is the preferred way:
@@ -268,7 +334,7 @@ Extract each PDF to page-marked text beside the PDF, with page separators of the
 
 ## Verified configuration
 
-Everything in this document was run on:
+The Windows instructions in this document were run on:
 
 | | |
 |---|---|
@@ -280,14 +346,36 @@ Everything in this document was run on:
 | FFmpeg | 8.0.1 |
 | Python | 3.14.6 |
 
-Result: configure, build and `ctest` all clean, 256/256 tests passing.
+Result: configure, build and `ctest` all clean, 256/256 tests passing (windows-msvc and
+windows-llvm both — see `.github/workflows/ci.yml`'s status comment).
 
-The Linux legs of the table above were verified separately, on WSL2 Ubuntu 26.04 with gcc 15.2.0
-and clang 21.1.8 (270/270 there — the extra 14 are `tests/platform/alsa/`, built only when the
-ALSA backend is selected) — see [Linux audio](#linux-audio) for what that did and did not prove.
-CI (`.github/workflows/ci.yml`) now runs and *requires* windows-msvc, windows-llvm, linux-gcc,
-linux-llvm, linux-llvm-asan-ubsan and static-analysis (clang-tidy) on every push; only
-macos-llvm remains experimental (`continue-on-error`) — it has never been run anywhere, on CI or
-otherwise, because the project has no Mac. `src/lib/CMakeLists.txt` selects the no-backend
-platform directory there, so the codec half is expected to work and the three audio-hardware
-commands are expected to report themselves unavailable, but neither has been observed.
+The Linux instructions were run on:
+
+| | |
+|---|---|
+| OS | Ubuntu 26.04 (WSL2) |
+| Compilers | GCC 15.2.0 and Clang 21.1.x, both tried |
+| CMake | ≥ 3.28, Ninja generator |
+| Qt | 6.10.2, apt-packaged (`qt6-base-dev`, `qt6-declarative-dev`) |
+| ALSA | `libasound2-dev`, both present and as the no-ALSA fallback — see [Linux audio](#linux-audio) |
+| vcpkg | checkout at `/opt/vcpkg` |
+
+Result: configure, build and `ctest` all clean on both compilers, GUI and ALSA both included —
+270/270 tests, `AC3FORGE_WITH_ALSA`'s `tests/platform/alsa/` accounting for the 14-test gap over
+the 256/256 a Linux build without `libasound2-dev` gets (same count as Windows, since GUI does
+not gate any `ctest` entry — it only adds the separate `ac3gui` build target). `ac3gui --smoke`
+also runs clean headless (`QT_QPA_PLATFORM=offscreen`), encoding real audio and instantiating
+real QML channel meters. See [Linux audio](#linux-audio) for what the ALSA verification did,
+and did not (real hardware), prove.
+
+CI (`.github/workflows/ci.yml`) runs and *requires* windows-msvc, windows-llvm, linux-gcc,
+linux-llvm, linux-llvm-asan-ubsan and static-analysis (clang-tidy) on every push — the two Linux
+legs install the same Qt6/ALSA packages and build/smoke-test the GUI too. Only macos-llvm
+remains experimental (`continue-on-error`).
+
+No macOS host exists for this project, so `config-macos-llvm`/`config-macos-llvm-debug` have
+never been configured, built or tested — `src/lib/CMakeLists.txt` selects the no-backend audio
+implementations there (same as a Linux machine without `libasound2-dev`), so the codec and GUI
+halves are expected to work and the three audio-hardware commands are expected to report
+themselves unavailable, but none of that has been observed. Treat macOS as unverified until
+someone with a Mac tries it.

@@ -16,8 +16,9 @@ the technical names AC-3 and E-AC-3. Whether the patents reading on these format
 your use is your problem to assess, not something this project resolves.
 
 **Status.** Version 0.2.0. The API is not stable. Green and required in CI on Windows (MSVC,
-clang-cl), Linux (GCC 15, Clang 21, and an ASan+UBSan leg) and static analysis (clang-tidy);
-macOS is the one experimental leg, never run anywhere. See [Portability](#portability).
+clang-cl) and Linux (GCC 15, Clang 21) — CLI and GUI alike on all four — plus an ASan+UBSan leg
+and clang-tidy static analysis; macOS is the one experimental leg, never run anywhere. See
+[Portability](#portability).
 
 ## Contents
 
@@ -177,40 +178,44 @@ the metadata is. It is covered bit-by-bit instead ([tests/test_drc.cpp](tests/te
 ### Portability
 
 Built and tested with MSVC 14.51 and clang-cl 21.1 on Windows 11, and with gcc 15.2 and clang
-21.1 on Ubuntu 26.04 (WSL2). The codec itself has no platform dependency; the three features
-that touch sound hardware — capture, monitor playback and IEC 61937 passthrough — live in one
-directory per audio subsystem that `src/lib/CMakeLists.txt` picks between: WASAPI on Windows,
-ALSA on Linux, with a no-backend fallback (macOS, or Linux without libasound headers) that
-reports itself unavailable rather than failing to link. See [Linux audio](docs/BUILDING.md#linux-audio)
-for the ALSA backend specifically.
+21.1 on Ubuntu 26.04 (WSL2) — CLI and GUI on every one of those four. The codec itself has no
+platform dependency; the three features that touch sound hardware — capture, monitor playback
+and IEC 61937 passthrough — live in one directory per audio subsystem that
+`src/lib/CMakeLists.txt` picks between: WASAPI on Windows, ALSA on Linux, with a no-backend
+fallback (macOS, or Linux without libasound headers) that reports itself unavailable rather than
+failing to link. See [Linux audio](docs/BUILDING.md#linux-audio) for the ALSA backend
+specifically.
 
 CI (`.github/workflows/ci.yml`) runs all five platform/compiler legs plus static analysis on
 every push, and requires six of them: windows-msvc, windows-llvm, linux-gcc, linux-llvm,
 linux-llvm-asan-ubsan (AddressSanitizer + UndefinedBehaviorSanitizer, `cmake/Sanitizers.cmake`)
-and static-analysis (clang-tidy, `.clang-tidy`). Only macos-llvm remains experimental
-(`continue-on-error`) — it has never run anywhere, on CI or otherwise, because the project has
-no Mac; `src/lib/CMakeLists.txt` falls back to the no-backend platform directory there, so the
-codec half is expected to work and the three audio-hardware commands to report themselves
+and static-analysis (clang-tidy, `.clang-tidy`). The two Linux legs install a Qt6 kit and build
+`ac3gui` too (`-DAC3FORGE_BUILD_GUI=ON`, on top of the preset's own default `OFF`), then run it
+headless via `--smoke`; `linux-llvm-asan-ubsan` stays CLI-only on purpose, to keep a Qt kit out
+of the sanitizer leg's install time. Only macos-llvm remains experimental (`continue-on-error`)
+— it has never run anywhere, on CI or otherwise, because the project has no Mac;
+`src/lib/CMakeLists.txt` falls back to the no-backend platform directory there, so the codec
+half is expected to work and the three audio-hardware commands to report themselves
 unavailable, but neither has been observed. See the status table at the top of `ci.yml` for
-exact test counts per leg.
+exact test counts per leg — and its own caveat that the two Linux legs' `GREEN*` marking means
+"confirmed by a local WSL2 run", pending that push's first real hosted CI run.
 
 **No Linux audio has been tried against real hardware.** The ALSA backend was verified headless
 (including against ALSA's software `null` device, under ASan+UBSan) because the available Linux
 environment is WSL2, which has no sound devices at all. Nothing has been bitstreamed to an
 actual S/PDIF or HDMI output, and no AV receiver has been asked to lock onto it.
 
-The GUI builds and runs on Linux too — `ac3gui` compiles and passes its headless `--smoke` run
-against Ubuntu 26.04's Qt 6.10 — but `AC3FORGE_BUILD_GUI` still defaults `OFF` on every Linux
-and macOS preset (pass `-DAC3FORGE_BUILD_GUI=ON` on a machine with Qt 6.5+; CI does not, since
-its containers carry no Qt kit). macOS gets the no-backend fallback and has never been built at
-all, GUI or otherwise.
+No macOS host exists for this project, so `macos-llvm` remains unverified — it gets the
+no-backend fallback and has never been built at all. See
+[docs/BUILDING.md](docs/BUILDING.md)'s [Verified configuration](docs/BUILDING.md#verified-configuration)
+for exact toolchain versions.
 
 ## Building
 
-Requirements: Visual Studio 2026 (MSVC), CMake ≥ 3.28, Ninja, a
-[vcpkg](https://github.com/microsoft/vcpkg) checkout with `VCPKG_ROOT` set (it supplies
-Catch2, and nothing else), and — for the GUI only — a prebuilt Qt 6.5+ kit. Qt is never taken
-from vcpkg.
+Requirements: CMake ≥ 3.28, Ninja, a [vcpkg](https://github.com/microsoft/vcpkg) checkout with
+`VCPKG_ROOT` set (it supplies Catch2, and nothing else), and — for the GUI only — a prebuilt
+Qt 6.5+ kit. Qt is never taken from vcpkg. On Windows that means Visual Studio 2026 (MSVC) or
+clang-cl; on Linux, GCC ≥ 15 or Clang ≥ 21.
 
 ```bash
 cmake --preset config-windows-msvc-debug
@@ -218,11 +223,14 @@ cmake --build --preset build-windows-msvc-debug
 ctest --preset test-windows-msvc-debug
 ```
 
-The Windows presets pin their own compiler — chainloading a toolchain file that finds MSVC via
-`vswhere` and imports its build environment if a Developer PowerShell hasn't already set one up
-— so this works from an ordinary shell as well as a Developer one.
-[docs/BUILDING.md](docs/BUILDING.md) covers the full preset list, building without Qt, and the
-machine-local preset pattern.
+Every preset pins its own compiler rather than trusting `PATH` — the Windows ones chainload a
+toolchain file that finds MSVC via `vswhere` and imports its build environment if a Developer
+PowerShell hasn't already set one up, so this works from an ordinary shell too; the Linux ones
+`find_program` an exact GCC/Clang version the same way. On Linux, substitute the
+`config-linux-gcc-debug` / `build-linux-gcc-debug` / `test-linux-gcc-debug` presets (or `-llvm-`
+for Clang); the GUI is opt-in there via `-DAC3FORGE_BUILD_GUI=ON` rather than on by default.
+[docs/BUILDING.md](docs/BUILDING.md) covers the full preset list, building without Qt, the
+Linux GUI opt-in, and the machine-local preset pattern.
 
 ## Using the library
 
