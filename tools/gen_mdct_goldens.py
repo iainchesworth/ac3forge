@@ -7,8 +7,14 @@ Three independent anchors are tied together here:
    numpy (np.i0 Bessel kernel, alpha = 5 -> beta = 5*pi, kernel length 257).
    The script FAILS if this does not reproduce Table 7.33 to 5-decimal
    rounding, so a formula error can never silently become a golden.
-3. The forward MDCT of A/52 section 8.2.3.2 (alpha = 0, long transform)
-   evaluated directly in float64 for a set of test signals.
+3. The forward MDCT of A/52 section 8.2.3.2 evaluated directly in float64
+   for a set of test signals, for both the long transform (alpha = 0,
+   N = 512) and the two block-switched half transforms (alpha = -1/+1,
+   N = 256 each, fed the same window-applied signal split in half — §7.9.2's
+   "usual 512 sample windowed audio segment... split into two segments").
+   The short-transform inverse (§7.9.4.2) has no separate golden here, same
+   as the long inverse: both are validated by TDAC round-trip in
+   tests/test_mdct.cpp instead.
 
 Output: tests/golden/mdct_goldens.hpp (constexpr arrays consumed by Catch2).
 Run from the repo root:  python tools/gen_mdct_goldens.py
@@ -54,12 +60,13 @@ def kbd_window_512() -> np.ndarray:
     return np.concatenate([half, half[::-1]])
 
 
-def mdct_forward(x_windowed: np.ndarray) -> np.ndarray:
-    """A/52 section 8.2.3.2, alpha = 0: XD[k] = (-2/N) sum x[n] cos(phase)."""
-    n = np.arange(N)[None, :]
-    k = np.arange(N // 2)[:, None]
-    phase = (2.0 * np.pi / (4.0 * N)) * (2 * n + 1) * (2 * k + 1) + (np.pi / 4.0) * (2 * k + 1)
-    return (-2.0 / N) * np.sum(x_windowed[None, :] * np.cos(phase), axis=1)
+def mdct_forward(x_windowed: np.ndarray, n_len: int = N, alpha: float = 0.0) -> np.ndarray:
+    """A/52 section 8.2.3.2: XD[k] = (-2/n_len) sum x[n] cos(phase(alpha))."""
+    nn = np.arange(n_len)[None, :]
+    k = np.arange(n_len // 2)[:, None]
+    phase = ((2.0 * np.pi / (4.0 * n_len)) * (2 * nn + 1) * (2 * k + 1) +
+             (np.pi / 4.0) * (2 * k + 1) * (1.0 + alpha))
+    return (-2.0 / n_len) * np.sum(x_windowed[None, :] * np.cos(phase), axis=1)
 
 
 def fmt_array(name: str, values: np.ndarray, per_line: int = 4) -> str:
