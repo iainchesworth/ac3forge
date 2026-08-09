@@ -42,9 +42,15 @@ other legs had gone green in the meantime and taken the debt with them. The
 exemption was removed rather than re-justified, so `ac3forge` now compiles
 under one warning set in every configuration, this one included.
 
-That the set is genuinely live here, and not merely listed on the command
-line, was checked by injecting a deliberate sign-conversion and double-
-promotion into a library source and confirming the fuzz build fails on both.
+The four harness executables link `ac3::warnings` too, and had no warnings of
+their own either. They need to name it explicitly: `ac3forge` links it
+`PRIVATE`, so the flags govern the library's own sources and do not propagate
+to anything downstream of it.
+
+That the set is genuinely live, and not merely listed on the command line, was
+checked twice - once by injecting a deliberate sign-conversion and double-
+promotion into a library source, once into a harness source - confirming the
+fuzz build fails on both in each case.
 
 ## Status at the commit that added this
 
