@@ -11,6 +11,7 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <vector>
 
@@ -20,6 +21,7 @@
 #include "ac3/encoder/plan.hpp"
 #include "ac3/oba/motion.hpp"
 #include "ac3/oba/oamd.hpp"
+#include "ac3/sinks/monitor.hpp"
 #include "ac3/sinks/passthrough.hpp"
 
 // The QObject facade the QML layer talks to. All codec and capture work
@@ -44,6 +46,14 @@ class EncoderController : public QObject {
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
     Q_PROPERTY(double progress READ progress NOTIFY progressChanged)
+    // Encoding is a job with a history, not a modal moment: one entry per
+    // file encode (not a live recording, which already has its own elapsed-
+    // time readout), newest first. Each is {id, filename, bitrateKbps,
+    // durationText, status ("encoding"|"done"|"failed"|"cancelled"),
+    // sizeText, detail}. There is at most one "encoding" entry at a time
+    // (busy_ gates a new run), and its live progress is read off the
+    // existing `progress` property rather than duplicated per entry.
+    Q_PROPERTY(QVariantList runs READ runs NOTIFY runsChanged)
     Q_PROPERTY(int bitrateKbps READ bitrateKbps WRITE setBitrateKbps NOTIFY planChanged)
     Q_PROPERTY(QVariantList bitrates READ bitrates NOTIFY planChanged)
     Q_PROPERTY(QStringList captureDevices READ captureDevices NOTIFY captureDevicesChanged)
@@ -60,21 +70,47 @@ class EncoderController : public QObject {
     // Annex E coding tools or mixmdate group.
     Q_PROPERTY(int codecIndex READ codecIndex WRITE setCodecIndex NOTIFY planChanged)
     Q_PROPERTY(QStringList codecNames READ codecNames CONSTANT)
-    Q_PROPERTY(int layoutIndex READ layoutIndex WRITE setLayoutIndex NOTIFY planChanged)
-    // Only the layouts the current codec can carry, so an unreachable choice
-    // is never offered rather than offered and then refused. The list always
-    // ends with one synthetic "Custom…" entry - not a LayoutId, just the
-    // signal to read customChannels instead - for anything Annex E allows
-    // that has no preset (a full channel-picker is a later design pass; this
-    // is the minimal control that exercises the general allocator at all).
-    Q_PROPERTY(QStringList layoutNames READ layoutNames NOTIFY planChanged)
     Q_PROPERTY(QString layoutDetail READ layoutDetail NOTIFY planChanged)
-    Q_PROPERTY(bool customLayoutSelected READ customLayoutSelected NOTIFY planChanged)
-    // Comma-separated Table E2.5 location names (plan::parse_channels), read
-    // only when customLayoutSelected is true.
-    Q_PROPERTY(QString customChannels READ customChannels WRITE setCustomChannels NOTIFY planChanged)
     Q_PROPERTY(int containerIndex READ containerIndex WRITE setContainerIndex NOTIFY planChanged)
     Q_PROPERTY(QStringList containerNames READ containerNames CONSTANT)
+
+    // ---- the channel model --------------------------------------------------
+    // Tier 1: exactly one bed, always - one of Table 5.8's seven speaker
+    // shapes - plus an independent LFE toggle. Tier 2: additive "extras"
+    // pairs/singles on top. Replaces layoutNames() as a UI concept entirely;
+    // every combination resolves through the same ac3::eac3::chanmap::allocate()
+    // a hand-typed comma list already did, so the picker can never express
+    // something the encoder would then refuse.
+    Q_PROPERTY(int bedIndex READ bedIndex WRITE setBedIndex NOTIFY planChanged)
+    // Seven rows {id, label, channels}, always all seven regardless of codec:
+    // AC-3 disables only the extras, never the bed (plan::carries() already
+    // offers AC-3 mono and stereo, and this must not remove that).
+    Q_PROPERTY(QVariantList bedChoices READ bedChoices CONSTANT)
+    Q_PROPERTY(bool bedLfe READ bedLfe WRITE setBedLfe NOTIFY planChanged)
+    // Five rows {id, label, channels, checked, enabled, reason}: `enabled` is
+    // false when ticking (or, for an already-ticked row, UNticking) would
+    // leave chanmap::allocate() unable to satisfy the result - over the
+    // 16-channel ceiling (A/52 §E3.8.2), no Table 5.8 bed fits, or an LFE2
+    // left with no full-bandwidth companion once its last co-selected extra
+    // is removed. `reason` names which, or the lock reason, for the row to
+    // print next to itself.
+    Q_PROPERTY(QVariantList extrasModel READ extrasModel NOTIFY planChanged)
+    // AC-3 has no dependent substreams at all (Table 5.8 tops out at 3/2 +
+    // LFE), so it leaves every bed shape and the LFE toggle live and disables
+    // only the extras - never the reverse. Object mode locks everything,
+    // including the bed, at a fixed 5.1.
+    Q_PROPERTY(bool extrasLocked READ extrasLocked NOTIFY planChanged)
+    // "<ear-level count>.<LFE count>[.<ceiling count>]", read off the actual
+    // location mask so an unnamed combination still reads honestly - 3/2 +
+    // LFE + LFE2 is "5.2", 3/2 + LFE + rear + both ceiling pairs is "7.1.4".
+    Q_PROPERTY(QString channelShapeName READ channelShapeName NOTIFY planChanged)
+    Q_PROPERTY(int channelBudgetUsed READ channelBudgetUsed NOTIFY planChanged)
+    Q_PROPERTY(int channelBudgetMax READ channelBudgetMax CONSTANT)
+    // plan::format_channels() of the current bed+LFE+extras mask - the
+    // comma-separated Table E2.5 list ac3cli's own [layout] argument takes,
+    // so the command bar can generate a line that actually runs rather than
+    // a friendly name ac3cli has no preset for.
+    Q_PROPERTY(QString channelLocationsText READ channelLocationsText NOTIFY planChanged)
 
     // ---- Annex E coding tools ---------------------------------------------
     Q_PROPERTY(bool toolsAvailable READ toolsAvailable NOTIFY planChanged)
@@ -124,30 +160,66 @@ class EncoderController : public QObject {
     Q_PROPERTY(QString layoutName READ layoutName NOTIFY layoutChanged)
     Q_PROPERTY(bool hasLevels READ hasLevels NOTIFY layoutChanged)
     Q_PROPERTY(bool surround READ surround NOTIFY layoutChanged)
+    // Each entry also carries "ceiling" (a height-type location, for the
+    // second soundfield ring) and "replaced" (a bed channel a dependent
+    // substream supersedes - Coded mode groups it behind a rule; Rendered
+    // mode hides it) alongside the existing peak/rms/hold/fed/directional
+    // fields, so a Repeater filtering by meter mode never needs a second
+    // array to look anything up in.
     Q_PROPERTY(QVariantList channelLevels READ channelLevels NOTIFY levelsChanged)
     Q_PROPERTY(QVariantMap soundfield READ soundfield NOTIFY levelsChanged)
     Q_PROPERTY(bool metering READ metering NOTIFY meteringChanged)
     Q_PROPERTY(double meterFloorDb READ meterFloorDb CONSTANT)
 
     // ---- objects ----------------------------------------------------------
-    // Object mode. Each source channel becomes an object placed around one
-    // point in the room, encoded as a 5.1 E-AC-3 bed with JOC and OAMD beside
-    // it (TS 103 420) rather than as channels.
+    // Object mode. Each source channel becomes an object, encoded as a 5.1
+    // E-AC-3 bed with JOC and OAMD beside it (TS 103 420) rather than as
+    // channels. Placement is per object now, not one shared point plus a
+    // spread fan-out (§6 Q5): spread was standing in for that and is retired.
     Q_PROPERTY(bool atmosEnabled READ atmosEnabled WRITE setAtmosEnabled NOTIFY planChanged)
-    // Room-anchored per §4.2.1: x 0 at the left wall to 1 at the right, y 0 at
-    // the front wall to 1 at the back, z -1 at the floor to +1 at the ceiling.
-    Q_PROPERTY(double objectX READ objectX WRITE setObjectX NOTIFY objectsChanged)
-    Q_PROPERTY(double objectY READ objectY WRITE setObjectY NOTIFY objectsChanged)
-    Q_PROPERTY(double objectZ READ objectZ WRITE setObjectZ NOTIFY objectsChanged)
-    // How far apart the source's channels are spread either side of that
-    // point. Objects that reach the bed by the same route are exactly the ones
-    // JOC cannot separate again, so this is what makes them recoverable.
-    Q_PROPERTY(double objectSpread READ objectSpread WRITE setObjectSpread NOTIFY objectsChanged)
-    // Objects never reach the LFE by panning — there is no direction that
-    // points at it — so this send is the only route, and without it the bed's
-    // LFE is silent however the objects are placed.
-    Q_PROPERTY(double objectLfeSend READ objectLfeSend WRITE setObjectLfeSend NOTIFY objectsChanged)
     Q_PROPERTY(int objectCount READ objectCount NOTIFY sourceChanged)
+    // Which object the room plan, the sliders and the timeline all edit.
+    Q_PROPERTY(int selectedObjectIndex READ selectedObjectIndex WRITE setSelectedObjectIndex NOTIFY objectsChanged)
+    // One row per object: {index, sourceLabel, x, y, z, lfeSend, hasPath,
+    // keyCount} - room-anchored per §4.2.1 (x 0 at the left wall to 1 at the
+    // right, y 0 at the front wall to 1 at the back, z -1 at the floor to +1
+    // at the ceiling). Backs both the room plan's markers and the object
+    // list table, so the two can never disagree about a position.
+    Q_PROPERTY(QVariantList objectModel READ objectModel NOTIFY objectsChanged)
+
+    // ---- live session -------------------------------------------------------
+    // Capture, encode and (optionally) monitor+passthrough all running at
+    // once, as opposed to startRecording (capture+encode+file only) or
+    // playToReceiver (an already-encoded file's bytes, no live capture at
+    // all). Distinct from `busy` even though it also sets busy_ - `busy`
+    // gates every other operation the way it always has, and `liveActive`
+    // is what the Live session tab itself needs to know.
+    Q_PROPERTY(bool liveActive READ liveActive NOTIFY liveActiveChanged)
+    Q_PROPERTY(bool liveMonitoring READ liveMonitoring NOTIFY liveActiveChanged)
+    Q_PROPERTY(bool livePassthrough READ livePassthrough NOTIFY liveActiveChanged)
+    Q_PROPERTY(bool liveWritingToDisk READ liveWritingToDisk NOTIFY liveActiveChanged)
+    // What the receiver leg can actually carry, and whether that is less than
+    // the main encode plan. Object mode is always a gap: TS 103 420's JOC
+    // layer plays as its 5.1 bed on any real decoder we have tried, ours
+    // included (see docs - the decoder's object gate is keyed, and forging
+    // that key is deliberately not done), so a live Atmos session is never
+    // heard as Atmos on the other end, independent of what the receiver
+    // device itself supports.
+    Q_PROPERTY(QString liveReceiverPlanText READ liveReceiverPlanText NOTIFY liveActiveChanged)
+    Q_PROPERTY(bool liveGap READ liveGap NOTIFY liveActiveChanged)
+    // Set for a couple of seconds right after the passthrough endpoint opens
+    // - a real exclusive-mode stream open, which is exactly when a physical
+    // receiver drops its lock and re-negotiates.
+    Q_PROPERTY(bool liveReconnecting READ liveReconnecting NOTIFY liveReconnectingChanged)
+    Q_PROPERTY(double liveRunningSeconds READ liveRunningSeconds NOTIFY liveStatsChanged)
+    Q_PROPERTY(qint64 liveFramesEncoded READ liveFramesEncoded NOTIFY liveStatsChanged)
+    Q_PROPERTY(qint64 liveFramesDropped READ liveFramesDropped NOTIFY liveStatsChanged)
+    Q_PROPERTY(quint64 liveUnderruns READ liveUnderruns NOTIFY liveStatsChanged)
+    // A computed lower bound (two frame periods: one to fill the capture
+    // buffer, one to encode and hand off), not a measurement - neither sink
+    // reports an end-to-end figure. Zero when nothing is running, since there
+    // is nothing to estimate yet.
+    Q_PROPERTY(double liveLatencyMs READ liveLatencyMs NOTIFY liveActiveChanged)
 
 public:
     explicit EncoderController(QObject* parent = nullptr);
@@ -160,6 +232,7 @@ public:
     [[nodiscard]] QString status() const { return status_; }
     [[nodiscard]] bool busy() const { return busy_; }
     [[nodiscard]] double progress() const { return progress_; }
+    [[nodiscard]] QVariantList runs() const { return runs_; }
     [[nodiscard]] int bitrateKbps() const { return bitrate_kbps_; }
     [[nodiscard]] QVariantList bitrates() const;
     [[nodiscard]] QStringList captureDevices() const { return capture_devices_; }
@@ -172,13 +245,21 @@ public:
 
     [[nodiscard]] int codecIndex() const { return static_cast<int>(codec_); }
     [[nodiscard]] QStringList codecNames() const;
-    [[nodiscard]] int layoutIndex() const;
-    [[nodiscard]] QStringList layoutNames() const;
     [[nodiscard]] QString layoutDetail() const;
-    [[nodiscard]] bool customLayoutSelected() const { return custom_layout_; }
-    [[nodiscard]] QString customChannels() const { return custom_channels_text_; }
     [[nodiscard]] int containerIndex() const { return container_index_; }
     [[nodiscard]] QStringList containerNames() const;
+
+    [[nodiscard]] int bedIndex() const;
+    [[nodiscard]] QVariantList bedChoices() const;
+    [[nodiscard]] bool bedLfe() const { return bed_lfe_; }
+    [[nodiscard]] QVariantList extrasModel() const;
+    [[nodiscard]] bool extrasLocked() const {
+        return atmos_enabled_ || codec_ == ac3::plan::Codec::kAc3;
+    }
+    [[nodiscard]] QString channelShapeName() const;
+    [[nodiscard]] int channelBudgetUsed() const;
+    [[nodiscard]] int channelBudgetMax() const { return 16; }
+    [[nodiscard]] QString channelLocationsText() const;
 
     [[nodiscard]] bool toolsAvailable() const {
         return codec_ == ac3::plan::Codec::kEac3 && !atmos_enabled_;
@@ -225,17 +306,27 @@ public:
     [[nodiscard]] double meterFloorDb() const { return kMeterFloorDb; }
 
     [[nodiscard]] bool atmosEnabled() const { return atmos_enabled_; }
-    [[nodiscard]] double objectX() const { return object_x_; }
-    [[nodiscard]] double objectY() const { return object_y_; }
-    [[nodiscard]] double objectZ() const { return object_z_; }
-    [[nodiscard]] double objectSpread() const { return object_spread_; }
-    [[nodiscard]] double objectLfeSend() const { return object_lfe_send_; }
     [[nodiscard]] int objectCount() const { return object_count_; }
+    [[nodiscard]] int selectedObjectIndex() const { return selected_object_index_; }
+    [[nodiscard]] QVariantList objectModel() const;
+
+    [[nodiscard]] bool liveActive() const { return live_active_; }
+    [[nodiscard]] bool liveMonitoring() const { return live_monitoring_; }
+    [[nodiscard]] bool livePassthrough() const { return live_passthrough_; }
+    [[nodiscard]] bool liveWritingToDisk() const { return live_writing_to_disk_; }
+    [[nodiscard]] QString liveReceiverPlanText() const { return live_receiver_plan_text_; }
+    [[nodiscard]] bool liveGap() const { return live_gap_; }
+    [[nodiscard]] bool liveReconnecting() const { return live_reconnecting_; }
+    [[nodiscard]] double liveRunningSeconds() const { return live_running_seconds_; }
+    [[nodiscard]] qint64 liveFramesEncoded() const { return live_frames_encoded_; }
+    [[nodiscard]] qint64 liveFramesDropped() const { return live_frames_dropped_; }
+    [[nodiscard]] quint64 liveUnderruns() const { return live_underruns_; }
+    [[nodiscard]] double liveLatencyMs() const { return live_latency_ms_; }
 
     void setBitrateKbps(int kbps);
     void setCodecIndex(int index);
-    void setLayoutIndex(int index);
-    void setCustomChannels(const QString& text);
+    void setBedIndex(int index);
+    void setBedLfe(bool on);
     void setContainerIndex(int index);
     void setCoupling(bool on);
     void setSpx(bool on);
@@ -256,22 +347,46 @@ public:
     void setLfeMix(int value);
     void setDmixIndex(int index);
     void setAtmosEnabled(bool enabled);
-    void setObjectX(double value);
-    void setObjectY(double value);
-    void setObjectZ(double value);
-    void setObjectSpread(double value);
-    void setObjectLfeSend(double value);
+    void setSelectedObjectIndex(int index);
 
+    // Refused (silently, same as a bed button or LFE toggle) when locked or
+    // when the result would leave chanmap::allocate() unable to satisfy it.
+    Q_INVOKABLE void toggleExtra(const QString& id);
+    // Sets bed + LFE + extras together - "5.1", "7.1", "5.1.4", "7.1.4" or
+    // "5.2" - the starting points the Format tab's preset buttons offer.
+    // Upgrades AC-3 to E-AC-3 first if the preset needs a dependent substream,
+    // the same way a manual extras tick would otherwise be refused outright.
+    Q_INVOKABLE void applyChannelPreset(const QString& name);
     // The minimal authoring hook for genuine per-object motion: an object
     // with authored keyframes here moves along them during encodeObjects
-    // instead of sitting at the static objectX/Y/Z + objectSpread point. Each
-    // entry of `keyframes` is a map with "time", "x", "y", "z", "gain" and
-    // "lfeSend" (the latter two optional). An empty list clears the object's
-    // path, returning it to the static fallback. No QML timeline exists yet
-    // for this - it is deliberately just plumbing, ahead of the GUI design
-    // pass that will decide the real authoring surface.
+    // instead of sitting at its static position. Each entry of `keyframes`
+    // is a map with "time", "x", "y", "z", "gain" and "lfeSend" (the latter
+    // two optional). An empty list clears the object's path, returning it to
+    // the static fallback.
     Q_INVOKABLE void setObjectPathKeyframes(int objectIndex, const QVariantList& keyframes);
     Q_INVOKABLE void clearObjectPath(int objectIndex);
+    // The room plan's drag target and the object list's editable cells - the
+    // static position a path-less object holds for the whole file, or that a
+    // keyframe is captured from (see addObjectKeyframe).
+    Q_INVOKABLE void setObjectPosition(int objectIndex, double x, double y, double z);
+    Q_INVOKABLE void setObjectLfeSend(int objectIndex, double value);
+    // Sorted by time, each {time, x, y, z, gain, lfeSend} - what the motion
+    // timeline draws one lane of. Empty for an object with no authored path.
+    Q_INVOKABLE [[nodiscard]] QVariantList objectKeyframes(int objectIndex) const;
+    // Captures the object's CURRENT static position as a keyframe at time_s,
+    // replacing one already there within 1/100s (float-equality has no
+    // business deciding whether two cues are "the same moment"). The first
+    // keyframe on a path-less object starts the path; setObjectPathKeyframes
+    // is what actually holds it, so this and clearObjectPath are the only two
+    // ways a path's contents change.
+    Q_INVOKABLE void addObjectKeyframe(int objectIndex, double timeS);
+    Q_INVOKABLE void removeObjectKeyframe(int objectIndex, double timeS);
+    // Where an object sits at timeS: along its authored path if it has one,
+    // else its static position, unmoving. What the motion timeline's preview
+    // playhead reads so the room plan animates exactly what encodeObjects()
+    // will actually place - the same ac3::oba::KeyframePath, not a second
+    // interpolation that could disagree with it.
+    Q_INVOKABLE [[nodiscard]] QVariantMap evaluateObjectPath(int objectIndex, double timeS) const;
 
     Q_INVOKABLE void loadSourceFile(const QUrl& url);
     Q_INVOKABLE void encodeTo(const QUrl& url);
@@ -285,6 +400,19 @@ public:
     Q_INVOKABLE void stopRecording();
     Q_INVOKABLE void refreshOutputDevices();
     Q_INVOKABLE void playToReceiver(int deviceIndex);
+    // Starts a continuous capture -> encode session: unlike startRecording,
+    // frames never wait for a stop to reach a sink - each is optionally
+    // handed to a MonitorSink (decoded back for an honest preview of what
+    // was just encoded, not the raw input) and a PassthroughSink (bitstreamed
+    // to the receiver) as it is produced, and only optionally also
+    // accumulated for a `writeToDisk` file at the end. `receiverDeviceIndex`
+    // indexes outputDevices(); -1 means no passthrough this run. Refused
+    // (silently, same convention as every other start-a-thing entry point)
+    // while anything else is busy.
+    Q_INVOKABLE void startLiveSession(int captureDeviceIndex, bool monitor,
+                                      int receiverDeviceIndex, bool writeToDisk,
+                                      const QUrl& fileUrl);
+    Q_INVOKABLE void stopLiveSession();
     // Where a level sits on the meter scale, for the QML that draws the
     // gridline labels. The bars themselves get their positions in
     // channelLevels; this exists so the ticks cannot disagree with them.
@@ -298,6 +426,7 @@ signals:
     void statusChanged();
     void busyChanged();
     void progressChanged();
+    void runsChanged();
     // One signal for every encoding decision. They are read together by the
     // summary lines and gate each other besides - the codec decides which
     // layouts exist, which decides whether the tools apply - so splitting them
@@ -314,6 +443,9 @@ signals:
     void levelsChanged();
     void meteringChanged();
     void encodeFinished(bool ok, const QString& message);
+    void liveActiveChanged();
+    void liveStatsChanged();
+    void liveReconnectingChanged();
 
 private:
     struct Source;
@@ -324,17 +456,17 @@ private:
 
     // Everything the user has chosen, as the one value ac3cli also builds.
     [[nodiscard]] ac3::plan::Plan currentPlan() const;
-    // Object mode always codes a 5.1 bed, so the layout it reports is that
-    // bed rather than whatever the layout box last showed.
-    [[nodiscard]] ac3::plan::LayoutId effectiveLayout() const;
+    // The bed's own acmod/lfeon plus every selected extra's bits, OR'd
+    // together - what a request to chanmap::allocate() looks like from here.
+    // Object mode overrides this entirely (see currentPlan()), so this never
+    // needs to know about atmos_enabled_ itself.
+    [[nodiscard]] std::uint16_t currentLocationMask() const;
     // currentPlan() resolved to its actual channels - what every display and
-    // routing computation below should read, whether the plan came from a
-    // named layout or a custom selection. Assumes currentPlan() validates,
+    // routing computation below should read. Assumes currentPlan() validates,
     // the way ac3cli's own resolve() does.
     [[nodiscard]] ac3::plan::ChannelPlan effectiveChannelPlan() const;
-    // What the layout box's detail line and the routing summary call this
-    // plan: a named layout's label, "5.1 bed" for object mode, or the parsed
-    // channel list for a custom selection.
+    // What the routing summary calls this plan: "5.1 bed" for object mode,
+    // else the derived shape name (channelShapeName()).
     [[nodiscard]] QString effectiveLabel() const;
 
     // Channels through the plan and out as AC-3 or E-AC-3. One worker for
@@ -347,6 +479,31 @@ private:
     // because an object is not a speaker feed.
     void encodeObjects(const QString& path, std::vector<std::vector<float>> planes,
                        std::uint32_t sample_rate);
+    // Resizes object_configs_ to object_count_, preserving any object index
+    // that survives the change and spreading newly-added ones out along x
+    // instead of defaulting them all onto the same overlapping point (the
+    // design brief's own complaint about the single-point-plus-spread model).
+    // Called wherever object_count_ is set.
+    void refreshObjectConfigs();
+    // The shared lookup addObjectKeyframe/removeObjectKeyframe/
+    // objectKeyframes/evaluateObjectPath all build on: object_keyframes_'s
+    // entry for this index, sorted by time, or empty if it has none.
+    [[nodiscard]] std::vector<ac3::oba::Keyframe> sortedKeyframes(int objectIndex) const;
+
+    struct ObjectConfig;
+    // The live session worker. One function for both channel and object mode
+    // (mirrors ac3cli's own `live` command, which combines them the same way)
+    // rather than split like encodeChannels/encodeObjects: almost everything
+    // here - capture, monitor, passthrough, the disk-write, the live counters
+    // - is identical between the two, and only the "turn source samples into
+    // one encoded unit" step differs.
+    void runLiveSession(ac3::capture::DeviceInfo device, bool monitor, bool passthrough,
+                        bool write_to_disk, QString file_path);
+    // A snapshot of object_configs_ that setObjectPosition/setObjectLfeSend
+    // also keep current, guarded by live_object_mutex_ - the one piece of
+    // state the live worker thread and the GUI thread genuinely touch
+    // concurrently (dragging the room while a live Atmos session runs).
+    [[nodiscard]] std::vector<ObjectConfig> liveObjectSnapshot() const;
 
     // Writes an elementary stream, or muxes Matroska, according to the chosen
     // container. Returns an empty string on success and the reason otherwise.
@@ -356,6 +513,15 @@ private:
 
     void setStatus(const QString& text);
     void setBusy(bool busy);
+    // Adds a new "encoding" entry to runs_ and remembers its id, so the
+    // encodeFinished this run eventually emits (there are several call
+    // sites; a run is always started right after setBusy(true) rather than
+    // duplicated at each one) knows which entry to settle.
+    void startRun(const QString& path);
+    // Connected to encodeFinished in the constructor. A run whose message
+    // mentions cancellation reads "cancelled" rather than "failed" - the
+    // same text setStatus() already shows, not a second judgement of it.
+    void finishRun(bool ok, const QString& message);
     void setProgress(double value);
     void setRecording(bool recording);
     void setMetering(bool metering);
@@ -364,14 +530,20 @@ private:
     void refreshRouting();
 
     // Re-labels the meters and clears them to the floor. GUI thread only, and
-    // always before a worker that will publish into them starts. `names` may
-    // be wider than the acmod, for a layout built from dependent substreams.
+    // always before a worker that will publish into them starts. `names` and
+    // `coded` may be wider than the acmod, for a layout built from dependent
+    // substreams; `coded` carries each entry's actual Table E2.5 location and
+    // whether it is a bed channel a dependent replaces, which is what lets
+    // publishLevels() place a channel on the right soundfield ring (or the
+    // right one of the two, ear-level vs ceiling) without asking the acmod
+    // alone, which only ever knew about the bed's own five positions.
     //
     // `fed` says which of those channels the routing actually puts audio into.
     // A channel the source cannot fill reads -inf for a legitimate reason, and
     // that is a different thing from a meter wired to nothing; an empty vector
     // means every channel is fed.
     void setLayout(ac3::Acmod acmod, bool lfe, const QStringList& names, const QString& label,
+                   const std::vector<ac3::plan::CodedChannel>& coded,
                    const std::vector<bool>& fed = {});
     // Which coded channels the current plan feeds, sized to the layout.
     [[nodiscard]] std::vector<bool> fedChannels() const;
@@ -397,12 +569,14 @@ private:
     int bitrate_kbps_ = 192;
 
     ac3::plan::Codec codec_ = ac3::plan::Codec::kAc3;
-    ac3::plan::LayoutId layout_ = ac3::plan::LayoutId::kStereo;
-    // Selected via layoutNames' trailing "Custom…" entry. custom_channels_text_
-    // is kept as typed even when it does not yet parse, so a still-in-progress
-    // edit is not silently discarded.
-    bool custom_layout_ = false;
-    QString custom_channels_text_;
+    // Tier 1: the bed and its independent LFE. Defaults to stereo, matching
+    // what a freshly opened window always used to call itself; loading a
+    // source or picking a preset moves it.
+    ac3::Acmod bed_acmod_ = ac3::Acmod::k2_0;
+    bool bed_lfe_ = false;
+    // Tier 2: OR of the selected extras' Table E2.5 bits (kLwRw, kLrsRrs,
+    // kVhlVhr, kLtsRts, kLfe2 - see kExtras in the .cpp).
+    std::uint16_t extras_mask_ = 0;
     ac3::plan::Tools tools_{};
     ac3::plan::Metadata meta_{};
     int container_index_ = 0;
@@ -414,19 +588,30 @@ private:
     double dialogue_db_ = -20.0;
 
     bool atmos_enabled_ = false;
-    // Straight ahead at ear height, which is where a stereo pair already is.
-    double object_x_ = 0.5;
-    double object_y_ = 0.0;
-    double object_z_ = 0.0;
-    double object_spread_ = 0.15;
-    // Enough that the bed's LFE carries something without the low end of the
-    // programme arriving twice.
-    double object_lfe_send_ = 0.15;
     int object_count_ = 0;
+    int selected_object_index_ = 0;
+    // One static position per object - independent now, not a shared point
+    // plus a spread fan-out. Resized (and freshly spread out, so a loaded
+    // file's objects do not all default onto the same overlapping point) in
+    // refreshObjectConfigs() whenever object_count_ changes.
+    struct ObjectConfig {
+        double x = 0.5;
+        double y = 0.0;
+        double z = 0.0;
+        // Objects never reach the LFE by panning - there is no direction
+        // that points at it - so this send is the only route, and without
+        // it the bed's LFE is silent however the objects are placed.
+        double lfe_send = 0.15;
+    };
+    std::vector<ObjectConfig> object_configs_;
     // Authored motion, keyed by object index. An index absent here (the
-    // common case today) falls back to the static objectX/Y/Z + objectSpread
-    // placement in encodeObjects.
+    // common case) falls back to the object's static ObjectConfig placement
+    // in encodeObjects, held constant for the whole file.
     QHash<int, std::vector<ac3::oba::Keyframe>> object_keyframes_;
+
+    QVariantList runs_;
+    int current_run_id_ = -1;
+    int next_run_id_ = 1;
 
     bool playing_ = false;
     QStringList capture_devices_;
@@ -439,6 +624,11 @@ private:
     bool metering_ = false;
     QStringList channel_names_;
     std::vector<bool> channel_fed_;
+    // Parallel to channel_names_/channel_fed_: each entry's Table E2.5
+    // location (for soundfield placement) and whether it is a bed channel a
+    // dependent substream replaces (for the Coded/Rendered meter split).
+    std::vector<ac3::eac3::chanmap::Location> channel_locations_;
+    std::vector<bool> channel_replaced_;
     QString layout_name_;
     QVariantList channel_levels_;
     QVariantMap soundfield_;
@@ -447,4 +637,35 @@ private:
     std::unique_ptr<ac3::capture::Capture> capture_;
     std::atomic_bool cancel_requested_{false};
     std::atomic_bool stop_recording_{false};
+
+    // ---- live session --------------------------------------------------
+    // stop_live_ is the only piece of this state the worker thread reads;
+    // everything else it only ever touches through a QMetaObject::invokeMethod
+    // back onto the GUI thread (the same discipline startRecording's worker
+    // already follows), so plain members are safe even though a background
+    // thread is what makes them change.
+    std::atomic_bool stop_live_{false};
+    bool live_active_ = false;
+    bool live_monitoring_ = false;
+    bool live_passthrough_ = false;
+    bool live_writing_to_disk_ = false;
+    QString live_receiver_plan_text_;
+    bool live_gap_ = false;
+    bool live_reconnecting_ = false;
+    double live_running_seconds_ = 0.0;
+    qint64 live_frames_encoded_ = 0;
+    qint64 live_frames_dropped_ = 0;
+    quint64 live_underruns_ = 0;
+    double live_latency_ms_ = 0.0;
+    // Genuinely shared with the live worker thread (dragging the Live
+    // session's room, or the Objects tab's, while a live Atmos session is
+    // running): every read and write goes through live_object_mutex_.
+    mutable std::mutex live_object_mutex_;
+    std::vector<ObjectConfig> live_object_snapshot_;
+    // Opened and (via the worker's final invokeMethod) closed on the GUI
+    // thread, matching capture_'s own convention - only buffer()/submit()/
+    // stats() are called from the worker while a session runs.
+    std::unique_ptr<ac3::capture::Capture> live_capture_;
+    std::unique_ptr<ac3::sinks::MonitorSink> live_monitor_sink_;
+    std::unique_ptr<ac3::sinks::PassthroughSink> live_passthrough_sink_;
 };

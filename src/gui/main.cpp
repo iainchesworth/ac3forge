@@ -19,8 +19,9 @@
 // report what the meters did: a clean build proves the app links, and only
 // this proves the display is wired to the audio.
 //
-//   ac3gui --smoke        <in.wav> <out.ac3>              [shot.png] [prop=value ...]
+//   ac3gui --smoke        <in.wav> <out.ac3>                [shot.png] [prop=value ...]
 //   ac3gui --smoke-record <deviceIndex> <seconds> <out.ac3> [shot.png] [prop=value ...]
+//   ac3gui --smoke-live   <deviceIndex> <seconds> <out.ac3> [shot.png] [prop=value ...]
 //
 // The trailing prop=value tokens are set through Qt's property system, which
 // is the same path a QML binding writes through - so a smoke run exercises the
@@ -339,6 +340,83 @@ int run_smoke_record(QQmlApplicationEngine& engine, int device, double seconds,
     return QGuiApplication::exec();
 }
 
+// A live session, watched the same way run_smoke_record watches a plain
+// recording, plus the one thing a recording never has: frames reaching a
+// sink (here, the file writer alone - monitor and passthrough both need a
+// real render endpoint this harness cannot assume exists) while the capture
+// is still running rather than only once it stops.
+int run_smoke_live(QQmlApplicationEngine& engine, int device, double seconds,
+                   const QString& out_path, const QString& shot_path,
+                   const QStringList& properties) {
+    auto* controller = smoke_controller(engine);
+    if (controller == nullptr) {
+        return 1;
+    }
+    if (!apply_properties(controller, properties)) {
+        return 1;
+    }
+    const auto devices = controller->captureDevices();
+    if (device < 0 || device >= devices.size()) {
+        std::println(stderr, "smoke: capture device {} out of range ({} available)", device,
+                     devices.size());
+        for (qsizetype i = 0; i < devices.size(); ++i) {
+            std::println(stderr, "smoke:   {} {}", i, devices[i].toStdString());
+        }
+        return 1;
+    }
+    std::println("smoke: live session {:.1f} s from {}", seconds, devices[device].toStdString());
+
+    const auto trace = watch_meters(controller);
+
+    controller->startLiveSession(device, false, -1, true, QUrl::fromLocalFile(out_path));
+    if (!controller->liveActive()) {
+        std::println(stderr, "smoke: live session did not start: {}",
+                     controller->status().toStdString());
+        return 1;
+    }
+    std::println("smoke: layout {} ({} channels)", controller->layoutName().toStdString(),
+                 controller->channelNames().size());
+    const int drawn = meters_drawn(engine);
+    if (drawn < 0) {
+        std::println(stderr, "smoke: the channelMeters repeater is not in the scene");
+        controller->stopLiveSession();
+        return 1;
+    }
+    std::println("smoke: QML instantiated {} channel meters", drawn);
+
+    const auto millis = static_cast<int>(seconds * 1000.0);
+    if (!shot_path.isEmpty()) {
+        QTimer::singleShot(millis * 7 / 10, controller, [&engine, shot_path] {
+            std::println("smoke: window grab -> {}", save_window(engine, shot_path)
+                                                         ? shot_path.toStdString()
+                                                         : std::string{"FAILED"});
+        });
+    }
+    QTimer::singleShot(millis, controller, [controller] { controller->stopLiveSession(); });
+    QTimer::singleShot(millis + 15000, controller, [] {
+        std::println(stderr, "smoke: FAILED (live session never finished)");
+        QCoreApplication::exit(1);
+    });
+
+    QObject::connect(
+        controller, &EncoderController::encodeFinished, controller,
+        [controller, drawn, seconds, trace](bool ok, const QString& message) {
+            std::println("smoke: {}", message.toStdString());
+            const auto expected = static_cast<int>(seconds * 1000.0 / 32.0) / 2;
+            const bool meters_ok = report_meters(controller, *trace, drawn, expected);
+            // The one thing a plain recording cannot check: that frames were
+            // actually counted as they were produced, not just at the end.
+            const bool frames_ok = controller->liveFramesEncoded() > 0;
+            std::println("smoke: {} frames encoded live, {} dropped", controller->liveFramesEncoded(),
+                         controller->liveFramesDropped());
+            const bool passed = ok && meters_ok && frames_ok;
+            std::println("smoke: {}", passed ? "OK" : "failed");
+            QCoreApplication::exit(passed ? 0 : 1);
+        });
+
+    return QGuiApplication::exec();
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -382,6 +460,12 @@ int main(int argc, char* argv[]) {
         const auto properties = trailing(5, shot);
         return run_smoke_record(engine, args[2].toInt(), args[3].toDouble(), args[4], shot,
                                 properties);
+    }
+    if (args.size() >= 5 && args[1] == QLatin1String("--smoke-live")) {
+        QString shot;
+        const auto properties = trailing(5, shot);
+        return run_smoke_live(engine, args[2].toInt(), args[3].toDouble(), args[4], shot,
+                              properties);
     }
     if (args.size() == 2 && !args[1].startsWith(QLatin1Char('-'))) {
         // Opening the app on a file is the same gesture as dropping one on

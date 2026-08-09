@@ -51,7 +51,7 @@ RowLayout {
         id: track
         Layout.fillWidth: true
         Layout.preferredHeight: 14
-        radius: 3
+        radius: Theme.radius
         color: Theme.surfaceAlt
         border.color: Theme.border
         border.width: 1
@@ -65,7 +65,7 @@ RowLayout {
             y: 1
             height: parent.height - 2
             width: track.inner * (root.level.rms !== undefined ? root.level.rms : 0)
-            radius: 2
+            radius: Theme.radius
             color: root.barColor
             opacity: 0.55
             Behavior on width { NumberAnimation { duration: 40 } }
@@ -108,7 +108,7 @@ RowLayout {
     Rectangle {
         Layout.preferredWidth: 30
         Layout.preferredHeight: 14
-        radius: 3
+        radius: Theme.radius
         color: root.clipped ? Theme.bad : "transparent"
         border.color: root.clipped ? Theme.bad : Theme.border
         border.width: 1
