@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -860,6 +861,25 @@ TEST_CASE("chanmap counts paired locations as two channels", "[eac3]") {
     CHECK(channel_count(k71Rear) == 4);
 }
 
+namespace {
+// A pair location gets exactly one bit in Table E2.5 (kLcRc, not separate
+// kLc/kRc bits), so "Lc without Rc" cannot even be SPELLED as the
+// std::uint16_t chanmap::allocate() and the rest of this header take - there
+// is no bit position for one alone. Proven at compile time rather than by a
+// runtime rejection test, because there is no runtime call this API could
+// receive that would name half a pair: the type itself has nowhere to put
+// it. (The higher-level string API, plan::parse_channels, accepts individual
+// location NAMES before it ever reaches this type - that boundary is where a
+// runtime check belongs, and test_plan.cpp's parse_channels test covers it.)
+using namespace ac3::eac3::chanmap;
+static_assert(std::popcount(kLcRc) == 1 && channel_count(kLcRc) == 2);
+static_assert(std::popcount(kLrsRrs) == 1 && channel_count(kLrsRrs) == 2);
+static_assert(std::popcount(kLsdRsd) == 1 && channel_count(kLsdRsd) == 2);
+static_assert(std::popcount(kLwRw) == 1 && channel_count(kLwRw) == 2);
+static_assert(std::popcount(kVhlVhr) == 1 && channel_count(kVhlVhr) == 2);
+static_assert(std::popcount(kLtsRts) == 1 && channel_count(kLtsRts) == 2);
+}  // namespace
+
 TEST_CASE("acmod_for_chanmap picks the acmod that codes exactly the mask's channels", "[eac3]") {
     using namespace ac3::eac3::chanmap;
     // Full-bandwidth-only masks: each count picks the Table 5.8 acmod with
@@ -990,6 +1010,49 @@ TEST_CASE("allocate partitions an arbitrary channel set into a bed and dependent
     }
 }
 
+TEST_CASE("allocate refuses a request no Table 5.8 mode can anchor a bed on",
+          "[eac3]") {
+    using namespace ac3::eac3::chanmap;
+    // bed_for() takes the WIDEST acmod whose own set is a SUBSET of the
+    // request, and Table 5.8's narrowest mode is exactly {C} - so ANY request
+    // containing Centre always matches at least 1/0. The only way to fail is
+    // a request with no Centre AND not both Left and Right together: nothing
+    // in Table 5.8 codes L or R alone, or a surround without its own front
+    // pair. This covers both the "ceiling/extras only" and the "incomplete
+    // front shape" ways a request can fail that test.
+    for (const auto locations : {
+             kLeft,                                                // L alone
+             kRight,                                                // R alone
+             static_cast<std::uint16_t>(kLeft | kLeftSurround),    // L+Ls, no R
+             static_cast<std::uint16_t>(kRight | kRightSurround),  // R+Rs, no L
+             kVhlVhr,   // ceiling only, no front channel at all
+             kLcRc,     // Lc/Rc only - aux locations Table 5.8 never names
+         }) {
+        CAPTURE(locations);
+        const auto plan = allocate(locations);
+        REQUIRE_FALSE(plan.has_value());
+        CHECK(plan.error() == AllocationError::kNoBedFit);
+    }
+
+    // C + R with no L LOOKS just as incomplete as the cases above, but is
+    // not: chanmap lets a dependent's coded channel carry any location
+    // regardless of what the bed's own acmod would naturally mean, so this
+    // is bed=1/0 (mono, C only) plus a one-channel dependent explicitly
+    // labelled R - odd content, but a legal bitstream (§E2.3.1.8 only checks
+    // that the dependent's chanmap population matches ITS OWN acmod's coded
+    // count, never that it matches the bed). Proving this does NOT get
+    // refused matters as much as the rejections above: over-refusing a
+    // request the format can actually carry would be its own bug.
+    {
+        const auto plan = allocate(static_cast<std::uint16_t>(kCentre | kRight));
+        REQUIRE(plan.has_value());
+        CHECK(plan->bed_acmod == ac3::Acmod::k1_0);
+        CHECK_FALSE(plan->bed_lfe);
+        REQUIRE(plan->dependents.size() == 1);
+        CHECK(plan->dependents[0] == kRight);
+    }
+}
+
 TEST_CASE("E-AC-3 access unit concatenates its substreams", "[eac3]") {
     const auto unit = ac3::eac3::build_silent_access_unit(seven_one());
     REQUIRE(unit.has_value());
@@ -1082,6 +1145,15 @@ TEST_CASE("E-AC-3 rejects substream layouts it cannot express", "[eac3]") {
     CHECK(ac3::eac3::build_silent_access_unit(wrong).error() ==
           ac3::FrameError::kInvalidChannelMap);
 
+    // The reverse direction: a chanmap naming MORE channels than acmod codes
+    // is exactly as wrong as naming fewer - E2.3.1.8 requires the two to
+    // agree exactly, not merely "chanmap covers what acmod needs".
+    auto over = seven_one();
+    over.dependents[0].chanmap = static_cast<std::uint16_t>(
+        ac3::eac3::chanmap::k71Rear | ac3::eac3::chanmap::kCs);  // 5, not 4
+    CHECK(ac3::eac3::build_silent_access_unit(over).error() ==
+          ac3::FrameError::kInvalidChannelMap);
+
     // Only a dependent substream may carry one.
     CHECK(ac3::eac3::build_silent_frame(
               {.chanmap = ac3::eac3::chanmap::kLeft})
@@ -1108,6 +1180,47 @@ TEST_CASE("E-AC-3 rejects substream layouts it cannot express", "[eac3]") {
     headless.independent.strmtyp = StreamType::kDependent;
     CHECK(ac3::eac3::build_silent_access_unit(headless).error() ==
           ac3::FrameError::kInvalidSubstream);
+}
+
+TEST_CASE("E-AC-3 does not reject two substreams that claim the same location",
+          "[eac3]") {
+    // §E2.3.1.8's chanmap check, and the one above it, only ever look at ONE
+    // substream at a time - nothing compares a dependent's chanmap against
+    // its SIBLINGS'. So two dependents both naming Vhc is not caught here at
+    // all: §E3.8.2 says the later substream simply overwrites the earlier one
+    // at decode time (proven with real, distinguishable audio in
+    // test_eac3_decoder.cpp). This test is the ENCODER's half of that
+    // contract: building such an access unit must succeed, not fail, and the
+    // aggregate sixteen-channel ceiling (kTooManyChannels) must count the
+    // shared location once, not once per substream that claims it.
+    using ac3::eac3::AccessUnitConfig;
+    using ac3::eac3::FrameConfig;
+    namespace cm = ac3::eac3::chanmap;
+
+    const FrameConfig claim_vhc{
+        .bitrate_kbps = 32, .acmod = ac3::Acmod::k1_0, .chanmap = cm::kVhc};
+    const AccessUnitConfig config{
+        .independent = {.bitrate_kbps = 448, .acmod = ac3::Acmod::k3_2, .lfe = true},
+        .dependents = {claim_vhc, claim_vhc}};
+    const auto unit = ac3::eac3::build_silent_access_unit(config);
+    REQUIRE(unit.has_value());
+    CHECK(unit->substream_count() == 3);
+
+    // A sharper version of the same point: three dependents that all claim
+    // the SAME five locations would sum to 6 + 5*3 = 21 if the ceiling check
+    // added every substream's count up rather than unioning the locations -
+    // past sixteen - but the programme only ever renders 6 + 5 = 11 distinct
+    // locations, so it has to be accepted.
+    const FrameConfig claim_five{
+        .bitrate_kbps = 256,
+        .acmod = ac3::Acmod::k3_2,
+        .chanmap = static_cast<std::uint16_t>(cm::kLcRc | cm::kLrsRrs | cm::kCs)};
+    AccessUnitConfig triple;
+    triple.independent = config.independent;
+    triple.dependents = {claim_five, claim_five, claim_five};
+    const auto triple_unit = ac3::eac3::build_silent_access_unit(triple);
+    REQUIRE(triple_unit.has_value());
+    CHECK(triple_unit->substream_count() == 4);
 }
 
 TEST_CASE("E-AC-3 rejects an access unit that renders more than sixteen channels", "[eac3]") {
