@@ -333,3 +333,59 @@ TEST_CASE("every decode error describes itself", "[decoder]") {
         CHECK(seen.insert(text).second);
     }
 }
+
+TEST_CASE("a real transient triggers block switching and decodes without pre-echo",
+         "[decoder][block-switching]") {
+    ac3::FrameEncoder encoder{{.bitrate_kbps = 448, .acmod = ac3::Acmod::k2_0}};
+    ac3::FrameDecoder decoder;
+    const auto nchans = static_cast<std::size_t>(encoder.channel_count());
+
+    const std::vector<float> silence(ac3::kSamplesPerFrame, 0.0f);
+    std::vector<std::span<const float>> silence_views(nchans, silence);
+    // Two silent frames: the first primes history_, the second clears the
+    // transient detector's own first-pass guard (which - correctly, see
+    // TransientDetector's own comment - never flags a transient on the very
+    // first pass it ever runs, having nothing to compare against).
+    for (int f = 0; f < 2; ++f) {
+        const auto frame = encoder.encode_frame(silence_views);
+        REQUIRE(frame.has_value());
+        REQUIRE(decoder.decode_frame(*frame).has_value());
+    }
+
+    // Silence for the first ~5/8 of the frame, then a sudden, loud 1 kHz
+    // tone - squarely inside some block's second half, which is exactly
+    // what §8.2.2 defines blksw from.
+    constexpr int kOnset = 960;
+    std::vector<float> transient(static_cast<std::size_t>(ac3::kSamplesPerFrame), 0.0f);
+    for (int n = kOnset; n < ac3::kSamplesPerFrame; ++n) {
+        transient[static_cast<std::size_t>(n)] = static_cast<float>(
+            0.9 * std::sin(2.0 * std::numbers::pi * 1000.0 * static_cast<double>(n) / 48000.0));
+    }
+    std::vector<std::span<const float>> transient_views(nchans, transient);
+    const auto frame = encoder.encode_frame(transient_views);
+    REQUIRE(frame.has_value());
+
+    const auto decoded = decoder.decode_frame(*frame);
+    REQUIRE(decoded.has_value());
+
+    bool any_switched = false;
+    for (const auto& channel : decoded->blksw) {
+        for (const bool sw : channel) {
+            any_switched = any_switched || sw;
+        }
+    }
+    CHECK(any_switched);
+
+    // The transform's own 256-sample overlap means "before the onset" for
+    // reconstruction purposes starts a block-length earlier than the onset
+    // itself; short of that margin, near-silence should stay near-silent
+    // rather than smearing the onset backward in time.
+    for (std::size_t ch = 0; ch < nchans; ++ch) {
+        double pre_energy = 0.0;
+        for (int n = 0; n < kOnset - 256; ++n) {
+            const double v = decoded->channels[ch][static_cast<std::size_t>(n)];
+            pre_energy += v * v;
+        }
+        CHECK(pre_energy < 1e-4);
+    }
+}

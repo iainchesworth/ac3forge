@@ -665,3 +665,50 @@ TEST_CASE("the E-AC-3 decoder rejects malformed streams", "[eac3][decoder]") {
               ac3::DecodeError::kInvalidStream);
     }
 }
+
+TEST_CASE("a real transient triggers block switching and decodes without pre-echo",
+         "[eac3][decoder][block-switching]") {
+    ac3::eac3::FrameEncoder encoder{{.bitrate_kbps = 192, .acmod = ac3::Acmod::k2_0}};
+    ac3::Eac3Decoder decoder;
+    const auto nchans = static_cast<std::size_t>(encoder.channel_count());
+
+    const std::vector<float> silence(ac3::kSamplesPerFrame, 0.0f);
+    std::vector<std::span<const float>> silence_views(nchans, silence);
+    // Two silent frames: the first primes history_, the second clears the
+    // transient detector's own first-pass guard.
+    for (int f = 0; f < 2; ++f) {
+        const auto frame = encoder.encode_frame(silence_views);
+        REQUIRE(frame.has_value());
+        REQUIRE(decoder.decode_substream(*frame).has_value());
+    }
+
+    constexpr int kOnset = 960;
+    std::vector<float> transient(static_cast<std::size_t>(ac3::kSamplesPerFrame), 0.0f);
+    for (int n = kOnset; n < ac3::kSamplesPerFrame; ++n) {
+        transient[static_cast<std::size_t>(n)] = static_cast<float>(
+            0.9 * std::sin(2.0 * std::numbers::pi * 1000.0 * static_cast<double>(n) / 48000.0));
+    }
+    std::vector<std::span<const float>> transient_views(nchans, transient);
+    const auto frame = encoder.encode_frame(transient_views);
+    REQUIRE(frame.has_value());
+
+    const auto decoded = decoder.decode_substream(*frame);
+    REQUIRE(decoded.has_value());
+
+    bool any_switched = false;
+    for (const auto& channel : decoded->blksw) {
+        for (const bool sw : channel) {
+            any_switched = any_switched || sw;
+        }
+    }
+    CHECK(any_switched);
+
+    for (std::size_t ch = 0; ch < nchans; ++ch) {
+        double pre_energy = 0.0;
+        for (int n = 0; n < kOnset - 256; ++n) {
+            const double v = decoded->channels[ch][static_cast<std::size_t>(n)];
+            pre_energy += v * v;
+        }
+        CHECK(pre_energy < 1e-4);
+    }
+}
