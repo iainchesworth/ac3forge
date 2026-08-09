@@ -85,6 +85,7 @@ target_sources(ac3forge
         src/encoder/eac3_tools.cpp
         src/encoder/encoder.cpp
         src/encoder/plan.cpp
+        src/encoder/transient.cpp
         src/io/elementary.cpp
         src/io/wav.cpp
         src/meta/drc.cpp
