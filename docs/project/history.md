@@ -3,7 +3,7 @@
 How the codec was built, in the order it was built. This is a record of what was implemented
 and what evidence closed each step, kept out of the README because a landing page is not a
 development log. Nothing here supersedes the current [capability and limitation
-tables](../README.md#what-it-does) — where the two disagree, the README is right and this file
+tables](https://github.com/iainchesworth/ac3forge/blob/main/README.md#what-it-does) — where the two disagree, the README is right and this file
 is stale.
 
 Milestone numbering is as it was used during development. Milestone 4 was folded into 5.
@@ -57,7 +57,7 @@ variation), 2/0 rematrixing (§7.5.3 minimum-power rule, with the decoder-side u
 bit-rate-aware bandwidth defaults.
 
 This is the point at which output quality passed FFmpeg's encoder on the SNR metric. Current
-numbers and method are in the [README](../README.md#how-it-is-validated); `ac3cli encode`
+numbers and method are in the [README](https://github.com/iainchesworth/ac3forge/blob/main/README.md#how-it-is-validated); `ac3cli encode`
 gained arbitrary stereo WAV input here. Decoder parity held on rematrix-active material at max
 difference 1.1e-5.
 
@@ -96,7 +96,7 @@ unavailable device reports *why* — "cannot bitstream" (an analog output) as ag
 exclusive access" (disabled or in use).
 
 This has never been confirmed against bitstreaming hardware; see the
-[README](../README.md#verification-gaps).
+[README](https://github.com/iainchesworth/ac3forge/blob/main/README.md#verification-gaps).
 
 ## Channel coupling
 
@@ -171,7 +171,7 @@ container matching Dolby's byte-for-byte on the fields that matter.
 
 Two limits established here are structural and remain: objects sharing a direction cannot be
 separated, and Dolby's decoder will not treat these as objects because the stream is not
-signed with its key. Both are in the [README](../README.md#verification-gaps).
+signed with its key. Both are in the [README](https://github.com/iainchesworth/ac3forge/blob/main/README.md#verification-gaps).
 
 ## Metering and analysis
 
@@ -196,7 +196,7 @@ screenshot.
 Everything above decodes; this is what makes it *play* right. An AV receiver reads exactly
 these bits to set level, compress dynamics and fold down, and until this point they were all
 zero. `dynrng`, `compr`, a measured `dialnorm`, and the downmix levels — see the
-[README](../README.md#metadata) for what each one does here.
+[README](https://github.com/iainchesworth/ac3forge/blob/main/README.md#metadata) for what each one does here.
 
 Verified against the oracle rather than against the bits alone: `tools/check_drc.py` runs 22
 checks in which a decode that *applies* the metadata is compared against one that ignores it
@@ -258,8 +258,53 @@ this machine's Realtek output in real time, end to end, including a live capture
 session. Exclusive-mode E-AC-3 passthrough did not get the same confirmation — this machine has
 no S/PDIF/HDMI endpoint behind a real AV receiver, so `IsFormatSupported` was exercised (and
 correctly answers no everywhere available) but no receiver has locked onto either the existing
-AC-3 burst or the new E-AC-3 one. See the [README](../README.md#verification-gaps) for the full
+AC-3 burst or the new E-AC-3 one. See the [README](https://github.com/iainchesworth/ac3forge/blob/main/README.md#verification-gaps) for the full
 account.
+
+## The ALSA backend
+
+Live capture, monitor playback and IEC 61937 passthrough had been WASAPI-only, gated behind
+`WIN32` with a no-backend stub everywhere else. `src/lib/src/platform/alsa/` gives Linux a real
+implementation of all three, selected by `src/lib/CMakeLists.txt` when libasound's headers are
+present (`AC3FORGE_WITH_ALSA=AUTO` by default; `ON` makes their absence a configure error, `OFF`
+forces the no-backend fallback) — optional and detected, not a hard new dependency. Capture and
+monitor playback are ordinary PCM and any Linux audio API could do them; passthrough is why ALSA
+specifically: the IEC 60958 non-audio bit that tells a receiver these bytes are Dolby Digital
+rather than music is expressed as ALSA device-name arguments (`iec958:CARD=...,AES0=0x06,...`),
+and PulseAudio's and PipeWire's own passthrough paths both end in that same ALSA call made by a
+daemon instead of by this code — so ALSA is the layer underneath, not the lowest common
+denominator above it. Verified on WSL2 Ubuntu 26.04 (gcc 15.2, clang 21.1) with and without
+libasound present, and under ASan+UBSan with leak detection, including the device-independent
+halves (device-name construction, channel-status derivation) driven against ALSA's software
+`null` PCM. Not verified: any real sound hardware — WSL2 has none. See
+[docs/BUILDING.md](../building.md#linux-audio).
+
+## Per-object Atmos motion
+
+Objects had always been placed once per encode and stayed there — `AtmosEncoder::encode_frame`
+already took a fresh `ObjectPlacement` every call, but nothing generated a *sequence* of them.
+`ac3/oba/motion.hpp` adds that layer without touching `AtmosEncoder` itself: `KeyframePath`
+linearly interpolates an authored `std::vector<Keyframe>` (position, gain, LFE send per point,
+holding at the ends rather than extrapolating), `OrbitPath` is the same closed-form circular
+orbit the `atmos`/`live --atmos` demos already computed, and `ObjectPath` (a
+`std::variant` of the two) plus `evaluate_placements()` turn either into the
+`std::span<const ObjectPlacement>` `encode_frame` wants at a given instant. `ac3cli atmos-path`
+takes an authored keyframe file; `live --atmos` evaluates an orbit fresh every frame from
+elapsed wall-clock time, described in its own doc comment as the shape a future real live
+position source drops into.
+
+## The general E-AC-3 channel model
+
+`ac3::plan::LayoutId` only ever named one of seven hand-picked combinations Table E2.5 can
+express. `ac3::eac3::chanmap::ChannelPlan` and `chanmap::allocate(locations)` (new in
+`eac3_tables.hpp`/`.cpp`) solve the general problem underneath: given an arbitrary bitmask of
+Table E2.5 locations, pick the widest Table 5.8 acmod whose own channels are all in the request
+as the bed, then bin-pack whatever is left into as many ≤5-full-bandwidth-channel dependents as
+it takes (LFE2 held back and placed last, since it needs a full-bandwidth companion in its own
+substream). The seven named layouts are now a convenience shortcut for a specific plan rather
+than a separate system — `ac3::plan::channel_plan_for(id)` is a one-line lookup into the same
+`ChannelPlan` a caller can otherwise build directly via `Plan::custom_locations` and
+`parse_channels`/`format_channels` for a channel set no named layout covers.
 
 ## Since
 
@@ -268,3 +313,11 @@ account.
   from the bitstream rather than being told.
 - `ac3cli` dispatch moved to a single command table, so an argv index cannot be quietly wrong.
 - This documentation, and the `examples/` targets behind it.
+- AddressSanitizer + UndefinedBehaviorSanitizer (`cmake/Sanitizers.cmake`, the
+  `linux-llvm-asan-ubsan` preset) and clang-tidy (`.clang-tidy`, a curated `bugprone-*` /
+  `clang-analyzer-*` / `performance-*` / narrow `cert-*` set) both promoted to required,
+  green CI legs.
+- libFuzzer harnesses (`fuzz/`) over every untrusted-input entry point — `scan`, both decoders,
+  WAV reading — Clang-only and off by default (`AC3FORGE_BUILD_FUZZERS`); see
+  [`fuzz/README.md`](https://github.com/iainchesworth/ac3forge/blob/main/fuzz/README.md). Runs on every push (`fuzz-regress`, seed/regression
+  replay only) and nightly (`fuzz-nightly`, bounded mutation).

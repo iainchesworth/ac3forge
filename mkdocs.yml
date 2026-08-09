@@ -1,0 +1,105 @@
+site_name: ac3forge
+site_description: A clean-room AC-3 / E-AC-3 / Dolby Atmos encoder and decoder in C++23
+site_url: https://iainchesworth.github.io/ac3forge/
+repo_url: https://github.com/iainchesworth/ac3forge
+repo_name: iainchesworth/ac3forge
+edit_uri: edit/develop/docs/
+
+docs_dir: docs
+
+exclude_docs: |
+  design/handoff-workbench/
+  research/
+  spec/
+  branch-protection.md
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.tabs.link
+    - toc.follow
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.snippets:
+      base_path: ["."]
+      check_paths: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Quick start: quickstart.md
+      - Building from source: building.md
+      - Platform notes:
+          - Windows: platforms/windows.md
+          - Linux: platforms/linux.md
+          - macOS (TBD): platforms/macos.md
+  - Concepts:
+      - Overview: concepts/index.md
+      - AC-3 & E-AC-3: concepts/ac3-eac3.md
+      - Atmos & JOC: concepts/atmos-joc.md
+  - Library:
+      - Conventions: library/index.md
+      - Encoding AC-3: library/encoding-ac3.md
+      - Encoding E-AC-3: library/encoding-eac3.md
+      - Decoding: library/decoding.md
+      - Spatial & Atmos objects: library/spatial-and-atmos.md
+      - Metadata: library/metadata.md
+      - Muxing & sinks: library/muxing-and-sinks.md
+      - Header map: library/header-map.md
+  - CLI reference:
+      - Overview: cli/index.md
+      - Commands: cli/commands.md
+      - Metadata options: cli/metadata-options.md
+  - GUI guide:
+      - Window layout: gui/index.md
+      - Loading a source: gui/loading-a-source.md
+      - Format & channels: gui/format-and-channels.md
+      - Coding tools: gui/coding-tools.md
+      - Metadata: gui/metadata.md
+      - Objects & motion: gui/objects-and-motion.md
+      - Live capture & session: gui/live-session.md
+  - Project:
+      - Contributing: contributing.md
+      - Releasing: releasing.md
+      - History: project/history.md
+      - Research: project/research.md
+      - GUI design brief (superseded): project/gui-design-brief.md

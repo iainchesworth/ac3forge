@@ -4,6 +4,10 @@ A clean-room AC-3 and E-AC-3 encoder and decoder in C++23, implemented from the 
 standards. It turns PCM — or mono sources placed and moved in 3D space — into AC-3, E-AC-3,
 or E-AC-3 with Joint Object Coding elementary streams, and reads those streams back.
 
+**Documentation:** [iainchesworth.github.io/ac3forge](https://iainchesworth.github.io/ac3forge/) —
+a beginner's guide to the formats, a developer quick start, the full library reference, the CLI
+reference, and a step-by-step GUI guide with screenshots.
+
 Nothing here links FFmpeg or any other codec library. The FFmpeg command-line tools are used
 during development as an independent decoder to check output against; the build does not
 depend on them.
@@ -15,8 +19,10 @@ affiliated with, endorsed by, or certified by Dolby Laboratories. Code and docum
 the technical names AC-3 and E-AC-3. Whether the patents reading on these formats matter for
 your use is your problem to assess, not something this project resolves.
 
-**Status.** Version 0.2.0. The API is not stable. Built and tested only with MSVC on Windows;
-see [Portability](#portability).
+**Status.** Version 0.2.0. The API is not stable. Green and required in CI on Windows (MSVC,
+clang-cl) and Linux (GCC 15, Clang 21) — CLI and GUI alike on all four — plus an ASan+UBSan leg
+and clang-tidy static analysis; macOS is the one experimental leg, never run anywhere. See
+[Portability](#portability).
 
 ## Contents
 
@@ -72,9 +78,9 @@ substreams, `chanmap`, and the §E3.8.2 render that lays a dependent's channels 
 | `ac3::io::scan` | Finds access-unit boundaries in a raw elementary stream and reports what it renders, without being told. |
 | `matroska::matroska` | A standalone MKV muxer. Links nothing from `ac3::forge` and knows nothing about AC-3. |
 | `ac3::sinks::iec61937` | S/PDIF burst packing: AC-3 byte-exact against FFmpeg's `spdif` muxer; E-AC-3 (`Eac3BurstPacker`) verified against FFmpeg's `spdif_header_eac3` and Microsoft's own IEC 61937 documentation (both independently fetched, not recalled — see the limitations below). |
-| `ac3::capture` | WASAPI capture from input endpoints and render endpoints in loopback, through a lock-free SPSC ring. |
-| `ac3::sinks::PassthroughSink` | WASAPI exclusive-mode bitstream output, AC-3 or E-AC-3. See the limitations below. |
-| `ac3::sinks::MonitorSink` | WASAPI shared-mode PCM playback: a non-bitstreamed preview/monitor path that decodes what is being encoded and plays it back on an ordinary output. Confirmed against real hardware — see below. |
+| `ac3::capture` | Live input/loopback capture — WASAPI on Windows, ALSA on Linux — through a lock-free SPSC ring. |
+| `ac3::sinks::PassthroughSink` | Exclusive-mode/direct bitstream output, AC-3 or E-AC-3 — WASAPI on Windows, ALSA on Linux. See the limitations below (Windows hardware-confirmed; the ALSA backend is not). |
+| `ac3::sinks::MonitorSink` | Shared-mode PCM playback — WASAPI or ALSA: a non-bitstreamed preview/monitor path that decodes what is being encoded and plays it back on an ordinary output. Confirmed against real Windows hardware — see below. |
 | `ac3::analysis` | Peak/RMS metering with console ballistics, and the Gerzon energy vector over the BS.775 ring. |
 
 ## What it does not do
@@ -175,37 +181,68 @@ the metadata is. It is covered bit-by-bit instead ([tests/test_drc.cpp](tests/te
 
 ### Portability
 
-Built and tested with MSVC 14.51 on Windows 11, and with gcc 15.2 and clang 21.1 on Ubuntu
-26.04. The codec itself has no platform dependency; the three features that touch sound
-hardware — capture, monitor playback and IEC 61937 passthrough — live in one directory per
-audio subsystem that `src/lib/CMakeLists.txt` picks between, WASAPI on Windows and ALSA on
-Linux, with a no-backend fallback that reports itself unavailable rather than failing to link.
+Built and tested with MSVC 14.51 and clang-cl 21.1 on Windows 11, and with gcc 15.2 and clang
+21.1 on Ubuntu 26.04 (WSL2) — CLI and GUI on every one of those four. The codec itself has no
+platform dependency; the three features that touch sound hardware — capture, monitor playback
+and IEC 61937 passthrough — live in one directory per audio subsystem that
+`src/lib/CMakeLists.txt` picks between: WASAPI on Windows, ALSA on Linux, with a no-backend
+fallback (macOS, or Linux without libasound headers) that reports itself unavailable rather than
+failing to link. See [Linux audio](docs/BUILDING.md#linux-audio) for the ALSA backend
+specifically.
+
+CI (`.github/workflows/ci.yml`) runs all five platform/compiler legs plus static analysis on
+every push, and requires six of them: windows-msvc, windows-llvm, linux-gcc, linux-llvm,
+linux-llvm-asan-ubsan (AddressSanitizer + UndefinedBehaviorSanitizer, `cmake/Sanitizers.cmake`)
+and static-analysis (clang-tidy, `.clang-tidy`). The two Linux legs install a Qt6 kit and build
+`ac3gui` too (`-DAC3FORGE_BUILD_GUI=ON`, on top of the preset's own default `OFF`), then run it
+headless via `--smoke`; `linux-llvm-asan-ubsan` stays CLI-only on purpose, to keep a Qt kit out
+of the sanitizer leg's install time. Only macos-llvm remains experimental (`continue-on-error`)
+— it has never run anywhere, on CI or otherwise, because the project has no Mac;
+`src/lib/CMakeLists.txt` falls back to the no-backend platform directory there, so the codec
+half is expected to work and the three audio-hardware commands to report themselves
+unavailable, but neither has been observed. See the status table at the top of `ci.yml` for
+exact test counts per leg — and its own caveat that the two Linux legs' `GREEN*` marking means
+"confirmed by a local WSL2 run", pending that push's first real hosted CI run.
 
 **No Linux audio has been tried against real hardware.** The ALSA backend was verified headless
 (including against ALSA's software `null` device, under ASan+UBSan) because the available Linux
 environment is WSL2, which has no sound devices at all. Nothing has been bitstreamed to an
-actual S/PDIF or HDMI output, and no AV receiver has been asked to lock onto it. See
-[docs/BUILDING.md](docs/BUILDING.md#linux-audio).
+actual S/PDIF or HDMI output, and no AV receiver has been asked to lock onto it.
 
-macOS gets the no-backend fallback and has never been built at all.
+No macOS host exists for this project, so `macos-llvm` remains unverified — it gets the
+no-backend fallback and has never been built at all. See
+[docs/BUILDING.md](docs/BUILDING.md)'s [Verified configuration](docs/BUILDING.md#verified-configuration)
+for exact toolchain versions.
 
 ## Building
 
-Requirements: Visual Studio 2026 (MSVC), CMake ≥ 3.28, Ninja, a
-[vcpkg](https://github.com/microsoft/vcpkg) checkout with `VCPKG_ROOT` set (it supplies
-Catch2, and nothing else), and — for the GUI only — a prebuilt Qt 6.5+ kit. Qt is never taken
-from vcpkg.
-
-From a **Developer PowerShell for VS 2026**, so that `cl.exe` is on `PATH`:
+Requirements: CMake ≥ 3.28, Ninja, a [vcpkg](https://github.com/microsoft/vcpkg) checkout with
+`VCPKG_ROOT` set (it supplies Catch2, and nothing else), and — for the GUI only — a prebuilt
+Qt 6.5+ kit. Qt is never taken from vcpkg. On Windows that means Visual Studio 2026 (MSVC) or
+clang-cl; on Linux, GCC ≥ 15 or Clang ≥ 21.
 
 ```bash
-cmake --preset debug && cmake --build --preset debug && ctest --preset debug
+cmake --preset config-windows-msvc-debug
+cmake --build --preset build-windows-msvc-debug
+ctest --preset test-windows-msvc-debug
 ```
 
-The presets do not pin a compiler, so running them from an ordinary shell picks up whatever is
-first on `PATH` — which is how you get a wall of unrelated errors from a different toolchain.
-[docs/BUILDING.md](docs/BUILDING.md) covers that failure, building without Qt, and the
-machine-local preset pattern.
+Every preset pins its own compiler rather than trusting `PATH` — the Windows ones chainload a
+toolchain file that finds MSVC via `vswhere` and imports its build environment if a Developer
+PowerShell hasn't already set one up, so this works from an ordinary shell too; the Linux ones
+`find_program` an exact GCC/Clang version the same way. On Linux, substitute the
+`config-linux-gcc-debug` / `build-linux-gcc-debug` / `test-linux-gcc-debug` presets (or `-llvm-`
+for Clang); the GUI is opt-in there via `-DAC3FORGE_BUILD_GUI=ON` rather than on by default.
+[docs/BUILDING.md](docs/BUILDING.md) covers the full preset list, building without Qt, the
+Linux GUI opt-in, and the machine-local preset pattern.
+
+**Packaging.** `cpack --preset pack-windows-msvc` (and the equivalent `pack-<platform>` preset
+for every leg in the matrix, though only Windows has actually been run) produces a ZIP, plus
+NSIS/DEB/RPM/DragNDrop on top where the platform packaging tool is available. A `vX.Y.Z` tag
+pushed to `main` additionally triggers [`release.yml`](.github/workflows/release.yml), which
+builds, signs and publishes packages as a GitHub Release. See
+[docs/BUILDING.md#packaging](docs/BUILDING.md#packaging) and
+[docs/releasing.md](docs/releasing.md).
 
 ## Using the library
 
@@ -236,7 +273,7 @@ for (int frame = 0; frame < 31; ++frame) {
 
 That is [examples/encode_ac3.cpp](examples/encode_ac3.cpp) with the error handling elided.
 
-[docs/LIBRARY.md](docs/LIBRARY.md) covers the rest: `ac3::eac3::FrameEncoder` and
+[docs/library/](docs/library/index.md) covers the rest: `ac3::eac3::FrameEncoder` and
 `AccessUnitEncoder`, both decoders, `ac3::io::scan`, the spatial object layer, the Atmos
 encoder, and `matroska::mux`. Every example in it is a program under [examples/](examples/)
 that the build compiles and `ctest` runs, so none of them can quietly rot.
@@ -260,16 +297,22 @@ ac3cli decode out.ec3 out.wav
 `encode` takes 1–6 channel WAVs and picks the `acmod` to match. `eac3-sine` and
 `eac3-silence` take a layout: `stereo | 51 | 71 | 512 | 514 | 714`. Metadata options
 (`drc=`, `heavy`, `dialnorm=auto`, `cmixlev=`, …) follow the positional arguments in any
-order. `atmos`, `orbit`, `levels`, `loudness`, `spdif`, `mkv`, `record`, `devices` and
-`outputs` are documented in the usage text, as are `play` and `spdif`'s E-AC-3 support, and
-two commands this session added: `monitor` (decode and play a file on an ordinary output —
-the shared-mode preview path) and `live` (capture → encode → optional live monitor and/or
-IEC 61937 passthrough, running continuously and still writing the file `record` always has;
-`live`'s `atmos` mode moves each object's placement every frame from elapsed time, the same
-shape `atmos`'s synthetic orbit demo uses).
+order. `silence`, `sine`, `atmos`, `atmos-path` (objects driven by an authored keyframe file
+instead of the built-in orbit), `atmos-encode`, `orbit`, `eac3-encode`, `levels`, `loudness`,
+`spdif`, `mkv`, `record`, `devices`, `outputs` and `play` (both `spdif` and `play` handle AC-3
+and E-AC-3, bsid decides) are documented in the usage text, as are two live-audio commands:
+`monitor` (decode and play a file on an ordinary, non-bitstreamed output — the shared-mode
+preview path) and `live` (capture → encode → optional live monitor and/or IEC 61937
+passthrough, running continuously and still writing the file `record` always has; `live`'s
+`atmos` mode moves each object's placement every frame from elapsed time, the same shape
+`atmos`'s synthetic orbit demo uses).
 
 `ac3gui` is a Qt Quick front end over the same library: file and live-capture encoding, a plan
 view for dragging objects around the room, a height slider, and channel-level metering.
+
+`ac3cli --version` (a flag, not one of the twenty-one commands) prints the semantic version plus
+git provenance — commit, branch, dirty flag — stamped in at build time by
+`cmake/GenerateVersion.cmake`.
 
 ## How it is validated
 
@@ -308,25 +351,31 @@ Measured with FFmpeg 8.0.1 on 2026-08-09; reproduce with `python tools/quality_r
 SNR on synthetic material is a narrow metric — it says the waveform is closer, not that it
 sounds better, and no listening test has been run.
 
-The test suite is 182 ctest entries: 175 Catch2 unit tests plus the seven example programs.
+The test suite is 249 Catch2 unit tests plus the seven example programs: 256 ctest entries on
+Windows, 270 on Linux where the ALSA backend adds 14 tests of its own
+(`tests/platform/alsa/`).
 
 ```bash
-ctest --preset debug
+ctest --preset test-windows-msvc-debug
 ```
 
 ## Repository layout
 
 ```
-cmake/          FindQt6.cmake (prebuilt-Qt discovery), CompilerWarnings.cmake
+cmake/          FindQt6.cmake (prebuilt-Qt discovery), CompilerWarnings.cmake, Sanitizers.cmake,
+                Packaging.cmake (CPack), GenerateVersion.cmake (git-provenance version stamping),
+                toolchains/ (one per platform/compiler preset), vcpkg/triplets/ (overlays)
 src/lib/        ac3::forge — the whole codec, GUI-free
   include/ac3/  the public API: core/ encoder/ decoder/ meta/ spatial/ oba/
-                emdf/ analysis/ sinks/ io/ capture/
-  src/          implementation
+                emdf/ analysis/ sinks/ io/ capture/ platform/
+  src/          implementation; src/platform/{windows,alsa,posix}/ selected by CMake
 src/matroska/   matroska::matroska — a standalone MKV muxer, no ac3::forge dependency
 src/cli/        ac3cli — command-line front end
 src/gui/        ac3gui — Qt Quick front end (QML module "Ac3Forge")
-tests/          Catch2 unit tests; golden/ vectors generated by tools/
-examples/       the programs docs/LIBRARY.md is written from
+tests/          Catch2 unit tests; golden/ vectors generated by tools/; platform/alsa/ when built
+examples/       the programs docs/library/ is written from
+fuzz/           libFuzzer harnesses over untrusted-input entry points (Clang only, off by
+                default); see fuzz/README.md
 tools/          Python: spec-table generators, independent reference
                 implementations, the FFmpeg quality race
 docs/           see below
@@ -340,12 +389,26 @@ beside it. [docs/BUILDING.md](docs/BUILDING.md) has the details.
 
 ## Documentation
 
+The published site — [iainchesworth.github.io/ac3forge](https://iainchesworth.github.io/ac3forge/)
+— is the best-in-class starting point: a beginner's guide to AC-3/E-AC-3/Atmos/JOC, a developer
+quick start, the full library reference, the CLI reference, and a step-by-step GUI guide with
+screenshots. The table below is the same material's in-repo source, plus a few things that don't
+belong on the public site.
+
 | Document | Contents |
 |---|---|
+| [docs/quickstart.md](docs/quickstart.md) | Developer quick start: clone to first encode |
 | [docs/BUILDING.md](docs/BUILDING.md) | Building from a clean clone, including the failures you will hit |
-| [docs/LIBRARY.md](docs/LIBRARY.md) | The public API, with compiled examples |
-| [docs/HISTORY.md](docs/HISTORY.md) | How the implementation was built, milestone by milestone |
-| [docs/RESEARCH.md](docs/RESEARCH.md) | The original feasibility research and the decisions that came out of it |
+| [docs/platforms/](docs/platforms/windows.md) | Windows / Linux / macOS specifics: toolchains, audio backends, packaging |
+| [docs/releasing.md](docs/releasing.md) | Cutting a release: versioning, the tag-triggered workflow, GPG signing |
+| [docs/concepts/](docs/concepts/index.md) | Beginner's guide to AC-3, E-AC-3, Atmos and JOC, with diagrams |
+| [docs/library/](docs/library/index.md) | The public API, with compiled examples |
+| [docs/cli/](docs/cli/index.md) | The `ac3cli` reference: all 21 commands, metadata options |
+| [docs/gui/](docs/gui/index.md) | Step-by-step `ac3gui` guide, with screenshots |
+| [docs/project/history.md](docs/project/history.md) | How the implementation was built, milestone by milestone |
+| [docs/project/research.md](docs/project/research.md) | The original feasibility research and the decisions that came out of it |
+| [fuzz/README.md](fuzz/README.md) | The libFuzzer harnesses: what they cover, how to run them locally |
+| [docs/project/gui-design-brief.md](docs/project/gui-design-brief.md) | Superseded input document for the GUI redesign: current-state inventory at the time, user journeys, open questions |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Conventions, and the validation discipline |
 
 ## Licence

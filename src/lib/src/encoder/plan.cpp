@@ -799,9 +799,10 @@ eac3::AccessUnitConfig eac3_config(const Plan& plan) {
         // `mask` came from a ChannelPlan that channel_plan_for/allocate()
         // already built to satisfy exactly one (acmod, lfeon) - it cannot
         // fail here.
-        const auto fit = eac3::chanmap::acmod_for_chanmap(mask);
-        dependent.acmod = fit->first;
-        dependent.lfe = fit->second;
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+        const auto fit = *eac3::chanmap::acmod_for_chanmap(mask);
+        dependent.acmod = fit.first;
+        dependent.lfe = fit.second;
         apply_tools(plan.tools, dependent);
         out.dependents.push_back(dependent);
     }

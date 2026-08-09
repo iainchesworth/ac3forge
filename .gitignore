@@ -1,6 +1,11 @@
 # Build output
 build/
 vcpkg_installed/
+packages/
+
+# Generated docs site (mkdocs build / mkdocs serve); published via the docs
+# workflow to the gh-pages branch, never committed to develop/main.
+site/
 
 # Machine-local CMake presets (carry local VCPKG_ROOT)
 CMakeUserPresets.json

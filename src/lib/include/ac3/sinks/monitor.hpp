@@ -23,7 +23,7 @@
 
 namespace ac3::sinks {
 
-enum class MonitorError {
+enum class MonitorError : std::uint8_t {
     kNoBackend,       // built without a platform monitor backend
     kComFailure,      // a Windows audio (WASAPI/COM) call failed
     kDeviceNotFound,

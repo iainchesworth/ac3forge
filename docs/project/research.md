@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-06
 **Method:** two multi-agent research waves (26 agents, ~500 web sources consulted). Every load-bearing claim was independently, adversarially fact-checked: **122 claims → 113 confirmed, 3 refuted (corrected here), 6 uncertain (flagged inline)**.
-**Full detail:** [wave 2 — from-scratch implementation brief](research/wave2-from-scratch-brief.md) (the spine of this project) and [wave 1 — domain brief](research/wave1-domain-brief.md) (format, I/O, toolchain background; its "link FFmpeg" recommendation predates the project pivot and is superseded). Verification records: [wave 1](research/wave1-verdicts.json) · [wave 2](research/wave2-verdicts.json).
+**Full detail:** [wave 2 — from-scratch implementation brief](https://github.com/iainchesworth/ac3forge/blob/main/docs/research/wave2-from-scratch-brief.md) (the spine of this project) and [wave 1 — domain brief](https://github.com/iainchesworth/ac3forge/blob/main/docs/research/wave1-domain-brief.md) (format, I/O, toolchain background; its "link FFmpeg" recommendation predates the project pivot and is superseded). Verification records: [wave 1](https://github.com/iainchesworth/ac3forge/blob/main/docs/research/wave1-verdicts.json) · [wave 2](https://github.com/iainchesworth/ac3forge/blob/main/docs/research/wave2-verdicts.json).
 
 ---
 
@@ -124,7 +124,7 @@ C++23 toolchain reality (verified): `std::expected`, `std::print`, `std::countl_
 | 7 | Quality layer: exponent-strategy search, rematrixing, bandwidth tuning | PSNR/PEAQ trend approaches FFmpeg at 256–448 kbps |
 | 8 | Spatial layer: scene + VBAP + bed mixer → WAV sink, then AC-3 sink (parallelizable from week 1) | Moving source renders smoothly; gains match libear |
 | 9 | IEC 61937 packer + spdif-WAV receiver test | A real receiver lights "Dolby Digital" from a bit-exact WAV |
-| 10 | Live: capture (WASAPI loopback) + WASAPI-exclusive passthrough sink | The software "DD-Live" moment; ~70–100 ms end-to-end budget — **done for AC-3 file capture and live encode; E-AC-3/Atmos passthrough, a shared-mode monitor path (`MonitorSink`), and `ac3cli live` (capture→encode→live monitor and/or passthrough, continuously) landed later — see [HISTORY.md](HISTORY.md#live-monitor-e-ac-3atmos-passthrough-and-the-live-pipeline). Still unconfirmed against real bitstreaming hardware; see the [README](../README.md#verification-gaps).** |
+| 10 | Live: capture (WASAPI loopback) + WASAPI-exclusive passthrough sink | The software "DD-Live" moment; ~70–100 ms end-to-end budget — **done for AC-3 file capture and live encode; E-AC-3/Atmos passthrough, a shared-mode monitor path (`MonitorSink`), and `ac3cli live` (capture→encode→live monitor and/or passthrough, continuously) landed later — see [history.md](history.md#live-monitor-e-ac-3atmos-passthrough-and-the-live-pipeline). Still unconfirmed against real bitstreaming hardware; see the [README](https://github.com/iainchesworth/ac3forge/blob/main/README.md#verification-gaps).** |
 | 11 | Coupling (optional quality work at low bitrates) | Parity at ≤192 kbps 5.1 |
 | 12 | Minimal E-AC-3 (bsid-16) | Strict FFmpeg decode; real-device HDMI/eARC test |
 | 13 | E-AC-3 7.1/SPX/AHT · IAMF sink prototype | As appetite allows |
@@ -141,4 +141,4 @@ First clean FFmpeg decode of real audio typically lands week 3–5. Budget the m
 
 ## Glossary
 
-See the [wave 2 brief's glossary](research/wave2-from-scratch-brief.md#glossary) — it covers every term used here (MDCT, KBD, exponent/mantissa, bap, PSD, SNR offset, acmod, dialnorm, DRC, VBAP, ADM, JOC, EMDF, IAMF, IEC 61937, LFE, bed/object).
+See the [wave 2 brief's glossary](https://github.com/iainchesworth/ac3forge/blob/main/docs/research/wave2-from-scratch-brief.md#glossary) — it covers every term used here (MDCT, KBD, exponent/mantissa, bap, PSD, SNR offset, acmod, dialnorm, DRC, VBAP, ADM, JOC, EMDF, IAMF, IEC 61937, LFE, bed/object).

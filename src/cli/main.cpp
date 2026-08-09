@@ -38,12 +38,9 @@
 #include "ac3/sinks/monitor.hpp"
 #include "ac3/sinks/passthrough.hpp"
 #include "ac3/spatial/spatial.hpp"
+#include "ac3/version.hpp"
 #include "matroska/matroska.hpp"
-
-#ifdef AC3FORGE_QUARANTINE_SIGNER
-// Optional, non-clean-room overlay (src/quarantine is gitignored / local only).
-#include "quarantine/emdf_atmos_signer.hpp"
-#endif
+#include "quarantine_hook.hpp"
 
 namespace {
 
@@ -459,7 +456,7 @@ bool resolve_layout(std::string_view name, plan::Codec codec, plan::Plan& plan, 
                      name, ac3::plan::describe(ac3::plan::PlanError::kLayoutNeedsEac3));
         return false;
     }
-    plan.custom_locations = *custom;
+    plan.custom_locations = custom;
     label = ac3::plan::format_channels(*custom);
     return true;
 }
@@ -891,16 +888,13 @@ int run_atmos(std::string_view out_path, std::uint32_t seconds, std::uint32_t bi
         }
         out.push_back(std::move(unit->bytes));
     }
-#ifdef AC3FORGE_QUARANTINE_SIGNER
     // Optional, non-clean-room: sign the EMDF protection field so a Dolby
-    // decoder accepts the objects as Atmos. Off unless AC3FORGE_SIGN is set.
-    // Provided by the local src/quarantine overlay; never on a public branch.
-    if (ac3::quarantine::sign_requested()) {
-        int signed_count = 0;
-        for (auto& unit : out) signed_count += ac3::quarantine::sign_atmos_stream(unit);
+    // decoder accepts the objects as Atmos. A no-op unless this build was
+    // configured with -DAC3FORGE_QUARANTINE_SIGNER=ON, which requires the
+    // local-only src/quarantine overlay - see quarantine_hook.hpp.
+    if (const int signed_count = ac3cli::maybe_sign_atmos_units(out); signed_count > 0) {
         std::println("  signed {} frames with the (RE-derived) EMDF protection MAC", signed_count);
     }
-#endif
     if (!write_frames(out_path, out)) {
         return 1;
     }
@@ -2036,7 +2030,7 @@ int run_play(std::string_view in_path, int device_index) {
     for (const auto& unit : units) {
         std::vector<std::byte> burst;
         if (eac3) {
-            const auto result = eac3_packer.push(unit);
+            auto result = eac3_packer.push(unit);
             if (!result) {
                 std::println(stderr, "error: burst wrap failed");
                 return 1;
@@ -2702,6 +2696,7 @@ void print_usage() {
     std::println("ac3forge — clean-room AC-3 / E-AC-3 (ATSC A/52) encoder/decoder");
     std::println("");
     std::println("Usage:");
+    std::println("  ac3cli --version    print version and git provenance, then exit");
     for (const auto& c : kCommands) {
         std::string line = std::format("  ac3cli {:<13}{}", c.name, c.spec);
         // A command the platform cannot run is listed, not hidden: hiding it
@@ -2813,6 +2808,11 @@ void print_usage() {
 
 int run_main(int argc, char** argv) {
     const std::span<char*> raw{argv, static_cast<std::size_t>(argc)};
+    if (raw.size() > 1 &&
+        (std::string_view{raw[1]} == "--version" || std::string_view{raw[1]} == "-v")) {
+        std::println("{}", ac3::version_details());
+        return 0;
+    }
     // Split the command line into positional arguments and metadata options. An
     // option is a key=value token or one of the three bare flags, so the
     // positional arguments keep their places whether options are present or

@@ -1,6 +1,8 @@
 #include "encoder_controller.hpp"
 
 #include <QFileInfo>
+#include <QRegularExpression>
+#include <QTimer>
 #include <QtConcurrent/QtConcurrentRun>
 
 #include <iterator>
@@ -60,6 +62,143 @@ constexpr std::array<ac3::meta::ProfileId, 5> kDrcProfiles = {
     ac3::meta::ProfileId::kMusicStandard, ac3::meta::ProfileId::kMusicLight,
     ac3::meta::ProfileId::kSpeech};
 
+// ---------------------------------------------------------------------------
+// The channel model's two tiers. Tier 1 (bed) is Table 5.8's seven speaker
+// shapes, always all seven regardless of codec - AC-3 disables only the
+// extras (see EncoderController::extrasLocked). Tier 2 (extras) is additive
+// Table E2.5 locations on top of the bed.
+//
+// The handoff's own extras table names three ceiling pairs (front/middle/
+// rear). Checked directly against A/52-2018 Table E2.5 (10008-10033 in the
+// spec text): there are only TWO ceiling pairs at all - Vhl/Vhr and Lts/Rts -
+// plus two unpaired height locations (Vhc, Ts) the handoff's curated list
+// does not surface either. "Ceiling middle" is not a real chanmap bit; it is
+// dropped here rather than invented. eac3_tables.hpp's own Location enum and
+// its spec-cited static_asserts already agreed with this before it was
+// double-checked against the spec text directly, which is the point of
+// checking rather than trusting a summary.
+// ---------------------------------------------------------------------------
+
+struct BedInfo {
+    ac3::Acmod acmod;
+    const char* id;  // matches the handoff's own ids: "1/0" .. "3/2"
+};
+
+// In the handoff's own display order.
+constexpr std::array<BedInfo, 7> kBeds{{
+    {ac3::Acmod::k1_0, "1/0"},
+    {ac3::Acmod::k2_0, "2/0"},
+    {ac3::Acmod::k3_0, "3/0"},
+    {ac3::Acmod::k2_1, "2/1"},
+    {ac3::Acmod::k3_1, "3/1"},
+    {ac3::Acmod::k2_2, "2/2"},
+    {ac3::Acmod::k3_2, "3/2"},
+}};
+
+struct ExtraInfo {
+    const char* id;
+    const char* label;
+    std::uint16_t bits;
+};
+
+constexpr std::array<ExtraInfo, 5> kExtras{{
+    {"wide", "Front wide", ac3::eac3::chanmap::kLwRwBit},
+    {"rear", "Rear surround", ac3::eac3::chanmap::kLrsRrsBit},
+    {"topf", "Ceiling front", ac3::eac3::chanmap::kVhlVhrBit},
+    {"topr", "Ceiling rear", ac3::eac3::chanmap::kLtsRtsBit},
+    {"lfe2", "Second LFE", ac3::eac3::chanmap::kLfe2Bit},
+}};
+
+// Space-joined location names for a bed's own full-bandwidth channels, e.g.
+// "L C R Ls Rs" for 3/2 - what the bed button shows beneath its id.
+QString bed_channel_names(ac3::Acmod acmod) {
+    QStringList names;
+    for (const auto location : ac3::eac3::chanmap::expand(
+             ac3::eac3::chanmap::acmod_map(acmod, false))) {
+        names.append(to_qstring(ac3::eac3::chanmap::name(location)));
+    }
+    return names.join(QStringLiteral(" "));
+}
+
+// ---------------------------------------------------------------------------
+// Where a Table E2.5 location sits on the soundfield plans. This is a GUI-
+// only convention - nothing about encoding reads it - extending the ITU-R
+// BS.775 ring ac3::spatial::kSpeakerAzimuthDeg already fixes for the bed's
+// five positions (L +30, C 0, R -30, Ls +110, Rs -110, degrees CCW from
+// front) to the wider set of channels the general channel model can carry.
+// Without this, a plan wider than a plain 5.1 bed had no way to place its
+// extra channels at all: channel_azimuth_deg(acmod, lfe, index) only ever
+// knew about indices inside the BED's own acmod, so a dependent substream's
+// channels always came back non-directional and simply never appeared on the
+// ring, ceiling or otherwise. LFE/LFE2 stay non-directional; every other
+// location gets a plausible placement instead of vanishing.
+// ---------------------------------------------------------------------------
+
+std::optional<double> location_azimuth_deg(ac3::eac3::chanmap::Location location) {
+    using ac3::eac3::chanmap::Location;
+    switch (location) {
+        case Location::kLeft: return 30.0;
+        case Location::kCentre: return 0.0;
+        case Location::kRight: return -30.0;
+        case Location::kLeftSurround: return 110.0;
+        case Location::kRightSurround: return -110.0;
+        case Location::kLc: return 15.0;
+        case Location::kRc: return -15.0;
+        case Location::kLrs: return 135.0;
+        case Location::kRrs: return -135.0;
+        case Location::kCs: return 180.0;
+        case Location::kTs: return 180.0;    // ceiling: overhead-rear
+        case Location::kLsd: return 90.0;
+        case Location::kRsd: return -90.0;
+        case Location::kLw: return 60.0;
+        case Location::kRw: return -60.0;
+        case Location::kVhl: return 45.0;    // ceiling: front height
+        case Location::kVhr: return -45.0;   // ceiling: front height
+        case Location::kVhc: return 0.0;     // ceiling: centre height
+        case Location::kLts: return 110.0;   // ceiling: rear height
+        case Location::kRts: return -110.0;  // ceiling: rear height
+        case Location::kLfe2:
+        case Location::kLfe:
+            return std::nullopt;
+    }
+    return std::nullopt;
+}
+
+// The two soundfield rings: everything overhead goes on the ceiling plan,
+// everything else - however far back or wide - stays on the ear-level one.
+bool is_ceiling_location(ac3::eac3::chanmap::Location location) {
+    using ac3::eac3::chanmap::Location;
+    switch (location) {
+        case Location::kTs:
+        case Location::kVhl:
+        case Location::kVhr:
+        case Location::kVhc:
+        case Location::kLts:
+        case Location::kRts:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// Interleaves `channels` (one vector per decoded channel, AC-3/E-AC-3 coded
+// order) into WAV/Windows speaker order for playback, reading order[i] as
+// which channels[] entry belongs at interleaved position i - the same
+// permutation plan::wav_order/ac3::io::wav_channel_order already produce for
+// exactly this AC-3-order-vs-playback-order reconciliation (mirrors
+// ac3cli's run_live, which monitors a live session the same way).
+std::vector<float> interleave_reordered(std::span<const std::vector<float>> channels,
+                                        std::span<const std::size_t> order) {
+    const auto frame_count = channels.empty() ? std::size_t{0} : channels.front().size();
+    std::vector<float> out(frame_count * order.size());
+    for (std::size_t i = 0; i < frame_count; ++i) {
+        for (std::size_t ch = 0; ch < order.size(); ++ch) {
+            out[i * order.size() + ch] = channels[order[ch]][i];
+        }
+    }
+    return out;
+}
+
 }  // namespace
 
 struct EncoderController::Source {
@@ -67,6 +206,11 @@ struct EncoderController::Source {
 };
 
 EncoderController::EncoderController(QObject* parent) : QObject(parent) {
+    // Every encodeFinished emission (there are several call sites, one per
+    // early-exit failure plus the two workers' own completions) settles
+    // whichever run startRun() most recently opened, without each site
+    // having to say so itself.
+    connect(this, &EncoderController::encodeFinished, this, &EncoderController::finishRun);
     refreshCaptureDevices();
     refreshOutputDevices();
     refreshRouting();
@@ -89,46 +233,143 @@ QStringList EncoderController::containerNames() const {
     return {QStringLiteral("Elementary stream"), QStringLiteral("Matroska (.mkv)")};
 }
 
-QStringList EncoderController::layoutNames() const {
-    QStringList names;
-    for (const auto& info : plan::kLayouts) {
-        if (plan::carries(codec_, info.id)) {
-            names.append(to_qstring(info.label));
+int EncoderController::bedIndex() const {
+    for (std::size_t i = 0; i < kBeds.size(); ++i) {
+        if (kBeds[i].acmod == bed_acmod_) {
+            return static_cast<int>(i);
         }
-    }
-    names.append(QStringLiteral("Custom…"));
-    return names;
-}
-
-int EncoderController::layoutIndex() const {
-    if (custom_layout_) {
-        return static_cast<int>(layoutNames().size()) - 1;
-    }
-    int index = 0;
-    for (const auto& info : plan::kLayouts) {
-        if (!plan::carries(codec_, info.id)) {
-            continue;
-        }
-        if (info.id == layout_) {
-            return index;
-        }
-        ++index;
     }
     return 0;
+}
+
+QVariantList EncoderController::bedChoices() const {
+    QVariantList out;
+    for (const auto& bed : kBeds) {
+        QVariantMap row;
+        row[QStringLiteral("id")] = QString::fromLatin1(bed.id);
+        row[QStringLiteral("channels")] = bed_channel_names(bed.acmod);
+        out.append(row);
+    }
+    return out;
+}
+
+QVariantList EncoderController::extrasModel() const {
+    QVariantList out;
+    const bool locked = extrasLocked();
+    const auto bed_mask = ac3::eac3::chanmap::acmod_map(bed_acmod_, bed_lfe_);
+    const QString lock_reason = atmos_enabled_ ? QStringLiteral("fixed by object mode")
+                                               : QStringLiteral("Dolby Digital Plus only");
+
+    for (const auto& extra : kExtras) {
+        const bool checked = (extras_mask_ & extra.bits) != 0;
+        const auto tentative = static_cast<std::uint16_t>(
+            checked ? extras_mask_ & ~extra.bits : extras_mask_ | extra.bits);
+        // The single general validity check every control here uses, so the
+        // picker can never express a combination chanmap::allocate() would
+        // then refuse: over the 16-channel ceiling, no Table 5.8 bed fits (not
+        // reachable here, the bed is always one), or - the case that is
+        // reachable - an LFE2 left with no full-bandwidth companion once its
+        // last co-selected extra is the one being unticked.
+        const auto result =
+            ac3::eac3::chanmap::allocate(static_cast<std::uint16_t>(bed_mask | tentative));
+
+        QString reason;
+        if (locked) {
+            reason = lock_reason;
+        } else if (!result) {
+            reason = checked ? QStringLiteral("another extra needs this one")
+                             : to_qstring(ac3::eac3::chanmap::describe(result.error()));
+        }
+
+        QVariantMap row;
+        row[QStringLiteral("id")] = QString::fromLatin1(extra.id);
+        row[QStringLiteral("label")] = QString::fromLatin1(extra.label);
+        row[QStringLiteral("channels")] = ac3::eac3::chanmap::channel_count(extra.bits);
+        row[QStringLiteral("checked")] = checked;
+        row[QStringLiteral("enabled")] = !locked && result.has_value();
+        row[QStringLiteral("reason")] = reason;
+        out.append(row);
+    }
+    return out;
+}
+
+QVariantList EncoderController::objectModel() const {
+    QVariantList out;
+    for (std::size_t i = 0; i < object_configs_.size(); ++i) {
+        const auto& config = object_configs_[i];
+        const auto keyframes = sortedKeyframes(static_cast<int>(i));
+        QVariantMap row;
+        row[QStringLiteral("index")] = static_cast<int>(i);
+        // Objects are the source's own channels, one each, so the honest
+        // name for where one comes from is which channel it is - there is no
+        // richer source layout to name it from once it has become an object.
+        row[QStringLiteral("sourceLabel")] = QStringLiteral("Ch %1").arg(i + 1);
+        row[QStringLiteral("x")] = config.x;
+        row[QStringLiteral("y")] = config.y;
+        row[QStringLiteral("z")] = config.z;
+        row[QStringLiteral("lfeSend")] = config.lfe_send;
+        row[QStringLiteral("hasPath")] = !keyframes.empty();
+        row[QStringLiteral("keyCount")] = static_cast<int>(keyframes.size());
+        out.append(row);
+    }
+    return out;
+}
+
+QString EncoderController::channelShapeName() const {
+    using ac3::eac3::chanmap::Location;
+    int ear = 0;
+    int lfe_count = 0;
+    int ceiling = 0;
+    for (const auto location : ac3::eac3::chanmap::expand(currentLocationMask())) {
+        switch (location) {
+            case Location::kLfe:
+            case Location::kLfe2:
+                ++lfe_count;
+                break;
+            case Location::kTs:
+            case Location::kVhl:
+            case Location::kVhr:
+            case Location::kVhc:
+            case Location::kLts:
+            case Location::kRts:
+                ++ceiling;
+                break;
+            default:
+                ++ear;
+                break;
+        }
+    }
+    QString name = QStringLiteral("%1.%2").arg(ear).arg(lfe_count);
+    if (ceiling > 0) {
+        name += QStringLiteral(".%1").arg(ceiling);
+    }
+    return name;
+}
+
+int EncoderController::channelBudgetUsed() const {
+    return ac3::eac3::chanmap::channel_count(currentLocationMask());
+}
+
+QString EncoderController::channelLocationsText() const {
+    return to_qstring(plan::format_channels(currentLocationMask()));
 }
 
 QString EncoderController::layoutDetail() const {
     if (atmos_enabled_) {
         return QStringLiteral("5.1 bed · JOC + OAMD · objects carry the height");
     }
-    if (custom_layout_ && !plan::parse_channels(custom_channels_text_.toStdString())) {
-        return QStringLiteral("Not a recognised channel list - see the layout note below.");
-    }
     const auto cp = effectiveChannelPlan();
     const auto rendered = plan::rendered_channel_count(cp);
     const auto transmitted = static_cast<int>(plan::coded_channels(cp).size());
     const auto dependents = static_cast<int>(cp.dependents.size());
-    if (transmitted == rendered) {
+    // Whether there is only the independent substream is what "one substream"
+    // actually means - dependents == 0, not transmitted == rendered. The two
+    // used to coincide when every dependent came from a hand-picked LayoutId
+    // (7.1's k71Rear duplicates the bed's Ls/Rs into its dependent, so wider-
+    // than-bed always meant transmitted > rendered too), but the general
+    // extras model doesn't duplicate anything: a plain "rear" extra alone can
+    // need a real dependent while still transmitting exactly what it renders.
+    if (dependents == 0) {
         return QStringLiteral("%1 channel%2, one substream")
             .arg(rendered)
             .arg(rendered == 1 ? QString() : QStringLiteral("s"));
@@ -200,54 +441,107 @@ void EncoderController::setCodecIndex(int index) {
         return;
     }
     codec_ = codec;
-    // A layout the new codec cannot carry has to go somewhere: 5.1 is the
-    // widest AC-3 reaches, and silently encoding a narrower stream than the
-    // one asked for would be worse than moving the control.
-    if (!plan::carries(codec_, layout_)) {
-        layout_ = plan::LayoutId::k51;
+    // AC-3 has no dependent substreams at all, so extras that needed one have
+    // to go somewhere: dropping them is what the extras lock itself would
+    // have refused going forward, and leaving them set would silently build a
+    // plan validate() then rejects at encode time instead of here.
+    if (codec_ == plan::Codec::kAc3) {
+        extras_mask_ = 0;
     }
     emit planChanged();
     emit outputChanged();
     refreshRouting();
 }
 
-void EncoderController::setLayoutIndex(int index) {
-    if (busy_) {
+void EncoderController::setBedIndex(int index) {
+    if (busy_ || atmos_enabled_ || index < 0 || index >= static_cast<int>(kBeds.size())) {
         return;
     }
-    if (index == layoutNames().size() - 1) {
-        if (!custom_layout_) {
-            custom_layout_ = true;
-            emit planChanged();
-            refreshRouting();
-        }
+    const auto acmod = kBeds[static_cast<std::size_t>(index)].acmod;
+    if (acmod == bed_acmod_) {
         return;
     }
-    int seen = 0;
-    for (const auto& info : plan::kLayouts) {
-        if (!plan::carries(codec_, info.id)) {
+    bed_acmod_ = acmod;
+    emit planChanged();
+    refreshRouting();
+}
+
+void EncoderController::setBedLfe(bool on) {
+    if (busy_ || atmos_enabled_ || on == bed_lfe_) {
+        return;
+    }
+    bed_lfe_ = on;
+    emit planChanged();
+    refreshRouting();
+}
+
+void EncoderController::toggleExtra(const QString& id) {
+    if (busy_ || extrasLocked()) {
+        return;
+    }
+    for (const auto& extra : kExtras) {
+        if (id != QLatin1String(extra.id)) {
             continue;
         }
-        if (seen++ != index) {
-            continue;
+        const bool checked = (extras_mask_ & extra.bits) != 0;
+        const auto tentative = static_cast<std::uint16_t>(
+            checked ? extras_mask_ & ~extra.bits : extras_mask_ | extra.bits);
+        const auto bed_mask = ac3::eac3::chanmap::acmod_map(bed_acmod_, bed_lfe_);
+        // Refused rather than truncated: over budget, or - unticking an
+        // extra an LFE2 was sharing its substream with - an orphaned LFE2,
+        // are both "this does not fit", not "fit what you can".
+        if (!ac3::eac3::chanmap::allocate(static_cast<std::uint16_t>(bed_mask | tentative))) {
+            return;
         }
-        if (info.id != layout_ || custom_layout_) {
-            layout_ = info.id;
-            custom_layout_ = false;
-            emit planChanged();
-            refreshRouting();
-        }
+        extras_mask_ = tentative;
+        emit planChanged();
+        refreshRouting();
         return;
     }
 }
 
-void EncoderController::setCustomChannels(const QString& text) {
-    if (text == custom_channels_text_ || busy_) {
+void EncoderController::applyChannelPreset(const QString& name) {
+    if (busy_ || atmos_enabled_) {
         return;
     }
-    custom_channels_text_ = text;
-    emit planChanged();
-    refreshRouting();
+    struct Preset {
+        const char* name;
+        bool lfe;
+        std::uint16_t extras;
+    };
+    // Bed is always 3/2 here: every named preset in the handoff's own list is
+    // built on the widest bed. A preset is a starting point for the general
+    // model, not a separate one - see the file comment on kBeds/kExtras for
+    // why this goes through chanmap::allocate() rather than the legacy
+    // LayoutId table (fewer transmitted channels for 7.1/7.1.4 than the old
+    // hand-picked k71Rear/kTopQuad dependents, same rendered speakers).
+    static constexpr std::array<Preset, 5> kPresets{{
+        {"5.1", true, 0},
+        {"7.1", true, ac3::eac3::chanmap::kLrsRrsBit},
+        {"5.1.4", true,
+         static_cast<std::uint16_t>(ac3::eac3::chanmap::kVhlVhrBit | ac3::eac3::chanmap::kLtsRtsBit)},
+        {"7.1.4", true,
+         static_cast<std::uint16_t>(ac3::eac3::chanmap::kLrsRrsBit | ac3::eac3::chanmap::kVhlVhrBit |
+                                    ac3::eac3::chanmap::kLtsRtsBit)},
+        {"5.2", true, ac3::eac3::chanmap::kLfe2Bit},
+    }};
+    for (const auto& preset : kPresets) {
+        if (name != QLatin1String(preset.name)) {
+            continue;
+        }
+        // A preset needing extras has to bring E-AC-3 with it, the same way a
+        // manual tick would otherwise find the row locked and refuse.
+        if (preset.extras != 0 && codec_ == plan::Codec::kAc3) {
+            codec_ = plan::Codec::kEac3;
+        }
+        bed_acmod_ = ac3::Acmod::k3_2;
+        bed_lfe_ = preset.lfe;
+        extras_mask_ = preset.extras;
+        emit planChanged();
+        emit outputChanged();
+        refreshRouting();
+        return;
+    }
 }
 
 void EncoderController::setContainerIndex(int index) {
@@ -449,44 +743,52 @@ void EncoderController::setAtmosEnabled(bool enabled) {
     refreshRouting();
 }
 
-void EncoderController::setObjectX(double value) {
-    const double clamped = std::clamp(value, 0.0, 1.0);
-    if (object_x_ != clamped) {
-        object_x_ = clamped;
-        emit objectsChanged();
+void EncoderController::setSelectedObjectIndex(int index) {
+    if (index < 0 || index >= object_count_ || index == selected_object_index_) {
+        return;
     }
+    selected_object_index_ = index;
+    emit objectsChanged();
 }
 
-void EncoderController::setObjectY(double value) {
-    const double clamped = std::clamp(value, 0.0, 1.0);
-    if (object_y_ != clamped) {
-        object_y_ = clamped;
-        emit objectsChanged();
+void EncoderController::setObjectPosition(int objectIndex, double x, double y, double z) {
+    if (objectIndex < 0 || objectIndex >= static_cast<int>(object_configs_.size())) {
+        return;
     }
+    auto& config = object_configs_[static_cast<std::size_t>(objectIndex)];
+    config.x = std::clamp(x, 0.0, 1.0);
+    config.y = std::clamp(y, 0.0, 1.0);
+    config.z = std::clamp(z, -1.0, 1.0);
+    {
+        // Kept current even when nothing is live: cheaper than branching on
+        // liveActive from the GUI thread, and the worker only ever reads this
+        // when it is actually running.
+        std::lock_guard lock(live_object_mutex_);
+        if (objectIndex < static_cast<int>(live_object_snapshot_.size())) {
+            live_object_snapshot_[static_cast<std::size_t>(objectIndex)] = config;
+        }
+    }
+    emit objectsChanged();
 }
 
-void EncoderController::setObjectZ(double value) {
-    const double clamped = std::clamp(value, -1.0, 1.0);
-    if (object_z_ != clamped) {
-        object_z_ = clamped;
-        emit objectsChanged();
+void EncoderController::setObjectLfeSend(int objectIndex, double value) {
+    if (objectIndex < 0 || objectIndex >= static_cast<int>(object_configs_.size())) {
+        return;
     }
+    auto& config = object_configs_[static_cast<std::size_t>(objectIndex)];
+    config.lfe_send = std::clamp(value, 0.0, 1.0);
+    {
+        std::lock_guard lock(live_object_mutex_);
+        if (objectIndex < static_cast<int>(live_object_snapshot_.size())) {
+            live_object_snapshot_[static_cast<std::size_t>(objectIndex)] = config;
+        }
+    }
+    emit objectsChanged();
 }
 
-void EncoderController::setObjectSpread(double value) {
-    const double clamped = std::clamp(value, 0.0, 0.5);
-    if (object_spread_ != clamped) {
-        object_spread_ = clamped;
-        emit objectsChanged();
-    }
-}
-
-void EncoderController::setObjectLfeSend(double value) {
-    const double clamped = std::clamp(value, 0.0, 1.0);
-    if (object_lfe_send_ != clamped) {
-        object_lfe_send_ = clamped;
-        emit objectsChanged();
-    }
+std::vector<EncoderController::ObjectConfig> EncoderController::liveObjectSnapshot() const {
+    std::lock_guard lock(live_object_mutex_);
+    return live_object_snapshot_;
 }
 
 void EncoderController::setObjectPathKeyframes(int objectIndex, const QVariantList& keyframes) {
@@ -516,29 +818,125 @@ void EncoderController::clearObjectPath(int objectIndex) {
     }
 }
 
+std::vector<ac3::oba::Keyframe> EncoderController::sortedKeyframes(int objectIndex) const {
+    const auto found = object_keyframes_.constFind(objectIndex);
+    if (found == object_keyframes_.constEnd()) {
+        return {};
+    }
+    auto keyframes = *found;
+    std::ranges::sort(keyframes, {}, &ac3::oba::Keyframe::time_s);
+    return keyframes;
+}
+
+QVariantList EncoderController::objectKeyframes(int objectIndex) const {
+    QVariantList out;
+    for (const auto& key : sortedKeyframes(objectIndex)) {
+        out.append(QVariantMap{
+            {QStringLiteral("time"), key.time_s},
+            {QStringLiteral("x"), key.position.x},
+            {QStringLiteral("y"), key.position.y},
+            {QStringLiteral("z"), key.position.z},
+            {QStringLiteral("gain"), key.gain},
+            {QStringLiteral("lfeSend"), key.lfe_send},
+        });
+    }
+    return out;
+}
+
+void EncoderController::addObjectKeyframe(int objectIndex, double timeS) {
+    if (objectIndex < 0 || objectIndex >= static_cast<int>(object_configs_.size())) {
+        return;
+    }
+    const auto& config = object_configs_[static_cast<std::size_t>(objectIndex)];
+    auto keyframes = sortedKeyframes(objectIndex);
+    // Same moment, not the same float: two cues a hundredth of a second apart
+    // are not a user trying to nudge one, they are a mis-click.
+    constexpr double kSameInstant = 0.01;
+    const auto existing = std::ranges::find_if(keyframes, [&](const ac3::oba::Keyframe& key) {
+        return std::abs(key.time_s - timeS) < kSameInstant;
+    });
+    ac3::oba::Keyframe key{.time_s = timeS,
+                           .position = {.x = config.x, .y = config.y, .z = config.z},
+                           .gain = 1.0,
+                           .lfe_send = config.lfe_send};
+    if (existing != keyframes.end()) {
+        *existing = key;
+    } else {
+        keyframes.push_back(key);
+    }
+    object_keyframes_[objectIndex] = std::move(keyframes);
+    emit objectsChanged();
+}
+
+void EncoderController::removeObjectKeyframe(int objectIndex, double timeS) {
+    auto keyframes = sortedKeyframes(objectIndex);
+    constexpr double kSameInstant = 0.01;
+    const auto before = keyframes.size();
+    std::erase_if(keyframes, [&](const ac3::oba::Keyframe& key) {
+        return std::abs(key.time_s - timeS) < kSameInstant;
+    });
+    if (keyframes.size() == before) {
+        return;
+    }
+    if (keyframes.empty()) {
+        object_keyframes_.remove(objectIndex);
+    } else {
+        object_keyframes_[objectIndex] = std::move(keyframes);
+    }
+    emit objectsChanged();
+}
+
+QVariantMap EncoderController::evaluateObjectPath(int objectIndex, double timeS) const {
+    QVariantMap out;
+    if (objectIndex < 0 || objectIndex >= static_cast<int>(object_configs_.size())) {
+        return out;
+    }
+    const auto& config = object_configs_[static_cast<std::size_t>(objectIndex)];
+    ac3::oba::Position position{.x = config.x, .y = config.y, .z = config.z};
+    double gain = 1.0;
+    double lfe_send = config.lfe_send;
+
+    const auto keyframes = sortedKeyframes(objectIndex);
+    if (!keyframes.empty()) {
+        if (const auto path = ac3::oba::KeyframePath::create(keyframes)) {
+            const auto placement = path->evaluate(timeS);
+            position = placement.position;
+            gain = placement.gain;
+            lfe_send = placement.lfe_send;
+        }
+    }
+    out[QStringLiteral("x")] = position.x;
+    out[QStringLiteral("y")] = position.y;
+    out[QStringLiteral("z")] = position.z;
+    out[QStringLiteral("gain")] = gain;
+    out[QStringLiteral("lfeSend")] = lfe_send;
+    return out;
+}
+
 // ---------------------------------------------------------------------------
 // The plan
 // ---------------------------------------------------------------------------
 
-plan::LayoutId EncoderController::effectiveLayout() const {
-    // Object mode always codes a 5.1 bed whatever the layout box last showed:
-    // JOC reconstructs from five channels (§6.3.2.2) and the LFE is outside
-    // the matrix entirely.
-    return atmos_enabled_ ? plan::LayoutId::k51 : layout_;
+std::uint16_t EncoderController::currentLocationMask() const {
+    return static_cast<std::uint16_t>(ac3::eac3::chanmap::acmod_map(bed_acmod_, bed_lfe_) |
+                                      extras_mask_);
 }
 
 plan::Plan EncoderController::currentPlan() const {
     plan::Plan p{.codec = codec_,
-                 .layout = effectiveLayout(),
+                 // Ignored whenever custom_locations is set below (every case
+                 // except object mode); kept a plain 5.1 rather than left
+                 // default-constructed only so a stray read of it before that
+                 // branch runs is never a channel width nothing can carry.
+                 .layout = plan::LayoutId::k51,
                  .bitrate_kbps = static_cast<std::uint32_t>(bitrate_kbps_),
                  .tools = tools_,
                  .meta = meta_};
-    // Object mode always codes its own 5.1 bed (effectiveLayout() already
-    // says so via .layout); a custom selection only applies otherwise, and
-    // only once it actually parses - an in-progress edit falls back to
-    // whatever .layout already holds rather than producing an empty plan.
-    if (custom_layout_ && !atmos_enabled_) {
-        p.custom_locations = plan::parse_channels(custom_channels_text_.toStdString());
+    // Object mode always codes its own 5.1 bed: JOC reconstructs from five
+    // channels (§6.3.2.2) and the LFE is outside the matrix entirely, so the
+    // bed/LFE/extras picker's own state is beside the point while it is on.
+    if (!atmos_enabled_) {
+        p.custom_locations = currentLocationMask();
     }
     if (source_) {
         if (const auto rate = to_sample_rate(source_->wav.sample_rate)) {
@@ -556,13 +954,7 @@ QString EncoderController::effectiveLabel() const {
     if (atmos_enabled_) {
         return QStringLiteral("5.1 bed");
     }
-    if (custom_layout_) {
-        if (const auto mask = plan::parse_channels(custom_channels_text_.toStdString())) {
-            return to_qstring(plan::format_channels(*mask));
-        }
-        return QStringLiteral("(unrecognised channel list)");
-    }
-    return to_qstring(plan::layout(layout_).label);
+    return channelShapeName();
 }
 
 void EncoderController::refreshRouting() {
@@ -680,6 +1072,60 @@ void EncoderController::setBusy(bool busy) {
     emit busyChanged();
 }
 
+void EncoderController::startRun(const QString& path) {
+    double seconds = 0.0;
+    if (source_ && source_->wav.sample_rate > 0) {
+        seconds = static_cast<double>(source_->wav.frame_count()) /
+                  static_cast<double>(source_->wav.sample_rate);
+    }
+    QVariantMap run;
+    run[QStringLiteral("id")] = next_run_id_;
+    run[QStringLiteral("filename")] = QFileInfo(path).fileName();
+    run[QStringLiteral("bitrateKbps")] = bitrate_kbps_;
+    run[QStringLiteral("durationText")] =
+        QStringLiteral("%1:%2")
+            .arg(static_cast<int>(seconds) / 60)
+            .arg(static_cast<int>(seconds) % 60, 2, 10, QLatin1Char('0'));
+    run[QStringLiteral("status")] = QStringLiteral("encoding");
+    run[QStringLiteral("sizeText")] = QString();
+    run[QStringLiteral("detail")] = QString();
+    // Newest first, matching the run strip's own reading order.
+    runs_.prepend(run);
+    current_run_id_ = next_run_id_;
+    ++next_run_id_;
+    emit runsChanged();
+}
+
+void EncoderController::finishRun(bool ok, const QString& message) {
+    if (current_run_id_ < 0) {
+        return;
+    }
+    for (auto& variant : runs_) {
+        auto run = variant.toMap();
+        if (run.value(QStringLiteral("id")).toInt() != current_run_id_) {
+            continue;
+        }
+        // The same text setStatus() already put on screen for a cancelled
+        // run - read back rather than re-decided, so the run chip and the
+        // status line that preceded it can never disagree about which of
+        // the three this was.
+        const bool cancelled = message.contains(QStringLiteral("cancelled"), Qt::CaseInsensitive);
+        run[QStringLiteral("status")] = ok ? QStringLiteral("done")
+                                       : (cancelled ? QStringLiteral("cancelled")
+                                                    : QStringLiteral("failed"));
+        run[QStringLiteral("detail")] = message;
+        static const QRegularExpression kSizePattern(QStringLiteral(R"(\(([0-9.]+ [KMG]B)\))"));
+        const auto match = kSizePattern.match(message);
+        if (match.hasMatch()) {
+            run[QStringLiteral("sizeText")] = match.captured(1);
+        }
+        variant = run;
+        break;
+    }
+    current_run_id_ = -1;
+    emit runsChanged();
+}
+
 void EncoderController::setProgress(double value) {
     if (qFuzzyCompare(value + 1.0, progress_ + 1.0)) {
         return;
@@ -712,21 +1158,17 @@ std::vector<bool> EncoderController::fedChannels() const {
         // at the front of the room legitimately leave the surrounds silent,
         // and claiming otherwise would have the display report a fault.
         std::vector<bool> fed(6, false);
-        const auto objects = static_cast<std::size_t>(std::max(object_count_, 1));
-        for (std::size_t i = 0; i < objects; ++i) {
-            const double offset =
-                objects < 2 ? 0.0
-                            : object_spread_ * (2.0 * static_cast<double>(i) /
-                                                    static_cast<double>(objects - 1) - 1.0);
-            const auto gains =
-                ac3::spatial::pan_room(std::clamp(object_x_ + offset, 0.0, 1.0), object_y_);
+        bool any_lfe_send = false;
+        for (const auto& config : object_configs_) {
+            const auto gains = ac3::spatial::pan_room(config.x, config.y);
             for (std::size_t ch = 0; ch < gains.size(); ++ch) {
                 fed[ch] = fed[ch] || gains[ch] != 0.0;
             }
+            any_lfe_send = any_lfe_send || config.lfe_send > 0.0;
         }
         // An object reaches the LFE only through the explicit send: there is
         // no direction that points at it (§6.3.2.2 bypasses it entirely).
-        fed[5] = object_lfe_send_ > 0.0;
+        fed[5] = any_lfe_send;
         return fed;
     }
     if (!source_) {
@@ -747,7 +1189,9 @@ std::vector<bool> EncoderController::fedChannels() const {
 }
 
 void EncoderController::setLayout(ac3::Acmod acmod, bool lfe, const QStringList& names,
-                                  const QString& label, const std::vector<bool>& fed) {
+                                  const QString& label,
+                                  const std::vector<ac3::plan::CodedChannel>& coded,
+                                  const std::vector<bool>& fed) {
     acmod_ = acmod;
     lfe_ = lfe;
     channel_names_ = names;
@@ -755,6 +1199,23 @@ void EncoderController::setLayout(ac3::Acmod acmod, bool lfe, const QStringList&
                        ? std::vector<bool>(static_cast<std::size_t>(names.size()), true)
                        : fed;
     channel_fed_.resize(static_cast<std::size_t>(names.size()), true);
+
+    channel_locations_.clear();
+    channel_replaced_.clear();
+    channel_locations_.reserve(coded.size());
+    channel_replaced_.reserve(coded.size());
+    for (const auto& channel : coded) {
+        channel_locations_.push_back(channel.location);
+        // A bed channel a dependent overwrites still exists and still reaches
+        // a 5.1 decoder, but Rendered mode hides it - it is coded_channel_
+        // names()'s own "(bed)" test, kept in step with it deliberately.
+        const bool replaced =
+            channel.bed && std::ranges::any_of(coded, [&](const auto& other) {
+                return !other.bed && other.location == channel.location;
+            });
+        channel_replaced_.push_back(replaced);
+    }
+
     layout_name_ = label;
     emit layoutChanged();
     // Start silent: leaving the previous source's levels under the new
@@ -763,8 +1224,48 @@ void EncoderController::setLayout(ac3::Acmod acmod, bool lfe, const QStringList&
         std::vector<ac3::analysis::ChannelLevel>(static_cast<std::size_t>(names.size())));
 }
 
+void EncoderController::refreshObjectConfigs() {
+    const auto count = static_cast<std::size_t>(std::max(object_count_, 0));
+    const auto previous = object_configs_.size();
+    if (count == previous) {
+        return;
+    }
+    // Existing objects keep whatever position they were given; only the
+    // newly-appeared ones need a default, spread out along x rather than
+    // stacked on one point (the design brief's own complaint about the old
+    // single-point-plus-spread model, where six objects "overlap into a
+    // smear").
+    object_configs_.resize(count);
+    for (std::size_t i = previous; i < count; ++i) {
+        const double offset = count < 2 ? 0.0
+                                        : 0.3 * (2.0 * static_cast<double>(i) /
+                                                     static_cast<double>(count - 1) - 1.0);
+        object_configs_[i] = {.x = std::clamp(0.5 + offset, 0.0, 1.0),
+                              .y = 0.15,
+                              .z = 0.0,
+                              .lfe_send = 0.15};
+    }
+    if (selected_object_index_ >= static_cast<int>(count)) {
+        selected_object_index_ = count > 0 ? static_cast<int>(count) - 1 : 0;
+    }
+    // A path for an index the new count no longer has is meaningless - drop
+    // it rather than let it silently reappear if the count later grows back
+    // to cover that index again with motion authored for a different file.
+    QList<int> stale;
+    for (auto it = object_keyframes_.constBegin(); it != object_keyframes_.constEnd(); ++it) {
+        if (it.key() >= static_cast<int>(count)) {
+            stale.append(it.key());
+        }
+    }
+    for (const auto key : stale) {
+        object_keyframes_.remove(key);
+    }
+}
+
 void EncoderController::clearLayout() {
     channel_names_.clear();
+    channel_locations_.clear();
+    channel_replaced_.clear();
     layout_name_.clear();
     channel_levels_.clear();
     soundfield_.clear();
@@ -778,10 +1279,12 @@ void EncoderController::publishLevels(std::span<const ac3::analysis::ChannelLeve
     entries.reserve(static_cast<qsizetype>(levels.size()));
     for (std::size_t ch = 0; ch < levels.size(); ++ch) {
         const auto& level = levels[ch];
-        // Only the bed's channels have an azimuth: a dependent substream's
-        // speakers are named by a chanmap, which no acmod can place.
-        const auto azimuth =
-            ac3::analysis::channel_azimuth_deg(acmod_, lfe_, static_cast<int>(ch));
+        const bool has_location = ch < channel_locations_.size();
+        const auto location = has_location ? channel_locations_[ch]
+                                           : ac3::eac3::chanmap::Location::kLeft;
+        const auto azimuth = has_location ? location_azimuth_deg(location) : std::nullopt;
+        const bool ceiling = has_location && is_ceiling_location(location);
+        const bool replaced = ch < channel_replaced_.size() && channel_replaced_[ch];
         entries.append(QVariantMap{
             {QStringLiteral("peakDb"), level.peak_db},
             {QStringLiteral("rmsDb"), level.rms_db},
@@ -796,6 +1299,8 @@ void EncoderController::publishLevels(std::span<const ac3::analysis::ChannelLeve
             {QStringLiteral("hold"), ac3::analysis::meter_fraction(level.hold_db, kMeterFloorDb)},
             {QStringLiteral("azimuthDeg"), azimuth.value_or(0.0)},
             {QStringLiteral("directional"), azimuth.has_value()},
+            {QStringLiteral("ceiling"), ceiling},
+            {QStringLiteral("replaced"), replaced},
             // A channel the source cannot fill reads -inf for a reason, and
             // the display should say which reason: silent by routing is not
             // the same as silent because nothing is reaching the meter.
@@ -966,6 +1471,472 @@ void EncoderController::playToReceiver(int deviceIndex) {
     });
 }
 
+void EncoderController::stopLiveSession() {
+    stop_live_.store(true, std::memory_order_relaxed);
+}
+
+void EncoderController::startLiveSession(int captureDeviceIndex, bool monitor,
+                                         int receiverDeviceIndex, bool writeToDisk,
+                                         const QUrl& fileUrl) {
+    if (busy_ || recording_ || live_active_) {
+        return;
+    }
+    if (captureDeviceIndex < 0 ||
+        static_cast<std::size_t>(captureDeviceIndex) >= devices_.size()) {
+        setStatus(QStringLiteral("Choose a capture device first."));
+        return;
+    }
+    const auto device = devices_[static_cast<std::size_t>(captureDeviceIndex)];
+    if (!to_sample_rate(device.sample_rate)) {
+        setStatus(QStringLiteral("\"%1\" runs at %2 Hz; AC-3/E-AC-3 need 32, 44.1 or 48 kHz.")
+                      .arg(QString::fromStdString(device.name))
+                      .arg(device.sample_rate));
+        return;
+    }
+
+    auto p = currentPlan();
+    p.sample_rate = *to_sample_rate(device.sample_rate);
+    if (const auto bad = plan::validate(p)) {
+        setStatus(to_qstring(plan::describe(*bad)));
+        return;
+    }
+
+    const bool want_passthrough = receiverDeviceIndex >= 0;
+    ac3::sinks::RenderDeviceInfo receiver{};
+    if (want_passthrough) {
+        if (static_cast<std::size_t>(receiverDeviceIndex) >= outputs_.size()) {
+            setStatus(QStringLiteral("Choose a receiver device first."));
+            return;
+        }
+        receiver = outputs_[static_cast<std::size_t>(receiverDeviceIndex)];
+    }
+
+    QString path;
+    if (writeToDisk) {
+        path = fileUrl.isLocalFile() ? fileUrl.toLocalFile() : fileUrl.toString();
+        if (path.isEmpty()) {
+            setStatus(QStringLiteral("Choose where to save the take first."));
+            return;
+        }
+    }
+
+    live_capture_ = std::make_unique<ac3::capture::Capture>();
+    const auto started = live_capture_->start(device.id, device.kind);
+    if (!started) {
+        const auto why = ac3::capture::describe(started.error());
+        live_capture_.reset();
+        setStatus(QStringLiteral("Could not open \"%1\": %2")
+                      .arg(QString::fromStdString(device.name),
+                           QString::fromUtf8(why.data(), static_cast<qsizetype>(why.size()))));
+        return;
+    }
+
+    // §8.3.2.2's decoder-side object gate means nobody downstream ever hears
+    // our objects AS objects (see docs/design's own note on this - the real
+    // decoder's gate is keyed, and forging that key is deliberately not
+    // done), so an Atmos session's receiver leg is always just its 5.1 bed,
+    // independent of what the device itself can bitstream.
+    const bool eac3 = atmos_enabled_ || p.codec == plan::Codec::kEac3;
+    const auto format =
+        eac3 ? ac3::sinks::BitstreamFormat::kEac3 : ac3::sinks::BitstreamFormat::kAc3;
+    bool passthrough_ok = false;
+    if (want_passthrough) {
+        const bool supports = eac3 ? receiver.supports_eac3_passthrough
+                                   : receiver.supports_ac3_passthrough;
+        if (!supports) {
+            live_receiver_plan_text_ =
+                QStringLiteral("\"%1\" cannot bitstream %2 over IEC 61937.")
+                    .arg(QString::fromStdString(receiver.name),
+                         eac3 ? QStringLiteral("E-AC-3") : QStringLiteral("AC-3"));
+        } else {
+            auto psink = std::make_unique<ac3::sinks::PassthroughSink>();
+            const auto pstarted = psink->start(receiver.id, device.sample_rate, format);
+            if (!pstarted) {
+                const auto why = ac3::sinks::describe(pstarted.error());
+                live_receiver_plan_text_ =
+                    QStringLiteral("\"%1\" would not open: %2")
+                        .arg(QString::fromStdString(receiver.name),
+                             QString::fromUtf8(why.data(), static_cast<qsizetype>(why.size())));
+            } else {
+                passthrough_ok = true;
+                live_passthrough_sink_ = std::move(psink);
+                live_receiver_plan_text_ =
+                    atmos_enabled_
+                        ? QStringLiteral("Dolby Digital Plus · 5.1 bed only · %1")
+                              .arg(QString::fromStdString(receiver.name))
+                        : QStringLiteral("%1 · %2 · %3")
+                              .arg(eac3 ? QStringLiteral("Dolby Digital Plus")
+                                        : QStringLiteral("Dolby Digital"))
+                              .arg(channelShapeName(), QString::fromStdString(receiver.name));
+            }
+        }
+    } else {
+        live_receiver_plan_text_ = QStringLiteral("No passthrough this session.");
+    }
+    live_gap_ = want_passthrough && (!passthrough_ok || atmos_enabled_);
+
+    bool monitor_ok = false;
+    if (monitor) {
+        auto msink = std::make_unique<ac3::sinks::MonitorSink>();
+        const auto mstarted = msink->start(
+            std::string{}, device.sample_rate,
+            static_cast<std::uint16_t>(atmos_enabled_ ? 6 : plan::coded_channels(
+                                                              effectiveChannelPlan()).size()));
+        if (mstarted) {
+            monitor_ok = true;
+            live_monitor_sink_ = std::move(msink);
+        }
+    }
+
+    if (atmos_enabled_) {
+        // A live session has no loaded file to size object_configs_ from -
+        // loadSourceFile is what normally does that. The capture device's
+        // channel count plays the same role here, so the Live room and the
+        // Objects tab have something to show/drag for a capture-only session
+        // that never opened a file at all.
+        const int nobjects = std::min<int>(static_cast<int>(device.channels), 15);
+        if (object_count_ != nobjects) {
+            object_count_ = nobjects;
+            refreshObjectConfigs();
+            emit sourceChanged();
+        }
+    }
+
+    {
+        std::lock_guard lock(live_object_mutex_);
+        live_object_snapshot_ = object_configs_;
+    }
+
+    stop_live_.store(false, std::memory_order_relaxed);
+    live_active_ = true;
+    live_monitoring_ = monitor_ok;
+    live_passthrough_ = passthrough_ok;
+    live_writing_to_disk_ = writeToDisk;
+    live_running_seconds_ = 0.0;
+    live_frames_encoded_ = 0;
+    live_frames_dropped_ = 0;
+    live_underruns_ = 0;
+    live_latency_ms_ =
+        2000.0 * static_cast<double>(ac3::kSamplesPerFrame) / static_cast<double>(device.sample_rate);
+    setBusy(true);
+    setStatus(QStringLiteral("Live session running from %1…")
+                  .arg(QString::fromStdString(device.name)));
+    emit liveActiveChanged();
+    emit liveStatsChanged();
+
+    if (passthrough_ok) {
+        // A freshly opened exclusive-mode stream is exactly when a physical
+        // receiver drops lock to re-negotiate - the mockup's own copy quotes
+        // "expect a second of silence", so the banner clears on the same
+        // timescale.
+        live_reconnecting_ = true;
+        emit liveReconnectingChanged();
+        QTimer::singleShot(1500, this, [this] {
+            live_reconnecting_ = false;
+            emit liveReconnectingChanged();
+        });
+    }
+
+    runLiveSession(device, monitor_ok, passthrough_ok, writeToDisk, path);
+}
+
+void EncoderController::runLiveSession(ac3::capture::DeviceInfo device, bool monitor,
+                                       bool passthrough, bool write_to_disk, QString file_path) {
+    auto p = currentPlan();
+    p.sample_rate = *to_sample_rate(device.sample_rate);
+    const bool atmos = atmos_enabled_;
+    const bool eac3 = atmos || p.codec == plan::Codec::kEac3;
+
+    std::optional<plan::ChannelPlan> cp;
+    std::optional<plan::Routing> routing;
+    if (!atmos) {
+        cp = effectiveChannelPlan();
+        routing = plan::route(*cp, device.channels, p.meta.cmixlev, p.meta.surmixlev);
+        if (!routing) {
+            live_capture_.reset();
+            live_monitor_sink_.reset();
+            live_passthrough_sink_.reset();
+            live_active_ = false;
+            setBusy(false);
+            emit liveActiveChanged();
+            setStatus(to_qstring(plan::describe(plan::PlanError::kNoSourceLayout)));
+            emit encodeFinished(false, status());
+            return;
+        }
+        const auto coded = plan::coded_channels(*cp);
+        const auto names = plan::coded_channel_names(*cp);
+        QStringList labels;
+        for (const auto& name : names) {
+            labels.append(QString::fromStdString(name));
+        }
+        setLayout(cp->bed_acmod, cp->bed_lfe, labels, effectiveLabel(), coded, fedChannels());
+    } else {
+        const auto coded = plan::coded_channels(plan::LayoutId::k51);
+        const auto names = plan::coded_channel_names(plan::LayoutId::k51);
+        QStringList labels;
+        for (const auto& name : names) {
+            labels.append(QString::fromStdString(name));
+        }
+        setLayout(ac3::Acmod::k3_2, true, labels, QStringLiteral("5.1 bed"), coded,
+                 fedChannels());
+    }
+    setMetering(true);
+
+    const std::size_t nobjects = atmos ? std::min<std::size_t>(device.channels, 15) : 0;
+    const std::size_t channels = device.channels;
+    const std::uint32_t sample_rate = device.sample_rate;
+
+    std::ignore = QtConcurrent::run([this, p, atmos, eac3, cp = std::move(cp),
+                                     routing = std::move(routing), nobjects, channels,
+                                     sample_rate, monitor, passthrough, write_to_disk,
+                                     file_path]() mutable {
+        ac3::FrameEncoder ac3_encoder{plan::ac3_config(p)};
+        ac3::eac3::AccessUnitEncoder eac3_encoder{plan::eac3_config(p)};
+        std::optional<ac3::oba::AtmosEncoder> atmos_encoder;
+        if (atmos) {
+            atmos_encoder.emplace(
+                ac3::oba::AtmosConfig{.sample_rate = p.sample_rate,
+                                      .bitrate_kbps = p.bitrate_kbps,
+                                      .dialnorm = p.meta.dialnorm,
+                                      .num_bands_idx = 4},
+                static_cast<int>(nobjects));
+        }
+        ac3::FrameDecoder ac3_monitor_decoder;
+        ac3::Eac3Decoder eac3_monitor_decoder;
+        ac3::iec61937::Eac3BurstPacker eac3_packer;
+
+        ac3::analysis::LevelMeter meter =
+            atmos ? ac3::analysis::LevelMeter{ac3::Acmod::k3_2, true, sample_rate}
+                  : ac3::analysis::LevelMeter{cp->bed_acmod, cp->bed_lfe, sample_rate,
+                                             routing->coded_channels};
+
+        std::vector<float> interleaved(static_cast<std::size_t>(ac3::kSamplesPerFrame) *
+                                       channels);
+        std::vector<std::vector<float>> object_block(
+            std::max<std::size_t>(nobjects, 1), std::vector<float>(ac3::kSamplesPerFrame, 0.0f));
+        std::vector<std::span<const float>> object_views(std::max<std::size_t>(nobjects, 1));
+        std::vector<ac3::oba::ObjectPlacement> placement(std::max<std::size_t>(nobjects, 1));
+        std::vector<std::span<const float>> bed_views(6);
+
+        const std::size_t coded_count =
+            atmos ? 6 : static_cast<std::size_t>(routing->coded_channels);
+        std::vector<std::vector<float>> chan_source(
+            atmos ? 0 : static_cast<std::size_t>(routing->source_channels),
+            std::vector<float>(ac3::kSamplesPerFrame, 0.0f));
+        std::vector<std::vector<float>> chan_block(coded_count,
+                                                   std::vector<float>(ac3::kSamplesPerFrame, 0.0f));
+        std::vector<std::span<const float>> chan_in;
+        std::vector<std::span<float>> chan_out;
+        std::vector<std::span<const float>> chan_views;
+        for (auto& channel : chan_source) {
+            chan_in.emplace_back(channel);
+        }
+        for (auto& channel : chan_block) {
+            chan_out.emplace_back(channel);
+            chan_views.emplace_back(channel);
+        }
+
+        std::vector<std::vector<std::byte>> frames;
+        std::uint64_t n0 = 0;
+        auto published_at = std::chrono::steady_clock::now() - kPublishInterval;
+
+        while (!stop_live_.load(std::memory_order_relaxed)) {
+            std::size_t filled = 0;
+            while (filled < interleaved.size() &&
+                   !stop_live_.load(std::memory_order_relaxed)) {
+                const auto got = live_capture_->buffer()->read(
+                    std::span{interleaved}.subspan(filled, interleaved.size() - filled));
+                filled += got;
+                if (got == 0) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                }
+            }
+            if (filled < interleaved.size()) {
+                break;  // stopped mid-frame; drop the partial frame
+            }
+            n0 += static_cast<std::uint64_t>(ac3::kSamplesPerFrame);
+
+            std::vector<std::byte> unit_bytes;
+            if (atmos) {
+                for (std::size_t ch = 0; ch < nobjects; ++ch) {
+                    for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+                        const std::size_t base = static_cast<std::size_t>(i) * channels;
+                        object_block[ch][static_cast<std::size_t>(i)] =
+                            ch < channels ? interleaved[base + ch] : 0.0f;
+                    }
+                    object_views[ch] = object_block[ch];
+                }
+                const auto snapshot = liveObjectSnapshot();
+                for (std::size_t i = 0; i < nobjects; ++i) {
+                    const auto& config = i < snapshot.size() ? snapshot[i] : ObjectConfig{};
+                    placement[i] = {
+                        .position = {.x = config.x, .y = config.y, .z = config.z},
+                        .gain = 0.7 / std::sqrt(static_cast<double>(nobjects)),
+                        .lfe_send = config.lfe_send / std::sqrt(static_cast<double>(nobjects))};
+                }
+                const auto unit = atmos_encoder->encode_frame(
+                    std::span{object_views}.first(nobjects),
+                    std::span{placement}.first(nobjects));
+                if (!unit) {
+                    break;
+                }
+                for (std::size_t ch = 0; ch < 6; ++ch) {
+                    bed_views[ch] = std::span{atmos_encoder->bed()[ch]};
+                }
+                meter.process(bed_views);
+                unit_bytes = unit->bytes;
+            } else {
+                for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+                    const std::size_t base = static_cast<std::size_t>(i) * channels;
+                    for (std::size_t ch = 0; ch < chan_source.size(); ++ch) {
+                        chan_source[ch][static_cast<std::size_t>(i)] =
+                            ch < channels ? interleaved[base + ch] : 0.0f;
+                    }
+                }
+                plan::render(*routing, chan_in, chan_out, ac3::kSamplesPerFrame);
+                meter.process(chan_views);
+                if (eac3) {
+                    const auto unit = eac3_encoder.encode_access_unit(chan_views);
+                    if (!unit) {
+                        break;
+                    }
+                    unit_bytes = unit->bytes;
+                } else {
+                    const auto frame = ac3_encoder.encode_frame(chan_views);
+                    if (!frame) {
+                        break;
+                    }
+                    unit_bytes = *frame;
+                }
+            }
+
+            if (monitor) {
+                std::optional<std::vector<float>> to_play;
+                if (eac3) {
+                    const auto decoded = eac3_monitor_decoder.decode_access_unit(unit_bytes);
+                    if (decoded) {
+                        const auto order = plan::wav_order(std::span{decoded->layout.items}.first(
+                            static_cast<std::size_t>(decoded->layout.count)));
+                        to_play = interleave_reordered(decoded->channels, order);
+                    }
+                } else {
+                    const auto decoded = ac3_monitor_decoder.decode_frame(unit_bytes);
+                    if (decoded) {
+                        const auto order =
+                            ac3::io::wav_channel_order(decoded->acmod, decoded->lfe);
+                        to_play = interleave_reordered(decoded->channels, order);
+                    }
+                }
+                if (to_play) {
+                    while (!live_monitor_sink_->submit(*to_play) &&
+                          !stop_live_.load(std::memory_order_relaxed)) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(4));
+                    }
+                }
+            }
+
+            if (passthrough) {
+                std::optional<std::vector<std::byte>> burst;
+                if (eac3) {
+                    const auto packed = eac3_packer.push(unit_bytes);
+                    if (packed && *packed) {
+                        burst = std::move(**packed);
+                    }
+                } else {
+                    const auto wrapped = ac3::iec61937::wrap_frame(unit_bytes);
+                    if (wrapped) {
+                        burst = *wrapped;
+                    }
+                }
+                if (burst) {
+                    while (!live_passthrough_sink_->submit(*burst) &&
+                          !stop_live_.load(std::memory_order_relaxed)) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(4));
+                    }
+                }
+            }
+
+            if (write_to_disk) {
+                frames.push_back(unit_bytes);
+            }
+
+            const auto now = std::chrono::steady_clock::now();
+            if (now - published_at >= kPublishInterval) {
+                published_at = now;
+                const double seconds =
+                    static_cast<double>(n0) / static_cast<double>(sample_rate);
+                const auto dropped = live_capture_->stats().frames_dropped;
+                const auto underruns = passthrough ? live_passthrough_sink_->stats().underruns
+                                                   : std::uint64_t{0};
+                std::vector<ac3::analysis::ChannelLevel> snapshot(meter.levels().begin(),
+                                                                  meter.levels().end());
+                const auto encoded = static_cast<qint64>(n0 / ac3::kSamplesPerFrame);
+                QMetaObject::invokeMethod(
+                    this, [this, seconds, dropped, underruns, encoded,
+                          snapshot = std::move(snapshot)] {
+                        live_running_seconds_ = seconds;
+                        live_frames_encoded_ = encoded;
+                        live_frames_dropped_ = static_cast<qint64>(dropped);
+                        live_underruns_ = underruns;
+                        emit liveStatsChanged();
+                        publishLevels(snapshot);
+                    });
+            }
+        }
+
+        QString problem;
+        if (write_to_disk) {
+            problem = writeOutput(file_path, frames, sample_rate,
+                                  static_cast<int>(coded_count));
+        }
+
+        std::vector<ac3::analysis::ChannelLevel> totals(
+            static_cast<std::size_t>(meter.channel_count()));
+        for (std::size_t ch = 0; ch < totals.size(); ++ch) {
+            const auto& stats = meter.summary()[ch];
+            totals[ch].peak_db = stats.peak_db();
+            totals[ch].hold_db = stats.peak_db();
+            totals[ch].rms_db = stats.rms_db();
+            totals[ch].clipped = stats.clipped_samples > 0;
+        }
+
+        const auto count = frames.size();
+        QMetaObject::invokeMethod(this, [this, count, problem, write_to_disk,
+                                         totals = std::move(totals)] {
+            const auto capture_stats = live_capture_->stats();
+            live_capture_->stop();
+            live_capture_.reset();
+            if (live_monitor_sink_) {
+                live_monitor_sink_->stop();
+                live_monitor_sink_.reset();
+            }
+            if (live_passthrough_sink_) {
+                live_passthrough_sink_->stop();
+                live_passthrough_sink_.reset();
+            }
+            live_active_ = false;
+            live_reconnecting_ = false;
+            setBusy(false);
+            setMetering(false);
+            publishLevels(totals);
+            if (!problem.isEmpty()) {
+                setStatus(problem);
+            } else if (write_to_disk) {
+                setStatus(QStringLiteral("Live session ended - wrote %1 frames (%2 dropped).")
+                              .arg(count)
+                              .arg(capture_stats.frames_dropped));
+            } else {
+                setStatus(QStringLiteral("Live session ended (%1 dropped, nothing written to "
+                                         "disk).")
+                              .arg(capture_stats.frames_dropped));
+            }
+            emit liveActiveChanged();
+            emit liveReconnectingChanged();
+            emit encodeFinished(problem.isEmpty(), status());
+        });
+    });
+}
+
 void EncoderController::setRecording(bool recording) {
     if (recording == recording_) {
         return;
@@ -1038,6 +2009,7 @@ void EncoderController::startRecording(int deviceIndex, const QUrl& url) {
     recorded_seconds_ = 0.0;
     emit recordedSecondsChanged();
 
+    const auto coded = plan::coded_channels(cp);
     const auto names = plan::coded_channel_names(cp);
     QStringList labels;
     std::vector<bool> fed(names.size(), false);
@@ -1049,7 +2021,7 @@ void EncoderController::startRecording(int deviceIndex, const QUrl& url) {
             fed[static_cast<std::size_t>(c)] = routing->at(c, s) != 0.0;
         }
     }
-    setLayout(cp.bed_acmod, cp.bed_lfe, labels, label, fed);
+    setLayout(cp.bed_acmod, cp.bed_lfe, labels, label, coded, fed);
     setMetering(true);
     setStatus(QStringLiteral("Recording from %1…").arg(QString::fromStdString(device.name)));
 
@@ -1059,11 +2031,11 @@ void EncoderController::startRecording(int deviceIndex, const QUrl& url) {
 
     std::ignore = QtConcurrent::run([this, path, p, routing = *routing, channels, sample_rate,
                                      cp, eac3]() {
-        const auto coded = static_cast<std::size_t>(routing.coded_channels);
+        const auto coded_count = static_cast<std::size_t>(routing.coded_channels);
         ac3::FrameEncoder ac3_encoder{plan::ac3_config(p)};
         ac3::eac3::AccessUnitEncoder eac3_encoder{plan::eac3_config(p)};
         ac3::analysis::LevelMeter meter{cp.bed_acmod, cp.bed_lfe, sample_rate,
-                                        static_cast<int>(coded)};
+                                        static_cast<int>(coded_count)};
 
         std::vector<std::vector<std::byte>> frames;
         std::vector<float> interleaved(static_cast<std::size_t>(ac3::kSamplesPerFrame) *
@@ -1071,7 +2043,7 @@ void EncoderController::startRecording(int deviceIndex, const QUrl& url) {
         std::vector<std::vector<float>> source(
             static_cast<std::size_t>(routing.source_channels),
             std::vector<float>(ac3::kSamplesPerFrame, 0.0f));
-        std::vector<std::vector<float>> block(coded,
+        std::vector<std::vector<float>> block(coded_count,
                                               std::vector<float>(ac3::kSamplesPerFrame, 0.0f));
         std::vector<std::span<const float>> in;
         std::vector<std::span<float>> out;
@@ -1183,6 +2155,7 @@ void EncoderController::loadSourceFile(const QUrl& url) {
         source_path_ = path;
         source_info_.clear();
         object_count_ = 0;
+        refreshObjectConfigs();
         clearLayout();
         emit sourceChanged();
         setStatus(QStringLiteral("Could not read %1: %2")
@@ -1208,14 +2181,25 @@ void EncoderController::loadSourceFile(const QUrl& url) {
                       .arg(to_qstring(plan::describe(plan::PlanError::kNoSourceLayout)));
     }
 
-    // A newly loaded file picks the layout that matches it, which is what a
+    // A newly loaded file picks the bed+extras that match it, which is what a
     // user almost always wants and is the only choice that carries every
     // channel through untouched. Everything else stays where they left it.
     if (const auto natural = plan::layout_for_source(channels)) {
         if (plan::carries(codec_, *natural)) {
-            layout_ = *natural;
-        } else if (!plan::carries(codec_, layout_)) {
-            layout_ = plan::LayoutId::k51;
+            const auto cp = plan::channel_plan_for(*natural);
+            bed_acmod_ = cp.bed_acmod;
+            bed_lfe_ = cp.bed_lfe;
+            extras_mask_ = 0;
+            for (const auto dependent : cp.dependents) {
+                extras_mask_ = static_cast<std::uint16_t>(extras_mask_ | dependent);
+            }
+        } else if (codec_ == plan::Codec::kAc3 && extras_mask_ != 0) {
+            // The natural layout needs extras AC-3 cannot carry, and the
+            // current selection also does - fall back to a plain, always-
+            // legal 5.1 rather than leave an uncarryable one in place.
+            bed_acmod_ = ac3::Acmod::k3_2;
+            bed_lfe_ = true;
+            extras_mask_ = 0;
         }
         emit planChanged();
     }
@@ -1227,6 +2211,7 @@ void EncoderController::loadSourceFile(const QUrl& url) {
                        .arg(static_cast<int>(seconds) % 60, 2, 10, QLatin1Char('0'))
                        .arg(channels == 1 ? QString() : QStringLiteral("s"));
     object_count_ = static_cast<int>(std::min<std::size_t>(channels, 15));
+    refreshObjectConfigs();
     source_ = std::make_unique<Source>(Source{std::move(*wav)});
     source_path_ = path;
     source_ready_ = problem.isEmpty();
@@ -1245,9 +2230,16 @@ void EncoderController::loadSourceFile(const QUrl& url) {
             labels.append(to_qstring(ac3::analysis::channel_name(source_layout->acmod,
                                                                  source_layout->lfe, ch)));
         }
+        std::vector<plan::CodedChannel> coded;
+        coded.reserve(static_cast<std::size_t>(count));
+        for (const auto location : ac3::eac3::chanmap::expand(ac3::eac3::chanmap::acmod_map(
+                 source_layout->acmod, source_layout->lfe))) {
+            coded.push_back({.location = location, .bed = true, .substream = 0});
+        }
         setLayout(source_layout->acmod, source_layout->lfe, labels,
                   to_qstring(ac3::analysis::layout_name(source_layout->acmod,
-                                                        source_layout->lfe)));
+                                                        source_layout->lfe)),
+                  coded);
         setMetering(false);
         ac3::analysis::LevelMeter meter{source_layout->acmod, source_layout->lfe, rate};
         std::vector<std::span<const float>> views(source_layout->wav_index.size());
@@ -1329,6 +2321,7 @@ void EncoderController::encodeTo(const QUrl& url) {
     emit outputChanged();
 
     cancel_requested_.store(false, std::memory_order_relaxed);
+    startRun(path);
     setBusy(true);
     setProgress(0.0);
     setStatus(QStringLiteral("Encoding…"));
@@ -1381,32 +2374,33 @@ void EncoderController::encodeChannels(const QString& path,
         }
     }
 
+    const auto coded = plan::coded_channels(cp);
     const auto names = plan::coded_channel_names(cp);
     QStringList labels;
     for (const auto& name : names) {
         labels.append(QString::fromStdString(name));
     }
-    setLayout(cp.bed_acmod, cp.bed_lfe, labels, label, fedChannels());
+    setLayout(cp.bed_acmod, cp.bed_lfe, labels, label, coded, fedChannels());
     setMetering(true);
 
     const bool eac3 = p.codec == plan::Codec::kEac3;
     std::ignore = QtConcurrent::run([this, path, p, routing = *routing, cp, sample_rate,
                                      eac3, label, planes = std::move(planes)]() mutable {
-        const auto coded = static_cast<std::size_t>(routing.coded_channels);
+        const auto coded_count = static_cast<std::size_t>(routing.coded_channels);
         ac3::FrameEncoder ac3_encoder{plan::ac3_config(p)};
         ac3::eac3::AccessUnitEncoder eac3_encoder{plan::eac3_config(p)};
         ac3::analysis::LevelMeter meter{cp.bed_acmod, cp.bed_lfe, sample_rate,
-                                        static_cast<int>(coded)};
+                                        static_cast<int>(coded_count)};
 
         const std::size_t total = planes.front().size();
         std::vector<std::vector<float>> source(planes.size(),
                                                std::vector<float>(ac3::kSamplesPerFrame));
-        std::vector<std::vector<float>> block(coded,
+        std::vector<std::vector<float>> block(coded_count,
                                               std::vector<float>(ac3::kSamplesPerFrame));
         std::vector<std::span<const float>> in;
         std::vector<std::span<float>> out;
         std::vector<std::span<const float>> views;
-        std::vector<std::span<const float>> metered(coded);
+        std::vector<std::span<const float>> metered(coded_count);
         for (auto& channel : source) {
             in.emplace_back(channel);
         }
@@ -1436,7 +2430,7 @@ void EncoderController::encodeChannels(const QString& path,
                 }
             }
             plan::render(routing, in, out, ac3::kSamplesPerFrame);
-            for (std::size_t ch = 0; ch < coded; ++ch) {
+            for (std::size_t ch = 0; ch < coded_count; ++ch) {
                 metered[ch] = std::span{block[ch]}.first(valid);
             }
             meter.process(metered);
@@ -1535,11 +2529,12 @@ void EncoderController::encodeObjects(const QString& path,
     const std::size_t nobjects = std::min<std::size_t>(planes.size(), 15);
 
     // Each object gets its own path over time: authored keyframes where the
-    // GUI has been given some (see setObjectPathKeyframes), otherwise the
-    // static point-plus-spread placement below, held constant for the whole
-    // file. Built here, on the GUI thread, and moved into the worker below -
-    // the same timing today's centre/spread/lfe_send capture already relied
-    // on, so nothing about that thread-safety changes.
+    // GUI has been given some (see setObjectPathKeyframes), otherwise its own
+    // static position (see ObjectConfig - independent per object now, not a
+    // shared point plus a spread fan-out), held constant for the whole file.
+    // Built here, on the GUI thread, and moved into the worker below - the
+    // same timing today's per-object capture already relied on, so nothing
+    // about that thread-safety changes.
     std::vector<ac3::oba::ObjectPath> paths;
     paths.reserve(nobjects);
     for (std::size_t i = 0; i < nobjects; ++i) {
@@ -1551,40 +2546,33 @@ void EncoderController::encodeObjects(const QString& path,
                 continue;
             }
         }
-        // Objects that reach the bed by the SAME route are exactly the ones
-        // JOC cannot pull apart again, so they are spread either side of the
-        // chosen point rather than stacked on it. A stereo pair lands at
-        // exactly -/+ spread.
-        const double offset =
-            nobjects < 2 ? 0.0
-                         : object_spread_ * (2.0 * static_cast<double>(i) /
-                                                 static_cast<double>(nobjects - 1) - 1.0);
+        const auto& config = i < object_configs_.size()
+                                 ? object_configs_[i]
+                                 : ObjectConfig{};
         auto fallback = ac3::oba::KeyframePath::create(
             {{.time_s = 0.0,
-              .position = {.x = std::clamp(object_x_ + offset, 0.0, 1.0),
-                           .y = object_y_,
-                           .z = object_z_},
+              .position = {.x = config.x, .y = config.y, .z = config.z},
               // Every object is panned into the SAME five channels, so their
               // contributions add there. At unity apiece a six-channel source
               // put the bed's centre 7 dB over full scale; the inverse-root
               // law is what ac3cli's 'atmos' uses, and it keeps the sum near
               // unity for sources that are not identical.
               .gain = 0.7 / std::sqrt(static_cast<double>(nobjects)),
-              // Shared across the objects for the same reason: the LFE is one
-              // channel, and sending every object at full strength would
-              // pile the whole programme's low end into it.
-              .lfe_send = object_lfe_send_ / std::sqrt(static_cast<double>(nobjects))}});
+              // The LFE is one channel, and sending every object at full
+              // strength would pile the whole programme's low end into it.
+              .lfe_send = config.lfe_send / std::sqrt(static_cast<double>(nobjects))}});
         paths.emplace_back(std::move(*fallback));
     }
 
     // The meters follow the BED, not the source: 5.1 is what comes out and
     // what a legacy decoder hears, whatever the source layout was.
+    const auto coded = plan::coded_channels(plan::LayoutId::k51);
     const auto names = plan::coded_channel_names(plan::LayoutId::k51);
     QStringList labels;
     for (const auto& name : names) {
         labels.append(QString::fromStdString(name));
     }
-    setLayout(ac3::Acmod::k3_2, true, labels, QStringLiteral("5.1 bed"), fedChannels());
+    setLayout(ac3::Acmod::k3_2, true, labels, QStringLiteral("5.1 bed"), coded, fedChannels());
     setMetering(true);
 
     std::ignore = QtConcurrent::run([this, path, p, sample_rate, nobjects,

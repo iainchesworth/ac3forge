@@ -1,0 +1,33 @@
+#pragma once
+
+// NOTE: this header is generated from version.hpp.in by cmake/GenerateVersion.cmake.
+// Do not edit the generated copy; edit the template instead.
+
+#include <string>
+#include <string_view>
+
+namespace ac3 {
+
+// Semantic version (https://semver.org).
+inline constexpr int version_major = @AC3FORGE_VERSION_MAJOR@;
+inline constexpr int version_minor = @AC3FORGE_VERSION_MINOR@;
+inline constexpr int version_patch = @AC3FORGE_VERSION_PATCH@;
+inline constexpr std::string_view version_string = "@AC3FORGE_VERSION@";
+
+// Git provenance, stamped at build time.
+inline constexpr std::string_view git_commit = "@AC3FORGE_GIT_COMMIT@";
+inline constexpr std::string_view git_commit_full = "@AC3FORGE_GIT_COMMIT_FULL@";
+inline constexpr std::string_view git_describe = "@AC3FORGE_GIT_DESCRIBE@";
+inline constexpr std::string_view git_branch = "@AC3FORGE_GIT_BRANCH@";
+inline constexpr bool git_dirty = @AC3FORGE_GIT_DIRTY@;
+
+// OS/architecture/compiler this binary was built for, e.g. "Linux x86_64
+// (Clang 21.1.8)". Computed by src/lib/CMakeLists.txt from the toolchain
+// CMake itself configured, not read back from predefined compiler macros.
+inline constexpr std::string_view build_target = "@AC3FORGE_BUILD_TARGET@";
+
+// A multi-line, human-readable version + build-provenance block, suitable for
+// `--version` output or an About dialog.
+[[nodiscard]] std::string version_details();
+
+}  // namespace ac3

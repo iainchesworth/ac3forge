@@ -94,7 +94,7 @@
     {
       "name": "macos-llvm",
       "hidden": true,
-      "description": "macOS (Apple Silicon)/LLVM 21 toolchain selection. UNVERIFIED: this project has no macOS host, so these presets have never been configured, built or tested. GUI off for the same reason as linux-gcc.",
+      "description": "macOS (Apple Silicon)/Homebrew LLVM toolchain selection. Verified via CI only (this project has no local macOS host) - see docs/BUILDING.md's Verified configuration section. GUI off for the same reason as linux-gcc.",
       "cacheVariables": {
         "VCPKG_TARGET_TRIPLET": "arm64-macos-llvm",
         "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/macos.llvm.toolchain.cmake",
@@ -312,6 +312,39 @@
         "ASAN_OPTIONS": "detect_leaks=1",
         "UBSAN_OPTIONS": "print_stacktrace=1"
       }
+    }
+  ],
+
+  "packagePresets": [
+    {
+      "name": "pack-windows-msvc",
+      "displayName": "Windows MSVC Package",
+      "configurePreset": "config-windows-msvc",
+      "packageDirectory": "${sourceDir}/packages"
+    },
+    {
+      "name": "pack-windows-llvm",
+      "displayName": "Windows LLVM Package",
+      "configurePreset": "config-windows-llvm",
+      "packageDirectory": "${sourceDir}/packages"
+    },
+    {
+      "name": "pack-linux-gcc",
+      "displayName": "Linux GCC Package",
+      "configurePreset": "config-linux-gcc",
+      "packageDirectory": "${sourceDir}/packages"
+    },
+    {
+      "name": "pack-linux-llvm",
+      "displayName": "Linux LLVM Package",
+      "configurePreset": "config-linux-llvm",
+      "packageDirectory": "${sourceDir}/packages"
+    },
+    {
+      "name": "pack-macos-llvm",
+      "displayName": "macOS LLVM Package",
+      "configurePreset": "config-macos-llvm",
+      "packageDirectory": "${sourceDir}/packages"
     }
   ],
 

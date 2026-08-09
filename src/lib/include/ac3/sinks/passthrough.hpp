@@ -42,7 +42,7 @@ enum class PassthroughError : std::uint8_t {
 // runs the carrier at 4x the content rate (Microsoft's "Representing Formats
 // for IEC 61937 Transmissions") - and different burst sizes
 // (ac3::iec61937::kBurstBytes vs kEac3BurstBytes).
-enum class BitstreamFormat { kAc3, kEac3 };
+enum class BitstreamFormat : std::uint8_t { kAc3, kEac3 };
 
 struct RenderDeviceInfo {
     std::string id;

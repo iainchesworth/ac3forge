@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <expected>
 #include <span>
 #include <variant>
@@ -27,7 +28,7 @@ struct Keyframe {
     double lfe_send = 0.0;
 };
 
-enum class PathError { kNoKeyframes, kDuplicateTimestamp };
+enum class PathError : std::uint8_t { kNoKeyframes, kDuplicateTimestamp };
 
 // Sparse authored points, linearly interpolated between neighbours. Clamps
 // to the first/last keyframe outside their time range - an object holds
@@ -71,7 +72,7 @@ private:
 class ObjectPath {
 public:
     ObjectPath(KeyframePath path) : path_(std::move(path)) {}
-    ObjectPath(OrbitPath path) : path_(std::move(path)) {}
+    ObjectPath(const OrbitPath& path) : path_(path) {}
 
     [[nodiscard]] ObjectPlacement evaluate(double time_s) const;
 

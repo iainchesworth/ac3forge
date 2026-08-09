@@ -15,6 +15,13 @@
 set -euo pipefail
 
 CLI="${1:?usage: run-codec-matrix.sh <path-to-ac3cli> [workdir]}"
+# Resolve to an absolute path before the `cd "$WORKDIR"` below: CI passes a
+# path relative to the repo root (e.g. "build/.../bin/ac3cli"), which stops
+# resolving the moment the working directory changes.
+case "$CLI" in
+    /*) ;;
+    *) CLI="$PWD/$CLI" ;;
+esac
 WORKDIR="${2:-$(mktemp -d)}"
 mkdir -p "$WORKDIR"
 cd "$WORKDIR"
