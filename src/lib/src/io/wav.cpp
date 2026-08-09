@@ -91,7 +91,7 @@ std::expected<WavData, WavError> read_wav(const std::string& path) {
     result.channels.assign(channel_count, std::vector<float>(frames));
     for (std::size_t frame = 0; frame < frames; ++frame) {
         for (std::uint16_t ch = 0; ch < channel_count; ++ch) {
-            const std::size_t at = payload_at + frame * stride + ch * bits / 8;
+            const std::size_t at = payload_at + frame * stride + static_cast<std::size_t>(ch) * bits / 8;
             if (is_float) {
                 float value = 0.0f;
                 std::memcpy(&value, raw.data() + at, sizeof(value));

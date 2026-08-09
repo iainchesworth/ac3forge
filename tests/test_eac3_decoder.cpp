@@ -459,7 +459,7 @@ TEST_CASE("the E-AC-3 decoder rejects malformed streams", "[eac3][decoder]") {
         // fscod(2) numblkscod(2) acmod(3) lfeon(1) bsid(5) dialnorm(5)
         // compre(1) compr(8) chanmape(1).
         constexpr std::size_t kChanmapBit = 16 + 2 + 3 + 11 + 2 + 2 + 3 + 1 + 5 + 5 + 1 + 8 + 1;
-        patch_bits(dependent, kChanmapBit, 16, ac3::eac3::chanmap::kLrsRrs);  // 2, not 4
+        patch_bits(dependent, kChanmapBit, 16, ac3::eac3::chanmap::kLrsRrsBit);  // 2, not 4
         CHECK(decoder.decode_substream(dependent).error() ==
               ac3::DecodeError::kInvalidStream);
     }

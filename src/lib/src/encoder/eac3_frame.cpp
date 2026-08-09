@@ -1507,10 +1507,10 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                                        aht_bin_bits(hebap));
                         continue;
                     }
-                    const int mantissa_bits = aht_mantissa_bits(hebap);
+                    const int hebap_mantissa_bits = aht_mantissa_bits(hebap);
                     for (std::size_t j = 0; j < kBlocksPerFrameSize; ++j) {
                         const auto code =
-                            aht_quantize_mantissa(values[j], mantissa_bits,
+                            aht_quantize_mantissa(values[j], hebap_mantissa_bits,
                                                   plan.aht_gain[at]);
                         writer.add_raw(code.code, code.bits);
                         if (code.escape_bits > 0) {

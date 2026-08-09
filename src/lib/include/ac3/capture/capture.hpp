@@ -19,7 +19,7 @@
 
 namespace ac3::capture {
 
-enum class CaptureError {
+enum class CaptureError : std::uint8_t {
     kNoBackend,          // built without a platform capture backend
     kComFailure,         // COM/WASAPI call failed
     kDeviceNotFound,
@@ -29,7 +29,7 @@ enum class CaptureError {
 
 [[nodiscard]] std::string_view describe(CaptureError error);
 
-enum class DeviceKind {
+enum class DeviceKind : std::uint8_t {
     kInput,     // microphone, line in
     kLoopback,  // what the machine is playing (a render endpoint)
 };

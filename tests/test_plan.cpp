@@ -43,7 +43,7 @@ void fill_tone(std::vector<float>& out, double hz, double amplitude, std::uint64
 [[nodiscard]] double rms(std::span<const float> samples) {
     double sum = 0.0;
     for (const float value : samples) {
-        sum += static_cast<double>(value) * value;
+        sum += static_cast<double>(value) * static_cast<double>(value);
     }
     return samples.empty() ? 0.0 : std::sqrt(sum / static_cast<double>(samples.size()));
 }

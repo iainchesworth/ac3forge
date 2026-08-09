@@ -24,12 +24,12 @@
 
 namespace ac3::io {
 
-enum class StreamKind {
+enum class StreamKind : std::uint8_t {
     kAc3,   // bsid <= 10
     kEac3,  // bsid 16 (Annex E)
 };
 
-enum class ScanError {
+enum class ScanError : std::uint8_t {
     kEmpty,
     kLostSync,
     kUnsupportedBsid,

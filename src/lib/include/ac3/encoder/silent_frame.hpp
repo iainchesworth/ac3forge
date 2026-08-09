@@ -38,7 +38,7 @@ struct SilentFrameConfig {
     bool pad441 = false;
 };
 
-enum class FrameError {
+enum class FrameError : std::uint8_t {
     kInvalidBitrate,
     kInvalidDialnorm,
     // A substream's strmtyp/substreamid is out of range, an access unit has

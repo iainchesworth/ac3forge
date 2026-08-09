@@ -21,28 +21,28 @@ constexpr int kBsidBitOffset = 40;
     switch (acmod) {
         case Acmod::kDualMono:  // 1+1: two independent programs, not a layout
         case Acmod::k1_0:
-            map = kCentre;
+            map = kCentreBit;
             break;
         case Acmod::k2_0:
-            map = kLeft | kRight;
+            map = kLeftBit | kRightBit;
             break;
         case Acmod::k3_0:
-            map = kLeft | kCentre | kRight;
+            map = kLeftBit | kCentreBit | kRightBit;
             break;
         case Acmod::k2_1:
-            map = kLeft | kRight | kCs;
+            map = kLeftBit | kRightBit | kCsBit;
             break;
         case Acmod::k3_1:
-            map = kLeft | kCentre | kRight | kCs;
+            map = kLeftBit | kCentreBit | kRightBit | kCsBit;
             break;
         case Acmod::k2_2:
-            map = kLeft | kRight | kLeftSurround | kRightSurround;
+            map = kLeftBit | kRightBit | kLeftSurroundBit | kRightSurroundBit;
             break;
         case Acmod::k3_2:
-            map = kLeft | kCentre | kRight | kLeftSurround | kRightSurround;
+            map = kLeftBit | kCentreBit | kRightBit | kLeftSurroundBit | kRightSurroundBit;
             break;
     }
-    return static_cast<std::uint16_t>(map | (lfe ? kLfe : 0));
+    return static_cast<std::uint16_t>(map | (lfe ? kLfeBit : 0));
 }
 
 [[nodiscard]] bool sync_at(std::span<const std::byte> stream, std::size_t offset) {

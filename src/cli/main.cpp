@@ -3,6 +3,7 @@
 #include <charconv>
 #include <chrono>
 #include <cmath>
+#include <exception>
 #include <cstdint>
 #include <cstdio>
 #include <format>
@@ -224,6 +225,7 @@ std::optional<int> measured_dialnorm(const ac3::io::WavData& wav, ac3::SampleRat
                                      ac3::Acmod acmod, bool lfe) {
     ac3::meta::LoudnessMeter meter{rate, acmod, lfe};
     std::vector<std::span<const float>> views;
+    views.reserve(wav.channels.size());
     for (const auto& channel : wav.channels) {
         views.emplace_back(channel);
     }
@@ -372,7 +374,7 @@ void print_live_meter(const ac3::analysis::LevelMeter& meter, double seconds) {
     // Without a newline nothing reaches the console on its own: stdout is
     // block-buffered the moment it is redirected, and a meter nobody sees
     // until the run ends is not a meter.
-    std::fflush(stdout);
+    (void)std::fflush(stdout);  // best-effort: a live meter with nothing left to do on failure
 }
 
 int run_silence(std::string_view out_path, std::uint32_t seconds, std::uint32_t bitrate) {
@@ -398,7 +400,7 @@ int run_silence(std::string_view out_path, std::uint32_t seconds, std::uint32_t 
 // the same reason - identical ones could not tell §E3.8.2's overwrite
 // happening apart from the dependent being ignored altogether.
 std::vector<double> layout_tones(plan::LayoutId id) {
-    const std::vector<double> bed = {1000.0, 800.0, 1200.0, 600.0, 1400.0, 60.0};
+    std::vector<double> bed = {1000.0, 800.0, 1200.0, 600.0, 1400.0, 60.0};
     const std::vector<double> rear = {500.0, 1600.0, 400.0, 1800.0};
     const std::vector<double> top = {2000.0, 2400.0, 2800.0, 3200.0};
     std::vector<double> out;
@@ -1012,7 +1014,7 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
             }
             views[ch] = block[ch];
         }
-        const auto unit = encoder.encode_frame(views, placement);
+        auto unit = encoder.encode_frame(views, placement);
         if (!unit) {
             std::println(stderr,
                          "error: cannot encode {} objects at {} kbps — the metadata and the "
@@ -1470,6 +1472,10 @@ int run_decode(std::string_view in_path, std::string_view out_path,
                            decoded->channels[ch].end());
             views.emplace_back(decoded->channels[ch]);
         }
+        // have_first gates meter.emplace() a few lines up, in this same
+        // iteration on the first pass and an earlier one on every pass
+        // after, so meter is always engaged by the time this line runs.
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         meter->process(views);
     }
     if (!have_first) {
@@ -1498,6 +1504,9 @@ int run_decode(std::string_view in_path, std::string_view out_path,
     } else {
         std::println("          compr  absent");
     }
+    // The have_first check above already returned if the frame loop never
+    // ran, and it is that same loop's first iteration that emplaces meter.
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     print_channel_summary(*meter);
     return 0;
 }
@@ -1535,7 +1544,7 @@ int run_levels_eac3(std::span<const std::byte> stream, std::string_view in_path)
                 stats.peak = std::max(stats.peak, magnitude);
                 stats.sum_squares += magnitude * magnitude;
                 ++stats.samples;
-                if (magnitude >= ac3::analysis::kFullScale) {
+                if (magnitude >= static_cast<double>(ac3::analysis::kFullScale)) {
                     ++stats.clipped_samples;
                 }
             }
@@ -1600,8 +1609,14 @@ int run_levels(std::string_view in_path) {
             for (const auto& channel : decoded->channels) {
                 views.emplace_back(channel);
             }
+            // meter is engaged by the !meter check a few lines up, in this
+            // same iteration on the first pass and an earlier one thereafter.
+            // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
             meter->process(views);
         }
+        // The `!frames || frames->empty()` check above guarantees the loop
+        // ran at least once, and its first iteration always emplaces meter.
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         print_channel_summary(*meter);
         return 0;
     }
@@ -1902,7 +1917,7 @@ struct Args {
 // the same reason min_args is: stated once, beside the command it describes,
 // and read by both dispatch and the usage text so the two cannot disagree
 // about which commands exist here.
-enum class Needs { kNothing, kCapture, kPassthrough };
+enum class Needs : std::uint8_t { kNothing, kCapture, kPassthrough };
 
 // The unmet requirement, or nullptr when the platform can satisfy it.
 //
@@ -2092,7 +2107,7 @@ void print_usage() {
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int run_main(int argc, char** argv) {
     const std::span<char*> raw{argv, static_cast<std::size_t>(argc)};
     // Split the command line into positional arguments and metadata options. An
     // option is a key=value token or one of the three bare flags, so the
@@ -2149,4 +2164,26 @@ int main(int argc, char** argv) {
     std::println(stderr, "error: unknown command '{}'", command);
     print_usage();
     return 1;
+}
+
+// run_main is std::expected-clean throughout; the one realistic exception
+// source left is std::format/std::println itself (std::format_error), which
+// nothing here catches internally. Left uncaught, that unwinds out of main
+// and terminates - a crash with no exit code a script could act on rather
+// than the ordinary "error: ..." this CLI otherwise always prints on
+// failure. This is the one place that catches it. clang-tidy still flags
+// main() itself: it cannot see past this try/catch to know the escape is
+// caught, and reports the one path it cannot fully close by construction -
+// the catch block's own std::println, whose fixed one-argument format string
+// has no realistic way to throw. NOLINTNEXTLINE(bugprone-exception-escape)
+int main(int argc, char** argv) {
+    try {
+        return run_main(argc, argv);
+    } catch (const std::exception& e) {
+        std::println(stderr, "error: unhandled exception: {}", e.what());
+        return 1;
+    } catch (...) {
+        std::println(stderr, "error: unhandled exception of unknown type");
+        return 1;
+    }
 }

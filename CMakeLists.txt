@@ -21,6 +21,11 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(CompilerWarnings)
 
+# Empty unless -DAC3FORGE_SANITIZERS=<comma-list> is set (see the *-asan-ubsan
+# presets in CMakePresets.json); a plain configure is unaffected.
+set(AC3FORGE_SANITIZERS "" CACHE STRING "Comma-separated -fsanitize= value, e.g. address,undefined")
+include(Sanitizers)
+
 # Sources carry spec citations with non-ASCII glyphs (section marks, degrees,
 # arrows). Tell MSVC both the source and execution charsets are UTF-8 so it
 # neither mis-decodes them nor warns; harmless everywhere else.

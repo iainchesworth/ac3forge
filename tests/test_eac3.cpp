@@ -849,11 +849,11 @@ TEST_CASE("chanmap counts paired locations as two channels", "[eac3]") {
     // Six of the sixteen Table E2.5 locations name a pair, so population count
     // is not channel count - and the two disagreeing is a wrong-speaker bug
     // that parses perfectly.
-    CHECK(channel_count(kLeft) == 1);
-    CHECK(channel_count(kLfe) == 1);
-    CHECK(channel_count(kLrsRrs) == 2);
-    CHECK(channel_count(kVhlVhr) == 2);
-    CHECK(channel_count(static_cast<std::uint16_t>(kLeft | kCentre | kRight)) == 3);
+    CHECK(channel_count(kLeftBit) == 1);
+    CHECK(channel_count(kLfeBit) == 1);
+    CHECK(channel_count(kLrsRrsBit) == 2);
+    CHECK(channel_count(kVhlVhrBit) == 2);
+    CHECK(channel_count(static_cast<std::uint16_t>(kLeftBit | kCentreBit | kRightBit)) == 3);
     // Bit 0 is the MSB, which is the only numbering under which the spec's
     // example (bits 3, 4, 6 with acmod 2/2) comes to four channels.
     CHECK(k71Rear == 0x1A00);
@@ -948,19 +948,19 @@ TEST_CASE("E-AC-3 rejects substream layouts it cannot express", "[eac3]") {
     // and lfeon code. A decoder would not fail on this - it would just put
     // audio in the wrong speakers - so the encoder has to refuse it.
     auto wrong = seven_one();
-    wrong.dependents[0].chanmap = ac3::eac3::chanmap::kLrsRrs;  // 2, not 4
+    wrong.dependents[0].chanmap = ac3::eac3::chanmap::kLrsRrsBit;  // 2, not 4
     CHECK(ac3::eac3::build_silent_access_unit(wrong).error() ==
           ac3::FrameError::kInvalidChannelMap);
 
     // Only a dependent substream may carry one.
     CHECK(ac3::eac3::build_silent_frame(
-              {.chanmap = ac3::eac3::chanmap::kLeft})
+              {.chanmap = ac3::eac3::chanmap::kLeftBit})
               .error() == ac3::FrameError::kInvalidSubstream);
 
     // E2.3.1.2: eight dependents per independent substream, no more.
     AccessUnitConfig crowded;
     crowded.dependents.assign(
-        9, {.bitrate_kbps = 32, .chanmap = ac3::eac3::chanmap::kLwRw});
+        9, {.bitrate_kbps = 32, .chanmap = ac3::eac3::chanmap::kLwRwBit});
     CHECK(ac3::eac3::build_silent_access_unit(crowded).error() ==
           ac3::FrameError::kInvalidSubstream);
 
@@ -969,7 +969,7 @@ TEST_CASE("E-AC-3 rejects substream layouts it cannot express", "[eac3]") {
     AccessUnitConfig mixed;
     mixed.dependents.push_back({.sample_rate = ac3::SampleRate::k32000,
                                 .bitrate_kbps = 96,
-                                .chanmap = ac3::eac3::chanmap::kLwRw});
+                                .chanmap = ac3::eac3::chanmap::kLwRwBit});
     CHECK(ac3::eac3::build_silent_access_unit(mixed).error() ==
           ac3::FrameError::kInvalidSubstream);
 

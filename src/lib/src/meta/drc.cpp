@@ -34,7 +34,7 @@ std::uint8_t quantize(double gain_db, int mantissa_bits, int exp_low, int exp_hi
     // epsilon keeps an exactly representable gain from truncating a code low
     // on the last bit of the pow/frexp round trip.
     auto y = static_cast<int>(round_down ? std::floor(mantissa + 1e-9)
-                                         : std::lround(mantissa));
+                                         : static_cast<double>(std::lround(mantissa)));
     if (y > static_cast<int>(scale) - 1) {
         // The mantissa rounded up past its top: renormalise into the next
         // exponent rather than emitting an out-of-range field.

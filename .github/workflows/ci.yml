@@ -1,34 +1,32 @@
 # ac3forge CI.
 #
 # ---------------------------------------------------------------------------
-# Matrix status at the commit that added this workflow
+# Matrix status (updated when sanitizer builds and static analysis were added)
 # ---------------------------------------------------------------------------
-# Every leg was run for real before being claimed here: windows-msvc and
-# windows-llvm locally (MSVC 14.51 / clang-cl 21.1.0), the two Linux legs in an
-# Ubuntu 26.04 container built from .github/toolchain/ (gcc 15.2.0 / clang
-# 21.1.8). macOS could not be run at all — the project has no Mac.
+# Every leg below was run for real, not just claimed: windows-msvc locally
+# (MSVC 14.51), the Linux legs and static-analysis in an Ubuntu 26.04
+# container built from .github/toolchain/ (gcc 15.2.0 / clang 21.1.8).
+# windows-llvm and macos-llvm remain as they were: windows-llvm still fails
+# under -Werror (nobody has ported it), and macOS could not be run at all —
+# the project has no Mac.
 #
-#   leg            status    what stands in the way
-#   -------------  --------  ---------------------------------------------------
-#   windows-msvc   GREEN     175/175 tests pass
-#   windows-llvm   red       17 sites: sign-conversion, double-promotion
-#   linux-gcc      red       47 sites: shadow (141), sign-conversion (103),
-#                            double-promotion, missing-field-initializers,
-#                            null-dereference, range-loop-construct,
-#                            unused-function
-#   linux-llvm     red       16 sites: sign-conversion (102), double-promotion,
-#                            missing-designated-field-initializers,
-#                            implicit-int-float-conversion
-#   macos-llvm     unknown   never executed; shares linux-llvm's warning set, so
-#                            expect at least the same failures
+#   leg                    status    notes
+#   ----------------------  --------  ------------------------------------------
+#   windows-msvc            GREEN     214/214 tests pass
+#   windows-llvm             red      17 sites: sign-conversion, double-promotion
+#   linux-gcc                GREEN    214/214 tests pass
+#   linux-llvm               GREEN    214/214 tests pass
+#   linux-llvm-asan-ubsan    GREEN    214/214 tests + the full codec-matrix
+#                                     script (99 encode/decode/report commands
+#                                     across every layout, Annex E tool token,
+#                                     and Atmos mode) - see cmake/Sanitizers.cmake
+#   static-analysis (tidy)   GREEN    .clang-tidy's curated set, clean baseline
+#   macos-llvm               unknown  never executed; shares linux-llvm's
+#                                     warning set, so expect at least the same
+#                                     failures as windows-llvm
 #
-# One root cause runs through all of it: cmake/CompilerWarnings.cmake enables a
-# strict GNU-style warning set with -Werror, and until now only MSVC's /W4 /WX
-# has ever had to be satisfied. The failures are in the codec sources, not in
-# CI, and fixing them is the cross-platform porting work — not this workflow's
-# job. So the four unproven legs run with continue-on-error (see _build.yml):
+# windows-llvm and macos-llvm run with continue-on-error (see _build.yml):
 # they report honestly without turning the default branch red on every push.
-#
 # Promote a leg by deleting its `experimental: true` line in _build.yml.
 name: CI
 
@@ -166,6 +164,60 @@ jobs:
         shell: pwsh
         run: ./scripts/check-platform-macros.ps1 -Root $PWD
 
+  # .clang-tidy's own header comment explains the curated check groups and
+  # what got excluded from them (and why). A full Build precedes clang-tidy,
+  # not just Configure: CMake 3.28's Ninja dependency-scan step (the
+  # "Generating CXX dyndep file" lines in a normal build log) writes a
+  # per-TU .modmap response file that compile_commands.json's command lines
+  # reference, and nothing generates it until ninja actually runs - clang-tidy
+  # fails with "no such file or directory" on every TU without this step, even
+  # though it is only reading the AST, not linking anything.
+  # -warnings-as-errors='*' makes any finding in the curated set fail the job
+  # (run-clang-tidy-21 is the LLVM Python wrapper and takes single-dash
+  # arguments, unlike clang-tidy itself): every finding present when this job
+  # was added was either fixed or suppressed with a NOLINT and a one-line
+  # justification (see the commit that added this job), so a clean baseline
+  # is the starting point, not an aspiration.
+  static-analysis:
+    name: Static Analysis (clang-tidy)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    container: ubuntu:26.04
+    steps:
+      - name: Bootstrap container
+        run: |
+          set -eu
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends \
+            build-essential ca-certificates cmake curl git gnupg lsb-release \
+            ninja-build pkg-config software-properties-common tar unzip wget zip
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install LLVM 21
+        run: bash .github/toolchain/03-llvm-toolchain.sh
+
+      - uses: ./.github/actions/setup-vcpkg
+        with:
+          vcpkg-commit: "eaca4a577b6b678c6e10252754b6988a61746c19"
+
+      - name: Configure
+        shell: bash
+        run: cmake --preset config-linux-llvm
+
+      - name: Build
+        shell: bash
+        run: cmake --build --preset build-linux-llvm -- -k 0
+
+      - name: clang-tidy
+        shell: bash
+        run: |
+          run-clang-tidy-21 -j "$(nproc)" -p build/config-linux-llvm \
+            -warnings-as-errors='*' \
+            'src/(lib|cli|matroska)/.*\.cpp'
+
   build-and-test:
     name: Build & Test
     needs: changes
@@ -179,7 +231,7 @@ jobs:
   ci-status:
     name: CI Status
     if: always()
-    needs: [ branch-name, no-quarantine, changes, platform-macros, build-and-test ]
+    needs: [ branch-name, no-quarantine, changes, platform-macros, static-analysis, build-and-test ]
     runs-on: ubuntu-latest
     steps:
       - name: Gate on required job results
@@ -191,13 +243,14 @@ jobs:
           R_CHANGES: ${{ needs.changes.result }}
           R_MACROS: ${{ needs.platform-macros.result }}
           # 'skipped' on a docs-only change, which is a pass, not a failure.
+          R_TIDY: ${{ needs.static-analysis.result }}
           R_BUILD: ${{ needs.build-and-test.result }}
         run: |
           set -euo pipefail
           fail=0
           for pair in "branch-name:$R_BRANCH" "no-quarantine:$R_QUARANTINE" \
                       "changes:$R_CHANGES" "platform-macros:$R_MACROS" \
-                      "build-and-test:$R_BUILD"; do
+                      "static-analysis:$R_TIDY" "build-and-test:$R_BUILD"; do
             job="${pair%%:*}"; result="${pair#*:}"
             echo "  $job: $result"
             if [ "$result" = "failure" ] || [ "$result" = "cancelled" ]; then

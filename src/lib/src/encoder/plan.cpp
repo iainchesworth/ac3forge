@@ -862,7 +862,7 @@ void render(const Routing& routing, std::span<const std::span<const float>> sour
             const auto in = source[static_cast<std::size_t>(s)];
             const auto n = std::min(samples, in.size());
             for (std::size_t i = 0; i < n; ++i) {
-                out[i] += static_cast<float>(gain * in[i]);
+                out[i] += static_cast<float>(gain * static_cast<double>(in[i]));
             }
         }
     }
