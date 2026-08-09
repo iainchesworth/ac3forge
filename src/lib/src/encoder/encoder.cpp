@@ -816,22 +816,44 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     };
 
     // --- 8. Measure the side information -----------------------------------
-    std::uint32_t side_bits = 16 + 16 + 2 + 6;  // syncinfo
-    {
+    const auto measure_side_bits = [&] {
+        std::uint32_t bits = 16 + 16 + 2 + 6;  // syncinfo
         std::uint32_t bsi = 25;
         if (has_three_front(config_.acmod)) bsi += 2;  // cmixlev
         if (has_surround(config_.acmod)) bsi += 2;     // surmixlev
         if (config_.acmod == Acmod::k2_0) bsi += 2;    // dsurmod
         if (config_.heavy) bsi += 8;                   // compr (§5.4.2.10)
-        side_bits += bsi;
-    }
-    {
+        bits += bsi;
         BitWriter counter;
         for (int block = 0; block < kBlocksPerFrame; ++block) {
             emit_block_side_info(counter, block);
             counter.put(0, 1);  // skiple, always present
         }
-        side_bits += static_cast<std::uint32_t>(counter.bit_count());
+        bits += static_cast<std::uint32_t>(counter.bit_count());
+        return bits;
+    };
+    std::uint32_t side_bits = measure_side_bits();
+
+    // §7.2.2.6: delta bit allocation is a pure quality refinement, never
+    // load-bearing - a run's own code saying "no delta" is always legal - so
+    // its side-info cost must never be the reason an otherwise-fittable frame
+    // is refused. Cleared and re-measured, lazily, only if the budget check
+    // below would otherwise fail on it - generalizing the coupling exclusion
+    // above (§7.2.2.6's own scope note) from "coupling active" to "would not
+    // otherwise fit".
+    if (side_bits + detail::kTailBits > total_bits) {
+        bool any_delta = false;
+        for (auto& p : plan) {
+            for (auto& run : p.runs) {
+                if (run.delta.deltnseg > 0) {
+                    any_delta = true;
+                    run.delta = {};
+                }
+            }
+        }
+        if (any_delta) {
+            side_bits = measure_side_bits();
+        }
     }
     if (side_bits + detail::kTailBits > total_bits) {
         // The chosen configuration cannot fit its own headers at this rate.

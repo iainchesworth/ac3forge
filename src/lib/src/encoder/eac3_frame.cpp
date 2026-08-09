@@ -1477,11 +1477,35 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     // words - 1" above) - so this can be measured before the real word count
     // is known. That is exactly the order VBR needs: content decides the
     // size there, rather than the size deciding how much content fits.
-    const auto side_bits = [&] {
+    const auto measure_side_bits = [&] {
         BitWriter probe;
         emit_frame(probe, config_, 1, payload, aux);
         return static_cast<std::uint32_t>(probe.bit_count());
-    }();
+    };
+    std::uint32_t side_bits = measure_side_bits();
+
+    // §7.2.2.6/§E2.3.2.9: delta bit allocation is a pure quality refinement -
+    // dbaflde clear, or any stream's own code saying "no delta", is always a
+    // legal frame - so its side-info cost must never be the reason an
+    // otherwise-fittable frame is refused. Cleared and re-measured, lazily,
+    // at whichever budget check below would otherwise fail on it; matches
+    // cpl.in_use's existing "delta never load-bearing" rule above,
+    // generalized from "coupling active" to "would not otherwise fit".
+    bool any_delta_applied = false;
+    for (const auto& plan : payload.chans) {
+        any_delta_applied = any_delta_applied || plan.delta.deltnseg > 0;
+    }
+    const auto drop_delta_and_remeasure = [&] {
+        if (!any_delta_applied) {
+            return false;
+        }
+        for (auto& plan : payload.chans) {
+            plan.delta = {};
+        }
+        any_delta_applied = false;
+        side_bits = measure_side_bits();
+        return true;
+    };
 
     std::vector<std::span<const std::uint8_t>> bap_views;
     bap_views.reserve(static_cast<std::size_t>(streams));
@@ -1586,6 +1610,9 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     std::optional<std::uint32_t> fixed_budget;
     if (!config_.vbr) {
         words = frame_words(config_.sample_rate, config_.bitrate_kbps);
+        if (side_bits + kTailBits > words * 16 && drop_delta_and_remeasure()) {
+            // retried below with side_bits refreshed
+        }
         if (side_bits + kTailBits > words * 16) {
             return std::unexpected(FrameError::kInvalidBitrate);
         }
@@ -1595,7 +1622,10 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         const auto& vbr = *config_.vbr;
         const int composite = std::clamp(
             static_cast<int>(std::lround(std::clamp(vbr.quality, 0.0, 1.0) * 1023.0)), 0, 1023);
-        const auto sized = vbr_size_for(bits_at(composite), vbr);
+        auto sized = vbr_size_for(bits_at(composite), vbr);
+        if (!sized && drop_delta_and_remeasure()) {
+            sized = vbr_size_for(bits_at(composite), vbr);
+        }
         if (!sized) {
             return std::unexpected(FrameError::kInvalidBitrate);
         }
@@ -1656,7 +1686,10 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
             // including the same max_kbps re-check in case a forced mode
             // pushed the cost back over a bound the quality target alone had
             // stayed under.
-            const auto sized = vbr_size_for(bits_at(lo), *config_.vbr);
+            auto sized = vbr_size_for(bits_at(lo), *config_.vbr);
+            if (!sized && drop_delta_and_remeasure()) {
+                sized = vbr_size_for(bits_at(lo), *config_.vbr);
+            }
             if (!sized) {
                 return std::unexpected(FrameError::kInvalidBitrate);
             }
