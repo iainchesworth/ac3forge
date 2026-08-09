@@ -6,6 +6,33 @@
 add_library(ac3forge)
 add_library(ac3::forge ALIAS ac3forge)
 
+# --- Version + git stamp ---------------------------------------------------
+find_package(Git QUIET)
+set(AC3FORGE_VERSION_TEMPLATE "${CMAKE_CURRENT_SOURCE_DIR}/include/ac3/version.hpp.in")
+set(AC3FORGE_VERSION_HEADER "${CMAKE_CURRENT_BINARY_DIR}/generated/ac3/version.hpp")
+
+# Generate once at configure time so the header exists for the first build.
+set(AC3FORGE_VERSION "${PROJECT_VERSION}")
+set(SRC "${AC3FORGE_VERSION_TEMPLATE}")
+set(DST "${AC3FORGE_VERSION_HEADER}")
+set(WORKDIR "${PROJECT_SOURCE_DIR}")
+include("${PROJECT_SOURCE_DIR}/cmake/GenerateVersion.cmake")
+
+# Re-stamp on every build so the git information tracks new commits without a
+# reconfigure. configure_file only rewrites when the content changes, so this
+# does not needlessly recompile dependants.
+add_custom_target(ac3forge_version ALL
+    BYPRODUCTS "${AC3FORGE_VERSION_HEADER}"
+    COMMAND "${CMAKE_COMMAND}"
+        "-DAC3FORGE_VERSION=${PROJECT_VERSION}"
+        "-DSRC=${AC3FORGE_VERSION_TEMPLATE}"
+        "-DDST=${AC3FORGE_VERSION_HEADER}"
+        "-DGIT_EXECUTABLE=${GIT_EXECUTABLE}"
+        "-DWORKDIR=${PROJECT_SOURCE_DIR}"
+        -P "${PROJECT_SOURCE_DIR}/cmake/GenerateVersion.cmake"
+    COMMENT "Stamping version and git information"
+    VERBATIM)
+
 # Everything here is portable: bitstream, DSP, containers, measurement. The
 # OS-specific code is selected further down, out of this list.
 target_sources(ac3forge
@@ -34,11 +61,15 @@ target_sources(ac3forge
         src/oba/motion.cpp
         src/oba/oamd.cpp
         src/sinks/iec61937.cpp
-        src/spatial/spatial.cpp)
+        src/spatial/spatial.cpp
+        src/version.cpp)
+
+add_dependencies(ac3forge ac3forge_version)
 
 target_include_directories(ac3forge
     PUBLIC
         "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+        "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/generated>"
         "$<INSTALL_INTERFACE:include>")
 
 target_compile_features(ac3forge PUBLIC cxx_std_23)

@@ -1,0 +1,388 @@
+# Tag-triggered release: builds packages on every platform (best-effort - see
+# _build.yml's `experimental` legs), signs and attests them, generates an
+# SBOM, and publishes a GitHub Release. Modelled on aqualink-automate's
+# .github/workflows/release.yml, with three things deliberately left out:
+# APT/DNF repository publishing, a Docker image, and a Home Assistant add-on
+# wrapper - none of which apply to ac3forge. If ac3forge ever grows a package
+# repository the way aqualink-automate has, that job is the precedent to
+# copy, not to reinvent.
+#
+# ---------------------------------------------------------------------------
+# Versioning: the tag is validated against CMakeLists.txt, not derived from it
+# ---------------------------------------------------------------------------
+# aqualink-automate derives its version FROM the git tag at configure time
+# (cmake/GitVersionDerivation.cmake) - the tag is the only source of truth,
+# and CMakeLists.txt never hardcodes a version at all. ac3forge does the
+# opposite on purpose: `project(ac3forge VERSION ...)` stays the source of
+# truth (see the comment beside it, and cmake/GenerateVersion.cmake's git
+# provenance stamping, which layers ON TOP of that hardcoded version rather
+# than replacing it). Rearchitecting that was judged too large a change to
+# bundle into standing up release automation.
+#
+# The `resolve-version` job instead enforces that the two stay in sync at
+# release time: it fails fast if the pushed tag's version doesn't match
+# CMakeLists.txt's project() VERSION, rather than silently packaging
+# something mislabelled. Bump CMakeLists.txt (and vcpkg.json - see the
+# comment beside its "version" field) and merge to main BEFORE tagging.
+#
+# ---------------------------------------------------------------------------
+# Signing: GPG (human identity) + Sigstore (keyless build provenance)
+# ---------------------------------------------------------------------------
+# Both, matching aqualink-automate. The GPG step is gated on
+# `secrets.REPO_GPG_PRIVATE_KEY` being set and no-ops cleanly if it is not -
+# see docs/releasing.md for how to generate and provision that key. Nobody
+# other than a human with access to GitHub's secret store should ever see
+# that key; it is never generated or handled by an agent.
+name: Release
+
+on:
+  push:
+    tags: [ "v*" ]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Tag to release, e.g. v0.2.0 or v0.2.0-beta.1"
+        required: true
+        type: string
+      prerelease:
+        description: "Mark the GitHub Release as a prerelease"
+        required: false
+        type: boolean
+        default: false
+      dry_run:
+        description: "Build and package every platform; do not tag or publish anything"
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-${{ inputs.version || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Parses and validates the version once, so every downstream job reads a
+  # single agreed-on version/version_tag rather than re-deriving it (and
+  # possibly disagreeing) from github.ref_name or the dispatch inputs.
+  resolve-version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      version_tag: ${{ steps.resolve.outputs.version_tag }}
+      is_prerelease: ${{ steps.resolve.outputs.is_prerelease }}
+      is_dry_run: ${{ steps.resolve.outputs.is_dry_run }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          # This job only reads history for the merge-base check below - it
+          # never pushes, so it doesn't need a usable credential left behind.
+          persist-credentials: false
+
+      - name: Resolve and validate version
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          semver_re='^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$'
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version_tag="${{ inputs.version }}"
+            is_dry_run="${{ inputs.dry_run }}"
+            manual_prerelease="${{ inputs.prerelease }}"
+          else
+            version_tag="${{ github.ref_name }}"
+            is_dry_run="false"
+            manual_prerelease="false"
+          fi
+
+          if ! [[ "$version_tag" =~ $semver_re ]]; then
+            echo "::error::'$version_tag' is not vMAJOR.MINOR.PATCH[-(alpha|beta|rc).N]"
+            exit 1
+          fi
+
+          version="${version_tag#v}"
+          bare_version="${version%%-*}"
+
+          is_prerelease="false"
+          if [[ "$version_tag" == *-* ]] || [ "$manual_prerelease" = "true" ]; then
+            is_prerelease="true"
+          fi
+
+          # See the file header: the tag does not derive ac3forge's version,
+          # it is checked against it. A mismatch here means someone tagged
+          # before bumping CMakeLists.txt (or forgot vcpkg.json) - fail
+          # before packaging something mislabelled, not after.
+          cmake_version=$(grep -oP '(?<=VERSION )[0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt | head -1)
+          if [ "$bare_version" != "$cmake_version" ]; then
+            echo "::error::tag $version_tag (version $bare_version) does not match CMakeLists.txt's project() VERSION $cmake_version. Bump CMakeLists.txt (and vcpkg.json) to $bare_version and merge to main before tagging."
+            exit 1
+          fi
+
+          # Dry runs skip both checks below: no tag is ever pushed or
+          # published, so "does the tag already exist" and "is this cut from
+          # main" do not apply - and exempting the main-only check is what
+          # lets a dry run validate packaging changes from a topic branch
+          # before they merge.
+          if [ "$is_dry_run" != "true" ]; then
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              if git rev-parse "refs/tags/$version_tag" >/dev/null 2>&1; then
+                echo "::error::tag $version_tag already exists"
+                exit 1
+              fi
+              check_ref="${{ github.sha }}"
+            else
+              check_ref="$version_tag"
+            fi
+            git fetch origin main --quiet
+            if ! git merge-base --is-ancestor "$check_ref" origin/main; then
+              echo "::error::$check_ref is not on main - releases must be cut from main"
+              exit 1
+            fi
+          fi
+
+          {
+            echo "version=$bare_version"
+            echo "version_tag=$version_tag"
+            echo "is_prerelease=$is_prerelease"
+            echo "is_dry_run=$is_dry_run"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Resolved $version_tag (version $bare_version, prerelease=$is_prerelease, dry_run=$is_dry_run)"
+
+  # Same reusable workflow ci.yml calls for ordinary pushes, with do_package
+  # turned on: every packageable matrix leg attempts cpack, not just
+  # windows-msvc. The experimental legs still run continue-on-error inside
+  # _build.yml, so this job "succeeds" even if some of them fail to build at
+  # all - the release just ships without that platform's package. Runs on
+  # dry runs too: that is what a dry run is for.
+  build-packages:
+    name: Build & package
+    needs: resolve-version
+    uses: ./.github/workflows/_build.yml
+    with:
+      do_package: true
+
+  # Downloads whatever packages actually got built, signs and attests them,
+  # generates an SBOM, and publishes the GitHub Release. Skipped entirely on
+  # a dry run - that is the one thing a dry run deliberately does not do.
+  github-release:
+    name: Sign, attest and publish
+    needs: [ resolve-version, build-packages ]
+    if: needs.resolve-version.outputs.is_dry_run != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      # A step's `if:` cannot read `secrets` directly, only `env` - so the
+      # presence check happens once here and every gated step reads this
+      # instead. Empty means the GPG steps below no-op cleanly rather than
+      # failing a release that has not provisioned a signing key yet.
+      HAVE_GPG_KEY: ${{ secrets.REPO_GPG_PRIVATE_KEY != '' && 'true' || 'false' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download package artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: packages-*
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Verify at least one package was built
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          artifacts=(release-artifacts/*.deb release-artifacts/*.rpm release-artifacts/*.tar.gz
+                     release-artifacts/*.zip release-artifacts/*.exe release-artifacts/*.dmg)
+          if [ ${#artifacts[@]} -eq 0 ]; then
+            echo "::error::no package artifacts were downloaded - every platform failed to build"
+            exit 1
+          fi
+          printf '%s\n' "${artifacts[@]}"
+
+      - name: Import GPG signing key
+        if: env.HAVE_GPG_KEY == 'true'
+        env:
+          GPG_KEY: ${{ secrets.REPO_GPG_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "$GPG_KEY" | gpg --batch --import
+          echo "GPG_KEYID=$(gpg --list-secret-keys --with-colons | awk -F: '/^sec:/ {print $5; exit}')" >> "$GITHUB_ENV"
+          mkdir -p ~/.gnupg
+          echo "allow-loopback-pinentry" >> ~/.gnupg/gpg-agent.conf
+          gpgconf --kill gpg-agent
+
+      # Exports the public key so a downloader can verify without trusting
+      # GitHub, signs an aggregate SHA512SUMS manifest AND each artifact
+      # individually (standard release practice - a manifest signature lets
+      # you check everything in one step, per-artifact signatures let you
+      # verify a single downloaded file without the rest). The passphrase is
+      # piped through fd 3, not env/argv, so it never appears in the process
+      # list. Self-verifies its own signature before finishing, so a broken
+      # key fails this job instead of shipping an unverifiable release.
+      - name: GPG-sign release artifacts
+        if: env.HAVE_GPG_KEY == 'true'
+        env:
+          REPO_GPG_PASSPHRASE: ${{ secrets.REPO_GPG_PASSPHRASE }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gpg --armor --export "$GPG_KEYID" > release-artifacts/ac3forge-signing-key.asc
+
+          shopt -s nullglob
+          artifacts=(release-artifacts/*.deb release-artifacts/*.rpm release-artifacts/*.tar.gz
+                     release-artifacts/*.zip release-artifacts/*.exe release-artifacts/*.dmg)
+
+          sign() {
+            gpg --batch --yes --pinentry-mode loopback --passphrase-fd 3 --armor \
+                --detach-sign "$1" 3<<<"$REPO_GPG_PASSPHRASE"
+          }
+
+          ( cd release-artifacts && sha512sum "${artifacts[@]##release-artifacts/}" > SHA512SUMS )
+          sign release-artifacts/SHA512SUMS
+          for f in "${artifacts[@]}"; do
+            sign "$f"
+          done
+
+          gpg --verify release-artifacts/SHA512SUMS.asc release-artifacts/SHA512SUMS
+
+      - name: Generate release SBOM (SPDX)
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: release-artifacts
+          format: spdx-json
+          output-file: release-artifacts/ac3forge-${{ needs.resolve-version.outputs.version }}.spdx.json
+          upload-artifact: false
+
+      # Keyless: signed via Sigstore/Fulcio using this job's own GitHub OIDC
+      # identity (id-token: write above), no private key to manage. This
+      # attests WHICH repo/workflow/commit built these bytes; the GPG
+      # signature above attests WHO (a human maintainer) vouches for them -
+      # complementary, not redundant. Verify with:
+      #   gh attestation verify <file> --repo iainchesworth/ac3forge
+      - name: Attest package build provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: |
+            release-artifacts/*.deb
+            release-artifacts/*.rpm
+            release-artifacts/*.tar.gz
+            release-artifacts/*.zip
+            release-artifacts/*.exe
+            release-artifacts/*.dmg
+
+      - name: Attest package SBOM
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-path: |
+            release-artifacts/*.deb
+            release-artifacts/*.rpm
+            release-artifacts/*.tar.gz
+            release-artifacts/*.zip
+            release-artifacts/*.exe
+            release-artifacts/*.dmg
+          sbom-path: release-artifacts/ac3forge-${{ needs.resolve-version.outputs.version }}.spdx.json
+
+      # Only for workflow_dispatch: a tag-push run already has its tag (that
+      # is what triggered it). Pushed here, after build/package/sign/attest
+      # have all succeeded, so a failed dispatch run leaves no orphaned tag
+      # for anything but this step's own failure - which
+      # cleanup-failed-prerelease handles for prereleases.
+      - name: Push release tag
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TAG: ${{ needs.resolve-version.outputs.version_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "$TAG"
+          git push origin "$TAG"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION_TAG: ${{ needs.resolve-version.outputs.version_tag }}
+          IS_PRERELEASE: ${{ needs.resolve-version.outputs.is_prerelease }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          prerelease_flag=""
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            prerelease_flag="--prerelease"
+          fi
+          gh release create "$VERSION_TAG" \
+            --title "$VERSION_TAG" \
+            --generate-notes \
+            $prerelease_flag
+
+      # Deliberately a separate step from Create GitHub Release, not
+      # `gh release create <tag> ... release-artifacts/*` in one call:
+      # CountdownSolver's release.yml hit this for real - the combined form
+      # silently uploaded only 4 of 9 files, exit 0, no error, nothing to
+      # notice until someone went looking for a missing asset. Uploading
+      # separately and then verifying the asset count against the file count
+      # turns that into a failed job instead of a quietly incomplete release.
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION_TAG: ${{ needs.resolve-version.outputs.version_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(find release-artifacts -type f)
+          echo "Uploading ${#files[@]} file(s):"
+          printf '  %s\n' "${files[@]}"
+
+          gh release upload "$VERSION_TAG" "${files[@]}" --clobber
+
+          uploaded=$(gh release view "$VERSION_TAG" --json assets --jq '.assets | length')
+          if [ "$uploaded" -ne "${#files[@]}" ]; then
+            echo "::error::expected ${#files[@]} release assets, found $uploaded - upload silently dropped some files"
+            exit 1
+          fi
+
+  # Only reachable if github-release ran and failed AFTER pushing the tag
+  # (Push release tag succeeded, something later did not) on a dispatched
+  # PRERELEASE - a real (non-prerelease) tag is left alone even on failure,
+  # since silently deleting a version someone explicitly declared is a
+  # bigger surprise than a maintainer having to clean it up by hand. A
+  # tag-push trigger never reaches here at all: that tag existed before the
+  # workflow started, so this job cannot have been the one that created it.
+  cleanup-failed-prerelease:
+    name: Clean up orphaned prerelease tag
+    needs: [ resolve-version, github-release ]
+    if: |
+      always() &&
+      github.event_name == 'workflow_dispatch' &&
+      needs.resolve-version.outputs.is_prerelease == 'true' &&
+      needs.resolve-version.outputs.is_dry_run != 'true' &&
+      needs.github-release.result == 'failure'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Delete orphaned tag, if it was pushed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.resolve-version.outputs.version_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Deleting orphaned prerelease tag $TAG"
+            git push origin ":refs/tags/$TAG"
+          else
+            echo "No tag $TAG on origin; nothing to clean up"
+          fi

@@ -1,7 +1,10 @@
 # Reusable configure/build/test workflow — the single definition of how ac3forge
-# is built and tested on each platform. Called by ci.yml. Modelled on
-# aqualink-automate's .github/workflows/_build.yml, minus the packaging half
-# (ac3forge ships no packages yet).
+# is built and tested on each platform. Called by ci.yml (do_package defaults
+# false: only windows-msvc packages, continuously, as a packaging smoke test)
+# and by release.yml (do_package: true: every packageable leg attempts to
+# package, best-effort — the experimental legs still run continue-on-error, so
+# a release ships whichever packages actually built). Modelled on
+# aqualink-automate's .github/workflows/_build.yml.
 #
 # ---------------------------------------------------------------------------
 # On `experimental: true`
@@ -29,6 +32,10 @@ on:
         description: "microsoft/vcpkg commit to pin (see .github/actions/setup-vcpkg)."
         type: string
         default: "eaca4a577b6b678c6e10252754b6988a61746c19"
+      do_package:
+        description: "Package every packageable matrix leg (best-effort), not just windows-msvc. Set by release.yml."
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -60,12 +67,14 @@ jobs:
             # ships whatever 18.x is current, and the assert step below fails
             # loudly if that ever stops being a 14.5x toolset.
             msvc: true
+            packageable: true
 
           - name: "Windows LLVM (clang-cl)"
             runner: windows-latest
             preset: windows-llvm
             msvc: true          # clang-cl targets the MSVC ABI: same headers, same libs
             llvm: true
+            packageable: true
 
           # gui: true builds ac3gui too (the linux-gcc/linux-llvm presets
           # otherwise default AC3FORGE_BUILD_GUI off - see the preset's own
@@ -81,6 +90,7 @@ jobs:
             preset: linux-gcc
             gcc: true
             gui: true
+            packageable: true
             alsa_fallback: true
 
           - name: "Linux LLVM (clang)"
@@ -89,6 +99,7 @@ jobs:
             preset: linux-llvm
             llvm: true
             gui: true
+            packageable: true
 
           # AddressSanitizer + UndefinedBehaviorSanitizer (cmake/Sanitizers.cmake),
           # -fno-sanitize-recover=all so a violation fails the job outright. Shares
@@ -96,6 +107,10 @@ jobs:
           # the codec-matrix step below, since ctest's 200+ cases alone do not
           # reach every layout/tool/atmos code path a sanitizer needs to see
           # execute to be worth anything.
+          #
+          # Not `packageable`: there is no pack-linux-llvm-asan-ubsan preset
+          # and there should not be one - a sanitizer-instrumented debug build
+          # is a diagnostic tool, not something to ship.
           - name: "Linux LLVM ASan+UBSan"
             runner: ubuntu-latest
             container: ubuntu:26.04
@@ -109,6 +124,7 @@ jobs:
             runner: macos-latest
             preset: macos-llvm
             experimental: true
+            packageable: true
 
     steps:
       # Before checkout: the bare ubuntu image has no git, and actions/checkout
@@ -130,7 +146,7 @@ jobs:
           apt-get update -qq
           apt-get install -y -qq --no-install-recommends \
             build-essential ca-certificates cmake curl git gnupg libasound2-dev lsb-release \
-            ninja-build pkg-config software-properties-common tar unzip wget zip
+            ninja-build pkg-config rpm software-properties-common tar unzip wget zip
 
       # Qt is a prebuilt dependency (cmake/FindQt6.cmake), never a vcpkg port -
       # see that file's own header. qt6-declarative-dev-tools/qt6-base-dev-tools
@@ -204,6 +220,25 @@ jobs:
             Windows) choco install ninja -y --no-progress ;;
           esac
 
+      # AC3FORGE_BUILD_GUI is ON only on the two Windows presets (see
+      # CMakePresets.json), and cmake/FindQt6.cmake only widens
+      # CMAKE_PREFIX_PATH to LOCAL install roots (C:/Qt/6.x/msvc2022_64, and
+      # so on) - it has no notion of a CI runner, so a Windows leg with no
+      # Qt kit on the image at all would fail at find_package(Qt6 ...)
+      # without this. clang-cl (windows-llvm) targets the MSVC ABI, so it
+      # shares this same msvc2022_64 kit with windows-msvc rather than
+      # needing its own. Version pinned to the exact kit already verified
+      # locally (see docs/BUILDING.md's Verified configuration table); the
+      # pinned action itself is CountdownSolver's own precedent
+      # (R:\CountdownSolver\.github\workflows\release.yml), the other
+      # project sharing this same "prebuilt Qt, never vcpkg" convention.
+      - name: Install Qt (prebuilt)
+        if: runner.os == 'Windows'
+        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
+        with:
+          version: "6.8.3"
+          cache: true
+
       # CMakePresets.json is version 6 and the project needs >= 3.28. Every
       # current runner image is well past that; assert rather than discover it
       # through a confusing "unknown preset field" error.
@@ -247,12 +282,28 @@ jobs:
       # AC3FORGE_BUILD_GUI=OFF. The toolchain-preset system splits each leg into
       # config-/build-/test-<leg> (the bare <leg> is a hidden fragment), so the
       # matrix value is the suffix and each step names its own prefix. Running
-      # `cmake --preset config-<leg>` locally reproduces CI exactly.
+      # `cmake --preset config-<leg>` locally reproduces CI exactly - EXCEPT
+      # for two overrides bolted on here:
+      #   - -DCMAKE_PREFIX_PATH on Windows: install-qt-action installs into a
+      #     runner-specific path (QT_ROOT_DIR) that cmake/FindQt6.cmake's
+      #     local search roots do not cover, so it has to be passed in
+      #     explicitly rather than relying on auto-detection the way a local
+      #     build does.
+      #   - -DAC3FORGE_BUILD_GUI=ON on the `gui: true` Linux legs, which
+      #     default the GUI off (see CMakePresets.json) so a machine that
+      #     hasn't installed Qt still builds everything else.
       - name: Configure
         shell: bash
-        run: >
-          cmake --preset config-${{ matrix.preset }}
-          ${{ matrix.gui && '-DAC3FORGE_BUILD_GUI=ON' || '' }}
+        run: |
+          set -euo pipefail
+          extra_args=()
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            extra_args+=(-DCMAKE_PREFIX_PATH="$QT_ROOT_DIR")
+          fi
+          if [ "${{ matrix.gui }}" = "true" ]; then
+            extra_args+=(-DAC3FORGE_BUILD_GUI=ON)
+          fi
+          cmake --preset config-${{ matrix.preset }} "${extra_args[@]}"
 
       # -k 0 so a first-time port sees every diagnostic in one run rather than
       # one-per-push. Warnings are errors on every compiler
@@ -322,3 +373,33 @@ jobs:
           }
           cmake --build build/no-alsa -- -k 0
           ctest --test-dir build/no-alsa
+
+      # Packaging. windows-msvc always packages, on every push, as a
+      # continuous smoke test of the packaging path itself - it is the only
+      # leg that has ever actually been packaged and inspected end to end.
+      # Every other packageable leg only packages when do_package is set
+      # (release.yml, cutting a real release); the still-experimental
+      # macos-llvm leg fails to package for the same reason it fails to
+      # build - continue-on-error absorbs it, and the release just ships
+      # without that platform's package rather than failing outright.
+      # linux-llvm-asan-ubsan is never packaged at all (not `packageable` -
+      # see the matrix entry): there is no pack-linux-llvm-asan-ubsan preset,
+      # a sanitizer-instrumented debug build is a diagnostic tool, not
+      # something to ship.
+      #
+      # cpack reuses the same build/config-<leg> tree the Configure and Build
+      # steps above already produced - pack-<leg> points at the same
+      # config-<leg> configurePreset - so this proves the packaging path
+      # against the exact build that was just tested, not a separate one.
+      - name: Package
+        if: matrix.packageable && (matrix.preset == 'windows-msvc' || inputs.do_package)
+        shell: bash
+        run: cpack --preset pack-${{ matrix.preset }}
+
+      - name: Upload package artifacts
+        if: matrix.packageable && (matrix.preset == 'windows-msvc' || inputs.do_package)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: packages-${{ matrix.preset }}
+          path: packages/*
+          if-no-files-found: error

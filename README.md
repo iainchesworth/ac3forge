@@ -232,6 +232,14 @@ for Clang); the GUI is opt-in there via `-DAC3FORGE_BUILD_GUI=ON` rather than on
 [docs/BUILDING.md](docs/BUILDING.md) covers the full preset list, building without Qt, the
 Linux GUI opt-in, and the machine-local preset pattern.
 
+**Packaging.** `cpack --preset pack-windows-msvc` (and the equivalent `pack-<platform>` preset
+for every leg in the matrix, though only Windows has actually been run) produces a ZIP, plus
+NSIS/DEB/RPM/DragNDrop on top where the platform packaging tool is available. A `vX.Y.Z` tag
+pushed to `main` additionally triggers [`release.yml`](.github/workflows/release.yml), which
+builds, signs and publishes packages as a GitHub Release. See
+[docs/BUILDING.md#packaging](docs/BUILDING.md#packaging) and
+[docs/releasing.md](docs/releasing.md).
+
 ## Using the library
 
 Two headers and about a dozen lines to encode a frame:
@@ -298,6 +306,10 @@ passthrough, running continuously and still writing the file `record` always has
 `ac3gui` is a Qt Quick front end over the same library: file and live-capture encoding, a plan
 view for dragging objects around the room, a height slider, and channel-level metering.
 
+`ac3cli --version` (a flag, not one of the twenty-one commands) prints the semantic version plus
+git provenance — commit, branch, dirty flag — stamped in at build time by
+`cmake/GenerateVersion.cmake`.
+
 ## How it is validated
 
 Four independent checks, in rough order of strength.
@@ -347,6 +359,7 @@ ctest --preset test-windows-msvc-debug
 
 ```
 cmake/          FindQt6.cmake (prebuilt-Qt discovery), CompilerWarnings.cmake, Sanitizers.cmake,
+                Packaging.cmake (CPack), GenerateVersion.cmake (git-provenance version stamping),
                 toolchains/ (one per platform/compiler preset), vcpkg/triplets/ (overlays)
 src/lib/        ac3::forge — the whole codec, GUI-free
   include/ac3/  the public API: core/ encoder/ decoder/ meta/ spatial/ oba/
@@ -375,6 +388,7 @@ beside it. [docs/BUILDING.md](docs/BUILDING.md) has the details.
 | Document | Contents |
 |---|---|
 | [docs/BUILDING.md](docs/BUILDING.md) | Building from a clean clone, including the failures you will hit |
+| [docs/releasing.md](docs/releasing.md) | Cutting a release: versioning, the tag-triggered workflow, GPG signing |
 | [docs/LIBRARY.md](docs/LIBRARY.md) | The public API, with compiled examples |
 | [docs/HISTORY.md](docs/HISTORY.md) | How the implementation was built, milestone by milestone |
 | [docs/RESEARCH.md](docs/RESEARCH.md) | The original feasibility research and the decisions that came out of it |

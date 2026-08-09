@@ -1,6 +1,7 @@
 # Build output
 build/
 vcpkg_installed/
+packages/
 
 # Machine-local CMake presets (carry local VCPKG_ROOT)
 CMakeUserPresets.json
