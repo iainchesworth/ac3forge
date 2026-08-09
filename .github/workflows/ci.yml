@@ -148,7 +148,9 @@ jobs:
     name: No Quarantine On Main
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Assert src/quarantine is absent
         shell: bash
         run: |
@@ -219,6 +221,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Check for preprocessor conditionals in src/
         shell: pwsh
         run: ./scripts/check-platform-macros.ps1 -Root $PWD
@@ -254,6 +258,8 @@ jobs:
             ninja-build pkg-config software-properties-common tar unzip wget zip
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install LLVM 21
         run: bash .github/toolchain/03-llvm-toolchain.sh

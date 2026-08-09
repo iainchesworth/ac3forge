@@ -1,0 +1,52 @@
+# OpenSSF Scorecard: supply-chain security health score (pinned deps, branch
+# protection, SAST presence, etc.) for the published repo - runs against
+# 'main' only, not every branch, since it's assessing the repo's public
+# posture rather than gating individual PRs. Visible-only: results are a
+# score/badge, not a pass/fail check. Modelled on CountdownSolver's
+# .github/workflows/scorecard.yml.
+#
+# The branch-protection sub-check needs read access to repo settings to score
+# fully; without a token it degrades gracefully rather than failing. To get
+# the fuller score, add a fine-grained PAT (read-only, "Administration: read")
+# as a repo secret named SCORECARD_READ_TOKEN and uncomment repo_token below.
+
+on:
+  push:
+    branches: [ main ]
+  schedule:
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+
+permissions: read-all
+
+concurrency:
+  group: scorecard-${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  analysis:
+    name: Analyze
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run Scorecard analysis
+        uses: ossf/scorecard-action@99c09fe975337306107572b4fdf4db224cf8e2f2 # v2.4.3
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+          # repo_token: ${{ secrets.SCORECARD_READ_TOKEN }}
+
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@24ea975727876cf496b1eb0c5b36e96e01600b51 # v4.37.0
+        with:
+          sarif_file: results.sarif
+          category: scorecard

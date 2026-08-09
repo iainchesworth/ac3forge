@@ -1,0 +1,82 @@
+# CodeQL static analysis for the C++ codec/CLI/matroska sources. Modelled on
+# CountdownSolver's .github/workflows/codeql.yml (same CMake+vcpkg shape,
+# same gitflow model) - build-mode: manual, library+CLI only, no Qt app: the
+# GUI adds nothing CodeQL needs to see and config-linux-gcc already defaults
+# AC3FORGE_BUILD_GUI off (see CMakePresets.json), so this is the same build
+# ci.yml's static-analysis (clang-tidy) job already proves clean.
+#
+# Complements platform-macros (no-#ifdef rule) and static-analysis
+# (clang-tidy) in ci.yml: those catch style/portability issues, CodeQL finds
+# actual security-relevant defects (buffer overflow, use-after-free, tainted
+# data flow) and publishes them to Security > Code scanning.
+name: CodeQL (C++)
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    # Weekly scan catches new CodeQL query packs even without code changes.
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: codeql-${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (C++)
+    runs-on: ubuntu-latest
+    container: ubuntu:26.04
+    permissions:
+      security-events: write
+      contents: read
+    steps:
+      # Before checkout: the bare ubuntu image has no git, and actions/checkout
+      # silently degrades to a REST tarball download without it. Also installs
+      # what the toolchain script assumes is present (lsb_release,
+      # add-apt-repository, curl+gnupg) - the same package list ci.yml's
+      # static-analysis job uses. No libasound2-dev: this build never enables
+      # AC3FORGE_BUILD_GUI, and the ALSA backend is optional, auto-detected,
+      # and irrelevant to what CodeQL is scanning for here.
+      - name: Bootstrap container
+        run: |
+          set -eu
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends \
+            build-essential ca-certificates cmake curl git gnupg lsb-release \
+            ninja-build pkg-config software-properties-common tar unzip wget zip
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install GCC 15
+        run: bash .github/toolchain/02-gcc-toolchain.sh
+
+      - uses: ./.github/actions/setup-vcpkg
+        with:
+          vcpkg-commit: "eaca4a577b6b678c6e10252754b6988a61746c19"
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@24ea975727876cf496b1eb0c5b36e96e01600b51 # v4.37.0
+        with:
+          languages: cpp
+          build-mode: manual
+
+      - name: Configure
+        run: cmake --preset config-linux-gcc
+
+      - name: Build
+        run: cmake --build --preset build-linux-gcc -- -k 0
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@24ea975727876cf496b1eb0c5b36e96e01600b51 # v4.37.0
+        with:
+          category: "/language:cpp"
