@@ -268,9 +268,12 @@ jobs:
       # scripts/verify-gold-reference.sh). Proven first on macOS alone (the
       # newest, least-trusted leg); gold_reference now covers every packaged
       # leg except linux-llvm-asan-ubsan, which stays a diagnostic-only build
-      # (see that matrix entry's own comment).
+      # (see that matrix entry's own comment) but still needs it: the codec
+      # matrix step below (matrix.sanitizer) runs scripts/run-codec-matrix.sh,
+      # which also uses ffmpeg as its independent oracle regardless of the
+      # gold-reference gate being skipped on this leg.
       - name: Install ffmpeg (Linux)
-        if: matrix.gold_reference && runner.os == 'Linux'
+        if: (matrix.gold_reference || matrix.sanitizer) && runner.os == 'Linux'
         run: apt-get install -y -qq --no-install-recommends ffmpeg
 
       - name: Install ffmpeg (Windows)
