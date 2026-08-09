@@ -68,6 +68,7 @@ jobs:
             # loudly if that ever stops being a 14.5x toolset.
             msvc: true
             packageable: true
+            gold_reference: true
 
           - name: "Windows LLVM (clang-cl)"
             runner: windows-latest
@@ -75,6 +76,7 @@ jobs:
             msvc: true          # clang-cl targets the MSVC ABI: same headers, same libs
             llvm: true
             packageable: true
+            gold_reference: true
 
           # gui: true builds ac3gui too (the linux-gcc/linux-llvm presets
           # otherwise default AC3FORGE_BUILD_GUI off - see the preset's own
@@ -92,6 +94,7 @@ jobs:
             gui: true
             packageable: true
             alsa_fallback: true
+            gold_reference: true
 
           - name: "Linux LLVM (clang)"
             runner: ubuntu-latest
@@ -100,6 +103,7 @@ jobs:
             llvm: true
             gui: true
             packageable: true
+            gold_reference: true
 
           # AddressSanitizer + UndefinedBehaviorSanitizer (cmake/Sanitizers.cmake),
           # -fno-sanitize-recover=all so a violation fails the job outright. Shares
@@ -232,8 +236,19 @@ jobs:
           echo "${llvm_prefix}/bin" >> "$GITHUB_PATH"
 
       # ffmpeg is the gold-reference gate's decode oracle (see
-      # scripts/verify-gold-reference.sh) - macOS only for now while that gate
-      # is being proven out; see gold_reference in the matrix.
+      # scripts/verify-gold-reference.sh). Proven first on macOS alone (the
+      # newest, least-trusted leg); gold_reference now covers every packaged
+      # leg except linux-llvm-asan-ubsan, which stays a diagnostic-only build
+      # (see that matrix entry's own comment).
+      - name: Install ffmpeg (Linux)
+        if: matrix.gold_reference && runner.os == 'Linux'
+        run: apt-get install -y -qq --no-install-recommends ffmpeg
+
+      - name: Install ffmpeg (Windows)
+        if: matrix.gold_reference && runner.os == 'Windows'
+        shell: bash
+        run: choco install ffmpeg -y --no-progress
+
       - name: Install ffmpeg (macOS)
         if: matrix.gold_reference && runner.os == 'macOS'
         run: brew install ffmpeg
@@ -366,13 +381,21 @@ jobs:
 
       # The gold-reference correctness gate (docs/RESEARCH.md's L3 FFmpeg-
       # oracle + a lightweight L4 SNR check, wired into CI for the first time
-      # here - see scripts/verify-gold-reference.sh's own header). macOS only
-      # for now, to prove the gate itself out on the newest leg before
-      # extending it to Linux/Windows.
+      # here - see scripts/verify-gold-reference.sh's own header). Proven on
+      # macOS alone first; now every leg has it except linux-llvm-asan-ubsan,
+      # which stays diagnostic-only (same reasoning as its `packageable`
+      # exclusion below - a sanitizer build's job is catching memory/UB
+      # errors, not re-proving codec correctness a plain build already did).
       - name: Gold reference gate
         if: matrix.gold_reference
         shell: bash
-        run: bash scripts/verify-gold-reference.sh "build/config-${{ matrix.preset }}/bin/ac3cli"
+        run: |
+          set -euo pipefail
+          bin="build/config-${{ matrix.preset }}/bin/ac3cli"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            bin="${bin}.exe"
+          fi
+          bash scripts/verify-gold-reference.sh "$bin"
 
       # ctest above already covers the codec; this covers the one thing it
       # can't - that ac3gui actually starts, loads its QML, and drives a real
