@@ -267,10 +267,11 @@ struct Plan {
 };
 
 enum class PlanError : std::uint8_t {
-    kLayoutNeedsEac3,   // an immersive layout (or channel selection) asked of AC-3
-    kBitrateNotLegal,   // AC-3 takes only the 19 Table 5.18 rates
-    kNoSourceLayout,    // no standard speaker layout has that many channels
-    kInvalidChannels,   // custom_locations is not a channel selection allocate() can satisfy
+    kLayoutNeedsEac3,       // an immersive layout (or channel selection) asked of AC-3
+    kBitrateNotLegal,       // AC-3 takes only the 19 Table 5.18 rates
+    kNoSourceLayout,        // no standard speaker layout has that many channels
+    kInvalidChannels,       // custom_locations is not a channel selection allocate() can satisfy
+    kSampleRateNeedsEac3,   // fscod2 (24/22.05/16 kHz) asked of AC-3, which has no such field
 };
 
 [[nodiscard]] std::string_view describe(PlanError error);

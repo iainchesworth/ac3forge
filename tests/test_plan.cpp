@@ -227,6 +227,38 @@ TEST_CASE("AC-3 takes only the Table 5.18 rates") {
     CHECK_FALSE(ac3::plan::validate(plan).has_value());
 }
 
+TEST_CASE("fscod2 half rates are refused to AC-3 rather than silently narrowed") {
+    for (const auto rate : {ac3::SampleRate::k24000, ac3::SampleRate::k22050,
+                            ac3::SampleRate::k16000}) {
+        CAPTURE(ac3::sample_rate_hz(rate));
+        ac3::plan::Plan plan{.codec = ac3::plan::Codec::kAc3, .sample_rate = rate};
+        const auto error = ac3::plan::validate(plan);
+        REQUIRE(error.has_value());
+        CHECK(*error == ac3::plan::PlanError::kSampleRateNeedsEac3);
+        // Annex E's fscod2 is exactly what E-AC-3 has instead of a fourth
+        // Table 5.6 rate, so the identical Plan is fine once retargeted.
+        plan.codec = ac3::plan::Codec::kEac3;
+        CHECK_FALSE(ac3::plan::validate(plan).has_value());
+    }
+}
+
+TEST_CASE("classic AC-3 encoders refuse a reduced sample rate directly, not just via Plan") {
+    // Plan::validate() is the friendly front door, but FrameEncoder/
+    // build_silent_stereo_frame must refuse it too - a caller can construct
+    // an EncoderConfig/SilentFrameConfig without ever going through a Plan.
+    ac3::FrameEncoder encoder{{.sample_rate = ac3::SampleRate::k24000, .bitrate_kbps = 192}};
+    const std::vector<float> silence(static_cast<std::size_t>(ac3::kSamplesPerFrame), 0.0f);
+    const std::vector<std::span<const float>> views{silence, silence};
+    const auto frame = encoder.encode_frame(views);
+    REQUIRE_FALSE(frame.has_value());
+    CHECK(frame.error() == ac3::FrameError::kInvalidBitrate);
+
+    const auto silent =
+        ac3::build_silent_stereo_frame({.sample_rate = ac3::SampleRate::k16000});
+    REQUIRE_FALSE(silent.has_value());
+    CHECK(silent.error() == ac3::FrameError::kInvalidBitrate);
+}
+
 TEST_CASE("validate refuses a custom channel selection Annex E cannot express") {
     namespace cm = ac3::eac3::chanmap;
     // No front coverage at all: no Table 5.8 acmod has anything to anchor a

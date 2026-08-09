@@ -67,7 +67,10 @@ decoder as a check on the encoder: a test can assert on the `dynrng` words the e
 
 What both decoders refuse, cleanly, rather than mis-decoding: block switching, delta bit
 allocation, dual mono. The E-AC-3 decoder additionally refuses Annex E coupling, spectral
-extension, AHT, transient pre-noise processing, and `fscod2` half sample rates.
+extension, AHT, and transient pre-noise processing. `fscod2` (the Annex E half sample rates —
+24, 22.05, 16 kHz) is decoded like any other rate: the reduced rate reuses the same
+bit-allocation tables as its double-rate parent (§E2.3.1.4), so nothing else about decoding
+changes.
 
 ---
 

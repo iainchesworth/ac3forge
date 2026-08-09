@@ -585,3 +585,89 @@ TEST_CASE("the E-AC-3 decoder rejects malformed streams", "[eac3][decoder]") {
               ac3::DecodeError::kInvalidStream);
     }
 }
+
+namespace {
+
+// Real, two-tone audio at an arbitrary rate - separate from tone_frame()/
+// round_trip() above, which bake 48 kHz into both synthesis and analysis and
+// are shared by tests that have no reason to generalize them.
+std::vector<std::vector<float>> fscod2_tone_pair(double rate_hz, std::uint64_t start) {
+    constexpr double kFscod2Amplitude = 0.35;
+    constexpr std::array<double, 2> kTones = {300.0, 700.0};  // well under any fscod2 Nyquist
+    std::vector<std::vector<float>> pcm(2, std::vector<float>(ac3::kSamplesPerFrame));
+    for (std::size_t ch = 0; ch < pcm.size(); ++ch) {
+        for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+            const auto n = static_cast<double>(start + static_cast<std::uint64_t>(i));
+            pcm[ch][static_cast<std::size_t>(i)] = static_cast<float>(
+                kFscod2Amplitude * std::sin(2.0 * std::numbers::pi * kTones[ch] * n / rate_hz));
+        }
+    }
+    return pcm;
+}
+
+double fscod2_dominant_freq_hz(const std::vector<float>& x, double rate_hz) {
+    double best_f = 0.0;
+    double best_m = -1.0;
+    const std::size_t n0 = 512;
+    const std::size_t len = std::min<std::size_t>(2048, x.size() - n0);
+    for (double f = 50.0; f <= 1200.0; f += 5.0) {
+        double re = 0.0;
+        double im = 0.0;
+        for (std::size_t i = 0; i < len; ++i) {
+            const double phase = 2.0 * std::numbers::pi * f * static_cast<double>(i) / rate_hz;
+            re += static_cast<double>(x[n0 + i]) * std::cos(phase);
+            im += static_cast<double>(x[n0 + i]) * std::sin(phase);
+        }
+        const double mag = re * re + im * im;
+        if (mag > best_m) {
+            best_m = mag;
+            best_f = f;
+        }
+    }
+    return best_f;
+}
+
+}  // namespace
+
+TEST_CASE("E-AC-3 encodes and decodes real audio at fscod2 half rates",
+          "[eac3][decoder]") {
+    struct Case {
+        ac3::SampleRate rate;
+        std::uint32_t hz;
+    };
+    const std::array<Case, 3> cases = {{{ac3::SampleRate::k24000, 24000},
+                                        {ac3::SampleRate::k22050, 22050},
+                                        {ac3::SampleRate::k16000, 16000}}};
+    for (const auto& c : cases) {
+        CAPTURE(c.hz);
+        ac3::eac3::AccessUnitEncoder encoder{
+            {.independent = {.sample_rate = c.rate, .bitrate_kbps = 192}}};
+        ac3::Eac3Decoder decoder;
+        std::vector<std::vector<float>> rendered(2);
+        std::uint64_t n = 0;
+        for (int f = 0; f < 4; ++f) {
+            auto pcm = fscod2_tone_pair(static_cast<double>(c.hz), n);
+            n += ac3::kSamplesPerFrame;
+            const std::vector<std::span<const float>> views{pcm[0], pcm[1]};
+            const auto unit = encoder.encode_access_unit(views);
+            REQUIRE(unit.has_value());
+            // encode_access_unit's own bytes are already exactly one access
+            // unit - no need to concatenate and re-split, unlike round_trip()
+            // above, which is proving something else (that a muxed multi-unit
+            // stream scans correctly).
+            const auto decoded = decoder.decode_access_unit(unit->bytes);
+            REQUIRE(decoded.has_value());
+            CHECK(decoded->sample_rate == c.rate);
+            REQUIRE(decoded->channels.size() == 2);
+            for (std::size_t ch = 0; ch < 2; ++ch) {
+                rendered[ch].insert(rendered[ch].end(), decoded->channels[ch].begin(),
+                                    decoded->channels[ch].end());
+            }
+        }
+        // Real audio, not silence: §7.2.2.1.1's all-zero allocation would
+        // decode perfectly whether or not fscod2's bit-allocation family
+        // mapping (fscod_family()) were wired up correctly at all.
+        CHECK(std::abs(fscod2_dominant_freq_hz(rendered[0], c.hz) - 300.0) < 15.0);
+        CHECK(std::abs(fscod2_dominant_freq_hz(rendered[1], c.hz) - 700.0) < 15.0);
+    }
+}

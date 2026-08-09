@@ -178,7 +178,7 @@ void compute_bit_allocation(std::span<const std::uint8_t> exps, SampleRate sampl
 
     // §7.2.2.5: masking curve (excitation, dB knee boost, hearing threshold).
     std::array<int, 50> mask{};
-    const auto& hth = *kHearingThreshold[static_cast<std::size_t>(sample_rate)];
+    const auto& hth = *kHearingThreshold[static_cast<std::size_t>(fscod_family(sample_rate))];
     for (int bin = bndstrt; bin < bndend; ++bin) {
         if (bndpsd[static_cast<std::size_t>(bin)] < dbknee) {
             excite[static_cast<std::size_t>(bin)] +=
