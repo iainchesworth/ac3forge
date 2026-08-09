@@ -112,9 +112,15 @@ struct StreamPlan {
 FrameEncoder::FrameEncoder(const EncoderConfig& config) : config_(config) {
     if (config_.drc) {
         range_.emplace(*config_.drc, config_.sample_rate);
+        if (config_.acmod == Acmod::kDualMono) {
+            range2_.emplace(*config_.drc, config_.sample_rate);
+        }
     }
     if (config_.heavy) {
         heavy_.emplace(*config_.heavy, config_.sample_rate);
+        if (config_.acmod == Acmod::kDualMono) {
+            heavy2_.emplace(*config_.heavy, config_.sample_rate);
+        }
     }
 }
 
@@ -127,10 +133,14 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     if (config_.dialnorm < 1 || config_.dialnorm > 31) {
         return std::unexpected(FrameError::kInvalidDialnorm);
     }
+    const bool dual_mono = config_.acmod == Acmod::kDualMono;
+    if (dual_mono &&
+        (!config_.dialnorm2 || *config_.dialnorm2 < 1 || *config_.dialnorm2 > 31)) {
+        return std::unexpected(FrameError::kInvalidDialnorm);
+    }
     const int nfchans = fullbw_channel_count(config_.acmod);
     const int nchans = channel_count();
     assert(static_cast<int>(channels.size()) == nchans);
-    assert(config_.acmod != Acmod::kDualMono);
     for (const auto& channel : channels) {
         assert(channel.size() == kSamplesPerFrame);
         (void)channel;
@@ -141,34 +151,63 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     // programme, not this encoder's output, and a decoder applies them after
     // reconstruction. Doing it here also settles the words before the side
     // information is measured, since a transmitted dynrng costs nine bits.
+    // For dual mono, Ch1 and Ch2 are unrelated programmes: each is measured
+    // and controlled entirely on its own, never combined the way a real
+    // multi-channel layout's channels are (§7.7.2.2 for compr; the same
+    // reasoning applies to dynrng, which has no channel-combining rule to
+    // begin with once there is no single soundfield to describe a level for).
     std::array<std::uint8_t, kBlocksPerFrame> dynrng{};
     dynrng.fill(meta::kDynrngUnity);
+    std::array<std::uint8_t, kBlocksPerFrame> dynrng2{};
+    dynrng2.fill(meta::kDynrngUnity);
     if (range_) {
         std::array<std::span<const float>, 5> block_view{};
+        const int level_chans = dual_mono ? 1 : nfchans;
         for (int block = 0; block < kBlocksPerFrame; ++block) {
-            for (int ch = 0; ch < nfchans; ++ch) {
+            for (int ch = 0; ch < level_chans; ++ch) {
                 block_view[static_cast<std::size_t>(ch)] =
                     channels[static_cast<std::size_t>(ch)].subspan(
                         static_cast<std::size_t>(block) * kSamplesPerBlock,
                         kSamplesPerBlock);
             }
             const double level = meta::level_dbfs(
-                std::span{block_view}.first(static_cast<std::size_t>(nfchans)));
+                std::span{block_view}.first(static_cast<std::size_t>(level_chans)));
             dynrng[static_cast<std::size_t>(block)] =
                 range_->next(level, config_.dialnorm);
         }
     }
+    if (dual_mono && range2_) {
+        std::array<std::span<const float>, 1> block_view{};
+        for (int block = 0; block < kBlocksPerFrame; ++block) {
+            block_view[0] = channels[1].subspan(
+                static_cast<std::size_t>(block) * kSamplesPerBlock, kSamplesPerBlock);
+            const double level = meta::level_dbfs(std::span{block_view});
+            dynrng2[static_cast<std::size_t>(block)] =
+                range2_->next(level, *config_.dialnorm2);
+        }
+    }
     std::uint8_t compr = meta::kComprUnity;
+    std::uint8_t compr2 = meta::kComprUnity;
     if (heavy_) {
         // §7.7.2 bounds the MONO DOWNMIX, so that is what gets measured - the
         // loudest single channel is not the constraint, the sum is. history_
         // still holds the previous frame's tail at this point, which is exactly
-        // the extra 256 samples this frame's block 0 codes.
-        const double peak = meta::mono_downmix_peak_dbfs(
-            std::span{history_}.first(static_cast<std::size_t>(nfchans)),
-            channels.first(static_cast<std::size_t>(nfchans)), config_.acmod,
-            meta::coefficient(config_.cmixlev), meta::coefficient(config_.surmixlev));
+        // the extra 256 samples this frame's block 0 codes. Dual mono has no
+        // downmix at all - §7.7.2.2 says compr bounds Ch1's own signal - so
+        // that channel's true peak is measured directly instead.
+        const double peak =
+            dual_mono
+                ? meta::channel_peak_dbfs(std::span{history_[0]}, channels[0])
+                : meta::mono_downmix_peak_dbfs(
+                      std::span{history_}.first(static_cast<std::size_t>(nfchans)),
+                      channels.first(static_cast<std::size_t>(nfchans)), config_.acmod,
+                      meta::coefficient(config_.cmixlev),
+                      meta::coefficient(config_.surmixlev));
         compr = heavy_->next(peak, config_.dialnorm);
+    }
+    if (dual_mono && heavy2_) {
+        const double peak2 = meta::channel_peak_dbfs(std::span{history_[1]}, channels[1]);
+        compr2 = heavy2_->next(peak2, *config_.dialnorm2);
     }
 
     // Bandwidth: explicit config, or a bitrate-aware default. This comes
@@ -184,8 +223,11 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     const int chbw_endmant = ((chbwcod + 12) * 3) + 37;
 
     // --- Coupling decision -------------------------------------------------
-    // Coupling needs at least two full-bandwidth channels to share anything.
-    const bool cplinu = config_.coupling && nfchans >= 2;
+    // Coupling needs at least two full-bandwidth channels to share anything -
+    // true of dual mono's nfchans too, but sharing is exactly what its two
+    // channels must never do: they are unrelated programmes, and a coupling
+    // channel built from their average would leak each into the other.
+    const bool cplinu = config_.coupling && nfchans >= 2 && !dual_mono;
     int cplbegf = 0;
     int cplendf = 0;
     int cplstrtmant = 0;
@@ -579,6 +621,16 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         if (send_dynrng) {
             w.put(dynrng[static_cast<std::size_t>(block)], 8);
         }
+        if (config_.acmod == Acmod::kDualMono) {
+            const bool send_dynrng2 =
+                config_.drc.has_value() &&
+                (first || dynrng2[static_cast<std::size_t>(block)] !=
+                              dynrng2[static_cast<std::size_t>(block) - 1]);
+            w.put(send_dynrng2 ? 1 : 0, 1);  // dynrng2e
+            if (send_dynrng2) {
+                w.put(dynrng2[static_cast<std::size_t>(block)], 8);
+            }
+        }
 
         w.put(first ? 1 : 0, 1);  // cplstre
         if (first) {
@@ -738,6 +790,10 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         if (has_surround(config_.acmod)) bsi += 2;     // surmixlev
         if (config_.acmod == Acmod::k2_0) bsi += 2;    // dsurmod
         if (config_.heavy) bsi += 8;                   // compr (§5.4.2.10)
+        if (dual_mono) {
+            bsi += 5 + 1 + 1 + 1;  // dialnorm2, compr2e, langcod2e, audprodi2e
+            if (config_.heavy) bsi += 8;  // compr2
+        }
         side_bits += bsi;
     }
     {
@@ -880,6 +936,15 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     }
     w.put(0, 1);  // langcode
     w.put(0, 1);  // audprodie
+    if (dual_mono) {
+        w.put(static_cast<std::uint32_t>(*config_.dialnorm2), 5);
+        w.put(config_.heavy ? 1 : 0, 1);  // compr2e
+        if (config_.heavy) {
+            w.put(compr2, 8);
+        }
+        w.put(0, 1);  // langcod2e
+        w.put(0, 1);  // audprodi2e
+    }
     w.put(0, 1);  // copyrightb
     w.put(1, 1);  // origbs
     w.put(0, 1);  // timecod1e

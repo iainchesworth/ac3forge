@@ -110,6 +110,13 @@ anywhere, because bass has no direction.</figcaption>
 
 E-AC-3 can describe larger layouts too — 7.1 and beyond — described in the next section.
 
+One coding mode is deliberately not a bed at all: **dual mono**, sometimes written **1+1**.
+Rather than one programme mixed onto a fixed set of speakers, it's *two* independent
+single-channel programmes — a second language track, a director's commentary — sharing one
+syncframe and never mixed together. There's no diagram for it, because there's no soundstage: a
+receiver plays one programme or the other (or both to separate outputs), chosen by the listener,
+not blended by the encoder the way L/C/R are.
+
 ## Bitrate
 
 ac3forge encodes **CBR** (constant bit rate) only — no variable bit rate. Every frame of a

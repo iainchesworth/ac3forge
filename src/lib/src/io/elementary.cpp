@@ -19,7 +19,13 @@ constexpr int kBsidBitOffset = 40;
     using namespace eac3::chanmap;
     std::uint16_t map = 0;
     switch (acmod) {
-        case Acmod::kDualMono:  // 1+1: two independent programs, not a layout
+        // 1+1 has no Table E2.5 location - Ch1 and Ch2 are independent
+        // programmes, not directions - but this function's only consumer
+        // wants a channel COUNT, so the same placeholder acmod_map() uses for
+        // that reason stands in here too: two bits, for two coded channels.
+        case Acmod::kDualMono:
+            map = kLeftBit | kRightBit;
+            break;
         case Acmod::k1_0:
             map = kCentreBit;
             break;

@@ -91,9 +91,9 @@ pages, not here. Two gaps are load-bearing enough to flag up front:
     devices at all. Nothing has been bitstreamed to an actual S/PDIF or HDMI output, and no AV
     receiver has been asked to lock onto it.
 
-Also not implemented at all: block switching (short blocks), dual mono (1+1, acmod 0), delta bit
-allocation, E-AC-3 half sample rates (`fscod2`: 24, 22.05, 16 kHz), enhanced coupling, transient
-pre-noise processing, and variable bit rate — CBR only.
+Also not implemented at all: block switching (short blocks), delta bit allocation, E-AC-3 half
+sample rates (`fscod2`: 24, 22.05, 16 kHz), enhanced coupling, transient pre-noise processing, and
+variable bit rate — CBR only.
 
 ## Where to go next
 

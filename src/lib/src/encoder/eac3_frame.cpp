@@ -234,6 +234,9 @@ struct Payload {
     // §7.7.2. std::nullopt means "no heavy-compression word", which is a
     // different statement from "a word saying unity".
     std::optional<std::uint8_t> compr = std::nullopt;
+    // Ch2's own words, present only when acmod is kDualMono.
+    std::array<std::uint8_t, kBlocksPerFrame> dynrng2{};
+    std::optional<std::uint8_t> compr2 = std::nullopt;
 };
 
 // §E3.3.2: the rematrixing bands cannot reach above whichever tool takes over
@@ -379,8 +382,18 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
     if (compre) {
         w.put(dependent ? meta::kComprUnity : *payload.compr, 8);
     }
-    // acmod == 0x0 (1+1) is rejected in validate(), so the dialnorm2 /
-    // compr2e block never applies.
+    // Annex E Table E1.2: unconditional on strmtyp, unlike chanmape below -
+    // a dependent substream coding 1+1 would need its own Ch2 metadata too,
+    // though this encoder's own callers never build one (dual mono has no
+    // bed/dependent split to make - it is one independent substream, always).
+    if (config.acmod == Acmod::kDualMono) {
+        w.put(static_cast<std::uint32_t>(*config.dialnorm2), 5);
+        const bool compre2 = !dependent && payload.compr2.has_value();
+        w.put(compre2 ? 1 : 0, 1);
+        if (compre2) {
+            w.put(*payload.compr2, 8);
+        }
+    }
     if (dependent) {
         w.put(config.chanmap ? 1 : 0, 1);  // chanmape
         if (config.chanmap) {
@@ -419,11 +432,16 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
         // dependent therefore stops after the levels above.
         if (!dependent) {
             w.put(0, 1);  // pgmscle:    §E2.3.1.12, absent means 0 dB
+            if (acmod_value == 0x0) {
+                w.put(0, 1);  // pgmscl2e: mirrors pgmscle - no scale sent
+            }
             w.put(0, 1);  // extpgmscle: §E2.3.1.16, absent means 0 dB
             w.put(0, 2);  // mixdef:     no mixing-parameter data
-            // acmod == 0x0 is rejected in validate(), so only 1/0 reaches here.
             if (acmod_value < 0x2) {
                 w.put(0, 1);  // paninfoe
+                if (acmod_value == 0x0) {
+                    w.put(0, 1);  // paninfo2e: mirrors paninfoe - no pan sent
+                }
             }
             w.put(0, 1);  // frmmixcfginfoe
         }
@@ -543,6 +561,16 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
         w.put(send_dynrng ? 1 : 0, 1);  // dynrnge
         if (send_dynrng) {
             w.put(payload.dynrng[static_cast<std::size_t>(blk)], 8);
+        }
+        if (config.acmod == Acmod::kDualMono) {
+            const bool send_dynrng2 =
+                config.drc.has_value() &&
+                (first || payload.dynrng2[static_cast<std::size_t>(blk)] !=
+                              payload.dynrng2[static_cast<std::size_t>(blk) - 1]);
+            w.put(send_dynrng2 ? 1 : 0, 1);  // dynrng2e
+            if (send_dynrng2) {
+                w.put(payload.dynrng2[static_cast<std::size_t>(blk)], 8);
+            }
         }
 
         // Spectral extension strategy: block 0 has spxstre implied, later
@@ -792,9 +820,9 @@ std::expected<void, FrameError> validate(const FrameConfig& config) {
     if (words < 1 || words > kMaxFrameWords) {
         return std::unexpected(FrameError::kInvalidBitrate);
     }
-    // 1+1 needs a second program's metadata throughout; out of scope here.
-    if (config.acmod == Acmod::kDualMono) {
-        return std::unexpected(FrameError::kInvalidBitrate);
+    if (config.acmod == Acmod::kDualMono &&
+        (!config.dialnorm2 || *config.dialnorm2 < 1 || *config.dialnorm2 > 31)) {
+        return std::unexpected(FrameError::kInvalidDialnorm);
     }
     if (config.substreamid < 0 || config.substreamid > 7) {
         return std::unexpected(FrameError::kInvalidSubstream);
@@ -886,9 +914,15 @@ std::expected<std::vector<std::byte>, FrameError> build_silent_frame(
 FrameEncoder::FrameEncoder(const FrameConfig& config) : config_(config) {
     if (config_.drc) {
         range_.emplace(*config_.drc, config_.sample_rate);
+        if (config_.acmod == Acmod::kDualMono) {
+            range2_.emplace(*config_.drc, config_.sample_rate);
+        }
     }
     if (config_.heavy) {
         heavy_.emplace(*config_.heavy, config_.sample_rate);
+        if (config_.acmod == Acmod::kDualMono) {
+            heavy2_.emplace(*config_.heavy, config_.sample_rate);
+        }
     }
 }
 
@@ -901,34 +935,63 @@ FrameMetadata derive_metadata(const FrameConfig& config,
                               std::span<const std::array<double, 256>> history,
                               std::span<const std::span<const float>> channels,
                               std::optional<meta::RangeController>& range,
-                              std::optional<meta::HeavyCompressor>& heavy) {
+                              std::optional<meta::HeavyCompressor>& heavy,
+                              std::optional<meta::RangeController>* range2 = nullptr,
+                              std::optional<meta::HeavyCompressor>* heavy2 = nullptr) {
+    const bool dual_mono = config.acmod == Acmod::kDualMono;
     const int nfchans = fullbw_channel_count(config.acmod);
     FrameMetadata out;
     out.dynrng.fill(meta::kDynrngUnity);
+    out.dynrng2.fill(meta::kDynrngUnity);
     if (range) {
         std::array<std::span<const float>, 5> block_view{};
+        const int level_chans = dual_mono ? 1 : nfchans;
         for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
-            for (int ch = 0; ch < nfchans; ++ch) {
+            for (int ch = 0; ch < level_chans; ++ch) {
                 block_view[static_cast<std::size_t>(ch)] =
                     channels[static_cast<std::size_t>(ch)].subspan(
                         static_cast<std::size_t>(blk) * kSamplesPerBlock, kSamplesPerBlock);
             }
             const double level = meta::level_dbfs(
-                std::span{block_view}.first(static_cast<std::size_t>(nfchans)));
+                std::span{block_view}.first(static_cast<std::size_t>(level_chans)));
             out.dynrng[static_cast<std::size_t>(blk)] = range->next(level, config.dialnorm);
+        }
+    }
+    if (dual_mono && range2 && *range2) {
+        std::array<std::span<const float>, 1> block_view{};
+        for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
+            block_view[0] = channels[1].subspan(
+                static_cast<std::size_t>(blk) * kSamplesPerBlock, kSamplesPerBlock);
+            const double level = meta::level_dbfs(std::span{block_view});
+            out.dynrng2[static_cast<std::size_t>(blk)] =
+                (*range2)->next(level, *config.dialnorm2);
         }
     }
     if (heavy) {
         // With no mixmdate the §7.8 fallbacks stand in - the same intermediate
-        // levels §5.4.2.4 and §5.4.2.5 tell a decoder to substitute.
-        const double clev = config.mixing ? meta::coefficient(config.mixing->lorocmixlev)
-                                          : meta::level::kMinus4_5dB;
-        const double slev = config.mixing ? meta::coefficient(config.mixing->lorosurmixlev)
-                                          : meta::level::kMinus6dB;
-        const double peak = meta::mono_downmix_peak_dbfs(
-            history, channels.first(static_cast<std::size_t>(nfchans)), config.acmod, clev,
-            slev);
+        // levels §5.4.2.4 and §5.4.2.5 tell a decoder to substitute. Dual mono
+        // has no downmix to fall back on in the first place - §7.7.2.2 bounds
+        // Ch1's own signal - so its true peak is measured directly instead.
+        const double peak =
+            dual_mono
+                ? meta::channel_peak_dbfs(std::span<const double>(history[0]), channels[0])
+                : [&] {
+                      const double clev = config.mixing
+                                              ? meta::coefficient(config.mixing->lorocmixlev)
+                                              : meta::level::kMinus4_5dB;
+                      const double slev = config.mixing
+                                              ? meta::coefficient(config.mixing->lorosurmixlev)
+                                              : meta::level::kMinus6dB;
+                      return meta::mono_downmix_peak_dbfs(
+                          history, channels.first(static_cast<std::size_t>(nfchans)),
+                          config.acmod, clev, slev);
+                  }();
         out.compr = heavy->next(peak, config.dialnorm);
+    }
+    if (dual_mono && heavy2 && *heavy2) {
+        const double peak2 =
+            meta::channel_peak_dbfs(std::span<const double>(history[1]), channels[1]);
+        out.compr2 = (*heavy2)->next(peak2, *config.dialnorm2);
     }
     return out;
 }
@@ -944,7 +1007,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     return encode_frame(
         channels,
         derive_metadata(config_, std::span{history_}.first(static_cast<std::size_t>(nfchans)),
-                        channels, range_, heavy_),
+                        channels, range_, heavy_, &range2_, &heavy2_),
         aux);
 }
 
@@ -977,6 +1040,10 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     payload.dynrng = metadata.dynrng;
     if (config_.strmtyp == StreamType::kIndependent) {
         payload.compr = metadata.compr;
+    }
+    payload.dynrng2 = metadata.dynrng2;
+    if (config_.strmtyp == StreamType::kIndependent) {
+        payload.compr2 = metadata.compr2;
     }
     auto& cpl = payload.cpl;
     auto& spx = payload.spx;
@@ -1837,11 +1904,18 @@ AccessUnitEncoder::AccessUnitEncoder(const AccessUnitConfig& config) : config_(c
     // The substreams have controllers of their own, but this class always
     // supplies the words explicitly, so those never advance. These are the
     // ones that run.
+    const bool dual_mono = config_.independent.acmod == Acmod::kDualMono;
     if (config_.independent.drc) {
         range_.emplace(*config_.independent.drc, config_.independent.sample_rate);
+        if (dual_mono) {
+            range2_.emplace(*config_.independent.drc, config_.independent.sample_rate);
+        }
     }
     if (config_.independent.heavy) {
         heavy_.emplace(*config_.independent.heavy, config_.independent.sample_rate);
+        if (dual_mono) {
+            heavy2_.emplace(*config_.independent.heavy, config_.independent.sample_rate);
+        }
     }
 }
 
@@ -1871,7 +1945,7 @@ std::expected<AccessUnit, FrameError> AccessUnitEncoder::encode_access_unit(
         static_cast<std::size_t>(fullbw_channel_count(config_.independent.acmod));
     const FrameMetadata metadata =
         derive_metadata(config_.independent, std::span{tail_}.first(independent_fbw),
-                        channels.first(independent_count), range_, heavy_);
+                        channels.first(independent_count), range_, heavy_, &range2_, &heavy2_);
     for (std::size_t ch = 0; ch < independent_fbw; ++ch) {
         for (int n = 0; n < kSamplesPerBlock; ++n) {
             tail_[ch][static_cast<std::size_t>(n)] = static_cast<double>(

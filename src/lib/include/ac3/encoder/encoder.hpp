@@ -31,6 +31,9 @@ struct EncoderConfig {
     SampleRate sample_rate = SampleRate::k48000;
     std::uint32_t bitrate_kbps = 192;
     int dialnorm = 31;       // 1..31 (§5.4.2.8)
+    // §5.4.2.16: Ch2's dialnorm, required when acmod is kDualMono (1+1) and
+    // meaningless otherwise — the two programmes are levelled independently.
+    std::optional<int> dialnorm2 = std::nullopt;
     int chbwcod = -1;        // fbw bandwidth code 0..60; -1 = auto from bitrate
     Acmod acmod = Acmod::k2_0;
     bool lfe = false;
@@ -84,6 +87,10 @@ private:
     // frame - a per-frame instance would restart the attack every 32 ms.
     std::optional<meta::RangeController> range_;
     std::optional<meta::HeavyCompressor> heavy_;
+    // Ch2's own controllers, present only when acmod is kDualMono. A shared
+    // instance would smooth one programme's gain history into the other's.
+    std::optional<meta::RangeController> range2_;
+    std::optional<meta::HeavyCompressor> heavy2_;
 };
 
 }  // namespace ac3

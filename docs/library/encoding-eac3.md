@@ -43,6 +43,12 @@ for (int frame = 0; frame < 31; ++frame) {
 > the verification-gap table in the [README](https://github.com/iainchesworth/ac3forge/blob/main/README.md#verification-gaps) before relying on
 > a round trip.
 
+`FrameConfig::dialnorm2` (see "Dual mono" in [Encoding AC-3](encoding-ac3.md)) works exactly
+the same way here: set it alongside `dialnorm` when `acmod` is `kDualMono`. Dual mono is always a
+lone independent substream with no dependents — 1+1 has no bed/dependent split to make — so
+`AccessUnitEncoder` gives Ch2 its own `RangeController`/`HeavyCompressor` too, measured on the
+independent substream's own two channels the same way it measures Ch1's.
+
 ## Wide layouts: `ac3::eac3::AccessUnitEncoder`
 
 Anything past 5.1 rides in *dependent substreams* beside a self-sufficient 5.1 bed. Every

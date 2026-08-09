@@ -66,8 +66,16 @@ decoder as a check on the encoder: a test can assert on the `dynrng` words the e
 | `heavy_compression` | `false` | §7.7.2: prefer `compr` where it exists, falling back on `dynrng` for syncframes that carry none. |
 
 What both decoders refuse, cleanly, rather than mis-decoding: block switching, delta bit
-allocation, dual mono. The E-AC-3 decoder additionally refuses Annex E coupling, spectral
-extension, AHT, transient pre-noise processing, and `fscod2` half sample rates.
+allocation. The E-AC-3 decoder additionally refuses Annex E coupling, spectral extension, AHT,
+transient pre-noise processing, and `fscod2` half sample rates.
+
+Dual mono (`acmod` 0, "1+1") decodes on both: it's two independent single-channel programmes
+sharing one syncframe rather than a channel layout, so `DecodedFrame`/`DecodedSubstream` carry a
+second `dialnorm2`/`compr2` alongside the usual fields, and each channel's §7.7 gain is applied
+from its own words — Ch2 is never affected by Ch1's compression or vice versa.
+`Eac3Decoder::decode_access_unit`'s `layout` comes back empty for it (`DecodedAccessUnit::acmod ==
+kDualMono`), since there's no Table E2.5 location for "the second programme" to render onto — the
+two channels come back in coded order (Ch1, Ch2) instead.
 
 ---
 
