@@ -72,23 +72,42 @@ struct Direction {
 // the crossfade below needs.
 constexpr double kHeightElevationDeg = 45.0;
 
-// Where a location sits. The one context-dependent entry is the side surround
-// pair: with rear surrounds also present they move forward to +/-90 and the
-// rears take the +/-150 the 5.1 ring would have given them, which is the
-// physical difference between 5.1 and 7.1 rather than a naming one.
-[[nodiscard]] Direction direction_of(Location location, bool has_rears) {
+// Where a location sits. Two entries are context-dependent, both to avoid two
+// DISTINCT locations landing on the identical (ring, azimuth) pair that
+// pan_direction/pan_ring pan by - two targets it cannot tell apart make one
+// of them lose whatever a source aimed at that spot was carrying, silently:
+//
+//   - The side surround pair: with rear surrounds also present they move
+//     forward to +/-90 and the rears take the +/-150 the 5.1 ring would have
+//     given them, which is the physical difference between 5.1 and 7.1
+//     rather than a naming one. But Lsd/Rsd (SMPTE 428-3's own discrete side
+//     position) already sits at +/-90 unconditionally - so a request naming
+//     Ls/Rs, Lrs/Rrs AND Lsd/Rsd together would put Ls/Rs and Lsd/Rsd on top
+//     of each other. has_side_discrete keeps Ls/Rs at their no-rears +/-110
+//     in exactly that combination, which is otherwise unused in the low ring.
+//   - Ts (Table E2.5's lone, unpaired "top surround") sits directly overhead,
+//     where azimuth is physically undefined - 0 was as good a choice as any
+//     UNTIL Vhc, the front height centre, turned out to already own azimuth 0
+//     in the same (high) ring. This file's own naming already treats
+//     "surround" as REAR throughout (Cs, Lrs/Rrs, Lts/Rts all sit behind the
+//     listener) - Ts follows that pattern and moves to 180, behind the
+//     listener like Cs, rather than colliding with Vhc in front.
+[[nodiscard]] Direction direction_of(Location location, bool has_rears,
+                                     bool has_side_discrete) {
     switch (location) {
         case Location::kLeft: return {30.0, 0.0};
         case Location::kCentre: return {0.0, 0.0};
         case Location::kRight: return {-30.0, 0.0};
-        case Location::kLeftSurround: return {has_rears ? 90.0 : 110.0, 0.0};
-        case Location::kRightSurround: return {has_rears ? -90.0 : -110.0, 0.0};
+        case Location::kLeftSurround:
+            return {has_rears && !has_side_discrete ? 90.0 : 110.0, 0.0};
+        case Location::kRightSurround:
+            return {has_rears && !has_side_discrete ? -90.0 : -110.0, 0.0};
         case Location::kLc: return {15.0, 0.0};
         case Location::kRc: return {-15.0, 0.0};
         case Location::kLrs: return {150.0, 0.0};
         case Location::kRrs: return {-150.0, 0.0};
         case Location::kCs: return {180.0, 0.0};
-        case Location::kTs: return {0.0, 90.0};
+        case Location::kTs: return {180.0, 90.0};
         case Location::kLsd: return {90.0, 0.0};
         case Location::kRsd: return {-90.0, 0.0};
         case Location::kLw: return {60.0, 0.0};
@@ -123,13 +142,15 @@ struct PanTargets {
 
 [[nodiscard]] PanTargets pan_targets(std::span<const Location> locations) {
     const bool has_rears = std::ranges::find(locations, Location::kLrs) != locations.end();
+    const bool has_side_discrete =
+        std::ranges::find(locations, Location::kLsd) != locations.end();
     PanTargets out;
     for (const auto location : locations) {
         if (is_lfe(location)) {
             continue;
         }
         out.locations.push_back(location);
-        out.directions.push_back(direction_of(location, has_rears));
+        out.directions.push_back(direction_of(location, has_rears, has_side_discrete));
     }
     return out;
 }
@@ -894,12 +915,15 @@ std::optional<Routing> route(const ChannelPlan& target, std::size_t wav_channels
     std::vector<double> rendered_gains(rendered.directions.size());
     const bool source_has_rears =
         std::ranges::find(source, Location::kLrs) != source.end();
+    const bool source_has_side_discrete =
+        std::ranges::find(source, Location::kLsd) != source.end();
 
     for (std::size_t s = 0; s < source.size(); ++s) {
         if (is_lfe(source[s])) {
             continue;
         }
-        const auto direction = direction_of(source[s], source_has_rears);
+        const auto direction =
+            direction_of(source[s], source_has_rears, source_has_side_discrete);
         pan_direction(direction, bed.directions, bed_gains);
         pan_direction(direction, rendered.directions, rendered_gains);
 

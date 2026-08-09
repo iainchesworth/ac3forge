@@ -162,6 +162,10 @@ struct FrameConfig {
     return static_cast<std::uint32_t>(bits / 16);
 }
 
+// §E2.3.1.3: frmsiz is 11 bits and holds (words - 1), so 2048 is the largest
+// word count this format can ever signal, whatever bitrate produced it.
+inline constexpr std::uint32_t kMaxFrameWords = 2048;
+
 // An EMDF container (ac3::emdf::build_container) to carry in this frame's aux
 // data, or an empty span for none.
 //

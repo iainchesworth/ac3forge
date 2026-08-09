@@ -337,6 +337,85 @@ TEST_CASE("a programme can carry LFE and LFE2 as two distinct channels", "[eac3]
     }
 }
 
+TEST_CASE("two dependents that claim the same location: the later one wins",
+          "[eac3][decoder]") {
+    using ac3::Acmod;
+    namespace cm = ac3::eac3::chanmap;
+    // Nothing stops two dependents from naming the same Table E2.5 location -
+    // the per-substream chanmap check (E2.3.1.8) never looks at siblings, and
+    // build_silent_access_unit accepts it outright (see the encoder-side test
+    // in test_eac3.cpp). The decoder's own §E3.8.2 rule - "transmission order
+    // is overwrite order" (eac3_decoder.cpp) - is what actually resolves the
+    // conflict. This is that rule proven with real, distinguishable audio
+    // rather than just read off the comment that documents it: if the later
+    // dependent did NOT win, or if the two blended, the tone check below
+    // would catch it.
+    const LayoutCase layout{
+        .name = "duplicate Vhc claim",
+        .config = {.independent = bed(640),
+                   .dependents = {{.bitrate_kbps = 128, .acmod = Acmod::k1_0, .chanmap = cm::kVhcBit},
+                                  {.bitrate_kbps = 128, .acmod = Acmod::k1_0, .chanmap = cm::kVhcBit}}},
+        .tones = {1000.0, 800.0, 1200.0, 600.0, 1400.0, 60.0, 2000.0, 2500.0},
+        .speakers = {{Location::kLeft, 1000.0},
+                     {Location::kCentre, 800.0},
+                     {Location::kRight, 1200.0},
+                     {Location::kLeftSurround, 600.0},
+                     {Location::kRightSurround, 1400.0},
+                     {Location::kVhc, 2500.0},  // the SECOND dependent's tone, not the first's 2000
+                     {Location::kLfe, 60.0}}};
+
+    const auto rt = round_trip(layout, 4);
+    REQUIRE(rt.rendered.size() == layout.speakers.size());
+    REQUIRE(rt.layout.count == static_cast<int>(layout.speakers.size()));
+    REQUIRE(rt.substreams == 3);
+    for (std::size_t ch = 0; ch < layout.speakers.size(); ++ch) {
+        CAPTURE(ch, ac3::eac3::chanmap::name(layout.speakers[ch].location));
+        CHECK(rt.layout[static_cast<int>(ch)] == layout.speakers[ch].location);
+        CHECK(std::abs(dominant_freq_hz(rt.rendered[ch]) - layout.speakers[ch].tone_hz) < 10.0);
+    }
+}
+
+TEST_CASE("two substreams claiming primary LFE: the later one wins, not both",
+          "[eac3][decoder]") {
+    using ac3::Acmod;
+    namespace cm = ac3::eac3::chanmap;
+    // The bed's own lfeon and a dependent's chanmap can each independently
+    // claim bit 15 (primary LFE): nothing stops a dependent's chanmap from
+    // relabelling its lfe-type coded slot as LFE instead of LFE2, the same
+    // way the LFE/LFE2 test above relabels it AS LFE2. Two substreams both
+    // claiming the format's one LFE-type-per-substream slot at the SAME
+    // location is the sharpest version of the overwrite footgun: get it
+    // wrong and a channel goes silent with no error anywhere to explain why.
+    // It does not go silent here - the later substream's LFE content plays,
+    // exactly as documented in eac3_decoder.cpp - but that is a claim only
+    // real, distinguishable audio through the real decoder can prove.
+    const LayoutCase layout{
+        .name = "duplicate primary LFE claim",
+        .config = {.independent = bed(640),
+                   .dependents = {{.bitrate_kbps = 128,
+                                   .acmod = Acmod::k1_0,
+                                   .lfe = true,
+                                   .chanmap = static_cast<std::uint16_t>(cm::kVhcBit | cm::kLfeBit)}}},
+        .tones = {1000.0, 800.0, 1200.0, 600.0, 1400.0, 60.0, 2000.0, 150.0},
+        .speakers = {{Location::kLeft, 1000.0},
+                     {Location::kCentre, 800.0},
+                     {Location::kRight, 1200.0},
+                     {Location::kLeftSurround, 600.0},
+                     {Location::kRightSurround, 1400.0},
+                     {Location::kVhc, 2000.0},
+                     {Location::kLfe, 150.0}}};  // the DEPENDENT's LFE tone, not the bed's 60
+
+    const auto rt = round_trip(layout, 4);
+    REQUIRE(rt.rendered.size() == layout.speakers.size());
+    REQUIRE(rt.layout.count == static_cast<int>(layout.speakers.size()));
+    REQUIRE(rt.substreams == 2);
+    for (std::size_t ch = 0; ch < layout.speakers.size(); ++ch) {
+        CAPTURE(ch, ac3::eac3::chanmap::name(layout.speakers[ch].location));
+        CHECK(rt.layout[static_cast<int>(ch)] == layout.speakers[ch].location);
+        CHECK(std::abs(dominant_freq_hz(rt.rendered[ch]) - layout.speakers[ch].tone_hz) < 10.0);
+    }
+}
+
 TEST_CASE("E-AC-3 round trips are near-transparent in every channel", "[eac3][decoder]") {
     // Real audio from frame 1 onward is the only input that can detect a
     // frame-layout error: with silence every bap is zero, so a stray bit lands
