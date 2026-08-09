@@ -118,6 +118,67 @@ QString bed_channel_names(ac3::Acmod acmod) {
     return names.join(QStringLiteral(" "));
 }
 
+// ---------------------------------------------------------------------------
+// Where a Table E2.5 location sits on the soundfield plans. This is a GUI-
+// only convention - nothing about encoding reads it - extending the ITU-R
+// BS.775 ring ac3::spatial::kSpeakerAzimuthDeg already fixes for the bed's
+// five positions (L +30, C 0, R -30, Ls +110, Rs -110, degrees CCW from
+// front) to the wider set of channels the general channel model can carry.
+// Without this, a plan wider than a plain 5.1 bed had no way to place its
+// extra channels at all: channel_azimuth_deg(acmod, lfe, index) only ever
+// knew about indices inside the BED's own acmod, so a dependent substream's
+// channels always came back non-directional and simply never appeared on the
+// ring, ceiling or otherwise. LFE/LFE2 stay non-directional; every other
+// location gets a plausible placement instead of vanishing.
+// ---------------------------------------------------------------------------
+
+std::optional<double> location_azimuth_deg(ac3::eac3::chanmap::Location location) {
+    using ac3::eac3::chanmap::Location;
+    switch (location) {
+        case Location::kLeft: return 30.0;
+        case Location::kCentre: return 0.0;
+        case Location::kRight: return -30.0;
+        case Location::kLeftSurround: return 110.0;
+        case Location::kRightSurround: return -110.0;
+        case Location::kLc: return 15.0;
+        case Location::kRc: return -15.0;
+        case Location::kLrs: return 135.0;
+        case Location::kRrs: return -135.0;
+        case Location::kCs: return 180.0;
+        case Location::kTs: return 180.0;    // ceiling: overhead-rear
+        case Location::kLsd: return 90.0;
+        case Location::kRsd: return -90.0;
+        case Location::kLw: return 60.0;
+        case Location::kRw: return -60.0;
+        case Location::kVhl: return 45.0;    // ceiling: front height
+        case Location::kVhr: return -45.0;   // ceiling: front height
+        case Location::kVhc: return 0.0;     // ceiling: centre height
+        case Location::kLts: return 110.0;   // ceiling: rear height
+        case Location::kRts: return -110.0;  // ceiling: rear height
+        case Location::kLfe2:
+        case Location::kLfe:
+            return std::nullopt;
+    }
+    return std::nullopt;
+}
+
+// The two soundfield rings: everything overhead goes on the ceiling plan,
+// everything else - however far back or wide - stays on the ear-level one.
+bool is_ceiling_location(ac3::eac3::chanmap::Location location) {
+    using ac3::eac3::chanmap::Location;
+    switch (location) {
+        case Location::kTs:
+        case Location::kVhl:
+        case Location::kVhr:
+        case Location::kVhc:
+        case Location::kLts:
+        case Location::kRts:
+            return true;
+        default:
+            return false;
+    }
+}
+
 }  // namespace
 
 struct EncoderController::Source {
@@ -901,7 +962,9 @@ std::vector<bool> EncoderController::fedChannels() const {
 }
 
 void EncoderController::setLayout(ac3::Acmod acmod, bool lfe, const QStringList& names,
-                                  const QString& label, const std::vector<bool>& fed) {
+                                  const QString& label,
+                                  const std::vector<ac3::plan::CodedChannel>& coded,
+                                  const std::vector<bool>& fed) {
     acmod_ = acmod;
     lfe_ = lfe;
     channel_names_ = names;
@@ -909,6 +972,23 @@ void EncoderController::setLayout(ac3::Acmod acmod, bool lfe, const QStringList&
                        ? std::vector<bool>(static_cast<std::size_t>(names.size()), true)
                        : fed;
     channel_fed_.resize(static_cast<std::size_t>(names.size()), true);
+
+    channel_locations_.clear();
+    channel_replaced_.clear();
+    channel_locations_.reserve(coded.size());
+    channel_replaced_.reserve(coded.size());
+    for (const auto& channel : coded) {
+        channel_locations_.push_back(channel.location);
+        // A bed channel a dependent overwrites still exists and still reaches
+        // a 5.1 decoder, but Rendered mode hides it - it is coded_channel_
+        // names()'s own "(bed)" test, kept in step with it deliberately.
+        const bool replaced =
+            channel.bed && std::ranges::any_of(coded, [&](const auto& other) {
+                return !other.bed && other.location == channel.location;
+            });
+        channel_replaced_.push_back(replaced);
+    }
+
     layout_name_ = label;
     emit layoutChanged();
     // Start silent: leaving the previous source's levels under the new
@@ -919,6 +999,8 @@ void EncoderController::setLayout(ac3::Acmod acmod, bool lfe, const QStringList&
 
 void EncoderController::clearLayout() {
     channel_names_.clear();
+    channel_locations_.clear();
+    channel_replaced_.clear();
     layout_name_.clear();
     channel_levels_.clear();
     soundfield_.clear();
@@ -932,10 +1014,12 @@ void EncoderController::publishLevels(std::span<const ac3::analysis::ChannelLeve
     entries.reserve(static_cast<qsizetype>(levels.size()));
     for (std::size_t ch = 0; ch < levels.size(); ++ch) {
         const auto& level = levels[ch];
-        // Only the bed's channels have an azimuth: a dependent substream's
-        // speakers are named by a chanmap, which no acmod can place.
-        const auto azimuth =
-            ac3::analysis::channel_azimuth_deg(acmod_, lfe_, static_cast<int>(ch));
+        const bool has_location = ch < channel_locations_.size();
+        const auto location = has_location ? channel_locations_[ch]
+                                           : ac3::eac3::chanmap::Location::kLeft;
+        const auto azimuth = has_location ? location_azimuth_deg(location) : std::nullopt;
+        const bool ceiling = has_location && is_ceiling_location(location);
+        const bool replaced = ch < channel_replaced_.size() && channel_replaced_[ch];
         entries.append(QVariantMap{
             {QStringLiteral("peakDb"), level.peak_db},
             {QStringLiteral("rmsDb"), level.rms_db},
@@ -950,6 +1034,8 @@ void EncoderController::publishLevels(std::span<const ac3::analysis::ChannelLeve
             {QStringLiteral("hold"), ac3::analysis::meter_fraction(level.hold_db, kMeterFloorDb)},
             {QStringLiteral("azimuthDeg"), azimuth.value_or(0.0)},
             {QStringLiteral("directional"), azimuth.has_value()},
+            {QStringLiteral("ceiling"), ceiling},
+            {QStringLiteral("replaced"), replaced},
             // A channel the source cannot fill reads -inf for a reason, and
             // the display should say which reason: silent by routing is not
             // the same as silent because nothing is reaching the meter.
@@ -1158,6 +1244,7 @@ void EncoderController::startRecording(int deviceIndex, const QUrl& url) {
     recorded_seconds_ = 0.0;
     emit recordedSecondsChanged();
 
+    const auto coded = plan::coded_channels(cp);
     const auto names = plan::coded_channel_names(cp);
     QStringList labels;
     std::vector<bool> fed(names.size(), false);
@@ -1169,7 +1256,7 @@ void EncoderController::startRecording(int deviceIndex, const QUrl& url) {
             fed[static_cast<std::size_t>(c)] = routing->at(c, s) != 0.0;
         }
     }
-    setLayout(cp.bed_acmod, cp.bed_lfe, labels, label, fed);
+    setLayout(cp.bed_acmod, cp.bed_lfe, labels, label, coded, fed);
     setMetering(true);
     setStatus(QStringLiteral("Recording from %1…").arg(QString::fromStdString(device.name)));
 
@@ -1376,9 +1463,16 @@ void EncoderController::loadSourceFile(const QUrl& url) {
             labels.append(to_qstring(ac3::analysis::channel_name(source_layout->acmod,
                                                                  source_layout->lfe, ch)));
         }
+        std::vector<plan::CodedChannel> coded;
+        coded.reserve(static_cast<std::size_t>(count));
+        for (const auto location : ac3::eac3::chanmap::expand(ac3::eac3::chanmap::acmod_map(
+                 source_layout->acmod, source_layout->lfe))) {
+            coded.push_back({.location = location, .bed = true, .substream = 0});
+        }
         setLayout(source_layout->acmod, source_layout->lfe, labels,
                   to_qstring(ac3::analysis::layout_name(source_layout->acmod,
-                                                        source_layout->lfe)));
+                                                        source_layout->lfe)),
+                  coded);
         setMetering(false);
         ac3::analysis::LevelMeter meter{source_layout->acmod, source_layout->lfe, rate};
         std::vector<std::span<const float>> views(source_layout->wav_index.size());
@@ -1512,12 +1606,13 @@ void EncoderController::encodeChannels(const QString& path,
         }
     }
 
+    const auto coded = plan::coded_channels(cp);
     const auto names = plan::coded_channel_names(cp);
     QStringList labels;
     for (const auto& name : names) {
         labels.append(QString::fromStdString(name));
     }
-    setLayout(cp.bed_acmod, cp.bed_lfe, labels, label, fedChannels());
+    setLayout(cp.bed_acmod, cp.bed_lfe, labels, label, coded, fedChannels());
     setMetering(true);
 
     const bool eac3 = p.codec == plan::Codec::kEac3;
@@ -1666,12 +1761,13 @@ void EncoderController::encodeObjects(const QString& path,
 
     // The meters follow the BED, not the source: 5.1 is what comes out and
     // what a legacy decoder hears, whatever the source layout was.
+    const auto coded = plan::coded_channels(plan::LayoutId::k51);
     const auto names = plan::coded_channel_names(plan::LayoutId::k51);
     QStringList labels;
     for (const auto& name : names) {
         labels.append(QString::fromStdString(name));
     }
-    setLayout(ac3::Acmod::k3_2, true, labels, QStringLiteral("5.1 bed"), fedChannels());
+    setLayout(ac3::Acmod::k3_2, true, labels, QStringLiteral("5.1 bed"), coded, fedChannels());
     setMetering(true);
 
     std::ignore = QtConcurrent::run([this, path, p, sample_rate, centre, spread, lfe_send,

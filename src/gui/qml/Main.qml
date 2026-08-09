@@ -73,6 +73,11 @@ ApplicationWindow {
     // the tab bar itself.
     property bool advanced: false
     property string currentTab: "format"
+    // "coded" | "rendered" - persisted preference, the fourteen-rows-for-
+    // twelve-speakers question turned into a mode rather than a puzzle.
+    // Defaults to "coded" so the meters keep showing every transmitted
+    // channel unless asked otherwise - what the app has always done.
+    property string meterMode: "coded"
     readonly property var tabOrder: ["format", "coding", "meta", "objects"]
     readonly property var visibleTabs: {
         const tabs = [{ key: "format", label: qsTr("Format") }];
@@ -368,7 +373,37 @@ ApplicationWindow {
 
                     // ---- channel levels ------------------------------------------
                     Card {
+                        id: levelsCard
                         title: qsTr("Channel levels")
+
+                        // Which coded-channel indices this mode shows: Coded
+                        // shows every transmitted channel; Rendered hides a bed
+                        // channel a dependent substream replaces (level.replaced),
+                        // since it carries the same audio as the one that stays.
+                        readonly property var visibleMeterIndices: {
+                            const indices = [];
+                            const levels = EncoderController.channelLevels;
+                            const names = EncoderController.channelNames;
+                            for (let i = 0; i < names.length; i++) {
+                                const level = i < levels.length ? levels[i] : ({});
+                                if (window.meterMode === "rendered" && level.replaced === true) {
+                                    continue;
+                                }
+                                indices.push(i);
+                            }
+                            return indices;
+                        }
+                        readonly property int meterFedCount: {
+                            let count = 0;
+                            const levels = EncoderController.channelLevels;
+                            for (const i of visibleMeterIndices) {
+                                const level = i < levels.length ? levels[i] : ({});
+                                if (level.fed !== false) {
+                                    count++;
+                                }
+                            }
+                            return count;
+                        }
 
                         RowLayout {
                             Layout.fillWidth: true
@@ -402,6 +437,16 @@ ApplicationWindow {
                             }
 
                             Item { Layout.fillWidth: true }
+
+                            SegmentedControl {
+                                visible: EncoderController.hasLevels
+                                model: [{ value: "coded", label: qsTr("Coded") },
+                                        { value: "rendered", label: qsTr("Rendered") }]
+                                currentValue: window.meterMode
+                                segHeight: 22
+                                fontSize: 11
+                                onSelected: (value) => window.meterMode = value
+                            }
                         }
 
                         ColumnLayout {
@@ -411,20 +456,46 @@ ApplicationWindow {
 
                             ColumnLayout {
                                 Layout.fillWidth: true
-                                spacing: 4
+                                spacing: 3
 
                                 Repeater {
                                     objectName: "channelMeters"
-                                    model: EncoderController.channelNames
+                                    model: levelsCard.visibleMeterIndices
 
-                                    delegate: ChannelMeter {
-                                        required property int index
-                                        required property string modelData
+                                    delegate: Item {
+                                        required property int modelData
+
+                                        readonly property var level:
+                                            modelData < EncoderController.channelLevels.length
+                                            ? EncoderController.channelLevels[modelData] : ({})
+                                        // Coded mode groups a bed channel a dependent
+                                        // replaces behind a left rule so the
+                                        // duplication reads as structure; Rendered
+                                        // mode never sees these rows at all.
+                                        readonly property bool grouped:
+                                            window.meterMode === "coded" && level.replaced === true
 
                                         Layout.fillWidth: true
-                                        channelName: modelData
-                                        level: index < EncoderController.channelLevels.length
-                                               ? EncoderController.channelLevels[index] : ({})
+                                        implicitHeight: meter.implicitHeight
+
+                                        Rectangle {
+                                            visible: grouped
+                                            anchors.left: parent.left
+                                            anchors.top: parent.top
+                                            anchors.bottom: parent.bottom
+                                            width: 2
+                                            color: Theme.accent300
+                                        }
+
+                                        ChannelMeter {
+                                            id: meter
+                                            anchors.left: parent.left
+                                            anchors.right: parent.right
+                                            anchors.leftMargin: grouped ? 8 : 0
+                                            channelName: modelData < EncoderController.channelNames.length
+                                                         ? EncoderController.channelNames[modelData] : ""
+                                            level: parent.level
+                                        }
                                     }
                                 }
 
@@ -453,14 +524,39 @@ ApplicationWindow {
                                         }
                                     }
                                 }
+
+                                // Half the answer to "how do routing consequences
+                                // show before the fact" - the other half is the
+                                // channel map in Format. Reads as a plain fact
+                                // when everything is fed, and as a warning (accent
+                                // top rule) when the source is narrower than the
+                                // plan.
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    Layout.topMargin: 6
+                                    height: levelsCard.meterFedCount < levelsCard.visibleMeterIndices.length ? 2 : 1
+                                    color: levelsCard.meterFedCount < levelsCard.visibleMeterIndices.length
+                                           ? Theme.accent : Theme.divider
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    Layout.topMargin: 4
+                                    readonly property int total: levelsCard.visibleMeterIndices.length
+                                    readonly property int fed: levelsCard.meterFedCount
+                                    readonly property string noun: window.meterMode === "coded"
+                                                                    ? qsTr("coded channels") : qsTr("channels")
+                                    text: fed === total
+                                          ? qsTr("All %1 %2 fed").arg(total).arg(noun)
+                                          : qsTr("%1 of %2 %3 fed").arg(fed).arg(total).arg(noun)
+                                    color: fed === total ? Theme.textMuted : Theme.accent700
+                                    font.pixelSize: Theme.fontSmall
+                                }
                             }
 
                             // Below the meters rather than beside them: at the
                             // rail's 340-404px width there is no longer room for
                             // both side by side without crushing the meter track
-                            // down to a few pixels. The two-ring (ear/ceiling)
-                            // soundfield redesign is its own checkpoint; this is
-                            // just the arrangement fix the narrower rail forces.
+                            // down to a few pixels.
                             SoundfieldView {
                                 Layout.alignment: Qt.AlignHCenter
                                 visible: EncoderController.surround

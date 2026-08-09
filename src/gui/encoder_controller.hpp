@@ -148,6 +148,12 @@ class EncoderController : public QObject {
     Q_PROPERTY(QString layoutName READ layoutName NOTIFY layoutChanged)
     Q_PROPERTY(bool hasLevels READ hasLevels NOTIFY layoutChanged)
     Q_PROPERTY(bool surround READ surround NOTIFY layoutChanged)
+    // Each entry also carries "ceiling" (a height-type location, for the
+    // second soundfield ring) and "replaced" (a bed channel a dependent
+    // substream supersedes - Coded mode groups it behind a rule; Rendered
+    // mode hides it) alongside the existing peak/rms/hold/fed/directional
+    // fields, so a Repeater filtering by meter mode never needs a second
+    // array to look anything up in.
     Q_PROPERTY(QVariantList channelLevels READ channelLevels NOTIFY levelsChanged)
     Q_PROPERTY(QVariantMap soundfield READ soundfield NOTIFY levelsChanged)
     Q_PROPERTY(bool metering READ metering NOTIFY meteringChanged)
@@ -393,14 +399,20 @@ private:
     void refreshRouting();
 
     // Re-labels the meters and clears them to the floor. GUI thread only, and
-    // always before a worker that will publish into them starts. `names` may
-    // be wider than the acmod, for a layout built from dependent substreams.
+    // always before a worker that will publish into them starts. `names` and
+    // `coded` may be wider than the acmod, for a layout built from dependent
+    // substreams; `coded` carries each entry's actual Table E2.5 location and
+    // whether it is a bed channel a dependent replaces, which is what lets
+    // publishLevels() place a channel on the right soundfield ring (or the
+    // right one of the two, ear-level vs ceiling) without asking the acmod
+    // alone, which only ever knew about the bed's own five positions.
     //
     // `fed` says which of those channels the routing actually puts audio into.
     // A channel the source cannot fill reads -inf for a legitimate reason, and
     // that is a different thing from a meter wired to nothing; an empty vector
     // means every channel is fed.
     void setLayout(ac3::Acmod acmod, bool lfe, const QStringList& names, const QString& label,
+                   const std::vector<ac3::plan::CodedChannel>& coded,
                    const std::vector<bool>& fed = {});
     // Which coded channels the current plan feeds, sized to the layout.
     [[nodiscard]] std::vector<bool> fedChannels() const;
@@ -466,6 +478,11 @@ private:
     bool metering_ = false;
     QStringList channel_names_;
     std::vector<bool> channel_fed_;
+    // Parallel to channel_names_/channel_fed_: each entry's Table E2.5
+    // location (for soundfield placement) and whether it is a bed channel a
+    // dependent substream replaces (for the Coded/Rendered meter split).
+    std::vector<ac3::eac3::chanmap::Location> channel_locations_;
+    std::vector<bool> channel_replaced_;
     QString layout_name_;
     QVariantList channel_levels_;
     QVariantMap soundfield_;
