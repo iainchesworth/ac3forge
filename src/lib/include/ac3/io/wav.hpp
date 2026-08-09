@@ -17,7 +17,7 @@
 
 namespace ac3::io {
 
-enum class WavError {
+enum class WavError : std::uint8_t {
     kCannotOpen,
     kNotRiffWave,
     kUnsupportedFormat,  // not PCM16 / float32

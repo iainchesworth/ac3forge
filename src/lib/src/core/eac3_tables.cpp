@@ -51,10 +51,10 @@ std::string_view describe(AllocationError error) {
 std::optional<std::pair<Acmod, bool>> acmod_for_chanmap(std::uint16_t mask) {
     // lfeon is a single bit: a substream has room for one LFE-type channel,
     // never both LFE and LFE2 at once.
-    if ((mask & kLfe) != 0 && (mask & kLfe2) != 0) {
+    if ((mask & kLfeBit) != 0 && (mask & kLfe2Bit) != 0) {
         return std::nullopt;
     }
-    const bool lfe = (mask & (kLfe | kLfe2)) != 0;
+    const bool lfe = (mask & (kLfeBit | kLfe2Bit)) != 0;
     const int fullbw = channel_count(mask) - (lfe ? 1 : 0);
     for (const auto acmod : kBedCandidates) {
         if (fullbw_channel_count(acmod) == fullbw) {
@@ -90,7 +90,7 @@ std::expected<ChannelPlan, AllocationError> allocate(std::uint16_t locations) {
 
     ChannelPlan plan;
     plan.bed_acmod = *bed_acmod;
-    plan.bed_lfe = (locations & kLfe) != 0;
+    plan.bed_lfe = (locations & kLfeBit) != 0;
     auto remaining =
         static_cast<std::uint16_t>(locations & ~acmod_map(*bed_acmod, plan.bed_lfe));
 
@@ -98,8 +98,8 @@ std::expected<ChannelPlan, AllocationError> allocate(std::uint16_t locations) {
     // always contributes at least one full-bandwidth channel, so it can never
     // be a dependent's entire content) - held back and placed last, once
     // every other dependent's own shape is settled.
-    const bool needs_lfe2 = (remaining & kLfe2) != 0;
-    remaining = static_cast<std::uint16_t>(remaining & ~kLfe2);
+    const bool needs_lfe2 = (remaining & kLfe2Bit) != 0;
+    remaining = static_cast<std::uint16_t>(remaining & ~kLfe2Bit);
 
     // Bin-pack the rest in Table E2.5 bit order: keep adding to the current
     // dependent until the next location would push it past
@@ -130,7 +130,7 @@ std::expected<ChannelPlan, AllocationError> allocate(std::uint16_t locations) {
         bool placed = false;
         for (auto& dependent : plan.dependents) {
             if (channel_count(dependent) < kMaxSubstreamChannels) {
-                dependent = static_cast<std::uint16_t>(dependent | kLfe2);
+                dependent = static_cast<std::uint16_t>(dependent | kLfe2Bit);
                 placed = true;
                 break;
             }

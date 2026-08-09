@@ -35,7 +35,7 @@ namespace ac3::iec61937 {
 inline constexpr std::size_t kBurstBytes = 6144;
 inline constexpr std::size_t kEac3BurstBytes = 24576;
 
-enum class WrapError {
+enum class WrapError : std::uint8_t {
     kNotAFrame,       // missing sync word or truncated header
     kFrameTooLarge,   // cannot happen for legal AC-3 sizes; guarded anyway
 };

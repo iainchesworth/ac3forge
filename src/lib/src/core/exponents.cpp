@@ -55,6 +55,12 @@ EncodedExponents encode_exponents(std::span<const std::uint8_t> raw, ExpStrategy
     // note) so the loudest member stays representable. Positions whose first
     // bin lies at or past endmant are pure padding, handled after slew
     // limiting below.
+    // group_size == 0 only for ExpStrategy::kReuse, and every caller of this
+    // function passes kD15/kD25/kD45 (strategy_for_span in encoder.cpp never
+    // produces kReuse; every other call site is a hardcoded kD15) - the
+    // assert above holds for the whole call graph, clang-analyzer just
+    // cannot see across translation units to confirm it.
+    // NOLINTNEXTLINE(clang-analyzer-core.DivideZero)
     const int real_diffs = (endmant - 1 + group_size - 1) / group_size;
     assert(real_diffs <= diff_count);
     std::vector<int> pre(static_cast<std::size_t>(diff_count) + 1);
@@ -111,6 +117,9 @@ EncodedCouplingExponents encode_coupling_exponents(std::span<const std::uint8_t>
     const int count = static_cast<int>(raw.size());
     assert(group_size > 0 && count > 0);
     assert(count % (3 * group_size) == 0);
+    // Same reasoning as encode_exponents above: group_size == 0 only for
+    // ExpStrategy::kReuse, which no caller of this function ever passes.
+    // NOLINTNEXTLINE(clang-analyzer-core.DivideZero)
     const int ngrps = count / (3 * group_size);
     const int diff_count = ngrps * 3;
 

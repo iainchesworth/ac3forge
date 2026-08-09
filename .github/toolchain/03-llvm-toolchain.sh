@@ -25,6 +25,16 @@ PACKAGES=(
     "lld-${LLVM_VERSION}"
     "libc++-${LLVM_VERSION}-dev"
     "libc++abi-${LLVM_VERSION}-dev"
+    # ASan/UBSan's static runtime libs (libclang_rt.*.a) - without this package
+    # any -fsanitize= link fails with "cannot find libclang_rt.*.a". Not needed
+    # by a plain build, but every Linux LLVM leg shares this script, so it is
+    # simplest to always have it rather than fork the install for the
+    # sanitizer presets alone.
+    "libclang-rt-${LLVM_VERSION}-dev"
+    # llvm-symbolizer, which ASan/UBSan shell out to at runtime to turn
+    # addresses back into file:line - without it a report is a stack of raw
+    # addresses. It ships in llvm-${LLVM_VERSION}, not clang-${LLVM_VERSION}.
+    "llvm-${LLVM_VERSION}"
 )
 
 # Ubuntu 26.04 LTS (resolute) and newer ship this exact set in the 'universe'
@@ -86,6 +96,7 @@ update-alternatives --install /usr/bin/clang clang "/usr/bin/clang-${LLVM_VERSIO
 update-alternatives --install /usr/bin/clang++ clang++ "/usr/bin/clang++-${LLVM_VERSION}" 100
 update-alternatives --install /usr/bin/clang-tidy clang-tidy "/usr/bin/clang-tidy-${LLVM_VERSION}" 100
 update-alternatives --install /usr/bin/lld lld "/usr/bin/lld-${LLVM_VERSION}" 100
+update-alternatives --install /usr/bin/llvm-symbolizer llvm-symbolizer "/usr/bin/llvm-symbolizer-${LLVM_VERSION}" 100
 
 echo "==> Clang $(clang --version | head -1) installed"
 

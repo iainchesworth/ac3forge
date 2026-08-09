@@ -74,6 +74,9 @@ std::expected<std::size_t, DecodeError> syncframe_bytes(std::span<const std::byt
         return std::unexpected(DecodeError::kReservedValue);
     }
     const std::uint32_t kbps = kBitratesKbps[frmsizecod >> 1];
+    // kbps came from the very table frame_size_bytes -> bitrate_index
+    // searches for an exact match, so the lookup inside it always succeeds.
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     return *frame_size_bytes(static_cast<SampleRate>(fscod), kbps, (frmsizecod & 1) != 0);
 }
 

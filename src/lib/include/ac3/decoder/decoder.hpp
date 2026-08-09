@@ -44,7 +44,7 @@
 
 namespace ac3 {
 
-enum class DecodeError {
+enum class DecodeError : std::uint8_t {
     kTruncated,
     kBadSyncWord,
     kBadCrc,
