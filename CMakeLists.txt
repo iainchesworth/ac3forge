@@ -5,6 +5,11 @@ project(ac3forge
     DESCRIPTION "Clean-room AC-3 (ATSC A/52) encoder and decoder with a spatial object layer"
     LANGUAGES CXX)
 
+# vcpkg.json's "version" is a SEPARATE copy of this number - vcpkg reads its
+# manifest before any CMake configure step runs, so there is no automatic way
+# to keep the two in sync. Bump vcpkg.json's "version" by hand whenever
+# VERSION above changes.
+
 # ---------------------------------------------------------------------------
 # Global language settings: C++23 only, no compiler extensions.
 # ---------------------------------------------------------------------------
@@ -101,6 +106,9 @@ endif()
 if(AC3FORGE_BUILD_FUZZERS)
     add_subdirectory(fuzz)
 endif()
+
+# After every target's install() rules (src/cli, src/gui) have been declared.
+include(Packaging)
 
 message(STATUS "ac3forge ${PROJECT_VERSION}")
 message(STATUS "  Build CLI      : ${AC3FORGE_BUILD_CLI}")

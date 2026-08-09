@@ -305,6 +305,50 @@ modules, so nothing here has been played to an actual S/PDIF or HDMI output, and
 has been asked to lock onto the result. Whether a given output accepts a bitstream is
 per-device anyway — `ac3cli outputs` probes each one and says.
 
+## Packaging
+
+`cmake/Packaging.cmake` wires CPack up behind the platform preset matrix. A plain ZIP is
+always produced; NSIS (Windows), DEB/RPM (Linux) and DragNDrop (macOS) are added on top when
+the packaging tool for that format is found on `PATH`, so `cpack` degrades gracefully instead
+of failing outright on a machine that does not have e.g. `makensis` installed.
+
+From a Developer PowerShell, with `VCPKG_ROOT` set:
+
+```bash
+cmake --preset config-windows-msvc
+```
+
+```bash
+cmake --build --preset build-windows-msvc
+```
+
+```bash
+cpack --preset pack-windows-msvc
+```
+
+The equivalent `pack-<platform>` preset exists for every entry in the platform matrix
+(`pack-windows-llvm`, `pack-linux-gcc`, `pack-linux-llvm`, `pack-macos-llvm`), though only the
+Windows ones have ever actually been run — see [Verified configuration](#verified-configuration)
+and the note in `cmake/Packaging.cmake` about Linux Qt packaging not applying yet, since
+`AC3FORGE_BUILD_GUI` still defaults off on every non-Windows preset even though Qt itself can be
+found there and CI now builds and smoke-tests it on both Linux legs — see
+[GUI on Linux](#gui-on-linux). Packages land in `packages/` at the repository root.
+`cmake --build --preset build-windows-msvc --target pack-ac3forge` runs the same thing from
+inside an IDE's target list instead of the command line.
+
+Only `ac3cli` and `ac3gui` are installed/packaged; `ac3::forge` and `matroska::matroska` are
+link-only libraries, not a public API this project ships standalone.
+
+CI packages the `windows-msvc` leg on every push and uploads the result as a workflow
+artifact (`.github/workflows/_build.yml`), so the packaging path is exercised continuously
+rather than only when someone remembers to run it locally.
+
+A tag-triggered release workflow (`.github/workflows/release.yml`) builds, signs, attests and
+publishes packages for every platform in the matrix (best-effort beyond windows-msvc) whenever a
+`vX.Y.Z` tag is pushed — GPG signing (optional, off until a key is provisioned), keyless
+Sigstore/OIDC build provenance, an SPDX SBOM, and a GitHub Release. See
+[docs/releasing.md](releasing.md) for the full process, including how to provision the GPG key.
+
 ## The standards documents
 
 `docs/spec/` is gitignored: the standards are free to download but are not redistributed here.
