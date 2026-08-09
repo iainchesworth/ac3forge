@@ -3,7 +3,7 @@
 How the codec was built, in the order it was built. This is a record of what was implemented
 and what evidence closed each step, kept out of the README because a landing page is not a
 development log. Nothing here supersedes the current [capability and limitation
-tables](../README.md#what-it-does) — where the two disagree, the README is right and this file
+tables](https://github.com/iainchesworth/ac3forge/blob/main/README.md#what-it-does) — where the two disagree, the README is right and this file
 is stale.
 
 Milestone numbering is as it was used during development. Milestone 4 was folded into 5.
@@ -57,7 +57,7 @@ variation), 2/0 rematrixing (§7.5.3 minimum-power rule, with the decoder-side u
 bit-rate-aware bandwidth defaults.
 
 This is the point at which output quality passed FFmpeg's encoder on the SNR metric. Current
-numbers and method are in the [README](../README.md#how-it-is-validated); `ac3cli encode`
+numbers and method are in the [README](https://github.com/iainchesworth/ac3forge/blob/main/README.md#how-it-is-validated); `ac3cli encode`
 gained arbitrary stereo WAV input here. Decoder parity held on rematrix-active material at max
 difference 1.1e-5.
 
@@ -96,7 +96,7 @@ unavailable device reports *why* — "cannot bitstream" (an analog output) as ag
 exclusive access" (disabled or in use).
 
 This has never been confirmed against bitstreaming hardware; see the
-[README](../README.md#verification-gaps).
+[README](https://github.com/iainchesworth/ac3forge/blob/main/README.md#verification-gaps).
 
 ## Channel coupling
 
@@ -171,7 +171,7 @@ container matching Dolby's byte-for-byte on the fields that matter.
 
 Two limits established here are structural and remain: objects sharing a direction cannot be
 separated, and Dolby's decoder will not treat these as objects because the stream is not
-signed with its key. Both are in the [README](../README.md#verification-gaps).
+signed with its key. Both are in the [README](https://github.com/iainchesworth/ac3forge/blob/main/README.md#verification-gaps).
 
 ## Metering and analysis
 
@@ -196,7 +196,7 @@ screenshot.
 Everything above decodes; this is what makes it *play* right. An AV receiver reads exactly
 these bits to set level, compress dynamics and fold down, and until this point they were all
 zero. `dynrng`, `compr`, a measured `dialnorm`, and the downmix levels — see the
-[README](../README.md#metadata) for what each one does here.
+[README](https://github.com/iainchesworth/ac3forge/blob/main/README.md#metadata) for what each one does here.
 
 Verified against the oracle rather than against the bits alone: `tools/check_drc.py` runs 22
 checks in which a decode that *applies* the metadata is compared against one that ignores it
@@ -258,7 +258,7 @@ this machine's Realtek output in real time, end to end, including a live capture
 session. Exclusive-mode E-AC-3 passthrough did not get the same confirmation — this machine has
 no S/PDIF/HDMI endpoint behind a real AV receiver, so `IsFormatSupported` was exercised (and
 correctly answers no everywhere available) but no receiver has locked onto either the existing
-AC-3 burst or the new E-AC-3 one. See the [README](../README.md#verification-gaps) for the full
+AC-3 burst or the new E-AC-3 one. See the [README](https://github.com/iainchesworth/ac3forge/blob/main/README.md#verification-gaps) for the full
 account.
 
 ## The ALSA backend
@@ -277,7 +277,7 @@ denominator above it. Verified on WSL2 Ubuntu 26.04 (gcc 15.2, clang 21.1) with 
 libasound present, and under ASan+UBSan with leak detection, including the device-independent
 halves (device-name construction, channel-status derivation) driven against ALSA's software
 `null` PCM. Not verified: any real sound hardware — WSL2 has none. See
-[docs/BUILDING.md](BUILDING.md#linux-audio).
+[docs/BUILDING.md](../building.md#linux-audio).
 
 ## Per-object Atmos motion
 
@@ -319,5 +319,5 @@ than a separate system — `ac3::plan::channel_plan_for(id)` is a one-line looku
   green CI legs.
 - libFuzzer harnesses (`fuzz/`) over every untrusted-input entry point — `scan`, both decoders,
   WAV reading — Clang-only and off by default (`AC3FORGE_BUILD_FUZZERS`); see
-  [`fuzz/README.md`](../fuzz/README.md). Runs on every push (`fuzz-regress`, seed/regression
+  [`fuzz/README.md`](https://github.com/iainchesworth/ac3forge/blob/main/fuzz/README.md). Runs on every push (`fuzz-regress`, seed/regression
   replay only) and nightly (`fuzz-nightly`, bounded mutation).

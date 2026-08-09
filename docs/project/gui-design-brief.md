@@ -1,5 +1,12 @@
 # ac3forge GUI — design brief
 
+!!! warning "Superseded"
+    This brief, and the four screenshots below, describe the **pre-redesign** nine-card GUI. The
+    current GUI is the two-pane workbench that shipped in "Merge the GUI redesign workbench into
+    develop" (`9ce8378`); see the [GUI guide](../gui/index.md) for how it actually looks and works
+    today. This page is kept for historical context on the redesign's rationale — the open
+    questions in [§6](#6-open-questions-for-the-designer) are what the workbench redesign answers.
+
 An input document for a design pass over the ac3forge desktop application. It describes what the
 application is for, what it shows today, how people move through it, and what still has to be
 accommodated. It does not propose a design.
@@ -50,7 +57,7 @@ window — the entire application is this one column. Qt Quick Controls is pinne
 style in `main.cpp` so that controls render identically on every platform rather than adopting the
 native Windows look.
 
-![The default state with a 5.1 file loaded](design/01-default.png)
+![The default state with a 5.1 file loaded](../design/01-default.png)
 
 *Default state with a 5.1 WAV loaded. The window has been enlarged to 900 × 1500 to fit the content;
 at the default 940 px height everything from Dynamic range downwards is below the fold. The Annex E
@@ -101,7 +108,7 @@ dialogue-level spin box. For E-AC-3 only, a `Mixing metadata` checkbox reveals a
 dropdown and an LFE mix spin box that reads `off` at −1 and `10 dB` at 0. Three paragraphs of
 explanation, two of them conditional.
 
-![E-AC-3 at 7.1.4 with every coding tool and metadata group open](design/02-eac3-714.png)
+![E-AC-3 at 7.1.4 with every coding tool and metadata group open](../design/02-eac3-714.png)
 
 *E-AC-3 at 7.1.4 with all three Annex E tools, heavy compression and mixing metadata switched on,
 during a live capture. Fourteen meter rows for twelve speakers; the twelve channels a stereo capture
@@ -113,7 +120,7 @@ LFE`), and a warning when the bit rate is below 384 kbps because the bed is alwa
 190 × 190 plan view of the room with one marker per object, and three sliders — Height (−1…1), Spread
 (0…0.5) and LFE send (0…1) — above a five-value monospace readout.
 
-![Object mode with a 5.1 file loaded](design/03-object-mode.png)
+![Object mode with a 5.1 file loaded](../design/03-object-mode.png)
 
 *Object mode with the same 5.1 file: six objects over a 5.1 bed. All six markers sit on the front
 wall at the default y of 0.00, overlapping each other and the "front" label.*
@@ -273,7 +280,7 @@ problem**, more than any individual screen.
   and receiver passthrough go through `ac3::capture`/`ac3::sinks`, which is WASAPI on Windows and
   ALSA on Linux behind the same API — no longer Windows-exclusive at the library level, though
   `ac3gui` itself is still built only on Windows by default (it does build and run on Linux with
-  `-DAC3FORGE_BUILD_GUI=ON` and a Qt kit; see [Portability](../README.md#portability)).
+  `-DAC3FORGE_BUILD_GUI=ON` and a Qt kit; see [Portability](https://github.com/iainchesworth/ac3forge/blob/main/README.md#portability)).
 - **Light and dark themes.** Only dark exists today. Both are required, which means colour decisions
   must survive inversion — particularly the meter colours, where green/amber/red carry meaning.
 - **Real-time metering.** The controller publishes a level snapshot about 30 times a second (one per
@@ -294,7 +301,7 @@ problem**, more than any individual screen.
 
 > **Answered.** These eleven questions, plus five later change prompts (dynamic channel counts, real
 > object motion, the basic/advanced split, the live demo scenario, and the channel-picker constraint
-> model), are resolved by [`docs/design/handoff-workbench/README.md`](design/handoff-workbench/README.md)
+> model), are resolved by [`docs/design/handoff-workbench/README.md`](https://github.com/iainchesworth/ac3forge/blob/main/docs/design/handoff-workbench/README.md)
 > — the two-pane workbench redesign, spec'd and prototyped on `feature/gui-redesign-workbench`. That
 > prototype is a static HTML/CSS reference for an implementing engineer to build from, explicitly not
 > production code; `src/gui/qml/Main.qml` here is still the nine-card layout Section 2 describes. The
@@ -355,7 +362,7 @@ Two notes on what the images do and do not show:
   headless harness, which passes a device index directly and does not load a file — not defects in the
   interface.
 
-![Object mode driven from a capture endpoint](design/04-object-mode-capture.png)
+![Object mode driven from a capture endpoint](../design/04-object-mode-capture.png)
 
 *Image 04: object mode with the sliders at non-default values, driven from a capture endpoint. Note
 the Layout box reading `2/0 stereo` while the line below it and the bed are 5.1, and the meters at −∞

@@ -1,0 +1,8 @@
+# Pins for building the docs site (mkdocs.yml, `mkdocs build` / `mkdocs serve` / `mkdocs gh-deploy`).
+# mkdocs is capped below 2.0 deliberately: 2.0 removes the plugin system, rewrites theming with
+# no migration path, and is unlicensed as of this writing - see
+# https://squidfunk.github.io/mkdocs-material/blog/2026/02/18/mkdocs-2.0/. Revisit the cap once
+# 2.0 (or Material's response to it) actually ships something this site can build against.
+mkdocs>=1.6,<2.0
+mkdocs-material>=9.5,<10.0
+pymdown-extensions>=10.7

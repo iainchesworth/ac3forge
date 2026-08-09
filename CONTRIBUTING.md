@@ -2,7 +2,7 @@
 
 ## Build and test
 
-Setup is in [docs/BUILDING.md](docs/BUILDING.md). The short form, from a Developer PowerShell:
+Setup is in [docs/BUILDING.md](https://github.com/iainchesworth/ac3forge/blob/main/docs/building.md). The short form, from a Developer PowerShell:
 
 ```bash
 cmake --preset debug && cmake --build --preset debug && ctest --preset debug
@@ -121,19 +121,19 @@ Ranked by how much they prove. Prefer the strongest one available for what you a
 4. **Dolby's Reference Player and Media Encoder**, for object-layer syntax.
 
 Neither decoder covers everything, and the gaps do not overlap: see the [verification-gap
-table](README.md#verification-gaps). If your change lands in a cell with no oracle, say so in
+table](https://github.com/iainchesworth/ac3forge/blob/main/README.md#verification-gaps). If your change lands in a cell with no oracle, say so in
 the commit message and cover it bit-by-bit instead.
 
 ## Documentation
 
-The examples in [docs/LIBRARY.md](docs/LIBRARY.md) are excerpts from programs in
+The examples in [docs/library/](https://github.com/iainchesworth/ac3forge/blob/main/docs/library/index.md) are excerpts from programs in
 [`examples/`](examples/), which are build targets and `ctest` entries. If you change a public
 API, update the example — the build will tell you if you forget. Do not add a snippet to the
 docs that is not backed by a compiled file.
 
-If you add a capability or find a new limitation, the tables in [README.md](README.md) are the
-authority and must be updated with it. [docs/HISTORY.md](docs/HISTORY.md) is a record of past
-work and is not maintained against the current state.
+If you add a capability or find a new limitation, the tables in [README.md](https://github.com/iainchesworth/ac3forge/blob/main/README.md) are the
+authority and must be updated with it. [docs/project/history.md](https://github.com/iainchesworth/ac3forge/blob/main/docs/project/history.md) is a
+record of past work and is not maintained against the current state.
 
 ## Commits
 
