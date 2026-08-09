@@ -20,9 +20,11 @@ the technical names AC-3 and E-AC-3. Whether the patents reading on these format
 your use is your problem to assess, not something this project resolves.
 
 **Status.** Version 0.2.0. The API is not stable. Green and required in CI on Windows (MSVC,
-clang-cl) and Linux (GCC 15, Clang 21) — CLI and GUI alike on all four — plus an ASan+UBSan leg,
-clang-tidy static analysis and a line/branch coverage gate over the library; macOS is the one
-experimental leg, never run anywhere. See [Portability](#portability).
+clang-cl), Linux (GCC 15, Clang 21) and macOS (Homebrew LLVM) — CLI and GUI alike on the first
+four, CLI only on macOS — plus an ASan+UBSan leg, clang-tidy static analysis, a line/branch
+coverage gate over the library, a per-platform gold-reference *quality* gate, and a dedicated
+Linux FFmpeg-validation leg checking output *correctness* across the full option space. No leg
+remains experimental. See [Portability](#portability).
 
 ## Contents
 
@@ -190,21 +192,35 @@ fallback (macOS, or Linux without libasound headers) that reports itself unavail
 failing to link. See [Linux audio](docs/BUILDING.md#linux-audio) for the ALSA backend
 specifically.
 
-CI (`.github/workflows/ci.yml`) runs all five platform/compiler legs plus static analysis and
-coverage on every push, and requires seven of them: windows-msvc, windows-llvm, linux-gcc,
-linux-llvm, linux-llvm-asan-ubsan (AddressSanitizer + UndefinedBehaviorSanitizer,
-`cmake/Sanitizers.cmake`), static-analysis (clang-tidy, `.clang-tidy`) and coverage (gcovr line/
-branch gate over `src/lib` via the `linux-gcc-coverage` preset, `cmake/Coverage.cmake`). The two
-Linux legs install a Qt6 kit and build
-`ac3gui` too (`-DAC3FORGE_BUILD_GUI=ON`, on top of the preset's own default `OFF`), then run it
-headless via `--smoke`; `linux-llvm-asan-ubsan` stays CLI-only on purpose, to keep a Qt kit out
-of the sanitizer leg's install time. Only macos-llvm remains experimental (`continue-on-error`)
-— it has never run anywhere, on CI or otherwise, because the project has no Mac;
-`src/lib/CMakeLists.txt` falls back to the no-backend platform directory there, so the codec
-half is expected to work and the three audio-hardware commands to report themselves
-unavailable, but neither has been observed. See the status table at the top of `ci.yml` for
-exact test counts per leg — and its own caveat that the two Linux legs' `GREEN*` marking means
-"confirmed by a local WSL2 run", pending that push's first real hosted CI run.
+CI (`.github/workflows/ci.yml`) runs all six platform/compiler legs plus static analysis,
+coverage and FFmpeg validation on every push, and requires nine jobs: windows-msvc, windows-llvm,
+linux-gcc, linux-llvm, linux-llvm-asan-ubsan (AddressSanitizer + UndefinedBehaviorSanitizer,
+`cmake/Sanitizers.cmake`), macos-llvm, static-analysis (clang-tidy, `.clang-tidy`), coverage
+(gcovr line/branch gate over `src/lib` via the `linux-gcc-coverage` preset,
+`cmake/Coverage.cmake`) and ffmpeg-validate. No leg remains experimental — macos-llvm was the
+last promoted, once a real GitHub Actions run (this project has no Mac) confirmed 256/256 tests
+and the gold-reference gate both green.
+
+ffmpeg-validate is a separate, CLI-only linux-llvm build that runs `scripts/run-codec-matrix.sh`'s
+FFmpeg strict-decode checks, `tools/check_drc.py`, `tools/check_coupling.py`/
+`check_coupling_level.py`, and `tools/quality_race.py ci` against a pinned FFmpeg, plus
+`tools/check_matrix_coverage.py` to catch a new layout, Annex E tool token or command landing
+without a matching matrix entry (see [Oracles](CONTRIBUTING.md#oracles)). It answers a different
+question from the gold-reference gate every other leg also runs (see
+[docs/BUILDING.md](docs/BUILDING.md#gold-reference-correctness-gate)): gold-reference checks that
+one fixed sample decodes to the *right audio*, identically enough across every compiler/OS; this
+leg checks that *every option in the encoder's surface* — every layout, every Annex E tool token,
+every metadata flag — produces a *structurally valid* stream at all, something one fixed sample
+can never exercise.
+
+The two Linux legs install a Qt6 kit and build `ac3gui` too (`-DAC3FORGE_BUILD_GUI=ON`, on top of
+the preset's own default `OFF`), then run it headless via `--smoke`; `linux-llvm-asan-ubsan`
+stays CLI-only on purpose, to keep a Qt kit out of the sanitizer leg's install time.
+`src/lib/CMakeLists.txt` falls back to the no-backend platform directory on macOS, so the codec
+half is verified there but the three audio-hardware commands only report themselves unavailable,
+never tested against real hardware. See the status table at the top of `ci.yml` for exact test
+counts per leg — and its own caveat that the two Linux legs' `GREEN*` marking means "confirmed by
+a local WSL2 run", pending that push's first real hosted CI run.
 
 **No Linux audio has been tried against real hardware.** The ALSA backend was verified headless
 (including against ALSA's software `null` device, under ASan+UBSan) because the available Linux
@@ -325,8 +341,10 @@ Four independent checks, in rough order of strength.
    parity with FFmpeg's decoder on identical streams: max sample difference 7.9e-6 (≈ −102
    dBFS) for AC-3, 1.4e-5 for E-AC-3. It also reads FFmpeg's own encoder output.
 2. **FFmpeg as an external oracle.** Every stream this project produces is strict-decoded with
-   `-err_detect crccheck+bitstream+buffer+explode`, which fails on a CRC error, a bitstream
-   violation or a buffer problem rather than concealing it.
+   `-xerror -err_detect crccheck+bitstream+buffer+explode`, which fails on a CRC error, a
+   bitstream violation or a buffer problem rather than concealing it (`-xerror` is what turns a
+   detected error into a failing process — `-err_detect` alone does not change FFmpeg's exit
+   code). Automated and required in CI; see [Oracles](CONTRIBUTING.md#oracles).
 3. **Independent Python transcriptions.** [tools/](tools/) holds second implementations of the
    spec pseudocode, written from the standard separately from the C++: the §7.2.2 bit
    allocation, the Tables 7.29/7.30 DRC lookups, MDCT goldens. Agreement between two
@@ -409,6 +427,7 @@ belong on the public site.
 | [docs/gui/](docs/gui/index.md) | Step-by-step `ac3gui` guide, with screenshots |
 | [docs/project/history.md](docs/project/history.md) | How the implementation was built, milestone by milestone |
 | [docs/project/research.md](docs/project/research.md) | The original feasibility research and the decisions that came out of it |
+| [docs/quality-trend.md](docs/quality-trend.md) | Gold-reference SNR history by commit, develop vs. main - the persisted half of `research.md`'s L3/L4 validation pyramid |
 | [fuzz/README.md](fuzz/README.md) | The libFuzzer harnesses: what they cover, how to run them locally |
 | [docs/project/gui-design-brief.md](docs/project/gui-design-brief.md) | Superseded input document for the GUI redesign: current-state inventory at the time, user journeys, open questions |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Conventions, and the validation discipline |

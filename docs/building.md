@@ -425,14 +425,21 @@ also runs clean headless (`QT_QPA_PLATFORM=offscreen`), encoding real audio and 
 real QML channel meters. See [Linux audio](#linux-audio) for what the ALSA verification did,
 and did not (real hardware), prove.
 
-CI (`.github/workflows/ci.yml`) runs and *requires* windows-msvc, windows-llvm, linux-gcc,
-linux-llvm, linux-llvm-asan-ubsan, macos-llvm, static-analysis (clang-tidy) and coverage (gcovr
-over `src/lib`, via `config-linux-gcc-coverage`) on every push — the two Linux legs install the
-same Qt6/ALSA packages and build/smoke-test the GUI too.
+linux-llvm, linux-llvm-asan-ubsan, macos-llvm, static-analysis (clang-tidy), coverage (gcovr over
+`src/lib`, via `config-linux-gcc-coverage`) and ffmpeg-validate on every push — the two Linux legs
+install the same Qt6/ALSA packages and build/smoke-test the GUI too. ffmpeg-validate is a
+separate, CLI-only linux-llvm build that runs FFmpeg as an independent oracle against the full
+layout/tool/metadata option space (see
+[CONTRIBUTING.md's Oracles section](https://github.com/iainchesworth/ac3forge/blob/main/CONTRIBUTING.md#oracles)) — a different question from the
+[gold-reference gate](#gold-reference-correctness-gate) below, which every leg runs against one
+fixed sample to check output *quality*; ffmpeg-validate instead checks that every option
+combination produces a *structurally correct* stream at all, plus a numeric fidelity floor for
+the Annex E tools the gold-reference gate cannot reach (its own decode side refuses them). No leg
+remains experimental.
 
-The coverage job's own gate — 82.7% line / 73.3% branch measured, 80%/70% required — was run the
-same way, on the same WSL2 host and the same GCC 15 pin, but has not yet been exercised by a real
-hosted GitHub Actions run; see the `coverage` row in `ci.yml`'s own status comment.
+The coverage job's own gate — 81.3% line / 72.0% branch measured on a real GitHub Actions run,
+80%/70% required — uses the same GCC 15 pin as the other Linux legs; see the `coverage` row in
+`ci.yml`'s own status comment.
 
 No macOS host exists for this project, so `config-macos-llvm`/`config-macos-llvm-debug` are only
 ever exercised by CI (`macos-latest`, Apple Silicon) — never locally. That CI leg is green:
@@ -469,3 +476,10 @@ perceptual/SNR-based rather than a bit-exact bitstream comparison deliberately: 
 project verifies that Homebrew LLVM, GCC and MSVC round the codec's floating-point
 pipeline identically, and the real numbers above show they in fact do not, by a small but
 measurable margin.
+
+This is a narrow, cross-platform *quality* check — one sample, two codecs, every OS — not a
+conformance sweep. `tools/check_matrix_coverage.py`, `tools/quality_race.py`'s `ci` mode and the
+rest of the `ffmpeg-validate` CI leg (Linux-only, see [Verified configuration](#verified-configuration)
+above) cover the *correctness* question instead: does every layout, every Annex E tool token and
+every metadata option actually produce a structurally valid, spec-conformant stream, across the
+full option space this gate does not attempt.
