@@ -42,6 +42,25 @@ tools:  Annex E coding tools, '+'-joined — none | cpl | spx | aht | all (cpl:N
 Example: `tools=cpl+spx:5+aht:0` turns on coupling (auto band edge), spectral extension pinned
 to band 5, and AHT with GAQ off.
 
+## The `vbr` token (`eac3-encode` only)
+
+```text
+vbr (eac3-encode only): off | q:0..1[,min:kbps][,max:kbps] - E-AC-3 only
+        quality is encoder-relative, not a fixed target — bit cost rises
+        steeply above roughly half the range, so a high quality with no
+        max bound will often refuse real programme material outright;
+        bitrate_kbps still matters in vbr mode — it feeds the same
+        coupling/spx frequency defaults it always has, not a target rate
+```
+
+Example: `ac3cli eac3-encode in.wav out.ec3 192 none stereo q:0.4,max:320` encodes at quality 0.4,
+capped at 320 kbps whenever the content would otherwise ask for more; `bitrate_kbps` (192 here)
+still drives the coupling/spx band-edge defaults the way it always has, since VBR has no fixed
+target rate to hand them.
+
+Omit `vbr` (or pass `off`) for ordinary CBR — the default, and the only mode AC-3 (`encode`,
+`eac3-silence`, `eac3-sine`) supports at all, since `frmsizecod` has no free word count to vary.
+
 ## The `layout` grammar
 
 ```text

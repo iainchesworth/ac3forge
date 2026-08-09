@@ -530,6 +530,86 @@ TEST_CASE("the dependent substream's own fields survive the round trip",
     CHECK(second->last_dependent);
 }
 
+namespace {
+
+// A stereo frame that is either a single quiet tone (tiny mantissa cost) or
+// several full-scale tones spread across the spectrum (large mantissa
+// cost), so that consecutive access units in ONE stream come out genuinely
+// different sizes - the thing CBR never had to prove the decoder handles.
+std::vector<std::vector<float>> busy_or_quiet_frame(bool busy, std::uint64_t start) {
+    std::vector<std::vector<float>> pcm(
+        2, std::vector<float>(static_cast<std::size_t>(ac3::kSamplesPerFrame)));
+    const double tones[4] = {310.0, 2200.0, 6800.0, 13500.0};
+    for (std::size_t ch = 0; ch < pcm.size(); ++ch) {
+        for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+            const auto n = static_cast<double>(start + static_cast<std::uint64_t>(i));
+            double value = 0.0;
+            if (busy) {
+                for (std::size_t t = 0; t < 4; ++t) {
+                    const double gain = 0.2 / (1.0 + static_cast<double>((t + ch) % 3));
+                    value += gain * std::sin(2.0 * std::numbers::pi * tones[t] * n / 48000.0);
+                }
+            } else {
+                value = 0.05 * std::sin(2.0 * std::numbers::pi * 1000.0 * n / 48000.0);
+            }
+            pcm[ch][static_cast<std::size_t>(i)] = static_cast<float>(value);
+        }
+    }
+    return pcm;
+}
+
+}  // namespace
+
+TEST_CASE("VBR access units of differing size still decode correctly",
+          "[eac3][decoder][vbr]") {
+    ac3::eac3::AccessUnitEncoder encoder{
+        {.independent = {.bitrate_kbps = 192, .vbr = ac3::eac3::VbrConfig{.quality = 0.3}}}};
+    REQUIRE(encoder.channel_count() == 2);
+
+    std::vector<std::byte> stream;
+    std::vector<std::size_t> unit_bytes;
+    std::vector<float> want_l;
+    std::vector<float> want_r;
+    std::uint64_t n = 0;
+    const std::vector<bool> busy{true, false, true, false, true};
+    for (const bool b : busy) {
+        auto pcm = busy_or_quiet_frame(b, n);
+        n += ac3::kSamplesPerFrame;
+        want_l.insert(want_l.end(), pcm[0].begin(), pcm[0].end());
+        want_r.insert(want_r.end(), pcm[1].begin(), pcm[1].end());
+        std::vector<std::span<const float>> views{pcm[0], pcm[1]};
+        const auto unit = encoder.encode_access_unit(views);
+        REQUIRE(unit.has_value());
+        unit_bytes.push_back(unit->bytes.size());
+        stream.insert(stream.end(), unit->bytes.begin(), unit->bytes.end());
+    }
+
+    // The whole point: consecutive access units in the SAME stream have
+    // DIFFERENT sizes. split_access_units and the decoder below must not
+    // assume otherwise - unlike every other test in this file, which never
+    // exercises that because CBR never produces it.
+    CHECK(unit_bytes[1] != unit_bytes[0]);
+
+    const auto units = ac3::split_access_units(stream);
+    REQUIRE(units.has_value());
+    REQUIRE(units->size() == busy.size());
+
+    ac3::Eac3Decoder decoder;
+    std::vector<float> rendered_l;
+    std::vector<float> rendered_r;
+    for (const auto& access_unit : *units) {
+        const auto decoded = decoder.decode_access_unit(access_unit);
+        REQUIRE(decoded.has_value());
+        REQUIRE(decoded->channels.size() == 2);
+        rendered_l.insert(rendered_l.end(), decoded->channels[0].begin(),
+                          decoded->channels[0].end());
+        rendered_r.insert(rendered_r.end(), decoded->channels[1].begin(),
+                          decoded->channels[1].end());
+    }
+    CHECK(snr_db(want_l, rendered_l) > 20.0);
+    CHECK(snr_db(want_r, rendered_r) > 20.0);
+}
+
 TEST_CASE("the E-AC-3 decoder rejects malformed streams", "[eac3][decoder]") {
     const auto unit = ac3::eac3::build_silent_access_unit(
         {.independent = {.bitrate_kbps = 448, .acmod = ac3::Acmod::k3_2, .lfe = true},

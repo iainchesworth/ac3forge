@@ -788,9 +788,22 @@ std::expected<void, FrameError> validate(const FrameConfig& config) {
     // only the 19 nominal Table 5.18 rates. bitrate_kbps == 0 gives
     // frame_words() == 0, which is not a syncframe at all; past
     // kMaxFrameWords the word count overflows frmsiz's 11 bits.
-    const auto words = frame_words(config.sample_rate, config.bitrate_kbps);
-    if (words < 1 || words > kMaxFrameWords) {
-        return std::unexpected(FrameError::kInvalidBitrate);
+    //
+    // Under VBR the content decides the word count, not bitrate_kbps - so
+    // this check does not apply there. What VBR needs checked instead is
+    // that its own bounds, if both given, are not inverted; anything an
+    // individual bound can't express (0 kbps, an unreachable ceiling) is
+    // caught where it actually bites, in FrameEncoder::encode_frame.
+    if (config.vbr) {
+        const auto& vbr = *config.vbr;
+        if (vbr.min_kbps && vbr.max_kbps && *vbr.min_kbps > *vbr.max_kbps) {
+            return std::unexpected(FrameError::kInvalidBitrate);
+        }
+    } else {
+        const auto words = frame_words(config.sample_rate, config.bitrate_kbps);
+        if (words < 1 || words > kMaxFrameWords) {
+            return std::unexpected(FrameError::kInvalidBitrate);
+        }
     }
     // 1+1 needs a second program's metadata throughout; out of scope here.
     if (config.acmod == Acmod::kDualMono) {
@@ -852,6 +865,12 @@ std::expected<std::vector<std::byte>, FrameError> build_silent_frame(
     const FrameConfig& config, AuxPayload aux) {
     if (const auto ok = validate(config); !ok) {
         return std::unexpected(ok.error());
+    }
+    // Silence has no content to size a VBR frame against - every composite
+    // costs the same near-zero mantissa bits, so "quality" has nothing to
+    // measure. Silent frames stay CBR, sized from bitrate_kbps as always.
+    if (config.vbr) {
+        return std::unexpected(FrameError::kInvalidBitrate);
     }
 
     const int nfchans = fullbw_channel_count(config.acmod);
@@ -962,8 +981,16 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         (void)channel;
     }
 
-    const std::uint32_t words = frame_words(config_.sample_rate, config_.bitrate_kbps);
-    const std::uint32_t total_bits = words * 16;
+    // CBR fixes the word count up front, from bitrate_kbps; VBR does not know
+    // it until the content's own mantissa cost is measured in step 7, so this
+    // stays unset here and is resolved there. Either way default_cplbegf/
+    // default_spxbegf below need a rate-shaped number even under VBR, since
+    // that is what tells them how much per-channel headroom the frame has -
+    // vbr->nominal_kbps (or its own fallbacks) stands in for bitrate_kbps.
+    const std::uint32_t tool_reference_kbps =
+        config_.vbr ? config_.vbr->nominal_kbps.value_or(
+                          config_.vbr->max_kbps.value_or(kVbrDefaultNominalKbps))
+                    : config_.bitrate_kbps;
 
     // --- 1. Tool decisions --------------------------------------------------
     // Spectral extension is settled first, because when both tools are in use
@@ -984,7 +1011,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     if (spx.in_use) {
         spx.begf = std::clamp(config_.spxbegf >= 0
                                   ? config_.spxbegf
-                                  : default_spxbegf(config_.bitrate_kbps, nfchans),
+                                  : default_spxbegf(tool_reference_kbps, nfchans),
                               0, 7);
         // Synthesis runs to sub-band 17, coefficient 229 - 21.5 kHz at 48 kHz.
         // Nothing is coded or synthesized above it, which is a bandwidth no
@@ -1031,7 +1058,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     if (cpl.in_use) {
         cpl.begf = std::clamp(config_.cplbegf >= 0
                                   ? config_.cplbegf
-                                  : default_cplbegf(config_.bitrate_kbps, nfchans),
+                                  : default_cplbegf(tool_reference_kbps, nfchans),
                               0, 15);
         // Without spectral extension, coupling runs to the top of the coded
         // spectrum: chbwcod is gone for a coupled channel, so the coupling end
@@ -1351,15 +1378,17 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     // The metadata competes with the mantissas for the same frame. It is
     // inside emit_frame's output now that it rides in a skip field, so the
     // side-info measurement already accounts for it.
+    //
+    // The probe's word-count argument does not affect its own bit count -
+    // frmsiz is an 11-bit field regardless of what it holds (see "frmsiz is
+    // words - 1" above) - so this can be measured before the real word count
+    // is known. That is exactly the order VBR needs: content decides the
+    // size there, rather than the size deciding how much content fits.
     const auto side_bits = [&] {
         BitWriter probe;
-        emit_frame(probe, config_, words, payload, aux);
+        emit_frame(probe, config_, 1, payload, aux);
         return static_cast<std::uint32_t>(probe.bit_count());
     }();
-    if (side_bits + kTailBits > total_bits) {
-        return std::unexpected(FrameError::kInvalidBitrate);
-    }
-    const std::uint32_t budget = total_bits - side_bits - kTailBits;
 
     std::vector<std::span<const std::uint8_t>> bap_views;
     bap_views.reserve(static_cast<std::size_t>(streams));
@@ -1395,7 +1424,11 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                aht_bits;
     };
 
-    const auto search = [&] {
+    // Binary-searches the largest composite SNR offset (best quality) whose
+    // mantissa cost still fits `budget`. This is the whole of CBR's rate
+    // control; VBR reuses it only as a fallback, for when a quality target
+    // would need more words than an explicit max_kbps bound allows.
+    const auto search = [&](std::uint32_t budget) {
         int lo = 0;
         int hi = 1023;
         while (lo < hi) {
@@ -1408,7 +1441,87 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         }
         return lo;
     };
-    int lo = search();
+
+    // What a quality-driven mantissa cost turns into: either a direct word
+    // count, or - when vbr.max_kbps exists and the cost overshoots it - a
+    // budget to hand back to search() instead. nullopt only when there is no
+    // bound to fall back to AND the cost overshoots the format's own largest
+    // legal frame (kMaxFrameWords, fixed by frmsiz's 11 bits): a max_kbps
+    // bound smaller than that ceiling must still take the fallback branch
+    // rather than fail outright just because the UNCAPPED cost happens to
+    // exceed a ceiling nothing asked for.
+    struct VbrSize {
+        std::uint32_t words = 0;
+        std::optional<std::uint32_t> fallback_budget;
+    };
+    const auto vbr_size_for = [&](std::uint32_t mantissa_bits,
+                                  const VbrConfig& vbr) -> std::optional<VbrSize> {
+        const std::uint32_t content_bits = side_bits + mantissa_bits + kTailBits;
+        if (vbr.max_kbps) {
+            const std::uint32_t max_words =
+                std::clamp(frame_words(config_.sample_rate, *vbr.max_kbps), std::uint32_t{1},
+                          kMaxFrameWords);
+            if (content_bits > max_words * 16) {
+                if (side_bits + kTailBits > max_words * 16) {
+                    return std::nullopt;
+                }
+                return VbrSize{.words = max_words,
+                              .fallback_budget = max_words * 16 - side_bits - kTailBits};
+            }
+            return VbrSize{.words = (content_bits + 15) / 16, .fallback_budget = std::nullopt};
+        }
+        if (content_bits > kMaxFrameWords * 16) {
+            return std::nullopt;
+        }
+        return VbrSize{.words = (content_bits + 15) / 16, .fallback_budget = std::nullopt};
+    };
+    const auto vbr_min_words = [&](const VbrConfig& vbr) -> std::optional<std::uint32_t> {
+        if (!vbr.min_kbps) {
+            return std::nullopt;
+        }
+        return std::clamp(frame_words(config_.sample_rate, *vbr.min_kbps), std::uint32_t{1},
+                          kMaxFrameWords);
+    };
+
+    std::uint32_t words = 0;
+    int lo = 0;
+    // Set exactly when `lo` was chosen by search() against a fixed budget -
+    // CBR always, VBR only when a max_kbps bound was actually hit. The AHT
+    // pass below re-searches the same budget in that case, and otherwise
+    // re-derives the word count directly, matching how `lo` itself was found.
+    std::optional<std::uint32_t> fixed_budget;
+    if (!config_.vbr) {
+        words = frame_words(config_.sample_rate, config_.bitrate_kbps);
+        if (side_bits + kTailBits > words * 16) {
+            return std::unexpected(FrameError::kInvalidBitrate);
+        }
+        fixed_budget = words * 16 - side_bits - kTailBits;
+        lo = search(*fixed_budget);
+    } else {
+        const auto& vbr = *config_.vbr;
+        const int composite = std::clamp(
+            static_cast<int>(std::lround(std::clamp(vbr.quality, 0.0, 1.0) * 1023.0)), 0, 1023);
+        const auto sized = vbr_size_for(bits_at(composite), vbr);
+        if (!sized) {
+            return std::unexpected(FrameError::kInvalidBitrate);
+        }
+        lo = composite;
+        words = sized->words;
+        if (sized->fallback_budget) {
+            // The quality target overshoots vbr.max_kbps: fall back to the
+            // same search CBR uses, budgeted against the ceiling instead of
+            // a fixed target, so a bounded VBR frame is never worse than the
+            // best CBR could do at that rate.
+            fixed_budget = sized->fallback_budget;
+            lo = search(*fixed_budget);
+        }
+        // Only ever a floor: finish_frame's own auxbits padding already
+        // covers any gap between what the content actually needs and the
+        // frame size this creates.
+        if (const auto min_words = vbr_min_words(vbr)) {
+            words = std::max(words, *min_words);
+        }
+    }
 
     // Choosing the gain mode needs an allocation to choose against, and the
     // allocation needs a rate that depends on the mode - so the search runs
@@ -1436,7 +1549,32 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                 }
             }
         }
-        lo = search();
+        if (fixed_budget) {
+            // CBR, or a VBR frame already pinned to its max_kbps ceiling:
+            // the word count cannot move, only which offset fits it can.
+            lo = search(*fixed_budget);
+        } else {
+            // Free-running VBR (or a bound it was naturally already under):
+            // quality (lo) does not change, but the gain modes just chosen
+            // can move the mantissa cost - down, when auto-selecting the
+            // cheapest per channel; either way, when a mode was forced - so
+            // the word count is re-derived exactly as it was the first time,
+            // including the same max_kbps re-check in case a forced mode
+            // pushed the cost back over a bound the quality target alone had
+            // stayed under.
+            const auto sized = vbr_size_for(bits_at(lo), *config_.vbr);
+            if (!sized) {
+                return std::unexpected(FrameError::kInvalidBitrate);
+            }
+            words = sized->words;
+            if (sized->fallback_budget) {
+                fixed_budget = sized->fallback_budget;
+                lo = search(*fixed_budget);
+            }
+            if (const auto min_words = vbr_min_words(*config_.vbr)) {
+                words = std::max(words, *min_words);
+            }
+        }
     }
     // The call is not optional: it is what leaves payload.bap holding the
     // allocation for `lo`, which every mantissa below is quantised against.
@@ -1445,7 +1583,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     // unreferenced under NDEBUG while the call still has to happen. Folding it
     // into the assert would delete the allocation along with the check.
     [[maybe_unused]] const std::uint32_t mantissa_bits = bits_at(lo);
-    assert(mantissa_bits <= budget);
+    assert(side_bits + mantissa_bits + kTailBits <= words * 16);
     payload.csnroffst = lo >> 4;
     payload.fsnroffst = lo & 15;
 
@@ -1799,9 +1937,13 @@ std::span<const std::byte> AccessUnit::substream(std::size_t index) const {
 }
 
 std::uint32_t access_unit_words(const AccessUnitConfig& config) {
+    // CBR only - see the declaration's own comment. A VBR substream's word
+    // count depends on content no caller of this function has offered it.
+    assert(!config.independent.vbr);
     std::uint32_t words =
         frame_words(config.independent.sample_rate, config.independent.bitrate_kbps);
     for (const auto& dep : config.dependents) {
+        assert(!dep.vbr);
         words += frame_words(dep.sample_rate, dep.bitrate_kbps);
     }
     return words;
