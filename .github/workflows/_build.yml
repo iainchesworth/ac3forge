@@ -133,6 +133,7 @@ jobs:
             llvm: true
             experimental: true
             packageable: true
+            gold_reference: true
 
     steps:
       # Before checkout: the bare ubuntu image has no git, and actions/checkout
@@ -229,6 +230,13 @@ jobs:
           brew install llvm
           llvm_prefix="$(brew --prefix llvm)"
           echo "${llvm_prefix}/bin" >> "$GITHUB_PATH"
+
+      # ffmpeg is the gold-reference gate's decode oracle (see
+      # scripts/verify-gold-reference.sh) - macOS only for now while that gate
+      # is being proven out; see gold_reference in the matrix.
+      - name: Install ffmpeg (macOS)
+        if: matrix.gold_reference && runner.os == 'macOS'
+        run: brew install ffmpeg
 
       # cl.exe, INCLUDE and LIB are not on the default PATH, and Ninja does not
       # set them up itself (unlike MSBuild). clang-cl needs them too.
@@ -355,6 +363,16 @@ jobs:
       - name: Test
         shell: bash
         run: ctest --preset test-${{ matrix.preset }}
+
+      # The gold-reference correctness gate (docs/RESEARCH.md's L3 FFmpeg-
+      # oracle + a lightweight L4 SNR check, wired into CI for the first time
+      # here - see scripts/verify-gold-reference.sh's own header). macOS only
+      # for now, to prove the gate itself out on the newest leg before
+      # extending it to Linux/Windows.
+      - name: Gold reference gate
+        if: matrix.gold_reference
+        shell: bash
+        run: bash scripts/verify-gold-reference.sh "build/config-${{ matrix.preset }}/bin/ac3cli"
 
       # ctest above already covers the codec; this covers the one thing it
       # can't - that ac3gui actually starts, loads its QML, and drives a real
