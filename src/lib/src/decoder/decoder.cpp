@@ -247,6 +247,7 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
     out.dialnorm = dialnorm;
     out.compr = compr;
     out.dynrng.fill(meta::kDynrngUnity);
+    out.blksw.assign(static_cast<std::size_t>(nfchans), {});
     out.channels.assign(static_cast<std::size_t>(nchans),
                         std::vector<float>(kSamplesPerFrame, 0.0f));
 
@@ -288,6 +289,8 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
         std::array<bool, 5> blksw{};  // AC-3's widest acmod (3/2) has 5 fbw channels
         for (int ch = 0; ch < nfchans; ++ch) {
             blksw[static_cast<std::size_t>(ch)] = r.read(1) != 0;
+            out.blksw[static_cast<std::size_t>(ch)][static_cast<std::size_t>(block)] =
+                blksw[static_cast<std::size_t>(ch)];
         }
         for (int ch = 0; ch < nfchans; ++ch) {
             (void)r.read(1);  // dithflag: bap-0 bins reconstruct as zero either way

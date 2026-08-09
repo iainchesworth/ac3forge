@@ -365,6 +365,7 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
     out.numblkscod = bsi->numblkscod;
     out.chanmap = bsi->chanmap;
     out.last_dependent = bsi->strmtyp == StreamType::kDependent && bsi->compre;
+    out.blksw.assign(static_cast<std::size_t>(nfchans), {});
     out.channels.assign(static_cast<std::size_t>(nchans),
                         std::vector<float>(static_cast<std::size_t>(nblks * kSamplesPerBlock),
                                            0.0f));
@@ -396,6 +397,10 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
             for (int ch = 0; ch < nfchans; ++ch) {
                 blksw[static_cast<std::size_t>(ch)] = r.read(1) != 0;
             }
+        }
+        for (int ch = 0; ch < nfchans; ++ch) {
+            out.blksw[static_cast<std::size_t>(ch)][static_cast<std::size_t>(blk)] =
+                blksw[static_cast<std::size_t>(ch)];
         }
         if (frm->dithflage) {
             // bap-0 bins reconstruct as zero whatever this says, matching the

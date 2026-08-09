@@ -85,6 +85,10 @@ struct DecodedFrame {
     // inherited, and block 0 without a word reports unity rather than
     // whatever the previous frame ended on.
     std::array<std::uint8_t, kBlocksPerFrame> dynrng{};
+    // §8.2.2/§7.9: per full-bandwidth channel, per block - true where that
+    // block used the short (block-switched) transform. Sized to nfchans; the
+    // LFE and any coupling channel never switch, so they carry no entry.
+    std::vector<std::array<bool, kBlocksPerFrame>> blksw;
     // nchans x kSamplesPerFrame, AC-3 channel order, LFE last when present.
     std::vector<std::vector<float>> channels;
 };
@@ -122,6 +126,10 @@ struct DecodedSubstream {
     // word so much as mark the LAST dependent of the program — the point at
     // which a decoder knows every channel has arrived.
     bool last_dependent = false;
+    // §8.2.2/§7.9: per full-bandwidth channel, per block - true where that
+    // block used the short (block-switched) transform. Sized to nfchans; the
+    // LFE and any coupling channel never switch, so they carry no entry.
+    std::vector<std::array<bool, kBlocksPerFrame>> blksw;
     std::vector<std::vector<float>> channels;
 
     // The Table E2.5 map this substream's channels occupy.
