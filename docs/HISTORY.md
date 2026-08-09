@@ -210,6 +210,57 @@ lookups, so the bit-packing has a second opinion.
 One gap found here and still open: FFmpeg's Annex E header parser skips the compression word,
 so E-AC-3 `compr` has no external oracle and is covered bit-by-bit instead.
 
+## Live monitor, E-AC-3/Atmos passthrough, and the live pipeline
+
+Capture→encode already ran live (`EncoderController::startRecording`, `ac3cli record`), but
+only ever reached a file, and `PassthroughSink`/`ac3::iec61937::wrap_frame` understood AC-3
+bursts only — `playToReceiver` and `ac3cli play` refused anything with `bsid > 8` outright.
+Three pieces closed that: `ac3::sinks::MonitorSink` (shared-mode WASAPI playback, a
+non-bitstreamed preview path), `ac3::iec61937::Eac3BurstPacker` plus a second WASAPI
+exclusive-mode format (`make_eac3_format`, `KSDATAFORMAT_SUBTYPE_IEC61937_DOLBY_DIGITAL_PLUS`)
+for E-AC-3/Atmos passthrough, and `ac3cli live` wiring capture → encode → both, continuously,
+with `live --atmos` moving each object's placement every frame from elapsed time — the same
+per-frame-recompute shape `atmos`'s synthetic orbit demo already used, now with room for a real
+live position source to read from instead of a formula once one exists.
+
+The E-AC-3 burst framing was deliberately not guessed from AC-3's shape. Two primary sources
+were fetched live and cross-checked against each other: FFmpeg's `spdif_header_eac3`
+(`libavformat/spdifenc.c`) and Microsoft's own "Representing Formats for IEC 61937
+Transmissions" documentation, which includes a worked Dolby Digital Plus example. They agree:
+data type `0x15` with no extra bits in `Pc` (unlike AC-3's `bsmod`); a burst fixed at 24576
+bytes (4x AC-3's), matching WASAPI's own requirement that the carrier clock run at 4x the
+content rate for DD+; `Pd` (length) in **bytes**, not bits, unlike AC-3 — confirmed directly
+from the source (`ctx->length_code = ctx->hd_buf_filled`, no `<<3`) and sanity-checked against
+TrueHD/DTS-HD doing the same for the same reason (bits would overflow the 16-bit field at these
+rates); and — the detail that would silently drop channels if missed — the unit fed to the
+packer has to be a whole *access unit* (`ac3::split_access_units`), not a lone syncframe, or a
+dependent substream's channels never reach the receiver. `tests/test_iec61937.cpp` is new (the
+AC-3 packer had no dedicated tests before this either) and covers both, including real
+multi-frame audio and hand-built multi-syncframe accumulation; the `Pd`-in-bits and
+burst-size-6144 bugs were both deliberately reintroduced and confirmed to fail the suite before
+being reverted.
+
+Building the monitor path against real hardware — not just unit tests — found two real bugs
+neither would have caught. `MonitorSink::submit()` gated a write on a fixed ~20 ms readiness
+threshold smaller than an actual chunk (~32 ms, one AC-3/E-AC-3 frame); `RingBuffer::write()`
+then silently performed a *partial* write while `submit()` still reported failure, so the
+caller retried the same chunk, duplicating bytes that had already landed and desynchronising
+the submitted/rendered counters from what was actually queued. `ac3cli live --atmos` separately
+wrote a bed-metering step into the same `views` vector the encoder read object essences from,
+sized to the object count (as few as one) rather than the bed's fixed six channels — an
+out-of-bounds heap write, surfacing as a crash partway through an otherwise-successful session.
+Both are fixed (see `MonitorSink::submit` in `src/lib/src/platform/windows/monitor.cpp` and
+`run_live`'s `bed_views` in `src/cli/main.cpp`).
+
+What that hardware testing did and did not confirm, precisely: `MonitorSink` played real
+microphone capture and real decoded AC-3/E-AC-3 (including an Atmos stream's 5.1 bed) through
+this machine's Realtek output in real time, end to end, including a live capture→encode→monitor
+session. Exclusive-mode E-AC-3 passthrough did not get the same confirmation — this machine has
+no S/PDIF/HDMI endpoint behind a real AV receiver, so `IsFormatSupported` was exercised (and
+correctly answers no everywhere available) but no receiver has locked onto either the existing
+AC-3 burst or the new E-AC-3 one. See the [README](../README.md#verification-gaps) for the full
+account.
+
 ## Since
 
 - The Matroska muxer (`src/matroska/`), deliberately independent of `ac3::forge`.

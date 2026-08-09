@@ -755,11 +755,17 @@ void EncoderController::refreshOutputDevices() {
         for (const auto& device : outputs_) {
             // The capability is part of the label: a user staring at a greyed
             // out device deserves to know which of the two reasons applies.
-            const QString capability =
-                device.supports_ac3_passthrough
-                    ? QStringLiteral("AC-3 ready")
-                    : (device.supports_exclusive_pcm ? QStringLiteral("cannot bitstream")
-                                                     : QStringLiteral("no exclusive access"));
+            QString capability;
+            if (device.supports_ac3_passthrough && device.supports_eac3_passthrough) {
+                capability = QStringLiteral("AC-3 + E-AC-3 ready");
+            } else if (device.supports_ac3_passthrough) {
+                capability = QStringLiteral("AC-3 ready");
+            } else if (device.supports_eac3_passthrough) {
+                capability = QStringLiteral("E-AC-3 ready");
+            } else {
+                capability = device.supports_exclusive_pcm ? QStringLiteral("cannot bitstream")
+                                                            : QStringLiteral("no exclusive access");
+            }
             names.append(QStringLiteral("%1  —  %2")
                              .arg(QString::fromStdString(device.name), capability));
         }
@@ -779,13 +785,6 @@ void EncoderController::playToReceiver(int deviceIndex) {
         return;
     }
     const auto device = outputs_[static_cast<std::size_t>(deviceIndex)];
-    if (!device.supports_ac3_passthrough) {
-        setStatus(QStringLiteral("\"%1\" will not accept AC-3 over IEC 61937. Only S/PDIF and "
-                                 "HDMI outputs can bitstream, and Dolby Digital must be enabled "
-                                 "for the device in Sound settings.")
-                      .arg(QString::fromStdString(device.name)));
-        return;
-    }
 
     playing_ = true;
     emit playingChanged();
@@ -803,41 +802,76 @@ void EncoderController::playToReceiver(int deviceIndex) {
 
         QString message;
         const auto bsid = ac3::stream_bsid(stream);
-        const auto frames = ac3::split_frames(stream);
-        if (bsid && *bsid > 8) {
-            // The IEC 61937 packer emits AC-3 bursts only (data type 1). A
-            // receiver would take an E-AC-3 burst; this packer cannot make one.
-            message = QStringLiteral("That stream is E-AC-3 (bsid %1). Passthrough here wraps "
-                                     "AC-3 bursts only — encode as AC-3 to send it.")
-                          .arg(*bsid);
-        } else if (!frames || frames->empty()) {
-            message = QStringLiteral("That file is not a valid AC-3 stream.");
+        if (!bsid) {
+            message = QStringLiteral("That file is too short to hold a syncframe.");
         } else {
-            const auto fscod = std::to_integer<std::uint32_t>((*frames)[0][4]) >> 6;
-            const auto rate = sample_rate_hz(static_cast<ac3::SampleRate>(fscod));
-            ac3::sinks::PassthroughSink sink;
-            const auto started = sink.start(device.id, rate);
-            if (!started) {
-                const auto why = ac3::sinks::describe(started.error());
-                message = QString::fromUtf8(why.data(), static_cast<qsizetype>(why.size()));
+            const bool eac3 = *bsid > 8;
+            if (eac3 && !device.supports_eac3_passthrough) {
+                message = QStringLiteral(
+                              "\"%1\" will not accept E-AC-3 over IEC 61937. Only S/PDIF and "
+                              "HDMI outputs can bitstream, and Dolby Digital Plus must be "
+                              "enabled for the device in Sound settings.")
+                              .arg(QString::fromStdString(device.name));
+            } else if (!eac3 && !device.supports_ac3_passthrough) {
+                message = QStringLiteral(
+                              "\"%1\" will not accept AC-3 over IEC 61937. Only S/PDIF and "
+                              "HDMI outputs can bitstream, and Dolby Digital must be enabled "
+                              "for the device in Sound settings.")
+                              .arg(QString::fromStdString(device.name));
             } else {
-                for (const auto& frame : *frames) {
-                    const auto burst = ac3::iec61937::wrap_frame(frame);
-                    if (!burst) {
-                        break;
-                    }
-                    while (!sink.submit(*burst)) {
-                        std::this_thread::sleep_for(std::chrono::milliseconds(4));
+                // Access units for E-AC-3, since a dependent substream's
+                // channels only reach the burst alongside the independent
+                // one it extends (see run_play's own comment on this).
+                const auto units =
+                    eac3 ? ac3::split_access_units(stream) : ac3::split_frames(stream);
+                if (!units || units->empty()) {
+                    message = QStringLiteral("That file is not a valid %1 stream.")
+                                  .arg(eac3 ? QStringLiteral("E-AC-3") : QStringLiteral("AC-3"));
+                } else {
+                    const auto rate = sample_rate_hz(static_cast<ac3::SampleRate>(
+                        std::to_integer<std::uint32_t>((*units)[0][4]) >> 6));
+                    ac3::sinks::PassthroughSink sink;
+                    const auto started = sink.start(
+                        device.id, rate,
+                        eac3 ? ac3::sinks::BitstreamFormat::kEac3
+                             : ac3::sinks::BitstreamFormat::kAc3);
+                    if (!started) {
+                        const auto why = ac3::sinks::describe(started.error());
+                        message = QString::fromUtf8(why.data(), static_cast<qsizetype>(why.size()));
+                    } else {
+                        ac3::iec61937::Eac3BurstPacker eac3_packer;
+                        for (const auto& unit : *units) {
+                            std::vector<std::byte> burst;
+                            if (eac3) {
+                                const auto result = eac3_packer.push(unit);
+                                if (!result) {
+                                    break;
+                                }
+                                if (!*result) {
+                                    continue;  // accumulating; nothing to submit yet
+                                }
+                                burst = std::move(**result);
+                            } else {
+                                const auto wrapped = ac3::iec61937::wrap_frame(unit);
+                                if (!wrapped) {
+                                    break;
+                                }
+                                burst = *wrapped;
+                            }
+                            while (!sink.submit(burst)) {
+                                std::this_thread::sleep_for(std::chrono::milliseconds(4));
+                            }
+                        }
+                        while (sink.stats().bursts_rendered < sink.stats().bursts_submitted) {
+                            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                        }
+                        const auto stats = sink.stats();
+                        sink.stop();
+                        message = QStringLiteral("Streamed %1 bursts (%2 underruns).")
+                                      .arg(stats.bursts_rendered)
+                                      .arg(stats.underruns);
                     }
                 }
-                while (sink.stats().bursts_rendered < sink.stats().bursts_submitted) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-                }
-                const auto stats = sink.stats();
-                sink.stop();
-                message = QStringLiteral("Streamed %1 bursts (%2 underruns).")
-                              .arg(stats.bursts_rendered)
-                              .arg(stats.underruns);
             }
         }
 

@@ -42,6 +42,15 @@ constexpr PROPERTYKEY kPkeyDeviceFriendlyName = {
 constexpr GUID kSubtypeIec61937DolbyDigital = {
     0x00000092, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
 
+// KSDATAFORMAT_SUBTYPE_IEC61937_DOLBY_DIGITAL_PLUS from ksmedia.h:
+// {0000000a-0cea-0010-8000-00aa00389b71}. A different GUID family from AC-3's
+// (Data2 0x0cea rather than 0x0000) - confirmed against a Windows SDK
+// ksmedia.h mirror and against Microsoft's own "Representing Formats for IEC
+// 61937 Transmissions" documentation, which gives this exact value in a
+// worked Dolby Digital Plus example.
+constexpr GUID kSubtypeIec61937DolbyDigitalPlus = {
+    0x0000000a, 0x0cea, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
+
 // The class and interface identifiers, spelled out for a related reason: the
 // SDK declares CLSID_MMDeviceEnumerator and the IAudio* IIDs but ships no
 // import library that defines them, so the only header-only way to name them
@@ -95,6 +104,43 @@ WaveFormatIec61937 make_ac3_format(std::uint32_t sample_rate, DWORD encoded_chan
     return format;
 }
 
+// Dolby Digital Plus over IEC 60958/61937: per Microsoft's "Representing
+// Formats for IEC 61937 Transmissions", "the link-sampling rate must be four
+// times the sampling rate of the content" - so unlike AC-3, the carrier
+// itself (nSamplesPerSec/nAvgBytesPerSec) runs at 4x `sample_rate`, which
+// stays the CONTENT rate throughout. Field values otherwise mirror
+// Microsoft's own worked 48 kHz DD+ example verbatim.
+WaveFormatIec61937 make_eac3_format(std::uint32_t sample_rate, DWORD encoded_channels) {
+    WaveFormatIec61937 format{};
+    auto& wf = format.FormatExt.Format;
+    wf.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+    wf.nChannels = kCarrierChannels;
+    wf.nSamplesPerSec = sample_rate * 4;
+    wf.wBitsPerSample = kCarrierBits;
+    wf.nBlockAlign = static_cast<WORD>(kCarrierChannels * kCarrierBits / 8);
+    wf.nAvgBytesPerSec = wf.nSamplesPerSec * wf.nBlockAlign;
+    wf.cbSize = sizeof(WaveFormatIec61937) - sizeof(WAVEFORMATEX);
+
+    format.FormatExt.Samples.wValidBitsPerSample = kCarrierBits;
+    format.FormatExt.dwChannelMask = kSpeakerStereo;
+    format.FormatExt.SubFormat = kSubtypeIec61937DolbyDigitalPlus;
+
+    format.dwEncodedSamplesPerSec = sample_rate;
+    format.dwEncodedChannelCount = encoded_channels;
+    format.dwAverageBytesPerSec = 0;  // ignored for this format (MS docs)
+    return format;
+}
+
+WaveFormatIec61937 make_format(BitstreamFormat format, std::uint32_t sample_rate,
+                               DWORD encoded_channels) {
+    return format == BitstreamFormat::kEac3 ? make_eac3_format(sample_rate, encoded_channels)
+                                            : make_ac3_format(sample_rate, encoded_channels);
+}
+
+std::size_t burst_bytes_for(BitstreamFormat format) {
+    return format == BitstreamFormat::kEac3 ? iec61937::kEac3BurstBytes : iec61937::kBurstBytes;
+}
+
 std::string to_utf8(const wchar_t* wide) {
     if (wide == nullptr) {
         return {};
@@ -141,8 +187,9 @@ std::string_view describe(PassthroughError error) {
         case PassthroughError::kComFailure: return "a Windows audio (WASAPI/COM) call failed";
         case PassthroughError::kDeviceNotFound: return "the requested render device was not found";
         case PassthroughError::kFormatRejected:
-            return "the endpoint will not accept AC-3 over IEC 61937 (enable Dolby Digital "
-                   "passthrough for the device, or use an S/PDIF or HDMI output)";
+            return "the endpoint will not accept this format over IEC 61937 (enable Dolby "
+                   "Digital / Dolby Digital Plus passthrough for the device, or use an S/PDIF "
+                   "or HDMI output)";
         case PassthroughError::kExclusiveUnavailable:
             return "exclusive access was refused (another app holds the device, or exclusive "
                    "mode is disabled for it in Sound settings)";
@@ -182,7 +229,8 @@ std::expected<std::vector<RenderDeviceInfo>, PassthroughError> enumerate_render_
         return std::unexpected(PassthroughError::kComFailure);
     }
 
-    auto format = make_ac3_format(sample_rate, 6);
+    auto ac3_format = make_ac3_format(sample_rate, 6);
+    auto eac3_format = make_eac3_format(sample_rate, 6);
     std::vector<RenderDeviceInfo> devices;
     for (UINT i = 0; i < count; ++i) {
         ComPtr<IMMDevice> device;
@@ -211,11 +259,15 @@ std::expected<std::vector<RenderDeviceInfo>, PassthroughError> enumerate_render_
         ComPtr<IAudioClient> client;
         if (SUCCEEDED(device->Activate(kIidAudioClient, CLSCTX_ALL, nullptr, &client))) {
             // IsFormatSupported is the only honest way to ask "can this
-            // endpoint bitstream AC-3?" - the answer depends on the driver,
-            // the physical connector and the user's per-device settings.
+            // endpoint bitstream AC-3 / E-AC-3?" - the answer depends on the
+            // driver, the physical connector and the user's per-device
+            // settings.
             info.supports_ac3_passthrough =
                 client->IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE,
-                                          &format.FormatExt.Format, nullptr) == S_OK;
+                                          &ac3_format.FormatExt.Format, nullptr) == S_OK;
+            info.supports_eac3_passthrough =
+                client->IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE,
+                                          &eac3_format.FormatExt.Format, nullptr) == S_OK;
 
             // Control probe with an ordinary exclusive-mode PCM format, so a
             // "no" above can be attributed to the device rather than to
@@ -243,6 +295,9 @@ struct PassthroughSink::Impl {
     std::atomic<std::uint64_t> submitted{0};
     std::atomic<std::uint64_t> rendered{0};
     std::atomic<std::uint64_t> underruns{0};
+    // Set by start(); submit()/can_submit() validate against whichever burst
+    // size the chosen BitstreamFormat uses.
+    std::size_t burst_bytes = iec61937::kBurstBytes;
 };
 
 PassthroughSink::PassthroughSink() : impl_(std::make_unique<Impl>()) {}
@@ -265,11 +320,11 @@ bool PassthroughSink::can_submit() const {
     if (!impl_->queue) {
         return false;
     }
-    return impl_->queue->capacity() - impl_->queue->available() > iec61937::kBurstBytes;
+    return impl_->queue->capacity() - impl_->queue->available() > impl_->burst_bytes;
 }
 
 bool PassthroughSink::submit(std::span<const std::byte> burst) {
-    if (!running() || !impl_->queue || burst.size() != iec61937::kBurstBytes) {
+    if (!running() || !impl_->queue || burst.size() != impl_->burst_bytes) {
         return false;
     }
     if (!can_submit()) {
@@ -292,7 +347,8 @@ void PassthroughSink::stop() {
 }
 
 std::expected<void, PassthroughError> PassthroughSink::start(const std::string& device_id,
-                                                             std::uint32_t sample_rate) {
+                                                             std::uint32_t sample_rate,
+                                                             BitstreamFormat format_kind) {
     if (running()) {
         return std::unexpected(PassthroughError::kAlreadyRunning);
     }
@@ -325,11 +381,16 @@ std::expected<void, PassthroughError> PassthroughSink::start(const std::string& 
         return std::unexpected(PassthroughError::kComFailure);
     }
 
-    auto format = make_ac3_format(sample_rate, 6);
+    auto format = make_format(format_kind, sample_rate, 6);
     if (client->IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE, &format.FormatExt.Format,
                                   nullptr) != S_OK) {
         return std::unexpected(PassthroughError::kFormatRejected);
     }
+    // The carrier (link) rate, not the content rate: identical to
+    // `sample_rate` for AC-3, 4x it for E-AC-3 (make_eac3_format already
+    // applied that). GetDevicePeriod/GetBufferSize below deal in frames of
+    // this carrier, so the realignment math has to use it too.
+    const std::uint32_t carrier_rate = format.FormatExt.Format.nSamplesPerSec;
 
     REFERENCE_TIME default_period = 0;
     REFERENCE_TIME minimum_period = 0;
@@ -350,7 +411,7 @@ std::expected<void, PassthroughError> PassthroughSink::start(const std::string& 
             return std::unexpected(PassthroughError::kComFailure);
         }
         period = static_cast<REFERENCE_TIME>(
-            10000.0 * 1000 * aligned_frames / sample_rate + 0.5);
+            10000.0 * 1000 * aligned_frames / carrier_rate + 0.5);
         client.Reset();
         if (FAILED(device->Activate(kIidAudioClient, CLSCTX_ALL, nullptr, &client))) {
             return std::unexpected(PassthroughError::kComFailure);
@@ -386,7 +447,8 @@ std::expected<void, PassthroughError> PassthroughSink::start(const std::string& 
 
     // Room for roughly a second of bursts, so a caller encoding slightly
     // ahead of real time never has to spin.
-    impl_->queue = std::make_unique<capture::ByteRingBuffer>(iec61937::kBurstBytes * 40);
+    impl_->burst_bytes = burst_bytes_for(format_kind);
+    impl_->queue = std::make_unique<capture::ByteRingBuffer>(impl_->burst_bytes * 40);
     impl_->submitted.store(0, std::memory_order_relaxed);
     impl_->rendered.store(0, std::memory_order_relaxed);
     impl_->underruns.store(0, std::memory_order_relaxed);
@@ -424,7 +486,7 @@ std::expected<void, PassthroughError> PassthroughSink::start(const std::string& 
             }
             std::memcpy(target, chunk.data(), wanted);
             render->ReleaseBuffer(buffer_frames, 0);
-            impl_->rendered.fetch_add(got / iec61937::kBurstBytes, std::memory_order_relaxed);
+            impl_->rendered.fetch_add(got / impl_->burst_bytes, std::memory_order_relaxed);
         }
 
         client->Stop();
