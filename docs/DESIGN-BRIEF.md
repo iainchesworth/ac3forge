@@ -4,11 +4,10 @@ An input document for a design pass over the ac3forge desktop application. It de
 application is for, what it shows today, how people move through it, and what still has to be
 accommodated. It does not propose a design.
 
-**Which version this describes.** The GUI recently gained most of the codec surface it had been
-missing, on branch `claude/youthful-hermann-549468` (commit `dcaca85`, "Both front ends reach the
-whole codec"). That work is finished but not yet merged to `master`. This brief describes **that**
-version, because it is the one a designer will be working from — it is a substantially different and
-much larger interface than the seven-card `master` build. Every screenshot here is of that build.
+**Which version this describes.** The GUI gained most of the codec surface it had been missing in
+"Both front ends reach the whole codec" (`dcaca85`), now merged to `main`. This brief describes that
+build — a substantially larger interface than the earlier seven-card version. Every screenshot here
+is of it.
 
 ---
 
