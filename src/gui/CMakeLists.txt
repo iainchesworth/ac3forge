@@ -197,3 +197,54 @@ if(WIN32)
             "ac3gui.exe will not run standalone from the build tree.")
     endif()
 endif()
+
+# ---------------------------------------------------------------------------
+# Install + Qt runtime deployment for packaging. qt_generate_deploy_qml_app_script()
+# is Qt's CMake-native replacement for windeployqt/macdeployqt at install
+# time: it inspects the built target - including scanning its QML files for
+# imports, since this is a QQmlApplicationEngine app - and emits an
+# install(SCRIPT) that copies the Qt libraries/plugins/QML modules the app
+# actually uses next to it (or into the .app bundle on macOS). This is
+# separate from the POST_BUILD windeployqt step above, which targets the
+# build tree, not an install/package tree.
+#
+# The plain qt_generate_deploy_app_script() (no "_qml_") looks like the more
+# obvious choice and is NOT what this calls: it only runs
+# qt6_deploy_runtime_dependencies() (library dependencies), never
+# qt6_deploy_qml_imports() - confirmed empirically, a packaged build with it
+# produced a completely empty qml/ directory and ac3gui.exe failed outside
+# the build tree with "the QML failed to load" (no Fusion style plugin, no
+# QtQuick.Controls modules - nothing qmlimportscanner would have caught).
+# qt_generate_deploy_qml_app_script() is the QML-aware sibling that actually
+# scans main.cpp's engine.loadFromModule() and the .qml files, matching what
+# the POST_BUILD windeployqt --qmldir call above already does for the build
+# tree - including bundling every built-in QtQuick.Controls style (Fusion
+# among them), because QQuickStyle::setStyle("Fusion") is a runtime C++ call
+# no static QML scan can see is the one actually used.
+#
+# Linux gets none of this: qt_generate_deploy_qml_app_script() still writes a
+# "Prefix = .." qt.conf next to the installed binary even with
+# NO_UNSUPPORTED_PLATFORM_ERROR, which misdirects the SYSTEM Qt6's QML import
+# path lookup and breaks QtQuick.Controls at startup - confirmed empirically
+# in CountdownSolver (R:\CountdownSolver\src\app\CMakeLists.txt), which hit
+# this exact bug and documents it in the same place. Linux packaging instead
+# relies on a declared Qt6 runtime dependency in cmake/Packaging.cmake's DEB
+# generator plus the system's own Qt6 install - not implemented yet here
+# because AC3FORGE_BUILD_GUI defaults OFF on every Linux preset (see
+# CMakePresets.json), so this bug cannot bite in CI until someone turns it on
+# for a packaging build. Do not "fix" this by adding the WIN32 OR APPLE
+# guard below back in for Linux too.
+# ---------------------------------------------------------------------------
+include(GNUInstallDirs)
+
+install(TARGETS ac3gui
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+    BUNDLE DESTINATION ".")
+
+if(WIN32 OR APPLE)
+    qt_generate_deploy_qml_app_script(
+        TARGET ac3gui
+        OUTPUT_SCRIPT AC3_GUI_DEPLOY_SCRIPT
+        NO_UNSUPPORTED_PLATFORM_ERROR)
+    install(SCRIPT "${AC3_GUI_DEPLOY_SCRIPT}")
+endif()

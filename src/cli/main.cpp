@@ -38,6 +38,7 @@
 #include "ac3/sinks/monitor.hpp"
 #include "ac3/sinks/passthrough.hpp"
 #include "ac3/spatial/spatial.hpp"
+#include "ac3/version.hpp"
 #include "matroska/matroska.hpp"
 
 #ifdef AC3FORGE_QUARANTINE_SIGNER
@@ -2702,6 +2703,7 @@ void print_usage() {
     std::println("ac3forge — clean-room AC-3 / E-AC-3 (ATSC A/52) encoder/decoder");
     std::println("");
     std::println("Usage:");
+    std::println("  ac3cli --version    print version and git provenance, then exit");
     for (const auto& c : kCommands) {
         std::string line = std::format("  ac3cli {:<13}{}", c.name, c.spec);
         // A command the platform cannot run is listed, not hidden: hiding it
@@ -2813,6 +2815,11 @@ void print_usage() {
 
 int run_main(int argc, char** argv) {
     const std::span<char*> raw{argv, static_cast<std::size_t>(argc)};
+    if (raw.size() > 1 &&
+        (std::string_view{raw[1]} == "--version" || std::string_view{raw[1]} == "-v")) {
+        std::println("{}", ac3::version_details());
+        return 0;
+    }
     // Split the command line into positional arguments and metadata options. An
     // option is a key=value token or one of the three bare flags, so the
     // positional arguments keep their places whether options are present or
