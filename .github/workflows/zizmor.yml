@@ -40,7 +40,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
 
       - name: Run zizmor
         # continue-on-error: findings should surface in the Security tab, not
@@ -49,7 +49,7 @@ jobs:
         run: uvx "zizmor@${ZIZMOR_VERSION}" --format=sarif . > results.sarif
 
       - name: Upload SARIF
-        uses: github/codeql-action/upload-sarif@24ea975727876cf496b1eb0c5b36e96e01600b51 # v4.37.0
+        uses: github/codeql-action/upload-sarif@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4.37.0
         with:
           sarif_file: results.sarif
           category: zizmor
