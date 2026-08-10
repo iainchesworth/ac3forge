@@ -78,7 +78,7 @@ previous tag - a first draft only. Modelled on aqualink-automate's own process
 (`R:\aqualink-automate\docs\releasing.md`), curating it to the established pattern is a
 required step, not optional polish:
 
-1. Update [CHANGELOG.md](../CHANGELOG.md) first, if it isn't already current - a `## [x.y.z] -
+1. Update [CHANGELOG.md](https://github.com/iainchesworth/ac3forge/blob/main/CHANGELOG.md) first, if it isn't already current - a `## [x.y.z] -
    YYYY-MM-DD` section (moved down from `## [Unreleased]` if the changes were already logged
    there), [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. This is the
    authoritative, human-curated record; the GitHub Release body mirrors it, not the other way
@@ -95,7 +95,7 @@ required step, not optional polish:
    5. `**Full Changelog**: …/compare/v<prev>...v<this>` (keep the one `--generate-notes`
       produced; omit for the first release - there is no previous tag).
    6. For a prerelease, a trailing `> **Pre-release.**` caveat blockquote noting the biggest
-      open gap (see [Known gaps](../CHANGELOG.md#known-gaps) in the matching CHANGELOG.md
+      open gap (see [Known gaps](https://github.com/iainchesworth/ac3forge/blob/main/CHANGELOG.md#known-gaps) in the matching CHANGELOG.md
       section).
 3. Apply it:
 
