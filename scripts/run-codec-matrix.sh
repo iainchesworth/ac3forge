@@ -11,18 +11,18 @@
 # Every stream this script produces also gets FFmpeg's independent strict
 # decode (CONTRIBUTING.md's "Oracles" list, #2) alongside the in-repo
 # decoder's `run decode`, per the verification-gap table in README.md:
-#   - FFmpeg is the only oracle for Annex E coupling/spx/AHT, and a failure
-#     there is always a hard failure - unlike the in-repo decoder's known,
-#     tolerated refusal of those same tools (see
-#     run_tolerate_eac3_tool_unsupported below).
-#   - FFmpeg has no oracle at all for 7.1.4 (`714`): its ff_ac3_parse_header
-#     rejects a second dependent substream's `substreamid != 0` in every
-#     container tried. Those streams skip the FFmpeg check entirely rather
-#     than being tolerated - there is nothing to tolerate a decode failure
-#     against, and skipping (not tolerating) is what keeps this script from
-#     silently claiming coverage it does not have.
-#   - 7.1.4 combined with an Annex E tool has no oracle anywhere in this
-#     project (neither decoder reads it) and stays that way here too.
+#   - The in-repo decoder reads every Annex E tool combination now (coupling,
+#     spectral extension, AHT, and any combination including 7.1.4 with all
+#     three at once), so every `run decode` below is a real, asserted
+#     round-trip - there is nothing left to tolerate a known refusal against.
+#   - FFmpeg still has no oracle at all for 7.1.4 (`714`): its
+#     ff_ac3_parse_header rejects a second dependent substream's
+#     `substreamid != 0` in every container tried, regardless of which Annex
+#     E tools are in play. Those streams skip the FFmpeg check entirely
+#     rather than being tolerated - there is nothing to tolerate a decode
+#     failure against, and skipping (not tolerating) is what keeps this
+#     script from silently claiming FFmpeg coverage it does not have. The
+#     in-repo decoder is checked at 7.1.4 same as everywhere else.
 #
 # Usage: run-codec-matrix.sh <path-to-ac3cli> [workdir]
 # Exits non-zero on the first command that fails (a sanitizer violation exits
@@ -65,53 +65,17 @@ run() {
 # that actually turns a detected error into a failing process - verified by
 # hand against a deliberately corrupted stream while writing this function,
 # per CONTRIBUTING.md's "prove the test can fail" rule. Every call site below
-# is a stream the verification-gap table says FFmpeg CAN read, so unlike
-# run_tolerate_eac3_tool_unsupported above, a failure here always fails the
-# script; there is no known, accepted FFmpeg gap to tolerate.
+# is a stream the verification-gap table says FFmpeg CAN read, so a failure
+# here always fails the script; there is no known, accepted FFmpeg gap to
+# tolerate.
 run_ffmpeg_check() {
     count=$((count + 1))
     echo "[$count] ffmpeg strict-decode $1"
     ffmpeg -v error -xerror -err_detect crccheck+bitstream+buffer+explode -i "$1" -f null -
 }
 
-# The E-AC-3 decoder still refuses any stream that turns on spectral
-# extension or AHT (src/lib/src/decoder/eac3_decoder.cpp returns
-# DecodeError::kUnsupported the moment spxinu or ahte is set); coupling alone
-# (cplinu) decodes for real now (feature/eac3-annex-e-coupling-decode, the
-# first of three phases closing this gap - spx and AHT are next). This
-# wrapper still runs every tools: token, cpl included, so the assertion
-# tightens itself automatically as each remaining phase lands: a combination
-# that starts decoding for real is just a passing "$status -eq 0" from here
-# on, with nothing left to update in this script. tools/quality_race.py works
-# around the remaining gap the same way, decoding spx/aht-bearing streams
-# with FFmpeg or the reference player rather than this decoder. It runs the
-# encode side regardless (still exercises the tool's encoder under the
-# sanitizer, and exercises the decoder's OWN refusal-detection bit-reads) but
-# tolerates exactly that one, already-known refusal rather than treating it
-# as fatal, so the rest of the matrix still runs. Anything else - a crash, a
-# sanitizer abort, a different error code - still fails the script.
-run_tolerate_eac3_tool_unsupported() {
-    count=$((count + 1))
-    echo "[$count] $* (Annex E tool: decode refusal is a known gap, not asserted)"
-    set +e
-    out=$("$CLI" "$@" 2>&1)
-    status=$?
-    set -e
-    if [ "$status" -eq 0 ]; then
-        return 0
-    fi
-    if [ "$status" -eq 1 ] && printf '%s' "$out" | grep -q "decode failed (code 4)"; then
-        echo "    known limitation confirmed, continuing"
-        return 0
-    fi
-    echo "$out" >&2
-    echo "unexpected failure (status $status), not the known Annex E tool gap" >&2
-    exit "$status"
-}
-
 # --- AC-3: every layout sine can address, with and without coupling --------
-# (AC-3 coupling decode is fully implemented - unlike E-AC-3's, see above -
-# commit 8386c8f is the coupling reconstruction this exercises.)
+# (commit 8386c8f is the coupling reconstruction this exercises.)
 for layout in mono stereo stereoc 51 51c 1+1; do
     run sine "ac3_${layout}.ac3" 2 192 1000 80 "$layout"
     run decode "ac3_${layout}.ac3" "ac3_${layout}.wav"
@@ -175,25 +139,24 @@ for tools in none "atten:2" noatten; do
     run decode "eac3enc_${safe}.ec3" "eac3enc_${safe}.wav"
     run_ffmpeg_check "eac3enc_${safe}.ec3"
 done
-# FFmpeg is the ONLY oracle for these: it reads cpl/spx/aht where the in-repo
-# decoder refuses them (tolerated above), so the FFmpeg check here is not
-# optional belt-and-braces - it is the sole proof any of this matrix's
-# Annex-E-tool encodes are actually spec-correct.
+# Both the in-repo decoder and FFmpeg read every one of these now - two
+# independent decoders agreeing is stronger proof these Annex-E-tool encodes
+# are spec-correct than either checked alone.
 for tools in cpl spx aht all "spx+aht" "cpl:4+spx:5" "aht:0" "all+atten:2" "all+noatten"; do
     safe=$(echo "$tools" | tr ':+' '__')
     run eac3-encode bootstrap_51.wav "eac3enc_${safe}.ec3" 192 "$tools" 51
-    run_tolerate_eac3_tool_unsupported decode "eac3enc_${safe}.ec3" "eac3enc_${safe}.wav"
+    run decode "eac3enc_${safe}.ec3" "eac3enc_${safe}.wav"
     run_ffmpeg_check "eac3enc_${safe}.ec3"
 done
 
-# Wider layouts: a genuine round trip with no tools, plus tool-enabled
-# encodes (tolerated on decode) so the wider chanmap/dependent-substream
-# paths get exercised under the tools too, not just at 5.1. 714 is where the
-# two gaps stack: FFmpeg can't read a second dependent substream at all, so
-# eac3_714.ec3 (no tools) skips the FFmpeg check same as the sine loop above,
-# and eac3_714_all.ec3 (two dependents AND an Annex E tool) has no working
-# decoder anywhere in the project - skip it outright rather than tolerate a
-# failure, so this script never implies that combination is covered.
+# Wider layouts: a genuine round trip with no tools, plus a tool-enabled
+# encode (coupling + spx + AHT together via "all") so the wider chanmap/
+# dependent-substream paths get exercised under the tools too, not just at
+# 5.1. 714 is where FFmpeg's own, unrelated gap shows up: it can't read a
+# second dependent substream at all regardless of which Annex E tools are in
+# play, so eac3_714.ec3 and eac3_714_all.ec3 both skip the FFmpeg check same
+# as the sine loop above - the in-repo decoder has no such limit and is
+# checked at every layout including 714 either way.
 for layout in 71 512 714; do
     run eac3-encode bootstrap_51.wav "eac3_${layout}.ec3" 256 none "$layout"
     run decode "eac3_${layout}.ec3" "eac3_${layout}_decoded.wav"
@@ -201,11 +164,11 @@ for layout in 71 512 714; do
         run_ffmpeg_check "eac3_${layout}.ec3"
     fi
     run eac3-encode bootstrap_51.wav "eac3_${layout}_all.ec3" 256 all "$layout"
-    run_tolerate_eac3_tool_unsupported decode "eac3_${layout}_all.ec3" "eac3_${layout}_all.wav"
+    run decode "eac3_${layout}_all.ec3" "eac3_${layout}_all.wav"
     if [ "$layout" != "714" ]; then
         run_ffmpeg_check "eac3_${layout}_all.ec3"
     else
-        echo "    [skip] eac3_${layout}_all.ec3: 7.1.4 + Annex E tool has no oracle anywhere (README.md Verification gaps)"
+        echo "    [skip] eac3_${layout}_all.ec3: no FFmpeg oracle for 7.1.4 (README.md Verification gaps) - the in-repo decoder is still checked above"
     fi
 done
 
