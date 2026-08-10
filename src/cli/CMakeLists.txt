@@ -6,6 +6,7 @@ add_executable(ac3cli main.cpp)
 target_link_libraries(ac3cli
     PRIVATE
         ac3::forge
+        ac3::audio
         matroska::matroska
         ac3::warnings)
 
@@ -21,10 +22,11 @@ else()
     target_sources(ac3cli PRIVATE quarantine_hook_stub.cpp)
 endif()
 
-# ac3::forge and matroska::matroska are link-only: this project is not
-# currently positioned as a library other projects consume, so only the
-# executables get installed/packaged. Revisit with an EXPORT set if that
-# ever changes.
+# ac3::forge, ac3::audio and matroska::matroska are link-only here: only the
+# executables get installed/packaged today. ac3::forge is deliberately
+# platform-independent (see its own CMakeLists.txt) with an eventual EXPORT
+# set in mind for third-party consumption; that packaging work itself hasn't
+# landed yet.
 include(GNUInstallDirs)
 
 install(TARGETS ac3cli

@@ -176,9 +176,9 @@ jobs:
       #
       # libasound2-dev is the ALSA backend's only dependency, and the reason it
       # is here rather than left out is that its ABSENCE is not a build
-      # failure: src/lib/CMakeLists.txt would fall back to the no-backend
+      # failure: src/audio/CMakeLists.txt would fall back to the no-backend
       # platform directory and CI would go green having compiled none of
-      # src/lib/src/platform/alsa/. The alsa_fallback step at the end covers
+      # src/audio/src/platform/alsa/. The alsa_fallback step at the end covers
       # the other half of that switch on purpose.
       - name: Bootstrap container
         if: matrix.container
@@ -499,7 +499,7 @@ jobs:
 
       # The other side of the ALSA switch: a Linux machine without libasound's
       # development headers must still configure, build and pass everything,
-      # falling back to src/lib/src/platform/posix/ - that is the whole point
+      # falling back to src/audio/src/platform/posix/ - that is the whole point
       # of the dependency being optional, and it is a claim that rots silently
       # unless something checks it.
       #

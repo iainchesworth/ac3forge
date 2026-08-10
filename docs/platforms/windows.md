@@ -39,7 +39,7 @@ is deliberately explicit about the difference.
     let the ring buffer silently perform a partial write while reporting failure, and the live
     pipeline's Atmos metering step writing past the end of a buffer sized for the object count
     rather than the bed's fixed six channels. Both are fixed; see
-    `src/lib/src/platform/windows/monitor.cpp` and `run_live` in `src/cli/main.cpp`.
+    `src/audio/src/platform/windows/monitor.cpp` and `run_live` in `src/cli/main.cpp`.
 
 !!! warning "Exclusive-mode passthrough bitstreaming has never been confirmed against a real receiver"
     No S/PDIF or HDMI endpoint behind an actual AV receiver has been available during

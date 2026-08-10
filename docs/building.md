@@ -263,7 +263,7 @@ The dependency is **optional and detected**. Configure reports which way it went
 ```
 
 Without the headers, configure succeeds anyway and says so; the build then selects
-`src/lib/src/platform/posix/`, whose entry points all return `kNoBackend`, and `ac3cli` marks
+`src/audio/src/platform/posix/`, whose entry points all return `kNoBackend`, and `ac3cli` marks
 the affected commands `UNAVAILABLE HERE` in its usage rather than pretending they exist. Pass
 `-DAC3FORGE_WITH_ALSA=ON` to turn a missing libasound into a configure error instead, which is
 what a packaging build wants.
@@ -288,7 +288,7 @@ The cost is coexistence: opening a device directly takes it exclusively, so a ru
 server has to have released it. That is the same bargain WASAPI exclusive mode strikes on
 Windows, for the same reason — a mixer that resamples or volume-scales a burst stream turns it
 into noise. A PipeWire backend would be a reasonable second one to add (as a sibling directory
-under `src/lib/src/platform/`, selected the same way); it would buy politeness, not capability.
+under `src/audio/src/platform/`, selected the same way); it would buy politeness, not capability.
 
 #### What has and has not been verified
 

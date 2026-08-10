@@ -250,7 +250,7 @@ the submitted/rendered counters from what was actually queued. `ac3cli live --at
 wrote a bed-metering step into the same `views` vector the encoder read object essences from,
 sized to the object count (as few as one) rather than the bed's fixed six channels — an
 out-of-bounds heap write, surfacing as a crash partway through an otherwise-successful session.
-Both are fixed (see `MonitorSink::submit` in `src/lib/src/platform/windows/monitor.cpp` and
+Both are fixed (see `MonitorSink::submit` in `src/audio/src/platform/windows/monitor.cpp` and
 `run_live`'s `bed_views` in `src/cli/main.cpp`).
 
 What that hardware testing did and did not confirm, precisely: `MonitorSink` played real
@@ -265,7 +265,7 @@ account.
 ## The ALSA backend
 
 Live capture, monitor playback and IEC 61937 passthrough had been WASAPI-only, gated behind
-`WIN32` with a no-backend stub everywhere else. `src/lib/src/platform/alsa/` gives Linux a real
+`WIN32` with a no-backend stub everywhere else. `src/audio/src/platform/alsa/` gives Linux a real
 implementation of all three, selected by `src/lib/CMakeLists.txt` when libasound's headers are
 present (`AC3FORGE_WITH_ALSA=AUTO` by default; `ON` makes their absence a configure error, `OFF`
 forces the no-backend fallback) — optional and detected, not a hard new dependency. Capture and

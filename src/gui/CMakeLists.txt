@@ -113,6 +113,9 @@ endif()
 target_link_libraries(ac3gui
     PRIVATE
         ac3::forge
+        # EncoderController's live-capture/monitor/passthrough panel is a
+        # real, load-bearing consumer of this - not incidental.
+        ac3::audio
         # The GUI can save straight to .mkv, so it needs the muxer the CLI's
         # 'mkv' command uses. It links nothing from ac3::forge itself.
         matroska::matroska
