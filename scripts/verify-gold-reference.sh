@@ -30,7 +30,20 @@ COMPARE="$REPO_ROOT/scripts/compare_wav.py"
 # sides so a dynamic-range-compression default mismatch between FFmpeg and
 # ac3cli's own decoder (which also defaults drc_scale to 0 - see
 # src/cli/main.cpp's MetaOptions) can never masquerade as a fidelity loss.
-MIN_SNR_DB="${MIN_SNR_DB:-30}"
+#
+# 55, not some more conservative-looking round number: this gate compares two
+# decodes of the *same* bitstream (FFmpeg vs. ac3cli's own decoder), so absent
+# a real bug it should sit near the floating-point noise floor forever, not
+# vary the way a lossy-vs-original comparison (see tools/quality_race.py's
+# very different, much lower floors) legitimately does. Every real run
+# recorded in quality-history (docs/quality-trend.md) to date has landed
+# 61.8-67.9 dB, with the ~6 dB floor-to-floor spread being the known,
+# expected macOS-vs-Linux/Windows libm difference - not commit-to-commit
+# noise, which has stayed inside 0.02-0.08 dB. 55 leaves macOS's own ~61.8 dB
+# floor about 7 dB of headroom (comfortably above that noise) while catching
+# a regression more than an order of magnitude smaller than the previous
+# 30 dB floor ever could.
+MIN_SNR_DB="${MIN_SNR_DB:-55}"
 
 # Optional: when set, check_one also asks compare_wav.py to write a
 # structured result to "$RESULTS_JSON_DIR/<label>.json" - consumed by CI's

@@ -86,7 +86,7 @@ decoded AC-3 and E-AC-3 (including an Atmos stream's 5.1 bed) through real Windo
 hardware in real time, and a live microphone capture → encode → monitor session has run
 end-to-end. Building this path against real hardware surfaced two genuine bugs that neither
 unit tests nor silent/synthetic input would have caught — see the README's verification-gaps
-section for the details, and `src/lib/src/platform/windows/monitor.cpp` for the fixes.
+section for the details, and `src/audio/src/platform/windows/monitor.cpp` for the fixes.
 
 ## Capture: `ac3::capture`
 

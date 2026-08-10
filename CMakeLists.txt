@@ -83,6 +83,13 @@ option(AC3FORGE_QUARANTINE_SIGNER
 # The library holds the entire codec and spatial engine and is GUI-free.
 add_subdirectory(src/lib)
 
+# Live capture, monitor playback and IEC 61937 passthrough - the only
+# platform-specific code in the project. After src/lib (PRIVATE-links
+# ac3::forge for the IEC 61937 framer); before src/cli/src/gui/tests, which
+# link it alongside ac3::forge for their live-audio commands/features. Not
+# linked by examples/ - none of them touch live audio.
+add_subdirectory(src/audio)
+
 # Quarantined, RE-derived signer overlay (off by default; local-only, gitignored).
 # After src/lib so it can reuse the codec's parsing primitives; before src/cli so
 # ac3cli can link it.
@@ -130,7 +137,7 @@ message(STATUS "  Build CLI      : ${AC3FORGE_BUILD_CLI}")
 message(STATUS "  Build GUI      : ${AC3FORGE_BUILD_GUI}")
 message(STATUS "  Build tests    : ${AC3FORGE_BUILD_TESTS}")
 message(STATUS "  Build examples : ${AC3FORGE_BUILD_EXAMPLES}")
-# Which src/lib/src/platform/ directory was compiled, and so whether 'record'
+# Which src/audio/src/platform/ directory was compiled, and so whether 'record'
 # and 'play' work in this build at all - see the platform tree in
-# src/lib/CMakeLists.txt. 'posix' is the one that means no.
+# src/audio/CMakeLists.txt. 'posix' is the one that means no.
 message(STATUS "  Audio backend  : ${AC3FORGE_AUDIO_BACKEND}")
