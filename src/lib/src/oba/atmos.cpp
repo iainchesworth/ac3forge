@@ -43,6 +43,14 @@ constexpr double kAbsoluteFloor = 1e-20;
                 pivot = row;
             }
         }
+        // pivot is only ever col itself or a row from the loop above, both
+        // bounded to [0, kChannels) by their own for-loop conditions - so
+        // pivot is always in range here. MSVC /analyze's C28020 doesn't
+        // track that a variable's bound is inherited from the two loop
+        // variables it was assigned from, and flags the std::array subscript
+        // below as unproven.
+        assert(pivot >= 0 && pivot < kChannels);
+#pragma warning(suppress : 28020)
         if (std::abs(m[static_cast<std::size_t>(pivot)][static_cast<std::size_t>(col)]) <
             kAbsoluteFloor) {
             return false;
