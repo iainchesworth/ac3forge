@@ -546,7 +546,33 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: packages-${{ matrix.preset }}
-          path: packages/*
+          # An explicit extension allowlist, not packages/* - CPack leaves its
+          # per-generator staging tree behind under packages/_CPack_Packages/
+          # (never cleaned up; this is normal CPack behaviour, not a bug
+          # here), and a bare packages/* glob matches that directory too.
+          # DragNDrop's staging tree in particular contains a symlink to
+          # /Applications for the drag-to-install UX - upload-artifact
+          # dereferences symlinks by default, so on a macOS runner that walks
+          # straight into the real /Applications (Xcode's framework tree is
+          # notorious for symlink cycles) and OOMs the upload step's Node
+          # process trying to archive it. See actions/upload-artifact#619 and
+          # #590. Restricting the glob to real package files and their
+          # checksums - the same extensions github-release's own glob looks
+          # for - sidesteps the staging tree entirely rather than trying to
+          # outrun it with excludes.
+          path: |
+            packages/*.zip
+            packages/*.zip.sha512
+            packages/*.tar.gz
+            packages/*.tar.gz.sha512
+            packages/*.deb
+            packages/*.deb.sha512
+            packages/*.rpm
+            packages/*.rpm.sha512
+            packages/*.exe
+            packages/*.exe.sha512
+            packages/*.dmg
+            packages/*.dmg.sha512
           if-no-files-found: error
 
   # Persists this run's gold-reference SNR numbers (docs/quality-trend.md) so
