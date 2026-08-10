@@ -1717,7 +1717,11 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
             // same search CBR uses, budgeted against the ceiling instead of
             // a fixed target, so a bounded VBR frame is never worse than the
             // best CBR could do at that rate.
+            // sized->fallback_budget was just checked engaged above, and this
+            // copies that same optional, so the dereference below can never
+            // see an empty one.
             fixed_budget = sized->fallback_budget;
+            // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
             lo = search(*fixed_budget);
         }
         // Only ever a floor: finish_frame's own auxbits padding already

@@ -628,7 +628,10 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
         // Mantissas, in coded order: the full-bandwidth channels and then the
         // LFE, with no coupling channel to interleave.
         MantissaBlockReader mantissa_reader;
-        std::array<std::array<double, 256>, kMaxSubstreamChannels> coeffs{};
+        // Heap-backed, matching decoder.cpp's own per-block coeffs: at
+        // kMaxSubstreamChannels * 256 doubles, a stack std::array here is the
+        // single largest contributor to this function's frame size.
+        std::vector<std::array<double, 256>> coeffs(kMaxSubstreamChannels);
         for (int ch = 0; ch < nchans; ++ch) {
             const auto index = static_cast<std::size_t>(ch);
             for (int bin = 0; bin < endmant[index]; ++bin) {
