@@ -269,4 +269,23 @@ struct AhtMantissaCode {
     return gain == 4 ? 2 : (gain == 2 ? 1 : 0);
 }
 
+// The decode direction of the table above: the packed value read off the
+// wire back to the gain it names.
+[[nodiscard]] constexpr int aht_gaq_gain_from_mapped(int mapped) {
+    return mapped == 2 ? 4 : (mapped == 1 ? 2 : 1);
+}
+
+// The decode direction of aht_quantize_mantissa (§E3.4.4.2 / Table E3.5).
+// `code` and `escape` are the RAW bit patterns as read off the wire (small-
+// and large-codeword width respectively, both sign-extended internally as
+// two's complement); `has_escape` says whether the caller found the tag
+// (`code == 1 << (small_bits - 1)` as a raw pattern) and therefore read
+// `escape` at all - for gain 1 there is never a tag or an escape, and
+// `escape` is ignored. mantissa_bits is Table E3.2's per-hebap width; the
+// small/large bit counts this derives internally are the exact ones
+// aht_quantize_mantissa derives when producing them, so the two stay in
+// lockstep by construction rather than by keeping two tables in sync.
+[[nodiscard]] double aht_dequantize_mantissa(std::uint32_t code, std::uint32_t escape,
+                                             bool has_escape, int mantissa_bits, int gain);
+
 }  // namespace ac3::eac3

@@ -793,6 +793,102 @@ TEST_CASE("E-AC-3 spectral extension round-trips are near-transparent",
     }
 }
 
+TEST_CASE("E-AC-3 AHT round-trips are near-transparent", "[eac3][decoder][aht]") {
+    // AHT is a real change of mantissa format (VQ below hebap 8, gain-
+    // adaptive quantization at and above it) rather than a scale-and-copy or
+    // a synthesized approximation, and it is fully specified - no unspecified
+    // noise generator the way spx has - so it should decode far tighter than
+    // spx's ~20 dB bar. Cases cover: auto gaqmod, each of the four gaqmod
+    // pins (0 disables GAQ outright, testing pure VQ+plain-scalar; 1-3
+    // exercise the three gain-word packings), and "all" (coupling + spx +
+    // AHT stacked - the flagship combination this whole three-phase
+    // initiative was aimed at, short only of a 7.1.4 layout here, which
+    // round_trip's own real-decode-only helper already exercises for the
+    // wider layouts elsewhere in this file).
+    using ac3::Acmod;
+    auto aht_bed = bed(192);
+    aht_bed.aht = true;
+    auto aht_bed_gaqmod0 = bed(192);
+    aht_bed_gaqmod0.aht = true;
+    aht_bed_gaqmod0.gaqmod = 0;
+    auto aht_bed_gaqmod3 = bed(192);
+    aht_bed_gaqmod3.aht = true;
+    aht_bed_gaqmod3.gaqmod = 3;
+    auto all_bed = bed(192);
+    all_bed.coupling = true;
+    all_bed.spx = true;
+    all_bed.aht = true;
+
+    const std::vector<double> bed_tones = {1000.0, 800.0, 1200.0, 600.0, 1400.0, 60.0};
+    const std::vector<Speaker> bed_speakers = {
+        {Location::kLeft, 1000.0},         {Location::kCentre, 800.0},
+        {Location::kRight, 1200.0},        {Location::kLeftSurround, 600.0},
+        {Location::kRightSurround, 1400.0}, {Location::kLfe, 60.0}};
+
+    const std::vector<LayoutCase> cases = {
+        {.name = "5.1 aht (auto gaqmod)",
+         .config = {.independent = aht_bed},
+         .tones = bed_tones,
+         .speakers = bed_speakers},
+        {.name = "5.1 aht (gaqmod 0, GAQ off)",
+         .config = {.independent = aht_bed_gaqmod0},
+         .tones = bed_tones,
+         .speakers = bed_speakers},
+        {.name = "5.1 aht (gaqmod 3)",
+         .config = {.independent = aht_bed_gaqmod3},
+         .tones = bed_tones,
+         .speakers = bed_speakers},
+        {.name = "5.1 all three tools stacked",
+         .config = {.independent = all_bed},
+         .tones = bed_tones,
+         .speakers = bed_speakers},
+    };
+
+    for (const auto& layout : cases) {
+        CAPTURE(layout.name);
+        const auto rt = round_trip(layout, 5);
+        REQUIRE(rt.rendered.size() == layout.speakers.size());
+        for (std::size_t ch = 0; ch < layout.speakers.size(); ++ch) {
+            CAPTURE(ch, ac3::eac3::chanmap::name(layout.speakers[ch].location));
+            CHECK(snr_db(rt.source[ch], rt.rendered[ch]) > 30.0);
+        }
+    }
+}
+
+TEST_CASE("the E-AC-3 decoder rejects a truncated AHT stream", "[eac3][decoder][aht]") {
+    // AHT's per-bin payload is variable-width (VQ index or six gain-
+    // adaptively-quantized codewords, depending on that bin's hebap and
+    // gain), unlike coupling/spx's fixed-field geometry - there is no fixed
+    // bit offset to hand-patch a specific field at the way the coupling and
+    // spx adversarial tests do. What every decode path shares, AHT's new one
+    // included, is BitReader's own overflow guard: a stream cut short reads
+    // past the end without reading out of bounds and is caught by the
+    // existing overflowed() check once per block, so this proves that guard
+    // still holds for the new per-bin AHT loop rather than re-deriving a
+    // byte-for-byte bit layout to corrupt a single field within it.
+    ac3::eac3::AccessUnitEncoder encoder{
+        {.independent = {.bitrate_kbps = 448,
+                         .acmod = ac3::Acmod::k3_2,
+                         .lfe = true,
+                         .aht = true}}};
+    REQUIRE(encoder.channel_count() == 6);
+    std::vector<std::vector<float>> pcm(
+        6, std::vector<float>(static_cast<std::size_t>(ac3::kSamplesPerFrame)));
+    const double tones[6] = {1000.0, 800.0, 1200.0, 600.0, 1400.0, 60.0};
+    for (std::size_t ch = 0; ch < pcm.size(); ++ch) {
+        for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+            pcm[ch][static_cast<std::size_t>(i)] = static_cast<float>(
+                kAmplitude * std::sin(2.0 * std::numbers::pi * tones[ch] * i / 48000.0));
+        }
+    }
+    std::vector<std::span<const float>> views{pcm[0], pcm[1], pcm[2], pcm[3], pcm[4], pcm[5]};
+    const auto unit = encoder.encode_access_unit(views);
+    REQUIRE(unit.has_value());
+    ac3::Eac3Decoder decoder;
+    CHECK(decoder.decode_access_unit(std::span{unit->bytes}.first(unit->bytes.size() - 2))
+              .error() == ac3::DecodeError::kTruncated);
+}
+
 TEST_CASE("the E-AC-3 decoder rejects malformed spectral extension streams",
           "[eac3][decoder][spx]") {
     // A 3/2+LFE bed with spx on and attenuation explicitly off (so the

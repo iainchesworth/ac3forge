@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cmath>
 
+#include "ac3/core/aht_tables.hpp"
 #include "ac3/core/bitalloc.hpp"
 #include "ac3/core/bitreader.hpp"
 #include "ac3/core/crc16.hpp"
@@ -260,6 +262,11 @@ struct AudFrm {
     // channel does not attenuate (chinspxatten[ch] clear, or spxattene clear
     // for the whole frame).
     std::array<int, kMaxSubstreamChannels> spxattencod{};
+    // §E2.2.3: which streams are AHT-coded this frame - cplahtinu at
+    // kCplStream, chahtinu[ch] at [0, nfchans), lfeahtinu at [nfchans].
+    // Frame-constant, like everything else AHT touches (it needs exactly one
+    // exponent set for the whole frame, which rules out anything per-block).
+    std::array<bool, kMaxSubstreamStreams> ahtinu{};
 };
 
 std::expected<AudFrm, DecodeError> parse_audfrm(BitReader& r, const Bsi& bsi, int nblks) {
@@ -358,10 +365,24 @@ std::expected<AudFrm, DecodeError> parse_audfrm(BitReader& r, const Bsi& bsi, in
         }
     }
     if (frm.ahte) {
-        // The adaptive hybrid transform re-codes six blocks of mantissas as
-        // one 1536-point transform with its own gain-adaptive quantizer. It is
-        // a different mantissa format, not a variation on this one.
-        return std::unexpected(DecodeError::kUnsupported);
+        // §E2.2.3: cplahtinu, then chahtinu[ch] per fbw channel, then
+        // lfeahtinu - exactly which streams re-code their six blocks of
+        // mantissas as one gain-adaptively-quantized set instead of the
+        // ordinary per-block grouped format. cplahtinu is gated the same way
+        // frmcplexpstr was above: present only when some block actually
+        // couples this frame.
+        const bool cpl_active =
+            std::find(frm.cplinu.begin(), frm.cplinu.begin() + nblks, true) !=
+            frm.cplinu.begin() + nblks;
+        if (cpl_active) {
+            frm.ahtinu[static_cast<std::size_t>(kCplStream)] = r.read(1) != 0;  // cplahtinu
+        }
+        for (int ch = 0; ch < nfchans; ++ch) {
+            frm.ahtinu[static_cast<std::size_t>(ch)] = r.read(1) != 0;  // chahtinu[ch]
+        }
+        if (bsi.lfe) {
+            frm.ahtinu[static_cast<std::size_t>(nfchans)] = r.read(1) != 0;  // lfeahtinu
+        }
     }
     if (frm.snroffststr == 0x0) {
         frm.frmcsnroffst = static_cast<int>(r.read(6));
@@ -454,9 +475,9 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
     std::array<bool, 4> rematflg{};
     // §7.2.2.6, reset to "no segments" at the start of every syncframe like
     // fsnroffst/codes above, then persisting block to block until
-    // re-transmitted or cleared. Coupling is unsupported here (spxinu/cplinu
-    // already error before this point), so unlike the AC-3 decoder there is
-    // no coupling-channel slot to carry - only the per-fbw-channel deltbae[ch].
+    // re-transmitted or cleared. Only the per-fbw-channel deltbae[ch] exists
+    // (§5.4.3.49/E2.3.2.9 bound their loop by nfchans) - no coupling-channel
+    // or LFE slot.
     std::array<DeltaSegments, kMaxSubstreamChannels> delta{};
 
     // Coupling state (Annex E variant of §7.4). All of it persists until
@@ -493,6 +514,14 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
     std::vector<std::vector<double>> spxco(static_cast<std::size_t>(nfchans));
     std::vector<int> spxblnd(static_cast<std::size_t>(nfchans), 0);
     eac3::SpxNoise spx_noise;
+
+    // AHT-decoded coefficients (§3.4), one array of all six blocks per
+    // stream. Unlike every other per-stream array above, these are produced
+    // once - at block 0, since an AHT stream's mantissas exist only there -
+    // rather than block by block, so they need their own frame-lifetime
+    // buffer distinct from the per-block-local `coeffs` below.
+    std::vector<std::array<std::array<double, 256>, kBlocksPerFrame>> aht_coeffs(
+        static_cast<std::size_t>(kMaxSubstreamStreams));
 
     for (int blk = 0; blk < nblks; ++blk) {
         const auto strategy = [&](int ch) {
@@ -971,7 +1000,8 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
                                     .coupling = true,
                                     .cplfleak = cplfleak,
                                     .cplsleak = cplsleak,
-                                    .snr_all_zero = snr_all_zero});
+                                    .snr_all_zero = snr_all_zero,
+                                    .high_efficiency = frm->ahtinu[s]});
         }
         for (int ch = 0; ch < nchans; ++ch) {
             const int end = endmant[static_cast<std::size_t>(ch)];
@@ -989,6 +1019,7 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
                                    fsnroffst[static_cast<std::size_t>(ch)],
                                    bap[static_cast<std::size_t>(ch)],
                                    {.snr_all_zero = snr_all_zero,
+                                    .high_efficiency = frm->ahtinu[static_cast<std::size_t>(ch)],
                                     .delta = delta[static_cast<std::size_t>(ch)]});
         }
 
@@ -1013,17 +1044,125 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
                     dequantize_mantissa(code, bap_value) / static_cast<double>(1u << exp);
             }
         };
+
+        // §3.4.4 + §3.4.5: an AHT stream's mantissas exist only in block 0 -
+        // one gaqmod, its gain words, then per bin a VQ index (hebap 1-7) or
+        // six gain-adaptively-quantized codewords (hebap 8-19), covering all
+        // six blocks at once. `bap[s]` already holds hebap, not ordinary bap,
+        // because its BitAllocRegion was built with high_efficiency=true.
+        const auto decode_aht_stream = [&](int s, int begin) -> std::expected<void, DecodeError> {
+            const auto us = static_cast<std::size_t>(s);
+            const int end = endmant[us];
+            const auto& hebap = bap[us];
+
+            const auto gaqmod = static_cast<int>(r.read(2));
+            std::vector<int> gain(static_cast<std::size_t>(end), 1);  // default Gk=1
+            std::vector<int> gain_carrying_bins;
+            for (int bin = begin; bin < end; ++bin) {
+                if (eac3::aht_gaq_has_gain(hebap[static_cast<std::size_t>(bin)], gaqmod)) {
+                    gain_carrying_bins.push_back(bin);
+                }
+            }
+            if (gaqmod == 3) {
+                // Table E3.4, base-3 unpacked: three three-state gains to a
+                // 5-bit word, most significant first - the mirror image of
+                // the encoder's packing.
+                for (std::size_t i = 0; i < gain_carrying_bins.size(); i += 3) {
+                    const auto packed = r.read(5);
+                    const std::array<std::uint32_t, 3> mapped = {
+                        packed / 9, (packed % 9) / 3, (packed % 9) % 3};
+                    for (std::size_t t = 0;
+                         t < 3 && i + t < gain_carrying_bins.size(); ++t) {
+                        gain[static_cast<std::size_t>(gain_carrying_bins[i + t])] =
+                            eac3::aht_gaq_gain_from_mapped(static_cast<int>(mapped[t]));
+                    }
+                }
+            } else if (gaqmod != 0) {
+                const int alt = gaqmod == 1 ? 2 : 4;
+                for (const int bin : gain_carrying_bins) {
+                    gain[static_cast<std::size_t>(bin)] = r.read(1) != 0 ? alt : 1;
+                }
+            }
+
+            for (int bin = begin; bin < end; ++bin) {
+                const auto ubin = static_cast<std::size_t>(bin);
+                const int hb = hebap[ubin];
+                std::array<double, kBlocksPerFrame> mantissas{};
+                if (hb >= 1 && hb <= 7) {
+                    const auto book = tables::aht_vq_table(hb);
+                    const auto index = r.read(eac3::aht_bin_bits(hb));
+                    if (index >= book.size()) {
+                        return std::unexpected(DecodeError::kInvalidStream);
+                    }
+                    for (std::size_t j = 0; j < kBlocksPerFrame; ++j) {
+                        mantissas[j] = static_cast<double>(book[index][j]) / 32768.0;
+                    }
+                } else if (hb >= 8) {
+                    const int mantissa_bits = eac3::aht_mantissa_bits(hb);
+                    // hebap is clamped to kHeBapTab's 0..19 range inside
+                    // compute_bit_allocation, so this always holds for
+                    // hb >= 8 - matching the invariant aht_quantize_mantissa
+                    // (the encode direction) already asserts on the same
+                    // grounds, rather than a second, redundant runtime check.
+                    assert(mantissa_bits >= 3);
+                    const int g = gain[ubin];
+                    const int small_bits =
+                        g == 1 ? mantissa_bits : (g == 2 ? mantissa_bits - 1 : mantissa_bits - 2);
+                    const int large_bits = g == 2 ? mantissa_bits - 1 : mantissa_bits;
+                    for (std::size_t j = 0; j < kBlocksPerFrame; ++j) {
+                        const auto raw = r.read(small_bits);
+                        bool has_escape = false;
+                        std::uint32_t escape = 0;
+                        if (g != 1 && raw == (1u << (small_bits - 1))) {
+                            has_escape = true;
+                            escape = r.read(large_bits);
+                        }
+                        mantissas[j] = eac3::aht_dequantize_mantissa(raw, escape, has_escape,
+                                                                     mantissa_bits, g);
+                    }
+                }
+                // hb == 0: mantissas stays all-zero.
+                std::array<double, kBlocksPerFrame> blocks{};
+                eac3::aht_inverse(mantissas, blocks);
+                const int exp = exps[us][ubin];
+                for (std::size_t j = 0; j < kBlocksPerFrame; ++j) {
+                    aht_coeffs[us][j][ubin] = std::ldexp(blocks[j], -exp);
+                }
+            }
+            return {};
+        };
+        const auto read_stream_dispatch = [&](int s, int begin) -> std::expected<void, DecodeError> {
+            const auto us = static_cast<std::size_t>(s);
+            if (frm->ahtinu[us]) {
+                if (blk == 0) {
+                    if (const auto result = decode_aht_stream(s, begin); !result) {
+                        return result;
+                    }
+                }
+                coeffs[us] = aht_coeffs[us][static_cast<std::size_t>(blk)];
+                return {};
+            }
+            read_stream(s, begin);
+            return {};
+        };
+
         bool read_coupling = false;
         for (int ch = 0; ch < nfchans; ++ch) {
-            read_stream(ch, 0);
+            if (const auto result = read_stream_dispatch(ch, 0); !result) {
+                return std::unexpected(result.error());
+            }
             if (frm->cplinu[static_cast<std::size_t>(blk)] &&
                 chincpl[static_cast<std::size_t>(ch)] && !read_coupling) {
-                read_stream(kCplStream, cplstrtmant);
+                if (const auto result = read_stream_dispatch(kCplStream, cplstrtmant); !result) {
+                    return std::unexpected(result.error());
+                }
                 read_coupling = true;
             }
         }
         if (bsi->lfe) {
-            read_stream(nfchans, 0);
+            if (const auto result = read_stream_dispatch(nfchans, 0); !result) {
+                return std::unexpected(result.error());
+            }
         }
 
         // §7.4.3 decoupling: each coupled channel's high band is the shared
