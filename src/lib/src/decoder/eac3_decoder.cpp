@@ -877,7 +877,10 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
         // pulling in the shared coupling channel right after it, same as
         // AC-3), then the LFE.
         MantissaBlockReader mantissa_reader;
-        std::array<std::array<double, 256>, kMaxSubstreamStreams> coeffs{};
+        // Heap-backed, matching decoder.cpp's own per-block coeffs: at
+        // kMaxSubstreamStreams * 256 doubles, a stack std::array here is the
+        // single largest contributor to this function's frame size.
+        std::vector<std::array<double, 256>> coeffs(kMaxSubstreamStreams);
         const auto read_stream = [&](int s, int begin) {
             const auto index = static_cast<std::size_t>(s);
             for (int bin = begin; bin < endmant[index]; ++bin) {
