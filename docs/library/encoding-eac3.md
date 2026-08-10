@@ -43,6 +43,56 @@ for (int frame = 0; frame < 31; ++frame) {
 > the verification-gap table in the [README](https://github.com/iainchesworth/ac3forge/blob/main/README.md#verification-gaps) before relying on
 > a round trip.
 
+Block switching (§8.2.2/§7.9) is automatic here too — no config field. A channel that switches
+anywhere in the frame is excluded from both coupling (same reasoning as AC-3's) and, for this
+generation only, from AHT for that frame: AHT's own "stationary" premise (§E3.4, the opposite of
+what triggered the switch) already selects against a switching channel most of the time, but the
+exclusion is explicit rather than relying on that correlation.
+
+`FrameConfig::dialnorm2` (see "Dual mono" in [Encoding AC-3](encoding-ac3.md)) works exactly
+the same way here: set it alongside `dialnorm` when `acmod` is `kDualMono`. Dual mono is always a
+lone independent substream with no dependents — 1+1 has no bed/dependent split to make — so
+`AccessUnitEncoder` gives Ch2 its own `RangeController`/`HeavyCompressor` too, measured on the
+independent substream's own two channels the same way it measures Ch1's. It has no VBR
+implications either: dual mono is orthogonal to CBR/VBR, since `vbr` only changes how the frame's
+*size* is decided, not how many programmes it carries.
+
+## Variable bit rate: `FrameConfig::vbr`
+
+E-AC-3's `frmsiz` states the frame's word count directly rather than indexing a table, so unlike
+AC-3 a frame is free to be a different size than the one before it. Setting `vbr` switches a
+`FrameConfig` from CBR (size fixed from `bitrate_kbps`) to VBR (size follows the content, at a
+chosen quality):
+
+```cpp
+ac3::eac3::FrameEncoder encoder{{
+    .bitrate_kbps = 192,  // still used: see nominal_kbps below
+    .acmod = ac3::Acmod::k2_0,
+    .vbr = ac3::eac3::VbrConfig{
+        .quality = 0.4,
+        .max_kbps = 320,  // optional ceiling
+    },
+}};
+```
+
+| `VbrConfig` field | Default | Notes |
+|---|---|---|
+| `quality` | `0.5` | `[0, 1]`, linearly maps onto the encoder's own SNR-offset search space. Encoder-relative, not a perceptual scale — and **not linear in bit cost**: cost rises steeply in roughly the top half of the range, so a high quality with no `max_kbps` bound will often refuse ordinary multi-channel material outright (`FrameError::kInvalidBitrate`) rather than produce an oversized frame. |
+| `min_kbps`, `max_kbps` | none, none | Optional hard bounds, same unit as `bitrate_kbps`. When the quality target would need more words than `max_kbps` allows, the encoder falls back to the same search CBR uses, budgeted against the ceiling — so a bounded VBR frame is never worse than the best CBR could do at that rate. `min_kbps` is a pure floor: `finish_frame`'s own padding covers the gap. |
+| `nominal_kbps` | none | Drives the `cplbegf`/`spxbegf` frequency defaults in place of a fixed target rate. Defaults to `max_kbps` if set, else 192. A caller who wants today's CBR tool behaviour at some quality supplies the same number they would have passed as `bitrate_kbps`. |
+
+`bitrate_kbps` itself is not used for sizing once `vbr` is set, but it is still read — it is
+`nominal_kbps`'s own fallback when neither `nominal_kbps` nor `max_kbps` is given.
+
+`AccessUnitConfig` needs no separate VBR field: each substream's own `FrameConfig::vbr` carries
+what it needs, and `plan::eac3_config()` shares one `VbrConfig` across every substream of a
+`plan::Plan`, halving `min_kbps`/`max_kbps`/`nominal_kbps` for dependents the same way it already
+halves `bitrate_kbps` — substreams occupy one frame period, not one frame.
+
+Silent frames (`build_silent_frame`) and AC-3 (`plan::Codec::kAc3`) both reject a `vbr` config
+outright: silence has no content to size a quality target against, and AC-3's `frmsizecod` has no
+free word count to vary in the first place.
+
 ## Wide layouts: `ac3::eac3::AccessUnitEncoder`
 
 Anything past 5.1 rides in *dependent substreams* beside a self-sufficient 5.1 bed. Every

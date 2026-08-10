@@ -1,5 +1,18 @@
 # ac3forge
 
+<!-- Build & code health -->
+[![CI](https://github.com/iainchesworth/ac3forge/actions/workflows/ci.yml/badge.svg)](https://github.com/iainchesworth/ac3forge/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/iainchesworth/ac3forge/actions/workflows/codeql.yml/badge.svg)](https://github.com/iainchesworth/ac3forge/actions/workflows/codeql.yml)
+[![MSVC Code Analysis](https://github.com/iainchesworth/ac3forge/actions/workflows/msvc-analysis.yml/badge.svg)](https://github.com/iainchesworth/ac3forge/actions/workflows/msvc-analysis.yml)
+[![OSV-Scanner](https://github.com/iainchesworth/ac3forge/actions/workflows/osv-scanner.yml/badge.svg)](https://github.com/iainchesworth/ac3forge/actions/workflows/osv-scanner.yml)
+[![Zizmor](https://github.com/iainchesworth/ac3forge/actions/workflows/zizmor.yml/badge.svg)](https://github.com/iainchesworth/ac3forge/actions/workflows/zizmor.yml)
+<!-- Supply chain & project meta -->
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/iainchesworth/ac3forge/badge)](https://scorecard.dev/viewer/?uri=github.com/iainchesworth/ac3forge)
+[![Latest release](https://img.shields.io/github/v/release/iainchesworth/ac3forge?include_prereleases&sort=semver)](https://github.com/iainchesworth/ac3forge/releases/latest)
+[![Docs](https://img.shields.io/badge/docs-published-2f7d7b)](https://iainchesworth.github.io/ac3forge/)
+[![C++23](https://img.shields.io/badge/C%2B%2B-23-blue)](docs/building.md)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+
 A clean-room AC-3 and E-AC-3 encoder and decoder in C++23, implemented from the published
 standards. It turns PCM — or mono sources placed and moved in 3D space — into AC-3, E-AC-3,
 or E-AC-3 with Joint Object Coding elementary streams, and reads those streams back.
@@ -19,9 +32,13 @@ affiliated with, endorsed by, or certified by Dolby Laboratories. Code and docum
 the technical names AC-3 and E-AC-3. Whether the patents reading on these formats matter for
 your use is your problem to assess, not something this project resolves.
 
-**Status.** Version 0.2.0. The API is not stable. Green and required in CI on Windows (MSVC,
-clang-cl) and Linux (GCC 15, Clang 21) — CLI and GUI alike on all four — plus an ASan+UBSan leg
-and clang-tidy static analysis; macOS is the one experimental leg, never run anywhere. See
+**Status.** The API is not stable — no release has been tagged yet, so the Latest release badge
+above reads empty; once one lands, that badge is the current version, not this paragraph. Green
+and required in CI on Windows (MSVC, clang-cl), Linux (GCC 15, Clang 21) and macOS (Homebrew
+LLVM) — CLI and GUI alike on the first four, CLI only on macOS — plus an ASan+UBSan leg,
+clang-tidy static analysis, a line/branch coverage gate over the library, a per-platform
+gold-reference *quality* gate, and a dedicated Linux FFmpeg-validation leg checking output
+*correctness* across the full option space. No leg remains experimental. See
 [Portability](#portability).
 
 ## Contents
@@ -43,11 +60,12 @@ and clang-tidy static analysis; macOS is the one experimental leg, never run any
 | | AC-3 (bsid 8) | E-AC-3 (bsid 16) |
 |---|---|---|
 | Coding modes | 1/0, 2/0, 3/0, 2/1, 3/1, 2/2, 3/2, each with or without LFE | the same, plus 7.1, 5.1.2, 5.1.4 and 7.1.4 through dependent substreams |
-| Sample rates | 48, 44.1, 32 kHz | 48, 44.1, 32 kHz |
-| Bit rates | the 19 nominal rates of Table 5.18, 32–640 kbps | the same 19, per substream |
-| Transform | long blocks only (512-point MDCT, KBD window) | long blocks only |
+| Sample rates | 48, 44.1, 32 kHz | 48, 44.1, 32 kHz, plus the `fscod2` half rates 24, 22.05, 16 kHz (§E2.3.1.3 — Annex E only, no AC-3 counterpart) |
+| Bit rates | CBR only — the 19 nominal rates of Table 5.18, 32–640 kbps | CBR (the same 19, per substream) or VBR — a quality target with optional min/max kbps bounds, per substream |
+| Transform | long (512-point) or short (2x256-point) blocks, KBD window, chosen per block per channel by a §8.2.2 transient detector | same |
 | Exponents | D15 / D25 / D45, strategy chosen per block from the reuse span (§8.2.8) | frame-level, Table E2.10 code 0: D15 in block 0, reused for the other five |
 | Coupling | yes (§7.4), begin and end frequencies auto or pinned | yes (§E3.3) |
+| Delta bit allocation | automatic (§7.2.2.6), like rematrixing below — no toggle | automatic, same as AC-3 |
 | Rematrixing | yes, 2/0 (§7.5.3 minimum-power rule) | no — the syntax is written, the flags are always zero |
 | Annex E tools | — | spectral extension (§E3.6), adaptive hybrid transform with GAQ (§E3.4) |
 | Objects | panned to a 5.1 bed (no metadata survives) | OAMD + JOC in an EMDF container (TS 103 420) |
@@ -55,6 +73,23 @@ and clang-tidy static analysis; macOS is the one experimental leg, never run any
 At 44.1 kHz, CBR needs non-integral frame sizes; the AC-3 encoder alternates between the two
 Table 5.18 lengths on a Bresenham accumulator so the long-run rate is exact. E-AC-3 signals
 `frmsiz` directly and needs no such alternation.
+
+**Block switching's scope**: a §8.2.2 transient detector (cascaded biquad 8 kHz high-pass, a
+256/128/64-sample peak-ratio tree) runs per full-bandwidth channel per block; a channel that
+switches anywhere in the frame is excluded from coupling and, on E-AC-3, from AHT for that whole
+frame — this project's coupling and AHT decisions are frame-wide all-or-nothing, so there is no
+per-channel toggle to hook a narrower exclusion into. The LFE never switches (§8.2.2 defines the
+detector over full-bandwidth channels only).
+
+**Delta bit allocation's scope**: the encoder compares the coarse exponent-only masking curve
+§7.2.2.2-7.2.2.5 derive against one built from the real, pre-quantization coefficient magnitude,
+and corrects bands where the two clearly diverge (at least a full 6 dB Table 5.17 step). It is
+skipped for the LFE channel (no such field exists for it) and, for now, for every channel
+whenever coupling is in use that frame — the coupling channel is a synthesized average rather
+than a real recorded signal, and even leaving only the coupled channels' own narrow
+below-`cplstrtmant` region eligible measurably narrowed coupling's usual cost advantage and broke
+its tightest scenarios (128 kbit/s 5.1). The decoder accepts delta bit allocation on the coupling
+channel from any other encoder; this project's own just doesn't emit it yet.
 
 ### Metadata
 
@@ -89,12 +124,8 @@ substreams, `chanmap`, and the §E3.8.2 render that lays a dependent's channels 
 
 | Missing | Where it matters |
 |---|---|
-| Block switching (short blocks) | Transients smear. FFmpeg's AC-3 encoder has never used short blocks either, so this is conventional rather than unusual, but it is still a gap. |
-| Dual mono (1+1, acmod 0) | Refused by the encoder and the decoder. It is two programmes sharing a syncframe, with a second copy of every metadata item, and it has no channel layout to render. |
-| Delta bit allocation | Encoder never emits it; decoder refuses a stream carrying it. |
-| E-AC-3 half sample rates (`fscod2`: 24, 22.05, 16 kHz) | Refused. Every table the core indexes is three columns wide. |
 | Enhanced coupling, transient pre-noise processing | Recognised by the decoder and refused, rather than mis-decoded. |
-| Variable bit rate | CBR only. |
+| Variable bit rate on AC-3 | `frmsizecod` indexes Table 5.18 rather than stating a word count directly, so AC-3 has no free frame size to vary at all and stays CBR. E-AC-3 supports VBR — see [Encoding E-AC-3](docs/library/encoding-eac3.md#variable-bit-rate-frameconfigvbr). |
 
 ### Verification gaps
 
@@ -129,6 +160,20 @@ is unverified.
 | E-AC-3 7.1.4 (two dependents) | no | yes |
 | E-AC-3 with cpl / spx / aht | yes | no |
 | E-AC-3 7.1.4 with Annex E tools | no | no |
+| E-AC-3 `fscod2` half rates (24/22.05/16 kHz) | header only | yes |
+
+**`fscod2` audio content has no external decode oracle at all — not even Dolby's own.**
+`ffprobe` walks every syncframe of a reduced-rate stream correctly (frame count, exact byte
+size, exact spacing, and `sample_rate` all confirmed against all three rates), so the framing
+and header are cross-checked externally. But actually decoding the audio is refused by both
+real-world implementations available here: FFmpeg's E-AC-3 decoder (`Not yet implemented in
+FFmpeg, patches welcome`) and, more surprisingly, Dolby's own Reference Player — `dlbac3parse`
+reports `No valid frames found before end of stream` on a stream `ffprobe` reads frame-by-frame
+without complaint — using the same pipeline (`tools/quality_race.py`'s `dolby_decode`) that
+decodes a normal-rate stream from this encoder without issue. `fscod2` appears to be a coding
+tool whose own reference implementation does not support it. So the coded audio is verified
+only by this project's own encoder/decoder round trip and the independent Python parser
+(`tools/eac3_parse.py`).
 
 **Exclusive-mode passthrough — AC-3 and E-AC-3 alike — has never been confirmed against
 bitstreaming hardware.** The development machine has no S/PDIF or HDMI endpoint behind a real
@@ -190,19 +235,35 @@ fallback (macOS, or Linux without libasound headers) that reports itself unavail
 failing to link. See [Linux audio](docs/BUILDING.md#linux-audio) for the ALSA backend
 specifically.
 
-CI (`.github/workflows/ci.yml`) runs all five platform/compiler legs plus static analysis on
-every push, and requires six of them: windows-msvc, windows-llvm, linux-gcc, linux-llvm,
-linux-llvm-asan-ubsan (AddressSanitizer + UndefinedBehaviorSanitizer, `cmake/Sanitizers.cmake`)
-and static-analysis (clang-tidy, `.clang-tidy`). The two Linux legs install a Qt6 kit and build
-`ac3gui` too (`-DAC3FORGE_BUILD_GUI=ON`, on top of the preset's own default `OFF`), then run it
-headless via `--smoke`; `linux-llvm-asan-ubsan` stays CLI-only on purpose, to keep a Qt kit out
-of the sanitizer leg's install time. Only macos-llvm remains experimental (`continue-on-error`)
-— it has never run anywhere, on CI or otherwise, because the project has no Mac;
-`src/lib/CMakeLists.txt` falls back to the no-backend platform directory there, so the codec
-half is expected to work and the three audio-hardware commands to report themselves
-unavailable, but neither has been observed. See the status table at the top of `ci.yml` for
-exact test counts per leg — and its own caveat that the two Linux legs' `GREEN*` marking means
-"confirmed by a local WSL2 run", pending that push's first real hosted CI run.
+CI (`.github/workflows/ci.yml`) runs all six platform/compiler legs plus static analysis,
+coverage and FFmpeg validation on every push, and requires nine jobs: windows-msvc, windows-llvm,
+linux-gcc, linux-llvm, linux-llvm-asan-ubsan (AddressSanitizer + UndefinedBehaviorSanitizer,
+`cmake/Sanitizers.cmake`), macos-llvm, static-analysis (clang-tidy, `.clang-tidy`), coverage
+(gcovr line/branch gate over `src/lib` via the `linux-gcc-coverage` preset,
+`cmake/Coverage.cmake`) and ffmpeg-validate. No leg remains experimental — macos-llvm was the
+last promoted, once a real GitHub Actions run (this project has no Mac) confirmed 256/256 tests
+and the gold-reference gate both green.
+
+ffmpeg-validate is a separate, CLI-only linux-llvm build that runs `scripts/run-codec-matrix.sh`'s
+FFmpeg strict-decode checks, `tools/check_drc.py`, `tools/check_coupling.py`/
+`check_coupling_level.py`, and `tools/quality_race.py ci` against a pinned FFmpeg, plus
+`tools/check_matrix_coverage.py` to catch a new layout, Annex E tool token or command landing
+without a matching matrix entry (see [Oracles](CONTRIBUTING.md#oracles)). It answers a different
+question from the gold-reference gate every other leg also runs (see
+[docs/BUILDING.md](docs/BUILDING.md#gold-reference-correctness-gate)): gold-reference checks that
+one fixed sample decodes to the *right audio*, identically enough across every compiler/OS; this
+leg checks that *every option in the encoder's surface* — every layout, every Annex E tool token,
+every metadata flag — produces a *structurally valid* stream at all, something one fixed sample
+can never exercise.
+
+The two Linux legs install a Qt6 kit and build `ac3gui` too (`-DAC3FORGE_BUILD_GUI=ON`, on top of
+the preset's own default `OFF`), then run it headless via `--smoke`; `linux-llvm-asan-ubsan`
+stays CLI-only on purpose, to keep a Qt kit out of the sanitizer leg's install time.
+`src/lib/CMakeLists.txt` falls back to the no-backend platform directory on macOS, so the codec
+half is verified there but the three audio-hardware commands only report themselves unavailable,
+never tested against real hardware. See the status table at the top of `ci.yml` for exact test
+counts per leg — and its own caveat that the two Linux legs' `GREEN*` marking means "confirmed by
+a local WSL2 run", pending that push's first real hosted CI run.
 
 **No Linux audio has been tried against real hardware.** The ALSA backend was verified headless
 (including against ALSA's software `null` device, under ASan+UBSan) because the available Linux
@@ -323,8 +384,10 @@ Four independent checks, in rough order of strength.
    parity with FFmpeg's decoder on identical streams: max sample difference 7.9e-6 (≈ −102
    dBFS) for AC-3, 1.4e-5 for E-AC-3. It also reads FFmpeg's own encoder output.
 2. **FFmpeg as an external oracle.** Every stream this project produces is strict-decoded with
-   `-err_detect crccheck+bitstream+buffer+explode`, which fails on a CRC error, a bitstream
-   violation or a buffer problem rather than concealing it.
+   `-xerror -err_detect crccheck+bitstream+buffer+explode`, which fails on a CRC error, a
+   bitstream violation or a buffer problem rather than concealing it (`-xerror` is what turns a
+   detected error into a failing process — `-err_detect` alone does not change FFmpeg's exit
+   code). Automated and required in CI; see [Oracles](CONTRIBUTING.md#oracles).
 3. **Independent Python transcriptions.** [tools/](tools/) holds second implementations of the
    spec pseudocode, written from the standard separately from the C++: the §7.2.2 bit
    allocation, the Tables 7.29/7.30 DRC lookups, MDCT goldens. Agreement between two
@@ -407,6 +470,7 @@ belong on the public site.
 | [docs/gui/](docs/gui/index.md) | Step-by-step `ac3gui` guide, with screenshots |
 | [docs/project/history.md](docs/project/history.md) | How the implementation was built, milestone by milestone |
 | [docs/project/research.md](docs/project/research.md) | The original feasibility research and the decisions that came out of it |
+| [docs/quality-trend.md](docs/quality-trend.md) | Gold-reference SNR history by commit, develop vs. main - the persisted half of `research.md`'s L3/L4 validation pyramid |
 | [fuzz/README.md](fuzz/README.md) | The libFuzzer harnesses: what they cover, how to run them locally |
 | [docs/project/gui-design-brief.md](docs/project/gui-design-brief.md) | Superseded input document for the GUI redesign: current-state inventory at the time, user journeys, open questions |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Conventions, and the validation discipline |

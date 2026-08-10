@@ -13,9 +13,16 @@ provisioning the way pulling in numpy would.
 Usage:  python compare_wav.py <reference.wav> <actual.wav> [--min-snr-db N] [--max-lag-samples N]
 Exit 0 if every channel's SNR >= the threshold, exit 1 (with the offending
 channel and its SNR) otherwise.
+
+--json-out additionally writes a structured result (per-channel SNR, lag,
+threshold, pass/fail) for a caller that wants to persist the numbers rather
+than just gate on them - see docs/quality-trend.md. --codec-label and
+--bitrate-kbps are pure passthrough metadata for that file; this script does
+not care what codec produced its inputs.
 """
 
 import argparse
+import json
 import math
 import struct
 import sys
@@ -121,6 +128,20 @@ def snr_db(reference: list[float], actual: list[float]) -> float:
     return 10.0 * math.log10(signal_power / noise_power)
 
 
+def json_safe_db(value: float) -> float:
+    """Clamp +-inf (a bit-exact match, or a degenerate all-zero reference) to a
+    finite sentinel. json.dumps happily emits the non-standard `Infinity`
+    token, but JSON.parse in the browser rejects it outright, and this file's
+    JSON output is meant to be fetched and parsed client-side (see
+    docs/quality-trend.md) - so it must stay valid JSON, not just valid
+    Python-flavoured JSON."""
+    if value == math.inf:
+        return 200.0
+    if value == -math.inf:
+        return -200.0
+    return value
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("reference", type=Path)
@@ -128,6 +149,12 @@ def main() -> int:
     parser.add_argument("--min-snr-db", type=float, default=20.0)
     parser.add_argument("--max-lag-samples", type=int, default=512)
     parser.add_argument("--probe-samples", type=int, default=20000)
+    parser.add_argument("--json-out", type=Path, default=None,
+                         help="Also write a structured JSON result here.")
+    parser.add_argument("--codec-label", default="",
+                         help="Passthrough metadata for --json-out (e.g. 'ac3').")
+    parser.add_argument("--bitrate-kbps", type=int, default=0,
+                         help="Passthrough metadata for --json-out.")
     args = parser.parse_args()
 
     ref_channels, ref_rate = read_channels(args.reference)
@@ -147,9 +174,11 @@ def main() -> int:
 
     worst = math.inf
     failed = False
+    channels_db = []
     for idx, (ref_ch, act_ch) in enumerate(zip(ref_channels, act_channels)):
         r, a = align(ref_ch, act_ch, lag)
         result = snr_db(r, a)
+        channels_db.append(result)
         worst = min(worst, result)
         status = "ok" if result >= args.min_snr_db else "FAIL"
         if status == "FAIL":
@@ -157,6 +186,20 @@ def main() -> int:
         print(f"channel {idx}: {result:.2f} dB [{status}]")
 
     print(f"lag: {lag} samples, worst channel: {worst:.2f} dB, threshold: {args.min_snr_db} dB")
+
+    if args.json_out is not None:
+        args.json_out.parent.mkdir(parents=True, exist_ok=True)
+        args.json_out.write_text(json.dumps({
+            "codec": args.codec_label,
+            "bitrate_kbps": args.bitrate_kbps,
+            "sample_rate": ref_rate,
+            "lag_samples": lag,
+            "threshold_db": args.min_snr_db,
+            "channels_db": [json_safe_db(v) for v in channels_db],
+            "worst_db": json_safe_db(worst),
+            "pass": not failed,
+        }, indent=2))
+
     if failed:
         print("FAIL: at least one channel is below the SNR threshold")
         return 1

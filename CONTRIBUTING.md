@@ -112,9 +112,35 @@ Ranked by how much they prove. Prefer the strongest one available for what you a
 1. **The in-repo decoder.** Fully normative and sharing the encoder's core. Strongest for
    anything both sides implement, and the *only* oracle for 7.1.4.
 2. **FFmpeg.** External and independent. Always strict-decode:
-   `ffmpeg -v error -err_detect crccheck+bitstream+buffer+explode -i out.ac3 -f null -`.
-   Without `-err_detect`, FFmpeg conceals errors and a broken stream looks fine. FFmpeg is the
-   only oracle for Annex E coupling, spectral extension and AHT.
+   `ffmpeg -v error -xerror -err_detect crccheck+bitstream+buffer+explode -i out.ac3 -f null -`.
+   Without `-err_detect`, FFmpeg conceals errors and a broken stream looks fine. `-xerror` is not
+   optional either, and is easy to miss: `-err_detect` alone only controls what the decoder
+   treats as an error *internally* (concealing a bad frame and moving on) - it does not, by
+   itself, change ffmpeg's own exit code, which stays 0 even after a logged CRC mismatch.
+   `-xerror` ("exit on error") is the flag that turns a detected error into a failing process,
+   which is what every script here checking only the exit code (all of them) actually needs.
+
+   FFmpeg is the only oracle for Annex E coupling, spectral extension and AHT. Two separate CI
+   mechanisms use it, answering different questions:
+
+   - **`ffmpeg-validate`** (Linux-only, this job): *correctness* across the full option space.
+     `scripts/run-codec-matrix.sh`'s FFmpeg strict-decode checks for conformance,
+     `tools/check_drc.py` and `tools/check_coupling.py`/`check_coupling_level.py` for metadata
+     that only a discriminating decode can confirm, and `tools/quality_race.py ci` for a numeric
+     SNR/LSD floor per E-AC-3 tool variant. Running any of these locally needs `ffmpeg` on `PATH`
+     and, for the Python ones, `AC3CLI` (or `--cli`) pointed at your build's `ac3cli`.
+   - **The gold-reference gate** (`scripts/verify-gold-reference.sh`, every platform leg):
+     *quality* and cross-platform reproducibility on one fixed sample - does ac3cli's own decoder
+     agree with FFmpeg's, by SNR, on every compiler this project builds with. See
+     [docs/building.md](https://github.com/iainchesworth/ac3forge/blob/main/docs/building.md#gold-reference-correctness-gate).
+
+   The same job also runs `tools/check_matrix_coverage.py`, which asks a different question: not
+   "is the output correct" but "does anything exercise this at all". It reads the CLI's own
+   canonical option lists (its usage text, and the "unknown layout"/"unknown tool set" messages a
+   bad argument hits) and fails if a layout, Annex E tool token or command the CLI accepts is
+   never mentioned in `run-codec-matrix.sh`. So a new layout, tool token or command needs a
+   matching matrix entry in the same change, or CI says so — see that script's own header for
+   what it does and does not catch.
 3. **The Python references in `tools/`.** Independent transcriptions of the same spec text.
    Weaker than a decoder — two transcriptions can share a misreading — but they catch slips a
    self-consistent round trip cannot.

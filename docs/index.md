@@ -28,12 +28,13 @@ depend on them.
 
 | | AC-3 (bsid 8) | E-AC-3 (bsid 16) |
 |---|---|---|
-| Coding modes | 1/0, 2/0, 3/0, 2/1, 3/1, 2/2, 3/2, each with or without LFE | the same, plus 7.1, 5.1.2, 5.1.4 and 7.1.4 through dependent substreams |
-| Sample rates | 48, 44.1, 32 kHz | 48, 44.1, 32 kHz |
-| Bit rates | the 19 nominal rates of Table 5.18, 32–640 kbps | the same 19, per substream |
-| Transform | long blocks only (512-point MDCT, KBD window) | long blocks only |
+| Coding modes | 1+1 dual mono, 1/0, 2/0, 3/0, 2/1, 3/1, 2/2, 3/2, each with or without LFE (1+1 never carries one) | the same, plus 7.1, 5.1.2, 5.1.4 and 7.1.4 through dependent substreams |
+| Sample rates | 48, 44.1, 32 kHz | 48, 44.1, 32 kHz, plus the `fscod2` half rates 24, 22.05, 16 kHz (Annex E only) |
+| Bit rates | CBR only — the 19 nominal rates of Table 5.18, 32–640 kbps | CBR (the same 19, per substream) or VBR — a quality target with optional min/max kbps bounds, per substream |
+| Transform | long (512-point) or short (2x256-point) blocks, KBD window, chosen per block per channel by a §8.2.2 transient detector | same |
 | Exponents | D15 / D25 / D45, strategy chosen per block from the reuse span (§8.2.8) | frame-level, Table E2.10 code 0: D15 in block 0, reused for the other five |
 | Coupling | yes (§7.4), begin and end frequencies auto or pinned | yes (§E3.3) |
+| Delta bit allocation | automatic (§7.2.2.6), like rematrixing below — no toggle | automatic, same as AC-3 |
 | Rematrixing | yes, 2/0 (§7.5.3 minimum-power rule) | no — the syntax is written, the flags are always zero |
 | Annex E tools | — | spectral extension (§E3.6), adaptive hybrid transform with GAQ (§E3.4) |
 | Objects | panned to a 5.1 bed (no metadata survives) | OAMD + JOC in an EMDF container (TS 103 420) |
@@ -91,9 +92,9 @@ pages, not here. Two gaps are load-bearing enough to flag up front:
     devices at all. Nothing has been bitstreamed to an actual S/PDIF or HDMI output, and no AV
     receiver has been asked to lock onto it.
 
-Also not implemented at all: block switching (short blocks), dual mono (1+1, acmod 0), delta bit
-allocation, E-AC-3 half sample rates (`fscod2`: 24, 22.05, 16 kHz), enhanced coupling, transient
-pre-noise processing, and variable bit rate — CBR only.
+Also not implemented at all: enhanced coupling and transient pre-noise processing. Variable bit
+rate is E-AC-3 only — AC-3's frame size indexes Table 5.18 rather than stating a word count
+directly, so it has no equivalent and stays CBR.
 
 ## Where to go next
 

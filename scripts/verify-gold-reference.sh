@@ -32,6 +32,13 @@ COMPARE="$REPO_ROOT/scripts/compare_wav.py"
 # src/cli/main.cpp's MetaOptions) can never masquerade as a fidelity loss.
 MIN_SNR_DB="${MIN_SNR_DB:-30}"
 
+# Optional: when set, check_one also asks compare_wav.py to write a
+# structured result to "$RESULTS_JSON_DIR/<label>.json" - consumed by CI's
+# quality-trend job (see .github/workflows/_build.yml and
+# scripts/append-quality-history.py). Unset for a plain local/manual run,
+# which behaves exactly as before this existed.
+RESULTS_JSON_DIR="${RESULTS_JSON_DIR:-}"
+
 PYTHON=""
 for candidate in python3 python; do
     if command -v "$candidate" >/dev/null 2>&1; then
@@ -71,9 +78,10 @@ ffmpeg_strict_decode() {
 }
 
 # One (encode, decode-with-ac3cli, decode-with-ffmpeg, compare) round for a
-# given codec. $1: human label. $2: the file ac3cli just produced.
+# given codec. $1: human label. $2: the file ac3cli just produced. $3: codec
+# label for --json-out. $4: nominal bitrate in kbps for --json-out.
 check_one() {
-    local label="$1" encoded="$2"
+    local label="$1" encoded="$2" codec="$3" bitrate_kbps="$4"
     local ffmpeg_wav="$WORKDIR/${label}_ffmpeg.wav"
     local our_wav="$WORKDIR/${label}_ours.wav"
 
@@ -87,13 +95,25 @@ check_one() {
 
     count=$((count + 1))
     echo "[$count] $label: SNR vs. FFmpeg's decode (L4-lite, >= ${MIN_SNR_DB} dB)"
-    "$PYTHON" "$COMPARE" "$ffmpeg_wav" "$our_wav" --min-snr-db "$MIN_SNR_DB"
+    local json_args=()
+    if [ -n "$RESULTS_JSON_DIR" ]; then
+        mkdir -p "$RESULTS_JSON_DIR"
+        json_args=(--json-out "$RESULTS_JSON_DIR/${label}.json" --codec-label "$codec" --bitrate-kbps "$bitrate_kbps")
+    fi
+    # Not "${json_args[@]}" unguarded: macOS's /bin/bash is stuck on 3.2, whose
+    # `set -u` treats expanding a zero-element array as an unbound variable -
+    # same reasoning as _build.yml's Configure step.
+    if [ ${#json_args[@]} -eq 0 ]; then
+        "$PYTHON" "$COMPARE" "$ffmpeg_wav" "$our_wav" --min-snr-db "$MIN_SNR_DB"
+    else
+        "$PYTHON" "$COMPARE" "$ffmpeg_wav" "$our_wav" --min-snr-db "$MIN_SNR_DB" "${json_args[@]}"
+    fi
 }
 
 count=$((count + 1))
 echo "[$count] encode: AC-3 5.1 @ 448 kbps"
 "$CLI" encode "$GOLD_WAV" "$WORKDIR/gold.ac3" 448 51 >/dev/null
-check_one "ac3" "$WORKDIR/gold.ac3"
+check_one "ac3" "$WORKDIR/gold.ac3" "ac3" 448
 
 count=$((count + 1))
 echo "[$count] encode: E-AC-3 5.1 @ 256 kbps (tools=none)"
@@ -102,6 +122,6 @@ echo "[$count] encode: E-AC-3 5.1 @ 256 kbps (tools=none)"
 # on the same limitation) - this gate needs ac3cli's own decode to succeed,
 # not just tolerate a known refusal, so it stays on the plain-decodable path.
 "$CLI" eac3-encode "$GOLD_WAV" "$WORKDIR/gold.ec3" 256 none 51 >/dev/null
-check_one "eac3" "$WORKDIR/gold.ec3"
+check_one "eac3" "$WORKDIR/gold.ec3" "eac3" 256
 
 echo "gold reference gate: $count checks passed in $WORKDIR"

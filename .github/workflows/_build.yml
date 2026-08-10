@@ -37,6 +37,30 @@ on:
         description: "Package every packageable matrix leg (best-effort), not just windows-msvc. Set by release.yml."
         type: boolean
         default: false
+      version_tag:
+        description: "Resolved v* tag, threaded into configure as DERIVED_VERSION_OVERRIDE so the build stamps it deterministically. Empty in CI -> `git describe` (see GitVersionDerivation.cmake)."
+        type: string
+        default: ""
+      fetch_depth:
+        description: "checkout fetch-depth (0 for releases so `git describe`/cut-from-main see full history + tags; 1 for ordinary CI, which accepts the 0.0.0-dev fallback)."
+        type: number
+        default: 1
+      persist_quality_trend:
+        description: >-
+          After the gold-reference gate passes on every leg, append this run's SNR results to the
+          quality-history branch (see docs/quality-trend.md). Computed and set by ci.yml only for
+          direct pushes to develop/main - never for a PR, so unmerged work never pollutes the
+          trend - and left false by release.yml's call, which is tag-triggered, not a push to
+          either branch. A plain boolean input rather than this job re-deriving
+          github.event_name/github.ref itself: those reflect the reusable workflow's own call
+          context, and computing the condition once at the unambiguous caller site is simpler
+          than relying on exactly how that context propagates through workflow_call.
+        type: boolean
+        default: false
+      quality_trend_branch:
+        description: "github.ref_name at the call site, for the same reason as persist_quality_trend above. Empty when persist_quality_trend is false."
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -177,6 +201,9 @@ jobs:
             qt6-base-dev qt6-base-dev-tools qt6-declarative-dev qt6-declarative-dev-tools
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: ${{ inputs.fetch_depth }}
 
       # ---------------------------------------------------------------------
       # Toolchains
@@ -241,9 +268,12 @@ jobs:
       # scripts/verify-gold-reference.sh). Proven first on macOS alone (the
       # newest, least-trusted leg); gold_reference now covers every packaged
       # leg except linux-llvm-asan-ubsan, which stays a diagnostic-only build
-      # (see that matrix entry's own comment).
+      # (see that matrix entry's own comment) but still needs it: the codec
+      # matrix step below (matrix.sanitizer) runs scripts/run-codec-matrix.sh,
+      # which also uses ffmpeg as its independent oracle regardless of the
+      # gold-reference gate being skipped on this leg.
       - name: Install ffmpeg (Linux)
-        if: matrix.gold_reference && runner.os == 'Linux'
+        if: (matrix.gold_reference || matrix.sanitizer) && runner.os == 'Linux'
         run: apt-get install -y -qq --no-install-recommends ffmpeg
 
       - name: Install ffmpeg (Windows)
@@ -349,6 +379,16 @@ jobs:
       #     hasn't installed Qt still builds everything else.
       - name: Configure
         shell: bash
+        # VERSION_TAG_INPUT goes through env:, not straight into the script
+        # text, for the same reason release.yml's resolve-version job does -
+        # inputs.version_tag is attacker-reachable via workflow_dispatch and
+        # substituted directly it would be shell CODE, not data (zizmor:
+        # template-injection). Empty by default (ordinary CI): GitVersionDerivation.cmake
+        # then falls through to `git describe`, which finds nothing on this
+        # leg's shallow checkout and stamps 0.0.0-dev - expected, see the
+        # `fetch_depth` input's description above.
+        env:
+          VERSION_TAG_INPUT: ${{ inputs.version_tag }}
         run: |
           set -euo pipefail
           extra_args=()
@@ -357,6 +397,9 @@ jobs:
           fi
           if [ "${{ matrix.gui }}" = "true" ]; then
             extra_args+=(-DAC3FORGE_BUILD_GUI=ON)
+          fi
+          if [ -n "$VERSION_TAG_INPUT" ]; then
+            extra_args+=(-DDERIVED_VERSION_OVERRIDE="$VERSION_TAG_INPUT")
           fi
           # Not "${extra_args[@]}" unguarded: macOS's /bin/bash is stuck on
           # 3.2 (GPLv2 was the last version Apple could ship), and 3.2's
@@ -391,6 +434,14 @@ jobs:
       - name: Gold reference gate
         if: matrix.gold_reference
         shell: bash
+        env:
+          # See scripts/verify-gold-reference.sh's own comment: set, this asks
+          # compare_wav.py to also write a structured per-codec result here,
+          # which the "Upload gold-reference results" step below picks up.
+          # Unset (persist_quality_trend false, e.g. every PR run) the gate
+          # behaves exactly as it did before this existed - no extra files,
+          # no extra step running.
+          RESULTS_JSON_DIR: ${{ inputs.persist_quality_trend && format('{0}/gold-reference-results', runner.temp) || '' }}
         run: |
           set -euo pipefail
           bin="build/config-${{ matrix.preset }}/bin/ac3cli"
@@ -398,6 +449,18 @@ jobs:
             bin="${bin}.exe"
           fi
           bash scripts/verify-gold-reference.sh "$bin"
+
+      # Handed off to the quality-trend job below, which runs once (not once
+      # per leg) after every gold_reference leg has passed - see that job's
+      # own header comment for why it is a separate job rather than each leg
+      # pushing its own commit.
+      - name: Upload gold-reference results
+        if: matrix.gold_reference && inputs.persist_quality_trend
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gold-reference-${{ matrix.preset }}
+          path: ${{ runner.temp }}/gold-reference-results/*.json
+          if-no-files-found: error
 
       # ctest above already covers the codec; this covers the one thing it
       # can't - that ac3gui actually starts, loads its QML, and drives a real
@@ -485,3 +548,116 @@ jobs:
           name: packages-${{ matrix.preset }}
           path: packages/*
           if-no-files-found: error
+
+  # Persists this run's gold-reference SNR numbers (docs/quality-trend.md) so
+  # they outlive the CI run that produced them, instead of only ever living in
+  # a log that ages out. One job, not one push per leg: `needs: build` waits
+  # for every matrix leg, so this both (a) only runs when the hard gate passed
+  # everywhere - a leg failing fails `build` outright, which skips this job by
+  # its default `if`, so a broken run's numbers never get recorded - and
+  # (b) writes one commit per CI run instead of up to five racing to push at
+  # once. gold_reference is not set on linux-llvm-asan-ubsan, so it never
+  # contributes an artifact; `download-artifact` only requires that at least
+  # the pattern's namespace exist, not every leg specifically.
+  #
+  # The quality-history branch (not gh-pages) holds the data: `mkdocs
+  # gh-deploy` replaces gh-pages' entire tree on every deploy (it is a
+  # publish-a-directory-as-a-branch tool, not an incremental one), which would
+  # silently wipe anything appended there that mkdocs itself didn't generate.
+  # A dedicated branch sidesteps that entirely, and - since this is a public
+  # repo - is fetchable client-side from raw.githubusercontent.com with no
+  # auth, no API rate limit, and no server: see docs/quality-trend.md's own
+  # script. That also decouples data collection (every develop/main push)
+  # from the docs site's own publish cadence (push to main only, per
+  # docs.yml) - a develop push's numbers show up on the trend page without
+  # needing a docs deploy at all.
+  quality-trend:
+    name: Publish quality trend
+    needs: build
+    if: inputs.persist_quality_trend
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # persist-credentials: false - this checkout is only ever read from
+      # (scripts/append-quality-history.py, `git show` on this commit); the
+      # "Prepare quality-history checkout" step below pushes through its own
+      # explicitly-scoped remote instead, so leaving actions/checkout's token
+      # persisted in this working tree's git config would just be an unused,
+      # avoidable credential sitting around for the rest of the job.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download gold-reference results
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: gold-reference-*
+          path: results
+
+      # Plain git over an HTTPS remote carrying the token, mirroring docs.yml's
+      # own gh-deploy pattern - not actions/checkout, because that fails
+      # outright if `quality-history` does not exist yet (true only on this
+      # feature's first-ever run), and there is no built-in "create the branch
+      # if missing" input for it.
+      - name: Prepare quality-history checkout
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          mkdir -p history
+          cd history
+          if git ls-remote --exit-code --heads "$remote" quality-history >/dev/null 2>&1; then
+            git init -q
+            git remote add origin "$remote"
+            git fetch -q origin quality-history
+            git checkout -q quality-history
+          else
+            git init -q -b quality-history
+            git remote add origin "$remote"
+            git commit -q --allow-empty -m "Initialize quality-history branch"
+          fi
+
+      - name: Append quality-trend history
+        shell: bash
+        env:
+          # Env, not interpolated straight into the script: zizmor's
+          # template-injection audit treats a reusable workflow's own
+          # `inputs.*` as untrusted regardless of what this particular caller
+          # happens to pass - an env var is substituted by the shell, not
+          # textually spliced into the script by the runner before bash ever
+          # parses it, which is what actually closes the injection risk.
+          BRANCH: ${{ inputs.quality_trend_branch }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # The commit's own recorded date, not date -u/Date.now() - see
+          # append-quality-history.py's own header on why this is passed in
+          # rather than read from the clock.
+          commit_date="$(git show -s --format=%cI "$COMMIT_SHA")"
+          python3 scripts/append-quality-history.py \
+            --results-dir results \
+            --history-dir history \
+            --branch "$BRANCH" \
+            --commit "$COMMIT_SHA" \
+            --commit-date "$commit_date"
+
+      - name: Commit and push quality-history update
+        shell: bash
+        env:
+          BRANCH: ${{ inputs.quality_trend_branch }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          cd history
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -q -m "Quality trend: ${BRANCH}@${COMMIT_SHA}"
+            git push -q origin quality-history
+          fi
