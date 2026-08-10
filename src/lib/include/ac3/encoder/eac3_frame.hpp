@@ -96,6 +96,9 @@ struct FrameConfig {
     Acmod acmod = Acmod::k2_0;
     bool lfe = false;
     int dialnorm = 31;
+    // Annex E Table E1.2: Ch2's dialnorm, required when acmod is kDualMono
+    // (1+1) — the two programmes are levelled independently.
+    std::optional<int> dialnorm2 = std::nullopt;
     int chbwcod = 60;
 
     // --- substream identity (Table E1.2) -----------------------------------
@@ -234,6 +237,9 @@ using AuxPayload = std::span<const std::byte>;
 struct FrameMetadata {
     std::array<std::uint8_t, kBlocksPerFrame> dynrng{};
     std::optional<std::uint8_t> compr = std::nullopt;
+    // Ch2's own words, present only when the substream's acmod is kDualMono.
+    std::array<std::uint8_t, kBlocksPerFrame> dynrng2{};
+    std::optional<std::uint8_t> compr2 = std::nullopt;
 };
 
 // Real audio through the same container. The coding profile is deliberately
@@ -274,6 +280,9 @@ private:
     // per-frame objects.
     std::optional<meta::RangeController> range_;
     std::optional<meta::HeavyCompressor> heavy_;
+    // Ch2's own controllers, present only when acmod is kDualMono.
+    std::optional<meta::RangeController> range2_;
+    std::optional<meta::HeavyCompressor> heavy2_;
 };
 
 // An independent substream and the dependents that extend it. Every substream
@@ -341,6 +350,12 @@ private:
     // and the answer does not then depend on how many dependents ride along.
     std::optional<meta::RangeController> range_;
     std::optional<meta::HeavyCompressor> heavy_;
+    // Ch2's own controllers, present only when the independent substream's
+    // acmod is kDualMono. Dual mono never has dependents (1+1 has no
+    // bed/dependent split to make), so "the independent substream" and "the
+    // whole programme" are the same two channels here too.
+    std::optional<meta::RangeController> range2_;
+    std::optional<meta::HeavyCompressor> heavy2_;
     // Its own copy of the independent substream's MDCT overlap - the previous
     // access unit's last 256 samples per channel. The substream encoder keeps
     // the same window for its transform; this copy exists because the peak

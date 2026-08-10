@@ -1,6 +1,7 @@
 #include "ac3/decoder/decoder.hpp"
 
 #include <algorithm>
+#include <array>
 
 #include "ac3/core/bitalloc.hpp"
 #include "ac3/core/bitreader.hpp"
@@ -55,6 +56,9 @@ struct Bsi {
     int dialnorm = 31;
     bool compre = false;
     std::optional<std::uint16_t> chanmap;
+    // Ch2's own dialnorm/compr, present only when acmod is kDualMono (1+1).
+    std::optional<int> dialnorm2;
+    std::optional<std::uint8_t> compr2;
 };
 
 // Table E1.2's mixing-metadata payload. None of it changes how the audio is
@@ -122,9 +126,11 @@ void skip_informational_metadata(BitReader& r, const Bsi& bsi) {
     }
     if (r.read(1) != 0) r.skip(5 + 2 + 1);  // mixlevel, roomtyp, adconvtyp
     if (acmod == 0x0 && r.read(1) != 0) r.skip(5 + 2 + 1);
-    // sourcefscod is gated on fscod < 0x3, which always holds here: the half
-    // sample rates are refused before this is reached.
-    r.skip(1);
+    // §E2.3.2.6: sourcefscod is present only when fscod != 0x3 - a fscod2
+    // frame never carries it at all.
+    if (!is_reduced_rate(bsi.sample_rate)) {
+        r.skip(1);
+    }
 }
 
 std::expected<Bsi, DecodeError> parse_bsi(BitReader& r, std::size_t frame_bytes) {
@@ -144,25 +150,32 @@ std::expected<Bsi, DecodeError> parse_bsi(BitReader& r, std::size_t frame_bytes)
     }
     const auto fscod = r.read(2);
     if (fscod == 0x3) {
-        // fscod2 selects 24, 22.05 or 16 kHz. The core's SampleRate has no
-        // room for them and every table it indexes is three columns wide.
-        return std::unexpected(DecodeError::kUnsupported);
+        // §E2.3.1.3: fscod2 replaces numblkscod outright when it is used - a
+        // reduced-rate frame is implicitly always six blocks, so numblkscod's
+        // bits are never sent. Modelling that as numblkscod == 0x3 (rather
+        // than adding a parallel "six blocks, no field" flag) means every
+        // downstream numblkscod check below - which is really asking "is this
+        // the always-six-blocks case?" - keeps working unmodified.
+        const auto fscod2 = r.read(2);
+        const auto rate = sample_rate_from_fscod2(fscod2);
+        if (!rate) {
+            return std::unexpected(DecodeError::kReservedValue);
+        }
+        bsi.sample_rate = *rate;
+        bsi.numblkscod = 0x3;
+    } else {
+        bsi.sample_rate = static_cast<SampleRate>(fscod);
+        // Table E2.4. Fewer than six blocks shortens the syncframe and flips
+        // four of Table E1.2/E1.3's implied values, all of which fall out of
+        // nblks below. Nothing in this repo emits it and neither does
+        // FFmpeg's encoder, so unlike the six-block path it is spec-derived
+        // rather than measured.
+        bsi.numblkscod = static_cast<int>(r.read(2));
     }
-    bsi.sample_rate = static_cast<SampleRate>(fscod);
-    // Table E2.4. Fewer than six blocks shortens the syncframe and flips four
-    // of Table E1.2/E1.3's implied values, all of which fall out of nblks
-    // below. Nothing in this repo emits it and neither does FFmpeg's encoder,
-    // so unlike the six-block path it is spec-derived rather than measured.
-    bsi.numblkscod = static_cast<int>(r.read(2));
     bsi.acmod = static_cast<Acmod>(r.read(3));
     bsi.lfe = r.read(1) != 0;
     const auto bsid = static_cast<int>(r.read(5));
     if (bsid < eac3::kMinDecodableBsid || bsid > eac3::kBsid) {
-        return std::unexpected(DecodeError::kUnsupported);
-    }
-    if (bsi.acmod == Acmod::kDualMono) {
-        // 1+1 is two programs sharing a syncframe, with a second copy of every
-        // metadata item; it has no channel layout to render.
         return std::unexpected(DecodeError::kUnsupported);
     }
     bsi.dialnorm = static_cast<int>(r.read(5));
@@ -173,7 +186,15 @@ std::expected<Bsi, DecodeError> parse_bsi(BitReader& r, std::size_t frame_bytes)
     if (bsi.compre) {
         r.skip(8);  // compr
     }
-    // acmod 0x0 is refused above, so dialnorm2/compr2e never apply.
+    // Annex E Table E1.2: unconditional on strmtyp, mirroring the encoder's
+    // own write side - even a dependent substream coding 1+1 would carry it,
+    // though nothing in this repo ever builds one.
+    if (bsi.acmod == Acmod::kDualMono) {
+        bsi.dialnorm2 = static_cast<int>(r.read(5));
+        if (r.read(1) != 0) {  // compr2e
+            bsi.compr2 = static_cast<std::uint8_t>(r.read(8));
+        }
+    }
     if (bsi.strmtyp == StreamType::kDependent && r.read(1) != 0) {  // chanmape
         bsi.chanmap = static_cast<std::uint16_t>(r.read(16));
     }
@@ -362,6 +383,8 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
     out.acmod = bsi->acmod;
     out.lfe = bsi->lfe;
     out.dialnorm = bsi->dialnorm;
+    out.dialnorm2 = bsi->dialnorm2;
+    out.compr2 = bsi->compr2;
     out.numblkscod = bsi->numblkscod;
     out.chanmap = bsi->chanmap;
     out.last_dependent = bsi->strmtyp == StreamType::kDependent && bsi->compre;
@@ -384,6 +407,12 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
     std::array<int, kMaxSubstreamChannels> fsnroffst{};
     int csnroffst = 0;
     std::array<bool, 4> rematflg{};
+    // §7.2.2.6, reset to "no segments" at the start of every syncframe like
+    // fsnroffst/codes above, then persisting block to block until
+    // re-transmitted or cleared. Coupling is unsupported here (spxinu/cplinu
+    // already error before this point), so unlike the AC-3 decoder there is
+    // no coupling-channel slot to carry - only the per-fbw-channel deltbae[ch].
+    std::array<DeltaSegments, kMaxSubstreamChannels> delta{};
 
     for (int blk = 0; blk < nblks; ++blk) {
         const auto strategy = [&](int ch) {
@@ -411,7 +440,9 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
         if (r.read(1) != 0) {
             r.skip(8);  // dynrng: parsed, not applied
         }
-        // acmod 0x0 is refused, so dynrng2e never applies.
+        if (bsi->acmod == Acmod::kDualMono && r.read(1) != 0) {
+            r.skip(8);  // dynrng2e -> dynrng2: parsed, not applied - same as dynrng
+        }
 
         // Spectral extension. Block 0's strategy is implied rather than sent.
         const bool spxstre = blk == 0 || r.read(1) != 0;
@@ -512,7 +543,59 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
         }
         // cplleake is gated on cplinu, which is clear.
         if (frm->dbaflde && r.read(1) != 0) {  // deltbaie
-            return std::unexpected(DecodeError::kUnsupported);
+            // §E2.3.2.9/§5.4.3.49-57: deltbae[ch] per fbw channel only - no
+            // cpldeltbae, since coupling already errors before this point.
+            // The syntax table reads every channel's 2-bit deltbae[ch] code
+            // FIRST, then every channel's segment data - not interleaved per
+            // channel - so all codes are read and validated up front. Bounds
+            // are checked here, before compute_bit_allocation ever sees them,
+            // since deltoffst/deltlen are attacker-controlled and mask[] is
+            // exactly 50 bands wide.
+            std::array<int, eac3::chanmap::kMaxSubstreamFullbw> chcodes{};
+            for (int ch = 0; ch < nfchans; ++ch) {
+                chcodes[static_cast<std::size_t>(ch)] = static_cast<int>(r.read(2));
+                if (chcodes[static_cast<std::size_t>(ch)] == 3) {  // Table 5.16: reserved
+                    return std::unexpected(DecodeError::kReservedValue);
+                }
+                if (blk == 0 && chcodes[static_cast<std::size_t>(ch)] == 0) {
+                    return std::unexpected(DecodeError::kInvalidStream);  // shall not reuse in block 0
+                }
+            }
+            for (int ch = 0; ch < nfchans; ++ch) {
+                const int chcode = chcodes[static_cast<std::size_t>(ch)];
+                if (chcode == 1) {  // new info follows
+                    DeltaSegments segs;
+                    segs.deltnseg = static_cast<int>(r.read(3)) + 1;
+                    int band = 0;
+                    for (int seg = 0; seg < segs.deltnseg; ++seg) {
+                        segs.deltoffst[static_cast<std::size_t>(seg)] =
+                            static_cast<std::uint8_t>(r.read(5));
+                        segs.deltlen[static_cast<std::size_t>(seg)] =
+                            static_cast<std::uint8_t>(r.read(4));
+                        segs.deltba[static_cast<std::size_t>(seg)] =
+                            static_cast<std::uint8_t>(r.read(3));
+                        band += segs.deltoffst[static_cast<std::size_t>(seg)];
+                        const int len = segs.deltlen[static_cast<std::size_t>(seg)];
+                        if (band < 0 || band + len > 50) {
+                            return std::unexpected(DecodeError::kInvalidStream);
+                        }
+                        band += len;
+                    }
+                    delta[static_cast<std::size_t>(ch)] = segs;
+                } else if (chcode == 2) {  // perform no delta alloc
+                    delta[static_cast<std::size_t>(ch)] = {};
+                }
+                // chcode == 0 (reuse): leave delta[ch] exactly as it was.
+            }
+        } else if (blk == 0) {
+            // §5.4.3.47: deltbaie == 0 in block 0 forces "no delta alloc" for
+            // every fbw channel. Reached both when dbaflde is clear (delta[]
+            // is already {} from the frame-start reset, so this is a no-op)
+            // and when dbaflde is set but this frame's first block's deltbaie
+            // reads 0 (where it is the rule that actually matters).
+            for (int ch = 0; ch < nfchans; ++ch) {
+                delta[static_cast<std::size_t>(ch)] = {};
+            }
         }
         if (frm->skipflde && r.read(1) != 0) {  // skiple
             const auto skipl = r.read(9);
@@ -535,11 +618,15 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
             BitAllocCodes channel_codes = codes;
             channel_codes.fgaincod = fgaincod[static_cast<std::size_t>(ch)];
             bap[static_cast<std::size_t>(ch)].assign(static_cast<std::size_t>(end), 0);
+            // delta[ch] for ch == LFE's index is always {} (never written -
+            // §5.4.3.49/E2.3.2.9 bound their deltbae[ch] loop by nfchans, so
+            // the LFE channel has no delta bit allocation field at all).
             compute_bit_allocation(exps[static_cast<std::size_t>(ch)], bsi->sample_rate,
                                    channel_codes, csnroffst,
                                    fsnroffst[static_cast<std::size_t>(ch)],
                                    bap[static_cast<std::size_t>(ch)],
-                                   {.snr_all_zero = snr_all_zero});
+                                   {.snr_all_zero = snr_all_zero,
+                                    .delta = delta[static_cast<std::size_t>(ch)]});
         }
 
         // Mantissas, in coded order: the full-bandwidth channels and then the
@@ -640,6 +727,26 @@ std::expected<DecodedAccessUnit, DecodeError> Eac3Decoder::decode_access_unit(
         }
     }
 
+    DecodedAccessUnit out;
+    out.sample_rate = lead.sample_rate;
+    out.acmod = lead.acmod;
+    out.dialnorm = lead.dialnorm;
+    out.substream_count = static_cast<int>(substreams.size());
+
+    // Dual mono has no Table E2.5 location - Ch1 and Ch2 are unrelated
+    // programmes, not directions - and it has no bed/dependent split to make:
+    // 1+1 is always this one lone independent substream. acmod_map() has a
+    // placeholder L/R entry for it purely so channel-count bookkeeping
+    // elsewhere still adds up; consulting
+    // it here would mislabel Ch2 as a right channel, which is exactly the
+    // "not a pair" distinction dual mono exists to preserve. So: pass the
+    // substream's own two channels straight through in coded order, and leave
+    // `layout` empty to say plainly that there is no spatial layout to report.
+    if (lead.acmod == Acmod::kDualMono) {
+        out.channels = lead.channels;
+        return out;
+    }
+
     // §E3.8.2: the bed's locations, then every dependent's unioned in. A
     // dependent's channels that correspond to the independent's REPLACE them;
     // the rest extend the layout.
@@ -647,10 +754,6 @@ std::expected<DecodedAccessUnit, DecodeError> Eac3Decoder::decode_access_unit(
     for (const auto& sub : substreams) {
         occupied = static_cast<std::uint16_t>(occupied | sub.location_map());
     }
-    DecodedAccessUnit out;
-    out.sample_rate = lead.sample_rate;
-    out.dialnorm = lead.dialnorm;
-    out.substream_count = static_cast<int>(substreams.size());
     out.layout = eac3::chanmap::expand(occupied);
     // §E3.8.2 caps a single program at 16 rendered channels.
     if (out.layout.count > 16) {

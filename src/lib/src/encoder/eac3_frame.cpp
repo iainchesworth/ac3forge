@@ -56,7 +56,6 @@ constexpr BitAllocCodes kBamode0Codes{.sdcycod = 2,
                                       .floorcod = 7,
                                       .fgaincod = 4};  // frmfgaincode == 0 (§8.2.12)
 constexpr int kFrmfgaincode = 0;   // fgaincod defaults to 0x4, matching AC-3
-constexpr int kDbaflde = 0;        // no delta bit allocation
 // Padding goes through auxbits. AC-3 cannot do that - §5.5 confines its aux
 // field to the final 3/8 of the frame, to protect the crc1-at-5/8 checkpoint -
 // but E-AC-3 has no crc1 and Annex E states no equivalent constraint, so
@@ -135,6 +134,13 @@ struct ChannelPlan {
     // full-bandwidth channel's own plan - the coupling and LFE streams never
     // set any of these.
     std::array<bool, kBlocksPerFrame> blksw{};
+    // §7.2.2.6: computed once per frame (like `decoded` above, since Table
+    // E2.10 code 0 gives this stream one exponent set for all six blocks
+    // anyway) from the real coefficients, EXCEPT for an AHT stream - its
+    // actual coded quantity is the AHT-transformed coefficient, not the raw
+    // MDCT bin, so measuring the raw bin against it would compare the wrong
+    // signal; left at its default (no segments) rather than risk that.
+    DeltaSegments delta;
 };
 
 // The whole-frame mantissa cost of one AHT stream under a given gain mode,
@@ -237,6 +243,9 @@ struct Payload {
     // §7.7.2. std::nullopt means "no heavy-compression word", which is a
     // different statement from "a word saying unity".
     std::optional<std::uint8_t> compr = std::nullopt;
+    // Ch2's own words, present only when acmod is kDualMono.
+    std::array<std::uint8_t, kBlocksPerFrame> dynrng2{};
+    std::optional<std::uint8_t> compr2 = std::nullopt;
 };
 
 // §E3.3.2: the rematrixing bands cannot reach above whichever tool takes over
@@ -358,14 +367,17 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
     const auto& cpl = payload.cpl;
     const auto& spx = payload.spx;
     const int skipflde = metadata.empty() ? 0 : 1;
-    // §E2.3.2.5: blkswe is an all-or-nothing per-frame contract - once any
-    // channel wants a switched block anywhere, every block sends the full
-    // per-channel blksw syntax, including blocks with nothing to say.
+    // §E2.3.2.5/§E2.3.2.9: blkswe and dbaflde are each their own all-or-
+    // nothing per-frame contract - once any channel/stream wants something
+    // anywhere, every block sends the full syntax, including blocks with
+    // nothing to say.
     bool blkswe = false;
+    bool dbaflde = false;
     for (const auto& plan : payload.chans) {
         for (const bool sw : plan.blksw) {
             blkswe = blkswe || sw;
         }
+        dbaflde = dbaflde || plan.delta.deltnseg > 0;
     }
 
     w.put(kSyncWord, 16);
@@ -374,8 +386,16 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
     w.put(static_cast<std::uint32_t>(config.strmtyp), 2);
     w.put(static_cast<std::uint32_t>(config.substreamid), 3);
     w.put(words - 1, 11);  // frmsiz is words - 1
-    w.put(static_cast<std::uint32_t>(config.sample_rate), 2);  // fscod (not 0x3)
-    w.put(3, 2);  // numblkscod: six blocks per syncframe
+    // §E2.3.1.3: fscod2 replaces numblkscod when a rate is one of the three
+    // Annex E-only reduced rates - the block count is then implicitly always
+    // six, so numblkscod's bits are never sent in that case.
+    if (is_reduced_rate(config.sample_rate)) {
+        w.put(0x3, 2);                                                // fscod
+        w.put(static_cast<std::uint32_t>(fscod_family(config.sample_rate)), 2);  // fscod2
+    } else {
+        w.put(static_cast<std::uint32_t>(config.sample_rate), 2);  // fscod (not 0x3)
+        w.put(3, 2);  // numblkscod: six blocks per syncframe
+    }
     w.put(static_cast<std::uint32_t>(config.acmod), 3);
     w.put(config.lfe ? 1 : 0, 1);
     w.put(kBsid, 5);
@@ -391,8 +411,18 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
     if (compre) {
         w.put(dependent ? meta::kComprUnity : *payload.compr, 8);
     }
-    // acmod == 0x0 (1+1) is rejected in validate(), so the dialnorm2 /
-    // compr2e block never applies.
+    // Annex E Table E1.2: unconditional on strmtyp, unlike chanmape below -
+    // a dependent substream coding 1+1 would need its own Ch2 metadata too,
+    // though this encoder's own callers never build one (dual mono has no
+    // bed/dependent split to make - it is one independent substream, always).
+    if (config.acmod == Acmod::kDualMono) {
+        w.put(static_cast<std::uint32_t>(*config.dialnorm2), 5);
+        const bool compre2 = !dependent && payload.compr2.has_value();
+        w.put(compre2 ? 1 : 0, 1);
+        if (compre2) {
+            w.put(*payload.compr2, 8);
+        }
+    }
     if (dependent) {
         w.put(config.chanmap ? 1 : 0, 1);  // chanmape
         if (config.chanmap) {
@@ -431,11 +461,16 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
         // dependent therefore stops after the levels above.
         if (!dependent) {
             w.put(0, 1);  // pgmscle:    §E2.3.1.12, absent means 0 dB
+            if (acmod_value == 0x0) {
+                w.put(0, 1);  // pgmscl2e: mirrors pgmscle - no scale sent
+            }
             w.put(0, 1);  // extpgmscle: §E2.3.1.16, absent means 0 dB
             w.put(0, 2);  // mixdef:     no mixing-parameter data
-            // acmod == 0x0 is rejected in validate(), so only 1/0 reaches here.
             if (acmod_value < 0x2) {
                 w.put(0, 1);  // paninfoe
+                if (acmod_value == 0x0) {
+                    w.put(0, 1);  // paninfo2e: mirrors paninfoe - no pan sent
+                }
             }
             w.put(0, 1);  // frmmixcfginfoe
         }
@@ -464,7 +499,7 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
     w.put(kDithflage, 1);
     w.put(kBamode, 1);
     w.put(kFrmfgaincode, 1);
-    w.put(kDbaflde, 1);
+    w.put(dbaflde ? 1 : 0, 1);
     w.put(static_cast<std::uint32_t>(skipflde), 1);
     w.put(spx.atten ? 1 : 0, 1);  // spxattene
 
@@ -565,6 +600,16 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
         w.put(send_dynrng ? 1 : 0, 1);  // dynrnge
         if (send_dynrng) {
             w.put(payload.dynrng[static_cast<std::size_t>(blk)], 8);
+        }
+        if (config.acmod == Acmod::kDualMono) {
+            const bool send_dynrng2 =
+                config.drc.has_value() &&
+                (first || payload.dynrng2[static_cast<std::size_t>(blk)] !=
+                              payload.dynrng2[static_cast<std::size_t>(blk) - 1]);
+            w.put(send_dynrng2 ? 1 : 0, 1);  // dynrng2e
+            if (send_dynrng2) {
+                w.put(payload.dynrng2[static_cast<std::size_t>(blk)], 8);
+            }
         }
 
         // Spectral extension strategy: block 0 has spxstre implied, later
@@ -742,10 +787,52 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
                 w.put(static_cast<std::uint32_t>(cpl.sleak), 3);
             }
         }
-        // dbaflde == 0: no delta allocation. The skip field, when switched on,
-        // sits here - after the delta bit allocation fields and before the
-        // mantissas. Getting that order wrong does not fail to parse; it
-        // shifts every mantissa in the block, which comes back as noise.
+        // §E2.3.2.9/§5.4.3.47-57: present in every block once dbaflde is set,
+        // even a block with nothing to say (deltbaie = 0). This encoder never
+        // reuses ('00') a previous block's state - the correction is computed
+        // once per frame (see ChannelPlan::delta), so every block that wants
+        // one resends the identical segments as fresh ('01') info; a channel
+        // with none says '10' (no delta).
+        if (dbaflde) {
+            bool any_delta = cpl.in_use && payload.chans.back().delta.deltnseg > 0;
+            for (int ch = 0; ch < nfchans && !any_delta; ++ch) {
+                any_delta = payload.chans[static_cast<std::size_t>(ch)].delta.deltnseg > 0;
+            }
+            w.put(any_delta ? 1 : 0, 1);  // deltbaie
+            if (any_delta) {
+                // §5.4.3.47-57's syntax table sends every stream's 2-bit
+                // cpldeltbae/deltbae[ch] code FIRST, then every stream's
+                // segment data - the two are not interleaved per stream.
+                if (cpl.in_use) {
+                    w.put(payload.chans.back().delta.deltnseg > 0 ? 1u : 2u, 2);  // cpldeltbae
+                }
+                for (int ch = 0; ch < nfchans; ++ch) {
+                    w.put(payload.chans[static_cast<std::size_t>(ch)].delta.deltnseg > 0 ? 1u : 2u,
+                          2);  // deltbae[ch]
+                }
+                const auto emit_segments = [&](const DeltaSegments& segs) {
+                    if (segs.deltnseg > 0) {
+                        w.put(static_cast<std::uint32_t>(segs.deltnseg - 1), 3);
+                        for (int seg = 0; seg < segs.deltnseg; ++seg) {
+                            const auto i = static_cast<std::size_t>(seg);
+                            w.put(static_cast<std::uint32_t>(segs.deltoffst[i]), 5);
+                            w.put(static_cast<std::uint32_t>(segs.deltlen[i]), 4);
+                            w.put(static_cast<std::uint32_t>(segs.deltba[i]), 3);
+                        }
+                    }
+                };
+                if (cpl.in_use) {
+                    emit_segments(payload.chans.back().delta);
+                }
+                for (int ch = 0; ch < nfchans; ++ch) {
+                    emit_segments(payload.chans[static_cast<std::size_t>(ch)].delta);
+                }
+            }
+        }
+        // The skip field, when switched on, sits here - after the delta bit
+        // allocation fields and before the mantissas. Getting that order
+        // wrong does not fail to parse; it shifts every mantissa in the
+        // block, which comes back as noise.
         if (skipflde != 0) {
             put_skip_field(w, blk == kMetadataBlock ? metadata
                                                     : std::span<const std::byte>{});
@@ -827,9 +914,9 @@ std::expected<void, FrameError> validate(const FrameConfig& config) {
             return std::unexpected(FrameError::kInvalidBitrate);
         }
     }
-    // 1+1 needs a second program's metadata throughout; out of scope here.
-    if (config.acmod == Acmod::kDualMono) {
-        return std::unexpected(FrameError::kInvalidBitrate);
+    if (config.acmod == Acmod::kDualMono &&
+        (!config.dialnorm2 || *config.dialnorm2 < 1 || *config.dialnorm2 > 31)) {
+        return std::unexpected(FrameError::kInvalidDialnorm);
     }
     if (config.substreamid < 0 || config.substreamid > 7) {
         return std::unexpected(FrameError::kInvalidSubstream);
@@ -927,9 +1014,15 @@ std::expected<std::vector<std::byte>, FrameError> build_silent_frame(
 FrameEncoder::FrameEncoder(const FrameConfig& config) : config_(config) {
     if (config_.drc) {
         range_.emplace(*config_.drc, config_.sample_rate);
+        if (config_.acmod == Acmod::kDualMono) {
+            range2_.emplace(*config_.drc, config_.sample_rate);
+        }
     }
     if (config_.heavy) {
         heavy_.emplace(*config_.heavy, config_.sample_rate);
+        if (config_.acmod == Acmod::kDualMono) {
+            heavy2_.emplace(*config_.heavy, config_.sample_rate);
+        }
     }
     const int nfchans = fullbw_channel_count(config_.acmod);
     transient_detectors_.reserve(static_cast<std::size_t>(nfchans));
@@ -947,34 +1040,69 @@ FrameMetadata derive_metadata(const FrameConfig& config,
                               std::span<const std::array<double, 256>> history,
                               std::span<const std::span<const float>> channels,
                               std::optional<meta::RangeController>& range,
-                              std::optional<meta::HeavyCompressor>& heavy) {
+                              std::optional<meta::HeavyCompressor>& heavy,
+                              std::optional<meta::RangeController>* range2 = nullptr,
+                              std::optional<meta::HeavyCompressor>* heavy2 = nullptr) {
+    const bool dual_mono = config.acmod == Acmod::kDualMono;
     const int nfchans = fullbw_channel_count(config.acmod);
     FrameMetadata out;
     out.dynrng.fill(meta::kDynrngUnity);
+    out.dynrng2.fill(meta::kDynrngUnity);
     if (range) {
         std::array<std::span<const float>, 5> block_view{};
+        const int level_chans = dual_mono ? 1 : nfchans;
         for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
-            for (int ch = 0; ch < nfchans; ++ch) {
+            for (int ch = 0; ch < level_chans; ++ch) {
                 block_view[static_cast<std::size_t>(ch)] =
                     channels[static_cast<std::size_t>(ch)].subspan(
                         static_cast<std::size_t>(blk) * kSamplesPerBlock, kSamplesPerBlock);
             }
             const double level = meta::level_dbfs(
-                std::span{block_view}.first(static_cast<std::size_t>(nfchans)));
+                std::span{block_view}.first(static_cast<std::size_t>(level_chans)));
             out.dynrng[static_cast<std::size_t>(blk)] = range->next(level, config.dialnorm);
+        }
+    }
+    if (dual_mono && range2 && *range2) {
+        std::array<std::span<const float>, 1> block_view{};
+        for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
+            block_view[0] = channels[1].subspan(
+                static_cast<std::size_t>(blk) * kSamplesPerBlock, kSamplesPerBlock);
+            const double level = meta::level_dbfs(std::span{block_view});
+            // validate() requires dialnorm2 whenever acmod is kDualMono, and
+            // dual_mono is exactly that condition, checked above.
+            out.dynrng2[static_cast<std::size_t>(blk)] =
+                // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+                (*range2)->next(level, *config.dialnorm2);
         }
     }
     if (heavy) {
         // With no mixmdate the §7.8 fallbacks stand in - the same intermediate
-        // levels §5.4.2.4 and §5.4.2.5 tell a decoder to substitute.
-        const double clev = config.mixing ? meta::coefficient(config.mixing->lorocmixlev)
-                                          : meta::level::kMinus4_5dB;
-        const double slev = config.mixing ? meta::coefficient(config.mixing->lorosurmixlev)
-                                          : meta::level::kMinus6dB;
-        const double peak = meta::mono_downmix_peak_dbfs(
-            history, channels.first(static_cast<std::size_t>(nfchans)), config.acmod, clev,
-            slev);
+        // levels §5.4.2.4 and §5.4.2.5 tell a decoder to substitute. Dual mono
+        // has no downmix to fall back on in the first place - §7.7.2.2 bounds
+        // Ch1's own signal - so its true peak is measured directly instead.
+        const double peak =
+            dual_mono
+                ? meta::channel_peak_dbfs(std::span<const double>(history[0]), channels[0])
+                : [&] {
+                      const double clev = config.mixing
+                                              ? meta::coefficient(config.mixing->lorocmixlev)
+                                              : meta::level::kMinus4_5dB;
+                      const double slev = config.mixing
+                                              ? meta::coefficient(config.mixing->lorosurmixlev)
+                                              : meta::level::kMinus6dB;
+                      return meta::mono_downmix_peak_dbfs(
+                          history, channels.first(static_cast<std::size_t>(nfchans)),
+                          config.acmod, clev, slev);
+                  }();
         out.compr = heavy->next(peak, config.dialnorm);
+    }
+    if (dual_mono && heavy2 && *heavy2) {
+        const double peak2 =
+            meta::channel_peak_dbfs(std::span<const double>(history[1]), channels[1]);
+        // validate() requires dialnorm2 whenever acmod is kDualMono, and
+        // dual_mono is exactly that condition, checked above.
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+        out.compr2 = (*heavy2)->next(peak2, *config.dialnorm2);
     }
     return out;
 }
@@ -990,7 +1118,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     return encode_frame(
         channels,
         derive_metadata(config_, std::span{history_}.first(static_cast<std::size_t>(nfchans)),
-                        channels, range_, heavy_),
+                        channels, range_, heavy_, &range2_, &heavy2_),
         aux);
 }
 
@@ -1031,6 +1159,10 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     payload.dynrng = metadata.dynrng;
     if (config_.strmtyp == StreamType::kIndependent) {
         payload.compr = metadata.compr;
+    }
+    payload.dynrng2 = metadata.dynrng2;
+    if (config_.strmtyp == StreamType::kIndependent) {
+        payload.compr2 = metadata.compr2;
     }
     auto& cpl = payload.cpl;
     auto& spx = payload.spx;
@@ -1363,6 +1495,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         auto& plan = payload.chans[static_cast<std::size_t>(s)];
         plan.start = stream_start(s);
         plan.endmant = stream_end(s);
+        const bool is_lfe = config_.lfe && s == nfchans;
         const auto span = static_cast<std::size_t>(plan.endmant - plan.start);
         std::vector<std::uint8_t> raw(span, kMaxExponent);
         std::vector<std::uint8_t> axis_exps(span, 0);
@@ -1426,6 +1559,42 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
             decode_exponents(plan.coded.absolute, plan.coded.groups, ExpStrategy::kD15,
                              plan.decoded);
         }
+        // §7.2.2.6: one exponent set covers all six blocks here (Table E2.10
+        // code 0). `raw` above is the MIN exponent across those six blocks
+        // per bin - driven by whichever block has the LARGEST magnitude
+        // there - so the comparison needs that same per-bin max, not an
+        // average, or it would measure the (intentional) gap between
+        // "loudest block" and "typical block" instead of real quantization
+        // error and bias toward spurious cuts. See the ChannelPlan::delta
+        // comment for why AHT streams skip this.
+        // LFE is excluded too: §E2.3.2.9's deltbae[ch] loop is bounded by
+        // nfchans, so LFE has no delta bit allocation field to carry one in -
+        // computing and applying one anyway would let the encoder's own
+        // allocation diverge from what a decoder, which never receives it,
+        // would reconstruct.
+        //
+        // Delta is skipped entirely whenever coupling is in use this frame -
+        // not just for the coupling channel itself - deliberately narrowing
+        // this first cut's scope: the coupling channel is a synthesized
+        // average of the coupled channels rather than a real recorded
+        // signal, and even leaving ONLY the fbw channels' own narrow
+        // below-cplstrtmant region eligible, the extra side-info overhead
+        // was enough to break the tightest coupling scenarios (128 kbit/s
+        // 5.1, exactly the case coupling exists to rescue). Getting a
+        // coupling-aware version of this heuristic right needs more care
+        // than this phase has room for.
+        if (!plan.aht && !is_lfe && !cpl.in_use) {
+            std::vector<double> peak_mag(static_cast<std::size_t>(plan.endmant), 0.0);
+            for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
+                const auto& c = coeffs_at(s, blk);
+                for (int bin = plan.start; bin < plan.endmant; ++bin) {
+                    peak_mag[static_cast<std::size_t>(bin)] =
+                        std::max(peak_mag[static_cast<std::size_t>(bin)],
+                                std::abs(c[static_cast<std::size_t>(bin)]));
+                }
+            }
+            plan.delta = choose_delta_segments(peak_mag, plan.decoded, plan.start);
+        }
         plan.bap.assign(static_cast<std::size_t>(plan.endmant), 0);
         if (plan.aht) {
             // The mantissas the quantizers see, normalised by each bin's own
@@ -1469,11 +1638,35 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     // words - 1" above) - so this can be measured before the real word count
     // is known. That is exactly the order VBR needs: content decides the
     // size there, rather than the size deciding how much content fits.
-    const auto side_bits = [&] {
+    const auto measure_side_bits = [&] {
         BitWriter probe;
         emit_frame(probe, config_, 1, payload, aux);
         return static_cast<std::uint32_t>(probe.bit_count());
-    }();
+    };
+    std::uint32_t side_bits = measure_side_bits();
+
+    // §7.2.2.6/§E2.3.2.9: delta bit allocation is a pure quality refinement -
+    // dbaflde clear, or any stream's own code saying "no delta", is always a
+    // legal frame - so its side-info cost must never be the reason an
+    // otherwise-fittable frame is refused. Cleared and re-measured, lazily,
+    // at whichever budget check below would otherwise fail on it; matches
+    // cpl.in_use's existing "delta never load-bearing" rule above,
+    // generalized from "coupling active" to "would not otherwise fit".
+    bool any_delta_applied = false;
+    for (const auto& plan : payload.chans) {
+        any_delta_applied = any_delta_applied || plan.delta.deltnseg > 0;
+    }
+    const auto drop_delta_and_remeasure = [&] {
+        if (!any_delta_applied) {
+            return false;
+        }
+        for (auto& plan : payload.chans) {
+            plan.delta = {};
+        }
+        any_delta_applied = false;
+        side_bits = measure_side_bits();
+        return true;
+    };
 
     std::vector<std::span<const std::uint8_t>> bap_views;
     bap_views.reserve(static_cast<std::size_t>(streams));
@@ -1489,7 +1682,8 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                                         .cplfleak = cpl.fleak,
                                         .cplsleak = cpl.sleak,
                                         .snr_all_zero = composite == 0,
-                                        .high_efficiency = plan.aht};
+                                        .high_efficiency = plan.aht,
+                                        .delta = plan.delta};
             compute_bit_allocation(plan.decoded, config_.sample_rate, kBamode0Codes,
                                    composite >> 4, composite & 15, plan.bap, region);
             if (plan.aht) {
@@ -1577,6 +1771,9 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     std::optional<std::uint32_t> fixed_budget;
     if (!config_.vbr) {
         words = frame_words(config_.sample_rate, config_.bitrate_kbps);
+        if (side_bits + kTailBits > words * 16 && drop_delta_and_remeasure()) {
+            // retried below with side_bits refreshed
+        }
         if (side_bits + kTailBits > words * 16) {
             return std::unexpected(FrameError::kInvalidBitrate);
         }
@@ -1586,7 +1783,10 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         const auto& vbr = *config_.vbr;
         const int composite = std::clamp(
             static_cast<int>(std::lround(std::clamp(vbr.quality, 0.0, 1.0) * 1023.0)), 0, 1023);
-        const auto sized = vbr_size_for(bits_at(composite), vbr);
+        auto sized = vbr_size_for(bits_at(composite), vbr);
+        if (!sized && drop_delta_and_remeasure()) {
+            sized = vbr_size_for(bits_at(composite), vbr);
+        }
         if (!sized) {
             return std::unexpected(FrameError::kInvalidBitrate);
         }
@@ -1647,7 +1847,10 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
             // including the same max_kbps re-check in case a forced mode
             // pushed the cost back over a bound the quality target alone had
             // stayed under.
-            const auto sized = vbr_size_for(bits_at(lo), *config_.vbr);
+            auto sized = vbr_size_for(bits_at(lo), *config_.vbr);
+            if (!sized && drop_delta_and_remeasure()) {
+                sized = vbr_size_for(bits_at(lo), *config_.vbr);
+            }
             if (!sized) {
                 return std::unexpected(FrameError::kInvalidBitrate);
             }
@@ -2064,11 +2267,18 @@ AccessUnitEncoder::AccessUnitEncoder(const AccessUnitConfig& config) : config_(c
     // The substreams have controllers of their own, but this class always
     // supplies the words explicitly, so those never advance. These are the
     // ones that run.
+    const bool dual_mono = config_.independent.acmod == Acmod::kDualMono;
     if (config_.independent.drc) {
         range_.emplace(*config_.independent.drc, config_.independent.sample_rate);
+        if (dual_mono) {
+            range2_.emplace(*config_.independent.drc, config_.independent.sample_rate);
+        }
     }
     if (config_.independent.heavy) {
         heavy_.emplace(*config_.independent.heavy, config_.independent.sample_rate);
+        if (dual_mono) {
+            heavy2_.emplace(*config_.independent.heavy, config_.independent.sample_rate);
+        }
     }
 }
 
@@ -2098,7 +2308,7 @@ std::expected<AccessUnit, FrameError> AccessUnitEncoder::encode_access_unit(
         static_cast<std::size_t>(fullbw_channel_count(config_.independent.acmod));
     const FrameMetadata metadata =
         derive_metadata(config_.independent, std::span{tail_}.first(independent_fbw),
-                        channels.first(independent_count), range_, heavy_);
+                        channels.first(independent_count), range_, heavy_, &range2_, &heavy2_);
     for (std::size_t ch = 0; ch < independent_fbw; ++ch) {
         for (int n = 0; n < kSamplesPerBlock; ++n) {
             tail_[ch][static_cast<std::size_t>(n)] = static_cast<double>(

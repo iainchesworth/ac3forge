@@ -36,9 +36,10 @@ your use is your problem to assess, not something this project resolves.
 above reads empty; once one lands, that badge is the current version, not this paragraph. Green
 and required in CI on Windows (MSVC, clang-cl), Linux (GCC 15, Clang 21) and macOS (Homebrew
 LLVM) — CLI and GUI alike on the first four, CLI only on macOS — plus an ASan+UBSan leg,
-clang-tidy static analysis, a per-platform gold-reference *quality* gate, and a dedicated Linux
-FFmpeg-validation leg checking output *correctness* across the full option space. No leg remains
-experimental. See [Portability](#portability).
+clang-tidy static analysis, a line/branch coverage gate over the library, a per-platform
+gold-reference *quality* gate, and a dedicated Linux FFmpeg-validation leg checking output
+*correctness* across the full option space. No leg remains experimental. See
+[Portability](#portability).
 
 ## Contents
 
@@ -59,11 +60,12 @@ experimental. See [Portability](#portability).
 | | AC-3 (bsid 8) | E-AC-3 (bsid 16) |
 |---|---|---|
 | Coding modes | 1/0, 2/0, 3/0, 2/1, 3/1, 2/2, 3/2, each with or without LFE | the same, plus 7.1, 5.1.2, 5.1.4 and 7.1.4 through dependent substreams |
-| Sample rates | 48, 44.1, 32 kHz | 48, 44.1, 32 kHz |
+| Sample rates | 48, 44.1, 32 kHz | 48, 44.1, 32 kHz, plus the `fscod2` half rates 24, 22.05, 16 kHz (§E2.3.1.3 — Annex E only, no AC-3 counterpart) |
 | Bit rates | CBR only — the 19 nominal rates of Table 5.18, 32–640 kbps | CBR (the same 19, per substream) or VBR — a quality target with optional min/max kbps bounds, per substream |
 | Transform | long blocks only (512-point MDCT, KBD window) | long blocks only |
 | Exponents | D15 / D25 / D45, strategy chosen per block from the reuse span (§8.2.8) | frame-level, Table E2.10 code 0: D15 in block 0, reused for the other five |
 | Coupling | yes (§7.4), begin and end frequencies auto or pinned | yes (§E3.3) |
+| Delta bit allocation | automatic (§7.2.2.6), like rematrixing below — no toggle | automatic, same as AC-3 |
 | Rematrixing | yes, 2/0 (§7.5.3 minimum-power rule) | no — the syntax is written, the flags are always zero |
 | Annex E tools | — | spectral extension (§E3.6), adaptive hybrid transform with GAQ (§E3.4) |
 | Objects | panned to a 5.1 bed (no metadata survives) | OAMD + JOC in an EMDF container (TS 103 420) |
@@ -71,6 +73,16 @@ experimental. See [Portability](#portability).
 At 44.1 kHz, CBR needs non-integral frame sizes; the AC-3 encoder alternates between the two
 Table 5.18 lengths on a Bresenham accumulator so the long-run rate is exact. E-AC-3 signals
 `frmsiz` directly and needs no such alternation.
+
+**Delta bit allocation's scope**: the encoder compares the coarse exponent-only masking curve
+§7.2.2.2-7.2.2.5 derive against one built from the real, pre-quantization coefficient magnitude,
+and corrects bands where the two clearly diverge (at least a full 6 dB Table 5.17 step). It is
+skipped for the LFE channel (no such field exists for it) and, for now, for every channel
+whenever coupling is in use that frame — the coupling channel is a synthesized average rather
+than a real recorded signal, and even leaving only the coupled channels' own narrow
+below-`cplstrtmant` region eligible measurably narrowed coupling's usual cost advantage and broke
+its tightest scenarios (128 kbit/s 5.1). The decoder accepts delta bit allocation on the coupling
+channel from any other encoder; this project's own just doesn't emit it yet.
 
 ### Metadata
 
@@ -107,8 +119,6 @@ substreams, `chanmap`, and the §E3.8.2 render that lays a dependent's channels 
 |---|---|
 | Block switching (short blocks) | Transients smear. FFmpeg's AC-3 encoder has never used short blocks either, so this is conventional rather than unusual, but it is still a gap. |
 | Dual mono (1+1, acmod 0) | Refused by the encoder and the decoder. It is two programmes sharing a syncframe, with a second copy of every metadata item, and it has no channel layout to render. |
-| Delta bit allocation | Encoder never emits it; decoder refuses a stream carrying it. |
-| E-AC-3 half sample rates (`fscod2`: 24, 22.05, 16 kHz) | Refused. Every table the core indexes is three columns wide. |
 | Enhanced coupling, transient pre-noise processing | Recognised by the decoder and refused, rather than mis-decoded. |
 | Variable bit rate on AC-3 | `frmsizecod` indexes Table 5.18 rather than stating a word count directly, so AC-3 has no free frame size to vary at all and stays CBR. E-AC-3 supports VBR — see [Encoding E-AC-3](docs/library/encoding-eac3.md#variable-bit-rate-frameconfigvbr). |
 
@@ -145,6 +155,20 @@ is unverified.
 | E-AC-3 7.1.4 (two dependents) | no | yes |
 | E-AC-3 with cpl / spx / aht | yes | no |
 | E-AC-3 7.1.4 with Annex E tools | no | no |
+| E-AC-3 `fscod2` half rates (24/22.05/16 kHz) | header only | yes |
+
+**`fscod2` audio content has no external decode oracle at all — not even Dolby's own.**
+`ffprobe` walks every syncframe of a reduced-rate stream correctly (frame count, exact byte
+size, exact spacing, and `sample_rate` all confirmed against all three rates), so the framing
+and header are cross-checked externally. But actually decoding the audio is refused by both
+real-world implementations available here: FFmpeg's E-AC-3 decoder (`Not yet implemented in
+FFmpeg, patches welcome`) and, more surprisingly, Dolby's own Reference Player — `dlbac3parse`
+reports `No valid frames found before end of stream` on a stream `ffprobe` reads frame-by-frame
+without complaint — using the same pipeline (`tools/quality_race.py`'s `dolby_decode`) that
+decodes a normal-rate stream from this encoder without issue. `fscod2` appears to be a coding
+tool whose own reference implementation does not support it. So the coded audio is verified
+only by this project's own encoder/decoder round trip and the independent Python parser
+(`tools/eac3_parse.py`).
 
 **Exclusive-mode passthrough — AC-3 and E-AC-3 alike — has never been confirmed against
 bitstreaming hardware.** The development machine has no S/PDIF or HDMI endpoint behind a real
@@ -206,13 +230,14 @@ fallback (macOS, or Linux without libasound headers) that reports itself unavail
 failing to link. See [Linux audio](docs/BUILDING.md#linux-audio) for the ALSA backend
 specifically.
 
-CI (`.github/workflows/ci.yml`) runs all six platform/compiler legs plus static analysis and
-FFmpeg validation on every push, and requires eight jobs: windows-msvc, windows-llvm, linux-gcc,
-linux-llvm, linux-llvm-asan-ubsan (AddressSanitizer + UndefinedBehaviorSanitizer,
-`cmake/Sanitizers.cmake`), macos-llvm, static-analysis (clang-tidy, `.clang-tidy`) and
-ffmpeg-validate. No leg remains experimental — macos-llvm was the last promoted, once a real
-GitHub Actions run (this project has no Mac) confirmed 256/256 tests and the gold-reference gate
-both green.
+CI (`.github/workflows/ci.yml`) runs all six platform/compiler legs plus static analysis,
+coverage and FFmpeg validation on every push, and requires nine jobs: windows-msvc, windows-llvm,
+linux-gcc, linux-llvm, linux-llvm-asan-ubsan (AddressSanitizer + UndefinedBehaviorSanitizer,
+`cmake/Sanitizers.cmake`), macos-llvm, static-analysis (clang-tidy, `.clang-tidy`), coverage
+(gcovr line/branch gate over `src/lib` via the `linux-gcc-coverage` preset,
+`cmake/Coverage.cmake`) and ffmpeg-validate. No leg remains experimental — macos-llvm was the
+last promoted, once a real GitHub Actions run (this project has no Mac) confirmed 256/256 tests
+and the gold-reference gate both green.
 
 ffmpeg-validate is a separate, CLI-only linux-llvm build that runs `scripts/run-codec-matrix.sh`'s
 FFmpeg strict-decode checks, `tools/check_drc.py`, `tools/check_coupling.py`/

@@ -101,6 +101,11 @@ struct ExponentRun {
     EncodedExponents fbw;                  // fbw and LFE channels
     EncodedCouplingExponents cpl;          // the coupling channel
     std::vector<std::uint8_t> decoded;     // the decoder-mirror exponents
+    // §7.2.2.6: computed once per run (like `decoded` above) from the real
+    // coefficients of every block the run spans, rather than per block - a
+    // run already shares one exponent set and one bit allocation across its
+    // blocks, so its delta correction is constant across them too.
+    DeltaSegments delta;
 };
 
 struct StreamPlan {
@@ -113,9 +118,15 @@ struct StreamPlan {
 FrameEncoder::FrameEncoder(const EncoderConfig& config) : config_(config) {
     if (config_.drc) {
         range_.emplace(*config_.drc, config_.sample_rate);
+        if (config_.acmod == Acmod::kDualMono) {
+            range2_.emplace(*config_.drc, config_.sample_rate);
+        }
     }
     if (config_.heavy) {
         heavy_.emplace(*config_.heavy, config_.sample_rate);
+        if (config_.acmod == Acmod::kDualMono) {
+            heavy2_.emplace(*config_.heavy, config_.sample_rate);
+        }
     }
     const int nfchans = fullbw_channel_count(config_.acmod);
     transient_detectors_.reserve(static_cast<std::size_t>(nfchans));
@@ -130,13 +141,22 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     if (!index) {
         return std::unexpected(FrameError::kInvalidBitrate);
     }
+    // fscod2 is an Annex E (E-AC-3) concept; classic AC-3 has no frmsizecod
+    // row for a reduced rate.
+    if (is_reduced_rate(config_.sample_rate)) {
+        return std::unexpected(FrameError::kInvalidBitrate);
+    }
     if (config_.dialnorm < 1 || config_.dialnorm > 31) {
+        return std::unexpected(FrameError::kInvalidDialnorm);
+    }
+    const bool dual_mono = config_.acmod == Acmod::kDualMono;
+    if (dual_mono &&
+        (!config_.dialnorm2 || *config_.dialnorm2 < 1 || *config_.dialnorm2 > 31)) {
         return std::unexpected(FrameError::kInvalidDialnorm);
     }
     const int nfchans = fullbw_channel_count(config_.acmod);
     const int nchans = channel_count();
     assert(static_cast<int>(channels.size()) == nchans);
-    assert(config_.acmod != Acmod::kDualMono);
     for (const auto& channel : channels) {
         assert(channel.size() == kSamplesPerFrame);
         (void)channel;
@@ -147,34 +167,63 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     // programme, not this encoder's output, and a decoder applies them after
     // reconstruction. Doing it here also settles the words before the side
     // information is measured, since a transmitted dynrng costs nine bits.
+    // For dual mono, Ch1 and Ch2 are unrelated programmes: each is measured
+    // and controlled entirely on its own, never combined the way a real
+    // multi-channel layout's channels are (§7.7.2.2 for compr; the same
+    // reasoning applies to dynrng, which has no channel-combining rule to
+    // begin with once there is no single soundfield to describe a level for).
     std::array<std::uint8_t, kBlocksPerFrame> dynrng{};
     dynrng.fill(meta::kDynrngUnity);
+    std::array<std::uint8_t, kBlocksPerFrame> dynrng2{};
+    dynrng2.fill(meta::kDynrngUnity);
     if (range_) {
         std::array<std::span<const float>, 5> block_view{};
+        const int level_chans = dual_mono ? 1 : nfchans;
         for (int block = 0; block < kBlocksPerFrame; ++block) {
-            for (int ch = 0; ch < nfchans; ++ch) {
+            for (int ch = 0; ch < level_chans; ++ch) {
                 block_view[static_cast<std::size_t>(ch)] =
                     channels[static_cast<std::size_t>(ch)].subspan(
                         static_cast<std::size_t>(block) * kSamplesPerBlock,
                         kSamplesPerBlock);
             }
             const double level = meta::level_dbfs(
-                std::span{block_view}.first(static_cast<std::size_t>(nfchans)));
+                std::span{block_view}.first(static_cast<std::size_t>(level_chans)));
             dynrng[static_cast<std::size_t>(block)] =
                 range_->next(level, config_.dialnorm);
         }
     }
+    if (dual_mono && range2_) {
+        std::array<std::span<const float>, 1> block_view{};
+        for (int block = 0; block < kBlocksPerFrame; ++block) {
+            block_view[0] = channels[1].subspan(
+                static_cast<std::size_t>(block) * kSamplesPerBlock, kSamplesPerBlock);
+            const double level = meta::level_dbfs(std::span{block_view});
+            dynrng2[static_cast<std::size_t>(block)] =
+                range2_->next(level, *config_.dialnorm2);
+        }
+    }
     std::uint8_t compr = meta::kComprUnity;
+    std::uint8_t compr2 = meta::kComprUnity;
     if (heavy_) {
         // §7.7.2 bounds the MONO DOWNMIX, so that is what gets measured - the
         // loudest single channel is not the constraint, the sum is. history_
         // still holds the previous frame's tail at this point, which is exactly
-        // the extra 256 samples this frame's block 0 codes.
-        const double peak = meta::mono_downmix_peak_dbfs(
-            std::span{history_}.first(static_cast<std::size_t>(nfchans)),
-            channels.first(static_cast<std::size_t>(nfchans)), config_.acmod,
-            meta::coefficient(config_.cmixlev), meta::coefficient(config_.surmixlev));
+        // the extra 256 samples this frame's block 0 codes. Dual mono has no
+        // downmix at all - §7.7.2.2 says compr bounds Ch1's own signal - so
+        // that channel's true peak is measured directly instead.
+        const double peak =
+            dual_mono
+                ? meta::channel_peak_dbfs(std::span{history_[0]}, channels[0])
+                : meta::mono_downmix_peak_dbfs(
+                      std::span{history_}.first(static_cast<std::size_t>(nfchans)),
+                      channels.first(static_cast<std::size_t>(nfchans)), config_.acmod,
+                      meta::coefficient(config_.cmixlev),
+                      meta::coefficient(config_.surmixlev));
         compr = heavy_->next(peak, config_.dialnorm);
+    }
+    if (dual_mono && heavy2_) {
+        const double peak2 = meta::channel_peak_dbfs(std::span{history_[1]}, channels[1]);
+        compr2 = heavy2_->next(peak2, *config_.dialnorm2);
     }
 
     // Bandwidth: explicit config, or a bitrate-aware default. This comes
@@ -219,8 +268,13 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     }
 
     // --- Coupling decision -------------------------------------------------
-    // Coupling needs at least two full-bandwidth channels to share anything.
-    const bool cplinu = config_.coupling && nfchans >= 2 && !any_switched;
+    // Coupling needs at least two full-bandwidth channels to share anything -
+    // true of dual mono's nfchans too, but sharing is exactly what its two
+    // channels must never do: they are unrelated programmes, and a coupling
+    // channel built from their average would leak each into the other. A
+    // channel that block-switched anywhere this frame is excluded too - see
+    // the block-switching pre-pass above.
+    const bool cplinu = config_.coupling && nfchans >= 2 && !dual_mono && !any_switched;
     int cplbegf = 0;
     int cplendf = 0;
     int cplstrtmant = 0;
@@ -588,6 +642,43 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                 entry.fbw = encode_exponents(raw, strategy);
                 decode_exponents(entry.fbw.absolute, entry.fbw.groups, strategy, entry.decoded);
             }
+            // §7.2.2.6: compare this run's shared exponent-derived masking
+            // curve against one built from the real coefficients. `raw`
+            // above (and hence this run's exponents) is the MIN exponent
+            // across the run's blocks per bin, i.e. driven by whichever
+            // block has the LARGEST magnitude there - so the comparison
+            // needs that same per-bin max, not an average, or it would
+            // measure the (intentional) gap between "loudest block" and
+            // "typical block" instead of real quantization error and bias
+            // toward spurious cuts on any run spanning more than one block.
+            // LFE is excluded: §5.4.3.49's deltbae[ch] loop is bounded by
+            // nfchans, so LFE has no delta bit allocation field to carry one
+            // in at all - computing and applying one here anyway would let
+            // the encoder's own allocation diverge from what the decoder,
+            // which never receives it, would ever reconstruct.
+            //
+            // Delta is skipped entirely whenever coupling is in use this
+            // frame - not just for the coupling channel itself - deliberately
+            // narrowing this first cut's scope: the coupling channel is a
+            // synthesized average of the coupled channels rather than a real
+            // recorded signal, and even leaving ONLY the fbw channels' own
+            // narrow below-cplstrtmant region eligible, the extra side-info
+            // overhead was enough to break the tightest coupling scenarios
+            // (128 kbit/s 5.1, exactly the case coupling exists to rescue).
+            // Getting a coupling-aware version of this heuristic right needs
+            // more care than this phase has room for.
+            if (!is_lfe && !is_cpl && !cplinu) {
+                std::vector<double> peak_mag(static_cast<std::size_t>(end), 0.0);
+                for (int block = first; block < last; ++block) {
+                    const auto& c = coeffs_at(s, block);
+                    for (int bin = begin; bin < end; ++bin) {
+                        peak_mag[static_cast<std::size_t>(bin)] =
+                            std::max(peak_mag[static_cast<std::size_t>(bin)],
+                                    std::abs(c[static_cast<std::size_t>(bin)]));
+                    }
+                }
+                entry.delta = choose_delta_segments(peak_mag, entry.decoded, begin);
+            }
             for (int block = first; block < last; ++block) {
                 p.run_of_block[static_cast<std::size_t>(block)] = static_cast<int>(run);
             }
@@ -641,6 +732,16 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         w.put(send_dynrng ? 1 : 0, 1);  // dynrnge
         if (send_dynrng) {
             w.put(dynrng[static_cast<std::size_t>(block)], 8);
+        }
+        if (config_.acmod == Acmod::kDualMono) {
+            const bool send_dynrng2 =
+                config_.drc.has_value() &&
+                (first || dynrng2[static_cast<std::size_t>(block)] !=
+                              dynrng2[static_cast<std::size_t>(block) - 1]);
+            w.put(send_dynrng2 ? 1 : 0, 1);  // dynrng2e
+            if (send_dynrng2) {
+                w.put(dynrng2[static_cast<std::size_t>(block)], 8);
+            }
         }
 
         w.put(first ? 1 : 0, 1);  // cplstre
@@ -790,26 +891,95 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                 w.put(static_cast<std::uint32_t>(cplsleak), 3);
             }
         }
-        w.put(0, 1);  // deltbaie
+        // §5.4.3.47-57: this encoder never reuses ('00') a previous block's
+        // delta state - it always resends fresh ('01') when a run wants a
+        // correction, or says '10' (no delta) otherwise - so deltbaie itself
+        // only needs to be 1 when at least one stream has something to say
+        // this block.
+        const auto stream_delta = [&](int s) -> const DeltaSegments& {
+            const auto& p = plan[static_cast<std::size_t>(s)];
+            return p.runs[static_cast<std::size_t>(
+                              p.run_of_block[static_cast<std::size_t>(block)])]
+                .delta;
+        };
+        bool any_delta = cplinu && stream_delta(cpl_stream).deltnseg > 0;
+        for (int ch = 0; ch < nfchans && !any_delta; ++ch) {
+            any_delta = stream_delta(ch).deltnseg > 0;
+        }
+        w.put(any_delta ? 1 : 0, 1);  // deltbaie
+        if (any_delta) {
+            // §5.4.3.47's own syntax table sends every stream's 2-bit
+            // cpldeltbae/deltbae[ch] code FIRST, then every stream's segment
+            // data - the two are NOT interleaved per stream.
+            if (cplinu) {
+                w.put(stream_delta(cpl_stream).deltnseg > 0 ? 1u : 2u, 2);  // cpldeltbae
+            }
+            for (int ch = 0; ch < nfchans; ++ch) {
+                w.put(stream_delta(ch).deltnseg > 0 ? 1u : 2u, 2);  // deltbae[ch]
+            }
+            const auto emit_segments = [&](const DeltaSegments& segs) {
+                if (segs.deltnseg > 0) {
+                    w.put(static_cast<std::uint32_t>(segs.deltnseg - 1), 3);
+                    for (int seg = 0; seg < segs.deltnseg; ++seg) {
+                        const auto i = static_cast<std::size_t>(seg);
+                        w.put(static_cast<std::uint32_t>(segs.deltoffst[i]), 5);
+                        w.put(static_cast<std::uint32_t>(segs.deltlen[i]), 4);
+                        w.put(static_cast<std::uint32_t>(segs.deltba[i]), 3);
+                    }
+                }
+            };
+            if (cplinu) {
+                emit_segments(stream_delta(cpl_stream));
+            }
+            for (int ch = 0; ch < nfchans; ++ch) {
+                emit_segments(stream_delta(ch));
+            }
+        }
     };
 
     // --- 8. Measure the side information -----------------------------------
-    std::uint32_t side_bits = 16 + 16 + 2 + 6;  // syncinfo
-    {
+    const auto measure_side_bits = [&] {
+        std::uint32_t bits = 16 + 16 + 2 + 6;  // syncinfo
         std::uint32_t bsi = 25;
         if (has_three_front(config_.acmod)) bsi += 2;  // cmixlev
         if (has_surround(config_.acmod)) bsi += 2;     // surmixlev
         if (config_.acmod == Acmod::k2_0) bsi += 2;    // dsurmod
         if (config_.heavy) bsi += 8;                   // compr (§5.4.2.10)
-        side_bits += bsi;
-    }
-    {
+        if (dual_mono) {
+            bsi += 5 + 1 + 1 + 1;  // dialnorm2, compr2e, langcod2e, audprodi2e
+            if (config_.heavy) bsi += 8;  // compr2
+        }
+        bits += bsi;
         BitWriter counter;
         for (int block = 0; block < kBlocksPerFrame; ++block) {
             emit_block_side_info(counter, block);
             counter.put(0, 1);  // skiple, always present
         }
-        side_bits += static_cast<std::uint32_t>(counter.bit_count());
+        bits += static_cast<std::uint32_t>(counter.bit_count());
+        return bits;
+    };
+    std::uint32_t side_bits = measure_side_bits();
+
+    // §7.2.2.6: delta bit allocation is a pure quality refinement, never
+    // load-bearing - a run's own code saying "no delta" is always legal - so
+    // its side-info cost must never be the reason an otherwise-fittable frame
+    // is refused. Cleared and re-measured, lazily, only if the budget check
+    // below would otherwise fail on it - generalizing the coupling exclusion
+    // above (§7.2.2.6's own scope note) from "coupling active" to "would not
+    // otherwise fit".
+    if (side_bits + detail::kTailBits > total_bits) {
+        bool any_delta = false;
+        for (auto& p : plan) {
+            for (auto& run : p.runs) {
+                if (run.delta.deltnseg > 0) {
+                    any_delta = true;
+                    run.delta = {};
+                }
+            }
+        }
+        if (any_delta) {
+            side_bits = measure_side_bits();
+        }
     }
     if (side_bits + detail::kTailBits > total_bits) {
         // The chosen configuration cannot fit its own headers at this rate.
@@ -831,12 +1001,13 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
             auto& p = plan[static_cast<std::size_t>(s)];
             // Every stream shares one fsnroffst here, so the frame-wide
             // §7.2.2.1.1 condition reduces to the composite being zero.
-            const BitAllocRegion region{.start = stream_start(s),
-                                        .coupling = s == cpl_stream,
-                                        .cplfleak = cplfleak,
-                                        .cplsleak = cplsleak,
-                                        .snr_all_zero = composite == 0};
             for (std::size_t run = 0; run < p.runs.size(); ++run) {
+                const BitAllocRegion region{.start = stream_start(s),
+                                            .coupling = s == cpl_stream,
+                                            .cplfleak = cplfleak,
+                                            .cplsleak = cplsleak,
+                                            .snr_all_zero = composite == 0,
+                                            .delta = p.runs[run].delta};
                 auto& bap = run_bap[static_cast<std::size_t>(s)][run];
                 bap.assign(p.runs[run].decoded.size(), 0);
                 compute_bit_allocation(p.runs[run].decoded, config_.sample_rate, codes,
@@ -943,6 +1114,15 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     }
     w.put(0, 1);  // langcode
     w.put(0, 1);  // audprodie
+    if (dual_mono) {
+        w.put(static_cast<std::uint32_t>(*config_.dialnorm2), 5);
+        w.put(config_.heavy ? 1 : 0, 1);  // compr2e
+        if (config_.heavy) {
+            w.put(compr2, 8);
+        }
+        w.put(0, 1);  // langcod2e
+        w.put(0, 1);  // audprodi2e
+    }
     w.put(0, 1);  // copyrightb
     w.put(1, 1);  // origbs
     w.put(0, 1);  // timecod1e

@@ -113,6 +113,7 @@ target_link_libraries(ac3tests
         ac3::forge
         matroska::matroska
         ac3::warnings
+        ac3::coverage
         Catch2::Catch2WithMain)
 
 include(Catch)

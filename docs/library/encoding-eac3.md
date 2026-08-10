@@ -43,6 +43,14 @@ for (int frame = 0; frame < 31; ++frame) {
 > the verification-gap table in the [README](https://github.com/iainchesworth/ac3forge/blob/main/README.md#verification-gaps) before relying on
 > a round trip.
 
+`FrameConfig::dialnorm2` (see "Dual mono" in [Encoding AC-3](encoding-ac3.md)) works exactly
+the same way here: set it alongside `dialnorm` when `acmod` is `kDualMono`. Dual mono is always a
+lone independent substream with no dependents — 1+1 has no bed/dependent split to make — so
+`AccessUnitEncoder` gives Ch2 its own `RangeController`/`HeavyCompressor` too, measured on the
+independent substream's own two channels the same way it measures Ch1's. It has no VBR
+implications either: dual mono is orthogonal to CBR/VBR, since `vbr` only changes how the frame's
+*size* is decided, not how many programmes it carries.
+
 ## Variable bit rate: `FrameConfig::vbr`
 
 E-AC-3's `frmsiz` states the frame's word count directly rather than indexing a table, so unlike

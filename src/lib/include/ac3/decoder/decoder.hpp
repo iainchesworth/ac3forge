@@ -17,11 +17,15 @@
 // correctness anchor (fully normative, shares tables/bit-allocation/exponents/
 // IMDCT with the encoder core).
 //
-// AC-3 scope (bsid <= 8): any acmod 1/0..3/2 plus LFE, long blocks,
-// D15/D25/D45/reuse exponents, full bit allocation, mantissa ungrouping,
-// coupling (strategy, banded coordinates, phase flags and leak parameters)
-// and 2/0 rematrixing. Deliberately unsupported (clean errors, not wrong
-// audio): block switching, delta bit allocation, dual mono. dynrng words are
+// AC-3 scope (bsid <= 8): any acmod 0/0..3/2 plus LFE, long blocks,
+// D15/D25/D45/reuse exponents, full bit allocation including delta bit
+// allocation (§7.2.2.6), mantissa ungrouping, coupling (strategy, banded
+// coordinates, phase flags and leak parameters) and 2/0 rematrixing.
+// acmod 0 (1+1 dual mono) is two independent programmes sharing one
+// syncframe — Ch2's dialnorm2/compr2/dynrng2 are parsed and reported
+// alongside Ch1's, and each programme's §7.7 gain is applied to its own
+// channel only. Block switching (§8.2.2/§7.9) is decoded too — DecodedFrame::
+// blksw reports which blocks used the short transform. dynrng words are
 // parsed but not applied; bap-0 bins reconstruct as zero regardless of
 // dithflag (the spec lets the dither sequence be "any reasonably random
 // sequence"; zeros keep decode parity deterministic).
@@ -85,6 +89,11 @@ struct DecodedFrame {
     // inherited, and block 0 without a word reports unity rather than
     // whatever the previous frame ended on.
     std::array<std::uint8_t, kBlocksPerFrame> dynrng{};
+    // Ch2's own dialnorm/compr/dynrng (§5.4.2.16-22), present only when acmod
+    // is kDualMono — the second of the two independent programmes 1+1 codes.
+    std::optional<int> dialnorm2 = std::nullopt;
+    std::optional<std::uint8_t> compr2 = std::nullopt;
+    std::array<std::uint8_t, kBlocksPerFrame> dynrng2{};
     // §8.2.2/§7.9: per full-bandwidth channel, per block - true where that
     // block used the short (block-switched) transform. Sized to nfchans; the
     // LFE and any coupling channel never switch, so they carry no entry.
@@ -119,6 +128,10 @@ struct DecodedSubstream {
     Acmod acmod = Acmod::k2_0;
     bool lfe = false;
     int dialnorm = 31;
+    // Ch2's own dialnorm/compr, present only when acmod is kDualMono (1+1) -
+    // the second of the two independent programmes 1+1 codes.
+    std::optional<int> dialnorm2 = std::nullopt;
+    std::optional<std::uint8_t> compr2 = std::nullopt;
     int numblkscod = 3;
     // §E2.3.1.8: only a dependent substream may carry one.
     std::optional<std::uint16_t> chanmap;
@@ -141,12 +154,19 @@ struct DecodedSubstream {
 // One program's channels after §E3.8.2: the independent substream's bed with
 // each dependent's channels laid over it, in Table E2.5 location order (which
 // for a lone 5.1 bed is exactly the AC-3 channel order).
+//
+// Dual mono (acmod kDualMono) is the one exception: 1+1 is always a single
+// substream with no bed/dependent split, and its two channels are unrelated
+// programmes with no Table E2.5 location - Ch1 and Ch2, not L and R. `layout`
+// is left empty (count 0) in that case, matching ac3::meta::layout_of()'s own
+// "not a layout" stance, and `channels` holds Ch1 then Ch2 in coded order.
 struct DecodedAccessUnit {
     SampleRate sample_rate = SampleRate::k48000;
+    Acmod acmod = Acmod::k2_0;
     int dialnorm = 31;
     int substream_count = 0;
     eac3::chanmap::Layout layout;
-    std::vector<std::vector<float>> channels;  // parallel to layout
+    std::vector<std::vector<float>> channels;  // parallel to layout, except dual mono
 };
 
 class Eac3Decoder {

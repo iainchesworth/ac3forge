@@ -76,6 +76,8 @@ void print_meta_usage() {
     std::println("  dialogue=<dBFS>   where heavy compression puts dialogue (default -20)");
     std::println("  dialnorm=auto     measure BS.1770 loudness and derive dialnorm (§5.4.2.8)");
     std::println("  dialnorm=<1..31>  set it directly (default 31)");
+    std::println("  dialnorm2=auto | <1..31>   Ch2's own dialnorm, layout 1+1 only "
+                 "(§5.4.2.16, default 31)");
     std::println("  cmixlev=-3|-4.5|-6      centre downmix level (Table 5.9)");
     std::println("  surmixlev=-3|-6|off     surround downmix level (Table 5.10)");
     std::println("  mixmeta           E-AC-3 only: emit the mixmdate group (Table E1.2)");
@@ -164,6 +166,19 @@ bool parse_meta_options(std::span<char*> tokens, MetaOptions& out) {
             out.p.dialnorm = static_cast<int>(n);
             continue;
         }
+        if (key == "dialnorm2") {
+            if (value == "auto") {
+                out.p.measure_dialnorm2 = true;
+                continue;
+            }
+            const auto n = parse_u32_or(value, 0);
+            if (n < 1 || n > 31) {
+                std::println(stderr, "error: dialnorm2 must be auto or 1..31 (§5.4.2.16)");
+                return false;
+            }
+            out.p.dialnorm2 = static_cast<int>(n);
+            continue;
+        }
         if (key == "cmixlev") {
             if (value == "-3") {
                 out.p.cmixlev = ac3::meta::CentreMixLevel::kMinus3dB;
@@ -242,6 +257,79 @@ std::optional<int> measured_dialnorm(const ac3::io::WavData& wav, ac3::SampleRat
     const int dialnorm = ac3::meta::dialnorm_from_lkfs(*lkfs);
     std::println("measured {:.2f} LKFS (BS.1770-4, gated) -> dialnorm {}", *lkfs, dialnorm);
     return dialnorm;
+}
+
+// Same measurement, for one dual-mono programme's own channel alone - never a
+// programme's worth of BS.1770 surround weighting, since a 1+1 channel is not
+// part of a soundfield.
+std::optional<int> measured_dialnorm_channel(std::span<const float> channel,
+                                             ac3::SampleRate rate) {
+    ac3::meta::LoudnessMeter meter{rate, ac3::Acmod::k1_0, false};
+    const std::array<std::span<const float>, 1> views{channel};
+    meter.push(views);
+    const auto lkfs = meter.integrated_lkfs();
+    if (!lkfs) {
+        return std::nullopt;
+    }
+    const int dialnorm = ac3::meta::dialnorm_from_lkfs(*lkfs);
+    std::println("Ch2 measured {:.2f} LKFS (BS.1770-4, gated) -> dialnorm2 {}", *lkfs, dialnorm);
+    return dialnorm;
+}
+
+// Dual mono's Ch1/Ch2 arrive as either one two-channel file or two mono ones;
+// this settles which shape `wav` is in and merges a second file's channel in
+// when there is one, so everything downstream sees a plain two-channel source
+// the same way it always has - `plan::route`'s own 1+1 handling only ever
+// looks at the channel count, never how many files it came from.
+bool prepare_dual_mono_source(ac3::io::WavData& wav, std::string_view layout,
+                              std::string_view in2_path) {
+    if (layout != "1+1") {
+        if (!in2_path.empty()) {
+            std::println(stderr,
+                         "error: a second input file is only meaningful with layout 1+1 "
+                         "(got layout '{}')",
+                         layout);
+            return false;
+        }
+        return true;
+    }
+    if (in2_path.empty()) {
+        if (wav.channels.size() != 2) {
+            std::println(stderr,
+                         "error: layout 1+1 needs either one two-channel file (Ch1, Ch2) or "
+                         "two mono files; the source has {} channel(s) and no second file "
+                         "was given",
+                         wav.channels.size());
+            return false;
+        }
+        return true;
+    }
+    if (wav.channels.size() != 1) {
+        std::println(stderr,
+                     "error: layout 1+1 with a second input file needs the first file to be "
+                     "mono (Ch1); it has {} channels",
+                     wav.channels.size());
+        return false;
+    }
+    auto second = ac3::io::read_wav(std::string{in2_path});
+    if (!second) {
+        std::println(stderr, "error: {}: {}", in2_path, ac3::io::describe(second.error()));
+        return false;
+    }
+    if (second->channels.size() != 1) {
+        std::println(stderr, "error: {} must be mono (Ch2); it has {} channels", in2_path,
+                     second->channels.size());
+        return false;
+    }
+    if (second->sample_rate != wav.sample_rate) {
+        std::println(stderr,
+                     "error: {} is {} Hz, but the first file is {} Hz - both programmes must "
+                     "share a sample rate",
+                     in2_path, second->sample_rate, wav.sample_rate);
+        return false;
+    }
+    wav.channels.push_back(std::move(second->channels.front()));
+    return true;
 }
 
 bool write_frames(std::string_view path, std::span<const std::vector<std::byte>> frames) {
@@ -657,20 +745,24 @@ bool vbr_or_error(std::string_view text, std::optional<ac3::eac3::VbrConfig>& ou
     return false;
 }
 
-// A WAV's rate as an fscod, or a diagnosis. Shared because every encode path
-// asks the same question and A/52 Table 5.6 has the same three answers for
-// all of them.
-std::optional<ac3::SampleRate> wav_sample_rate(std::uint32_t hz, std::string_view codec) {
+// A WAV's rate as an fscod (or, for E-AC-3, fscod2), or a diagnosis. Shared
+// because every encode path asks the same question. Classic AC-3 has only
+// A/52 Table 5.6's three rates; E-AC-3 additionally accepts the three Annex E
+// fscod2 half rates (24/22.05/16 kHz), which have no AC-3 counterpart at all.
+std::optional<ac3::SampleRate> wav_sample_rate(std::uint32_t hz, std::string_view codec,
+                                               bool eac3) {
     switch (hz) {
         case 48000: return ac3::SampleRate::k48000;
         case 44100: return ac3::SampleRate::k44100;
         case 32000: return ac3::SampleRate::k32000;
-        default:
-            std::println(stderr,
-                         "error: sample rate {} is not legal for {} (need 32/44.1/48 kHz)", hz,
-                         codec);
-            return std::nullopt;
+        case 24000: if (eac3) return ac3::SampleRate::k24000; break;
+        case 22050: if (eac3) return ac3::SampleRate::k22050; break;
+        case 16000: if (eac3) return ac3::SampleRate::k16000; break;
+        default: break;
     }
+    std::println(stderr, "error: sample rate {} is not legal for {} (need {})", hz, codec,
+                eac3 ? "32/44.1/48 kHz, or 16/22.05/24 kHz" : "32/44.1/48 kHz");
+    return std::nullopt;
 }
 
 // A source's channels routed onto a plan's coded channels, or a diagnosis.
@@ -716,13 +808,17 @@ void print_routing(const plan::Plan& p, const plan::Routing& routing, std::strin
 // decisions, which is what the Annex E tools are judged on.
 int run_eac3_encode(std::string_view in_path, std::string_view out_path,
                     std::uint32_t bitrate, std::string_view tools, std::string_view layout,
-                    std::string_view vbr, const MetaOptions& meta) {
-    const auto wav = ac3::io::read_wav(std::string{in_path});
+                    std::string_view vbr, const MetaOptions& meta,
+                    std::string_view in2_path = {}) {
+    auto wav = ac3::io::read_wav(std::string{in_path});
     if (!wav) {
         std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(wav.error()));
         return 1;
     }
-    const auto sr = wav_sample_rate(wav->sample_rate, "E-AC-3");
+    if (!prepare_dual_mono_source(*wav, layout, in2_path)) {
+        return 1;
+    }
+    const auto sr = wav_sample_rate(wav->sample_rate, "E-AC-3", true);
     if (!sr) {
         return 1;
     }
@@ -761,6 +857,15 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
             return 1;
         }
         p.meta.dialnorm = *measured;
+    }
+    if (cp.bed_acmod == ac3::Acmod::kDualMono && p.meta.measure_dialnorm2) {
+        const auto measured2 = measured_dialnorm_channel(wav->channels[1], *sr);
+        if (!measured2) {
+            std::println(stderr, "error: Ch2 has no audio above the -70 LKFS absolute gate; "
+                                 "pass dialnorm2=<1..31> explicitly");
+            return 1;
+        }
+        p.meta.dialnorm2 = *measured2;
     }
 
     const auto routing = routing_or_error(p, wav->channels.size());
@@ -1092,7 +1197,7 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
         std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(wav.error()));
         return 1;
     }
-    const auto sr = wav_sample_rate(wav->sample_rate, "E-AC-3");
+    const auto sr = wav_sample_rate(wav->sample_rate, "E-AC-3", true);
     if (!sr) {
         return 1;
     }
@@ -1399,13 +1504,17 @@ int run_record(std::string_view out_path, std::uint32_t seconds, std::uint32_t b
 }
 
 int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_t bitrate,
-               bool couple, std::string_view layout, const MetaOptions& meta) {
-    const auto wav = ac3::io::read_wav(std::string{in_path});
+               bool couple, std::string_view layout, const MetaOptions& meta,
+               std::string_view in2_path = {}) {
+    auto wav = ac3::io::read_wav(std::string{in_path});
     if (!wav) {
         std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(wav.error()));
         return 1;
     }
-    const auto sr = wav_sample_rate(wav->sample_rate, "AC-3");
+    if (!prepare_dual_mono_source(*wav, layout, in2_path)) {
+        return 1;
+    }
+    const auto sr = wav_sample_rate(wav->sample_rate, "AC-3", false);
     if (!sr) {
         return 1;
     }
@@ -1454,6 +1563,16 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
             return 1;
         }
         p.meta.dialnorm = *measured;
+    }
+    if (plan::resolve(p).bed_acmod == ac3::Acmod::kDualMono && p.meta.measure_dialnorm2) {
+        const auto measured2 = measured_dialnorm_channel(wav->channels[1], *sr);
+        if (!measured2) {
+            std::println(stderr,
+                         "error: Ch2 has no audio above the -70 LKFS absolute gate; "
+                         "pass dialnorm2=<1..31> explicitly");
+            return 1;
+        }
+        p.meta.dialnorm2 = *measured2;
     }
 
     const auto routing = routing_or_error(p, wav->channels.size());
@@ -1546,6 +1665,23 @@ int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path
     if (pcm.empty()) {
         std::println(stderr, "error: no access units");
         return 1;
+    }
+    // Dual mono has no Table E2.5 location to order by - decode_access_unit
+    // leaves `layout` empty for exactly this case - so Ch1 and Ch2 go out in
+    // coded order, the same identity write_wav_f32 falls back to itself.
+    if (first.acmod == ac3::Acmod::kDualMono) {
+        const auto written = ac3::io::write_wav_f32(std::string{out_path}, pcm,
+                                                    sample_rate_hz(first.sample_rate));
+        if (!written) {
+            std::println(stderr, "error: {}", ac3::io::describe(written.error()));
+            return 1;
+        }
+        std::println("decoded {} E-AC-3 access units ({} substreams each) -> {}", units->size(),
+                     first.substream_count, out_path);
+        std::println("  {} channels, {} Hz: Ch1 Ch2 (1+1 dual mono - two programmes, not a "
+                     "soundfield)",
+                     pcm.size(), sample_rate_hz(first.sample_rate));
+        return 0;
     }
     // The same WAV speaker order the encode side reads a file in, so a stream
     // decoded here and re-encoded lands every channel back where it started.
@@ -1656,6 +1792,10 @@ int run_decode(std::string_view in_path, std::string_view out_path,
                  sample_rate_hz(first.sample_rate));
     std::println("metadata: dialnorm {} (dialogue at -{} dBFS)", first.dialnorm,
                  first.dialnorm);
+    if (first.dialnorm2) {
+        std::println("          dialnorm2 {} (Ch2, dialogue at -{} dBFS){}", *first.dialnorm2,
+                     *first.dialnorm2, first.compr2 ? ", compr2 present" : "");
+    }
     std::println("          dynrng {:+.2f} .. {:+.2f} dB{}", dynrng_min_db, dynrng_max_db,
                  meta.drc_scale != 0.0 ? std::format(", applied at scale {}", meta.drc_scale)
                                        : ", not applied");
@@ -1716,11 +1856,17 @@ int run_levels_eac3(std::span<const std::byte> stream, std::string_view in_path)
     std::println("per-channel levels:");
     std::println("  {:<6} {:>8} {:>8}  {:<20} {}", "ch", "peak", "rms", "peak (-60..0 dBFS)",
                  "clipped");
+    // Dual mono has no Table E2.5 location - `layout` is left empty for
+    // exactly that case (see decode_access_unit) - so Ch1/Ch2 name themselves
+    // by coded position instead of a speaker name that would not apply.
+    const bool dual_mono = first.acmod == ac3::Acmod::kDualMono;
     for (std::size_t ch = 0; ch < totals.size(); ++ch) {
         const auto& stats = totals[ch];
-        std::println("  {:<6} {:>8.2f} {:>8.2f}  [{}] {}",
-                     ac3::eac3::chanmap::name(first.layout[static_cast<int>(ch)]),
-                     stats.peak_db(), stats.rms_db(), meter_bar(stats.peak_db(), 18),
+        const std::string name = dual_mono ? std::format("Ch{}", ch + 1)
+                                           : std::string{ac3::eac3::chanmap::name(
+                                                 first.layout[static_cast<int>(ch)])};
+        std::println("  {:<6} {:>8.2f} {:>8.2f}  [{}] {}", name, stats.peak_db(),
+                     stats.rms_db(), meter_bar(stats.peak_db(), 18),
                      stats.clipped_samples > 0 ? std::to_string(stats.clipped_samples) : "-");
     }
     return 0;
@@ -2188,9 +2334,19 @@ int run_monitor(std::string_view in_path, int device_index) {
                 return 1;
             }
             if (order.empty()) {
-                order = plan::wav_order(
-                    std::span{decoded->layout.items}.first(
-                        static_cast<std::size_t>(decoded->layout.count)));
+                // Dual mono has no Table E2.5 location to order by - `layout`
+                // is left empty for exactly that case - so Ch1/Ch2 monitor in
+                // coded order, same as everywhere else this comes up.
+                if (decoded->acmod == ac3::Acmod::kDualMono) {
+                    order.resize(decoded->channels.size());
+                    for (std::size_t i = 0; i < order.size(); ++i) {
+                        order[i] = i;
+                    }
+                } else {
+                    order = plan::wav_order(
+                        std::span{decoded->layout.items}.first(
+                            static_cast<std::size_t>(decoded->layout.count)));
+                }
                 const auto started = sink.start(device_id, sample_rate_hz(decoded->sample_rate),
                                                 static_cast<std::uint16_t>(order.size()));
                 if (!started) {
@@ -2685,9 +2841,11 @@ constexpr std::array<Command, 21> kCommands{{
          return run_live(x.str(1), x.i32(2, 0), x.u32(3, 10), x.u32(4, 192), x.i32(5, -2),
                          x.i32(6, -2), x.str(7, "channels"));
      }},
-    {"encode", 3, "<in.wav> <out.ac3> [bitrate_kbps] [layout]", "", Needs::kNothing,
+    {"encode", 3, "<in.wav> <out.ac3> [bitrate_kbps] [layout] [in2.wav]",
+     "in2.wav: layout 1+1's Ch2, when Ch1 is a separate mono file", Needs::kNothing,
      [](const Args& x) {
-         return run_encode(x.str(1), x.str(2), x.u32(3, 192), x.couple, x.str(4), x.meta);
+         return run_encode(x.str(1), x.str(2), x.u32(3, 192), x.couple, x.str(4), x.meta,
+                           x.str(5));
      }},
     {"eac3-silence", 2, "<out.ec3> [seconds] [bitrate_kbps] [layout]", "", Needs::kNothing,
      [](const Args& x) {
@@ -2701,10 +2859,11 @@ constexpr std::array<Command, 21> kCommands{{
                               x.u32(5, 50), x.str(6, "stereo"), x.meta);
      }},
     {"eac3-encode", 3,
-     "<in.wav> <out.ec3> [bitrate_kbps] [tools] [layout] [vbr]", "", Needs::kNothing,
+     "<in.wav> <out.ec3> [bitrate_kbps] [tools] [layout] [vbr] [in2.wav]",
+     "in2.wav: layout 1+1's Ch2, when Ch1 is a separate mono file", Needs::kNothing,
      [](const Args& x) {
          return run_eac3_encode(x.str(1), x.str(2), x.u32(3, 192), x.str(4, "none"), x.str(5),
-                                x.str(6, "off"), x.meta);
+                                x.str(6, "off"), x.meta, x.str(7));
      }},
     {"decode", 3, "<in.ac3|in.ec3> <out.wav>", "AC-3 or E-AC-3; bsid decides", Needs::kNothing,
      [](const Args& x) { return run_decode(x.str(1), x.str(2), x.meta); }},
