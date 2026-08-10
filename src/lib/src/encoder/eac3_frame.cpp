@@ -1801,8 +1801,13 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
             // see an empty one. clang-tidy's bugprone-unchecked-optional-access
             // and MSVC /analyze's C26829 both flag it anyway: neither tracks
             // "has_value" across a copy into a different optional variable.
+            // #pragma warning(suppress: 26829) would silence MSVC's /analyze
+            // too, but it is not a portable pragma - GCC/clang both treat an
+            // unrecognized #pragma as -Wunknown-pragmas, and this project
+            // builds with -Werror, so emitting it here would fail every
+            // non-MSVC leg. The C26829 code-scanning alert is dismissed
+            // separately with this same justification instead.
             fixed_budget = sized->fallback_budget;
-#pragma warning(suppress : 26829)
             lo = search(*fixed_budget); // NOLINT(bugprone-unchecked-optional-access)
         }
         // Only ever a floor: finish_frame's own auxbits padding already
