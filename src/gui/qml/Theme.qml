@@ -3,14 +3,13 @@ pragma Singleton
 import QtQuick
 
 // Single source of truth for colour, spacing and type, so every page and
-// component stays visually consistent. Tokens are the Modernist system from
-// docs/design/handoff-workbench/README.md ("Design tokens"): zero radius
-// everywhere, an Archivo type scale, and colour ramps in two families
-// (neutral and accent), each 100 (lightest) to 900 (darkest).
+// component stays visually consistent. Tokens follow the Modernist design
+// system: zero radius everywhere, an Archivo type scale, and colour ramps in
+// two families (neutral and accent), each 100 (lightest) to 900 (darkest).
 //
 // Dark is DERIVED from the light values below by inverting each colour's HSL
-// lightness (see invert()) rather than hand-tuned as a second palette - the
-// handoff is explicit that "both themes must come from the same tokens".
+// lightness (see invert()) rather than hand-tuned as a second palette - both
+// themes must come from the same tokens.
 // Every component binds to a token name (Theme.neutral800, Theme.accent...)
 // and gets whichever theme is active; nothing outside this file knows there
 // are two palettes; nothing outside this file may know either.

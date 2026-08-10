@@ -139,8 +139,9 @@ names, modes and types and ships the trees in the companion archive as `ts_10342
 so `tools/gen_joc_tables.py` inverts that file — decoder trees in, encoder codewords out — and
 refuses to write unless every tree is a complete prefix code.
 
-The in-repo decoder does not read any of these three. For streams using them, FFmpeg is the
-only oracle.
+The in-repo decoder did not read any of these three at first; that gap closed later (see
+"Since" below) — it now reads all three, at every layout including 7.1.4 with all three
+stacked.
 
 ## Dolby Atmos objects (ETSI TS 103 420)
 
@@ -321,3 +322,28 @@ than a separate system — `ac3::plan::channel_plan_for(id)` is a one-line looku
   WAV reading — Clang-only and off by default (`AC3FORGE_BUILD_FUZZERS`); see
   [`fuzz/README.md`](https://github.com/iainchesworth/ac3forge/blob/main/fuzz/README.md). Runs on every push (`fuzz-regress`, seed/regression
   replay only) and nightly (`fuzz-nightly`, bounded mutation).
+- Dual mono (`acmod` 0, "1+1"): two independent single-channel programmes sharing one
+  syncframe rather than a channel layout, on both encoders and both decoders, with their own
+  `dialnorm2`/`compr2` metadata pair.
+- `fscod2`, Annex E's half sample rates (24, 22.05, 16 kHz) — decoded with the same tables as
+  their double-rate parent (§E2.3.1.4), so nothing else about decoding changes. No external
+  decode oracle exists for the audio content at these rates, not even Dolby's own Reference
+  Player; see the [README](https://github.com/iainchesworth/ac3forge/blob/main/README.md#verification-gaps).
+- Delta bit allocation (§7.2.2.6) on both encoders: corrects bands where the coarse
+  exponent-only masking curve and the real pre-quantization coefficient magnitude clearly
+  diverge. Skipped for the LFE and, on the encode side only, whenever coupling is active that
+  frame; both decoders accept it on the coupling channel regardless, from any encoder that
+  sends it.
+- E-AC-3 variable bit rate (`FrameConfig::vbr`): a quality target with optional min/max kbps
+  bounds, per substream — AC-3 has no free frame-size field to vary and stays CBR-only.
+- Block switching (§8.2.2 transient detector + §7.9 short transform) on both encoders and both
+  decoders: a per-block, per-channel choice between the long 512-point transform and a switched
+  pair of 256-point halves, excluding a switching channel from that frame's coupling (and, on
+  E-AC-3, AHT). Decoded switch decisions are reported back via `DecodedFrame::blksw`/
+  `DecodedSubstream::blksw`, the same tier of diagnostic as `dynrng`.
+- The E-AC-3 decoder's three remaining Annex E gaps — coupling, spectral extension and AHT —
+  closed, in that order. The decoder now reads every Annex E tool combination the encoder can
+  produce, at every layout including 7.1.4 with coupling, spectral extension and AHT all
+  stacked together. What it still refuses: enhanced coupling, transient pre-noise processing,
+  and (defensively, since this project's own encoder never emits it) the Annex E default
+  coupling band structure.

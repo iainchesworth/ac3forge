@@ -59,7 +59,7 @@ gold-reference *quality* gate, and a dedicated Linux FFmpeg-validation leg check
 
 | | AC-3 (bsid 8) | E-AC-3 (bsid 16) |
 |---|---|---|
-| Coding modes | 1/0, 2/0, 3/0, 2/1, 3/1, 2/2, 3/2, each with or without LFE | the same, plus 7.1, 5.1.2, 5.1.4 and 7.1.4 through dependent substreams |
+| Coding modes | 1/0, 2/0, 3/0, 2/1, 3/1, 2/2, 3/2, each with or without LFE, plus 1+1 dual mono (`acmod` 0 — two independent single-channel programmes sharing one syncframe, not a layout) | the same, plus 7.1, 5.1.2, 5.1.4 and 7.1.4 through dependent substreams |
 | Sample rates | 48, 44.1, 32 kHz | 48, 44.1, 32 kHz, plus the `fscod2` half rates 24, 22.05, 16 kHz (§E2.3.1.3 — Annex E only, no AC-3 counterpart) |
 | Bit rates | CBR only — the 19 nominal rates of Table 5.18, 32–640 kbps | CBR (the same 19, per substream) or VBR — a quality target with optional min/max kbps bounds, per substream |
 | Transform | long (512-point) or short (2x256-point) blocks, KBD window, chosen per block per channel by a §8.2.2 transient detector | same |
@@ -105,6 +105,10 @@ channel from any other encoder; this project's own just doesn't emit it yet.
 The in-repo decoder shares its tables, bit-allocation engine, exponent decoding and IMDCT
 with the encoder. It reads AC-3 (bsid ≤ 8) and E-AC-3 (bsid 11–16), including dependent
 substreams, `chanmap`, and the §E3.8.2 render that lays a dependent's channels over the bed.
+It also reads all three Annex E coding tools — coupling (§E3.3), spectral extension (§E3.6)
+and the adaptive hybrid transform with GAQ (§E3.4) — at every layout including 7.1.4 with all
+three stacked together, and reports block switching decisions back per block per channel
+(`DecodedFrame::blksw`/`DecodedSubstream::blksw`), the same tier of diagnostic as `dynrng`.
 
 ### Other
 
@@ -146,20 +150,19 @@ decoded 32 E-AC-3 access units (3 substreams each) -> out.wav
 Fourteen channels are coded and twelve are rendered: per §E3.8.2 the dependent's Ls and Rs
 replace the bed's rather than adding to them.
 
-**The oracles are complementary, and neither covers everything.** The in-repo decoder refuses
-Annex E coupling, spectral extension and AHT; FFmpeg reads all three, but refuses a *second*
-dependent substream. A single dependent numbers from 0 in its own space, which is why FFmpeg
-reads 7.1, 5.1.2 and 5.1.4 without complaint and only 7.1.4 defeats it. So a stream using an
-Annex E tool *and* two dependents has no decoder available here at all, and that combination
-is unverified.
+**The in-repo decoder now reads everything this project's own encoder can produce.** It closed
+its last three Annex E gaps — coupling, spectral extension and AHT — so the only case left with
+no *external* oracle is structural, not a tool-support gap: FFmpeg refuses a *second* dependent
+substream outright. A single dependent numbers from 0 in its own space, which is why FFmpeg
+reads 7.1, 5.1.2 and 5.1.4 (with or without Annex E tools) without complaint and only 7.1.4
+defeats it. So a stream using two dependents — with or without an Annex E tool on top — is
+checked only against this project's own encoder/decoder round trip, not against FFmpeg.
 
 | Stream | FFmpeg | In-repo decoder |
 |---|---|---|
 | AC-3, any supported mode | yes | yes |
-| E-AC-3 up to 5.1.4 (one dependent), no Annex E tools | yes | yes |
-| E-AC-3 7.1.4 (two dependents) | no | yes |
-| E-AC-3 with cpl / spx / aht | yes | no |
-| E-AC-3 7.1.4 with Annex E tools | no | no |
+| E-AC-3 up to 5.1.4 (one dependent), any combination of Annex E tools | yes | yes |
+| E-AC-3 7.1.4 (two dependents), with or without Annex E tools | no | yes |
 | E-AC-3 `fscod2` half rates (24/22.05/16 kHz) | header only | yes |
 
 **`fscod2` audio content has no external decode oracle at all — not even Dolby's own.**
@@ -241,7 +244,7 @@ linux-gcc, linux-llvm, linux-llvm-asan-ubsan (AddressSanitizer + UndefinedBehavi
 `cmake/Sanitizers.cmake`), macos-llvm, static-analysis (clang-tidy, `.clang-tidy`), coverage
 (gcovr line/branch gate over `src/lib` via the `linux-gcc-coverage` preset,
 `cmake/Coverage.cmake`) and ffmpeg-validate. No leg remains experimental — macos-llvm was the
-last promoted, once a real GitHub Actions run (this project has no Mac) confirmed 256/256 tests
+last promoted, once a real GitHub Actions run (this project has no Mac) confirmed 286/286 tests
 and the gold-reference gate both green.
 
 ffmpeg-validate is a separate, CLI-only linux-llvm build that runs `scripts/run-codec-matrix.sh`'s
@@ -414,8 +417,8 @@ Measured with FFmpeg 8.0.1 on 2026-08-09; reproduce with `python tools/quality_r
 SNR on synthetic material is a narrow metric — it says the waveform is closer, not that it
 sounds better, and no listening test has been run.
 
-The test suite is 249 Catch2 unit tests plus the seven example programs: 256 ctest entries on
-Windows, 270 on Linux where the ALSA backend adds 14 tests of its own
+The test suite is 279 Catch2 unit tests plus the seven example programs: 286 ctest entries on
+Windows, 300 on Linux where the ALSA backend adds 14 tests of its own
 (`tests/platform/alsa/`).
 
 ```bash
@@ -469,10 +472,8 @@ belong on the public site.
 | [docs/cli/](docs/cli/index.md) | The `ac3cli` reference: all 21 commands, metadata options |
 | [docs/gui/](docs/gui/index.md) | Step-by-step `ac3gui` guide, with screenshots |
 | [docs/project/history.md](docs/project/history.md) | How the implementation was built, milestone by milestone |
-| [docs/project/research.md](docs/project/research.md) | The original feasibility research and the decisions that came out of it |
-| [docs/quality-trend.md](docs/quality-trend.md) | Gold-reference SNR history by commit, develop vs. main - the persisted half of `research.md`'s L3/L4 validation pyramid |
+| [docs/quality-trend.md](docs/quality-trend.md) | Gold-reference SNR history by commit, develop vs. main - the FFmpeg-oracle gate's numbers, trended over time |
 | [fuzz/README.md](fuzz/README.md) | The libFuzzer harnesses: what they cover, how to run them locally |
-| [docs/project/gui-design-brief.md](docs/project/gui-design-brief.md) | Superseded input document for the GUI redesign: current-state inventory at the time, user journeys, open questions |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Conventions, and the validation discipline |
 
 ## Licence

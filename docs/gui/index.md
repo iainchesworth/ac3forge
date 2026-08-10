@@ -7,8 +7,7 @@ logic the library doesn't also expose, and every setting it makes maps onto an e
 
 The screenshots in this guide are of the current two-pane "workbench" layout. An earlier
 nine-card single-column design existed before it — if you find references to that layout
-elsewhere in the repo's history, they describe a superseded build; see the
-[superseded design brief](../project/gui-design-brief.md) if you want the history.
+elsewhere in the repo's history, they describe a superseded build predating this guide.
 
 ## The window
 

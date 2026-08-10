@@ -5,10 +5,10 @@ gate](https://github.com/iainchesworth/ac3forge/blob/main/scripts/verify-gold-re
 (encode the checked-in golden 5.1 WAV, strict-decode with FFmpeg and with
 `ac3cli`'s own decoder, delay-compensated SNR between the two) has its
 per-channel numbers appended to history instead of only living in that run's
-CI log. This is [research.md](project/research.md#7-validation-pyramid)'s L3
-(FFmpeg oracle) plus a lightweight L4 (perceptual SNR, trend lines) — the gate
-itself has run on every commit since it landed; what's below is what makes
-the *numbers*, not just the pass/fail, outlive the run that produced them.
+CI log. It turns the gate's own FFmpeg-oracle SNR check into a lightweight,
+trended perceptual signal — the gate itself has run on every commit since it
+landed; what's below is what makes the *numbers*, not just the pass/fail,
+outlive the run that produced them.
 
 The gate's own threshold (currently 30 dB, see `MIN_SNR_DB` in
 `verify-gold-reference.sh`) is a fixed floor and still the only thing that
@@ -222,9 +222,9 @@ Each row is one (commit, CI leg, codec) result — the gate runs on every
 `linux-llvm`, `macos-llvm`; not the ASan+UBSan leg, which stays
 diagnostic-only), so a single commit contributes up to five rows per codec.
 The chart plots the worst of those per commit, per branch — a cross-leg
-floating-point difference (see the ~62 dB vs. ~68 dB macOS/Linux split noted
-in [research.md](project/research.md)) is expected and not itself a
-regression.
+floating-point difference (a ~62 dB vs. ~68 dB macOS/Linux split is a known,
+expected effect of platform floating-point differences) is expected and not
+itself a regression.
 
 `develop` and `main` are shown as separate tracks because they represent
 different points in the codec's history — `main` only advances on a release
@@ -246,7 +246,6 @@ History is written by a job in `_build.yml` that runs after every
 `gold_reference` leg passes, on direct pushes to `develop` or `main` only —
 never on a pull request, so unmerged work never pollutes the trend. It reuses
 numbers the gate already computed rather than re-running the encode/decode
-pass, so — unlike [research.md](project/research.md#7-validation-pyramid)'s
-L4 entry, which calls for a nightly cadence to bound cost — doing this on
-every push costs nothing extra to compute; only a JSON append and a git push
-are new.
+pass, so — unlike a from-scratch perceptual pass, which would need a nightly
+cadence to bound cost — doing this on every push costs nothing extra to
+compute; only a JSON append and a git push are new.
