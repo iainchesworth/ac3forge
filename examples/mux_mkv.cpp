@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdio>
+#include <memory>
 #include <span>
 #include <string>
 #include <vector>
@@ -18,7 +19,10 @@
 
 int main() {
     // Some AC-3 to wrap.
-    ac3::FrameEncoder encoder{{.bitrate_kbps = 192, .acmod = ac3::Acmod::k2_0}};
+    // Heap-allocated: FrameEncoder carries several KB of MDCT scratch/history
+    // state (PREfast's C6262).
+    auto encoder = std::make_unique<ac3::FrameEncoder>(
+        ac3::EncoderConfig{.bitrate_kbps = 192, .acmod = ac3::Acmod::k2_0});
     std::vector<std::vector<float>> pcm(2, std::vector<float>(ac3::kSamplesPerFrame));
     const std::vector<std::span<const float>> views{pcm[0], pcm[1]};
 
@@ -30,7 +34,7 @@ int main() {
                     0.2F * static_cast<float>((n % 61) - 30) / 30.0F;
             }
         }
-        const auto encoded = encoder.encode_frame(views);
+        const auto encoded = encoder->encode_frame(views);
         if (!encoded) {
             return 1;
         }

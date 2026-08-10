@@ -276,6 +276,14 @@ private:
     // One per full-bandwidth channel (§8.2.2 excludes the LFE): stateful
     // across frames, like history_ above.
     std::vector<TransientDetector> transient_detectors_;
+    // Per-(channel, block) scratch for the MDCT pass, reused rather than
+    // stack-declared inside encode_frame (PREfast's C6262 flagged the
+    // function's stack frame) - see the AC-3 FrameEncoder for why reuse
+    // across iterations and calls changes nothing observable.
+    std::array<double, 512> time_scratch_{};
+    std::array<double, 512> windowed_scratch_{};
+    std::array<double, 128> half1_scratch_{};
+    std::array<double, 128> half2_scratch_{};
     // Smoothed across frames: see the AC-3 FrameEncoder for why they cannot be
     // per-frame objects.
     std::optional<meta::RangeController> range_;

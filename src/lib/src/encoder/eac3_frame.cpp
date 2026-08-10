@@ -1225,7 +1225,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         const auto& pcm = channels[static_cast<std::size_t>(ch)];
         auto& hist = history_[static_cast<std::size_t>(ch)];
         for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
-            std::array<double, 512> time{};
+            auto& time = time_scratch_;
             for (int n = 0; n < 512; ++n) {
                 const int pos = blk * 256 - 256 + n;
                 time[static_cast<std::size_t>(n)] =
@@ -1305,14 +1305,14 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         const auto& pcm = channels[static_cast<std::size_t>(ch)];
         auto& hist = history_[static_cast<std::size_t>(ch)];
         for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
-            std::array<double, 512> time{};
+            auto& time = time_scratch_;
             for (int n = 0; n < 512; ++n) {
                 const int pos = blk * 256 - 256 + n;
                 time[static_cast<std::size_t>(n)] =
                     pos < 0 ? hist[static_cast<std::size_t>(pos + 256)]
                             : static_cast<double>(pcm[static_cast<std::size_t>(pos)]);
             }
-            std::array<double, 512> windowed{};
+            auto& windowed = windowed_scratch_;
             apply_analysis_window(time, windowed);
             if (ch < nfchans && blksw[static_cast<std::size_t>(ch)][static_cast<std::size_t>(blk)]) {
                 // §7.9.2: the two half-block transforms are interleaved
@@ -1320,8 +1320,8 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                 // here on, exponent/bitalloc/mantissa code cannot tell this
                 // block apart from a long one.
                 const std::span<const double, 512> full(windowed);
-                std::array<double, 128> first{};
-                std::array<double, 128> second{};
+                auto& first = half1_scratch_;
+                auto& second = half2_scratch_;
                 mdct256_forward_first(full.first<256>(), first);
                 mdct256_forward_second(full.last<256>(), second);
                 auto& out = coeffs_at(ch, blk);
@@ -1798,10 +1798,17 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
             // best CBR could do at that rate.
             // sized->fallback_budget was just checked engaged above, and this
             // copies that same optional, so the dereference below can never
-            // see an empty one.
+            // see an empty one. clang-tidy's bugprone-unchecked-optional-access
+            // and MSVC /analyze's C26829 both flag it anyway: neither tracks
+            // "has_value" across a copy into a different optional variable.
+            // #pragma warning(suppress: 26829) would silence MSVC's /analyze
+            // too, but it is not a portable pragma - GCC/clang both treat an
+            // unrecognized #pragma as -Wunknown-pragmas, and this project
+            // builds with -Werror, so emitting it here would fail every
+            // non-MSVC leg. The C26829 code-scanning alert is dismissed
+            // separately with this same justification instead.
             fixed_budget = sized->fallback_budget;
-            // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
-            lo = search(*fixed_budget);
+            lo = search(*fixed_budget); // NOLINT(bugprone-unchecked-optional-access)
         }
         // Only ever a floor: finish_frame's own auxbits padding already
         // covers any gap between what the content actually needs and the
