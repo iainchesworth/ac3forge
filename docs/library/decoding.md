@@ -65,9 +65,13 @@ decoder as a check on the encoder: a test can assert on the `dynrng` words the e
 | `drc_scale` | 0.0 | §7.7.1 partial compression. 0 ignores `dynrng`; 1 applies it as encoded. A/52 says a consumer decoder should default to applying it — this one defaults to 0 because a reference that silently rescales its output is not a reference. |
 | `heavy_compression` | `false` | §7.7.2: prefer `compr` where it exists, falling back on `dynrng` for syncframes that carry none. |
 
-What both decoders refuse, cleanly, rather than mis-decoding: block switching. The E-AC-3 decoder
-additionally refuses Annex E coupling, spectral extension, AHT, and transient pre-noise
-processing.
+What both decoders refuse, cleanly, rather than mis-decoding: the E-AC-3 decoder refuses Annex E
+coupling, spectral extension, AHT, and transient pre-noise processing.
+
+Block switching (§8.2.2/§7.9) decodes on both, and is reported back: `DecodedFrame::blksw` /
+`DecodedSubstream::blksw` gives, per full-bandwidth channel per block, whether that block used the
+short transform — the same tier of diagnostic as `dynrng`, exposing what the encoder decided
+rather than only applying it.
 
 Dual mono (`acmod` 0, "1+1") decodes on both: it's two independent single-channel programmes
 sharing one syncframe rather than a channel layout, so `DecodedFrame`/`DecodedSubstream` carry a

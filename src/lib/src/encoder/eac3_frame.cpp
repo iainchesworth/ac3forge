@@ -36,7 +36,6 @@ constexpr int kFrmExpStrategyCode = 0;  // Table E2.10 row 0: D15 R R R R R
 constexpr double kAhtStationaryRatio = 10.0;
 constexpr int kSnroffststr = 0;    // one SNR offset pair for the whole frame
 constexpr int kTransproce = 0;     // no transient pre-noise processing
-constexpr int kBlkswe = 0;         // long blocks only, so no per-block flags
 constexpr int kDithflage = 1;      // sent explicitly: the DEFAULT when absent is
                                    // dither ON, which would fill every zero-bit
                                    // bin with noise and make "silence" audible
@@ -131,6 +130,10 @@ struct ChannelPlan {
     // decoder's reconstruction once they are packed.
     std::vector<std::array<double, kBlocksPerFrameSize>> aht_coeffs;
     std::vector<std::uint8_t> aht_gain;  // per bin: 1, 2 or 4
+    // §8.2.2/§7.9: per-block block-switch flag. Only meaningful for a
+    // full-bandwidth channel's own plan - the coupling and LFE streams never
+    // set any of these.
+    std::array<bool, kBlocksPerFrame> blksw{};
     // §7.2.2.6: computed once per frame (like `decoded` above, since Table
     // E2.10 code 0 gives this stream one exponent set for all six blocks
     // anyway) from the real coefficients, EXCEPT for an AHT stream - its
@@ -363,12 +366,16 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
     const auto& cpl = payload.cpl;
     const auto& spx = payload.spx;
     const int skipflde = metadata.empty() ? 0 : 1;
-    // §E2.3.2.9: dbaflde is an all-or-nothing per-frame contract - once any
-    // stream wants a correction, every block must carry the full delta bit
-    // allocation syntax, including blocks with nothing to say (deltbaie = 0
-    // there, not an absent field).
+    // §E2.3.2.5/§E2.3.2.9: blkswe and dbaflde are each their own all-or-
+    // nothing per-frame contract - once any channel/stream wants something
+    // anywhere, every block sends the full syntax, including blocks with
+    // nothing to say.
+    bool blkswe = false;
     bool dbaflde = false;
     for (const auto& plan : payload.chans) {
+        for (const bool sw : plan.blksw) {
+            blkswe = blkswe || sw;
+        }
         dbaflde = dbaflde || plan.delta.deltnseg > 0;
     }
 
@@ -487,7 +494,7 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
     w.put(payload.ahte ? 1 : 0, 1);
     w.put(kSnroffststr, 2);
     w.put(kTransproce, 1);
-    w.put(kBlkswe, 1);
+    w.put(blkswe ? 1 : 0, 1);
     w.put(kDithflage, 1);
     w.put(kBamode, 1);
     w.put(kFrmfgaincode, 1);
@@ -567,7 +574,17 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
     // --- audblk x6 (Table E1.4) ---
     for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
         const bool first = blk == 0;
-        // blkswe == 0: blksw omitted, all long blocks.
+        if (blkswe) {
+            for (int ch = 0; ch < nfchans; ++ch) {
+                w.put(payload.chans[static_cast<std::size_t>(ch)]
+                              .blksw[static_cast<std::size_t>(blk)]
+                          ? 1
+                          : 0,
+                      1);  // blksw
+            }
+        }
+        // blkswe == 0: blksw omitted, every channel implicitly long (Table
+        // E1.4's own else-branch).
         for (int ch = 0; ch < nfchans; ++ch) {
             w.put(0, 1);  // dithflag: off, so zero-bit bins stay silent
         }
@@ -1006,6 +1023,11 @@ FrameEncoder::FrameEncoder(const FrameConfig& config) : config_(config) {
             heavy2_.emplace(*config_.heavy, config_.sample_rate);
         }
     }
+    const int nfchans = fullbw_channel_count(config_.acmod);
+    transient_detectors_.reserve(static_cast<std::size_t>(nfchans));
+    for (int i = 0; i < nfchans; ++i) {
+        transient_detectors_.emplace_back(config_.sample_rate);
+    }
 }
 
 namespace {
@@ -1188,9 +1210,40 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         }
     }
 
+    // --- Block switching (§8.2.2/§7.9) --------------------------------------
+    // Decided before the coupling decision below, because §8.2.4.1's basic-
+    // encoder guidance excludes a block-switched channel from coupling, and
+    // this codebase's coupling is frame-wide all-or-nothing rather than a
+    // per-channel toggle - so the only way to honour that exclusion without
+    // inventing bitstream machinery this phase has no room for is to leave
+    // coupling (and, below, AHT) off for the WHOLE frame whenever any
+    // eligible channel switches, rather than just that one channel.
+    std::vector<std::array<bool, kBlocksPerFrame>> blksw(static_cast<std::size_t>(nfchans));
+    std::vector<bool> channel_switched(static_cast<std::size_t>(nfchans), false);
+    bool any_switched = false;
+    for (int ch = 0; ch < nfchans; ++ch) {
+        const auto& pcm = channels[static_cast<std::size_t>(ch)];
+        auto& hist = history_[static_cast<std::size_t>(ch)];
+        for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
+            std::array<double, 512> time{};
+            for (int n = 0; n < 512; ++n) {
+                const int pos = blk * 256 - 256 + n;
+                time[static_cast<std::size_t>(n)] =
+                    pos < 0 ? hist[static_cast<std::size_t>(pos + 256)]
+                            : static_cast<double>(pcm[static_cast<std::size_t>(pos)]);
+            }
+            const bool sw = transient_detectors_[static_cast<std::size_t>(ch)].detect(time);
+            blksw[static_cast<std::size_t>(ch)][static_cast<std::size_t>(blk)] = sw;
+            channel_switched[static_cast<std::size_t>(ch)] =
+                channel_switched[static_cast<std::size_t>(ch)] || sw;
+            any_switched = any_switched || sw;
+        }
+    }
+
     // §E2.2.3 gates the whole coupling element on acmod > 0x1, so 1/0 and the
     // rejected 1+1 cannot couple however the caller asks.
-    cpl.in_use = config_.coupling && static_cast<std::uint8_t>(config_.acmod) > 0x1;
+    cpl.in_use =
+        config_.coupling && static_cast<std::uint8_t>(config_.acmod) > 0x1 && !any_switched;
     if (cpl.in_use) {
         cpl.begf = std::clamp(config_.cplbegf >= 0
                                   ? config_.cplbegf
@@ -1261,7 +1314,24 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
             }
             std::array<double, 512> windowed{};
             apply_analysis_window(time, windowed);
-            mdct512_forward(windowed, coeffs_at(ch, blk));
+            if (ch < nfchans && blksw[static_cast<std::size_t>(ch)][static_cast<std::size_t>(blk)]) {
+                // §7.9.2: the two half-block transforms are interleaved
+                // bin-by-bin into one ordinary 256-coefficient set - from
+                // here on, exponent/bitalloc/mantissa code cannot tell this
+                // block apart from a long one.
+                const std::span<const double, 512> full(windowed);
+                std::array<double, 128> first{};
+                std::array<double, 128> second{};
+                mdct256_forward_first(full.first<256>(), first);
+                mdct256_forward_second(full.last<256>(), second);
+                auto& out = coeffs_at(ch, blk);
+                for (int k = 0; k < 128; ++k) {
+                    out[static_cast<std::size_t>(2 * k)] = first[static_cast<std::size_t>(k)];
+                    out[static_cast<std::size_t>(2 * k + 1)] = second[static_cast<std::size_t>(k)];
+                }
+            } else {
+                mdct512_forward(windowed, coeffs_at(ch, blk));
+            }
         }
         for (int n = 0; n < 256; ++n) {
             hist[static_cast<std::size_t>(n)] =
@@ -1369,8 +1439,18 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     // part of a frame, so the decision is per channel per frame and the test
     // is whether the block energies are within an order of magnitude.
     payload.chans.resize(static_cast<std::size_t>(streams));
+    for (int ch = 0; ch < nfchans; ++ch) {
+        payload.chans[static_cast<std::size_t>(ch)].blksw = blksw[static_cast<std::size_t>(ch)];
+    }
     for (int s = 0; s < streams && config_.aht; ++s) {
         auto& plan = payload.chans[static_cast<std::size_t>(s)];
+        // A block-switched channel's transform already varies within the
+        // frame by design - the opposite of AHT's own "stationary" premise -
+        // and forcing it whole-frame-transform anyway would silently discard
+        // the short-block coefficients switching was just computed for.
+        if (s < nfchans && channel_switched[static_cast<std::size_t>(s)]) {
+            continue;
+        }
         std::array<double, kBlocksPerFrameSize> energy{};
         for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
             for (int bin = stream_start(s); bin < stream_end(s); ++bin) {

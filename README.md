@@ -62,7 +62,7 @@ gold-reference *quality* gate, and a dedicated Linux FFmpeg-validation leg check
 | Coding modes | 1/0, 2/0, 3/0, 2/1, 3/1, 2/2, 3/2, each with or without LFE | the same, plus 7.1, 5.1.2, 5.1.4 and 7.1.4 through dependent substreams |
 | Sample rates | 48, 44.1, 32 kHz | 48, 44.1, 32 kHz, plus the `fscod2` half rates 24, 22.05, 16 kHz (§E2.3.1.3 — Annex E only, no AC-3 counterpart) |
 | Bit rates | CBR only — the 19 nominal rates of Table 5.18, 32–640 kbps | CBR (the same 19, per substream) or VBR — a quality target with optional min/max kbps bounds, per substream |
-| Transform | long blocks only (512-point MDCT, KBD window) | long blocks only |
+| Transform | long (512-point) or short (2x256-point) blocks, KBD window, chosen per block per channel by a §8.2.2 transient detector | same |
 | Exponents | D15 / D25 / D45, strategy chosen per block from the reuse span (§8.2.8) | frame-level, Table E2.10 code 0: D15 in block 0, reused for the other five |
 | Coupling | yes (§7.4), begin and end frequencies auto or pinned | yes (§E3.3) |
 | Delta bit allocation | automatic (§7.2.2.6), like rematrixing below — no toggle | automatic, same as AC-3 |
@@ -73,6 +73,13 @@ gold-reference *quality* gate, and a dedicated Linux FFmpeg-validation leg check
 At 44.1 kHz, CBR needs non-integral frame sizes; the AC-3 encoder alternates between the two
 Table 5.18 lengths on a Bresenham accumulator so the long-run rate is exact. E-AC-3 signals
 `frmsiz` directly and needs no such alternation.
+
+**Block switching's scope**: a §8.2.2 transient detector (cascaded biquad 8 kHz high-pass, a
+256/128/64-sample peak-ratio tree) runs per full-bandwidth channel per block; a channel that
+switches anywhere in the frame is excluded from coupling and, on E-AC-3, from AHT for that whole
+frame — this project's coupling and AHT decisions are frame-wide all-or-nothing, so there is no
+per-channel toggle to hook a narrower exclusion into. The LFE never switches (§8.2.2 defines the
+detector over full-bandwidth channels only).
 
 **Delta bit allocation's scope**: the encoder compares the coarse exponent-only masking curve
 §7.2.2.2-7.2.2.5 derive against one built from the real, pre-quantization coefficient magnitude,
@@ -121,8 +128,6 @@ all stacked together, at every channel layout including 7.1.4.
 
 | Missing | Where it matters |
 |---|---|
-| Block switching (short blocks) | Transients smear. FFmpeg's AC-3 encoder has never used short blocks either, so this is conventional rather than unusual, but it is still a gap. |
-| Dual mono (1+1, acmod 0) | Refused by the encoder and the decoder. It is two programmes sharing a syncframe, with a second copy of every metadata item, and it has no channel layout to render. |
 | Enhanced coupling, transient pre-noise processing | Recognised by the decoder and refused, rather than mis-decoded. |
 | Variable bit rate on AC-3 | `frmsizecod` indexes Table 5.18 rather than stating a word count directly, so AC-3 has no free frame size to vary at all and stays CBR. E-AC-3 supports VBR — see [Encoding E-AC-3](docs/library/encoding-eac3.md#variable-bit-rate-frameconfigvbr). |
 

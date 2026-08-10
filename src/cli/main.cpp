@@ -890,11 +890,16 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
     }
     std::vector<std::vector<std::byte>> frames;
     for (std::size_t start = 0; start < total; start += ac3::kSamplesPerFrame) {
+        // Hold the last real sample past end-of-file rather than dropping to
+        // hard zero - see run_encode's identical padding for why: a sudden
+        // drop to silence is itself a transient the encoder would (correctly)
+        // spend a block-switch on, for a discontinuity that only exists
+        // because this frame ends mid-buffer.
         for (std::size_t c = 0; c < source.size(); ++c) {
+            const float hold = total > 0 ? wav->channels[c][total - 1] : 0.0f;
             for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
                 const std::size_t at = start + static_cast<std::size_t>(i);
-                source[c][static_cast<std::size_t>(i)] =
-                    at < total ? wav->channels[c][at] : 0.0f;
+                source[c][static_cast<std::size_t>(i)] = at < total ? wav->channels[c][at] : hold;
             }
             in[c] = source[c];
         }
@@ -1599,14 +1604,19 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
     }
     std::vector<std::vector<std::byte>> frames;
     for (std::size_t start = 0; start < total; start += ac3::kSamplesPerFrame) {
-        // The tail frame is zero-padded to a full 1536 samples; the meter sees
-        // only the real ones, so the padding cannot pull the RMS down.
+        // The tail frame is padded to a full 1536 samples; the meter sees only
+        // the real ones, so the padding cannot pull the RMS down. Padding
+        // holds the last real sample rather than dropping to hard zero: a
+        // sudden drop to silence is itself a transient, and the encoder's own
+        // §8.2.2 detector would (correctly) spend a block-switch on it,
+        // paying real side-info bits to preserve a discontinuity that exists
+        // only because this frame ends mid-buffer, not in the source audio.
         const auto valid = std::min<std::size_t>(ac3::kSamplesPerFrame, total - start);
         for (std::size_t c = 0; c < source.size(); ++c) {
+            const float hold = total > 0 ? wav->channels[c][total - 1] : 0.0f;
             for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
                 const std::size_t at = start + static_cast<std::size_t>(i);
-                source[c][static_cast<std::size_t>(i)] =
-                    at < total ? wav->channels[c][at] : 0.0f;
+                source[c][static_cast<std::size_t>(i)] = at < total ? wav->channels[c][at] : hold;
             }
             in[c] = source[c];
         }

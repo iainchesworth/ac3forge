@@ -34,6 +34,23 @@ graph LR
 - **Packed bitstream** — the results are packed into the syncframe format the standard
   defines, ready to be written to disc, broadcast, or streamed.
 
+### Transients and block switching
+
+The transform above normally looks at a fairly long stretch of audio at once — about 10.7 ms —
+which is what gives it good frequency resolution. That works well for steady, sustained sound,
+but it has a cost on a sudden, sharp one: a drum hit or a cymbal crash: quantization error from
+that one loud instant leaks backward across the whole stretch the transform covers, smearing a
+faint echo of the hit into the silence just *before* it. That artefact is called **pre-echo**, and
+it's audible precisely because it appears where there was nothing to mask it.
+
+Both formats fix this by switching, per channel per block, to two half-length transforms instead
+of one long one whenever a channel's encoder detects a transient — shorter transforms trade away
+some frequency resolution for better time resolution, which confines the smearing to a much
+narrower window around the transient instead of the whole block. The decoder does not need to be
+told how the detector reached its decision, only which length transform to undo — the choice is a
+single bit per channel per block, and everything downstream of the transform (which frequencies
+got how many bits, and so on) is written identically either way.
+
 ## Channel beds and layout
 
 You'll often see surround sound described as "5.1" or "7.1." The number before the dot is the

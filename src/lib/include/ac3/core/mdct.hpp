@@ -30,4 +30,20 @@ void mdct512_forward(std::span<const double, 512> windowed, std::span<double, 25
 // Reconstruction: pcm[n] = 2 * (x[n] + previous_block_x[256 + n]).
 void imdct512_windowed(std::span<const double, 256> coeffs, std::span<double, 512> x);
 
+// The block-switched (short) transform pair (§7.9, blksw = 1): the usual
+// 512-sample windowed block split into two 256-sample halves, each
+// transformed separately with alpha = -1 (first) or +1 (second, §8.2.3.2).
+// Each half yields 128 coefficients; per §7.9.2 the encoder interleaves
+// them bin-by-bin (X[2k] = first[k], X[2k+1] = second[k]) into an ordinary
+// 256-coefficient set before quantization — exponents/bitalloc/mantissa
+// never see a difference from the long-block path.
+void mdct256_forward_first(std::span<const double, 256> windowed, std::span<double, 128> coeffs);
+void mdct256_forward_second(std::span<const double, 256> windowed, std::span<double, 128> coeffs);
+
+// Normative inverse for blksw = 1 (§7.9.4.2): takes the SAME 256-length
+// interleaved coefficient set a long block would carry and produces 512
+// WINDOWED time samples, using the identical overlap-add as
+// imdct512_windowed — callers do not need to know which transform path ran.
+void imdct256_pair_windowed(std::span<const double, 256> coeffs, std::span<double, 512> x);
+
 }  // namespace ac3

@@ -51,6 +51,13 @@ Coupling is what makes 5.1 viable below 448 kbit/s: above the coupling frequency
 full-bandwidth channels stop carrying their own coefficients and share one coupling channel
 plus per-band coordinates.
 
+### Block switching
+
+Automatic, like delta bit allocation below — no config field toggles it. A §8.2.2 transient
+detector runs per full-bandwidth channel per block; a channel that switches anywhere in the frame
+is excluded from coupling for that whole frame, since `chincpl` here is frame-wide all-or-nothing
+rather than a per-channel flag. The LFE never switches.
+
 ### Dual mono (`acmod` 0, "1+1")
 
 Not a channel layout — two independent, single-channel programmes sharing one syncframe (a

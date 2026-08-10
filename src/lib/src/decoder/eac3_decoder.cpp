@@ -455,6 +455,7 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
     out.numblkscod = bsi->numblkscod;
     out.chanmap = bsi->chanmap;
     out.last_dependent = bsi->strmtyp == StreamType::kDependent && bsi->compre;
+    out.blksw.assign(static_cast<std::size_t>(nfchans), {});
     out.channels.assign(static_cast<std::size_t>(nchans),
                         std::vector<float>(static_cast<std::size_t>(nblks * kSamplesPerBlock),
                                            0.0f));
@@ -530,12 +531,15 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
                        : frm->lfeexpstr[static_cast<std::size_t>(blk)];
         };
 
+        std::array<bool, eac3::chanmap::kMaxSubstreamFullbw> blksw{};
         if (frm->blkswe) {
             for (int ch = 0; ch < nfchans; ++ch) {
-                if (r.read(1) != 0) {  // blksw[ch]
-                    return std::unexpected(DecodeError::kUnsupported);
-                }
+                blksw[static_cast<std::size_t>(ch)] = r.read(1) != 0;
             }
+        }
+        for (int ch = 0; ch < nfchans; ++ch) {
+            out.blksw[static_cast<std::size_t>(ch)][static_cast<std::size_t>(blk)] =
+                blksw[static_cast<std::size_t>(ch)];
         }
         if (frm->dithflage) {
             // bap-0 bins reconstruct as zero whatever this says, matching the
@@ -1297,7 +1301,11 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
         for (int ch = 0; ch < nchans; ++ch) {
             const auto index = static_cast<std::size_t>(ch);
             std::array<double, 512> x{};
-            imdct512_windowed(coeffs[index], x);
+            if (ch < nfchans && blksw[static_cast<std::size_t>(ch)]) {
+                imdct256_pair_windowed(coeffs[index], x);
+            } else {
+                imdct512_windowed(coeffs[index], x);
+            }
             auto& history = delay[index];
             auto& pcm = out.channels[index];
             for (int n = 0; n < kSamplesPerBlock; ++n) {

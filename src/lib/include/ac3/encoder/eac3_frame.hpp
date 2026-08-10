@@ -11,6 +11,7 @@
 #include "ac3/core/eac3_tables.hpp"
 #include "ac3/core/tables.hpp"
 #include "ac3/encoder/silent_frame.hpp"  // FrameError
+#include "ac3/encoder/transient.hpp"
 #include "ac3/meta/drc.hpp"
 #include "ac3/meta/mixing.hpp"
 
@@ -272,6 +273,9 @@ public:
 private:
     FrameConfig config_;
     std::array<std::array<double, 256>, 6> history_{};  // MDCT overlap per channel
+    // One per full-bandwidth channel (§8.2.2 excludes the LFE): stateful
+    // across frames, like history_ above.
+    std::vector<TransientDetector> transient_detectors_;
     // Smoothed across frames: see the AC-3 FrameEncoder for why they cannot be
     // per-frame objects.
     std::optional<meta::RangeController> range_;
