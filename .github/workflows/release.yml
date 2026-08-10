@@ -238,6 +238,21 @@ jobs:
         run: |
           set -euo pipefail
           echo "$GPG_KEY" | gpg --batch --import
+          # REPO_GPG_PRIVATE_KEY is meant to hold exactly one key. If it ever
+          # holds more (e.g. a leftover test key alongside the real one),
+          # `gpg --list-secret-keys` lists all of them and picking "the
+          # first sec: line" silently signs with whichever one gpg happens
+          # to list first - not necessarily the intended identity, and with
+          # no indication anything was wrong beyond a confusing downstream
+          # signing failure if that key needs a passphrase nothing supplied
+          # one for. Fail loudly here instead: an ambiguous secret is a
+          # secret-provisioning bug to fix (see docs/releasing.md), not
+          # something to guess through.
+          key_count="$(gpg --list-secret-keys --with-colons | grep -c '^sec:')"
+          if [ "$key_count" -ne 1 ]; then
+            echo "::error::REPO_GPG_PRIVATE_KEY imported $key_count secret keys, expected exactly 1 - re-export just the intended signing key"
+            exit 1
+          fi
           echo "GPG_KEYID=$(gpg --list-secret-keys --with-colons | awk -F: '/^sec:/ {print $5; exit}')" >> "$GITHUB_ENV"
           mkdir -p ~/.gnupg
           echo "allow-loopback-pinentry" >> ~/.gnupg/gpg-agent.conf
@@ -302,8 +317,13 @@ jobs:
             release-artifacts/*.exe
             release-artifacts/*.dmg
 
+      # actions/attest-sbom is deprecated (GitHub folded it into the generic
+      # actions/attest action - confirmed by v0.2.0-beta.1's real run, which
+      # showed attest-sbom itself as just a thin wrapper forwarding these
+      # same two inputs to actions/attest internally). attest-build-provenance
+      # above isn't flagged deprecated, so it's untouched.
       - name: Attest package SBOM
-        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: |
             release-artifacts/*.deb
