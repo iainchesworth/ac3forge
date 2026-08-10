@@ -9,6 +9,7 @@
 #include <format>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <numbers>
 #include <optional>
 #include <print>
@@ -575,8 +576,10 @@ int run_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_t bit
         std::ranges::fill(tone_hz, static_cast<double>(freq_hz));
     }
 
-    ac3::FrameEncoder encoder{config};
-    const auto nchans = static_cast<std::size_t>(encoder.channel_count());
+    // Heap-allocated: FrameEncoder carries several KB of MDCT scratch/history
+    // state, and this function only constructs it once (PREfast's C6262).
+    auto encoder = std::make_unique<ac3::FrameEncoder>(config);
+    const auto nchans = static_cast<std::size_t>(encoder->channel_count());
     const double amplitude = amplitude_pct / 100.0;
     ac3::analysis::LevelMeter meter{config.acmod, config.lfe, 48000};
 
@@ -591,7 +594,7 @@ int run_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_t bit
         fill_tones(samples, views, tone_hz, amplitude, n0);
         n0 += ac3::kSamplesPerFrame;
         meter.process(views);
-        auto frame = encoder.encode_frame(views);
+        auto frame = encoder->encode_frame(views);
         if (!frame) {
             std::println(stderr, "error: bitrate must be a legal AC-3 rate");
             return 1;
@@ -1324,7 +1327,9 @@ int run_orbit(std::string_view out_path, std::uint32_t seconds, std::uint32_t bi
                        .layout = plan::LayoutId::k51,
                        .bitrate_kbps = bitrate,
                        .meta = meta.p};
-    ac3::FrameEncoder encoder{plan::ac3_config(p)};
+    // Heap-allocated: FrameEncoder carries several KB of MDCT scratch/history
+    // state, and this function only constructs it once (PREfast's C6262).
+    auto encoder = std::make_unique<ac3::FrameEncoder>(plan::ac3_config(p));
     ac3::analysis::LevelMeter meter{ac3::Acmod::k3_2, true, 48000};
 
     const std::uint64_t count = frame_count(seconds);
@@ -1367,7 +1372,7 @@ int run_orbit(std::string_view out_path, std::uint32_t seconds, std::uint32_t bi
             views[ch] = frame_channels[ch];
         }
         meter.process(views);
-        auto frame = encoder.encode_frame(views);
+        auto frame = encoder->encode_frame(views);
         if (!frame) {
             std::println(stderr, "error: bitrate must be a legal AC-3 rate");
             return 1;
@@ -1448,7 +1453,10 @@ int run_record(std::string_view out_path, std::uint32_t seconds, std::uint32_t b
     std::println("recording from \"{}\" ({} Hz, {} ch) for {} s…", device.name,
                  capture.sample_rate(), channels, seconds);
 
-    ac3::FrameEncoder encoder{{.sample_rate = sr, .bitrate_kbps = bitrate}};
+    // Heap-allocated: FrameEncoder carries several KB of MDCT scratch/history
+    // state, and this function only constructs it once (PREfast's C6262).
+    auto encoder = std::make_unique<ac3::FrameEncoder>(
+        ac3::EncoderConfig{.sample_rate = sr, .bitrate_kbps = bitrate});
     // Meters what the encoder is fed, not what the endpoint delivers: a
     // needle that moves on a channel the stream never carries would be a lie.
     ac3::analysis::LevelMeter meter{ac3::Acmod::k2_0, false, capture.sample_rate()};
@@ -1483,7 +1491,7 @@ int run_record(std::string_view out_path, std::uint32_t seconds, std::uint32_t b
                 channels > 1 ? interleaved[base + 1] : interleaved[base];
         }
         meter.process(views);
-        auto frame = encoder.encode_frame(views);
+        auto frame = encoder->encode_frame(views);
         if (!frame) {
             std::println(stderr, "error: bitrate must be a legal AC-3 rate");
             return 1;
@@ -1586,7 +1594,9 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
     }
 
     const auto config = plan::ac3_config(p);
-    ac3::FrameEncoder encoder{config};
+    // Heap-allocated: FrameEncoder carries several KB of MDCT scratch/history
+    // state, and this function only constructs it once (PREfast's C6262).
+    auto encoder = std::make_unique<ac3::FrameEncoder>(config);
     ac3::analysis::LevelMeter meter{config.acmod, config.lfe, wav->sample_rate};
     const auto nchans = static_cast<std::size_t>(routing->coded_channels);
     const std::size_t total = wav->frame_count();
@@ -1625,7 +1635,7 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
             metered[c] = std::span{block[c]}.first(valid);
         }
         meter.process(metered);
-        auto frame = encoder.encode_frame(views);
+        auto frame = encoder->encode_frame(views);
         if (!frame) {
             std::println(stderr, "error: bitrate must be a legal AC-3 rate");
             return 1;
@@ -2539,14 +2549,19 @@ int run_live(std::string_view out_path, int capture_device, std::uint32_t second
         }
     }
 
-    ac3::FrameEncoder ac3_encoder{{.sample_rate = sr, .bitrate_kbps = bitrate}};
-    std::optional<ac3::oba::AtmosEncoder> atmos_encoder;
+    // Heap-allocated: each carries several KB of MDCT/delay history state,
+    // and this function only constructs them once, at session start, not per
+    // audio frame (PREfast's C6262) - same pattern as EncoderController's
+    // runLiveSession, the GUI's equivalent of this function.
+    auto ac3_encoder = std::make_unique<ac3::FrameEncoder>(
+        ac3::EncoderConfig{.sample_rate = sr, .bitrate_kbps = bitrate});
+    std::unique_ptr<ac3::oba::AtmosEncoder> atmos_encoder;
     if (atmos) {
-        atmos_encoder.emplace(
+        atmos_encoder = std::make_unique<ac3::oba::AtmosEncoder>(
             ac3::oba::AtmosConfig{.sample_rate = sr, .bitrate_kbps = bitrate, .num_bands_idx = 4},
             static_cast<int>(nobjects));
     }
-    ac3::FrameDecoder ac3_monitor_decoder;
+    auto ac3_monitor_decoder = std::make_unique<ac3::FrameDecoder>();
     ac3::Eac3Decoder eac3_monitor_decoder;
     ac3::iec61937::Eac3BurstPacker eac3_packer;
 
@@ -2634,7 +2649,7 @@ int run_live(std::string_view out_path, int capture_device, std::uint32_t second
             meter.process(bed_views);
             unit_bytes = unit->bytes;
         } else {
-            const auto frame = ac3_encoder.encode_frame(std::span{views}.first(2));
+            const auto frame = ac3_encoder->encode_frame(std::span{views}.first(2));
             if (!frame) {
                 std::println(stderr, "error: bitrate must be a legal AC-3 rate");
                 break;
@@ -2654,7 +2669,7 @@ int run_live(std::string_view out_path, int capture_device, std::uint32_t second
                     to_play = interleave_reordered(decoded->channels, order);
                 }
             } else {
-                const auto decoded = ac3_monitor_decoder.decode_frame(unit_bytes);
+                const auto decoded = ac3_monitor_decoder->decode_frame(unit_bytes);
                 if (decoded) {
                     const auto order = ac3::io::wav_channel_order(decoded->acmod, decoded->lfe);
                     to_play = interleave_reordered(decoded->channels, order);
