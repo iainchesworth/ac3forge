@@ -20,10 +20,12 @@ on:
     - cron: "45 3 * * 1"
   workflow_dispatch:
 
+# Deliberately minimal: every job below declares its own full permissions set
+# (actions/contents read, security-events write, to upload SARIF), so this
+# top-level block is only ever a fallback for a future job that forgets to -
+# it should never itself carry security-events: write.
 permissions:
-  actions: read
   contents: read
-  security-events: write
 
 jobs:
   scan-pr:

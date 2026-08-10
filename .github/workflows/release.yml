@@ -203,12 +203,14 @@ jobs:
       # failing a release that has not provisioned a signing key yet.
       HAVE_GPG_KEY: ${{ secrets.REPO_GPG_PRIVATE_KEY != '' && 'true' || 'false' }}
     steps:
-      # persist-credentials is deliberately left at its default (true), not
-      # false: "Push release tag" below runs a plain `git push origin "$TAG"`
-      # against this checkout, which needs the token actions/checkout leaves
-      # behind. Every other checkout in this repo sets persist-credentials:
-      # false (it isn't needed there) - this is the one job where it is.
+      # persist-credentials: false - "Push release tag" below pushes through
+      # its own explicitly-scoped remote instead (mirroring _build.yml's
+      # quality-trend job and docs.yml's gh-deploy job), so actions/checkout's
+      # token never sits in this working tree's git config for the rest of
+      # the job.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Download package artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -343,13 +345,14 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         env:
           TAG: ${{ needs.resolve-version.outputs.version_tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag "$TAG"
-          git push origin "$TAG"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" "$TAG"
 
       - name: Create GitHub Release
         env:
@@ -414,11 +417,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      # persist-credentials left at its default (true) for the same reason as
-      # the github-release job above: "Delete orphaned tag" pushes a tag
-      # deletion with plain git, not gh, and needs the token this leaves
-      # behind.
+      # persist-credentials: false - same reasoning as the github-release job
+      # above: "Delete orphaned tag" pushes through its own explicitly-scoped
+      # remote instead of a credential left behind by checkout.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Delete orphaned tag, if it was pushed
         env:
@@ -427,9 +431,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          if git ls-remote --exit-code --tags "$remote" "refs/tags/$TAG" >/dev/null 2>&1; then
             echo "Deleting orphaned prerelease tag $TAG"
-            git push origin ":refs/tags/$TAG"
+            git push "$remote" ":refs/tags/$TAG"
           else
             echo "No tag $TAG on origin; nothing to clean up"
           fi
