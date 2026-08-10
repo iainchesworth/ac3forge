@@ -17,10 +17,13 @@ depend on them.
     your problem to assess, not something this project resolves.
 
 !!! note "Status"
-    Version 0.2.0. The API is not stable. Green and required in CI on Windows (MSVC, clang-cl)
-    and Linux (GCC 15, Clang 21) — CLI and GUI alike on all four — plus an ASan+UBSan leg and
-    clang-tidy static analysis; macOS is the one experimental leg, never run anywhere. See
-    [building.md](building.md) for exact toolchain versions and what each CI leg covers.
+    The API is not stable — no release has been tagged yet. Green and required in CI on Windows
+    (MSVC, clang-cl), Linux (GCC 15, Clang 21) and macOS (Homebrew LLVM) — CLI and GUI alike on
+    the first four, CLI only on macOS — plus an ASan+UBSan leg, clang-tidy static analysis, a
+    line/branch coverage gate over the library, a per-platform gold-reference *quality* gate, and
+    a dedicated Linux FFmpeg-validation leg checking output *correctness* across the full option
+    space. No leg remains experimental. See [building.md](building.md) for exact toolchain
+    versions and what each CI leg covers.
 
 ## What it does
 
@@ -43,6 +46,23 @@ At 44.1 kHz, CBR needs non-integral frame sizes; the AC-3 encoder alternates bet
 Table 5.18 lengths on a Bresenham accumulator so the long-run rate is exact. E-AC-3 signals
 `frmsiz` directly and needs no such alternation.
 
+**Block switching's scope**: a §8.2.2 transient detector (cascaded biquad 8 kHz high-pass, a
+256/128/64-sample peak-ratio tree) runs per full-bandwidth channel per block; a channel that
+switches anywhere in the frame is excluded from coupling and, on E-AC-3, from AHT for that whole
+frame — this project's coupling and AHT decisions are frame-wide all-or-nothing, so there is no
+per-channel toggle to hook a narrower exclusion into. The LFE never switches (§8.2.2 defines the
+detector over full-bandwidth channels only).
+
+**Delta bit allocation's scope**: the encoder compares the coarse exponent-only masking curve
+§7.2.2.2-7.2.2.5 derive against one built from the real, pre-quantization coefficient magnitude,
+and corrects bands where the two clearly diverge (at least a full 6 dB Table 5.17 step). It is
+skipped for the LFE channel (no such field exists for it) and, for now, for every channel
+whenever coupling is in use that frame — the coupling channel is a synthesized average rather
+than a real recorded signal, and even leaving only the coupled channels' own narrow
+below-`cplstrtmant` region eligible measurably narrowed coupling's usual cost advantage and broke
+its tightest scenarios (128 kbit/s 5.1). The decoder accepts delta bit allocation on the coupling
+channel from any other encoder; this project's own just doesn't emit it yet.
+
 ### Metadata
 
 | Field | Section | What it does here |
@@ -56,7 +76,11 @@ Table 5.18 lengths on a Bresenham accumulator so the long-run rate is exact. E-A
 
 The in-repo decoder shares its tables, bit-allocation engine, exponent decoding and IMDCT with
 the encoder. It reads AC-3 (bsid ≤ 8) and E-AC-3 (bsid 11–16), including dependent substreams,
-`chanmap`, and the §E3.8.2 render that lays a dependent's channels over the bed.
+`chanmap`, and the §E3.8.2 render that lays a dependent's channels over the bed. All three Annex
+E coding tools decode too — channel coupling (§E3.3), spectral extension (§E3.6, including the
+pseudo-random noise blend the standard requires but leaves the exact generator unspecified), and
+the adaptive hybrid transform with GAQ (§E3.4) — individually or all stacked together, at every
+channel layout including 7.1.4.
 
 ### Other
 
@@ -72,9 +96,9 @@ the encoder. It reads AC-3 (bsid ≤ 8) and E-AC-3 (bsid 11–16), including dep
 
 ## What it does not do
 
-The full picture — unimplemented features, verification gaps, and exactly what has and has not
-been confirmed against real hardware — lives in [Concepts](concepts/index.md) and the library
-pages, not here. Two gaps are load-bearing enough to flag up front:
+The full picture — verification gaps, quality numbers, and exactly what has and has not been
+confirmed against real hardware — is [Validation](verification.md), not here. Two gaps are
+load-bearing enough to flag up front:
 
 !!! warning "Objects will not decode as objects in Dolby's decoder"
     DD+ JOC gates object decoding on a keyed, sequence-bound HMAC-SHA-256 tag in the EMDF
@@ -102,6 +126,8 @@ directly, so it has no equivalent and stays CBR.
   minutes.
 - **Concepts** — [Overview](concepts/index.md): AC-3, E-AC-3 and the Atmos/JOC object layer
   explained.
+- **Validation** — [how output is checked](verification.md): quality numbers, oracle coverage,
+  and exactly where it runs out.
 - **Library** — [Conventions](library/index.md): the public C++ API, with compiled examples.
 - **CLI reference** — [Overview](cli/index.md): `ac3cli`'s twenty-one commands.
 - **GUI guide** — [Window layout](gui/index.md): `ac3gui`, the Qt Quick front end.

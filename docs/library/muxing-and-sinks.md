@@ -38,8 +38,8 @@ matter for seeking in large files, not for playing back what this project produc
 
 The pieces below are audio-hardware-facing rather than example-driven, so there's no compiled
 `examples/` program to excerpt — this is reference prose pointing at the relevant header, plus
-the platform and hardware-verification caveats the [README](https://github.com/iainchesworth/ac3forge/blob/main/README.md#verification-gaps)
-states about each. All of them are gated by `ac3::platform::audio_backend()`
+the platform and hardware-verification caveats [Validation](../verification.md) states about
+each. All of them are gated by `ac3::platform::audio_backend()`
 (`ac3/platform/audio_backend.hpp`), which reports whether capture, monitor playback and
 passthrough are available on this build's platform, and why not when they aren't — this backs
 the CLI's `UNAVAILABLE HERE` messaging for `devices`, `record`, `monitor`, `live`, `outputs`

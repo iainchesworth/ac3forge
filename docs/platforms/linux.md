@@ -124,5 +124,5 @@ purpose**, to keep a Qt kit out of the sanitizer leg's install time.
 
 The ALSA backend adds 14 tests of its own (`tests/platform/alsa/`): the suite is 286 ctest
 entries on a Linux build without `libasound2-dev`, the same count as Windows, and 300 with ALSA
-included. See [Portability](https://github.com/iainchesworth/ac3forge/blob/main/README.md#portability) in the project README for the full CI
+included. See [Verified configuration](../building.md#verified-configuration) for the full CI
 matrix.

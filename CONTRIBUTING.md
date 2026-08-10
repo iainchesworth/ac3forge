@@ -149,7 +149,7 @@ Ranked by how much they prove. Prefer the strongest one available for what you a
 4. **Dolby's Reference Player and Media Encoder**, for object-layer syntax.
 
 Neither decoder covers everything, and the gaps do not overlap: see the [verification-gap
-table](https://github.com/iainchesworth/ac3forge/blob/main/README.md#verification-gaps). If your change lands in a cell with no oracle, say so in
+table](https://iainchesworth.github.io/ac3forge/verification/#where-the-oracles-dont-reach). If your change lands in a cell with no oracle, say so in
 the commit message and cover it bit-by-bit instead.
 
 ## Documentation
@@ -159,8 +159,12 @@ The examples in [docs/library/](https://github.com/iainchesworth/ac3forge/blob/m
 API, update the example — the build will tell you if you forget. Do not add a snippet to the
 docs that is not backed by a compiled file.
 
-If you add a capability or find a new limitation, the tables in [README.md](https://github.com/iainchesworth/ac3forge/blob/main/README.md) are the
-authority and must be updated with it. [docs/project/history.md](https://github.com/iainchesworth/ac3forge/blob/main/docs/project/history.md) is a
+If you add a capability or find a new limitation, the tables in
+[docs/index.md](https://github.com/iainchesworth/ac3forge/blob/main/docs/index.md) ("What it
+does" / "What it does not do") and, for oracle coverage specifically,
+[docs/verification.md](https://github.com/iainchesworth/ac3forge/blob/main/docs/verification.md)
+are the authority and must be updated with it. README.md's own summary of the same material
+should stay a summary, not grow back into a second copy. [docs/project/history.md](https://github.com/iainchesworth/ac3forge/blob/main/docs/project/history.md) is a
 record of past work and is not maintained against the current state.
 
 ## Commits

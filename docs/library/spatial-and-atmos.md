@@ -86,8 +86,8 @@ The matrix is the minimum mean-square estimate `M = P Dᵀ (P D Dᵀ + εI)⁻¹
 built the downmix it knows `D` exactly rather than estimating it, which makes the solve
 near-exact for well-separated objects. Two limits are structural, not bugs: objects sharing a
 direction cannot be separated by any linear combination of the bed, and Dolby's decoder will
-not treat these as objects at all. Both are covered in the
-[README](https://github.com/iainchesworth/ac3forge/blob/main/README.md#verification-gaps).
+not treat these as objects at all. Both are covered in
+[Atmos & JOC](../concepts/atmos-joc.md#two-honest-limitations).
 
 ---
 

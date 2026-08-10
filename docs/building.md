@@ -7,7 +7,7 @@ Every command here has been run on the configuration described under
 
 | | Version | Notes |
 |---|---|---|
-| A compiler | MSVC (VS 2026), clang-cl 21, GCC 15, or Clang 21 | C++23. `std::expected`, `std::print` and deducing-`this` are all used. One [preset](#presets) per compiler; all four are required, green CI legs — see [Portability](https://github.com/iainchesworth/ac3forge/blob/main/README.md#portability). |
+| A compiler | MSVC (VS 2026), clang-cl 21, GCC 15, or Clang 21 | C++23. `std::expected`, `std::print` and deducing-`this` are all used. One [preset](#presets) per compiler; all four are required, green CI legs — see [Verified configuration](#verified-configuration). |
 | CMake | ≥ 3.28 | `cmake_minimum_required(VERSION 3.28...4.3)`. |
 | Ninja | any recent | The presets hard-code the Ninja generator. |
 | vcpkg | any recent | Supplies Catch2, and nothing else. Needed only when tests are on. |
@@ -77,7 +77,7 @@ hidden fragments composed together, not a flat list:
   file (see [above](#the-compiler-is-pinned-not-path-found)) via `VCPKG_CHAINLOAD_TOOLCHAIN_FILE`,
   and is gated by a `condition` on `hostSystemName` so only the presets for the machine you're on
   even appear. `AC3FORGE_BUILD_GUI` is `ON` for the two Windows ones and `OFF` for the rest — see
-  [Portability](https://github.com/iainchesworth/ac3forge/blob/main/README.md#portability).
+  [Verified configuration](#verified-configuration).
 
 Ten concrete `config-<platform>[-debug]` presets inherit `[ release|debug, <platform>, core ]`,
 each with a matching `build-<platform>[-debug]` and `test-<platform>[-debug]` preset:
@@ -95,7 +95,7 @@ because it isn't a platform/compiler pair but an instrumented variant of `linux-
 `config-linux-llvm-asan-ubsan` / `build-linux-llvm-asan-ubsan` / `test-linux-llvm-asan-ubsan`,
 which inherits `linux-llvm` plus a `sanitize-asan-ubsan` fragment setting
 `AC3FORGE_SANITIZERS=address,undefined` (see `cmake/Sanitizers.cmake`; MSVC is rejected outright,
-so this only exists for GCC/Clang). See [Portability](https://github.com/iainchesworth/ac3forge/blob/main/README.md#portability) for what CI says
+so this only exists for GCC/Clang). See [Verified configuration](#verified-configuration) for what CI says
 about all eleven. There are also six `ci-<platform>` `workflowPresets` (Release except for the
 asan-ubsan one, which is Debug-only) that chain configure→build→test in one
 `cmake --workflow --preset ci-windows-msvc` call; that is exactly what CI itself runs.
@@ -315,7 +315,7 @@ Linux and macOS preset still forces `AC3FORGE_BUILD_GUI=OFF` by default — pass
 `-DAC3FORGE_BUILD_GUI=ON` explicitly on a machine that has Qt 6.5+, which is verified to work on
 Linux both locally (see [GUI on Linux](#gui-on-linux) above) and in CI, which installs a Qt6 kit
 and turns the flag on for both `linux-gcc` and `linux-llvm`. macOS has never been tried. See
-[Portability](https://github.com/iainchesworth/ac3forge/blob/main/README.md#portability). If your kit is somewhere else, say so explicitly and it
+[Verified configuration](#verified-configuration). If your kit is somewhere else, say so explicitly and it
 wins over the search — the project's own `-DAC3FORGE_QT_ROOT=` (or the `AC3FORGE_QT_ROOT`,
 `QT_ROOT_DIR` or `QTDIR` environment variables) is the preferred way:
 
