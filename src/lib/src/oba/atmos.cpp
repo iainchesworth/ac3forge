@@ -48,9 +48,13 @@ constexpr double kAbsoluteFloor = 1e-20;
         // pivot is always in range here. MSVC /analyze's C28020 doesn't
         // track that a variable's bound is inherited from the two loop
         // variables it was assigned from, and flags the std::array subscript
-        // below as unproven.
+        // below as unproven. #pragma warning(suppress: 28020) would silence
+        // /analyze too, but it is not a portable pragma - GCC/clang both
+        // treat an unrecognized #pragma as -Wunknown-pragmas, and this
+        // project builds with -Werror, so emitting it here would fail every
+        // non-MSVC leg. The C28020 alert is dismissed separately with this
+        // same justification instead.
         assert(pivot >= 0 && pivot < kChannels);
-#pragma warning(suppress : 28020)
         if (std::abs(m[static_cast<std::size_t>(pivot)][static_cast<std::size_t>(col)]) <
             kAbsoluteFloor) {
             return false;
