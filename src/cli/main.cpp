@@ -1929,13 +1929,21 @@ int run_levels(std::string_view in_path) {
             }
             // meter is engaged by the !meter check a few lines up, in this
             // same iteration on the first pass and an earlier one thereafter.
-            // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
-            meter->process(views);
+            // clang-tidy's bugprone-unchecked-optional-access and MSVC
+            // /analyze's C26829 both flag it anyway: neither does the
+            // cross-iteration reasoning needed to see it's always engaged
+            // by the time this runs. #pragma warning(suppress: 26829) would
+            // silence /analyze too, but it is not a portable pragma - GCC/
+            // clang both treat an unrecognized #pragma as -Wunknown-pragmas,
+            // and this project builds with -Werror, so emitting it here
+            // would fail every non-MSVC leg. The C26829 alert on both this
+            // line and the one below is dismissed separately with this same
+            // justification instead.
+            meter->process(views); // NOLINT(bugprone-unchecked-optional-access)
         }
         // The `!frames || frames->empty()` check above guarantees the loop
         // ran at least once, and its first iteration always emplaces meter.
-        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
-        print_channel_summary(*meter);
+        print_channel_summary(*meter); // NOLINT(bugprone-unchecked-optional-access)
         return 0;
     }
 
