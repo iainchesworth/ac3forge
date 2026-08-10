@@ -25,9 +25,22 @@ runs:
       # SHA, but a value substituted directly into a run: block is shell CODE,
       # not data, so this closes that off rather than relying on every future
       # caller staying literal (zizmor: template-injection).
+      #
+      # zizmor's github-env audit also flags both `echo VCPKG_ROOT=... >>
+      # $GITHUB_ENV` writes below: it can't statically tell a safe dynamic
+      # value from an attacker-controlled one, so it flags every non-literal
+      # write on principle. $VCPKG_DIR here is built from $RUNNER_TEMP (a
+      # runner-assigned path) plus the literal suffix "/vcpkg" - nothing in it
+      # comes from a PR title, branch name, issue body or other
+      # attacker-reachable string, on this or any workflow that calls this
+      # composite action. VCPKG_ROOT has to be a real environment variable
+      # for CMake's vcpkg toolchain file to pick it up automatically in every
+      # later step across every job that uses this action - threading it
+      # through $GITHUB_OUTPUT instead would mean every one of those steps
+      # re-exporting it by hand, for no real safety gain here.
       env:
         VCPKG_COMMIT: ${{ inputs.vcpkg-commit }}
-      run: |
+      run: | # zizmor: ignore[github-env] VCPKG_ROOT is RUNNER_TEMP-derived, not attacker-influenced - see above
         set -euo pipefail
         VCPKG_DIR="${RUNNER_TEMP}/vcpkg"
         if [ ! -d "$VCPKG_DIR/.git" ]; then
@@ -46,9 +59,15 @@ runs:
     # vcpkg rejects an MSYS-style path (/c/...) for these, so hand it a native
     # Windows path. The cache action below still needs the bash-style path,
     # hence the two forms.
+    #
+    # Same github-env reasoning as the step above: BINARY_DIR/DOWNLOADS_DIR
+    # are $HOME plus literal suffixes, optionally reshaped by cygpath - never
+    # attacker-influenced. VCPKG_DEFAULT_BINARY_CACHE/VCPKG_DOWNLOADS are
+    # vcpkg's own env-var configuration knobs, read implicitly by every vcpkg
+    # invocation in later steps.
     - name: Set up vcpkg cache directories
       shell: bash
-      run: |
+      run: | # zizmor: ignore[github-env] BINARY_DIR/DOWNLOADS_DIR are $HOME-derived, not attacker-influenced - see above
         set -euo pipefail
         BINARY_DIR="$HOME/.cache/vcpkg/archives"
         DOWNLOADS_DIR="$HOME/.cache/vcpkg/downloads"
