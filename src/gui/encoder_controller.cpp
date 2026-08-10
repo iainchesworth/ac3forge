@@ -1451,7 +1451,7 @@ void EncoderController::playToReceiver(int deviceIndex) {
                         for (const auto& unit : *units) {
                             std::vector<std::byte> burst;
                             if (eac3) {
-                                const auto result = eac3_packer.push(unit);
+                                auto result = eac3_packer.push(unit);
                                 if (!result) {
                                     break;
                                 }
@@ -1858,7 +1858,7 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device, bool mon
             if (passthrough) {
                 std::optional<std::vector<std::byte>> burst;
                 if (eac3) {
-                    const auto packed = eac3_packer.push(unit_bytes);
+                    auto packed = eac3_packer.push(unit_bytes);
                     if (packed && *packed) {
                         burst = std::move(**packed);
                     }
