@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 
 #include "ac3/core/bitalloc.hpp"
 #include "ac3/core/bitreader.hpp"
@@ -11,6 +12,7 @@
 #include "ac3/core/mantissas.hpp"
 #include "ac3/core/mdct.hpp"
 #include "ac3/encoder/coupling.hpp"
+#include "ac3/encoder/eac3_tools.hpp"
 
 // E-AC-3 syncframe decoding, ATSC A/52:2018 Annex E Tables E1.2, E1.3 and E1.4.
 //
@@ -254,11 +256,16 @@ struct AudFrm {
     // The coupling channel's own exponent strategy, same Table E2.10 shape
     // as chexpstr, only present where cplinu[blk] holds.
     std::array<ExpStrategy, kBlocksPerFrame> cplexpstr{};
+    // §E3.6.4.2.3's per-channel notch code, frame-constant. -1 means this
+    // channel does not attenuate (chinspxatten[ch] clear, or spxattene clear
+    // for the whole frame).
+    std::array<int, kMaxSubstreamChannels> spxattencod{};
 };
 
 std::expected<AudFrm, DecodeError> parse_audfrm(BitReader& r, const Bsi& bsi, int nblks) {
     const int nfchans = fullbw_channel_count(bsi.acmod);
     AudFrm frm;
+    frm.spxattencod.fill(-1);
     // Only a six-block syncframe can hoist its exponent strategies; a shorter
     // one always carries them per block and never uses AHT.
     bool expstre = true;
@@ -371,7 +378,7 @@ std::expected<AudFrm, DecodeError> parse_audfrm(BitReader& r, const Bsi& bsi, in
     if (spxattene) {
         for (int ch = 0; ch < nfchans; ++ch) {
             if (r.read(1) != 0) {  // chinspxatten[ch]
-                r.skip(5);         // spxattencod[ch]
+                frm.spxattencod[static_cast<std::size_t>(ch)] = static_cast<int>(r.read(5));
             }
         }
     }
@@ -469,6 +476,24 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
     std::vector<std::vector<double>> cplco(static_cast<std::size_t>(nfchans));
     std::vector<bool> phsflg;
 
+    // Spectral extension state (§3.6). Persists until re-transmitted, same as
+    // coupling above - this encoder only ever (re)sends geometry in block 0.
+    // Unlike coupling's per-sub-band coordinates, spx coordinates are one per
+    // BAND already (no sub-band duplication step), so spx_bands/spxco are
+    // indexed by band directly throughout.
+    bool spxinu = false;
+    std::vector<bool> chinspx(static_cast<std::size_t>(nfchans), false);
+    int spxstrtf = 0;
+    int spxbegf = 0;
+    int spx_startmant = 0;  // spx_band_start(spx_begin_subbnd) - extension begins here
+    int spx_endmant = 0;    // spx_band_start(spx_end_subbnd) - one past the last bin
+    int spx_copystart = 0;  // spx_band_start(spxstrtf) - copy-up wraps back to here
+    eac3::BandLayout spx_bands{};
+    // [channel][band]
+    std::vector<std::vector<double>> spxco(static_cast<std::size_t>(nfchans));
+    std::vector<int> spxblnd(static_cast<std::size_t>(nfchans), 0);
+    eac3::SpxNoise spx_noise;
+
     for (int blk = 0; blk < nblks; ++blk) {
         const auto strategy = [&](int ch) {
             return ch < nfchans
@@ -496,10 +521,86 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
             r.skip(8);  // dynrng2e -> dynrng2: parsed, not applied - same as dynrng
         }
 
-        // Spectral extension. Block 0's strategy is implied rather than sent.
+        // --- spectral extension strategy + geometry (§E2.3.3, §3.6) ---
+        // Block 0's strategy is implied rather than sent; a later block only
+        // resends it (spxstre) if the strategy actually changes - this
+        // encoder never does, so everything below persists from block 0.
         const bool spxstre = blk == 0 || r.read(1) != 0;
-        if (spxstre && r.read(1) != 0) {  // spxinu
-            return std::unexpected(DecodeError::kUnsupported);
+        if (spxstre) {
+            spxinu = r.read(1) != 0;
+            if (spxinu) {
+                // 1/0 is the one mode where chinspx is not transmitted: the
+                // only channel there is always the one extended.
+                if (bsi->acmod != Acmod::k1_0) {
+                    for (int ch = 0; ch < nfchans; ++ch) {
+                        chinspx[static_cast<std::size_t>(ch)] = r.read(1) != 0;
+                    }
+                } else {
+                    chinspx[0] = true;
+                }
+                spxstrtf = static_cast<int>(r.read(2));
+                spxbegf = static_cast<int>(r.read(3));
+                const int spxendf = static_cast<int>(r.read(3));
+                const int begin_subbnd = eac3::spx_begin_subbnd(spxbegf);
+                const int end_subbnd = eac3::spx_end_subbnd(spxendf);
+                if (end_subbnd <= begin_subbnd || end_subbnd > eac3::kSpxSubBands) {
+                    return std::unexpected(DecodeError::kInvalidStream);
+                }
+                spx_startmant = eac3::spx_band_start(begin_subbnd);
+                spx_endmant = eac3::spx_band_start(end_subbnd);
+                spx_copystart = eac3::spx_band_start(spxstrtf);
+                const int subband_count = end_subbnd - begin_subbnd;
+                // spxbndstrc, relative to the region's first sub-band (as
+                // group_bands wants it); the default table (kDefaultSpxBand-
+                // Structure) is ABSOLUTE-indexed, so it is sliced at
+                // begin_subbnd rather than used as-is.
+                std::array<bool, eac3::kSpxSubBands> structure{};
+                if (r.read(1) != 0) {  // spxbndstrce
+                    for (int i = 1; i < subband_count; ++i) {
+                        structure[static_cast<std::size_t>(i)] = r.read(1) != 0;
+                    }
+                } else {
+                    // Unlike coupling's default table, spx's Table E2.11 is
+                    // unambiguous (absolute-sub-band-indexed, verified
+                    // against the spec text directly), so it is implemented
+                    // for real rather than refused.
+                    for (int i = 0; i < subband_count; ++i) {
+                        structure[static_cast<std::size_t>(i)] =
+                            eac3::kDefaultSpxBandStructure[static_cast<std::size_t>(
+                                begin_subbnd + i)];
+                    }
+                }
+                spx_bands = eac3::group_bands(spx_startmant, subband_count,
+                                              eac3::kSpxBinsPerSubBand,
+                                              std::span{structure}.first(
+                                                  static_cast<std::size_t>(subband_count)));
+                for (auto& channel : spxco) {
+                    channel.assign(static_cast<std::size_t>(spx_bands.count), 0.0);
+                }
+            }
+        }
+
+        // --- spectral extension coordinates (§E3.3, block-0 spxcoe implied) ---
+        if (spxinu) {
+            for (int ch = 0; ch < nfchans; ++ch) {
+                if (!chinspx[static_cast<std::size_t>(ch)]) {
+                    continue;
+                }
+                // firstspxcos[ch] starts at 1: block 0's spxcoe is implied.
+                const bool send = blk == 0 || r.read(1) != 0;
+                if (!send) {
+                    continue;
+                }
+                spxblnd[static_cast<std::size_t>(ch)] = static_cast<int>(r.read(5));
+                const int master = static_cast<int>(r.read(2));
+                auto& co = spxco[static_cast<std::size_t>(ch)];
+                for (int bnd = 0; bnd < spx_bands.count; ++bnd) {
+                    const auto exp = static_cast<std::uint8_t>(r.read(4));
+                    const auto mant = static_cast<std::uint8_t>(r.read(2));
+                    co[static_cast<std::size_t>(bnd)] = coupling::decode_coordinate(
+                        {.exp = exp, .mant = mant}, master, coupling::kSpxMantissaBits);
+                }
+            }
         }
 
         // --- coupling strategy + geometry (§E2.3.3, Table E1.4) ---
@@ -529,11 +630,11 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
                 }
             }
             cplbegf = static_cast<int>(r.read(4));
-            // §E3.3.1: cplendf is derived from spxbegf instead of transmitted
-            // whenever spectral extension is active - but spxinu already
-            // returned kUnsupported above whenever it is, so reaching here
-            // means it is not, and cplendf is always sent.
-            const int cplendf = static_cast<int>(r.read(4));
+            // §E3.3.1: with spectral extension active this block, cplendf is
+            // derived from spxbegf instead of transmitted, so the coupling
+            // region ends exactly where synthesis begins.
+            const int cplendf =
+                spxinu ? eac3::derived_cplendf(spxbegf) : static_cast<int>(r.read(4));
             const int subband_count = coupling::sub_band_count(cplbegf, cplendf);
             if (subband_count < 1) {
                 return std::unexpected(DecodeError::kInvalidStream);
@@ -573,12 +674,6 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
                 channel.assign(static_cast<std::size_t>(subband_count), 0.0);
             }
             phsflg.assign(static_cast<std::size_t>(ncplbnd), false);
-            // Coupled channels stop carrying their own coefficients here.
-            for (int ch = 0; ch < nfchans; ++ch) {
-                if (chincpl[static_cast<std::size_t>(ch)]) {
-                    endmant[static_cast<std::size_t>(ch)] = cplstrtmant;
-                }
-            }
         }
 
         // --- coupling coordinates (§7.4.3 shape, block-0 cplcoe implied) ---
@@ -616,16 +711,36 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
             }
         }
 
+        // A coupled or extended channel stops carrying its own coefficients
+        // at whichever tool takes over first; coupling always wins the
+        // channels it shares with spx, since the two are contiguous and
+        // coupling sits below (§E3.3.1's whole point). Runs every block,
+        // using the persistent geometry above, so a channel whose tool
+        // membership never changes keeps the same cutoff without needing to
+        // be re-derived only on the blocks that resend a strategy.
+        for (int ch = 0; ch < nfchans; ++ch) {
+            if (frm->cplinu[static_cast<std::size_t>(blk)] &&
+                chincpl[static_cast<std::size_t>(ch)]) {
+                endmant[static_cast<std::size_t>(ch)] = cplstrtmant;
+            } else if (spxinu && chinspx[static_cast<std::size_t>(ch)]) {
+                endmant[static_cast<std::size_t>(ch)] = spx_startmant;
+            }
+        }
+
         if (bsi->acmod == Acmod::k2_0) {
             // Unlike AC-3, block 0's rematstr is IMPLIED 1 rather than
             // transmitted; only later blocks carry the bit.
             if (blk == 0 || r.read(1) != 0) {
                 // §E3.3.2 / §7.5.2: the rematrixing bands cannot reach above
-                // where coupling takes over, so their count depends on where
-                // coupling starts.
-                const int nrematbd = !frm->cplinu[static_cast<std::size_t>(blk)]
-                                          ? 4
-                                          : (cplbegf > 2 ? 4 : (cplbegf > 0 ? 3 : 2));
+                // whichever tool takes over the spectrum first, so their
+                // count depends on where that tool starts. Coupling always
+                // wins the comparison when both are active, since it is
+                // always the lower of the two (§E3.3.1).
+                const int nrematbd =
+                    frm->cplinu[static_cast<std::size_t>(blk)]
+                        ? (cplbegf > 2 ? 4 : (cplbegf > 0 ? 3 : 2))
+                    : spxinu ? (spxbegf < 2 ? 3 : 4)
+                             : 4;
                 rematflg.fill(false);
                 for (int band = 0; band < nrematbd; ++band) {
                     rematflg[static_cast<std::size_t>(band)] = r.read(1) != 0;
@@ -634,15 +749,19 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
         }
 
         // chbwcod accompanies a fresh strategy, but only for a channel
-        // carrying its own high band: a coupled channel's bandwidth is fixed
-        // by where coupling takes over, and sending chbwcod anyway would
-        // both waste the bits and desynchronise the block.
+        // carrying its own high band: a coupled or extended channel's
+        // bandwidth is fixed by whichever tool takes over, and sending
+        // chbwcod anyway would both waste the bits and desynchronise the
+        // block.
         for (int ch = 0; ch < nfchans; ++ch) {
             if (strategy(ch) == ExpStrategy::kReuse) {
                 continue;
             }
             if (frm->cplinu[static_cast<std::size_t>(blk)] &&
                 chincpl[static_cast<std::size_t>(ch)]) {
+                continue;
+            }
+            if (spxinu && chinspx[static_cast<std::size_t>(ch)]) {
                 continue;
             }
             const auto chbwcod = r.read(6);
@@ -932,6 +1051,77 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
                     for (int bin = low; bin < high; ++bin) {
                         target[static_cast<std::size_t>(bin)] =
                             shared[static_cast<std::size_t>(bin)] * coordinate * 8.0 * sign;
+                    }
+                }
+            }
+        }
+
+        // §3.6.4 spectral extension synthesis: translate the low band up,
+        // notch the seams, blend with noise to approximate the original
+        // band's coarse energy, then scale by the transmitted coordinate.
+        // Runs after decoupling, so a channel that is both coupled and
+        // extended already has its coupling-restored content in place below
+        // spx_startmant to copy from - coupling always ends exactly where
+        // spx begins (§E3.3.1), so there is no gap and nothing to reconcile.
+        if (spxinu) {
+            for (int ch = 0; ch < nfchans; ++ch) {
+                if (!chinspx[static_cast<std::size_t>(ch)]) {
+                    continue;
+                }
+                auto& tc = coeffs[static_cast<std::size_t>(ch)];
+
+                // §3.6.4.1 Transform Coefficient Translation: copy low-band
+                // coefficients up into the extension region, banded, wrapping
+                // the copy source back to spx_copystart whenever a band would
+                // run past spx_startmant. copyindex never leaves
+                // [spx_copystart, spx_startmant) - strictly below the region
+                // this loop writes into - so mutating tc in place is safe.
+                std::array<bool, eac3::kMaxSubBands> wrapflag{};
+                std::array<double, eac3::kMaxSubBands> band_rms{};
+                int copyindex = spx_copystart;
+                for (int bnd = 0; bnd < spx_bands.count; ++bnd) {
+                    const auto ubnd = static_cast<std::size_t>(bnd);
+                    const int size = spx_bands.size[ubnd];
+                    const int low = spx_bands.start[ubnd];
+                    if (copyindex + size > spx_startmant) {
+                        copyindex = spx_copystart;
+                        wrapflag[ubnd] = true;
+                    }
+                    double accum = 0.0;
+                    for (int i = 0; i < size; ++i) {
+                        if (copyindex == spx_startmant) {
+                            copyindex = spx_copystart;
+                        }
+                        const double value = tc[static_cast<std::size_t>(copyindex++)];
+                        tc[static_cast<std::size_t>(low + i)] = value;
+                        accum += value * value;
+                    }
+                    band_rms[ubnd] = std::sqrt(accum / size);
+                }
+
+                // §3.6.4.2.3 Band Border Filtering: the notch runs on the
+                // already-translated, not-yet-blended region, using RMS
+                // measured before it (matching the encoder's own order).
+                eac3::spx_apply_notch(
+                    std::span{tc}.subspan(static_cast<std::size_t>(spx_startmant),
+                                          static_cast<std::size_t>(spx_endmant - spx_startmant)),
+                    spx_startmant, spx_bands, wrapflag,
+                    frm->spxattencod[static_cast<std::size_t>(ch)]);
+
+                // §3.6.4.2.4 Noise Scaling and Blending, then §3.6.4.3
+                // Blended Transform Coefficient Scaling.
+                const int blend = spxblnd[static_cast<std::size_t>(ch)];
+                for (int bnd = 0; bnd < spx_bands.count; ++bnd) {
+                    const auto ubnd = static_cast<std::size_t>(bnd);
+                    const int size = spx_bands.size[ubnd];
+                    const int low = spx_bands.start[ubnd];
+                    const double nratio = eac3::spx_noise_ratio(low, size, spx_endmant, blend);
+                    const double nscale = band_rms[ubnd] * std::sqrt(nratio);
+                    const double sscale = std::sqrt(1.0 - nratio);
+                    const double coordinate = spxco[static_cast<std::size_t>(ch)][ubnd] * 32.0;
+                    for (int i = 0; i < size; ++i) {
+                        const auto at = static_cast<std::size_t>(low + i);
+                        tc[at] = (tc[at] * sscale + spx_noise.next() * nscale) * coordinate;
                     }
                 }
             }
