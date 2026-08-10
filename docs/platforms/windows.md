@@ -106,6 +106,6 @@ artifact. See [Packaging](../building.md#packaging).
 
 Both Windows legs — `windows-msvc` and `windows-llvm` — run on every push and are **required**,
 alongside `linux-gcc`, `linux-llvm`, `linux-llvm-asan-ubsan` and static analysis (clang-tidy).
-CI runs the CLI and GUI on both Windows legs. See
-[Portability](https://github.com/iainchesworth/ac3forge/blob/main/README.md#portability) in the project README for the full CI matrix,
-including the two Linux legs and the experimental macOS leg.
+CI runs the CLI and GUI on both Windows legs. See [Verified
+configuration](../building.md#verified-configuration) for the full CI matrix, including the two
+Linux legs, macOS and the coverage/FFmpeg-validation legs.
