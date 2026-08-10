@@ -74,11 +74,37 @@ run from any branch - use it to validate a packaging change before merging.
 ## Post-release
 
 `gh release create --generate-notes` drafts release notes from merged PRs/commits since the
-previous tag - a first draft, not a finished changelog. Curate it:
+previous tag - a first draft only. Modelled on aqualink-automate's own process
+(`R:\aqualink-automate\docs\releasing.md`), curating it to the established pattern is a
+required step, not optional polish:
 
-```bash
-gh release edit vX.Y.Z --notes-file notes.md
-```
+1. Update [CHANGELOG.md](../CHANGELOG.md) first, if it isn't already current - a `## [x.y.z] -
+   YYYY-MM-DD` section (moved down from `## [Unreleased]` if the changes were already logged
+   there), [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. This is the
+   authoritative, human-curated record; the GitHub Release body mirrors it, not the other way
+   round.
+2. Write the GitHub Release body from that CHANGELOG.md section, in this order:
+   1. `## What's Changed` (first release) or `## What's Changed since v<prev>`.
+   2. A one-line summary of the release.
+   3. The changes as `###` subsections - grouped by subsystem, or as *Added*/*Changed*/*Fixed* -
+      with **bold lead-in** bullets in user-facing terms, mirrored from the CHANGELOG.md
+      section. A short release may use a flat bold-lead-in bullet list instead of subsections.
+   4. An `## Artifacts` section: the packages listed under [What gets
+      published](#what-gets-published) below, with their SHA-512 checksums, plus a pointer to
+      `ac3cli --help`/[docs/quickstart.md](quickstart.md).
+   5. `**Full Changelog**: …/compare/v<prev>...v<this>` (keep the one `--generate-notes`
+      produced; omit for the first release - there is no previous tag).
+   6. For a prerelease, a trailing `> **Pre-release.**` caveat blockquote noting the biggest
+      open gap (see [Known gaps](../CHANGELOG.md#known-gaps) in the matching CHANGELOG.md
+      section).
+3. Apply it:
+
+   ```bash
+   gh release edit vX.Y.Z[-beta.N] --notes-file notes.md
+   ```
+
+4. Verify the release page has all expected artifacts, and that the curated notes render and
+   read well.
 
 ## What gets published
 
