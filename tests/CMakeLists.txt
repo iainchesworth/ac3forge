@@ -89,7 +89,7 @@ endif()
 # ---------------------------------------------------------------------------
 # The audio backend's own tests, on the same axis the library selects it on.
 #
-# src/lib/CMakeLists.txt compiles exactly one src/platform/<backend>/ directory
+# src/audio/CMakeLists.txt compiles exactly one src/platform/<backend>/ directory
 # and publishes which one; a backend with device-free logic worth testing gets
 # a matching tests/platform/<backend>/ directory here, added only in the build
 # that compiled it. So the suite can never test a backend the library does not
@@ -111,6 +111,7 @@ target_include_directories(ac3tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(ac3tests
     PRIVATE
         ac3::forge
+        ac3::audio
         matroska::matroska
         ac3::warnings
         ac3::coverage

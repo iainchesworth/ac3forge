@@ -9,7 +9,7 @@
 
 // The platform tree, tested from outside it.
 //
-// One directory of src/lib/src/platform/ is compiled into the library and the
+// One directory of src/audio/src/platform/ is compiled into the library and the
 // others are not, so this file cannot name a backend - and does not want to.
 // What it checks is the contract every backend has to keep, which is that
 // ac3::platform::audio_backend() and the implementations beside it agree:
