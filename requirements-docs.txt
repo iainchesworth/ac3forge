@@ -5,4 +5,10 @@
 # 2.0 (or Material's response to it) actually ships something this site can build against.
 mkdocs>=1.6,<2.0
 mkdocs-material>=9.5,<10.0
-pymdown-extensions>=10.7
+# >=11.0.1 for real: fixes ReDoS in blocks.caption (GHSA-r6h4-mm7h-8pmq), path traversal in b64
+# (GHSA-gm37-52c6-37mw), snippets restrict_base_path bypass (GHSA-9xwg-3r6f-jcx2), and ReDoS in
+# caret/tilde/betterem/magiclink (GHSA-62q4-447f-wv8h).
+pymdown-extensions>=11.0.1
+# Transitive via mkdocs/requests; pin directly to keep it above the idna.encode() DoS
+# (CVE-2026-45409 / GHSA-65pc-fj4g-8rjx).
+idna>=3.15
