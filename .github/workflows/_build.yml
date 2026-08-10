@@ -658,6 +658,7 @@ jobs:
           fi
 
       - name: Append quality-trend history
+        id: append
         shell: bash
         env:
           # Env, not interpolated straight into the script: zizmor's
@@ -696,3 +697,15 @@ jobs:
             git commit -q -m "Quality trend: ${BRANCH}@${COMMIT_SHA}"
             git push -q origin quality-history
           fi
+
+      # Deliberately after the push above, not instead of the append step
+      # failing outright: a hard regression's numbers still need to land in
+      # quality-history (docs/quality-trend.md's table/chart is how anyone
+      # finds out what happened) even though this run must also end up red.
+      # See scripts/append-quality-history.py's HARD_REGRESSION_DROP_DB.
+      - name: Fail on hard quality regression
+        if: steps.append.outputs.hard_regression == 'true'
+        shell: bash
+        run: |
+          echo "::error::A leg/codec dropped more than the hard quality-trend threshold below its trailing average - see the job log above and docs/quality-trend.md for the recorded numbers."
+          exit 1
