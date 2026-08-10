@@ -37,8 +37,15 @@ jobs:
         with:
           persist-credentials: false
 
+      # Pinned to v2.4.3's underlying commit, not its annotated tag object's
+      # own SHA (a different git object - `git cat-file -t` on the old pin
+      # returns `tag`, not `commit`). scorecard-action's own publish step
+      # checks that the SHA invoking it is a real commit reachable in
+      # ossf/scorecard-action, so the tag-object SHA failed with "imposter
+      # commit... does not belong to ossf/scorecard-action" on every run -
+      # nothing to do with this repo's Scorecard registration.
       - name: Run Scorecard analysis
-        uses: ossf/scorecard-action@99c09fe975337306107572b4fdf4db224cf8e2f2 # v2.4.3
+        uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a # v2.4.3
         with:
           results_file: results.sarif
           results_format: sarif
