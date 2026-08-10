@@ -165,6 +165,15 @@ jobs:
     name: Build & package
     needs: resolve-version
     uses: ./.github/workflows/_build.yml
+    # Ceiling for _build.yml's quality-trend job, which needs contents: write
+    # to push to the quality-history branch - see ci.yml's identical override
+    # for the same call. Unused here: persist_quality_trend stays false below,
+    # so that job never actually runs for a release, but GitHub validates a
+    # reusable workflow's job permissions statically regardless of a job's own
+    # `if:`, so the ceiling still has to be raised or this call is rejected
+    # outright before any job starts.
+    permissions:
+      contents: write
     with:
       do_package: true
       # Full history + tags: GitVersionDerivation.cmake's `git describe` needs
