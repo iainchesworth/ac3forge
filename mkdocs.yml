@@ -8,8 +8,6 @@ edit_uri: edit/develop/docs/
 docs_dir: docs
 
 exclude_docs: |
-  design/handoff-workbench/
-  research/
   spec/
   branch-protection.md
 
@@ -102,6 +100,4 @@ nav:
       - Contributing: contributing.md
       - Releasing: releasing.md
       - History: project/history.md
-      - Research: project/research.md
       - Quality trend: quality-trend.md
-      - GUI design brief (superseded): project/gui-design-brief.md

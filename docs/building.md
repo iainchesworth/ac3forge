@@ -443,7 +443,7 @@ The coverage job's own gate — 81.3% line / 72.0% branch measured on a real Git
 
 No macOS host exists for this project, so `config-macos-llvm`/`config-macos-llvm-debug` are only
 ever exercised by CI (`macos-latest`, Apple Silicon) — never locally. That CI leg is green:
-configure, build and `ctest` all clean, 256/256 tests passing, using a Homebrew-installed LLVM
+configure, build and `ctest` all clean, 286/286 tests passing, using a Homebrew-installed LLVM
 (`cmake/toolchains/macos.llvm.toolchain.cmake` prefers it over Apple's bundled clang) rather than
 a version-pinned one — Homebrew's core `llvm` formula has no versioned sibling the way
 apt.llvm.org or the official Windows installer do, so unlike the other LLVM legs this one tracks

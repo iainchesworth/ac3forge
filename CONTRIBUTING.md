@@ -120,8 +120,10 @@ Ranked by how much they prove. Prefer the strongest one available for what you a
    `-xerror` ("exit on error") is the flag that turns a detected error into a failing process,
    which is what every script here checking only the exit code (all of them) actually needs.
 
-   FFmpeg is the only oracle for Annex E coupling, spectral extension and AHT. Two separate CI
-   mechanisms use it, answering different questions:
+   The in-repo decoder also reads Annex E coupling, spectral extension and AHT now, so FFmpeg is
+   a second, independent check on them rather than the only one — except at 7.1.4, where point 1
+   above is still the only decoder either way. Two separate CI mechanisms use FFmpeg, answering
+   different questions:
 
    - **`ffmpeg-validate`** (Linux-only, this job): *correctness* across the full option space.
      `scripts/run-codec-matrix.sh`'s FFmpeg strict-decode checks for conformance,
