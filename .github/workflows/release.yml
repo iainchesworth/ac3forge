@@ -238,6 +238,21 @@ jobs:
         run: |
           set -euo pipefail
           echo "$GPG_KEY" | gpg --batch --import
+          # REPO_GPG_PRIVATE_KEY is meant to hold exactly one key. If it ever
+          # holds more (e.g. a leftover test key alongside the real one),
+          # `gpg --list-secret-keys` lists all of them and picking "the
+          # first sec: line" silently signs with whichever one gpg happens
+          # to list first - not necessarily the intended identity, and with
+          # no indication anything was wrong beyond a confusing downstream
+          # signing failure if that key needs a passphrase nothing supplied
+          # one for. Fail loudly here instead: an ambiguous secret is a
+          # secret-provisioning bug to fix (see docs/releasing.md), not
+          # something to guess through.
+          key_count="$(gpg --list-secret-keys --with-colons | grep -c '^sec:')"
+          if [ "$key_count" -ne 1 ]; then
+            echo "::error::REPO_GPG_PRIVATE_KEY imported $key_count secret keys, expected exactly 1 - re-export just the intended signing key"
+            exit 1
+          fi
           echo "GPG_KEYID=$(gpg --list-secret-keys --with-colons | awk -F: '/^sec:/ {print $5; exit}')" >> "$GITHUB_ENV"
           mkdir -p ~/.gnupg
           echo "allow-loopback-pinentry" >> ~/.gnupg/gpg-agent.conf
