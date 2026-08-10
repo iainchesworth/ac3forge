@@ -109,8 +109,16 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
-  cancel-in-progress: true
+  # PR runs cancel their own superseded pushes (head_ref-keyed, cancel true) -
+  # that's the WIP-churn case this exists for. Push runs on main/develop are
+  # SHA-keyed instead: every merge gets its own group, so a fast run of merges
+  # can never cancel an earlier merge's still-running gold-reference gate and
+  # quality-history append (see docs/quality-trend.md) before it finishes.
+  # Branch-name-keyed cancellation silently dropped exactly that data in
+  # practice - confirmed via `gh run list`, e.g. PR #35's push run was
+  # cancelled outright by PR #36 landing a second later.
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.head_ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
