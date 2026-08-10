@@ -282,7 +282,7 @@ jobs:
       - name: Install ffmpeg (Windows)
         if: matrix.gold_reference && runner.os == 'Windows'
         shell: bash
-        run: choco install ffmpeg -y --no-progress
+        run: choco install ffmpeg -y --no-progress --requirechecksums
 
       - name: Install ffmpeg (macOS)
         if: matrix.gold_reference && runner.os == 'macOS'
@@ -301,7 +301,7 @@ jobs:
           set -euo pipefail
           case "$RUNNER_OS" in
             macOS)   brew install ninja ;;
-            Windows) choco install ninja -y --no-progress ;;
+            Windows) choco install ninja -y --no-progress --requirechecksums ;;
           esac
 
       # AC3FORGE_BUILD_GUI is ON only on the two Windows presets (see
