@@ -24,11 +24,11 @@
 // acmod 0 (1+1 dual mono) is two independent programmes sharing one
 // syncframe — Ch2's dialnorm2/compr2/dynrng2 are parsed and reported
 // alongside Ch1's, and each programme's §7.7 gain is applied to its own
-// channel only. Deliberately unsupported (clean errors, not wrong audio):
-// block switching. dynrng words are parsed but not applied; bap-0 bins
-// reconstruct as zero regardless of dithflag (the spec lets the dither
-// sequence be "any reasonably random sequence"; zeros keep decode parity
-// deterministic).
+// channel only. Block switching (§8.2.2/§7.9) is decoded too — DecodedFrame::
+// blksw reports which blocks used the short transform. dynrng words are
+// parsed but not applied; bap-0 bins reconstruct as zero regardless of
+// dithflag (the spec lets the dither sequence be "any reasonably random
+// sequence"; zeros keep decode parity deterministic).
 //
 // E-AC-3 scope (Annex E, bsid 11-16): the whole of Tables E1.2/E1.3/E1.4 as
 // syntax — every metadata payload is walked correctly whether or not its
@@ -94,6 +94,10 @@ struct DecodedFrame {
     std::optional<int> dialnorm2 = std::nullopt;
     std::optional<std::uint8_t> compr2 = std::nullopt;
     std::array<std::uint8_t, kBlocksPerFrame> dynrng2{};
+    // §8.2.2/§7.9: per full-bandwidth channel, per block - true where that
+    // block used the short (block-switched) transform. Sized to nfchans; the
+    // LFE and any coupling channel never switch, so they carry no entry.
+    std::vector<std::array<bool, kBlocksPerFrame>> blksw;
     // nchans x kSamplesPerFrame, AC-3 channel order, LFE last when present.
     std::vector<std::vector<float>> channels;
 };
@@ -135,6 +139,10 @@ struct DecodedSubstream {
     // word so much as mark the LAST dependent of the program — the point at
     // which a decoder knows every channel has arrived.
     bool last_dependent = false;
+    // §8.2.2/§7.9: per full-bandwidth channel, per block - true where that
+    // block used the short (block-switched) transform. Sized to nfchans; the
+    // LFE and any coupling channel never switch, so they carry no entry.
+    std::vector<std::array<bool, kBlocksPerFrame>> blksw;
     std::vector<std::vector<float>> channels;
 
     // The Table E2.5 map this substream's channels occupy.

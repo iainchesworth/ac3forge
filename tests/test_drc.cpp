@@ -707,7 +707,8 @@ Eac3Probe probe_eac3(std::span<const std::byte> frame) {
     REQUIRE(numblkscod == 3);
     r.skip(1 + 1);  // expstre, ahte
     r.skip(2);      // snroffststr
-    r.skip(1 + 1);  // transproce, blkswe
+    r.skip(1);                        // transproce
+    const bool blkswe = r.read(1) != 0;  // blkswe
     // dithflage is the ONLY set flag in this run, which makes it the canary for
     // everything upstream of it: drop or add a bit anywhere in bsi and this
     // reads a neighbouring zero instead. Without it a bsi field of the wrong
@@ -731,8 +732,12 @@ Eac3Probe probe_eac3(std::span<const std::byte> frame) {
     r.skip(6 + 4);  // frmcsnroffst, frmfsnroffst
     r.skip(1);      // blkstrtinfoe
 
-    // audblk 0 (Table E1.4): dithflag per channel, then dynrnge.
-    r.skip(static_cast<std::size_t>(nfchans));
+    // audblk 0 (Table E1.4): blksw per channel (only when blkswe), then
+    // dithflag per channel, then dynrnge.
+    if (blkswe) {
+        r.skip(static_cast<std::size_t>(nfchans));  // blksw[ch]
+    }
+    r.skip(static_cast<std::size_t>(nfchans));  // dithflag[ch]
     if (r.read(1) != 0) {
         out.dynrng = static_cast<std::uint8_t>(r.read(8));
     }

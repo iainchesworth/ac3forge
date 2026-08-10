@@ -27,7 +27,7 @@ std::string_view describe(DecodeError error) {
         case DecodeError::kBadCrc: return "the frame's CRC does not check out";
         case DecodeError::kReservedValue: return "a header field holds a value A/52 reserves";
         case DecodeError::kUnsupported:
-            return "valid AC-3 this decoder does not implement (bsid > 8, or block switching)";
+            return "valid AC-3 this decoder does not implement (bsid > 8)";
         case DecodeError::kInvalidStream:
             return "the frame contradicts a constraint A/52 requires of it";
     }
@@ -257,6 +257,7 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
     out.dialnorm2 = dialnorm2;
     out.compr2 = compr2;
     out.dynrng2.fill(meta::kDynrngUnity);
+    out.blksw.assign(static_cast<std::size_t>(nfchans), {});
     out.channels.assign(static_cast<std::size_t>(nchans),
                         std::vector<float>(kSamplesPerFrame, 0.0f));
 
@@ -301,10 +302,11 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
     std::vector<bool> phsflg;
 
     for (int block = 0; block < kBlocksPerFrame; ++block) {
+        std::array<bool, 5> blksw{};  // AC-3's widest acmod (3/2) has 5 fbw channels
         for (int ch = 0; ch < nfchans; ++ch) {
-            if (r.read(1) != 0) {  // blksw
-                return std::unexpected(DecodeError::kUnsupported);
-            }
+            blksw[static_cast<std::size_t>(ch)] = r.read(1) != 0;
+            out.blksw[static_cast<std::size_t>(ch)][static_cast<std::size_t>(block)] =
+                blksw[static_cast<std::size_t>(ch)];
         }
         for (int ch = 0; ch < nfchans; ++ch) {
             (void)r.read(1);  // dithflag: bap-0 bins reconstruct as zero either way
@@ -770,7 +772,11 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
         }
         for (int ch = 0; ch < nchans; ++ch) {
             std::array<double, 512> x{};
-            imdct512_windowed(coeffs[static_cast<std::size_t>(ch)], x);
+            if (ch < nfchans && blksw[static_cast<std::size_t>(ch)]) {
+                imdct256_pair_windowed(coeffs[static_cast<std::size_t>(ch)], x);
+            } else {
+                imdct512_windowed(coeffs[static_cast<std::size_t>(ch)], x);
+            }
             auto& delay = delay_[static_cast<std::size_t>(ch)];
             auto& pcm = out.channels[static_cast<std::size_t>(ch)];
             for (int n = 0; n < 256; ++n) {
