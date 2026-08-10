@@ -383,7 +383,8 @@ TEST_CASE("a real transient triggers block switching and decodes without pre-ech
     for (std::size_t ch = 0; ch < nchans; ++ch) {
         double pre_energy = 0.0;
         for (int n = 0; n < kOnset - 256; ++n) {
-            const double v = decoded->channels[ch][static_cast<std::size_t>(n)];
+            const double v =
+                static_cast<double>(decoded->channels[ch][static_cast<std::size_t>(n)]);
             pre_energy += v * v;
         }
         CHECK(pre_energy < 1e-4);
