@@ -82,19 +82,26 @@ gh release edit vX.Y.Z --notes-file notes.md
 
 ## What gets published
 
-| Platform | Packages | Built for real? |
-|---|---|---|
-| Windows (MSVC / clang-cl) | `.zip`, `.exe` (NSIS, if `makensis` is on the runner) | windows-msvc yes; windows-llvm best-effort |
-| Linux (GCC / clang) | `.tar.gz`, `.deb`, `.rpm` | best-effort (`experimental: true` legs) |
-| macOS (AppleClang) | `.tar.gz`, `.dmg` | best-effort, unverified - no Mac host locally |
+One package per OS, not one per compiler-toolchain leg: `_build.yml`'s matrix builds and tests
+both Windows toolchains (MSVC, clang-cl) and both Linux toolchains (GCC, Clang) on every push,
+but only the leg marked `release_package: true` per OS actually packages for a release -
+windows-msvc, linux-gcc and macos-llvm. windows-llvm and linux-llvm still catch
+compiler-specific bugs in full, every push; they just don't produce a second, redundantly
+canonical zip that a downloader would have no way to choose between.
 
-"Best-effort" means the leg runs `continue-on-error` in `_build.yml` - if it fails to even
-compile, the release simply ships without that platform's package rather than failing
-outright. Every package that IS built also gets a `.sha512` (`CPACK_PACKAGE_CHECKSUM` in
-`cmake/Packaging.cmake`), an aggregate `SHA512SUMS` manifest, keyless Sigstore/OIDC build
-provenance, and an SPDX SBOM covering the whole release artifact set - see Verifying a download
-below. GPG signatures are additional and only appear once a signing key is provisioned (next
-section); their absence doesn't block a release.
+| Platform | Leg | Packages |
+|---|---|---|
+| Windows | windows-msvc | `.zip`, `.exe` (NSIS, if `makensis` is on the runner) |
+| Linux | linux-gcc | `.tar.gz`, `.deb`, `.rpm` |
+| macOS | macos-llvm | `.tar.gz`, `.dmg` |
+
+No leg is `experimental: true` any more (see `ci.yml`'s status table), so all three package
+for real rather than best-effort - a packaging failure on any of them blocks the release the
+same as a build or test failure would. Every package gets a `.sha512`
+(`CPACK_PACKAGE_CHECKSUM` in `cmake/Packaging.cmake`), an aggregate `SHA512SUMS` manifest,
+keyless Sigstore/OIDC build provenance, and an SPDX SBOM covering the whole release artifact
+set - see Verifying a download below. GPG signatures are additional and only appear once a
+signing key is provisioned (next section); their absence doesn't block a release.
 
 ## Provisioning the GPG signing key (optional, one-time)
 
