@@ -59,7 +59,7 @@ gold-reference *quality* gate, and a dedicated Linux FFmpeg-validation leg check
 
 | | AC-3 (bsid 8) | E-AC-3 (bsid 16) |
 |---|---|---|
-| Coding modes | 1/0, 2/0, 3/0, 2/1, 3/1, 2/2, 3/2, each with or without LFE, plus 1+1 dual mono (`acmod` 0 — two independent single-channel programmes sharing one syncframe, not a layout) | the same, plus 7.1, 5.1.2, 5.1.4 and 7.1.4 through dependent substreams |
+| Coding modes | 1+1 dual mono, 1/0, 2/0, 3/0, 2/1, 3/1, 2/2, 3/2, each with or without LFE (1+1 never carries one) | the same, plus 7.1, 5.1.2, 5.1.4 and 7.1.4 through dependent substreams |
 | Sample rates | 48, 44.1, 32 kHz | 48, 44.1, 32 kHz, plus the `fscod2` half rates 24, 22.05, 16 kHz (§E2.3.1.3 — Annex E only, no AC-3 counterpart) |
 | Bit rates | CBR only — the 19 nominal rates of Table 5.18, 32–640 kbps | CBR (the same 19, per substream) or VBR — a quality target with optional min/max kbps bounds, per substream |
 | Transform | long (512-point) or short (2x256-point) blocks, KBD window, chosen per block per channel by a §8.2.2 transient detector | same |
@@ -105,10 +105,12 @@ channel from any other encoder; this project's own just doesn't emit it yet.
 The in-repo decoder shares its tables, bit-allocation engine, exponent decoding and IMDCT
 with the encoder. It reads AC-3 (bsid ≤ 8) and E-AC-3 (bsid 11–16), including dependent
 substreams, `chanmap`, and the §E3.8.2 render that lays a dependent's channels over the bed.
-It also reads all three Annex E coding tools — coupling (§E3.3), spectral extension (§E3.6)
-and the adaptive hybrid transform with GAQ (§E3.4) — at every layout including 7.1.4 with all
-three stacked together, and reports block switching decisions back per block per channel
-(`DecodedFrame::blksw`/`DecodedSubstream::blksw`), the same tier of diagnostic as `dynrng`.
+All three Annex E coding tools decode too — channel coupling (§E3.3), spectral extension
+(§E3.6, including the pseudo-random noise blend the standard requires but leaves the exact
+generator unspecified), and the adaptive hybrid transform with GAQ (§E3.4) — individually or
+all stacked together, at every channel layout including 7.1.4. Block switching decisions come
+back too, per block per channel (`DecodedFrame::blksw`/`DecodedSubstream::blksw`), the same
+tier of diagnostic as `dynrng`.
 
 ### Other
 
@@ -150,19 +152,24 @@ decoded 32 E-AC-3 access units (3 substreams each) -> out.wav
 Fourteen channels are coded and twelve are rendered: per §E3.8.2 the dependent's Ls and Rs
 replace the bed's rather than adding to them.
 
-**The in-repo decoder now reads everything this project's own encoder can produce.** It closed
-its last three Annex E gaps — coupling, spectral extension and AHT — so the only case left with
-no *external* oracle is structural, not a tool-support gap: FFmpeg refuses a *second* dependent
-substream outright. A single dependent numbers from 0 in its own space, which is why FFmpeg
-reads 7.1, 5.1.2 and 5.1.4 (with or without Annex E tools) without complaint and only 7.1.4
-defeats it. So a stream using two dependents — with or without an Annex E tool on top — is
-checked only against this project's own encoder/decoder round trip, not against FFmpeg.
+**The oracles are complementary, and neither covers everything on its own.** FFmpeg reads
+Annex E coupling, spectral extension and AHT, but refuses a *second* dependent substream. A
+single dependent numbers from 0 in its own space, which is why FFmpeg reads 7.1, 5.1.2 and
+5.1.4 without complaint and only 7.1.4 defeats it. The in-repo decoder reads every Annex E
+tool combination at every layout, 7.1.4 included — cross-checked against FFmpeg at every
+layout FFmpeg itself can read (98+ dB SNR for coupling and spectral extension; 62–89 dB for
+AHT, which genuinely recodes mantissas rather than scaling or synthesizing around
+already-decoded content, so a wider margin from bit-exact is expected there) — so 7.1.4 with
+an Annex E tool is the one combination left where FFmpeg cannot confirm the result
+independently; only encoder/decoder self-consistency backs it there, the same as plain 7.1.4.
 
 | Stream | FFmpeg | In-repo decoder |
 |---|---|---|
 | AC-3, any supported mode | yes | yes |
-| E-AC-3 up to 5.1.4 (one dependent), any combination of Annex E tools | yes | yes |
-| E-AC-3 7.1.4 (two dependents), with or without Annex E tools | no | yes |
+| E-AC-3 up to 5.1.4 (one dependent), no Annex E tools | yes | yes |
+| E-AC-3 7.1.4 (two dependents) | no | yes |
+| E-AC-3 with cpl / spx / aht | yes | yes |
+| E-AC-3 7.1.4 with Annex E tools | no | yes |
 | E-AC-3 `fscod2` half rates (24/22.05/16 kHz) | header only | yes |
 
 **`fscod2` audio content has no external decode oracle at all — not even Dolby's own.**
