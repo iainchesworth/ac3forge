@@ -1,14 +1,25 @@
 cmake_minimum_required(VERSION 3.28...4.3)
 
+# Derive the version from the nearest reachable v* git tag before project() -
+# see the file for the fallback/override rules. This makes a pushed tag the
+# single source of truth: nothing in this tree needs bumping by hand anymore.
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/GitVersionDerivation.cmake")
+
 project(ac3forge
-    VERSION 0.2.0
+    VERSION ${DERIVED_VERSION_SEMVER}
     DESCRIPTION "Clean-room AC-3 (ATSC A/52) encoder and decoder with a spatial object layer"
     LANGUAGES CXX)
 
-# vcpkg.json's "version" is a SEPARATE copy of this number - vcpkg reads its
-# manifest before any CMake configure step runs, so there is no automatic way
-# to keep the two in sync. Bump vcpkg.json's "version" by hand whenever
-# VERSION above changes.
+# CMake's project() VERSION field can only hold M.M.P, so a tag's prerelease
+# suffix (e.g. the "-beta.1" in v0.2.0-beta.1) is carried separately here.
+set(PROJECT_VERSION_PRERELEASE "${DERIVED_VERSION_PRERELEASE}" CACHE STRING "Prerelease label (e.g. beta.2)" FORCE)
+set(PROJECT_VERSION_FULL "${DERIVED_VERSION_FULL}" CACHE STRING "Full semver version (M.M.P[-prerelease])" FORCE)
+
+# vcpkg.json's "version" is a fixed placeholder, deliberately never kept in
+# sync with PROJECT_VERSION: it is only read by vcpkg's manifest resolver
+# before any CMake configure step runs, and this project is never published
+# to a vcpkg registry, so the field has no real meaning to synchronise.
+# Matches R:\aqualink-automate, whose vcpkg.json version sits equally static.
 
 # ---------------------------------------------------------------------------
 # Global language settings: C++23 only, no compiler extensions.
@@ -30,6 +41,10 @@ include(CompilerWarnings)
 # presets in CMakePresets.json); a plain configure is unaffected.
 set(AC3FORGE_SANITIZERS "" CACHE STRING "Comma-separated -fsanitize= value, e.g. address,undefined")
 include(Sanitizers)
+
+# ac3::coverage, off unless -DAC3FORGE_ENABLE_COVERAGE=ON (see the
+# linux-gcc-coverage preset in CMakePresets.json); a plain configure is unaffected.
+include(Coverage)
 
 # Sources carry spec citations with non-ASCII glyphs (section marks, degrees,
 # arrows). Tell MSVC both the source and execution charsets are UTF-8 so it
@@ -110,7 +125,7 @@ endif()
 # After every target's install() rules (src/cli, src/gui) have been declared.
 include(Packaging)
 
-message(STATUS "ac3forge ${PROJECT_VERSION}")
+message(STATUS "ac3forge ${PROJECT_VERSION_FULL}")
 message(STATUS "  Build CLI      : ${AC3FORGE_BUILD_CLI}")
 message(STATUS "  Build GUI      : ${AC3FORGE_BUILD_GUI}")
 message(STATUS "  Build tests    : ${AC3FORGE_BUILD_TESTS}")

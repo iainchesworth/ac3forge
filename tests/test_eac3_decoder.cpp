@@ -457,6 +457,85 @@ TEST_CASE("E-AC-3 round trips are near-transparent in every channel", "[eac3][de
     }
 }
 
+TEST_CASE("E-AC-3 dual mono codes two independent programmes, never one into the other",
+         "[eac3][decoder][dual-mono]") {
+    using ac3::Acmod;
+    // Same shape as the AC-3 version of this test: Ch1 loud, Ch2 silent, so
+    // any cross-talk - coupling switched on by mistake, a shared downmix
+    // measurement, Ch1 and Ch2 swapped - shows up directly rather than
+    // needing a correlation check to notice.
+    const ac3::eac3::AccessUnitConfig config{
+        .independent = {.bitrate_kbps = 192,
+                        .acmod = Acmod::kDualMono,
+                        .dialnorm = 27,
+                        .dialnorm2 = 18,
+                        .drc = ac3::meta::profile(ac3::meta::ProfileId::kFilmStandard),
+                        .heavy = ac3::meta::HeavyConfig{}}};
+    ac3::eac3::AccessUnitEncoder encoder{config};
+    REQUIRE(encoder.channel_count() == 2);
+
+    std::vector<std::vector<float>> block(2, std::vector<float>(ac3::kSamplesPerFrame));
+    std::vector<std::span<const float>> views(2);
+    std::vector<std::byte> stream;
+    std::uint64_t n0 = 0;
+    for (int f = 0; f < 3; ++f) {
+        for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+            const double t = static_cast<double>(n0 + static_cast<std::uint64_t>(i)) / 48000.0;
+            block[0][static_cast<std::size_t>(i)] =
+                static_cast<float>(0.8 * std::sin(2.0 * std::numbers::pi * 1200.0 * t));
+            block[1][static_cast<std::size_t>(i)] = 0.0f;
+        }
+        views[0] = block[0];
+        views[1] = block[1];
+        n0 += ac3::kSamplesPerFrame;
+        auto unit = encoder.encode_access_unit(views);
+        REQUIRE(unit.has_value());
+        stream.insert(stream.end(), unit->bytes.begin(), unit->bytes.end());
+    }
+
+    const auto units = ac3::split_access_units(stream);
+    REQUIRE(units.has_value());
+    REQUIRE(units->size() == 3);  // no dependents, so one substream per frame
+
+    ac3::Eac3Decoder substream_decoder;
+    ac3::DecodedSubstream last_substream{};
+    for (const auto& unit : *units) {
+        const auto frames = ac3::split_frames(unit);
+        REQUIRE(frames.has_value());
+        REQUIRE(frames->size() == 1);
+        const auto decoded = substream_decoder.decode_substream(frames->front());
+        REQUIRE(decoded.has_value());
+        last_substream = *decoded;
+    }
+    CHECK(last_substream.acmod == Acmod::kDualMono);
+    CHECK(last_substream.dialnorm == 27);
+    REQUIRE(last_substream.dialnorm2.has_value());
+    CHECK(*last_substream.dialnorm2 == 18);
+    REQUIRE(last_substream.compr2.has_value());
+    REQUIRE(last_substream.channels.size() == 2);
+
+    double ch1_peak = 0.0;
+    double ch2_peak = 0.0;
+    for (const float s : last_substream.channels[0]) {
+        ch1_peak = std::max(ch1_peak, std::abs(static_cast<double>(s)));
+    }
+    for (const float s : last_substream.channels[1]) {
+        ch2_peak = std::max(ch2_peak, std::abs(static_cast<double>(s)));
+    }
+    CHECK(ch1_peak > 0.3);
+    CHECK(ch2_peak < 0.02);
+
+    // decode_access_unit must not invent a spatial layout for 1+1 - a fresh
+    // decoder, so its overlap-add state cannot be confused with the loop
+    // above's per-substream one.
+    ac3::Eac3Decoder unit_decoder;
+    const auto au = unit_decoder.decode_access_unit(units->back());
+    REQUIRE(au.has_value());
+    CHECK(au->acmod == Acmod::kDualMono);
+    CHECK(au->layout.count == 0);
+    REQUIRE(au->channels.size() == 2);
+}
+
 TEST_CASE("bsid at bit 40 picks the framing", "[eac3][decoder]") {
     const auto unit = ac3::eac3::build_silent_access_unit(
         {.independent = {.bitrate_kbps = 448, .acmod = ac3::Acmod::k3_2, .lfe = true},
@@ -764,5 +843,91 @@ TEST_CASE("the E-AC-3 decoder rejects malformed streams", "[eac3][decoder]") {
         patch_bits(dependent, kChanmapBit, 16, ac3::eac3::chanmap::kLrsRrsBit);  // 2, not 4
         CHECK(decoder.decode_substream(dependent).error() ==
               ac3::DecodeError::kInvalidStream);
+    }
+}
+
+namespace {
+
+// Real, two-tone audio at an arbitrary rate - separate from tone_frame()/
+// round_trip() above, which bake 48 kHz into both synthesis and analysis and
+// are shared by tests that have no reason to generalize them.
+std::vector<std::vector<float>> fscod2_tone_pair(double rate_hz, std::uint64_t start) {
+    constexpr double kFscod2Amplitude = 0.35;
+    constexpr std::array<double, 2> kTones = {300.0, 700.0};  // well under any fscod2 Nyquist
+    std::vector<std::vector<float>> pcm(2, std::vector<float>(ac3::kSamplesPerFrame));
+    for (std::size_t ch = 0; ch < pcm.size(); ++ch) {
+        for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+            const auto n = static_cast<double>(start + static_cast<std::uint64_t>(i));
+            pcm[ch][static_cast<std::size_t>(i)] = static_cast<float>(
+                kFscod2Amplitude * std::sin(2.0 * std::numbers::pi * kTones[ch] * n / rate_hz));
+        }
+    }
+    return pcm;
+}
+
+double fscod2_dominant_freq_hz(const std::vector<float>& x, double rate_hz) {
+    double best_f = 0.0;
+    double best_m = -1.0;
+    const std::size_t n0 = 512;
+    const std::size_t len = std::min<std::size_t>(2048, x.size() - n0);
+    for (double f = 50.0; f <= 1200.0; f += 5.0) {
+        double re = 0.0;
+        double im = 0.0;
+        for (std::size_t i = 0; i < len; ++i) {
+            const double phase = 2.0 * std::numbers::pi * f * static_cast<double>(i) / rate_hz;
+            re += static_cast<double>(x[n0 + i]) * std::cos(phase);
+            im += static_cast<double>(x[n0 + i]) * std::sin(phase);
+        }
+        const double mag = re * re + im * im;
+        if (mag > best_m) {
+            best_m = mag;
+            best_f = f;
+        }
+    }
+    return best_f;
+}
+
+}  // namespace
+
+TEST_CASE("E-AC-3 encodes and decodes real audio at fscod2 half rates",
+          "[eac3][decoder]") {
+    struct Case {
+        ac3::SampleRate rate;
+        std::uint32_t hz;
+    };
+    const std::array<Case, 3> cases = {{{ac3::SampleRate::k24000, 24000},
+                                        {ac3::SampleRate::k22050, 22050},
+                                        {ac3::SampleRate::k16000, 16000}}};
+    for (const auto& c : cases) {
+        CAPTURE(c.hz);
+        ac3::eac3::AccessUnitEncoder encoder{
+            {.independent = {.sample_rate = c.rate, .bitrate_kbps = 192}}};
+        ac3::Eac3Decoder decoder;
+        std::vector<std::vector<float>> rendered(2);
+        std::uint64_t n = 0;
+        for (int f = 0; f < 4; ++f) {
+            auto pcm = fscod2_tone_pair(static_cast<double>(c.hz), n);
+            n += ac3::kSamplesPerFrame;
+            const std::vector<std::span<const float>> views{pcm[0], pcm[1]};
+            const auto unit = encoder.encode_access_unit(views);
+            REQUIRE(unit.has_value());
+            // encode_access_unit's own bytes are already exactly one access
+            // unit - no need to concatenate and re-split, unlike round_trip()
+            // above, which is proving something else (that a muxed multi-unit
+            // stream scans correctly).
+            const auto decoded = decoder.decode_access_unit(unit->bytes);
+            REQUIRE(decoded.has_value());
+            CHECK(decoded->sample_rate == c.rate);
+            REQUIRE(decoded->channels.size() == 2);
+            for (std::size_t ch = 0; ch < 2; ++ch) {
+                rendered[ch].insert(rendered[ch].end(), decoded->channels[ch].begin(),
+                                    decoded->channels[ch].end());
+            }
+        }
+        // Real audio, not silence: §7.2.2.1.1's all-zero allocation would
+        // decode perfectly whether or not fscod2's bit-allocation family
+        // mapping (fscod_family()) were wired up correctly at all.
+        CHECK(std::abs(fscod2_dominant_freq_hz(rendered[0], c.hz) - 300.0) < 15.0);
+        CHECK(std::abs(fscod2_dominant_freq_hz(rendered[1], c.hz) - 700.0) < 15.0);
     }
 }

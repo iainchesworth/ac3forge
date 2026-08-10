@@ -19,7 +19,13 @@ constexpr int kBsidBitOffset = 40;
     using namespace eac3::chanmap;
     std::uint16_t map = 0;
     switch (acmod) {
-        case Acmod::kDualMono:  // 1+1: two independent programs, not a layout
+        // 1+1 has no Table E2.5 location - Ch1 and Ch2 are independent
+        // programmes, not directions - but this function's only consumer
+        // wants a channel COUNT, so the same placeholder acmod_map() uses for
+        // that reason stands in here too: two bits, for two coded channels.
+        case Acmod::kDualMono:
+            map = kLeftBit | kRightBit;
+            break;
         case Acmod::k1_0:
             map = kCentreBit;
             break;
@@ -135,12 +141,19 @@ std::expected<Substream, ScanError> read_eac3_substream(std::span<const std::byt
     s.bytes = (static_cast<std::size_t>(r.read(11)) + 1) * 2;
     const auto fscod = r.read(2);
     if (fscod == 0x3) {
-        // fscod2: the half-rate sample rates, which this project does not
-        // produce and cannot name in SampleRate.
-        return std::unexpected(ScanError::kReservedValue);
+        // §E2.3.1.3: fscod2 replaces numblkscod outright - a reduced-rate
+        // substream is implicitly always six blocks, so numblkscod's bits are
+        // never sent.
+        const auto fscod2 = r.read(2);
+        const auto rate = sample_rate_from_fscod2(fscod2);
+        if (!rate) {
+            return std::unexpected(ScanError::kReservedValue);
+        }
+        s.sample_rate = *rate;
+    } else {
+        s.sample_rate = static_cast<SampleRate>(fscod);
+        r.skip(2);  // numblkscod
     }
-    s.sample_rate = static_cast<SampleRate>(fscod);
-    r.skip(2);  // numblkscod
     const auto acmod = r.read(3);
     s.acmod = static_cast<Acmod>(acmod);
     s.lfe = r.read(1) != 0;

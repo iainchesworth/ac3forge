@@ -61,6 +61,7 @@ enum class Codec : std::uint8_t {
 enum class LayoutId : std::uint8_t {
     kMono,
     kStereo,
+    kDualMono,
     k51,
     k71,
     k512,
@@ -84,9 +85,13 @@ struct LayoutInfo {
     int dependents;
 };
 
-inline constexpr std::array<LayoutInfo, 7> kLayouts{{
+inline constexpr std::array<LayoutInfo, 8> kLayouts{{
     {LayoutId::kMono, "mono", "1/0 mono", 1, 1, 0},
     {LayoutId::kStereo, "stereo", "2/0 stereo", 2, 2, 0},
+    // Two independent programmes sharing one syncframe, not a soundfield -
+    // "rendered"/"transmitted" both count 2 only because that is how many
+    // coded channels 1+1 carries, not because there are two speakers to fill.
+    {LayoutId::kDualMono, "1+1", "1+1 dual mono", 2, 2, 0},
     {LayoutId::k51, "51", "5.1", 6, 6, 0},
     // The dependent replaces the bed's surrounds and adds the rears, so four
     // coded channels buy two new speakers.
@@ -257,6 +262,11 @@ struct Metadata {
     // frame, so a front end does it before the first frame is encoded and
     // writes the answer back into `dialnorm`.
     bool measure_dialnorm = false;
+    // Ch2's own dialnorm, meaningful only when the plan's layout is 1+1 dual
+    // mono - the two programmes are levelled independently, so `dialnorm`
+    // alone cannot describe both.
+    int dialnorm2 = 31;
+    bool measure_dialnorm2 = false;
     // E-AC-3 only: emit the mixmdate group. AC-3 carries cmixlev/surmixlev in
     // bsi and has nowhere to put the rest.
     bool mixmeta = false;
@@ -290,11 +300,12 @@ struct Plan {
 };
 
 enum class PlanError : std::uint8_t {
-    kLayoutNeedsEac3,   // an immersive layout (or channel selection) asked of AC-3
-    kBitrateNotLegal,   // AC-3 takes only the 19 Table 5.18 rates
-    kNoSourceLayout,    // no standard speaker layout has that many channels
-    kInvalidChannels,   // custom_locations is not a channel selection allocate() can satisfy
-    kVbrNeedsEac3,      // vbr was set alongside Codec::kAc3
+    kLayoutNeedsEac3,       // an immersive layout (or channel selection) asked of AC-3
+    kBitrateNotLegal,       // AC-3 takes only the 19 Table 5.18 rates
+    kNoSourceLayout,        // no standard speaker layout has that many channels
+    kInvalidChannels,       // custom_locations is not a channel selection allocate() can satisfy
+    kSampleRateNeedsEac3,   // fscod2 (24/22.05/16 kHz) asked of AC-3, which has no such field
+    kVbrNeedsEac3,          // vbr was set alongside Codec::kAc3
 };
 
 [[nodiscard]] std::string_view describe(PlanError error);

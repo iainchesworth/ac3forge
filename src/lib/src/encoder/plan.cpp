@@ -388,6 +388,10 @@ ChannelPlan channel_plan_for(LayoutId id) {
             return {.bed_acmod = Acmod::k1_0, .bed_lfe = false, .dependents = {}};
         case LayoutId::kStereo:
             return {.bed_acmod = Acmod::k2_0, .bed_lfe = false, .dependents = {}};
+        case LayoutId::kDualMono:
+            // No LFE, ever: 1+1 has no soundfield for a subwoofer to sit in,
+            // and Table 5.8 never pairs acmod 0 with one in practice.
+            return {.bed_acmod = Acmod::kDualMono, .bed_lfe = false, .dependents = {}};
         case LayoutId::k51:
             return {.bed_acmod = Acmod::k3_2, .bed_lfe = true, .dependents = {}};
         case LayoutId::k71:
@@ -800,6 +804,8 @@ std::string_view describe(PlanError error) {
             return "no standard speaker layout has that many channels";
         case PlanError::kInvalidChannels:
             return "that channel selection is not one A/52 Annex E can express";
+        case PlanError::kSampleRateNeedsEac3:
+            return "24, 22.05 and 16 kHz (fscod2) only exist in E-AC-3; AC-3 has no such field";
         case PlanError::kVbrNeedsEac3:
             return "variable bit rate needs E-AC-3 - AC-3's frame size indexes Table 5.18 "
                    "and cannot vary freely";
@@ -824,6 +830,10 @@ std::optional<PlanError> validate(const Plan& plan) {
     if (plan.codec == Codec::kAc3 && !is_valid_bitrate(plan.bitrate_kbps)) {
         return PlanError::kBitrateNotLegal;
     }
+    // fscod2 is an Annex E field with no AC-3 counterpart at all.
+    if (plan.codec == Codec::kAc3 && is_reduced_rate(plan.sample_rate)) {
+        return PlanError::kSampleRateNeedsEac3;
+    }
     if (plan.vbr && plan.codec == Codec::kAc3) {
         return PlanError::kVbrNeedsEac3;
     }
@@ -842,6 +852,9 @@ EncoderConfig ac3_config(const Plan& plan) {
     return {.sample_rate = plan.sample_rate,
             .bitrate_kbps = plan.bitrate_kbps,
             .dialnorm = plan.meta.dialnorm,
+            .dialnorm2 = cp.bed_acmod == Acmod::kDualMono
+                            ? std::optional<int>(plan.meta.dialnorm2)
+                            : std::nullopt,
             .acmod = cp.bed_acmod,
             .lfe = cp.bed_lfe,
             // Coupling shares coefficients between full-bandwidth channels
@@ -895,6 +908,9 @@ eac3::AccessUnitConfig eac3_config(const Plan& plan) {
     independent.acmod = cp.bed_acmod;
     independent.lfe = cp.bed_lfe;
     independent.dialnorm = plan.meta.dialnorm;
+    if (cp.bed_acmod == Acmod::kDualMono) {
+        independent.dialnorm2 = plan.meta.dialnorm2;
+    }
     independent.drc = plan.meta.drc;
     independent.heavy = plan.meta.heavy;
     if (plan.meta.mixmeta) {
@@ -960,6 +976,19 @@ std::optional<Routing> route(const ChannelPlan& target, std::size_t wav_channels
                              meta::CentreMixLevel clev, meta::SurroundMixLevel slev) {
     if (wav_channels == 0) {
         return std::nullopt;
+    }
+    // Dual mono has no soundstage to pan into - Ch1 and Ch2 are unrelated
+    // programmes, not directions - so the direction-based machinery below,
+    // built entirely around Table E2.5 locations, does not apply at all. The
+    // only sensible routing is the identity: source channel i is coded
+    // channel i, always. The caller is responsible for having assembled
+    // `wav_channels == 2` worth of source PCM as Ch1 then Ch2, whether that
+    // came from one two-channel file or two mono ones.
+    if (target.bed_acmod == Acmod::kDualMono) {
+        if (wav_channels != 2) {
+            return std::nullopt;
+        }
+        return Routing{.source_channels = 2, .coded_channels = 2, .gain = {1.0, 0.0, 0.0, 1.0}};
     }
     // A source exactly as wide as the target is taken to BE the target, in WAV
     // speaker order. Nothing else can distinguish 7.1 from 5.1.2 at eight

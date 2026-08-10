@@ -115,6 +115,16 @@
         "AC3FORGE_SANITIZERS": "address,undefined"
       }
     },
+    {
+      "name": "coverage",
+      "hidden": true,
+      "description": "gcov source coverage instrumentation (cmake/Coverage.cmake) over ac3::forge and ac3tests. CLI and examples are off: both link ac3::forge, and an instrumented library's gcov runtime symbols would otherwise need resolving on their link lines too for no coverage benefit, since gcovr's report is filtered to src/lib/.* anyway - see .github/workflows/ci.yml's coverage job.",
+      "cacheVariables": {
+        "AC3FORGE_ENABLE_COVERAGE": "ON",
+        "AC3FORGE_BUILD_CLI": "OFF",
+        "AC3FORGE_BUILD_EXAMPLES": "OFF"
+      }
+    },
 
     {
       "name": "config-windows-msvc",
@@ -170,6 +180,11 @@
       "name": "config-linux-llvm-asan-ubsan",
       "inherits": [ "debug", "linux-llvm", "sanitize-asan-ubsan", "core" ],
       "displayName": "Linux LLVM ASan+UBSan"
+    },
+    {
+      "name": "config-linux-gcc-coverage",
+      "inherits": [ "debug", "linux-gcc", "coverage", "core" ],
+      "displayName": "Linux GCC Coverage"
     }
   ],
 
@@ -228,6 +243,11 @@
       "name": "build-linux-llvm-asan-ubsan",
       "configurePreset": "config-linux-llvm-asan-ubsan",
       "displayName": "Linux LLVM ASan+UBSan"
+    },
+    {
+      "name": "build-linux-gcc-coverage",
+      "configurePreset": "config-linux-gcc-coverage",
+      "displayName": "Linux GCC Coverage"
     }
   ],
 
@@ -312,6 +332,13 @@
         "ASAN_OPTIONS": "detect_leaks=1",
         "UBSAN_OPTIONS": "print_stacktrace=1"
       }
+    },
+    {
+      "name": "test-linux-gcc-coverage",
+      "configurePreset": "config-linux-gcc-coverage",
+      "displayName": "Linux GCC Coverage Tests",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error", "stopOnFailure": false }
     }
   ],
 

@@ -153,8 +153,14 @@ struct SkipPlan {
         return std::unexpected(FrameError::kInvalidDialnorm);
     }
 
-    const std::uint32_t words = *frame_size_words(config.sample_rate, config.bitrate_kbps,
-                                                  config.pad441);
+    // fscod2 is an E-AC-3-only concept (Annex E); classic AC-3 has no
+    // frmsizecod row for a reduced rate, so frame_size_words() refuses one.
+    const auto words_opt = frame_size_words(config.sample_rate, config.bitrate_kbps,
+                                            config.pad441);
+    if (!words_opt) {
+        return std::unexpected(FrameError::kInvalidBitrate);
+    }
+    const std::uint32_t words = *words_opt;
     const std::uint32_t total_bytes = words * 2;
     const std::uint32_t total_bits = total_bytes * 8;
     const std::uint32_t words58 = frame_size_58_words(words);

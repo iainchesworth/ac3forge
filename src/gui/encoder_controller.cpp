@@ -33,12 +33,32 @@ namespace plan = ac3::plan;
 
 namespace {
 
-// AC-3 accepts only these three rates (A/52 Table 5.6).
+// AC-3 accepts only these three rates (A/52 Table 5.6). Used for capture
+// devices too, deliberately: real audio hardware does not offer the Annex E
+// fscod2 half rates, so a device gate has no reason to accept them.
 std::optional<ac3::SampleRate> to_sample_rate(std::uint32_t hz) {
     switch (hz) {
         case 48000: return ac3::SampleRate::k48000;
         case 44100: return ac3::SampleRate::k44100;
         case 32000: return ac3::SampleRate::k32000;
+        default: return std::nullopt;
+    }
+}
+
+// A loaded file's rate can be one of the three Annex E fscod2 half rates too,
+// since unlike a capture device a WAV genuinely can be authored at 24/22.05/
+// 16 kHz - but only when the target is E-AC-3; classic AC-3 has no fscod2.
+std::optional<ac3::SampleRate> to_sample_rate_for_file(std::uint32_t hz, plan::Codec codec) {
+    if (const auto sr = to_sample_rate(hz)) {
+        return sr;
+    }
+    if (codec != plan::Codec::kEac3) {
+        return std::nullopt;
+    }
+    switch (hz) {
+        case 24000: return ac3::SampleRate::k24000;
+        case 22050: return ac3::SampleRate::k22050;
+        case 16000: return ac3::SampleRate::k16000;
         default: return std::nullopt;
     }
 }
@@ -939,7 +959,7 @@ plan::Plan EncoderController::currentPlan() const {
         p.custom_locations = currentLocationMask();
     }
     if (source_) {
-        if (const auto rate = to_sample_rate(source_->wav.sample_rate)) {
+        if (const auto rate = to_sample_rate_for_file(source_->wav.sample_rate, codec_)) {
             p.sample_rate = *rate;
         }
     }
@@ -2172,9 +2192,14 @@ void EncoderController::loadSourceFile(const QUrl& url) {
         rate > 0 ? static_cast<double>(wav->frame_count()) / static_cast<double>(rate) : 0.0;
 
     QString problem;
-    if (!to_sample_rate(rate)) {
-        problem = QStringLiteral("sample rate %1 Hz is not legal here (need 32, 44.1 or 48 kHz)")
-                      .arg(rate);
+    if (!to_sample_rate_for_file(rate, codec_)) {
+        problem = codec_ == plan::Codec::kEac3
+                      ? QStringLiteral("sample rate %1 Hz is not legal here "
+                                       "(need 32, 44.1 or 48 kHz, or 16, 22.05 or 24 kHz)")
+                            .arg(rate)
+                      : QStringLiteral("sample rate %1 Hz is not legal here (need 32, 44.1 or 48 "
+                                       "kHz)")
+                            .arg(rate);
     } else if (!plan::layout_for_source(channels)) {
         problem = QStringLiteral("%1 channels — %2")
                       .arg(channels)
@@ -2306,7 +2331,7 @@ void EncoderController::encodeTo(const QUrl& url) {
     if (busy_ || !source_ready_ || !source_) {
         return;
     }
-    const auto rate = to_sample_rate(source_->wav.sample_rate);
+    const auto rate = to_sample_rate_for_file(source_->wav.sample_rate, codec_);
     if (!rate) {
         return;
     }
