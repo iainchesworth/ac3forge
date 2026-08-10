@@ -93,6 +93,7 @@ jobs:
             # loudly if that ever stops being a 14.5x toolset.
             msvc: true
             packageable: true
+            release_package: true
             gold_reference: true
 
           - name: "Windows LLVM (clang-cl)"
@@ -118,6 +119,7 @@ jobs:
             gcc: true
             gui: true
             packageable: true
+            release_package: true
             alsa_fallback: true
             gold_reference: true
 
@@ -163,6 +165,7 @@ jobs:
             preset: macos-llvm
             llvm: true
             packageable: true
+            release_package: true
             gold_reference: true
 
     steps:
@@ -523,13 +526,19 @@ jobs:
       # Packaging. windows-msvc always packages, on every push, as a
       # continuous smoke test of the packaging path itself - it is the only
       # leg that has ever actually been packaged and inspected end to end.
-      # Every other packageable leg, including macos-llvm now that it is no
-      # longer experimental, only packages when do_package is set
-      # (release.yml, cutting a real release) - a packaging failure there
-      # blocks like any other leg's would, rather than being absorbed by
-      # continue-on-error. linux-llvm-asan-ubsan is never packaged at all
-      # (not `packageable` - see the matrix entry): there is no
-      # pack-linux-llvm-asan-ubsan preset, a sanitizer-instrumented debug
+      # For a real release (do_package set, from release.yml), only one leg
+      # per OS actually packages - `release_package: true` on windows-msvc,
+      # linux-gcc and macos-llvm - rather than every packageable leg. A
+      # release ships one canonical build per platform for people to
+      # download, not a build per compiler-toolchain leg: windows-llvm and
+      # linux-llvm exist to catch compiler-specific bugs in CI, which they
+      # still do in full (build+test, unchanged) - packaging them too would
+      # just be two redundant, unlabelled-as-to-which-is-canonical zips per
+      # OS with nothing to tell a downloader apart. A packaging failure on a
+      # release_package leg blocks like any other leg's would, rather than
+      # being absorbed by continue-on-error. linux-llvm-asan-ubsan is never
+      # packaged at all (not `packageable` - see the matrix entry): there is
+      # no pack-linux-llvm-asan-ubsan preset, a sanitizer-instrumented debug
       # build is a diagnostic tool, not something to ship.
       #
       # cpack reuses the same build/config-<leg> tree the Configure and Build
@@ -537,12 +546,12 @@ jobs:
       # config-<leg> configurePreset - so this proves the packaging path
       # against the exact build that was just tested, not a separate one.
       - name: Package
-        if: matrix.packageable && (matrix.preset == 'windows-msvc' || inputs.do_package)
+        if: matrix.packageable && (matrix.preset == 'windows-msvc' || (inputs.do_package && matrix.release_package))
         shell: bash
         run: cpack --preset pack-${{ matrix.preset }}
 
       - name: Upload package artifacts
-        if: matrix.packageable && (matrix.preset == 'windows-msvc' || inputs.do_package)
+        if: matrix.packageable && (matrix.preset == 'windows-msvc' || (inputs.do_package && matrix.release_package))
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: packages-${{ matrix.preset }}
