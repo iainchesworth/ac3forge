@@ -43,6 +43,12 @@ for (int frame = 0; frame < 31; ++frame) {
 > the verification-gap table in the [README](https://github.com/iainchesworth/ac3forge/blob/main/README.md#verification-gaps) before relying on
 > a round trip.
 
+Block switching (§8.2.2/§7.9) is automatic here too — no config field. A channel that switches
+anywhere in the frame is excluded from both coupling (same reasoning as AC-3's) and, for this
+generation only, from AHT for that frame: AHT's own "stationary" premise (§E3.4, the opposite of
+what triggered the switch) already selects against a switching channel most of the time, but the
+exclusion is explicit rather than relying on that correlation.
+
 `FrameConfig::dialnorm2` (see "Dual mono" in [Encoding AC-3](encoding-ac3.md)) works exactly
 the same way here: set it alongside `dialnorm` when `acmod` is `kDualMono`. Dual mono is always a
 lone independent substream with no dependents — 1+1 has no bed/dependent split to make — so
