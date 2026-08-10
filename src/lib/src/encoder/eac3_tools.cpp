@@ -209,6 +209,36 @@ AhtMantissaCode aht_quantize_mantissa(double value, int mantissa_bits, int gain)
     return out;
 }
 
+double aht_dequantize_mantissa(std::uint32_t code, std::uint32_t escape, bool has_escape,
+                               int mantissa_bits, int gain) {
+    const auto sign_extend = [](std::uint32_t raw, int bits) {
+        const auto sign_bit = static_cast<std::uint32_t>(1) << (bits - 1);
+        return static_cast<int>((raw ^ sign_bit) - sign_bit);
+    };
+
+    if (gain == 1) {
+        const int levels = (1 << mantissa_bits) - 1;
+        return 2.0 * sign_extend(code, mantissa_bits) / levels;
+    }
+
+    const int small_bits = gain == 2 ? mantissa_bits - 1 : mantissa_bits - 2;
+    const int large_bits = gain == 2 ? mantissa_bits - 1 : mantissa_bits;
+    const int small_half = 1 << (small_bits - 1);
+    const double dead_zone = 1.0 / gain;
+    const double large_step =
+        gain == 2 ? 1.0 / ((1 << (mantissa_bits - 1)) - 1)
+                  : 3.0 / ((1 << (mantissa_bits + 1)) - 2);
+
+    if (!has_escape) {
+        return static_cast<double>(sign_extend(code, small_bits)) / (small_half * gain);
+    }
+
+    // The mirror image of quantize's `code = value >= 0.0 ? k : -k - 1`.
+    const int large_code = sign_extend(escape, large_bits);
+    const int k = large_code >= 0 ? large_code : -large_code - 1;
+    return (large_code >= 0 ? 1.0 : -1.0) * (dead_zone + k * large_step);
+}
+
 int aht_bin_gaq_bits(std::span<const double, kBlocksPerFrameSize> values,
                      int mantissa_bits, int gain) {
     int bits = 0;
