@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdio>
+#include <memory>
 #include <span>
 #include <vector>
 
@@ -18,7 +19,10 @@ namespace {
 
 // A short AC-3 stream to decode, so the example needs no input file.
 std::vector<std::byte> make_stream() {
-    ac3::FrameEncoder encoder{{.bitrate_kbps = 192, .acmod = ac3::Acmod::k2_0}};
+    // Heap-allocated: FrameEncoder carries several KB of MDCT scratch/history
+    // state (PREfast's C6262).
+    auto encoder = std::make_unique<ac3::FrameEncoder>(
+        ac3::EncoderConfig{.bitrate_kbps = 192, .acmod = ac3::Acmod::k2_0});
     std::vector<std::vector<float>> pcm(2, std::vector<float>(ac3::kSamplesPerFrame));
     for (std::size_t ch = 0; ch < pcm.size(); ++ch) {
         for (int n = 0; n < ac3::kSamplesPerFrame; ++n) {
@@ -29,7 +33,7 @@ std::vector<std::byte> make_stream() {
 
     std::vector<std::byte> stream;
     for (int frame = 0; frame < 5; ++frame) {
-        const auto encoded = encoder.encode_frame(views);
+        const auto encoded = encoder->encode_frame(views);
         if (!encoded) {
             return {};
         }

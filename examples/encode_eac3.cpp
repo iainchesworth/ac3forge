@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <memory>
 #include <numbers>
 #include <span>
 #include <utility>
@@ -44,10 +45,12 @@ std::vector<std::span<const float>> views_of(const std::vector<std::vector<float
 
 // --- 1. a single substream -------------------------------------------------
 int encode_stereo() {
-    ac3::eac3::FrameEncoder encoder{{
+    // Heap-allocated: FrameEncoder carries several KB of MDCT scratch/history
+    // state (PREfast's C6262).
+    auto encoder = std::make_unique<ac3::eac3::FrameEncoder>(ac3::eac3::FrameConfig{
         .bitrate_kbps = 192,
         .acmod = ac3::Acmod::k2_0,
-    }};
+    });
 
     std::vector<std::vector<float>> pcm(2, std::vector<float>(ac3::kSamplesPerFrame));
     const auto views = views_of(pcm);
@@ -56,7 +59,7 @@ int encode_stereo() {
     std::vector<std::byte> stream;
     for (int frame = 0; frame < 31; ++frame) {
         fill_tones(pcm, tones, frame, 48000.0);
-        const auto encoded = encoder.encode_frame(views);
+        const auto encoded = encoder->encode_frame(views);
         if (!encoded) {
             std::printf("stereo encode failed: %d\n", std::to_underlying(encoded.error()));
             return 1;

@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <memory>
 #include <numbers>
 #include <span>
 #include <utility>
@@ -18,11 +19,13 @@
 #include "ac3/spatial/spatial.hpp"
 
 int main() {
-    ac3::FrameEncoder encoder{{
+    // Heap-allocated: FrameEncoder carries several KB of MDCT scratch/history
+    // state (PREfast's C6262).
+    auto encoder = std::make_unique<ac3::FrameEncoder>(ac3::EncoderConfig{
         .bitrate_kbps = 448,
         .acmod = ac3::Acmod::k3_2,
         .lfe = true,
-    }};
+    });
 
     ac3::spatial::BedRenderer renderer;
     // add_object allocates, so call it before rendering starts.
@@ -66,7 +69,7 @@ int main() {
             renderer.render_block(audio, block_out);
         }
 
-        const auto encoded = encoder.encode_frame(bed_views);
+        const auto encoded = encoder->encode_frame(bed_views);
         if (!encoded) {
             std::printf("encode failed: %d\n", std::to_underlying(encoded.error()));
             return 1;
