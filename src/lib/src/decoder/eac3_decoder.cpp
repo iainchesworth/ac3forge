@@ -1104,6 +1104,9 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
                     // hb >= 8 - matching the invariant aht_quantize_mantissa
                     // (the encode direction) already asserts on the same
                     // grounds, rather than a second, redundant runtime check.
+                    // The assert alone does not satisfy the static analyzer
+                    // in a build where it compiles out (NDEBUG), hence the
+                    // NOLINT below on the same proven-safe grounds.
                     assert(mantissa_bits >= 3);
                     const int g = gain[ubin];
                     const int small_bits =
@@ -1113,6 +1116,7 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
                         const auto raw = r.read(small_bits);
                         bool has_escape = false;
                         std::uint32_t escape = 0;
+                        // NOLINTNEXTLINE(clang-analyzer-core.BitwiseShift)
                         if (g != 1 && raw == (1u << (small_bits - 1))) {
                             has_escape = true;
                             escape = r.read(large_bits);
