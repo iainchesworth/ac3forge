@@ -39,9 +39,10 @@ for (int frame = 0; frame < 31; ++frame) {
 | `strmtyp`, `substreamid`, `chanmap`, `last_dependent` | independent, 0, none, false | Substream identity. Set by `AccessUnitEncoder`; you rarely touch these directly. |
 | `oba_complexity_index` | none | TS 103 420 §8.3 object count in `addbsi`. This is the marker FFmpeg keys its "Dolby Digital Plus + Dolby Atmos" report off. |
 
-> The in-repo decoder refuses `spx`, `aht` and Annex E coupling. FFmpeg reads all three. See
-> the verification-gap table in the [README](https://github.com/iainchesworth/ac3forge/blob/main/README.md#verification-gaps) before relying on
-> a round trip.
+> The in-repo decoder reads `spx`, `aht` and Annex E coupling, alone or stacked, at every
+> layout including 7.1.4. FFmpeg reads all three too, but only up to one dependent substream
+> (so not 7.1.4). See the verification-gap table in the
+> [README](https://github.com/iainchesworth/ac3forge/blob/main/README.md#verification-gaps).
 
 Block switching (§8.2.2/§7.9) is automatic here too — no config field. A channel that switches
 anywhere in the frame is excluded from both coupling (same reasoning as AC-3's) and, for this

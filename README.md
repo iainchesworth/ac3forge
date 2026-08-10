@@ -108,7 +108,9 @@ substreams, `chanmap`, and the §E3.8.2 render that lays a dependent's channels 
 All three Annex E coding tools decode too — channel coupling (§E3.3), spectral extension
 (§E3.6, including the pseudo-random noise blend the standard requires but leaves the exact
 generator unspecified), and the adaptive hybrid transform with GAQ (§E3.4) — individually or
-all stacked together, at every channel layout including 7.1.4.
+all stacked together, at every channel layout including 7.1.4. Block switching decisions come
+back too, per block per channel (`DecodedFrame::blksw`/`DecodedSubstream::blksw`), the same
+tier of diagnostic as `dynrng`.
 
 ### Other
 
@@ -249,7 +251,7 @@ linux-gcc, linux-llvm, linux-llvm-asan-ubsan (AddressSanitizer + UndefinedBehavi
 `cmake/Sanitizers.cmake`), macos-llvm, static-analysis (clang-tidy, `.clang-tidy`), coverage
 (gcovr line/branch gate over `src/lib` via the `linux-gcc-coverage` preset,
 `cmake/Coverage.cmake`) and ffmpeg-validate. No leg remains experimental — macos-llvm was the
-last promoted, once a real GitHub Actions run (this project has no Mac) confirmed 256/256 tests
+last promoted, once a real GitHub Actions run (this project has no Mac) confirmed 286/286 tests
 and the gold-reference gate both green.
 
 ffmpeg-validate is a separate, CLI-only linux-llvm build that runs `scripts/run-codec-matrix.sh`'s
@@ -422,8 +424,8 @@ Measured with FFmpeg 8.0.1 on 2026-08-09; reproduce with `python tools/quality_r
 SNR on synthetic material is a narrow metric — it says the waveform is closer, not that it
 sounds better, and no listening test has been run.
 
-The test suite is 249 Catch2 unit tests plus the seven example programs: 256 ctest entries on
-Windows, 270 on Linux where the ALSA backend adds 14 tests of its own
+The test suite is 279 Catch2 unit tests plus the seven example programs: 286 ctest entries on
+Windows, 300 on Linux where the ALSA backend adds 14 tests of its own
 (`tests/platform/alsa/`).
 
 ```bash
@@ -477,10 +479,8 @@ belong on the public site.
 | [docs/cli/](docs/cli/index.md) | The `ac3cli` reference: all 21 commands, metadata options |
 | [docs/gui/](docs/gui/index.md) | Step-by-step `ac3gui` guide, with screenshots |
 | [docs/project/history.md](docs/project/history.md) | How the implementation was built, milestone by milestone |
-| [docs/project/research.md](docs/project/research.md) | The original feasibility research and the decisions that came out of it |
-| [docs/quality-trend.md](docs/quality-trend.md) | Gold-reference SNR history by commit, develop vs. main - the persisted half of `research.md`'s L3/L4 validation pyramid |
+| [docs/quality-trend.md](docs/quality-trend.md) | Gold-reference SNR history by commit, develop vs. main - the FFmpeg-oracle gate's numbers, trended over time |
 | [fuzz/README.md](fuzz/README.md) | The libFuzzer harnesses: what they cover, how to run them locally |
-| [docs/project/gui-design-brief.md](docs/project/gui-design-brief.md) | Superseded input document for the GUI redesign: current-state inventory at the time, user journeys, open questions |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Conventions, and the validation discipline |
 
 ## Licence

@@ -65,8 +65,9 @@ decoder as a check on the encoder: a test can assert on the `dynrng` words the e
 | `drc_scale` | 0.0 | §7.7.1 partial compression. 0 ignores `dynrng`; 1 applies it as encoded. A/52 says a consumer decoder should default to applying it — this one defaults to 0 because a reference that silently rescales its output is not a reference. |
 | `heavy_compression` | `false` | §7.7.2: prefer `compr` where it exists, falling back on `dynrng` for syncframes that carry none. |
 
-What both decoders refuse, cleanly, rather than mis-decoding: the E-AC-3 decoder refuses Annex E
-coupling, spectral extension, AHT, and transient pre-noise processing.
+What both decoders refuse, cleanly, rather than mis-decoding: enhanced coupling and transient
+pre-noise processing. (Ordinary Annex E coupling, spectral extension and AHT all decode — see
+below.)
 
 Block switching (§8.2.2/§7.9) decodes on both, and is reported back: `DecodedFrame::blksw` /
 `DecodedSubstream::blksw` gives, per full-bandwidth channel per block, whether that block used the

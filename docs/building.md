@@ -403,7 +403,7 @@ The Windows instructions in this document were run on:
 | FFmpeg | 8.0.1 |
 | Python | 3.14.6 |
 
-Result: configure, build and `ctest` all clean, 256/256 tests passing (windows-msvc and
+Result: configure, build and `ctest` all clean, 286/286 tests passing (windows-msvc and
 windows-llvm both — see `.github/workflows/ci.yml`'s status comment).
 
 The Linux instructions were run on:
@@ -418,8 +418,8 @@ The Linux instructions were run on:
 | vcpkg | checkout at `/opt/vcpkg` |
 
 Result: configure, build and `ctest` all clean on both compilers, GUI and ALSA both included —
-270/270 tests, `AC3FORGE_WITH_ALSA`'s `tests/platform/alsa/` accounting for the 14-test gap over
-the 256/256 a Linux build without `libasound2-dev` gets (same count as Windows, since GUI does
+300/300 tests, `AC3FORGE_WITH_ALSA`'s `tests/platform/alsa/` accounting for the 14-test gap over
+the 286/286 a Linux build without `libasound2-dev` gets (same count as Windows, since GUI does
 not gate any `ctest` entry — it only adds the separate `ac3gui` build target). `ac3gui --smoke`
 also runs clean headless (`QT_QPA_PLATFORM=offscreen`), encoding real audio and instantiating
 real QML channel meters. See [Linux audio](#linux-audio) for what the ALSA verification did,
@@ -434,8 +434,8 @@ layout/tool/metadata option space (see
 [gold-reference gate](#gold-reference-correctness-gate) below, which every leg runs against one
 fixed sample to check output *quality*; ffmpeg-validate instead checks that every option
 combination produces a *structurally correct* stream at all, plus a numeric fidelity floor for
-the Annex E tools the gold-reference gate cannot reach (its own decode side refuses them). No leg
-remains experimental.
+the Annex E tool combinations the one fixed gold-reference sample does not itself exercise. No
+leg remains experimental.
 
 The coverage job's own gate — 81.3% line / 72.0% branch measured on a real GitHub Actions run,
 80%/70% required — uses the same GCC 15 pin as the other Linux legs; see the `coverage` row in
@@ -443,7 +443,7 @@ The coverage job's own gate — 81.3% line / 72.0% branch measured on a real Git
 
 No macOS host exists for this project, so `config-macos-llvm`/`config-macos-llvm-debug` are only
 ever exercised by CI (`macos-latest`, Apple Silicon) — never locally. That CI leg is green:
-configure, build and `ctest` all clean, 256/256 tests passing, using a Homebrew-installed LLVM
+configure, build and `ctest` all clean, 286/286 tests passing, using a Homebrew-installed LLVM
 (`cmake/toolchains/macos.llvm.toolchain.cmake` prefers it over Apple's bundled clang) rather than
 a version-pinned one — Homebrew's core `llvm` formula has no versioned sibling the way
 apt.llvm.org or the official Windows installer do, so unlike the other LLVM legs this one tracks
