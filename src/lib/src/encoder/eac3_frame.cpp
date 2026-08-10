@@ -1225,7 +1225,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         const auto& pcm = channels[static_cast<std::size_t>(ch)];
         auto& hist = history_[static_cast<std::size_t>(ch)];
         for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
-            std::array<double, 512> time{};
+            auto& time = time_scratch_;
             for (int n = 0; n < 512; ++n) {
                 const int pos = blk * 256 - 256 + n;
                 time[static_cast<std::size_t>(n)] =
@@ -1305,14 +1305,14 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         const auto& pcm = channels[static_cast<std::size_t>(ch)];
         auto& hist = history_[static_cast<std::size_t>(ch)];
         for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
-            std::array<double, 512> time{};
+            auto& time = time_scratch_;
             for (int n = 0; n < 512; ++n) {
                 const int pos = blk * 256 - 256 + n;
                 time[static_cast<std::size_t>(n)] =
                     pos < 0 ? hist[static_cast<std::size_t>(pos + 256)]
                             : static_cast<double>(pcm[static_cast<std::size_t>(pos)]);
             }
-            std::array<double, 512> windowed{};
+            auto& windowed = windowed_scratch_;
             apply_analysis_window(time, windowed);
             if (ch < nfchans && blksw[static_cast<std::size_t>(ch)][static_cast<std::size_t>(blk)]) {
                 // §7.9.2: the two half-block transforms are interleaved
@@ -1320,8 +1320,8 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                 // here on, exponent/bitalloc/mantissa code cannot tell this
                 // block apart from a long one.
                 const std::span<const double, 512> full(windowed);
-                std::array<double, 128> first{};
-                std::array<double, 128> second{};
+                auto& first = half1_scratch_;
+                auto& second = half2_scratch_;
                 mdct256_forward_first(full.first<256>(), first);
                 mdct256_forward_second(full.last<256>(), second);
                 auto& out = coeffs_at(ch, blk);
