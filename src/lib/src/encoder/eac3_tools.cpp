@@ -121,6 +121,23 @@ void spx_apply_notch(std::span<double> synth, int startmant, const BandLayout& b
     }
 }
 
+double spx_noise_ratio(int band_start, int band_size, int endmant, int blend) {
+    const double centre = band_start + 0.5 * band_size;
+    const double ratio = centre / static_cast<double>(endmant) - static_cast<double>(blend) / 32.0;
+    return std::clamp(ratio, 0.0, 1.0);
+}
+
+double SpxNoise::next() {
+    state ^= state << 13;
+    state ^= state >> 17;
+    state ^= state << 5;
+    // sqrt(3): a uniform distribution on [-a, a] has variance a^2/3, so this
+    // is the radius that makes the mapped value unit-variance.
+    constexpr double kRadius = 1.7320508075688772;
+    const double unit = static_cast<double>(state) / static_cast<double>(0xFFFFFFFFU);  // [0,1]
+    return (unit * 2.0 - 1.0) * kRadius;
+}
+
 std::span<const int> aht_gaq_gains(int gaqmod) {
     // Table E3.3. Mode 1's gains reach only to hebap 11; modes 2 and 3 reach
     // to 16, which aht_gaq_endbap encodes.

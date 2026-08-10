@@ -326,14 +326,13 @@ struct Payload {
 // tone wants the offset high.
 // §E3.6.4.2.1: the fraction of a band the decoder will fill with noise rather
 // than with copied signal. It rises with frequency across the extension
-// region and spxblnd shifts the whole curve down.
+// region and spxblnd shifts the whole curve down. The math itself lives in
+// eac3::spx_noise_ratio (eac3_tools.hpp) - shared with the decoder, which has
+// no SpxPlan of its own to pull band geometry out of.
 [[nodiscard]] double spx_noise_ratio(const SpxPlan& spx, int bnd, int blend) {
     const auto at = static_cast<std::size_t>(bnd);
-    const double centre =
-        spx.bands.start[at] + 0.5 * static_cast<double>(spx.bands.size[at]);
-    const double ratio =
-        centre / static_cast<double>(spx.endmant) - static_cast<double>(blend) / 32.0;
-    return std::clamp(ratio, 0.0, 1.0);
+    return ::ac3::eac3::spx_noise_ratio(spx.bands.start[at], spx.bands.size[at], spx.endmant,
+                                        blend);
 }
 
 [[nodiscard]] int spx_blend(std::span<const double> region) {

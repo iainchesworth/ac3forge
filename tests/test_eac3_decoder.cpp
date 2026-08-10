@@ -736,6 +736,106 @@ TEST_CASE("E-AC-3 coupling round-trips are near-transparent", "[eac3][decoder][c
     }
 }
 
+TEST_CASE("E-AC-3 spectral extension round-trips are near-transparent",
+          "[eac3][decoder][spx]") {
+    // Four shapes spx decode has to get right: acmod 2/0 (chinspx IS
+    // transmitted there, unlike coupling's phsflginu substitution), a
+    // 3/2+LFE bed with every fbw channel extended, an explicit spxbegf pin
+    // to exercise a different §7.5.2 rematrix-band count and copy/synthesis
+    // geometry, and spx stacked with coupling together (the case that needs
+    // cplendf derived from spxbegf rather than transmitted). spx_atten
+    // defaults on in FrameConfig, so every case here also exercises the
+    // seam notch for real, not just the copy/blend/scale path.
+    using ac3::Acmod;
+    auto spx_stereo = ac3::eac3::FrameConfig{.bitrate_kbps = 192, .spx = true};
+    auto spx_bed = bed(192);
+    spx_bed.spx = true;
+    auto spx_bed_pinned = bed(192);
+    spx_bed_pinned.spx = true;
+    spx_bed_pinned.spxbegf = 0;
+    auto cpl_spx_bed = bed(192);
+    cpl_spx_bed.coupling = true;
+    cpl_spx_bed.spx = true;
+
+    const std::vector<double> bed_tones = {1000.0, 800.0, 1200.0, 600.0, 1400.0, 60.0};
+    const std::vector<Speaker> bed_speakers = {
+        {Location::kLeft, 1000.0},         {Location::kCentre, 800.0},
+        {Location::kRight, 1200.0},        {Location::kLeftSurround, 600.0},
+        {Location::kRightSurround, 1400.0}, {Location::kLfe, 60.0}};
+
+    const std::vector<LayoutCase> cases = {
+        {.name = "stereo spx",
+         .config = {.independent = spx_stereo},
+         .tones = {1000.0, 1600.0},
+         .speakers = {{Location::kLeft, 1000.0}, {Location::kRight, 1600.0}}},
+        {.name = "5.1 spx (auto spxbegf)",
+         .config = {.independent = spx_bed},
+         .tones = bed_tones,
+         .speakers = bed_speakers},
+        {.name = "5.1 spx (spxbegf pinned to 0)",
+         .config = {.independent = spx_bed_pinned},
+         .tones = bed_tones,
+         .speakers = bed_speakers},
+        {.name = "5.1 coupling + spx together",
+         .config = {.independent = cpl_spx_bed},
+         .tones = bed_tones,
+         .speakers = bed_speakers},
+    };
+
+    for (const auto& layout : cases) {
+        CAPTURE(layout.name);
+        const auto rt = round_trip(layout, 5);
+        REQUIRE(rt.rendered.size() == layout.speakers.size());
+        for (std::size_t ch = 0; ch < layout.speakers.size(); ++ch) {
+            CAPTURE(ch, ac3::eac3::chanmap::name(layout.speakers[ch].location));
+            CHECK(snr_db(rt.source[ch], rt.rendered[ch]) > 20.0);
+        }
+    }
+}
+
+TEST_CASE("the E-AC-3 decoder rejects malformed spectral extension streams",
+          "[eac3][decoder][spx]") {
+    // A 3/2+LFE bed with spx on and attenuation explicitly off (so the
+    // frame-level chinspxatten/spxattencod block, which is variable-width
+    // per channel, drops out and the bit offsets below stay fixed) and
+    // nothing else, so the count is: bsi (54 bits) + audfrm (85 bits - 5
+    // fewer than the coupling test's 90, since frmcplexpstr is only present
+    // when some block actually couples, and none does here) + block 0's
+    // dithflag(5)/dynrnge(1) prefix (6 bits) puts spxinu at bit 145,
+    // followed by chinspx[0..4] (5), spxstrtf (2), spxbegf (3), spxendf (3).
+    ac3::eac3::AccessUnitEncoder encoder{
+        {.independent = {.bitrate_kbps = 448,
+                         .acmod = ac3::Acmod::k3_2,
+                         .lfe = true,
+                         .spx = true,
+                         .spx_atten = false}}};
+    REQUIRE(encoder.channel_count() == 6);
+    std::vector<std::vector<float>> pcm(
+        6, std::vector<float>(static_cast<std::size_t>(ac3::kSamplesPerFrame)));
+    const double tones[6] = {1000.0, 800.0, 1200.0, 600.0, 1400.0, 60.0};
+    for (std::size_t ch = 0; ch < pcm.size(); ++ch) {
+        for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+            pcm[ch][static_cast<std::size_t>(i)] = static_cast<float>(
+                kAmplitude * std::sin(2.0 * std::numbers::pi * tones[ch] * i / 48000.0));
+        }
+    }
+    std::vector<std::span<const float>> views{pcm[0], pcm[1], pcm[2], pcm[3], pcm[4], pcm[5]};
+    const auto unit = encoder.encode_access_unit(views);
+    REQUIRE(unit.has_value());
+    const std::vector<std::byte> whole = unit->bytes;
+    constexpr std::size_t kSpxinuBit = 145;
+    constexpr std::size_t kSpxbegfBit = kSpxinuBit + 1 + 5 + 2;  // chinspx x5, spxstrtf
+    constexpr std::size_t kSpxendfBit = kSpxbegfBit + 3;
+    ac3::Eac3Decoder decoder;
+
+    SECTION("spxbegf past spxendf collapses the extension region to nothing") {
+        auto broken = whole;
+        patch_bits(broken, kSpxbegfBit, 3, 7);  // begin_subbnd = 11
+        patch_bits(broken, kSpxendfBit, 3, 0);  // end_subbnd = 5
+        CHECK(decoder.decode_access_unit(broken).error() == ac3::DecodeError::kInvalidStream);
+    }
+}
+
 TEST_CASE("the E-AC-3 decoder rejects malformed coupling streams",
           "[eac3][decoder][coupling]") {
     // A 3/2+LFE bed with coupling on and nothing else (no dependents, drc,

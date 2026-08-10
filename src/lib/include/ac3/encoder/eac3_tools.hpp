@@ -136,6 +136,27 @@ inline constexpr int kSpxAttenCodes = 32;
 void spx_apply_notch(std::span<double> synth, int startmant, const BandLayout& bands,
                      std::span<const bool> wrapflag, int spxattencod);
 
+// §E3.6.4.2.1: how much of a band's synthesized content is pseudo-random
+// noise versus the translated low-band copy, encode and decode alike -
+// `nratio` in the standard's pseudocode. `band_start`/`band_size` locate the
+// band in the coefficient domain; `endmant` is the extension region's
+// exclusive end (spx_band_start(spx_end_subbnd)); `blend` is the transmitted
+// spxblnd (0..31).
+[[nodiscard]] double spx_noise_ratio(int band_start, int band_size, int endmant, int blend);
+
+// §E3.6.4.2.4's noise(): "a pseudo-random number generated from a zero-mean,
+// unity-variance noise generator." The standard deliberately leaves the exact
+// generator unspecified - the same class of freedom AC-3's own dither
+// sequence has (§7.3.4, "any reasonably random sequence") - so any generator
+// meeting that shape is spec-conformant. This one is a plain xorshift32
+// mapped onto a symmetric ±sqrt(3) uniform distribution (variance a²/3, so
+// a = sqrt(3) gives variance 1 with zero mean by symmetry). Deterministic:
+// the same stream always decodes to the same PCM.
+struct SpxNoise {
+    std::uint32_t state = 0x9E3779B9U;  // never zero, or xorshift sticks at 0
+    [[nodiscard]] double next();
+};
+
 // --- adaptive hybrid transform (§E3.4) -------------------------------------
 // A second transform stage, cascaded after the MDCT: a 6-point DCT-II taken
 // down each spectral bin across the frame's six blocks. For material that is
