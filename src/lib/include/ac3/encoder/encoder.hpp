@@ -85,6 +85,18 @@ private:
     // One per full-bandwidth channel (§8.2.2 excludes the LFE): stateful
     // across frames, like history_ above.
     std::vector<TransientDetector> transient_detectors_;
+    // Per-(channel, block) scratch for the MDCT pass, reused rather than
+    // stack-declared inside encode_frame (PREfast's C6262 flagged the
+    // function's stack frame). Each is always fully overwritten before being
+    // read within one iteration, and the two loops that use them run to
+    // completion one after another - never interleaved or reentered - so
+    // reuse across iterations, and across calls on this instance, changes
+    // nothing observable. Not thread-safe for concurrent calls on the same
+    // instance, same as history_ and the other per-frame state above.
+    std::array<double, 512> time_scratch_{};
+    std::array<double, 512> windowed_scratch_{};
+    std::array<double, 128> half1_scratch_{};
+    std::array<double, 128> half2_scratch_{};
     std::uint64_t rate_accumulator_ = 0;                // ideal-bits Bresenham state
     std::uint64_t words_emitted_ = 0;
     // Both controllers smooth their gain over time, so they have to outlive a
