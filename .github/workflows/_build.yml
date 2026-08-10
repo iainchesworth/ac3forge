@@ -184,7 +184,7 @@ jobs:
           export DEBIAN_FRONTEND=noninteractive
           apt-get update -qq
           apt-get install -y -qq --no-install-recommends \
-            build-essential ca-certificates cmake curl git gnupg libasound2-dev lsb-release \
+            build-essential ca-certificates cmake curl file git gnupg libasound2-dev lsb-release \
             ninja-build pkg-config rpm software-properties-common tar unzip wget zip
 
       # Qt is a prebuilt dependency (cmake/FindQt6.cmake), never a vcpkg port -
