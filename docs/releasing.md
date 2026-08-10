@@ -74,27 +74,60 @@ run from any branch - use it to validate a packaging change before merging.
 ## Post-release
 
 `gh release create --generate-notes` drafts release notes from merged PRs/commits since the
-previous tag - a first draft, not a finished changelog. Curate it:
+previous tag - a first draft only. Modelled on aqualink-automate's own process
+(`R:\aqualink-automate\docs\releasing.md`), curating it to the established pattern is a
+required step, not optional polish:
 
-```bash
-gh release edit vX.Y.Z --notes-file notes.md
-```
+1. Update [CHANGELOG.md](https://github.com/iainchesworth/ac3forge/blob/main/CHANGELOG.md) first, if it isn't already current - a `## [x.y.z] -
+   YYYY-MM-DD` section (moved down from `## [Unreleased]` if the changes were already logged
+   there), [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. This is the
+   authoritative, human-curated record; the GitHub Release body mirrors it, not the other way
+   round.
+2. Write the GitHub Release body from that CHANGELOG.md section, in this order:
+   1. `## What's Changed` (first release) or `## What's Changed since v<prev>`.
+   2. A one-line summary of the release.
+   3. The changes as `###` subsections - grouped by subsystem, or as *Added*/*Changed*/*Fixed* -
+      with **bold lead-in** bullets in user-facing terms, mirrored from the CHANGELOG.md
+      section. A short release may use a flat bold-lead-in bullet list instead of subsections.
+   4. An `## Artifacts` section: the packages listed under [What gets
+      published](#what-gets-published) below, with their SHA-512 checksums, plus a pointer to
+      `ac3cli --help`/[docs/quickstart.md](quickstart.md).
+   5. `**Full Changelog**: …/compare/v<prev>...v<this>` (keep the one `--generate-notes`
+      produced; omit for the first release - there is no previous tag).
+   6. For a prerelease, a trailing `> **Pre-release.**` caveat blockquote noting the biggest
+      open gap (see [Known gaps](https://github.com/iainchesworth/ac3forge/blob/main/CHANGELOG.md#known-gaps) in the matching CHANGELOG.md
+      section).
+3. Apply it:
+
+   ```bash
+   gh release edit vX.Y.Z[-beta.N] --notes-file notes.md
+   ```
+
+4. Verify the release page has all expected artifacts, and that the curated notes render and
+   read well.
 
 ## What gets published
 
-| Platform | Packages | Built for real? |
-|---|---|---|
-| Windows (MSVC / clang-cl) | `.zip`, `.exe` (NSIS, if `makensis` is on the runner) | windows-msvc yes; windows-llvm best-effort |
-| Linux (GCC / clang) | `.tar.gz`, `.deb`, `.rpm` | best-effort (`experimental: true` legs) |
-| macOS (AppleClang) | `.tar.gz`, `.dmg` | best-effort, unverified - no Mac host locally |
+One package per OS, not one per compiler-toolchain leg: `_build.yml`'s matrix builds and tests
+both Windows toolchains (MSVC, clang-cl) and both Linux toolchains (GCC, Clang) on every push,
+but only the leg marked `release_package: true` per OS actually packages for a release -
+windows-msvc, linux-gcc and macos-llvm. windows-llvm and linux-llvm still catch
+compiler-specific bugs in full, every push; they just don't produce a second, redundantly
+canonical zip that a downloader would have no way to choose between.
 
-"Best-effort" means the leg runs `continue-on-error` in `_build.yml` - if it fails to even
-compile, the release simply ships without that platform's package rather than failing
-outright. Every package that IS built also gets a `.sha512` (`CPACK_PACKAGE_CHECKSUM` in
-`cmake/Packaging.cmake`), an aggregate `SHA512SUMS` manifest, keyless Sigstore/OIDC build
-provenance, and an SPDX SBOM covering the whole release artifact set - see Verifying a download
-below. GPG signatures are additional and only appear once a signing key is provisioned (next
-section); their absence doesn't block a release.
+| Platform | Leg | Packages |
+|---|---|---|
+| Windows | windows-msvc | `.zip`, `.exe` (NSIS, if `makensis` is on the runner) |
+| Linux | linux-gcc | `.tar.gz`, `.deb`, `.rpm` |
+| macOS | macos-llvm | `.tar.gz`, `.dmg` |
+
+No leg is `experimental: true` any more (see `ci.yml`'s status table), so all three package
+for real rather than best-effort - a packaging failure on any of them blocks the release the
+same as a build or test failure would. Every package gets a `.sha512`
+(`CPACK_PACKAGE_CHECKSUM` in `cmake/Packaging.cmake`), an aggregate `SHA512SUMS` manifest,
+keyless Sigstore/OIDC build provenance, and an SPDX SBOM covering the whole release artifact
+set - see Verifying a download below. GPG signatures are additional and only appear once a
+signing key is provisioned (next section); their absence doesn't block a release.
 
 ## Provisioning the GPG signing key (optional, one-time)
 
