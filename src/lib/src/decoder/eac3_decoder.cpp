@@ -9,6 +9,7 @@
 #include "ac3/core/exponents.hpp"
 #include "ac3/core/mantissas.hpp"
 #include "ac3/core/mdct.hpp"
+#include "ac3/encoder/coupling.hpp"
 
 // E-AC-3 syncframe decoding, ATSC A/52:2018 Annex E Tables E1.2, E1.3 and E1.4.
 //
@@ -28,6 +29,14 @@ using eac3::StreamType;
 
 // A substream codes at most 3/2 plus LFE (Table 5.8).
 constexpr int kMaxSubstreamChannels = 6;
+
+// One more slot past the real channels for the shared coupling channel,
+// mirroring how it rides alongside the fbw channels and LFE in the coded
+// stream (§5.3.3). Channel indices never reach this far (nchans <= 6), so a
+// single fixed slot at index kMaxSubstreamChannels never collides with a
+// real channel, unlike AC-3's decoder which sizes its arrays dynamically.
+constexpr int kCplStream = kMaxSubstreamChannels;
+constexpr int kMaxSubstreamStreams = kMaxSubstreamChannels + 1;
 
 // Table E1.4, the else-branch of if(bamode): with bamode == 0 the allocation
 // parameters take THESE values. They are not the §8.2.12 basic-encoder
@@ -215,6 +224,15 @@ struct AudFrm {
     // [block][channel]; the LFE's is a separate one-bit strategy.
     std::array<std::array<ExpStrategy, kMaxSubstreamChannels>, kBlocksPerFrame> chexpstr{};
     std::array<ExpStrategy, kBlocksPerFrame> lfeexpstr{};
+    // cplstre[blk]: whether THIS block resends the coupling strategy (true
+    // for block 0's implied strategy). cplinu[blk]: the strategy in effect
+    // for that block, valid whether resent here or carried over from an
+    // earlier one. Both are decided in audfrm, ahead of any block's payload.
+    std::array<bool, kBlocksPerFrame> cplstre{};
+    std::array<bool, kBlocksPerFrame> cplinu{};
+    // The coupling channel's own exponent strategy, same Table E2.10 shape
+    // as chexpstr, only present where cplinu[blk] holds.
+    std::array<ExpStrategy, kBlocksPerFrame> cplexpstr{};
 };
 
 std::expected<AudFrm, DecodeError> parse_audfrm(BitReader& r, const Bsi& bsi, int nblks) {
@@ -240,23 +258,34 @@ std::expected<AudFrm, DecodeError> parse_audfrm(BitReader& r, const Bsi& bsi, in
     frm.skipflde = r.read(1) != 0;
     const bool spxattene = r.read(1) != 0;
 
-    // Coupling-in-use for every block is decided here, ahead of the blocks.
+    // Coupling-in-use for every block is decided here, ahead of the blocks:
+    // cplstre[0] is an implied 1 (block 0 always states a strategy), and
+    // later blocks either resend one (cplstre[blk]) or inherit the last.
     if (static_cast<std::uint8_t>(bsi.acmod) > 0x1) {
-        bool cplinu = r.read(1) != 0;  // cplstre[0] is an implied 1
-        bool any = cplinu;
+        bool cplinu = r.read(1) != 0;
+        frm.cplstre[0] = true;
+        frm.cplinu[0] = cplinu;
         for (int blk = 1; blk < nblks; ++blk) {
-            if (r.read(1) != 0) {  // cplstre[blk]
+            const bool resent = r.read(1) != 0;  // cplstre[blk]
+            frm.cplstre[static_cast<std::size_t>(blk)] = resent;
+            if (resent) {
                 cplinu = r.read(1) != 0;
             }
-            any = any || cplinu;
-        }
-        if (any) {
-            return std::unexpected(DecodeError::kUnsupported);
+            frm.cplinu[static_cast<std::size_t>(blk)] = cplinu;
         }
     }
 
     if (expstre) {
+        // Per-block explicit strategies. This project's own encoder always
+        // hoists (kExpstre == 0, the `else` branch below), so this path is
+        // spec-derived generality rather than something measured against a
+        // real stream - matching the project's existing stance on syntax
+        // this encoder never exercises (e.g. numblkscod != 3).
         for (int blk = 0; blk < nblks; ++blk) {
+            if (frm.cplinu[static_cast<std::size_t>(blk)]) {
+                frm.cplexpstr[static_cast<std::size_t>(blk)] =
+                    static_cast<ExpStrategy>(r.read(2));  // cplexpstr[blk]
+            }
             for (int ch = 0; ch < nfchans; ++ch) {
                 frm.chexpstr[static_cast<std::size_t>(blk)][static_cast<std::size_t>(ch)] =
                     static_cast<ExpStrategy>(r.read(2));
@@ -264,8 +293,18 @@ std::expected<AudFrm, DecodeError> parse_audfrm(BitReader& r, const Bsi& bsi, in
         }
     } else {
         // Table E2.10: one 5-bit code per channel expands to all six blocks.
-        // frmcplexpstr is absent because no block couples - it is conditional
-        // on ncplblks > 0, and coupling was refused above.
+        // frmcplexpstr precedes the per-channel codes, and is present only
+        // when some block in the frame actually couples.
+        const bool cpl_active =
+            std::find(frm.cplinu.begin(), frm.cplinu.begin() + nblks, true) !=
+            frm.cplinu.begin() + nblks;
+        if (cpl_active) {
+            const auto code = static_cast<int>(r.read(5));  // frmcplexpstr
+            for (int blk = 0; blk < nblks; ++blk) {
+                frm.cplexpstr[static_cast<std::size_t>(blk)] =
+                    eac3::frame_exp_strategy(code, blk);
+            }
+        }
         for (int ch = 0; ch < nfchans; ++ch) {
             const auto code = static_cast<int>(r.read(5));
             for (int blk = 0; blk < nblks; ++blk) {
@@ -374,15 +413,32 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
     // - is the pair, never the id alone.
     auto& delay = delay_[static_cast<int>(bsi->strmtyp) * 8 + bsi->substreamid];
 
-    std::array<int, kMaxSubstreamChannels> endmant{};
-    std::array<std::vector<std::uint8_t>, kMaxSubstreamChannels> exps;
-    std::array<std::vector<std::uint8_t>, kMaxSubstreamChannels> bap;
+    std::array<int, kMaxSubstreamStreams> endmant{};
+    std::array<std::vector<std::uint8_t>, kMaxSubstreamStreams> exps;
+    std::array<std::vector<std::uint8_t>, kMaxSubstreamStreams> bap;
     BitAllocCodes codes = kBamode0Codes;
-    std::array<int, kMaxSubstreamChannels> fgaincod{};
+    std::array<int, kMaxSubstreamStreams> fgaincod{};
     fgaincod.fill(kBamode0Codes.fgaincod);
-    std::array<int, kMaxSubstreamChannels> fsnroffst{};
+    std::array<int, kMaxSubstreamStreams> fsnroffst{};
     int csnroffst = 0;
     std::array<bool, 4> rematflg{};
+
+    // Coupling state (Annex E variant of §7.4). All of it persists until
+    // re-transmitted - this encoder only ever (re)sends geometry in block 0,
+    // but a general stream could resend it on any block whose cplstre is set.
+    bool phsflginu = false;
+    int cplbegf = 0;
+    int cplstrtmant = 0;
+    int cplendmant = 0;
+    int ncplbnd = 0;
+    int cplfleak = 0;
+    int cplsleak = 0;
+    std::vector<bool> chincpl(static_cast<std::size_t>(nfchans), false);
+    // Which coupling band each sub-band belongs to (cplbndstrc expansion).
+    std::vector<int> subband_band;
+    // [channel][sub-band] - already expanded from bands to sub-bands.
+    std::vector<std::vector<double>> cplco(static_cast<std::size_t>(nfchans));
+    std::vector<bool> phsflg;
 
     for (int blk = 0; blk < nblks; ++blk) {
         const auto strategy = [&](int ch) {
@@ -414,23 +470,148 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
         if (spxstre && r.read(1) != 0) {  // spxinu
             return std::unexpected(DecodeError::kUnsupported);
         }
-        // cplstre[blk] carries no payload with cplinu clear, and coupling was
-        // refused in audfrm, so nothing is read here.
+
+        // --- coupling strategy + geometry (§E2.3.3, Table E1.4) ---
+        // cplinu itself was already decided for this block in audfrm
+        // (frm->cplinu[blk]); only the GEOMETRY - which channels couple, the
+        // coupled region, and how its sub-bands group into bands - is
+        // per-block, and only present when this block resends the strategy
+        // (frm->cplstre[blk]: true for block 0's implied strategy, and for
+        // any later block that changes it - this encoder never does, so
+        // everything below persists unchanged from block 0 onward).
+        if (frm->cplstre[static_cast<std::size_t>(blk)] &&
+            frm->cplinu[static_cast<std::size_t>(blk)]) {
+            if (r.read(1) != 0) {  // ecplinu: enhanced coupling
+                return std::unexpected(DecodeError::kUnsupported);
+            }
+            // 2/0 is the one mode where chincpl is not transmitted: both
+            // channels are coupled by definition, and phsflginu takes its
+            // place instead. Every other mode sends chincpl per channel and
+            // has no phase-restoration flag at all.
+            if (bsi->acmod == Acmod::k2_0) {
+                chincpl[0] = chincpl[1] = true;
+                phsflginu = r.read(1) != 0;
+            } else {
+                phsflginu = false;
+                for (int ch = 0; ch < nfchans; ++ch) {
+                    chincpl[static_cast<std::size_t>(ch)] = r.read(1) != 0;
+                }
+            }
+            cplbegf = static_cast<int>(r.read(4));
+            // §E3.3.1: cplendf is derived from spxbegf instead of transmitted
+            // whenever spectral extension is active - but spxinu already
+            // returned kUnsupported above whenever it is, so reaching here
+            // means it is not, and cplendf is always sent.
+            const int cplendf = static_cast<int>(r.read(4));
+            const int subband_count = coupling::sub_band_count(cplbegf, cplendf);
+            if (subband_count < 1) {
+                return std::unexpected(DecodeError::kInvalidStream);
+            }
+            cplstrtmant = coupling::start_mant(cplbegf);
+            cplendmant = coupling::end_mant(cplendf);
+            if (cplendmant > 253 || cplstrtmant >= cplendmant) {
+                return std::unexpected(DecodeError::kInvalidStream);
+            }
+            if (r.read(1) == 0) {  // cplbndstrce
+                // Table E2.12's default band structure: no stream this
+                // project produces sets cplbndstrce to 0 - the encoder
+                // always transmits an explicit structure, precisely because
+                // the default's indexing is ambiguous (see eac3_tools.hpp's
+                // kDefaultCplBandStructure comment) - so it is recognised
+                // and refused here rather than guessed at.
+                return std::unexpected(DecodeError::kUnsupported);
+            }
+            // cplbndstrc: a 1 folds this sub-band into the previous coupling
+            // band, so coordinates are per band and duplicated back out
+            // across the sub-bands they cover.
+            subband_band.assign(static_cast<std::size_t>(subband_count), 0);
+            ncplbnd = 1;
+            for (int bnd = 1; bnd < subband_count; ++bnd) {
+                const bool merged = r.read(1) != 0;
+                if (!merged) {
+                    ++ncplbnd;
+                }
+                subband_band[static_cast<std::size_t>(bnd)] = ncplbnd - 1;
+            }
+            // Coordinates survive a re-sent strategy: cplcoe == 0 in this
+            // very block legally means "reuse the previous coordinates", so
+            // clearing them here would silence the coupled high band. Only a
+            // change in geometry forces a resize, and only the new entries
+            // start at zero.
+            for (auto& channel : cplco) {
+                channel.assign(static_cast<std::size_t>(subband_count), 0.0);
+            }
+            phsflg.assign(static_cast<std::size_t>(ncplbnd), false);
+            // Coupled channels stop carrying their own coefficients here.
+            for (int ch = 0; ch < nfchans; ++ch) {
+                if (chincpl[static_cast<std::size_t>(ch)]) {
+                    endmant[static_cast<std::size_t>(ch)] = cplstrtmant;
+                }
+            }
+        }
+
+        // --- coupling coordinates (§7.4.3 shape, block-0 cplcoe implied) ---
+        if (frm->cplinu[static_cast<std::size_t>(blk)]) {
+            bool any_new = false;
+            for (int ch = 0; ch < nfchans; ++ch) {
+                if (!chincpl[static_cast<std::size_t>(ch)]) {
+                    continue;
+                }
+                // firstcplcos[ch] starts at 1: block 0's cplcoe is implied
+                // rather than transmitted, unlike AC-3 which always sends it.
+                const bool send = blk == 0 || r.read(1) != 0;
+                if (!send) {
+                    continue;
+                }
+                any_new = true;
+                const int master = static_cast<int>(r.read(2));
+                std::vector<double> band_values(static_cast<std::size_t>(ncplbnd));
+                for (int bnd = 0; bnd < ncplbnd; ++bnd) {
+                    const auto exp = static_cast<std::uint8_t>(r.read(4));
+                    const auto mant = static_cast<std::uint8_t>(r.read(4));
+                    band_values[static_cast<std::size_t>(bnd)] =
+                        coupling::decode_coordinate({.exp = exp, .mant = mant}, master);
+                }
+                auto& channel = cplco[static_cast<std::size_t>(ch)];
+                for (std::size_t bnd = 0; bnd < channel.size(); ++bnd) {
+                    channel[bnd] = band_values[static_cast<std::size_t>(
+                        subband_band[bnd])];
+                }
+            }
+            if (phsflginu && any_new) {
+                for (int bnd = 0; bnd < ncplbnd; ++bnd) {
+                    phsflg[static_cast<std::size_t>(bnd)] = r.read(1) != 0;
+                }
+            }
+        }
 
         if (bsi->acmod == Acmod::k2_0) {
             // Unlike AC-3, block 0's rematstr is IMPLIED 1 rather than
             // transmitted; only later blocks carry the bit.
             if (blk == 0 || r.read(1) != 0) {
-                // nrematbd is 4 with neither coupling nor spectral extension.
-                for (auto& flag : rematflg) {
-                    flag = r.read(1) != 0;
+                // §E3.3.2 / §7.5.2: the rematrixing bands cannot reach above
+                // where coupling takes over, so their count depends on where
+                // coupling starts.
+                const int nrematbd = !frm->cplinu[static_cast<std::size_t>(blk)]
+                                          ? 4
+                                          : (cplbegf > 2 ? 4 : (cplbegf > 0 ? 3 : 2));
+                rematflg.fill(false);
+                for (int band = 0; band < nrematbd; ++band) {
+                    rematflg[static_cast<std::size_t>(band)] = r.read(1) != 0;
                 }
             }
         }
 
-        // chbwcod accompanies a fresh strategy; the strategies came in audfrm.
+        // chbwcod accompanies a fresh strategy, but only for a channel
+        // carrying its own high band: a coupled channel's bandwidth is fixed
+        // by where coupling takes over, and sending chbwcod anyway would
+        // both waste the bits and desynchronise the block.
         for (int ch = 0; ch < nfchans; ++ch) {
             if (strategy(ch) == ExpStrategy::kReuse) {
+                continue;
+            }
+            if (frm->cplinu[static_cast<std::size_t>(blk)] &&
+                chincpl[static_cast<std::size_t>(ch)]) {
                 continue;
             }
             const auto chbwcod = r.read(6);
@@ -438,6 +619,47 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
                 return std::unexpected(DecodeError::kInvalidStream);
             }
             endmant[static_cast<std::size_t>(ch)] = ((static_cast<int>(chbwcod) + 12) * 3) + 37;
+        }
+
+        // Coupling channel exponents, ahead of the fbw/LFE channels (§5.3.3
+        // order: coupling channel first). Offset to its own start bin and
+        // using the even-valued absolute reference, same as AC-3.
+        if (frm->cplinu[static_cast<std::size_t>(blk)]) {
+            const auto strat = frm->cplexpstr[static_cast<std::size_t>(blk)];
+            if (strat == ExpStrategy::kReuse) {
+                if (blk == 0) {
+                    return std::unexpected(DecodeError::kInvalidStream);
+                }
+            } else {
+                const int span = cplendmant - cplstrtmant;
+                const int group_size = exponent_group_size(strat);
+                if (group_size == 0 || span % (3 * group_size) != 0) {
+                    return std::unexpected(DecodeError::kInvalidStream);
+                }
+                const int ngrps = span / (3 * group_size);
+                const auto cplabsexp = static_cast<std::uint8_t>(r.read(4));
+                std::vector<std::uint8_t> groups(static_cast<std::size_t>(ngrps));
+                for (auto& g : groups) {
+                    g = static_cast<std::uint8_t>(r.read(7));
+                    if (g > 124) {  // §7.10.2 error condition 17
+                        return std::unexpected(DecodeError::kInvalidStream);
+                    }
+                }
+                auto& target = exps[static_cast<std::size_t>(kCplStream)];
+                target.assign(static_cast<std::size_t>(cplendmant), kMaxExponent);
+                decode_coupling_exponents(
+                    cplabsexp, groups, strat,
+                    std::span{target}.subspan(static_cast<std::size_t>(cplstrtmant)));
+                // §7.2.2.2: exponents are 0..24, and the reconstruction
+                // shifts by them - out of range is undefined behaviour.
+                for (std::size_t bin = static_cast<std::size_t>(cplstrtmant);
+                     bin < target.size(); ++bin) {
+                    if (target[bin] > kMaxExponent) {
+                        return std::unexpected(DecodeError::kInvalidStream);
+                    }
+                }
+                endmant[static_cast<std::size_t>(kCplStream)] = cplendmant;
+            }
         }
 
         for (int ch = 0; ch < nchans; ++ch) {
@@ -506,7 +728,16 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
         if (bsi->strmtyp != StreamType::kDependent && r.read(1) != 0) {  // convsnroffste
             r.skip(10);  // convsnroffst: for a converter's allocation, not ours
         }
-        // cplleake is gated on cplinu, which is clear.
+        // Coupling leak seeds. firstcplleak starts at 1: block 0's seeds are
+        // mandatory (no cplleake bit ahead of them), unlike AC-3 where the
+        // gating bit is always present; later blocks send an explicit
+        // cplleake bit and may choose to keep block 0's seeds instead.
+        if (frm->cplinu[static_cast<std::size_t>(blk)]) {
+            if (blk == 0 || r.read(1) != 0) {  // cplleake
+                cplfleak = static_cast<int>(r.read(3));
+                cplsleak = static_cast<int>(r.read(3));
+            }
+        }
         if (frm->dbaflde && r.read(1) != 0) {  // deltbaie
             return std::unexpected(DecodeError::kUnsupported);
         }
@@ -523,6 +754,23 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
         for (int ch = 0; ch < nchans && snr_all_zero; ++ch) {
             snr_all_zero = fsnroffst[static_cast<std::size_t>(ch)] == 0;
         }
+        if (frm->cplinu[static_cast<std::size_t>(blk)]) {
+            const auto s = static_cast<std::size_t>(kCplStream);
+            const int end = endmant[s];
+            if (static_cast<int>(exps[s].size()) != end) {
+                return std::unexpected(DecodeError::kInvalidStream);
+            }
+            BitAllocCodes cpl_codes = codes;
+            cpl_codes.fgaincod = fgaincod[s];
+            bap[s].assign(static_cast<std::size_t>(end), 0);
+            compute_bit_allocation(exps[s], bsi->sample_rate, cpl_codes, csnroffst,
+                                   fsnroffst[s], bap[s],
+                                   {.start = cplstrtmant,
+                                    .coupling = true,
+                                    .cplfleak = cplfleak,
+                                    .cplsleak = cplsleak,
+                                    .snr_all_zero = snr_all_zero});
+        }
         for (int ch = 0; ch < nchans; ++ch) {
             const int end = endmant[static_cast<std::size_t>(ch)];
             if (static_cast<int>(exps[static_cast<std::size_t>(ch)].size()) != end) {
@@ -538,13 +786,14 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
                                    {.snr_all_zero = snr_all_zero});
         }
 
-        // Mantissas, in coded order: the full-bandwidth channels and then the
-        // LFE, with no coupling channel to interleave.
+        // Mantissas, in coded order: fbw channels (the first coupled one
+        // pulling in the shared coupling channel right after it, same as
+        // AC-3), then the LFE.
         MantissaBlockReader mantissa_reader;
-        std::array<std::array<double, 256>, kMaxSubstreamChannels> coeffs{};
-        for (int ch = 0; ch < nchans; ++ch) {
-            const auto index = static_cast<std::size_t>(ch);
-            for (int bin = 0; bin < endmant[index]; ++bin) {
+        std::array<std::array<double, 256>, kMaxSubstreamStreams> coeffs{};
+        const auto read_stream = [&](int s, int begin) {
+            const auto index = static_cast<std::size_t>(s);
+            for (int bin = begin; bin < endmant[index]; ++bin) {
                 const int bap_value = bap[index][static_cast<std::size_t>(bin)];
                 if (bap_value == 0) {
                     continue;  // silence (dither substitution not implemented)
@@ -553,6 +802,51 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
                 const int exp = exps[index][static_cast<std::size_t>(bin)];
                 coeffs[index][static_cast<std::size_t>(bin)] =
                     dequantize_mantissa(code, bap_value) / static_cast<double>(1u << exp);
+            }
+        };
+        bool read_coupling = false;
+        for (int ch = 0; ch < nfchans; ++ch) {
+            read_stream(ch, 0);
+            if (frm->cplinu[static_cast<std::size_t>(blk)] &&
+                chincpl[static_cast<std::size_t>(ch)] && !read_coupling) {
+                read_stream(kCplStream, cplstrtmant);
+                read_coupling = true;
+            }
+        }
+        if (bsi->lfe) {
+            read_stream(nfchans, 0);
+        }
+
+        // §7.4.3 decoupling: each coupled channel's high band is the shared
+        // channel scaled by that channel's coordinate, times 8 - undoing the
+        // encoder's /8 headroom scaling. Runs before rematrixing, since
+        // rematrixing has to see the coupled channels' restored content.
+        if (frm->cplinu[static_cast<std::size_t>(blk)]) {
+            const auto& shared = coeffs[static_cast<std::size_t>(kCplStream)];
+            for (int ch = 0; ch < nfchans; ++ch) {
+                if (!chincpl[static_cast<std::size_t>(ch)]) {
+                    continue;
+                }
+                auto& target = coeffs[static_cast<std::size_t>(ch)];
+                for (int bnd = 0; bnd < static_cast<int>(subband_band.size()); ++bnd) {
+                    const double coordinate =
+                        cplco[static_cast<std::size_t>(ch)][static_cast<std::size_t>(bnd)];
+                    // §7.4.1: a set phase flag negates the right channel of a
+                    // 2/0 pair across that band, restoring the phase the
+                    // coupling sum discarded.
+                    const double sign =
+                        (phsflginu && ch == 1 &&
+                         phsflg[static_cast<std::size_t>(
+                             subband_band[static_cast<std::size_t>(bnd)])])
+                            ? -1.0
+                            : 1.0;
+                    const int low = cplstrtmant + bnd * coupling::kBinsPerSubBand;
+                    const int high = std::min(low + coupling::kBinsPerSubBand, cplendmant);
+                    for (int bin = low; bin < high; ++bin) {
+                        target[static_cast<std::size_t>(bin)] =
+                            shared[static_cast<std::size_t>(bin)] * coordinate * 8.0 * sign;
+                    }
+                }
             }
         }
 

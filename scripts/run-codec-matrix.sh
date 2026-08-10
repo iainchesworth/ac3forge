@@ -33,21 +33,22 @@ run() {
     "$CLI" "$@" >/dev/null
 }
 
-# The E-AC-3 decoder unconditionally refuses any stream that turns on ANY of
-# the three Annex E tools - coupling, spectral extension, or AHT
-# (src/lib/src/decoder/eac3_decoder.cpp returns DecodeError::kUnsupported the
-# moment cplinu, spxinu or ahte is set) - even though eac3-encode's cpl/spx/
-# aht/all tokens happily produce such a stream. tools/quality_race.py already
-# works around this by decoding tool-enabled streams with FFmpeg or the
-# reference player rather than this decoder, so it is likely a known,
-# deliberate scope boundary (this decoder as a basic-stream/AC-3-coupling
-# oracle, not a full Annex E implementation) rather than a bug - but that is
-# an inference, not something this script should decide. It runs the encode
-# side regardless (still exercises the tool's encoder under the sanitizer,
-# and exercises the decoder's OWN refusal-detection bit-reads) but tolerates
-# exactly that one, already-known refusal rather than treating it as fatal,
-# so the rest of the matrix still runs. Anything else - a crash, a sanitizer
-# abort, a different error code - still fails the script.
+# The E-AC-3 decoder still refuses any stream that turns on spectral
+# extension or AHT (src/lib/src/decoder/eac3_decoder.cpp returns
+# DecodeError::kUnsupported the moment spxinu or ahte is set); coupling alone
+# (cplinu) decodes for real now (feature/eac3-annex-e-coupling-decode, the
+# first of three phases closing this gap - spx and AHT are next). This
+# wrapper still runs every tools: token, cpl included, so the assertion tightens
+# itself automatically as each remaining phase lands: a combination that
+# starts decoding for real is just a passing "$status -eq 0" from here on,
+# with nothing left to update in this script. tools/quality_race.py works
+# around the remaining gap the same way, decoding spx/aht-bearing streams
+# with FFmpeg or the reference player rather than this decoder. It runs the
+# encode side regardless (still exercises the tool's encoder under the
+# sanitizer, and exercises the decoder's OWN refusal-detection bit-reads) but
+# tolerates exactly that one, already-known refusal rather than treating it
+# as fatal, so the rest of the matrix still runs. Anything else - a crash, a
+# sanitizer abort, a different error code - still fails the script.
 run_tolerate_eac3_tool_unsupported() {
     count=$((count + 1))
     echo "[$count] $* (Annex E tool: decode refusal is a known gap, not asserted)"

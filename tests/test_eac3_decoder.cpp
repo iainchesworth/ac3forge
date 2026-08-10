@@ -610,6 +610,107 @@ TEST_CASE("VBR access units of differing size still decode correctly",
     CHECK(snr_db(want_r, rendered_r) > 20.0);
 }
 
+TEST_CASE("E-AC-3 coupling round-trips are near-transparent", "[eac3][decoder][coupling]") {
+    // Three shapes coupling decode has to get right: acmod 2/0 (chincpl is
+    // NOT transmitted there - both channels couple by definition, and
+    // phsflginu takes its place), a 3/2+LFE bed with every fbw channel
+    // coupled and the LFE riding alongside uncoupled, and an explicit
+    // cplbegf pin (rather than the encoder's auto choice) to exercise a
+    // different §7.5.2 rematrix-band count and coupling geometry.
+    using ac3::Acmod;
+    auto cpl_stereo = ac3::eac3::FrameConfig{.bitrate_kbps = 192, .coupling = true};
+    auto cpl_bed = bed(192);
+    cpl_bed.coupling = true;
+    auto cpl_bed_pinned = bed(192);
+    cpl_bed_pinned.coupling = true;
+    cpl_bed_pinned.cplbegf = 0;
+
+    const std::vector<double> bed_tones = {1000.0, 800.0, 1200.0, 600.0, 1400.0, 60.0};
+    const std::vector<Speaker> bed_speakers = {
+        {Location::kLeft, 1000.0},         {Location::kCentre, 800.0},
+        {Location::kRight, 1200.0},        {Location::kLeftSurround, 600.0},
+        {Location::kRightSurround, 1400.0}, {Location::kLfe, 60.0}};
+
+    const std::vector<LayoutCase> cases = {
+        {.name = "stereo cpl (phsflginu path)",
+         .config = {.independent = cpl_stereo},
+         .tones = {1000.0, 1600.0},
+         .speakers = {{Location::kLeft, 1000.0}, {Location::kRight, 1600.0}}},
+        {.name = "5.1 cpl (auto cplbegf)",
+         .config = {.independent = cpl_bed},
+         .tones = bed_tones,
+         .speakers = bed_speakers},
+        {.name = "5.1 cpl (cplbegf pinned to 0)",
+         .config = {.independent = cpl_bed_pinned},
+         .tones = bed_tones,
+         .speakers = bed_speakers},
+    };
+
+    for (const auto& layout : cases) {
+        CAPTURE(layout.name);
+        const auto rt = round_trip(layout, 5);
+        REQUIRE(rt.rendered.size() == layout.speakers.size());
+        for (std::size_t ch = 0; ch < layout.speakers.size(); ++ch) {
+            CAPTURE(ch, ac3::eac3::chanmap::name(layout.speakers[ch].location));
+            CHECK(snr_db(rt.source[ch], rt.rendered[ch]) > 20.0);
+        }
+    }
+}
+
+TEST_CASE("the E-AC-3 decoder rejects malformed coupling streams",
+          "[eac3][decoder][coupling]") {
+    // A 3/2+LFE bed with coupling on and nothing else (no dependents, drc,
+    // mixing or spx) so the bit offsets below - counted straight off
+    // eac3_frame.cpp's emit_frame, the ONE function silent and real frames
+    // both go through (see its own comment) - land exactly where this one
+    // says: bsi (54 bits) + audfrm (90 bits) + block 0's dithflag(5)/
+    // dynrnge(1)/spxinu(1) prefix (7 bits) puts ecplinu at bit 151, followed
+    // by chincpl[0..4] (5), cplbegf (4), cplendf (4), then cplbndstrce at
+    // bit 165. A silent frame never turns cplinu on (build_silent_frame
+    // says so explicitly), so this needs a real, encoded tone.
+    ac3::eac3::AccessUnitEncoder encoder{
+        {.independent = {.bitrate_kbps = 448,
+                         .acmod = ac3::Acmod::k3_2,
+                         .lfe = true,
+                         .coupling = true}}};
+    REQUIRE(encoder.channel_count() == 6);
+    std::vector<std::vector<float>> pcm(
+        6, std::vector<float>(static_cast<std::size_t>(ac3::kSamplesPerFrame)));
+    const double tones[6] = {1000.0, 800.0, 1200.0, 600.0, 1400.0, 60.0};
+    for (std::size_t ch = 0; ch < pcm.size(); ++ch) {
+        for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+            pcm[ch][static_cast<std::size_t>(i)] = static_cast<float>(
+                kAmplitude * std::sin(2.0 * std::numbers::pi * tones[ch] * i / 48000.0));
+        }
+    }
+    std::vector<std::span<const float>> views{pcm[0], pcm[1], pcm[2], pcm[3], pcm[4], pcm[5]};
+    const auto unit = encoder.encode_access_unit(views);
+    REQUIRE(unit.has_value());
+    const std::vector<std::byte> whole = unit->bytes;
+    constexpr std::size_t kEcplinuBit = 151;
+    constexpr std::size_t kCplbegfBit = kEcplinuBit + 1 + 5;  // past ecplinu, chincpl x5
+    constexpr std::size_t kCplendfBit = kCplbegfBit + 4;
+    constexpr std::size_t kCplbndstrceBit = kCplendfBit + 4;
+    ac3::Eac3Decoder decoder;
+
+    SECTION("ecplinu set: enhanced coupling is recognised and refused") {
+        auto broken = whole;
+        patch_bits(broken, kEcplinuBit, 1, 1);
+        CHECK(decoder.decode_access_unit(broken).error() == ac3::DecodeError::kUnsupported);
+    }
+    SECTION("cplbndstrce cleared: the Annex E default band table is refused, not guessed at") {
+        auto broken = whole;
+        patch_bits(broken, kCplbndstrceBit, 1, 0);
+        CHECK(decoder.decode_access_unit(broken).error() == ac3::DecodeError::kUnsupported);
+    }
+    SECTION("cplbegf past cplendf collapses the coupled region to nothing") {
+        auto broken = whole;
+        patch_bits(broken, kCplbegfBit, 4, 15);
+        patch_bits(broken, kCplendfBit, 4, 0);
+        CHECK(decoder.decode_access_unit(broken).error() == ac3::DecodeError::kInvalidStream);
+    }
+}
+
 TEST_CASE("the E-AC-3 decoder rejects malformed streams", "[eac3][decoder]") {
     const auto unit = ac3::eac3::build_silent_access_unit(
         {.independent = {.bitrate_kbps = 448, .acmod = ac3::Acmod::k3_2, .lfe = true},
