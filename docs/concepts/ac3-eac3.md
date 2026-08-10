@@ -34,6 +34,23 @@ graph LR
 - **Packed bitstream** — the results are packed into the syncframe format the standard
   defines, ready to be written to disc, broadcast, or streamed.
 
+### Transients and block switching
+
+The transform above normally looks at a fairly long stretch of audio at once — about 10.7 ms —
+which is what gives it good frequency resolution. That works well for steady, sustained sound,
+but it has a cost on a sudden, sharp one: a drum hit or a cymbal crash: quantization error from
+that one loud instant leaks backward across the whole stretch the transform covers, smearing a
+faint echo of the hit into the silence just *before* it. That artefact is called **pre-echo**, and
+it's audible precisely because it appears where there was nothing to mask it.
+
+Both formats fix this by switching, per channel per block, to two half-length transforms instead
+of one long one whenever a channel's encoder detects a transient — shorter transforms trade away
+some frequency resolution for better time resolution, which confines the smearing to a much
+narrower window around the transient instead of the whole block. The decoder does not need to be
+told how the detector reached its decision, only which length transform to undo — the choice is a
+single bit per channel per block, and everything downstream of the transform (which frequencies
+got how many bits, and so on) is written identically either way.
+
 ## Channel beds and layout
 
 You'll often see surround sound described as "5.1" or "7.1." The number before the dot is the
@@ -110,14 +127,40 @@ anywhere, because bass has no direction.</figcaption>
 
 E-AC-3 can describe larger layouts too — 7.1 and beyond — described in the next section.
 
+One coding mode is deliberately not a bed at all: **dual mono**, sometimes written **1+1**.
+Rather than one programme mixed onto a fixed set of speakers, it's *two* independent
+single-channel programmes — a second language track, a director's commentary — sharing one
+syncframe and never mixed together. There's no diagram for it, because there's no soundstage: a
+receiver plays one programme or the other (or both to separate outputs), chosen by the listener,
+not blended by the encoder the way L/C/R are.
+
 ## Bitrate
 
-ac3forge encodes **CBR** (constant bit rate) only — no variable bit rate. Every frame of a
-given stream spends the same number of bits, chosen from the 19 nominal rates the standard
-defines, from 32 kbps up to 640 kbps. As with any lossy compressed format, the general rule
-holds: a higher bitrate means more bits are spent describing each second of audio, which
-generally means better quality, at the cost of a larger file or a bigger slice of a broadcast
-pipe's bandwidth.
+**AC-3 is CBR (constant bit rate) only.** Every frame of an AC-3 stream spends the same number
+of bits, chosen from the 19 nominal rates the standard defines, from 32 kbps up to 640 kbps —
+`frmsizecod` is a lookup into that fixed table, so there is no way to say anything else. As with
+any lossy compressed format, the general rule holds: a higher bitrate means more bits are spent
+describing each second of audio, which generally means better quality, at the cost of a larger
+file or a bigger slice of a broadcast pipe's bandwidth.
+
+**E-AC-3 additionally supports VBR (variable bit rate).** Unlike AC-3, E-AC-3 states its frame
+size directly (`frmsiz`, an 11-bit word count) rather than indexing a table, so nothing stops a
+frame from being a different size than the one before it. ac3forge's E-AC-3 encoder can use this
+either way:
+
+- **CBR** (the default): every frame is sized from a fixed `bitrate_kbps`, same as AC-3.
+- **VBR**: a *quality* target (0–1) replaces the fixed rate, and each frame's size follows how
+  much the content actually needs — a quiet passage produces a smaller frame than a busy one at
+  the same quality. Optional `min_kbps`/`max_kbps` bounds cap how far that can drift, the way
+  `-b`/`-B` bound LAME's own VBR mode.
+
+Quality is encoder-relative, not a perceptual scale that means the same thing across encoders —
+and it is **not linear in bit cost**: masking-model bit allocation spends roughly twice the bits
+for a fixed step up in precision, so cost rises steeply in the top part of the quality range. A
+high quality with no `max_kbps` bound will often ask for more bits than any legal E-AC-3 frame
+can hold at all for ordinary multi-channel material, and the encoder reports that plainly rather
+than silently truncating — pairing a high quality with a `max_kbps` ceiling is the normal way to
+use it. AC-3 has no equivalent: its frame size cannot vary at all.
 
 ## What E-AC-3 adds over AC-3
 

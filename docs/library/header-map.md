@@ -3,7 +3,7 @@
 | Header | Contents |
 |---|---|
 | `ac3/core/tables.hpp` | `SampleRate`, `Acmod`, `ExpStrategy`, frame constants, Table 5.18. Nearly everything includes it. |
-| `ac3/core/eac3_tables.hpp` | Annex E: `StreamType`, the Table E2.5 `chanmap` namespace, `Layout`. Also the general channel model: `chanmap::ChannelPlan` (a bed acmod/lfe plus however many dependent chanmaps it takes) and `chanmap::allocate(locations)`, which partitions an arbitrary Table E2.5 location bitmask into one — the algorithm `ac3::plan::LayoutId`'s seven named layouts are now themselves expressed through. |
+| `ac3/core/eac3_tables.hpp` | Annex E: `StreamType`, the Table E2.5 `chanmap` namespace, `Layout`. Also the general channel model: `chanmap::ChannelPlan` (a bed acmod/lfe plus however many dependent chanmaps it takes) and `chanmap::allocate(locations)`, which partitions an arbitrary Table E2.5 location bitmask into a `ChannelPlan` — the algorithm `ac3::plan::LayoutId`'s eight named layouts are themselves expressed through (dual mono's is a special case — see [Encoding AC-3](encoding-ac3.md)). |
 | `ac3/core/bitreader.hpp`, `bitwriter.hpp` | MSB-first bit I/O. |
 | `ac3/core/mdct.hpp`, `window.hpp` | The 512-point MDCT and the KBD window. |
 | `ac3/core/bitalloc.hpp`, `exponents.hpp`, `mantissas.hpp` | The §7.2 allocation model and §7.1/§7.3 coding, shared by encoder and decoder. |
@@ -11,7 +11,7 @@
 | `ac3/encoder/eac3_frame.hpp` | `FrameConfig`, `FrameEncoder`, `AccessUnitConfig`, `AccessUnitEncoder`, `AccessUnit`. |
 | `ac3/encoder/silent_frame.hpp` | `FrameError`, and pure-syntax silent frames. |
 | `ac3/encoder/coupling.hpp`, `eac3_tools.hpp` | Coupling, spectral extension, AHT. |
-| `ac3/encoder/plan.hpp` | `ac3::plan` — `Plan`, `Codec`, `LayoutId`, `Tools`, `Metadata`, `Routing`. The layout table, Annex E tool tokens, metadata defaults and source-to-coded-channel routing, shared by `ac3cli` and `ac3gui` so the two front ends cannot disagree about what a layout or a tools token means. `Plan::custom_locations`, `resolve(plan)` and `parse_channels`/`format_channels` are the escape hatch onto `chanmap::allocate` for a channel set none of the seven named `LayoutId`s cover. |
+| `ac3/encoder/plan.hpp` | `ac3::plan` — `Plan`, `Codec`, `LayoutId`, `Tools`, `Metadata`, `Routing`. The layout table, Annex E tool tokens, metadata defaults and source-to-coded-channel routing, shared by `ac3cli` and `ac3gui` so the two front ends cannot disagree about what a layout or a tools token means. `Plan::custom_locations`, `resolve(plan)` and `parse_channels`/`format_channels` are the escape hatch onto `chanmap::allocate` for a channel set none of the eight named `LayoutId`s cover. |
 | `ac3/decoder/decoder.hpp` | `FrameDecoder`, `Eac3Decoder`, `split_frames`, `split_access_units`, `stream_bsid`. |
 | `ac3/io/elementary.hpp` | `scan`, `ScannedStream`. |
 | `ac3/io/wav.hpp` | WAV read/write (PCM16 and float32) and the WAV↔Table 5.8 permutation. |

@@ -7,34 +7,40 @@ publishing, a Docker image, a Home Assistant add-on) removed.
 
 ## Versioning
 
-ac3forge does **not** derive its version from git tags the way aqualink-automate does.
-`project(ac3forge VERSION ...)` in the top-level `CMakeLists.txt` is the source of truth - it's
-what actually gets baked into every built package (see `cmake/Packaging.cmake`'s
-`CPACK_PACKAGE_VERSION_MAJOR`/`MINOR`/`PATCH`) and into `ac3cli --version`'s `version_string`.
+ac3forge derives its version from git tags, the same way aqualink-automate does.
+`cmake/GitVersionDerivation.cmake` runs `git describe --tags --match "v*"` **before**
+`project()` in the top-level `CMakeLists.txt` and feeds the result straight into
+`project(ac3forge VERSION ...)` - the tag is the single source of truth. Nothing in the tree
+hardcodes a version to bump by hand: not `CMakeLists.txt`, and not `vcpkg.json`'s `"version"`
+field, which is a fixed placeholder never read for anything but satisfying vcpkg's manifest
+schema (see the comment beside it).
 
-What the release workflow enforces instead: the tag you push must match `CMakeLists.txt`'s
-`VERSION` exactly, or `resolve-version` fails before anything builds. So the order is always:
+So the order is just:
 
-1. Bump `CMakeLists.txt`'s `project(... VERSION X.Y.Z ...)`.
-2. Bump `vcpkg.json`'s `"version"` to match (see the comment beside it - nothing keeps these
-   two in sync automatically).
-3. Merge to `main`.
-4. Tag.
+1. Merge to `main`.
+2. Tag.
+
+No version-bump commit, no file to keep in sync - tagging *is* the release decision.
 
 Tags are strict SemVer 2.0.0: `vMAJOR.MINOR.PATCH[-(alpha|beta|rc).N]`, e.g. `v0.2.0` or
 `v0.2.0-beta.1`. A tag with a prerelease suffix (or the dispatch form's `prerelease` checkbox)
-marks the GitHub Release as a prerelease; the bare `X.Y.Z` still has to match `CMakeLists.txt`
-either way - the suffix is a release-level label CMake's `VERSION` field can't hold, not a
-different version.
+marks the GitHub Release as a prerelease. The suffix also flows into the build: CMake's
+`project()` `VERSION` field can only hold the bare `X.Y.Z` (that's what `PROJECT_VERSION` and
+CPack's package version use), but the full tag - suffix included - is carried separately as
+`PROJECT_VERSION_FULL` and shows up as `ac3cli --version`'s `version_full` field.
+
+A checkout that can't see any `v*` tag (no history, or a shallow CI clone - see `_build.yml`'s
+`fetch_depth` input) falls back to version `0.0.0-dev` rather than failing the build. Ordinary
+CI legs stay shallow and always show that fallback; only `release.yml`'s tag-triggered or
+dispatched build fetches full history (or gets the version stamped directly via
+`-DDERIVED_VERSION_OVERRIDE=`) and shows the real one.
 
 ## Pre-release checklist
 
 1. CI green on `main` for the commit you're about to tag.
 2. Releases must be **cut from main** - `resolve-version` checks this with
    `git merge-base --is-ancestor` and fails otherwise (dry runs are exempt).
-3. `CMakeLists.txt`'s `VERSION` and `vcpkg.json`'s `"version"` both already match the tag you're
-   about to push (see Versioning above) - `resolve-version` checks the first but not the second.
-4. Decide the tag.
+3. Decide the tag.
 
 ## Option A: tag-based release (the normal path)
 
@@ -130,10 +136,6 @@ gpg --verify ac3forge-0.2.0-win64.zip.asc ac3forge-0.2.0-win64.zip
 ```
 
 ## Troubleshooting
-
-**"tag vX.Y.Z (version X.Y.Z) does not match CMakeLists.txt's project() VERSION ..."** - you
-tagged before bumping `CMakeLists.txt`. Delete the tag (`git push origin :refs/tags/vX.Y.Z && git
-tag -d vX.Y.Z`), bump `CMakeLists.txt` and `vcpkg.json`, merge to main, retag.
 
 **"... is not on main - releases must be cut from main"** - the commit you tagged (or the ref
 you dispatched from) hasn't been merged to `main` yet.

@@ -1,0 +1,44 @@
+# Enable GitHub auto-merge on routine Dependabot PRs so grouped GitHub Actions
+# bumps land on develop without manual intervention. Modelled on
+# aqualink-automate's .github/workflows/dependabot-auto-merge.yml.
+#
+# How it works: this job only flips the PR's auto-merge bit - GitHub itself
+# then merges (squash) once every REQUIRED status check passes. The required
+# checks on develop are "Branch Name" and "CI Status" (ci.yml) plus
+# "Scan dependency diff" (dependency-review.yml) - see docs/branch-protection.md.
+# Nothing merges without the full build/test matrix going green.
+#
+# codeql.yml, osv-scanner.yml, zizmor.yml and scorecard.yml are all
+# visible-only (upload to Security > Code scanning, never gate a PR - see
+# each workflow's own header), so a finding there does not block auto-merge.
+#
+# Scope: only non-major updates auto-merge. For the grouped github-actions PR,
+# fetch-metadata reports the HIGHEST bump in the group, so a group containing
+# any semver-major update stays open for manual review. The squash commit
+# takes the PR title, already Conventional-Commit shaped via the
+# commit-message prefix in .github/dependabot.yml.
+name: Dependabot Auto-Merge
+
+on: pull_request
+
+permissions: {}
+
+jobs:
+  auto-merge:
+    name: Enable auto-merge
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.repository == 'iainchesworth/ac3forge'
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+
+      - name: Enable auto-merge (non-major updates only)
+        if: steps.metadata.outputs.update-type != 'version-update:semver-major'
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr merge --auto --squash "$PR_URL"

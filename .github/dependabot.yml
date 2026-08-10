@@ -1,0 +1,26 @@
+version: 2
+updates:
+  # GitHub Actions used by ci.yml/_build.yml/release.yml + the composite
+  # actions under .github/actions/. Dependabot has no vcpkg ecosystem, so the
+  # C++ dependency (currently just Catch2 - see vcpkg.json) is NOT tracked
+  # here; osv-scanner.yml covers that gap instead.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    # Gitflow only allows release/hotfix/support branches (or develop itself)
+    # to target main - point Dependabot at develop so its PRs land where
+    # feature/bugfix work does, same as every other required check in ci.yml.
+    target-branch: "develop"
+    schedule:
+      interval: "weekly"
+    # Wait a week after a new action version is published before opening a PR
+    # for it - gives the community time to catch a compromised release before
+    # this repo auto-updates to it.
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "ci"
+    groups:
+      github-actions:
+        patterns:
+          - "*"

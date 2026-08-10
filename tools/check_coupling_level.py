@@ -13,6 +13,7 @@ either channel. It reports each channel's level error in the coupled band.
 Usage (repo root, after building):  python tools/check_coupling_level.py
 """
 
+import os
 import struct
 import subprocess
 import sys
@@ -22,7 +23,10 @@ import numpy as np
 
 REPO = Path(__file__).resolve().parent.parent
 BUILD = REPO / "build"
-CLI = BUILD / "dev" / "bin" / "ac3cli.exe"
+# AC3CLI overrides the binary - see tools/quality_race.py's CLI constant for
+# why the default below (a "dev" preset that does not exist, an .exe on a
+# platform that may not have one) is not a usable default everywhere.
+CLI = Path(os.environ.get("AC3CLI", str(BUILD / "dev" / "bin" / "ac3cli.exe")))
 RATE = 48000
 SECONDS = 3
 HIGH_HZ = 12000.0  # inside the default coupling region (~10.2-20.3 kHz)
@@ -81,7 +85,11 @@ def main():
         ac3 = BUILD / f"cpl_level_{'c' if extra else 'n'}.ac3"
         wav = BUILD / f"cpl_level_{'c' if extra else 'n'}.wav"
         run([CLI, "encode", source, ac3, "192", *extra])
-        run(["ffmpeg", "-v", "error", "-y", "-err_detect",
+        # -xerror is required alongside -err_detect: -err_detect alone only
+        # controls what the decoder treats as an error internally (concealing
+        # a bad frame and moving on) - it does not by itself change ffmpeg's
+        # exit code, which run() above is the only thing checking.
+        run(["ffmpeg", "-v", "error", "-y", "-xerror", "-err_detect",
              "crccheck+bitstream+buffer+explode", "-i", ac3, "-c:a", "pcm_f32le", wav])
         pcm = read_wav_f32(wav)
         got_l = tone_amplitude(pcm[RATE:2 * RATE, 0])

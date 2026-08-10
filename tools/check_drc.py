@@ -229,14 +229,22 @@ def check_compr(cli: str, tmp: Path) -> None:
 
 def check_downmix(cli: str, tmp: Path) -> None:
     print("downmix levels (Tables 5.9 / 5.10 feeding section 7.8) - against ffmpeg -ac 2")
-    # 'sine 51' puts a distinct tone in each channel: L 1000, C 800, R 1200,
-    # SL 600, SR 1400 Hz, so a single component read tells us what happened to
-    # exactly one channel.
+    # 'sine 51' puts a distinct tone in each CODED channel - main.cpp's
+    # layout_tones() assigns 200 + 137*i Hz by Table 5.8 coded order
+    # (L, C, R, SL, SR, LFE) regardless of the freq_hz argument passed here,
+    # so a single component read tells us what happened to exactly one
+    # channel. Centre is coded index 1 (337 Hz); the surround that folds into
+    # ffmpeg's -ac 2 left/"Lo" output per Sec. 7.8 is SL, coded index 3
+    # (611 Hz) - NOT the freq_hz-derived 800/600 Hz this check assumed before
+    # a real ffmpeg run first caught the mismatch (it had never been run in
+    # CI). The WAV column order ffmpeg/read_wav_f32 sees is the standard
+    # multichannel convention (L, R, C, LFE, SL, SR), not Table 5.8's coded
+    # order - confirmed empirically, not guessed, since the two disagree.
     amplitude_db = db(0.40 / math.sqrt(2.0))
 
     for label, freq, option, cases in (
-        ("centre", 800.0, "cmixlev", {"-3": -3.01, "-4.5": -4.52, "-6": -6.02}),
-        ("surround", 600.0, "surmixlev", {"-3": -3.01, "-6": -6.02}),
+        ("centre", 337.0, "cmixlev", {"-3": -3.01, "-4.5": -4.52, "-6": -6.02}),
+        ("surround", 611.0, "surmixlev", {"-3": -3.01, "-6": -6.02}),
     ):
         for value, expected_db in cases.items():
             stream = tmp / f"dm_{option}_{value}.ac3"
@@ -268,7 +276,7 @@ def check_downmix(cli: str, tmp: Path) -> None:
     out = tmp / "dm_off.wav"
     ffmpeg("-i", str(stream), "-ac", "2", "-c:a", "pcm_f32le", str(out))
     samples, rate = read_wav_f32(out)
-    measured = tone_db(samples[rate // 2 :, 0], 600.0, rate) - amplitude_db
+    measured = tone_db(samples[rate // 2 :, 0], 611.0, rate) - amplitude_db
     check("surmixlev=off drops the surrounds", measured < -40.0,
           f"surround tone at {measured:+.2f} dB")
 

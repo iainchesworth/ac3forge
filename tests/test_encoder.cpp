@@ -11,6 +11,7 @@
 #include "ac3/core/crc16.hpp"
 #include "ac3/core/exponents.hpp"
 #include "ac3/core/tables.hpp"
+#include "ac3/decoder/decoder.hpp"
 #include "ac3/encoder/coupling.hpp"
 #include "ac3/encoder/encoder.hpp"
 
@@ -501,4 +502,65 @@ TEST_CASE("invalid encoder configs are rejected", "[encoder]") {
     CHECK(encode_same(bad_rate, silence).error() == ac3::FrameError::kInvalidBitrate);
     ac3::FrameEncoder bad_dialnorm{{.bitrate_kbps = 192, .dialnorm = 0}};
     CHECK(encode_same(bad_dialnorm, silence).error() == ac3::FrameError::kInvalidDialnorm);
+    // 1+1 needs Ch2's own dialnorm; missing or out of range is exactly as
+    // invalid as Ch1's own would be.
+    ac3::FrameEncoder missing_dialnorm2{
+        {.bitrate_kbps = 192, .acmod = ac3::Acmod::kDualMono}};
+    CHECK(encode_same(missing_dialnorm2, silence).error() == ac3::FrameError::kInvalidDialnorm);
+    ac3::FrameEncoder bad_dialnorm2{
+        {.bitrate_kbps = 192, .dialnorm2 = 0, .acmod = ac3::Acmod::kDualMono}};
+    CHECK(encode_same(bad_dialnorm2, silence).error() == ac3::FrameError::kInvalidDialnorm);
+}
+
+TEST_CASE("dual mono codes two independent programmes, never one into the other",
+         "[encoder][dual-mono]") {
+    using ac3::Acmod;
+    // Ch1 carries a loud, genuinely wideband tone; Ch2 is silent. Any
+    // cross-talk between the two - coupling turned on by mistake, a shared
+    // downmix measurement, a swapped channel - shows up as either Ch1 losing
+    // level or Ch2 picking some of it up, neither of which real dual mono
+    // permits (§7.7.2.2: compr bounds Ch1's own signal, compr2 Ch2's, never a
+    // mix of the two).
+    const ac3::EncoderConfig config{.bitrate_kbps = 192,
+                                    .dialnorm = 27,
+                                    .dialnorm2 = 18,
+                                    .acmod = Acmod::kDualMono,
+                                    .drc = ac3::meta::profile(ac3::meta::ProfileId::kFilmStandard),
+                                    .heavy = ac3::meta::HeavyConfig{}};
+    ac3::FrameEncoder encoder{config};
+    ac3::FrameDecoder decoder;
+    std::uint64_t n = 0;
+    std::vector<std::byte> last_frame;
+    for (int f = 0; f < 3; ++f) {
+        const auto ch1 = sine_frame(n, 1200.0, 0.8);
+        std::uint64_t n2 = n - static_cast<std::uint64_t>(ac3::kSamplesPerFrame);
+        const auto ch2 = sine_frame(n2, 1200.0, 0.0);  // silence, same length
+        const std::vector<std::span<const float>> views{ch1, ch2};
+        const auto frame = encoder.encode_frame(views);
+        REQUIRE(frame.has_value());
+        check_frame_invariants(*frame, config.sample_rate, config.bitrate_kbps);
+        last_frame = *frame;
+    }
+
+    const auto decoded = decoder.decode_frame(last_frame);
+    REQUIRE(decoded.has_value());
+    CHECK(decoded->acmod == Acmod::kDualMono);
+    CHECK(decoded->dialnorm == 27);
+    REQUIRE(decoded->dialnorm2.has_value());
+    CHECK(*decoded->dialnorm2 == 18);
+    REQUIRE(decoded->compr.has_value());   // Ch1 is loud: heavy compression engaged
+    REQUIRE(decoded->compr2.has_value());  // still transmitted - §7.7.2 sends it every frame
+                                           // once heavy is configured, whatever the level
+    REQUIRE(decoded->channels.size() == 2);
+
+    double ch1_peak = 0.0;
+    double ch2_peak = 0.0;
+    for (const float s : decoded->channels[0]) {
+        ch1_peak = std::max(ch1_peak, std::abs(static_cast<double>(s)));
+    }
+    for (const float s : decoded->channels[1]) {
+        ch2_peak = std::max(ch2_peak, std::abs(static_cast<double>(s)));
+    }
+    CHECK(ch1_peak > 0.3);    // Ch1's tone survived coding
+    CHECK(ch2_peak < 0.02);  // Ch2 stayed silent - nothing leaked in from Ch1
 }

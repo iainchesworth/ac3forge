@@ -38,7 +38,8 @@ Full program: [`examples/encode_ac3.cpp`](https://github.com/iainchesworth/ac3fo
 | `bitrate_kbps` | 192 | Must be one of the 19 Table 5.18 rates; `ac3::is_valid_bitrate` checks. |
 | `dialnorm` | 31 | 1–31 (§5.4.2.8). 31 means "no attenuation", which is a claim about your content. |
 | `chbwcod` | -1 | Coded bandwidth, 0–60. -1 derives it from the bit rate. |
-| `acmod` | `k2_0` | Table 5.8. `kDualMono` is rejected. |
+| `acmod` | `k2_0` | Table 5.8, including `kDualMono` (1+1) — see below. |
+| `dialnorm2` | none | `std::optional<int>`. Ch2's own dialnorm (§5.4.2.16); required when `acmod` is `kDualMono`, meaningless otherwise. |
 | `lfe` | `false` | Adds one channel, coded last. |
 | `coupling` | `false` | §7.4. Needs ≥ 2 full-bandwidth channels. |
 | `cplbegf`, `cplendf` | -1, -1 | Sub-band indices; -1 lets the encoder choose from the per-channel rate. |
@@ -49,6 +50,25 @@ Full program: [`examples/encode_ac3.cpp`](https://github.com/iainchesworth/ac3fo
 Coupling is what makes 5.1 viable below 448 kbit/s: above the coupling frequency the
 full-bandwidth channels stop carrying their own coefficients and share one coupling channel
 plus per-band coordinates.
+
+### Block switching
+
+Automatic, like delta bit allocation below — no config field toggles it. A §8.2.2 transient
+detector runs per full-bandwidth channel per block; a channel that switches anywhere in the frame
+is excluded from coupling for that whole frame, since `chincpl` here is frame-wide all-or-nothing
+rather than a per-channel flag. The LFE never switches.
+
+### Dual mono (`acmod` 0, "1+1")
+
+Not a channel layout — two independent, single-channel programmes sharing one syncframe (a
+second language track, a commentary track), each levelled and compressed on its own. Set
+`acmod = ac3::Acmod::kDualMono` and `dialnorm2`; `channels[0]` is Ch1, `channels[1]` is Ch2
+(`fullbw_channel_count(kDualMono)` is 2, same as stereo, but the two channels are never
+downmixed, coupled or rematrixed together — coupling silently stays off even if `coupling` is
+set, since averaging two unrelated programmes together would leak one into the other). `heavy`
+and `drc`, if set, apply to both channels independently — each gets its own compressor/range
+controller and its own `compr`/`compr2` and `dynrng`/`dynrng2` words. There's no LFE: 1+1 has no
+soundfield for a subwoofer to sit in.
 
 ---
 

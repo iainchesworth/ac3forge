@@ -112,16 +112,44 @@ Ranked by how much they prove. Prefer the strongest one available for what you a
 1. **The in-repo decoder.** Fully normative and sharing the encoder's core. Strongest for
    anything both sides implement, and the *only* oracle for 7.1.4.
 2. **FFmpeg.** External and independent. Always strict-decode:
-   `ffmpeg -v error -err_detect crccheck+bitstream+buffer+explode -i out.ac3 -f null -`.
-   Without `-err_detect`, FFmpeg conceals errors and a broken stream looks fine. FFmpeg is the
-   only oracle for Annex E coupling, spectral extension and AHT.
+   `ffmpeg -v error -xerror -err_detect crccheck+bitstream+buffer+explode -i out.ac3 -f null -`.
+   Without `-err_detect`, FFmpeg conceals errors and a broken stream looks fine. `-xerror` is not
+   optional either, and is easy to miss: `-err_detect` alone only controls what the decoder
+   treats as an error *internally* (concealing a bad frame and moving on) - it does not, by
+   itself, change ffmpeg's own exit code, which stays 0 even after a logged CRC mismatch.
+   `-xerror` ("exit on error") is the flag that turns a detected error into a failing process,
+   which is what every script here checking only the exit code (all of them) actually needs.
+
+   The in-repo decoder also reads Annex E coupling, spectral extension and AHT now, so FFmpeg is
+   a second, independent check on them rather than the only one — except at 7.1.4, where point 1
+   above is still the only decoder either way. Two separate CI mechanisms use FFmpeg, answering
+   different questions:
+
+   - **`ffmpeg-validate`** (Linux-only, this job): *correctness* across the full option space.
+     `scripts/run-codec-matrix.sh`'s FFmpeg strict-decode checks for conformance,
+     `tools/check_drc.py` and `tools/check_coupling.py`/`check_coupling_level.py` for metadata
+     that only a discriminating decode can confirm, and `tools/quality_race.py ci` for a numeric
+     SNR/LSD floor per E-AC-3 tool variant. Running any of these locally needs `ffmpeg` on `PATH`
+     and, for the Python ones, `AC3CLI` (or `--cli`) pointed at your build's `ac3cli`.
+   - **The gold-reference gate** (`scripts/verify-gold-reference.sh`, every platform leg):
+     *quality* and cross-platform reproducibility on one fixed sample - does ac3cli's own decoder
+     agree with FFmpeg's, by SNR, on every compiler this project builds with. See
+     [docs/building.md](https://github.com/iainchesworth/ac3forge/blob/main/docs/building.md#gold-reference-correctness-gate).
+
+   The same job also runs `tools/check_matrix_coverage.py`, which asks a different question: not
+   "is the output correct" but "does anything exercise this at all". It reads the CLI's own
+   canonical option lists (its usage text, and the "unknown layout"/"unknown tool set" messages a
+   bad argument hits) and fails if a layout, Annex E tool token or command the CLI accepts is
+   never mentioned in `run-codec-matrix.sh`. So a new layout, tool token or command needs a
+   matching matrix entry in the same change, or CI says so — see that script's own header for
+   what it does and does not catch.
 3. **The Python references in `tools/`.** Independent transcriptions of the same spec text.
    Weaker than a decoder — two transcriptions can share a misreading — but they catch slips a
    self-consistent round trip cannot.
 4. **Dolby's Reference Player and Media Encoder**, for object-layer syntax.
 
 Neither decoder covers everything, and the gaps do not overlap: see the [verification-gap
-table](https://github.com/iainchesworth/ac3forge/blob/main/README.md#verification-gaps). If your change lands in a cell with no oracle, say so in
+table](https://iainchesworth.github.io/ac3forge/verification/#where-the-oracles-dont-reach). If your change lands in a cell with no oracle, say so in
 the commit message and cover it bit-by-bit instead.
 
 ## Documentation
@@ -131,8 +159,12 @@ The examples in [docs/library/](https://github.com/iainchesworth/ac3forge/blob/m
 API, update the example — the build will tell you if you forget. Do not add a snippet to the
 docs that is not backed by a compiled file.
 
-If you add a capability or find a new limitation, the tables in [README.md](https://github.com/iainchesworth/ac3forge/blob/main/README.md) are the
-authority and must be updated with it. [docs/project/history.md](https://github.com/iainchesworth/ac3forge/blob/main/docs/project/history.md) is a
+If you add a capability or find a new limitation, the tables in
+[docs/index.md](https://github.com/iainchesworth/ac3forge/blob/main/docs/index.md) ("What it
+does" / "What it does not do") and, for oracle coverage specifically,
+[docs/verification.md](https://github.com/iainchesworth/ac3forge/blob/main/docs/verification.md)
+are the authority and must be updated with it. README.md's own summary of the same material
+should stay a summary, not grow back into a second copy. [docs/project/history.md](https://github.com/iainchesworth/ac3forge/blob/main/docs/project/history.md) is a
 record of past work and is not maintained against the current state.
 
 ## Commits

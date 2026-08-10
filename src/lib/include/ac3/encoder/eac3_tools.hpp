@@ -136,6 +136,27 @@ inline constexpr int kSpxAttenCodes = 32;
 void spx_apply_notch(std::span<double> synth, int startmant, const BandLayout& bands,
                      std::span<const bool> wrapflag, int spxattencod);
 
+// §E3.6.4.2.1: how much of a band's synthesized content is pseudo-random
+// noise versus the translated low-band copy, encode and decode alike -
+// `nratio` in the standard's pseudocode. `band_start`/`band_size` locate the
+// band in the coefficient domain; `endmant` is the extension region's
+// exclusive end (spx_band_start(spx_end_subbnd)); `blend` is the transmitted
+// spxblnd (0..31).
+[[nodiscard]] double spx_noise_ratio(int band_start, int band_size, int endmant, int blend);
+
+// §E3.6.4.2.4's noise(): "a pseudo-random number generated from a zero-mean,
+// unity-variance noise generator." The standard deliberately leaves the exact
+// generator unspecified - the same class of freedom AC-3's own dither
+// sequence has (§7.3.4, "any reasonably random sequence") - so any generator
+// meeting that shape is spec-conformant. This one is a plain xorshift32
+// mapped onto a symmetric ±sqrt(3) uniform distribution (variance a²/3, so
+// a = sqrt(3) gives variance 1 with zero mean by symmetry). Deterministic:
+// the same stream always decodes to the same PCM.
+struct SpxNoise {
+    std::uint32_t state = 0x9E3779B9U;  // never zero, or xorshift sticks at 0
+    [[nodiscard]] double next();
+};
+
 // --- adaptive hybrid transform (§E3.4) -------------------------------------
 // A second transform stage, cascaded after the MDCT: a 6-point DCT-II taken
 // down each spectral bin across the frame's six blocks. For material that is
@@ -247,5 +268,24 @@ struct AhtMantissaCode {
 [[nodiscard]] constexpr int aht_gaq_mapped(int gain) {
     return gain == 4 ? 2 : (gain == 2 ? 1 : 0);
 }
+
+// The decode direction of the table above: the packed value read off the
+// wire back to the gain it names.
+[[nodiscard]] constexpr int aht_gaq_gain_from_mapped(int mapped) {
+    return mapped == 2 ? 4 : (mapped == 1 ? 2 : 1);
+}
+
+// The decode direction of aht_quantize_mantissa (§E3.4.4.2 / Table E3.5).
+// `code` and `escape` are the RAW bit patterns as read off the wire (small-
+// and large-codeword width respectively, both sign-extended internally as
+// two's complement); `has_escape` says whether the caller found the tag
+// (`code == 1 << (small_bits - 1)` as a raw pattern) and therefore read
+// `escape` at all - for gain 1 there is never a tag or an escape, and
+// `escape` is ignored. mantissa_bits is Table E3.2's per-hebap width; the
+// small/large bit counts this derives internally are the exact ones
+// aht_quantize_mantissa derives when producing them, so the two stay in
+// lockstep by construction rather than by keeping two tables in sync.
+[[nodiscard]] double aht_dequantize_mantissa(std::uint32_t code, std::uint32_t escape,
+                                             bool has_escape, int mantissa_bits, int gain);
 
 }  // namespace ac3::eac3

@@ -121,6 +121,23 @@ void spx_apply_notch(std::span<double> synth, int startmant, const BandLayout& b
     }
 }
 
+double spx_noise_ratio(int band_start, int band_size, int endmant, int blend) {
+    const double centre = band_start + 0.5 * band_size;
+    const double ratio = centre / static_cast<double>(endmant) - static_cast<double>(blend) / 32.0;
+    return std::clamp(ratio, 0.0, 1.0);
+}
+
+double SpxNoise::next() {
+    state ^= state << 13;
+    state ^= state >> 17;
+    state ^= state << 5;
+    // sqrt(3): a uniform distribution on [-a, a] has variance a^2/3, so this
+    // is the radius that makes the mapped value unit-variance.
+    constexpr double kRadius = 1.7320508075688772;
+    const double unit = static_cast<double>(state) / static_cast<double>(0xFFFFFFFFU);  // [0,1]
+    return (unit * 2.0 - 1.0) * kRadius;
+}
+
 std::span<const int> aht_gaq_gains(int gaqmod) {
     // Table E3.3. Mode 1's gains reach only to hebap 11; modes 2 and 3 reach
     // to 16, which aht_gaq_endbap encodes.
@@ -190,6 +207,36 @@ AhtMantissaCode aht_quantize_mantissa(double value, int mantissa_bits, int gain)
     out.escape_bits = large_bits;
     out.recon = (value >= 0.0 ? 1.0 : -1.0) * (dead_zone + k * large_step);
     return out;
+}
+
+double aht_dequantize_mantissa(std::uint32_t code, std::uint32_t escape, bool has_escape,
+                               int mantissa_bits, int gain) {
+    const auto sign_extend = [](std::uint32_t raw, int bits) {
+        const auto sign_bit = static_cast<std::uint32_t>(1) << (bits - 1);
+        return static_cast<int>((raw ^ sign_bit) - sign_bit);
+    };
+
+    if (gain == 1) {
+        const int levels = (1 << mantissa_bits) - 1;
+        return 2.0 * sign_extend(code, mantissa_bits) / levels;
+    }
+
+    const int small_bits = gain == 2 ? mantissa_bits - 1 : mantissa_bits - 2;
+    const int large_bits = gain == 2 ? mantissa_bits - 1 : mantissa_bits;
+    const int small_half = 1 << (small_bits - 1);
+    const double dead_zone = 1.0 / gain;
+    const double large_step =
+        gain == 2 ? 1.0 / ((1 << (mantissa_bits - 1)) - 1)
+                  : 3.0 / ((1 << (mantissa_bits + 1)) - 2);
+
+    if (!has_escape) {
+        return static_cast<double>(sign_extend(code, small_bits)) / (small_half * gain);
+    }
+
+    // The mirror image of quantize's `code = value >= 0.0 ? k : -k - 1`.
+    const int large_code = sign_extend(escape, large_bits);
+    const int k = large_code >= 0 ? large_code : -large_code - 1;
+    return (large_code >= 0 ? 1.0 : -1.0) * (dead_zone + k * large_step);
 }
 
 int aht_bin_gaq_bits(std::span<const double, kBlocksPerFrameSize> values,

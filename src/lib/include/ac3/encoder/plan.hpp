@@ -61,6 +61,7 @@ enum class Codec : std::uint8_t {
 enum class LayoutId : std::uint8_t {
     kMono,
     kStereo,
+    kDualMono,
     k51,
     k71,
     k512,
@@ -84,9 +85,13 @@ struct LayoutInfo {
     int dependents;
 };
 
-inline constexpr std::array<LayoutInfo, 7> kLayouts{{
+inline constexpr std::array<LayoutInfo, 8> kLayouts{{
     {LayoutId::kMono, "mono", "1/0 mono", 1, 1, 0},
     {LayoutId::kStereo, "stereo", "2/0 stereo", 2, 2, 0},
+    // Two independent programmes sharing one syncframe, not a soundfield -
+    // "rendered"/"transmitted" both count 2 only because that is how many
+    // coded channels 1+1 carries, not because there are two speakers to fill.
+    {LayoutId::kDualMono, "1+1", "1+1 dual mono", 2, 2, 0},
     {LayoutId::k51, "51", "5.1", 6, 6, 0},
     // The dependent replaces the bed's surrounds and adds the rears, so four
     // coded channels buy two new speakers.
@@ -225,6 +230,22 @@ inline constexpr std::string_view kToolsSyntax =
 // vocabulary the command line takes. Round-trips through parse_tools.
 [[nodiscard]] std::string format_tools(const Tools& tools);
 
+// --- variable bit rate -------------------------------------------------------
+
+inline constexpr std::string_view kVbrSyntax =
+    "off | q:0..1[,min:kbps][,max:kbps] - E-AC-3 only";
+
+// "off" or empty clears `out` (CBR); "q:<quality>" turns VBR on, optionally
+// followed by ",min:<kbps>" and/or ",max:<kbps>" in either order. Returns
+// false on anything unrecognised, out of range, or with min above max,
+// leaving `out` partially written - the same reject-rather-than-continue
+// rule parse_tools follows, for the same reason.
+[[nodiscard]] bool parse_vbr(std::string_view text, std::optional<eac3::VbrConfig>& out);
+
+// The inverse, so a front end can show what it is about to do in the same
+// vocabulary the command line takes. Round-trips through parse_vbr.
+[[nodiscard]] std::string format_vbr(const std::optional<eac3::VbrConfig>& vbr);
+
 // --- dynamic range, loudness and downmix metadata ---------------------------
 
 // The whole §7.7 / §7.8 / Table E1.2 group a front end collects. Everything
@@ -241,6 +262,11 @@ struct Metadata {
     // frame, so a front end does it before the first frame is encoded and
     // writes the answer back into `dialnorm`.
     bool measure_dialnorm = false;
+    // Ch2's own dialnorm, meaningful only when the plan's layout is 1+1 dual
+    // mono - the two programmes are levelled independently, so `dialnorm`
+    // alone cannot describe both.
+    int dialnorm2 = 31;
+    bool measure_dialnorm2 = false;
     // E-AC-3 only: emit the mixmdate group. AC-3 carries cmixlev/surmixlev in
     // bsi and has nowhere to put the rest.
     bool mixmeta = false;
@@ -264,13 +290,22 @@ struct Plan {
     std::uint32_t bitrate_kbps = 192;
     Tools tools{};
     Metadata meta{};
+    // E-AC-3 only: a quality target (with optional min/max kbps bounds)
+    // replaces bitrate_kbps-driven CBR sizing. AC-3 has no free-form frame
+    // size to vary (frmsizecod indexes Table 5.18), so validate() rejects
+    // this alongside Codec::kAc3 the same way it rejects an immersive layout
+    // there. Shared across every substream eac3_config() builds, the same
+    // way tools/meta already are.
+    std::optional<eac3::VbrConfig> vbr = std::nullopt;
 };
 
 enum class PlanError : std::uint8_t {
-    kLayoutNeedsEac3,   // an immersive layout (or channel selection) asked of AC-3
-    kBitrateNotLegal,   // AC-3 takes only the 19 Table 5.18 rates
-    kNoSourceLayout,    // no standard speaker layout has that many channels
-    kInvalidChannels,   // custom_locations is not a channel selection allocate() can satisfy
+    kLayoutNeedsEac3,       // an immersive layout (or channel selection) asked of AC-3
+    kBitrateNotLegal,       // AC-3 takes only the 19 Table 5.18 rates
+    kNoSourceLayout,        // no standard speaker layout has that many channels
+    kInvalidChannels,       // custom_locations is not a channel selection allocate() can satisfy
+    kSampleRateNeedsEac3,   // fscod2 (24/22.05/16 kHz) asked of AC-3, which has no such field
+    kVbrNeedsEac3,          // vbr was set alongside Codec::kAc3
 };
 
 [[nodiscard]] std::string_view describe(PlanError error);
