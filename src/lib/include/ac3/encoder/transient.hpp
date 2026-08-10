@@ -48,12 +48,19 @@ private:
     std::array<Biquad, 2> stages_;
 
     // §8.2.2 step 3's cross-pass carry: the previous pass's own last segment
-    // at each tree level, used as this pass's P[j][0]. Meaningless before
-    // the first pass has ever run - see run_pass's own comment.
-    bool first_pass_ = true;
+    // at each tree level, used as this pass's P[j][0].
     double prev_level1_ = 0.0;
     double prev_level2_ = 0.0;
     double prev_level3_ = 0.0;
+    // The very first 512-sample block this instance ever sees has no real
+    // "immediately prior tree" for EITHER of its two passes: the first
+    // pass's own baseline is the default-constructed 0.0, and the second
+    // pass's baseline is the first pass's result - which, for a freshly
+    // constructed encoder, was computed from zero-filled history, not real
+    // prior audio. Comparing genuine content against that synthetic silence
+    // would flag a spurious transient on literally any non-silent stream's
+    // opening block - see detect()'s own comment.
+    bool first_block_ = true;
 };
 
 }  // namespace ac3

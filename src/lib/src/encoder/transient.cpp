@@ -74,15 +74,11 @@ bool TransientDetector::run_pass(std::span<const double, 256> half) {
     };
 
     // §8.2.2 step 4's silence gate forces a long block regardless of the
-    // ratio comparisons below. The very first pass this instance ever runs
-    // has no "immediately prior tree" for P[j][0] to mean anything (the
-    // spec's own carry rule is silent on that case) - comparing against the
-    // default-constructed 0.0 would flag every non-silent stream's opening
-    // block as a spurious transient, so it is treated the same as silence:
-    // no transient, but the tree history below still advances so the NEXT
-    // pass compares against real data.
+    // ratio comparisons below. Whether this pass's OWN result is trusted at
+    // all is decided by the caller (detect()) - see its own comment for why
+    // the very first block needs special handling.
     bool transient = false;
-    if (!first_pass_ && p1 >= kSilenceThreshold) {
+    if (p1 >= kSilenceThreshold) {
         if (p1 * kT1 > prev_level1_) {
             transient = true;
         }
@@ -102,7 +98,6 @@ bool TransientDetector::run_pass(std::span<const double, 256> half) {
         }
     }
 
-    first_pass_ = false;
     prev_level1_ = p1;
     prev_level2_ = p2[1];
     prev_level3_ = p3.back();
@@ -110,8 +105,22 @@ bool TransientDetector::run_pass(std::span<const double, 256> half) {
 }
 
 bool TransientDetector::detect(std::span<const double, 512> time) {
+    // The very first 512-sample block this instance ever sees has no real
+    // "immediately prior tree" for EITHER of its two passes to compare
+    // against: the first pass's own baseline is the default-constructed
+    // 0.0, and - less obviously - the second pass's baseline is the first
+    // pass's own result, which for a freshly constructed encoder was
+    // computed from zero-filled history (silence), not real prior audio.
+    // Letting the second pass's real content flag against that synthetic
+    // silence would report a spurious transient on literally any
+    // non-silent stream's opening block. Both passes still run normally
+    // (so the tree history is real by the time block 1 arrives), only the
+    // reported result is suppressed.
+    const bool suppress = first_block_;
+    first_block_ = false;
     (void)run_pass(time.first<256>());
-    return run_pass(time.last<256>());
+    const bool second_half = run_pass(time.last<256>());
+    return !suppress && second_half;
 }
 
 }  // namespace ac3
