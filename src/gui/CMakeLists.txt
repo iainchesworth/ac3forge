@@ -24,14 +24,18 @@ qt_add_executable(ac3gui
 # kind of registration that matters. That is what Qt policy QTP0004 warns
 # about; aliasing removes the second root instead of papering over it with a
 # generated qmldir, and keeps working whichever way the policy defaults later.
+# Absolute, not "qml/Main.qml": qt_add_qml_module resolves QML_FILES against
+# whichever CMakeLists.txt calls it, and tests/CMakeLists.txt below reuses
+# this same list to embed an identical module into ac3gui_qmltests - a
+# relative path would resolve against the wrong directory from there.
 set(AC3_QML_FILES
-    qml/Main.qml
-    qml/Theme.qml
-    qml/Card.qml
-    qml/ChannelMeter.qml
-    qml/SoundfieldView.qml
-    qml/SegmentedControl.qml
-    qml/LoudnessGroup.qml)
+    "${CMAKE_CURRENT_SOURCE_DIR}/qml/Main.qml"
+    "${CMAKE_CURRENT_SOURCE_DIR}/qml/Theme.qml"
+    "${CMAKE_CURRENT_SOURCE_DIR}/qml/Card.qml"
+    "${CMAKE_CURRENT_SOURCE_DIR}/qml/ChannelMeter.qml"
+    "${CMAKE_CURRENT_SOURCE_DIR}/qml/SoundfieldView.qml"
+    "${CMAKE_CURRENT_SOURCE_DIR}/qml/SegmentedControl.qml"
+    "${CMAKE_CURRENT_SOURCE_DIR}/qml/LoudnessGroup.qml")
 
 foreach(qml_file IN LISTS AC3_QML_FILES)
     get_filename_component(qml_name "${qml_file}" NAME)
@@ -42,12 +46,16 @@ endforeach()
 # embeds the QML and the generated type registrations directly into it - no
 # separate plugin, and none of the WHOLE_ARCHIVE gymnastics a standalone
 # backing library would need to keep its resource initialisers alive.
+# tests/CMakeLists.txt's ac3gui_qmltests target follows the same pattern - a
+# second, independent embedding of the identical module, not a shared
+# library - for exactly this reason.
 # Theme is a QML singleton. This MUST run before qt_add_qml_module below:
 # that call reads QT_QML_SINGLETON_TYPE off each QML_FILES entry to decide
 # whether to emit a `singleton` line in the generated qmldir. Set it
 # afterwards and Theme registers as a plain type instead, so every Theme.*
 # binding silently resolves to undefined at runtime.
-set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
+set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/qml/Theme.qml"
+    PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 
 qt_add_qml_module(ac3gui
     URI Ac3Forge
@@ -252,4 +260,38 @@ if(WIN32 OR APPLE)
         OUTPUT_SCRIPT AC3_GUI_DEPLOY_SCRIPT
         NO_UNSUPPORTED_PLATFORM_ERROR)
     install(SCRIPT "${AC3_GUI_DEPLOY_SCRIPT}")
+endif()
+
+# Qt Quick Test coverage for the interactive surfaces above - gated the same
+# way tests/ is at the top level, and kept beside the GUI code it exercises
+# rather than inside the Qt-free tests/ Catch2 tree.
+if(AC3FORGE_BUILD_TESTS)
+    # Defines the ac3gui_qmltests executable target (sources, links, the
+    # add_test() registration) but NOT its QML module - see tests/CMakeLists.txt
+    # for why that call has to happen here instead, once the target exists.
+    add_subdirectory(tests)
+
+    qt_add_qml_module(ac3gui_qmltests
+        URI Ac3Forge
+        VERSION 1.0
+        # Both targets embed the same URI; without this they'd both compute
+        # the same "<binary dir>/Ac3Forge" output directory and collide -
+        # ac3gui's own module lives there already.
+        OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests/Ac3Forge"
+        QML_FILES ${AC3_QML_FILES})
+
+    # Same rationale as the ac3gui loop above: Qt's generated moc/rcc/
+    # qmlcachegen output for this target also compiles under the strict
+    # warning set unless excluded.
+    get_target_property(AC3_GUI_TEST_SOURCES ac3gui_qmltests SOURCES)
+    set(AC3_GUI_TEST_GENERATED_SOURCES "")
+    foreach(source IN LISTS AC3_GUI_TEST_SOURCES)
+        if(source MATCHES "^${CMAKE_CURRENT_BINARY_DIR}/.*\\.(cpp|cxx|cc)$")
+            list(APPEND AC3_GUI_TEST_GENERATED_SOURCES "${source}")
+        endif()
+    endforeach()
+    if(AC3_GUI_TEST_GENERATED_SOURCES)
+        set_source_files_properties(${AC3_GUI_TEST_GENERATED_SOURCES}
+            PROPERTIES COMPILE_OPTIONS "${AC3_WARNINGS_OFF_FLAG}")
+    endif()
 endif()
