@@ -44,6 +44,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <mutex>
 #include <numbers>
 #include <span>
@@ -68,10 +69,38 @@ constexpr double kSampleRate = 48000.0;
 // perfect fifth above it (C#5, E5) - an A major triad rather than an
 // arbitrary/dissonant set of tones, so the "sound interaction/mixing" the
 // ambient objects exist for is pleasant to actually listen to as they and
-// the lead move past each other. Ambient objects sit a little quieter than
-// the lead so it stays the clear focus of the demo.
+// the lead move past each other. Ambient objects sit quieter than the lead
+// so it stays the clear focus of the demo, but loud enough to still be
+// heard clearly - two rounds of real-device testing on a Shield + AVR each
+// found the previous level still needed the receiver driven meaningfully
+// hotter than normal listening level. These gains are deliberately chosen
+// alongside soft_limit() below rather than kept safely under a linear 1.0
+// ceiling on their own - see that function's own comment for why a limiter
+// was the only way to get materially louder without just clipping.
 constexpr std::array<double, kObjects> kToneHz{440.0, 554.365, 659.255};
-constexpr std::array<double, kObjects> kToneGain{0.22, 0.12, 0.12};
+constexpr std::array<double, kObjects> kToneGain{0.95, 0.30, 0.30};
+
+// A soft-knee limiter, applied to every object's final sample below - pure
+// linear gain increases run straight into a hard ceiling (any sample over
+// +-1.0 hard-clips, an audible crackle, since this encoder does no internal
+// limiting of its own), so getting meaningfully louder without distortion
+// needs the peaks themselves shaped, not just a bigger multiplier. Fully
+// transparent (identity) below kLimiterThreshold; only the excess above it
+// is compressed, smoothly approaching but never reaching +-1.0 - ordinary
+// low-level content is completely unaffected, only genuine peaks are
+// tamed. tanh() only runs for samples that actually exceed the threshold,
+// not on every sample.
+constexpr float kLimiterThreshold = 0.72f;
+float soft_limit(float x) {
+    const float sign = x < 0.0f ? -1.0f : 1.0f;
+    const float ax = std::abs(x);
+    if (ax <= kLimiterThreshold) {
+        return x;
+    }
+    const float excess = (ax - kLimiterThreshold) / (1.0f - kLimiterThreshold);
+    const float compressed = kLimiterThreshold + (1.0f - kLimiterThreshold) * std::tanh(excess);
+    return sign * std::min(compressed, 0.999f);
+}
 
 // One object's pre-planned path: a circular orbit centred on the room's
 // exact middle - oamd.hpp's (0.5, 0.5, 0) - which is also where the JOC/VBAP
@@ -89,17 +118,23 @@ struct TrajectoryParams {
     double height_rate_hz;  // z bob revolutions per second
 };
 
+// height_amp is close to the full [-1,1] range for the lead (0.85, not the
+// original 0.5) so its bob genuinely swings up near the ceiling and down
+// near the floor rather than only ever reaching halfway - real-device
+// testing found the original range read as barely-there movement rather
+// than a source passing overhead. Lap rate is also faster (12s, not 20s) so
+// the motion is perceptible within a short listening window rather than
+// requiring a patient, full-lap wait to notice.
 constexpr std::array<TrajectoryParams, kObjects> kTrajectory{{
-    // Interactive lead: one lap every 20s, a slow height bob so it reads as
-    // deliberate rather than mechanical.
-    {1.0 / 20.0, 0.0, 0.45, 0.5, 1.0 / 41.0},
+    // Interactive lead: one lap every 12s.
+    {1.0 / 12.0, 0.0, 0.45, 0.85, 1.0 / 25.0},
     // Ambient 1: a smaller, slower orbit, phase-offset 120 degrees so it
     // starts on the opposite side of the room from the lead.
-    {1.0 / 33.0, 2.0 * std::numbers::pi / 3.0, 0.28, 0.3, 1.0 / 53.0},
+    {1.0 / 33.0, 2.0 * std::numbers::pi / 3.0, 0.28, 0.45, 1.0 / 53.0},
     // Ambient 2: offset a further 120 degrees, and its height bob runs in
     // the opposite sense (negative amplitude) so it and ambient 1 do not
     // mirror each other in height as well as azimuth.
-    {1.0 / 27.0, 4.0 * std::numbers::pi / 3.0, 0.28, -0.3, 1.0 / 47.0},
+    {1.0 / 27.0, 4.0 * std::numbers::pi / 3.0, 0.28, -0.45, 1.0 / 47.0},
 }};
 
 ac3::oba::Position trajectory_position(int obj, double time_s) {
@@ -112,9 +147,76 @@ ac3::oba::Position trajectory_position(int obj, double time_s) {
             .z = p.height_amp * std::sin(height_angle)};
 }
 
+// The lead object's voice: a plain sine, however correctly panned, is a
+// genuinely bad choice for demonstrating precise 3D localization by ear -
+// real-device testing confirmed it as "muddy", not a discrete point source.
+// Two independent reasons, not one:
+//  - A single continuous tone with no onsets gives the ear a weak azimuth
+//    (interaural time/level difference) cue - there is no transient to lock
+//    onto, only a slowly-panning steady drone.
+//  - Elevation localization in human hearing is driven almost entirely by
+//    pinna-filtered high-frequency/broadband spectral cues - a 440Hz sine
+//    has essentially no energy up there at all, so "hear it go overhead"
+//    cannot work no matter how correct the encoder's height panning is.
+// A rhythmic, sharpened amplitude envelope (kLeadRotorHz, a rotor-blade-like
+// "thump" rather than a smooth tremolo) mixed with broadband noise addresses
+// both: real onset transients for azimuth, and real high-frequency content
+// for elevation. Ambient objects deliberately stay plain sines - a
+// contrasting, non-percussive texture that's easy to tune out, so the lead
+// reads as the one distinct, locatable voice by timbre alone, not just by
+// having asked the listener to trust the panning.
+constexpr double kLeadRotorHz = 5.0;
+constexpr double kLeadRotorSharpness = 3.0;  // higher = shorter, more percussive pulses
+constexpr float kLeadToneMix = 0.7f;
+constexpr float kLeadNoiseMix = 0.3f;
+
+// Cheap, deterministic PRNG (xorshift32) for the lead's noise texture - a
+// fixed seed rather than time-seeded, since the exact sequence never
+// matters, only that it sounds like noise; avoids <random>'s per-sample
+// engine overhead in what is otherwise a tight, allocation-free hot loop.
+std::uint32_t g_noise_state = 0x9e3779b9u;
+float next_noise_sample() {
+    g_noise_state ^= g_noise_state << 13;
+    g_noise_state ^= g_noise_state >> 17;
+    g_noise_state ^= g_noise_state << 5;
+    return static_cast<float>(static_cast<std::int32_t>(g_noise_state)) * (1.0f / 2147483648.0f);
+}
+
 std::thread g_worker;
 std::atomic_bool g_stop_requested{false};
 std::atomic_bool g_running{false};
+// run_loop()'s own start_time, published so nativeGetFutureLeadTrajectory()
+// (a JNI call from the UI thread, not the encode-loop thread) can compute
+// "now" in the exact same time base trajectory_position() uses without
+// touching anything mutex-protected - trajectory_position() is a pure
+// function of time, so this is the only state that call actually needs.
+std::atomic<std::int64_t> g_start_time_ns{0};
+
+// Live stream stats + the ambient-mute control, both read/written from
+// different threads (RoomView.kt's UI-thread poll, the remote's play/pause
+// keys, the encode-loop thread that updates the stats every frame) - plain
+// atomics, not LiveCursorState's mutex, since every field here is
+// independent and there is nothing that needs to stay consistent ACROSS
+// fields the way a whole ObjectPlacement does.
+struct StreamStats {
+    std::atomic<std::uint64_t> frames{0};
+    std::atomic<std::uint64_t> bursts_submitted{0};
+    std::atomic<std::uint64_t> bursts_rendered{0};
+    std::atomic<std::uint64_t> underruns{0};
+    std::atomic_bool signed_stream{false};
+    // Set by the remote's pause/play keys (InputController.kt) - muting the
+    // two ambient objects' audio (not their position/trajectory, which keeps
+    // advancing in the background) so a listener can isolate the lead
+    // object's sound and hear its own movement without the ambient wash on
+    // top of it. "Restart everything that was paused" on play is therefore
+    // just un-muting: the ambient objects never stopped moving, only sounding.
+    std::atomic_bool ambient_muted{false};
+};
+
+StreamStats& stream_stats() {
+    static StreamStats s;
+    return s;
+}
 
 // Input-driven bias for one interactive object: how far its actual position
 // currently sits from where trajectory_position() says it "should" be. Kept
@@ -130,11 +232,13 @@ struct Deflection {
 // How far held input can push an object off its trajectory before the clamp
 // in deflect_selected() stops it - the "bounding box" the deflection is
 // limited by. xy is tighter than z: the xy trajectory radius is already up
-// to 0.45 room-units (kTrajectory[0]), so 0.35 more still comfortably clears
-// the walls once combined and clamped again in advance() below; z has more
-// headroom since the trajectory's own height bob is modest.
-constexpr double kMaxDeflectXy = 0.35;
-constexpr double kMaxDeflectZ = 0.6;
+// to 0.45 room-units (kTrajectory[0]), so 0.45 more still comfortably clears
+// the walls once combined and clamped again in advance() below (real-device
+// testing found the original, tighter 0.35 made a deliberate push feel
+// underwhelming); z has even more headroom since the trajectory's own
+// height bob, even widened above, only reaches +-0.85.
+constexpr double kMaxDeflectXy = 0.45;
+constexpr double kMaxDeflectZ = 0.75;
 // Per-encode-frame multiplicative decay applied to a deflection whether or
 // not fresh input arrived this frame - the actual "spring-back". Frames are
 // kSamplesPerFrame/48000 = 32ms apart; this value is exp(-frame_s / tau) for
@@ -239,6 +343,7 @@ void run_loop() {
     // instead (see shield_quarantine_hook.hpp's signing_available() comment).
     // Only the local, quarantine-signer-enabled build ever sets this true.
     const bool emit_objects = ac3shield::signing_available();
+    stream_stats().signed_stream.store(emit_objects, std::memory_order_relaxed);
     ac3::oba::AtmosEncoder encoder({.bitrate_kbps = 448, .emit_object_metadata = emit_objects},
                                    kObjects);
     __android_log_print(ANDROID_LOG_INFO, kLogTag,
@@ -262,6 +367,10 @@ void run_loop() {
         phase_step[static_cast<std::size_t>(obj)] =
             2.0 * std::numbers::pi * kToneHz[static_cast<std::size_t>(obj)] / kSampleRate;
     }
+    // Only the lead (kInteractiveObjects == 1) has a rotor envelope; see
+    // kLeadRotorHz's own comment.
+    double rotor_phase = 0.0;
+    const double rotor_step = 2.0 * std::numbers::pi * kLeadRotorHz / kSampleRate;
 
     // Wall-clock frame pacing, not a producer to drain (see header comment):
     // one AC-3 frame is exactly kSamplesPerFrame/48000 seconds.
@@ -274,6 +383,10 @@ void run_loop() {
     // moves the trajectory forward with it rather than the encoded audio and
     // the visible motion drifting apart.
     const auto start_time = std::chrono::steady_clock::now();
+    g_start_time_ns.store(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(start_time.time_since_epoch())
+            .count(),
+        std::memory_order_relaxed);
 
     g_running.store(true, std::memory_order_release);
     __android_log_print(ANDROID_LOG_INFO, kLogTag, "encode loop started (%d interactive + %d ambient objects)",
@@ -281,14 +394,41 @@ void run_loop() {
 
     std::uint64_t frames = 0;
     while (!g_stop_requested.load(std::memory_order_acquire)) {
+        const bool ambient_muted = stream_stats().ambient_muted.load(std::memory_order_relaxed);
         for (int obj = 0; obj < kObjects; ++obj) {
             auto& tone = tones[static_cast<std::size_t>(obj)];
             auto& ph = phase[static_cast<std::size_t>(obj)];
             const auto step = phase_step[static_cast<std::size_t>(obj)];
-            const auto tone_gain = kToneGain[static_cast<std::size_t>(obj)];
-            for (std::size_t n = 0; n < tone.size(); ++n) {
-                tone[n] = static_cast<float>(tone_gain * std::sin(ph));
-                ph += step;
+            const bool is_lead = obj < kInteractiveObjects;
+            // Muting only silences the ambient objects' audio, never the
+            // lead's - see StreamStats::ambient_muted's own comment.
+            const auto tone_gain = kToneGain[static_cast<std::size_t>(obj)] *
+                                   ((!is_lead && ambient_muted) ? 0.0 : 1.0);
+            if (is_lead) {
+                for (std::size_t n = 0; n < tone.size(); ++n) {
+                    // See kLeadRotorHz's own comment for why this is a
+                    // rhythmic, sharpened envelope over a tone+noise mix
+                    // rather than a bare sine. Floor raised to 0.55 (from an
+                    // earlier 0.35): real-device testing asked for more
+                    // loudness twice over, and a shallower dip between
+                    // pulses raises the average level while still leaving a
+                    // clearly audible ~5dB swing for the percussive "thump"
+                    // itself - most of the extra loudness instead comes from
+                    // kToneGain and soft_limit() below.
+                    const double pulse = std::max(0.0, std::sin(rotor_phase));
+                    const double envelope = 0.55 + 0.45 * std::pow(pulse, kLeadRotorSharpness);
+                    const float voice = kLeadToneMix * static_cast<float>(std::sin(ph)) +
+                                        kLeadNoiseMix * next_noise_sample();
+                    tone[n] = soft_limit(static_cast<float>(tone_gain * envelope) * voice);
+                    ph += step;
+                    rotor_phase += rotor_step;
+                }
+                rotor_phase = std::fmod(rotor_phase, 2.0 * std::numbers::pi);
+            } else {
+                for (std::size_t n = 0; n < tone.size(); ++n) {
+                    tone[n] = soft_limit(static_cast<float>(tone_gain * std::sin(ph)));
+                    ph += step;
+                }
             }
             // Keep the running phase bounded - it only ever feeds sin(), so
             // this cannot audibly discontinue the waveform (sin is 2*pi
@@ -353,14 +493,23 @@ void run_loop() {
                                 "first frame produced no burst yet (accumulating blocks)");
         }
 
-        if (frames % 48 == 0) {  // roughly every 1.5s at 32ms/frame
+        // Published every frame, not just the 48-frame logcat interval below
+        // - RoomView.kt's on-screen stats readout polls this once per vsync
+        // and should read live, not update in visible 1.5s jumps.
+        {
             const auto stats = sink.stats();
-            __android_log_print(ANDROID_LOG_INFO, kLogTag,
-                                "frame %llu: bursts submitted=%llu rendered=%llu underruns=%llu",
-                                static_cast<unsigned long long>(frames),
-                                static_cast<unsigned long long>(stats.bursts_submitted),
-                                static_cast<unsigned long long>(stats.bursts_rendered),
-                                static_cast<unsigned long long>(stats.underruns));
+            stream_stats().frames.store(frames, std::memory_order_relaxed);
+            stream_stats().bursts_submitted.store(stats.bursts_submitted, std::memory_order_relaxed);
+            stream_stats().bursts_rendered.store(stats.bursts_rendered, std::memory_order_relaxed);
+            stream_stats().underruns.store(stats.underruns, std::memory_order_relaxed);
+            if (frames % 48 == 0) {  // roughly every 1.5s at 32ms/frame
+                __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                                    "frame %llu: bursts submitted=%llu rendered=%llu underruns=%llu",
+                                    static_cast<unsigned long long>(frames),
+                                    static_cast<unsigned long long>(stats.bursts_submitted),
+                                    static_cast<unsigned long long>(stats.bursts_rendered),
+                                    static_cast<unsigned long long>(stats.underruns));
+            }
         }
         ++frames;
 
@@ -457,4 +606,75 @@ Java_com_ac3forge_shield_NativeBridge_nativeGetObjectState(JNIEnv* env, jclass /
     }
     env->SetFloatArrayRegion(result, 0, kObjects * 4, flat.data());
     return result;
+}
+
+// Called from InputController.kt's play/pause key handling. See
+// StreamStats::ambient_muted's own comment for what this actually does
+// (mutes the ambient objects' audio, not their motion).
+extern "C" JNIEXPORT void JNICALL
+Java_com_ac3forge_shield_NativeBridge_nativeSetAmbientMuted(JNIEnv* /*env*/, jclass /*clazz*/,
+                                                              jboolean muted) {
+    stream_stats().ambient_muted.store(muted != JNI_FALSE, std::memory_order_relaxed);
+}
+
+// For the room visualization's 3D trail view: `sample_count` (x,y,z) points
+// along the LEAD object's own pre-planned trajectory - deliberately its base
+// path only, with no deflection - starting now and running `seconds_ahead`
+// seconds into the future. Deflection is excluded on purpose: it decays back
+// to zero on its own (LiveCursorState::advance) and future input can't be
+// known, so the only honest "path ahead" to show is the course the object
+// is actually heading back toward, not a guess at what a listener might do
+// with the stick next. trajectory_position() is a pure function of time -
+// this needs none of LiveCursorState's mutex-protected state, only
+// g_start_time_ns to translate "now" into the same elapsed-seconds time
+// base run_loop() itself uses.
+extern "C" JNIEXPORT jfloatArray JNICALL
+Java_com_ac3forge_shield_NativeBridge_nativeGetFutureLeadTrajectory(JNIEnv* env,
+                                                                     jclass /*clazz*/,
+                                                                     jfloat seconds_ahead,
+                                                                     jint sample_count) {
+    if (sample_count <= 0) {
+        return env->NewFloatArray(0);
+    }
+    const auto start_ns = g_start_time_ns.load(std::memory_order_relaxed);
+    const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::steady_clock::now().time_since_epoch())
+                            .count();
+    const double now_s = static_cast<double>(now_ns - start_ns) / 1.0e9;
+
+    jfloatArray result = env->NewFloatArray(sample_count * 3);
+    if (result == nullptr) {
+        return nullptr;
+    }
+    std::vector<jfloat> flat(static_cast<std::size_t>(sample_count) * 3);
+    const int steps = sample_count > 1 ? sample_count - 1 : 1;
+    for (int i = 0; i < sample_count; ++i) {
+        const double t = now_s + (static_cast<double>(i) / static_cast<double>(steps)) *
+                                     static_cast<double>(seconds_ahead);
+        const auto pos = trajectory_position(0, t);  // object 0: the lead
+        flat[static_cast<std::size_t>(i) * 3 + 0] = static_cast<jfloat>(pos.x);
+        flat[static_cast<std::size_t>(i) * 3 + 1] = static_cast<jfloat>(pos.y);
+        flat[static_cast<std::size_t>(i) * 3 + 2] = static_cast<jfloat>(pos.z);
+    }
+    env->SetFloatArrayRegion(result, 0, sample_count * 3, flat.data());
+    return result;
+}
+
+// For the on-screen stats overlay (RoomView.kt) - a single formatted line
+// rather than several numeric fields, since there is exactly one caller and
+// building the string here avoids Kotlin needing its own copy of the same
+// formatting logic.
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_ac3forge_shield_NativeBridge_nativeGetStreamStatsText(JNIEnv* env, jclass /*clazz*/) {
+    auto& s = stream_stats();
+    char buf[160];
+    std::snprintf(buf, sizeof buf, "frame %llu | bursts %llu/%llu (%llu lost) | %s%s",
+                  static_cast<unsigned long long>(s.frames.load(std::memory_order_relaxed)),
+                  static_cast<unsigned long long>(s.bursts_rendered.load(std::memory_order_relaxed)),
+                  static_cast<unsigned long long>(s.bursts_submitted.load(std::memory_order_relaxed)),
+                  static_cast<unsigned long long>(s.underruns.load(std::memory_order_relaxed)),
+                  s.signed_stream.load(std::memory_order_relaxed) ? "Atmos (signed)"
+                                                                   : "5.1 bed (unsigned)",
+                  s.ambient_muted.load(std::memory_order_relaxed) ? " | ambient muted" : "");
+    return env->NewStringUTF(buf);
 }

@@ -7,7 +7,7 @@ import android.util.Log
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MotionEvent
-import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.TextView
 import kotlin.concurrent.thread
 
@@ -74,8 +74,9 @@ class MainActivity : Activity() {
         }
         val hints = TextView(this).apply {
             text = "Stick/D-pad: push the lead object off its course, it drifts back when you " +
-                "let go   •   Right stick / L1+R1: height   •   Long-press A/center: D-pad " +
-                "up/down controls height instead of depth\n" +
+                "let go   •   Right stick / L1+R1: height   •   Press A/center: D-pad up/down " +
+                "toggles between depth and height   •   Pause: isolate the lead   •   Play: bring " +
+                "the ambient tones back\n" +
                 "● lead (yours to push around)   ● ● two ambient tones, always on their own course"
             textSize = 14f
             gravity = Gravity.CENTER
@@ -84,22 +85,37 @@ class MainActivity : Activity() {
             setPadding(16, 8, 16, 8)
         }
         val roomView = RoomView(this@MainActivity, inputController)
-        val root = FrameLayout(this).apply {
-            addView(roomView)
+        // A vertical LinearLayout, not title/hints overlaid on top of
+        // RoomView via a FrameLayout: with three panels now (the 3D view
+        // added alongside the original two), overlaying reserved no space
+        // for either text bar, so RoomView's own panel titles and the
+        // bottom "floor" label ended up drawn UNDER the title/hints text -
+        // confirmed on a real device screenshot. Giving each its own row
+        // means RoomView's measured height (and therefore everything it
+        // draws relative to that height) correctly excludes both bars
+        // instead of merely hoping nothing collides.
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
             addView(
                 title,
-                FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.WRAP_CONTENT,
-                    FrameLayout.LayoutParams.WRAP_CONTENT,
-                    Gravity.TOP or Gravity.CENTER_HORIZONTAL,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ).apply { gravity = Gravity.CENTER_HORIZONTAL },
+            )
+            addView(
+                roomView,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    0,
+                    1f,
                 ),
             )
             addView(
                 hints,
-                FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.WRAP_CONTENT,
-                    FrameLayout.LayoutParams.WRAP_CONTENT,
-                    Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
                 ),
             )
         }

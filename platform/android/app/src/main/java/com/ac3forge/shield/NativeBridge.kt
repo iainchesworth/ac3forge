@@ -68,6 +68,26 @@ object NativeBridge {
     external fun nativeGetObjectState(): FloatArray
 
     /**
+     * Mutes/unmutes the two ambient objects' audio (their trajectory keeps
+     * advancing regardless) - wired to the remote's pause/play keys so a
+     * listener can isolate the lead object's sound. See live_cursor.cpp's
+     * StreamStats::ambient_muted.
+     */
+    external fun nativeSetAmbientMuted(muted: Boolean)
+
+    /** One formatted line of live encode-loop stats, for the on-screen overlay. */
+    external fun nativeGetStreamStatsText(): String
+
+    /**
+     * `samples` (x,y,z) triples along the lead object's own base
+     * trajectory - no deflection, since future deflection can't be known -
+     * starting now and running `secondsAhead` seconds into the future. For
+     * the 3D trail view's "path ahead"; see live_cursor.cpp's
+     * trajectory_position().
+     */
+    external fun nativeGetFutureLeadTrajectory(secondsAhead: Float, samples: Int): FloatArray
+
+    /**
      * Diagnostic-only: streams a real, already-encoded AC-3/E-AC-3 file
      * (e.g. an audio track pulled from a commercial Dolby Atmos demo MKV,
      * unmodified) through the same PassthroughSink path the live cursor

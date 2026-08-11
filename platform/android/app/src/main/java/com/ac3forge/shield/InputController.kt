@@ -33,14 +33,25 @@ import kotlin.math.abs
  * (up/down biases the object further into/out of the room, same sense as
  * the analog stick), or X/Z (up/down biases height) after toggling - the
  * remote's only way to reach height at all, since it has no second stick or
- * shoulder buttons. Toggled by a LONG press of the centre/select button;
- * a SHORT press of the same button still cycles the selected object, same
- * as before - see [onKeyLongPress]/[onKeyUp]'s disambiguation.
+ * shoulder buttons. Toggled by a SHORT press of the centre/select button -
+ * deliberately immediate, not gated behind a long-press hold: on the basic
+ * remote this is the ONLY way to reach height, and real-device testing found
+ * a long-press-to-switch felt sluggish for something that needs switching
+ * back and forth rapidly while actively shaping a path in real time. A LONG
+ * press of the same button instead cycles the selected object (currently a
+ * no-op with a single interactive object, kept for when a second one
+ * exists) - see [onKeyLongPress]/[onKeyUp]'s disambiguation.
  *
  * No explicit InputDevice source detection/hot-plug listener: both schemes
  * are handled reactively as events arrive (onGenericMotionEvent only ever
  * fires for an analog-capable source in the first place), so there is
  * nothing that needs to know in advance which device is paired.
+ *
+ * The remote's dedicated play/pause keys mute/unmute the two ambient
+ * objects (see [NativeBridge.nativeSetAmbientMuted]) - added after
+ * real-device testing found three simultaneous tones made it hard to
+ * precisely localize the lead object's own movement by ear. Pausing lets a
+ * listener isolate it; playing brings the ambient wash back.
  */
 class InputController {
     @Volatile private var stickX = 0f
@@ -53,12 +64,14 @@ class InputController {
     @Volatile var axisMode: AxisMode = AxisMode.XY
         private set
 
+    @Volatile private var ambientMuted = false
+
     // Set by onKeyLongPress, read (and cleared) by onKeyUp: the framework
     // calls onKeyDown once immediately and, if still held past the long-press
     // threshold, onKeyLongPress - onKeyUp always follows eventually either
     // way, so this is what tells it whether the long-press action already
-    // fired (toggle axis mode) or the release should still count as a short
-    // press (cycle the selected object).
+    // fired (cycle the selected object) or the release should still count as
+    // a short press (toggle axis mode).
     private var longPressConsumed = false
 
     private var running = false
@@ -174,6 +187,32 @@ class InputController {
                 shoulderZ = -1f
                 true
             }
+            // repeatCount == 0 guards against the (unlikely, but not
+            // impossible) case of the framework redelivering onKeyDown for a
+            // held media key - these are handled here, on the down event,
+            // rather than onKeyUp, so the mute/unmute takes effect the
+            // instant the button is pressed rather than on release.
+            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
+                if (event.repeatCount == 0) {
+                    ambientMuted = !ambientMuted
+                    NativeBridge.nativeSetAmbientMuted(ambientMuted)
+                }
+                true
+            }
+            KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+                if (event.repeatCount == 0) {
+                    ambientMuted = true
+                    NativeBridge.nativeSetAmbientMuted(true)
+                }
+                true
+            }
+            KeyEvent.KEYCODE_MEDIA_PLAY -> {
+                if (event.repeatCount == 0) {
+                    ambientMuted = false
+                    NativeBridge.nativeSetAmbientMuted(false)
+                }
+                true
+            }
             else -> false
         }
     }
@@ -194,7 +233,7 @@ class InputController {
                 if (longPressConsumed) {
                     longPressConsumed = false
                 } else {
-                    NativeBridge.nativeCycleSelectedObject()
+                    axisMode = if (axisMode == AxisMode.XY) AxisMode.XZ else AxisMode.XY
                 }
                 true
             }
@@ -202,6 +241,11 @@ class InputController {
                 shoulderZ = 0f
                 true
             }
+            // Already actioned on the down event above; just consumed here
+            // so the system's own (unused - this app has no MediaSession)
+            // default key handling never sees them either.
+            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_MEDIA_PAUSE,
+            KeyEvent.KEYCODE_MEDIA_PLAY -> true
             else -> false
         }
     }
@@ -211,7 +255,7 @@ class InputController {
         return when (keyCode) {
             KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER,
             KeyEvent.KEYCODE_BUTTON_A -> {
-                axisMode = if (axisMode == AxisMode.XY) AxisMode.XZ else AxisMode.XY
+                NativeBridge.nativeCycleSelectedObject()
                 longPressConsumed = true
                 true
             }
