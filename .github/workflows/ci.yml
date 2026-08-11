@@ -372,6 +372,14 @@ jobs:
         shell: bash
         run: ctest --preset test-linux-gcc-coverage
 
+      # --gcov-ignore-parse-errors=suspicious_hits.warn: mdct.cpp's
+      # ForwardCosTable-driven hot loop (src/core/mdct.cpp) trips a documented
+      # gcov bug (gcc.gnu.org/bugzilla#68080, a false "suspicious hit value"
+      # on a tight accumulation loop) that otherwise aborts gcovr outright
+      # rather than just under/over-reporting that one line's count - gcovr's
+      # own error message names this exact flag as the fix. Warn, not skip,
+      # so a genuinely new suspicious-hit line elsewhere still shows up in
+      # the job log instead of vanishing silently.
       - name: Coverage report + gate
         shell: bash
         run: >
@@ -379,6 +387,7 @@ jobs:
           --gcov-executable gcov-15
           --exclude-throw-branches --exclude-unreachable-branches
           --gcov-ignore-errors=no_working_dir_found
+          --gcov-ignore-parse-errors=suspicious_hits.warn
           --object-directory build/config-linux-gcc-coverage
           --print-summary --html-details build/coverage.html
           --fail-under-line 80 --fail-under-branch 70

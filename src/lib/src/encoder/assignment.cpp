@@ -106,6 +106,11 @@ std::optional<Routing> route(const ChannelPlan& target, std::span<const SourceSh
                 if (coded[coded_index].location != dest.location) {
                     continue;
                 }
+                // flat_index() only returns nullopt when `channel` is out of
+                // range for `source` (see its own comment) - c is bounded by
+                // `c < sources[s].channels` in the loop just above, the exact
+                // condition that keeps it in range, so this is always set.
+                // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
                 out.gain[coded_index * total + *flat] = 1.0;
                 found = true;
             }
