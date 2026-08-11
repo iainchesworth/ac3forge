@@ -6,27 +6,33 @@
 # code deliberately avoids a second, parallel API that the real one could
 # silently disagree with (see encoder_controller.hpp's own header comment).
 #
+# Included (not add_subdirectory()'d) from ../CMakeLists.txt, so every path
+# below is written relative to src/gui, not src/gui/tests - see the comment
+# at that include() call for why that distinction is load-bearing here and
+# not just a style choice.
+#
 # This embeds a second, independent copy of the Ac3Forge QML module - not a
 # shared library with ac3gui - for the same WHOLE_ARCHIVE reason
 # ../CMakeLists.txt gives for embedding it directly into the executable
-# rather than a backing plugin.
-#
-# The qt_add_qml_module() call for THIS target is not in this file - it is
-# back in ../CMakeLists.txt, right after this add_subdirectory() returns.
-# Qt's generated qmlcache build rules compute their OWN output path from the
-# QML file's location relative to whichever CMakeLists.txt calls
-# qt_add_qml_module, regardless of QT_RESOURCE_ALIAS (confirmed empirically -
-# calling it from here, referencing ../qml/*.qml, produced ninja rules for a
-# literal "ac3gui_qmltests_..\qml\" output directory and failed at build
-# time). Calling it from ../CMakeLists.txt, where qml/ is a direct child,
-# avoids the whole problem rather than working around it.
+# rather than a backing plugin. AC3_QML_FILES is the same list ac3gui's own
+# qt_add_qml_module call uses, set once in ../CMakeLists.txt, so the two
+# embeddings cannot list a different set of files without both being edited.
 # ---------------------------------------------------------------------------
 find_package(Qt6 6.5 REQUIRED COMPONENTS QuickTest)
 
 qt_add_executable(ac3gui_qmltests
-    qml_test_main.cpp
-    "${CMAKE_CURRENT_SOURCE_DIR}/../encoder_controller.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/../encoder_controller.hpp")
+    tests/qml_test_main.cpp
+    encoder_controller.cpp
+    encoder_controller.hpp)
+
+qt_add_qml_module(ac3gui_qmltests
+    URI Ac3Forge
+    VERSION 1.0
+    # Both targets embed the same URI; without this they'd both compute the
+    # same "<binary dir>/Ac3Forge" output directory and collide - ac3gui's
+    # own module lives there already.
+    OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests/Ac3Forge"
+    QML_FILES ${AC3_QML_FILES})
 
 # The standard Qt Quick Test hookup: QUICK_TEST_MAIN's generated main() reads
 # this macro to find the tst_*.qml files at run time. -input on the ctest
@@ -34,9 +40,23 @@ qt_add_executable(ac3gui_qmltests
 # belt and suspenders, since this is the one part of the setup this project
 # had no prior example of to copy from.
 target_compile_definitions(ac3gui_qmltests PRIVATE
-    QUICK_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml")
+    QUICK_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/qml")
 
-target_include_directories(ac3gui_qmltests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+# Same rationale as ../CMakeLists.txt's identical loop: Qt's generated
+# moc/rcc/qmlcachegen output for THIS target compiles under the strict
+# warning set unless excluded, and qmlcachegen is known to emit at least one
+# warning clang-cl/GCC's -Wconversion rejects (see ../CMakeLists.txt).
+get_target_property(AC3_GUI_TEST_SOURCES ac3gui_qmltests SOURCES)
+set(AC3_GUI_TEST_GENERATED_SOURCES "")
+foreach(source IN LISTS AC3_GUI_TEST_SOURCES)
+    if(source MATCHES "^${CMAKE_CURRENT_BINARY_DIR}/.*\\.(cpp|cxx|cc)$")
+        list(APPEND AC3_GUI_TEST_GENERATED_SOURCES "${source}")
+    endif()
+endforeach()
+if(AC3_GUI_TEST_GENERATED_SOURCES)
+    set_source_files_properties(${AC3_GUI_TEST_GENERATED_SOURCES}
+        PROPERTIES COMPILE_OPTIONS "${AC3_WARNINGS_OFF_FLAG}")
+endif()
 
 target_link_libraries(ac3gui_qmltests
     PRIVATE
@@ -66,7 +86,7 @@ target_link_libraries(ac3gui_qmltests
 # but "failed" and someone has to already know this flag exists to find out
 # what broke.
 add_test(NAME ac3gui_qml_tests
-    COMMAND ac3gui_qmltests -input "${CMAKE_CURRENT_SOURCE_DIR}/qml" -platform offscreen)
+    COMMAND ac3gui_qmltests -input "${CMAKE_CURRENT_SOURCE_DIR}/tests/qml" -platform offscreen)
 set_tests_properties(ac3gui_qml_tests PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_FORCE_STDERR_LOGGING=1"
     LABELS "gui")
@@ -92,7 +112,7 @@ if(WIN32)
         add_custom_command(TARGET ac3gui_qmltests POST_BUILD
             COMMAND "${CMAKE_COMMAND}" -E env "VCINSTALLDIR=${AC3_VCINSTALLDIR}"
                 "${AC3_WINDEPLOYQT_EXECUTABLE}"
-                --qmldir "${CMAKE_CURRENT_SOURCE_DIR}/../qml"
+                --qmldir "${CMAKE_CURRENT_SOURCE_DIR}/qml"
                 --compiler-runtime
                 "$<TARGET_FILE:ac3gui_qmltests>"
             COMMAND "${CMAKE_COMMAND}" -E copy_if_different

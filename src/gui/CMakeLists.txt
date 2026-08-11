@@ -265,33 +265,20 @@ endif()
 # Qt Quick Test coverage for the interactive surfaces above - gated the same
 # way tests/ is at the top level, and kept beside the GUI code it exercises
 # rather than inside the Qt-free tests/ Catch2 tree.
+#
+# include(), not add_subdirectory(): tests/CMakeLists.txt's qt_add_executable
+# and qt_add_qml_module calls for ac3gui_qmltests need to run in THIS
+# directory's own scope, not a nested one - add_subdirectory() creates one,
+# and a fresh CI build (never an incrementally-rebuilt local tree, which can
+# mask this on stale cached state) then fails: Qt's AUTOMOC "collect
+# metatypes JSON" custom command silently does not get generated for a
+# target whose executable and QML module registration straddle a directory
+# boundary, leaving qmltyperegistrar fed an empty file with no visible error
+# unless QT_FORCE_STDERR_LOGGING=1 is also set - confirmed by reproducing
+# the CI failure locally with the Release preset. include() keeps
+# tests/CMakeLists.txt's own CMAKE_CURRENT_SOURCE_DIR/BINARY_DIR equal to
+# this file's, so every path inside it is written relative to src/gui, not
+# src/gui/tests.
 if(AC3FORGE_BUILD_TESTS)
-    # Defines the ac3gui_qmltests executable target (sources, links, the
-    # add_test() registration) but NOT its QML module - see tests/CMakeLists.txt
-    # for why that call has to happen here instead, once the target exists.
-    add_subdirectory(tests)
-
-    qt_add_qml_module(ac3gui_qmltests
-        URI Ac3Forge
-        VERSION 1.0
-        # Both targets embed the same URI; without this they'd both compute
-        # the same "<binary dir>/Ac3Forge" output directory and collide -
-        # ac3gui's own module lives there already.
-        OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests/Ac3Forge"
-        QML_FILES ${AC3_QML_FILES})
-
-    # Same rationale as the ac3gui loop above: Qt's generated moc/rcc/
-    # qmlcachegen output for this target also compiles under the strict
-    # warning set unless excluded.
-    get_target_property(AC3_GUI_TEST_SOURCES ac3gui_qmltests SOURCES)
-    set(AC3_GUI_TEST_GENERATED_SOURCES "")
-    foreach(source IN LISTS AC3_GUI_TEST_SOURCES)
-        if(source MATCHES "^${CMAKE_CURRENT_BINARY_DIR}/.*\\.(cpp|cxx|cc)$")
-            list(APPEND AC3_GUI_TEST_GENERATED_SOURCES "${source}")
-        endif()
-    endforeach()
-    if(AC3_GUI_TEST_GENERATED_SOURCES)
-        set_source_files_properties(${AC3_GUI_TEST_GENERATED_SOURCES}
-            PROPERTIES COMPILE_OPTIONS "${AC3_WARNINGS_OFF_FLAG}")
-    endif()
+    include(tests/CMakeLists.txt)
 endif()
