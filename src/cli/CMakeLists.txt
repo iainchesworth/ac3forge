@@ -22,13 +22,17 @@ else()
     target_sources(ac3cli PRIVATE quarantine_hook_stub.cpp)
 endif()
 
-# ac3::forge, ac3::audio and matroska::matroska are link-only here: only the
-# executables get installed/packaged today. ac3::forge is deliberately
-# platform-independent (see its own CMakeLists.txt) with an eventual EXPORT
-# set in mind for third-party consumption; that packaging work itself hasn't
-# landed yet.
+# ac3::forge and matroska::matroska are link-only here, but installed and
+# packaged in their own right elsewhere - see cmake/InstallLibrary.cmake and
+# cmake/Packaging.cmake's `library` CPack component, and
+# docs/library/index.md for how a third party consumes them via
+# find_package(ac3forge). ac3::audio stays link-only and unpackaged always -
+# a CLI/GUI implementation detail, not part of the distributed library.
 include(GNUInstallDirs)
 
+# COMPONENT runtime: without one, CPack files this under its own
+# "Unspecified" component, inconsistent once component-based packaging is
+# on for the library (see cmake/InstallLibrary.cmake, cmake/Packaging.cmake).
 install(TARGETS ac3cli
-    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
-    BUNDLE DESTINATION ".")
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT runtime
+    BUNDLE DESTINATION "." COMPONENT runtime)

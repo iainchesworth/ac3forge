@@ -250,9 +250,11 @@ endif()
 # ---------------------------------------------------------------------------
 include(GNUInstallDirs)
 
+# COMPONENT runtime - see src/cli/CMakeLists.txt's identical ac3cli install()
+# for why.
 install(TARGETS ac3gui
-    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
-    BUNDLE DESTINATION ".")
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT runtime
+    BUNDLE DESTINATION "." COMPONENT runtime)
 
 if(WIN32 OR APPLE)
     qt_generate_deploy_qml_app_script(

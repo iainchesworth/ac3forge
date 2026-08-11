@@ -6,6 +6,7 @@
 #include <variant>
 #include <vector>
 
+#include "ac3/export.hpp"
 #include "ac3/oba/atmos.hpp"
 #include "ac3/oba/oamd.hpp"
 
@@ -34,14 +35,14 @@ enum class PathError : std::uint8_t { kNoKeyframes, kDuplicateTimestamp };
 // to the first/last keyframe outside their time range - an object holds
 // still before its first cue and after its last, rather than extrapolating
 // or going silent.
-class KeyframePath {
-public:
+class AC3FORGE_EXPORT KeyframePath {
+   public:
     [[nodiscard]] static std::expected<KeyframePath, PathError> create(
         std::vector<Keyframe> keyframes);
 
     [[nodiscard]] ObjectPlacement evaluate(double time_s) const;
 
-private:
+   private:
     explicit KeyframePath(std::vector<Keyframe> sorted) : keyframes_(std::move(sorted)) {}
 
     std::vector<Keyframe> keyframes_;
@@ -52,13 +53,13 @@ private:
 // seconds, held at a constant height/gain/lfe_send. Evaluated in closed
 // form so it stays an exact circle - a KeyframePath decimated from the same
 // formula would only ever approximate it with straight chords.
-class OrbitPath {
-public:
+class AC3FORGE_EXPORT OrbitPath {
+   public:
     OrbitPath(double rate_hz, double phase_rad, double height, double gain, double lfe_send);
 
     [[nodiscard]] ObjectPlacement evaluate(double time_s) const;
 
-private:
+   private:
     double rate_hz_;
     double phase_rad_;
     double height_;
@@ -69,25 +70,26 @@ private:
 // A per-object placement over time - authored keyframes or a closed-form
 // generator - behind one evaluate(t) interface, so a caller (CLI, GUI, and
 // eventually a live-driven cursor) doesn't need to know which kind it holds.
-class ObjectPath {
-public:
+class AC3FORGE_EXPORT ObjectPath {
+   public:
     ObjectPath(KeyframePath path) : path_(std::move(path)) {}
     ObjectPath(const OrbitPath& path) : path_(path) {}
 
     [[nodiscard]] ObjectPlacement evaluate(double time_s) const;
 
-private:
+   private:
     std::variant<KeyframePath, OrbitPath> path_;
 };
 
 // Sugar for the common case: an ObjectPath that is nothing but an orbit.
-[[nodiscard]] ObjectPath make_orbit_path(double rate_hz, double phase_rad, double height,
-                                          double gain, double lfe_send);
+[[nodiscard]] AC3FORGE_EXPORT ObjectPath make_orbit_path(double rate_hz, double phase_rad,
+                                                         double height, double gain,
+                                                         double lfe_send);
 
 // N objects, each with a path: their placements at one instant, in path
 // order. What both the CLI's and the GUI's per-frame encode loops call once
 // per frame to get the span encode_frame() wants.
-[[nodiscard]] std::vector<ObjectPlacement> evaluate_placements(
+[[nodiscard]] AC3FORGE_EXPORT std::vector<ObjectPlacement> evaluate_placements(
     std::span<const ObjectPath> paths, double time_s);
 
 }  // namespace ac3::oba

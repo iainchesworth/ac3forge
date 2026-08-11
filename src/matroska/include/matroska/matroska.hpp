@@ -8,6 +8,8 @@
 #include <string_view>
 #include <vector>
 
+#include "matroska/export.hpp"
+
 // A minimal Matroska (MKV) muxer, per the EBML and Matroska specifications.
 //
 // This is a container writer and nothing more: it knows how to nest EBML
@@ -37,7 +39,7 @@ enum class MuxError : std::uint8_t {
     kFrameTooLarge,  // a single frame beyond what one SimpleBlock can carry
 };
 
-[[nodiscard]] std::string_view describe(MuxError error);
+[[nodiscard]] MATROSKA_EXPORT std::string_view describe(MuxError error);
 
 struct AudioTrack {
     std::string codec_id{kCodecEac3};
@@ -60,7 +62,7 @@ struct MuxOptions {
 
 // Mux frames into a complete .mkv, returned as bytes. No file I/O here, so
 // this stays testable without touching a disk.
-[[nodiscard]] std::expected<std::vector<std::byte>, MuxError> mux(
+[[nodiscard]] MATROSKA_EXPORT std::expected<std::vector<std::byte>, MuxError> mux(
     const AudioTrack& track, std::span<const std::vector<std::byte>> frames,
     const MuxOptions& options = {});
 
