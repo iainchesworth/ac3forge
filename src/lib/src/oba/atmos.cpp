@@ -8,6 +8,7 @@
 #include "ac3/core/mdct.hpp"
 #include "ac3/core/window.hpp"
 #include "ac3/emdf/emdf.hpp"
+#include "ac3/internal/profiling.hpp"
 
 namespace ac3::oba {
 
@@ -100,6 +101,7 @@ constexpr double kAbsoluteFloor = 1e-20;
 // Table 54 groups the subbands into parameter bands from there.
 void band_energy(std::span<const float> signal, std::span<const std::uint8_t, 64> mapping,
                  std::span<double> out) {
+    AC3_ZONE_SCOPED_N("band_energy");
     std::ranges::fill(out, 0.0);
     // The frame's own six blocks, without the previous frame's overlap: this
     // is an energy estimate, not a transform that has to reconstruct.
@@ -154,6 +156,7 @@ AtmosEncoder::AtmosEncoder(const AtmosConfig& config, int objects)
 std::expected<eac3::AccessUnit, FrameError> AtmosEncoder::encode_frame(
     std::span<const std::span<const float>> objects,
     std::span<const ObjectPlacement> placement) {
+    AC3_ZONE_SCOPED_N("AtmosEncoder::encode_frame");
     assert(static_cast<int>(objects.size()) == objects_);
     assert(static_cast<int>(placement.size()) == objects_);
 

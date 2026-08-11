@@ -147,19 +147,40 @@ target_include_directories(forge_objects
         "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/generated>"
         "$<INSTALL_INTERFACE:include>")
 
+# Selects which of the two identically-pathed ac3/internal/profiling.hpp
+# variants (src/internal/profiling/tracy_{enabled,disabled}/) every
+# `#include "ac3/internal/profiling.hpp"` call site resolves to - CMake
+# choosing the directory, not an #ifdef in the header, per
+# scripts/check-platform-macros.ps1's platform/feature-isolation rule (the
+# same reason src/audio's platform backends and the quarantine hook seam are
+# selected this way rather than with a preprocessor conditional). PRIVATE:
+# this header is internal build-diagnostics tooling, never installed, so it
+# has no business on forge_objects's PUBLIC include path at all.
+if(AC3FORGE_ENABLE_TRACY)
+    target_include_directories(forge_objects PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/internal/profiling/tracy_enabled")
+else()
+    target_include_directories(forge_objects PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/internal/profiling/tracy_disabled")
+endif()
+
 target_compile_features(forge_objects PUBLIC cxx_std_23)
 
 # $<BUILD_INTERFACE:...> wrapping, not a plain PRIVATE link: ac3::warnings/
-# ac3::coverage are dev-only interface targets that must never propagate to
-# an installed consumer regardless - but OBJECT libraries specifically
-# require install(EXPORT) to be able to resolve every dependency they have,
-# PRIVATE included, since a .o file's compile-time requirements aren't fully
-# self-contained the way a finished .lib/.dll's are. Wrapping makes the
-# dependency invisible to the export graph outright, which is what "dev-only,
-# never for a consumer" actually means here, not "somehow also exported."
+# ac3::coverage/ac3::tracy are dev-only interface targets that must never
+# propagate to an installed consumer regardless - but OBJECT libraries
+# specifically require install(EXPORT) to be able to resolve every dependency
+# they have, PRIVATE included, since a .o file's compile-time requirements
+# aren't fully self-contained the way a finished .lib/.dll's are. Wrapping
+# makes the dependency invisible to the export graph outright, which is what
+# "dev-only, never for a consumer" actually means here, not "somehow also
+# exported." ac3::tracy is a no-op INTERFACE target unless AC3FORGE_ENABLE_TRACY
+# is on (see cmake/Tracy.cmake), so linking it unconditionally costs nothing
+# by default.
 target_link_libraries(forge_objects PRIVATE
     "$<BUILD_INTERFACE:ac3::warnings>"
-    "$<BUILD_INTERFACE:ac3::coverage>")
+    "$<BUILD_INTERFACE:ac3::coverage>"
+    "$<BUILD_INTERFACE:ac3::tracy>")
 
 # --- Static+shared plumbing -------------------------------------------------
 # PIC is required for any object code that might end up in a shared library

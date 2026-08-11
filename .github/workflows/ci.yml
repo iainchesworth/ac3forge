@@ -380,10 +380,25 @@ jobs:
         shell: bash
         run: cmake --build --preset build-linux-gcc-coverage -- -k 0
 
+      # -LE Performance: gcov's per-basic-block instrumentation adds real,
+      # measurable overhead - a coverage build has no more business being
+      # held to a hard real-time budget than the linux-llvm-asan-ubsan leg
+      # does (same reasoning, see that matrix entry's own comment). This
+      # job's question is "how much of src/lib executes", not "how fast" -
+      # tests/performance/'s own suite covers the latter on a genuinely
+      # optimized build.
       - name: Test
         shell: bash
-        run: ctest --preset test-linux-gcc-coverage
+        run: ctest --preset test-linux-gcc-coverage -LE Performance
 
+      # --gcov-ignore-parse-errors=suspicious_hits.warn: mdct.cpp's
+      # ForwardCosTable-driven hot loop (src/core/mdct.cpp) trips a documented
+      # gcov bug (gcc.gnu.org/bugzilla#68080, a false "suspicious hit value"
+      # on a tight accumulation loop) that otherwise aborts gcovr outright
+      # rather than just under/over-reporting that one line's count - gcovr's
+      # own error message names this exact flag as the fix. Warn, not skip,
+      # so a genuinely new suspicious-hit line elsewhere still shows up in
+      # the job log instead of vanishing silently.
       - name: Coverage report + gate
         shell: bash
         run: >
@@ -391,6 +406,7 @@ jobs:
           --gcov-executable gcov-15
           --exclude-throw-branches --exclude-unreachable-branches
           --gcov-ignore-errors=no_working_dir_found
+          --gcov-ignore-parse-errors=suspicious_hits.warn
           --object-directory build/config-linux-gcc-coverage
           --print-summary --html-details build/coverage.html
           --fail-under-line 80 --fail-under-branch 70
@@ -423,6 +439,142 @@ jobs:
       # description in _build.yml.
       persist_quality_trend: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') }}
       quality_trend_branch: ${{ github.ref_name }}
+
+  # Persists this run's encoder throughput numbers (docs/performance-trend.md)
+  # so they outlive the CI log that produced them - the trend-tracking half of
+  # the performance suite, alongside tests/performance/test_performance.cpp's
+  # ac3perf (a hard, absolute real-time gate that runs on every push/PR as
+  # part of build-and-test's own ctest, not here). This job answers a softer
+  # question on top of that gate: is throughput drifting slower over time even
+  # while ac3perf keeps passing.
+  #
+  # One leg (linux-gcc), not the whole matrix: unlike the gold-reference SNR
+  # numbers (genuinely cross-platform floating-point comparisons worth seeing
+  # side by side), a timing trend's value is in comparing one consistent
+  # runner against its own history over time, not in comparing GitHub's
+  # runner classes against each other. Self-contained here rather than added
+  # to _build.yml's matrix, so this stays a small, independently-readable
+  # job instead of one more thing threaded through that file's per-leg logic.
+  #
+  # Reuses the quality-history branch (a different file - see
+  # scripts/append-performance-history.py) rather than a new branch, for the
+  # same reasons quality-trend already uses a dedicated branch instead of
+  # gh-pages: incremental, no publish-cadence coupling, fetchable client-side
+  # with no auth.
+  persist-performance-trend:
+    name: Publish performance trend
+    needs: build-and-test
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    container: ubuntu:26.04
+    permissions:
+      contents: write
+    steps:
+      - name: Bootstrap container
+        run: |
+          set -eu
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends \
+            build-essential ca-certificates cmake curl git gnupg lsb-release \
+            ninja-build pkg-config software-properties-common tar unzip wget zip
+
+      # persist-credentials: false - this checkout is only ever read from
+      # (ac3bench's build, `git show` on this commit); the "Prepare
+      # quality-history checkout" step below pushes through its own
+      # explicitly-scoped remote instead.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install GCC 15
+        run: bash .github/toolchain/02-gcc-toolchain.sh
+
+      - uses: ./.github/actions/setup-vcpkg
+        with:
+          vcpkg-commit: "eaca4a577b6b678c6e10252754b6988a61746c19"
+
+      - name: Configure
+        run: cmake --preset config-linux-gcc
+
+      - name: Build ac3bench
+        run: cmake --build --preset build-linux-gcc --target ac3bench -- -k 0
+
+      - name: Run ac3bench
+        run: |
+          set -euo pipefail
+          mkdir -p results/performance-linux-gcc
+          build/config-linux-gcc/bin/ac3bench --json-out results/performance-linux-gcc/bench.json
+
+      # Same mechanic as quality-trend's own step in _build.yml (plain git
+      # over an HTTPS remote carrying the token, not actions/checkout, which
+      # fails outright if quality-history does not exist yet).
+      - name: Prepare quality-history checkout
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory '*'
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          mkdir -p history
+          cd history
+          if git ls-remote --exit-code --heads "$remote" quality-history >/dev/null 2>&1; then
+            git init -q
+            git remote add origin "$remote"
+            git fetch -q origin quality-history
+            git checkout -q quality-history
+          else
+            git init -q -b quality-history
+            git remote add origin "$remote"
+            git commit -q --allow-empty -m "Initialize quality-history branch"
+          fi
+
+      - name: Append performance-trend history
+        id: append
+        shell: bash
+        env:
+          BRANCH: ${{ github.ref_name }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory '*'
+          commit_date="$(git show -s --format=%cI "$COMMIT_SHA")"
+          python3 scripts/append-performance-history.py \
+            --results-dir results \
+            --history-dir history \
+            --branch "$BRANCH" \
+            --commit "$COMMIT_SHA" \
+            --commit-date "$commit_date"
+
+      - name: Commit and push performance-history update
+        shell: bash
+        env:
+          BRANCH: ${{ github.ref_name }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          cd history
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -q -m "Performance trend: ${BRANCH}@${COMMIT_SHA}"
+            git push -q origin quality-history
+          fi
+
+      # Deliberately after the push above, not instead of the append step
+      # failing outright - see append-performance-history.py's own
+      # HARD_REGRESSION_SLOWDOWN_FRACTION and append-quality-history.py's
+      # identical reasoning for its own hard-regression step.
+      - name: Fail on hard performance regression
+        if: steps.append.outputs.hard_regression == 'true'
+        shell: bash
+        run: |
+          echo "::error::A leg/config ran at least twice as slow as its trailing average - see the job log above and docs/performance-trend.md for the recorded numbers."
+          exit 1
 
   # FFmpeg as an independent oracle (CONTRIBUTING.md's "Oracles" list, #2),
   # automated - previously a manual/developer-only practice. Builds ac3cli
@@ -535,7 +687,7 @@ jobs:
   ci-status:
     name: CI Status
     if: always()
-    needs: [ branch-name, no-quarantine, changes, platform-macros, static-analysis, coverage, build-and-test, ffmpeg-validate ]
+    needs: [ branch-name, no-quarantine, changes, platform-macros, static-analysis, coverage, build-and-test, ffmpeg-validate, persist-performance-trend ]
     runs-on: ubuntu-latest
     steps:
       - name: Gate on required job results
@@ -551,13 +703,17 @@ jobs:
           R_COVERAGE: ${{ needs.coverage.result }}
           R_BUILD: ${{ needs.build-and-test.result }}
           R_FFMPEG: ${{ needs.ffmpeg-validate.result }}
+          # 'skipped' on every PR and every push off develop/main (its own
+          # `if`) - a pass, not a failure, same as R_TIDY/R_COVERAGE above.
+          R_PERF_TREND: ${{ needs.persist-performance-trend.result }}
         run: |
           set -euo pipefail
           fail=0
           for pair in "branch-name:$R_BRANCH" "no-quarantine:$R_QUARANTINE" \
                       "changes:$R_CHANGES" "platform-macros:$R_MACROS" \
                       "static-analysis:$R_TIDY" "coverage:$R_COVERAGE" \
-                      "build-and-test:$R_BUILD" "ffmpeg-validate:$R_FFMPEG"; do
+                      "build-and-test:$R_BUILD" "ffmpeg-validate:$R_FFMPEG" \
+                      "persist-performance-trend:$R_PERF_TREND"; do
             job="${pair%%:*}"; result="${pair#*:}"
             echo "  $job: $result"
             if [ "$result" = "failure" ] || [ "$result" = "cancelled" ]; then

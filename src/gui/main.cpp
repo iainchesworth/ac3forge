@@ -22,19 +22,28 @@
 //   ac3gui --smoke        <in.wav> <out.ac3>                [shot.png] [prop=value ...]
 //   ac3gui --smoke-record <deviceIndex> <seconds> <out.ac3> [shot.png] [prop=value ...]
 //   ac3gui --smoke-live   <deviceIndex> <seconds> <out.ac3> [shot.png] [prop=value ...]
+//   ac3gui --smoke-shot   <shot.png>              [in.wav]  [prop=value ...]
 //
 // The trailing prop=value tokens are set through Qt's property system, which
 // is the same path a QML binding writes through - so a smoke run exercises the
 // real controls rather than a parallel API kept alongside them. Anything
 // declared Q_PROPERTY works: codecIndex=1, layoutIndex=5, coupling=true,
-// drcIndex=2, atmosEnabled=true, containerIndex=1.
+// drcIndex=2, atmosEnabled=true, containerIndex=1, and (on the window itself)
+// tier=expert; preset=7.1.4 invokes applyChannelPreset() instead - see
+// apply_properties' own comment.
 //
-// Both fail unless every channel the routing FEEDS has its needle leave the
-// floor, so --smoke-record against a silent endpoint fails by design: it is
-// the check that would otherwise pass on a meter wired to nothing. A channel
-// the source cannot fill is excluded, because reading -inf is the correct
-// answer there and demanding otherwise would only reward an encoder that
-// invented a signal.
+// Both --smoke and --smoke-record fail unless every channel the routing FEEDS
+// has its needle leave the floor, so --smoke-record against a silent endpoint
+// fails by design: it is the check that would otherwise pass on a meter wired
+// to nothing. A channel the source cannot fill is excluded, because reading
+// -inf is the correct answer there and demanding otherwise would only reward
+// an encoder that invented a signal.
+//
+// --smoke-shot is different in kind, not just in what it drives: it proves
+// nothing about audio reaching anything (there is no encode, no meter trace
+// to demand) - it exists purely to put the window into a specific state and
+// grab it, the documentation-screenshot use case where a completed run in
+// the strip would be noise the other three modes' own callers actually want.
 
 namespace {
 
@@ -143,7 +152,23 @@ bool report_meters(EncoderController* controller, const MeterTrace& trace, int d
 // rather than a parallel API kept beside them. A name that is not a property,
 // or a value the property will not take, is a failure rather than a shrug:
 // silently ignoring it would have the run report on settings it never used.
-bool apply_properties(EncoderController* controller, const QStringList& tokens) {
+//
+// Tried against `controller` (an EncoderController Q_PROPERTY - codecIndex,
+// atmosEnabled, bedIndex, vbrEnabled, ...) first, then against `root` (the
+// QML window itself) for the handful of properties that deliberately live
+// there instead - tier (Guided/Advanced/Expert) chief among them, kept off
+// EncoderController because nothing outside Main.qml reads it (see its own
+// comment there). One dispatch loop rather than two prop=value vocabularies
+// a caller would have to know apart.
+//
+// Two names are not properties at all: "preset" invokes applyChannelPreset()
+// (Q_INVOKABLE, not a Q_PROPERTY - it sets bed, LFE and every extra
+// together, which no single property does) and "src2" invokes
+// addSourceFile() (loading a second source is what actually populates the
+// multi-source assignment table - there is no property that does it either)
+// - the two method calls this otherwise property-only mechanism carries a
+// special case for.
+bool apply_properties(EncoderController* controller, QObject* root, const QStringList& tokens) {
     for (const auto& token : tokens) {
         const auto eq = token.indexOf(QLatin1Char('='));
         if (eq <= 0) {
@@ -152,21 +177,38 @@ bool apply_properties(EncoderController* controller, const QStringList& tokens) 
         }
         const QString name = token.left(eq);
         const QString text = token.mid(eq + 1);
-        const auto index = controller->metaObject()->indexOfProperty(name.toUtf8().constData());
+        if (name == QLatin1String("preset")) {
+            controller->applyChannelPreset(text);
+            std::println("smoke: preset = {} -> {}", text.toStdString(),
+                         controller->channelShapeName().toStdString());
+            continue;
+        }
+        if (name == QLatin1String("src2")) {
+            controller->addSourceFile(QUrl::fromLocalFile(text));
+            std::println("smoke: src2 = {} -> {} sources loaded", text.toStdString(),
+                         controller->sourceModel().size());
+            continue;
+        }
+        auto* target = static_cast<QObject*>(controller);
+        auto index = target->metaObject()->indexOfProperty(name.toUtf8().constData());
+        if (index < 0 && root != nullptr) {
+            target = root;
+            index = target->metaObject()->indexOfProperty(name.toUtf8().constData());
+        }
         if (index < 0) {
             std::println(stderr, "smoke: no property named '{}'", name.toStdString());
             return false;
         }
-        const auto property = controller->metaObject()->property(index);
+        const auto property = target->metaObject()->property(index);
         QVariant value{text};
         if (!value.convert(property.metaType()) ||
-            !property.write(controller, value)) {
+            !property.write(target, value)) {
             std::println(stderr, "smoke: could not set {} to '{}'", name.toStdString(),
                          text.toStdString());
             return false;
         }
         std::println("smoke: {} = {}", name.toStdString(),
-                     property.read(controller).toString().toStdString());
+                     property.read(target).toString().toStdString());
     }
     return true;
 }
@@ -210,7 +252,7 @@ int run_smoke(QQmlApplicationEngine& engine, const QString& in_path, const QStri
     }
     // After the load, not before: opening a file settles the layout on the one
     // that matches it, which would overwrite anything set here.
-    if (!apply_properties(controller, properties)) {
+    if (!apply_properties(controller, engine.rootObjects().first(), properties)) {
         return 1;
     }
     std::println("smoke: {}", controller->routingSummary().toStdString());
@@ -270,7 +312,7 @@ int run_smoke_record(QQmlApplicationEngine& engine, int device, double seconds,
     if (controller == nullptr) {
         return 1;
     }
-    if (!apply_properties(controller, properties)) {
+    if (!apply_properties(controller, engine.rootObjects().first(), properties)) {
         return 1;
     }
     const auto devices = controller->captureDevices();
@@ -352,7 +394,7 @@ int run_smoke_live(QQmlApplicationEngine& engine, int device, double seconds,
     if (controller == nullptr) {
         return 1;
     }
-    if (!apply_properties(controller, properties)) {
+    if (!apply_properties(controller, engine.rootObjects().first(), properties)) {
         return 1;
     }
     const auto devices = controller->captureDevices();
@@ -417,6 +459,40 @@ int run_smoke_live(QQmlApplicationEngine& engine, int device, double seconds,
     return QGuiApplication::exec();
 }
 
+// Loads a source (if given) and applies properties, then grabs a single
+// window screenshot without encoding anything - see this file's own top
+// comment on why that is a separate mode rather than an option on --smoke.
+int run_smoke_shot(QQmlApplicationEngine& engine, const QString& shot_path,
+                   const QString& in_path, const QStringList& properties) {
+    auto* controller = smoke_controller(engine);
+    if (controller == nullptr) {
+        return 1;
+    }
+    if (!in_path.isEmpty()) {
+        controller->loadSourceFile(QUrl::fromLocalFile(in_path));
+        if (!controller->sourceReady()) {
+            std::println(stderr, "smoke: source not usable: {}",
+                         controller->status().toStdString());
+            return 1;
+        }
+    }
+    if (!apply_properties(controller, engine.rootObjects().first(), properties)) {
+        return 1;
+    }
+    // One event-loop lap so the layout genuinely settles (window resize, tab
+    // reflow) before the grab - properties above are applied synchronously,
+    // but Qt Quick Layouts can still owe a polish pass, the same reason
+    // tst_guided_wizard.qml's own waitForWizardLayout() waits after creating
+    // a fresh window rather than grabbing on the same tick.
+    QTimer::singleShot(50, controller, [&engine, shot_path] {
+        const bool ok = save_window(engine, shot_path);
+        std::println("smoke: window grab -> {}",
+                     ok ? shot_path.toStdString() : std::string{"FAILED"});
+        QCoreApplication::exit(ok ? 0 : 1);
+    });
+    return QGuiApplication::exec();
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -466,6 +542,15 @@ int main(int argc, char* argv[]) {
         const auto properties = trailing(5, shot);
         return run_smoke_live(engine, args[2].toInt(), args[3].toDouble(), args[4], shot,
                               properties);
+    }
+    if (args.size() >= 3 && args[1] == QLatin1String("--smoke-shot")) {
+        // shot.png is the one fixed positional here (unlike the other three
+        // modes, where it is itself the trailing optional one) - trailing()
+        // still tells an input WAV apart from prop=value the same way, just
+        // starting one argument later.
+        QString in_path;
+        const auto properties = trailing(3, in_path);
+        return run_smoke_shot(engine, args[2], in_path, properties);
     }
     if (args.size() == 2 && !args[1].startsWith(QLatin1Char('-'))) {
         // Opening the app on a file is the same gesture as dropping one on

@@ -8,6 +8,21 @@ device, optionally tick **Monitor** (with its own output device) and **Also writ
 **Start live session…**. This needs the platform's capture backend — see
 [Platform notes](../platforms/windows.md) for what's hardware-confirmed where.
 
+### The VBR warning
+
+[Rate mode](format-and-channels.md#rate-mode-cbr-or-vbr) lives on the Format tab, shared with
+plain file encoding — nothing there knows whether the *next* thing clicked is Encode or Start live
+session, so a note appears on the Live capture card itself instead, whenever VBR is on and
+available, independent of whether a capture device happens to be plugged in right now:
+
+![VBR panel with the live-session warning visible in the left rail below it](screenshots/format-vbr.png)
+
+A live session always runs at the fixed bit rate shown above the Rate mode control, regardless of
+what it's set to: IEC 61937 passthrough bursts are fixed-size per access unit, and nothing
+renegotiates burst framing mid-stream, so `runLiveSession` drops `vbr` unconditionally before a
+session ever starts. There's also no "finished run" for a live session to summarize a variable
+rate against the way a file encode's run strip does.
+
 !!! note "No screenshot of an active session here"
     Every other screenshot in this guide is real capture, taken against a running build. This one
     isn't — driving an actual capture device would mean recording live audio through this

@@ -1,8 +1,9 @@
 # Metadata
 
-Advanced mode only — Basic mode folds the Loudness half of this onto the
+Expert tier only — Advanced folds the Loudness half of this onto the
 [Format tab](format-and-channels.md#codec-presets-bit-rate-container) instead and leaves the rest
-at their defaults.
+at their defaults. Guided's own Loudness wizard step covers DRC and dialnorm the same way Advanced
+does; Downmix, Heavy compression and Mixing metadata are Expert-only in every tier.
 
 ![Metadata tab: Loudness, Downmix, Heavy compression, Mixing metadata](screenshots/metadata-tab.png)
 
@@ -13,6 +14,11 @@ at their defaults.
 - **dialnorm** — a 1–31 spin box, disabled by a **measure** checkbox that derives it instead from
   BS.1770-4 gated loudness over the whole programme (§5.4.2.8). Getting it wrong isn't cosmetic —
   a levelled playback system plays the difference.
+- **dialnorm — programme 2** — appears only with a
+  [`1+1` dual-mono bed](format-and-channels.md#dual-mono) selected. Ch1 and Ch2 never share a
+  downmix to average loudness across, so each programme states its own dialogue level; its
+  **measure** checkbox is disabled — `dialnorm=auto`/`dialnorm2=auto` aren't yet supported for dual
+  mono, so both have to be set by hand.
 
 ## Downmix
 

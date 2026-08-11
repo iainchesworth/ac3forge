@@ -1,11 +1,14 @@
 #include "ac3/encoder/plan.hpp"
 
 #include <algorithm>
+#include <cerrno>
 #include <charconv>
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
 #include <iterator>
 #include <numbers>
+#include <string>
 
 #include "ac3/io/wav.hpp"
 #include "ac3/spatial/spatial.hpp"
@@ -677,9 +680,26 @@ std::string format_tools(const Tools& tools) {
 namespace {
 
 [[nodiscard]] bool parse_unit_double(std::string_view text, double& out) {
-    double value = 0.0;
-    const auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
-    if (ec != std::errc{} || ptr != text.data() + text.size() || value < 0.0 || value > 1.0) {
+    // Not std::from_chars: its floating-point overload is absent from some
+    // libc++ builds this project targets (NDK r26's bundled libc++ only
+    // implements <charconv>'s integer overloads, not double - see
+    // docs/platforms/android.md), so this hand-rolls the same
+    // locale-independent, reject-all-trailing-garbage contract with strtod
+    // instead, for the floating-point case only (parse_kbps below keeps
+    // std::from_chars - the integer overload IS available everywhere).
+    // strtod itself is locale-sensitive; nothing in this codebase ever
+    // calls setlocale, so the process locale stays "C" for its entire
+    // lifetime and this is safe in practice, not just in theory.
+    if (text.empty()) {
+        return false;
+    }
+    // strtod needs a NUL-terminated buffer; text is a view into someone
+    // else's storage (typically a CLI argument), not necessarily one.
+    const std::string buffer(text);
+    errno = 0;
+    char* end = nullptr;
+    const double value = std::strtod(buffer.c_str(), &end);
+    if (end != buffer.c_str() + buffer.size() || errno == ERANGE || value < 0.0 || value > 1.0) {
         return false;
     }
     out = value;
