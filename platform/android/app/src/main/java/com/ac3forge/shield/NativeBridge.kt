@@ -47,6 +47,16 @@ object NativeBridge {
     external fun nativeStopLiveCursor()
 
     /**
+     * Hands the app's [android.content.res.AssetManager] to native so the
+     * encode loop can load the bundled lead-object voice sample
+     * (assets/lead_voice_48k_mono_s16le.raw) from its own thread. Must be
+     * called before [nativeStartLiveCursor] - the encode loop reads the
+     * asset once at startup, not lazily. Missing this call is not fatal:
+     * live_cursor.cpp falls back to its live-synthesized voice.
+     */
+    external fun nativeSetAssetManager(assetManager: android.content.res.AssetManager)
+
+    /**
      * Biases the currently-selected object's position by (dx, dy, dz) away
      * from its pre-planned trajectory, clamped to a bounding box on the
      * native side. Called from [InputController]'s animation ticker roughly
@@ -60,6 +70,13 @@ object NativeBridge {
 
     /** Moves the selection to the next object; returns the new selected index. */
     external fun nativeCycleSelectedObject(): Int
+
+    /**
+     * Instantly zeroes the selected object's deflection, rather than
+     * waiting out the usual ~1.5s spring-back decay - a presenter's "and...
+     * reset" button. See live_cursor.cpp's LiveCursorState::snap_selected.
+     */
+    external fun nativeSnapSelectedToCourse()
 
     /**
      * kObjects*4 floats: (x, y, z, isSelected) per object, in native's fixed
@@ -77,6 +94,14 @@ object NativeBridge {
 
     /** One formatted line of live encode-loop stats, for the on-screen overlay. */
     external fun nativeGetStreamStatsText(): String
+
+    /**
+     * 6 floats, AC-3 coded order (L, C, R, Ls, Rs, LFE): RMS level of each
+     * real bed channel the last frame actually encoded
+     * (AtmosEncoder::bed()), already scaled and clamped to [0,1] for direct
+     * use as a meter bar height. For the speaker-activity meter.
+     */
+    external fun nativeGetChannelLevels(): FloatArray
 
     /**
      * `samples` (x,y,z) triples along the lead object's own base

@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.graphics.DashPathEffect
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.RectF
 import android.util.AttributeSet
 import android.view.Choreographer
 import android.view.View
@@ -33,6 +34,10 @@ import kotlin.math.abs
  * matching oamd.hpp's Position contract (x,y in [0,1], z in [-1,1]) - see
  * live_cursor.cpp's LiveCursorState::deflect_selected clamp.
  *
+ * Each panel is drawn as a rounded card (see [drawCard]) rather than a bare
+ * stroked rectangle floating on the activity's own background - see
+ * [Theme]'s own comment for why one shared palette exists at all.
+ *
  * A few demoability additions on top of the raw positions: a listener marker
  * at the room's exact centre (where the JOC/VBAP render implicitly assumes
  * the listener sits - see live_cursor.cpp's trajectory_position comment), a
@@ -56,51 +61,84 @@ class RoomView @JvmOverloads constructor(
         }
     }
 
+    private val cardBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = Theme.colorSurface
+    }
+    private val cardBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 2f
+        color = Theme.colorSurfaceBorder
+    }
+    private val dividerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 2f
+        color = Theme.colorSurfaceBorder
+    }
     private val roomPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = 3f
-        color = Color.DKGRAY
+        strokeWidth = 2f
+        color = Theme.colorSurfaceBorder
+    }
+    // Panel headers ("Top-down (X/Y)", "3D track", ...) - uppercase +
+    // letter-spaced deliberately reads as a dashboard card caption, not
+    // body text, so it stays visually subordinate to the objects moving
+    // underneath it.
+    private val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Theme.colorTextSecondary
+        textSize = 26f
+        letterSpacing = 0.08f
     }
     private val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.LTGRAY
-        textSize = 36f
+        color = Theme.colorTextMuted
+        textSize = 30f
     }
     private val objectPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
     }
+    // A soft, low-alpha halo drawn beneath each object dot (reusing this one
+    // Paint, mutating its color/alpha per object, rather than allocating a
+    // RadialGradient shader per dot per frame - this view redraws at up to
+    // 60fps and a fresh shader per dot per frame is needless GC pressure for
+    // an effect two nested drawCircle calls achieves just as well).
+    private val objectGlowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+    }
     private val selectedRingPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = 5f
-        color = Color.WHITE
+        strokeWidth = 4f
+        color = Theme.colorAccent
     }
     private val guidePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = 2f
-        color = Color.argb(120, 229, 57, 53)  // faint version of the lead object's color
+        color = Color.argb(110, 255, 99, 91)  // faint version of the lead object's color
         pathEffect = DashPathEffect(floatArrayOf(10f, 10f), 0f)
     }
     private val listenerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
-        color = Color.WHITE
+        color = Theme.colorTextSecondary
     }
     private val modePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.rgb(251, 192, 45)  // matches kObjectColors' amber, an unused hue here
-        textSize = 32f
+        color = Theme.colorWarn
+        textSize = 24f
     }
     private val statsPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.rgb(120, 200, 255)  // a cool blue, distinct from every other overlay's hue
-        textSize = 32f
+        color = Theme.colorAccent
+        textSize = 24f
     }
     private val trailPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = 4f
-        color = Color.WHITE
+        color = Theme.colorTextPrimary
     }
     private val dropLinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = 2f
-        color = Color.WHITE
+        color = Theme.colorTextPrimary
     }
+
+    private val cardRect = RectF()
 
     // The lead object's own recent-position history for the 3D view's trail
     // ("where it's come from") - RoomView's own responsibility, not
@@ -143,44 +181,89 @@ class RoomView @JvmOverloads constructor(
             null
         }
 
-        // Left column (wider - the isometric view is the most information-
-        // dense of the three, so it gets the most screen): the 3D trail
-        // view. Right column: the original two panels, stacked, sized close
-        // to square (rightWidth near each stacked panel's own height) -
-        // rather than the wide, short rectangles a fixed width fraction
-        // produced - so the 3D view gets whatever width is left over
-        // instead of a fixed, arbitrary split. Clamped so neither extreme
-        // device aspect ratio produces a degenerate column.
-        val columnGap = 24f
-        val rowGap = 24f
-        val rightPanelHeight = (height - rowGap) / 2f
-        val rightWidth = rightPanelHeight.coerceIn(width * 0.22f, width * 0.4f)
-        val leftWidth = width - rightWidth - columnGap
-        val rightLeft = leftWidth + columnGap
+        // Left: the 3D trail view, SQUARE rather than a wide rectangle - on
+        // a widescreen TV, a wide-rectangle 3D panel left most of its own
+        // width empty (the isometric projection's own natural bounding box
+        // is close to square - see ISO_X_HALF_RANGE/ISO_Y_HALF_RANGE - so a
+        // wider container just added dead margin, not more visible content).
+        // Squaring it up, capped at half the screen width, both puts real
+        // pixels back to use AND frees the rest of the width for the other
+        // two panels - see hands-on feedback for why this was worth a
+        // second layout pass after the first one merely narrowed them.
+        // Vertically centered when height is the limiting dimension (a very
+        // wide screen), so any leftover space splits evenly above/below
+        // rather than collecting entirely at the bottom.
+        val columnGap = Theme.spacingUnit
+        val leftSize = minOf(height.toFloat(), width * 0.5f)
+        val leftTop = (height - leftSize) / 2f
+        val rightLeft = leftSize + columnGap
+        val rightWidth = width - rightLeft
+        // Top-down and elevation side by side, not stacked - each gets the
+        // FULL row height this way instead of half of it (the "double
+        // height" hands-on feedback asked for), splitting the width the
+        // square 3D panel freed up between them instead.
+        val panelGap = Theme.spacingUnit
+        val sidePanelWidth = (rightWidth - panelGap) / 2f
 
-        draw3DView(canvas, 0f, 0f, leftWidth, height.toFloat(), state, objectCount, leadFuture)
+        // Both readouts below used to float as independent canvas text at a
+        // fixed screen position, clear of the cards at the time they were
+        // added - but the first-launch/idle overlay cue (MainActivity's own
+        // TextView, centered over this whole view) grew wider once it picked
+        // up real typography, and started covering them. Folding each into
+        // its own card's header row (see drawCard's `status` param) keeps
+        // them inside a bounded, opaque card background instead of floating
+        // text anything on top of this view can cover.
+        val statsText = try {
+            NativeBridge.nativeGetStreamStatsText()
+        } catch (e: UnsatisfiedLinkError) {
+            null
+        }
+        // Kept short deliberately ("D-PAD -> HEIGHT", not a full sentence):
+        // this shares the top-down panel's header row with that panel's own
+        // title, and that panel is the narrowest card in the layout.
+        val modeText = inputController?.let { controller ->
+            if (controller.axisMode == InputController.AxisMode.XY) "D-PAD → DEPTH" else "D-PAD → HEIGHT"
+        }
+
+        draw3DView(canvas, 0f, leftTop, leftSize, leftTop + leftSize, state, objectCount, leadFuture, statsText)
 
         drawPanel(
             canvas,
             left = rightLeft,
             top = 0f,
-            right = rightLeft + rightWidth,
-            bottom = rightPanelHeight,
+            right = rightLeft + sidePanelWidth,
+            bottom = height.toFloat(),
             title = "Top-down (X/Y)",
+            status = modeText,
+            statusPaint = modePaint,
             state = state,
             objectCount = objectCount,
             horizontal = { i -> state[i * 4] },      // x
-            vertical = { i -> state[i * 4 + 1] },     // y, [0,1]
+            // 1f - y, not y directly: drawPanel's own vertical-axis inversion
+            // (below) puts a smaller value at the TOP of the panel - for the
+            // elevation panel that's already right (ceiling should be up),
+            // but for this one it means passing 1-y so the front wall
+            // (y=0, where the listener faces - see InputController.kt's
+            // matching D-pad-up-is-forward fix) renders at the top, not the
+            // back wall. Paired with that fix so pressing D-pad up both
+            // means "forward" AND visibly moves the dot up this panel,
+            // rather than the two disagreeing with each other.
+            vertical = { i -> 1f - state[i * 4 + 1] },
+
             verticalIsHeight = false,
             showTrajectoryGuide = true,
         )
         drawPanel(
             canvas,
-            left = rightLeft,
-            top = rightPanelHeight + rowGap,
-            right = rightLeft + rightWidth,
-            bottom = rightPanelHeight * 2f + rowGap,
-            title = "Side elevation (X/Z)",
+            left = rightLeft + sidePanelWidth + panelGap,
+            top = 0f,
+            right = width.toFloat(),
+            bottom = height.toFloat(),
+            // "Side" dropped (was "Side elevation (X/Z)"): shorter title,
+            // more headroom for whatever width this card ends up with.
+            title = "Elevation (X/Z)",
+            status = null,
+            statusPaint = null,
             state = state,
             objectCount = objectCount,
             horizontal = { i -> state[i * 4] },           // x
@@ -188,36 +271,69 @@ class RoomView @JvmOverloads constructor(
             verticalIsHeight = true,
             showTrajectoryGuide = false,
         )
+    }
 
-        // Top-right, not bottom-left: the bottom of the screen is already the
-        // control-hints overlay (MainActivity's own TextView, added on top of
-        // this view) - drawing another line of text there put this readout's
-        // amber text directly behind the hints' own text, an unreadable
-        // overlap on real hardware. Right-aligned against the screen's own
-        // right edge, comfortably clear of the (left-aligned, starting
-        // mid-screen) "Side elevation (X/Z)" panel title below it.
-        inputController?.let { controller ->
-            val modeText = if (controller.axisMode == InputController.AxisMode.XY) {
-                "D-pad height mode: OFF (up/down = depth)"
-            } else {
-                "D-pad height mode: ON (up/down = height)"
-            }
-            // y=130f, not right under the panel titles (drawn at ~y=36 with a
-            // 36f-tall font) - clear of both those and the app's own title
-            // bar overlaid above this view.
-            val textWidth = modePaint.measureText(modeText)
-            canvas.drawText(modeText, width - textWidth - 24f, 130f, modePaint)
-        }
+    /**
+     * Fills+strokes a rounded-rect "card" background behind a panel, then
+     * draws its uppercase caption and a divider separating the caption from
+     * the plotted content below it - the one piece of chrome every panel in
+     * this view shares, so [drawPanel] and [draw3DView] only differ in what
+     * they draw INSIDE the card. Returns the content rect (inside the
+     * caption/divider/padding) callers should plot into.
+     */
+    private fun drawCard(
+        canvas: Canvas,
+        left: Float,
+        top: Float,
+        right: Float,
+        bottom: Float,
+        title: String,
+        status: String? = null,
+        statusPaint: Paint? = null,
+    ): RectF {
+        cardRect.set(left, top, right, bottom)
+        canvas.drawRoundRect(cardRect, Theme.cornerRadiusSmall, Theme.cornerRadiusSmall, cardBgPaint)
+        canvas.drawRoundRect(cardRect, Theme.cornerRadiusSmall, Theme.cornerRadiusSmall, cardBorderPaint)
 
-        // Same row as the axis-mode readout above, opposite corner - the two
-        // read as a matched pair rather than two unrelated overlays.
-        val statsText = try {
-            NativeBridge.nativeGetStreamStatsText()
-        } catch (e: UnsatisfiedLinkError) {
-            null
+        val pad = 28f
+        val titleBaseline = top + pad + 22f
+        canvas.drawText(title.uppercase(), left + pad, titleBaseline, titlePaint)
+
+        // A live readout (encode stats, D-pad axis mode) confined to this
+        // card's own bounds - not floating independently over the whole
+        // view, so nothing drawn on top of this View (the first-launch/idle
+        // overlay cue) can ever cover it without also covering the card it
+        // belongs to. On its OWN line below the title, right-aligned, rather
+        // than sharing the title's row: the top-down panel is the narrowest
+        // card in the layout and its title plus status text together don't
+        // fit on one line without overlapping - confirmed on a real device
+        // screenshot.
+        var dividerY = titleBaseline + 20f
+        if (status != null && statusPaint != null) {
+            val statusBaseline = titleBaseline + 36f
+            val statusWidth = statusPaint.measureText(status)
+            canvas.drawText(status, right - pad - statusWidth, statusBaseline, statusPaint)
+            dividerY = statusBaseline + 20f
         }
-        if (statsText != null) {
-            canvas.drawText(statsText, 24f, 130f, statsPaint)
+        canvas.drawLine(left + pad, dividerY, right - pad, dividerY, dividerPaint)
+
+        return RectF(left + pad, dividerY + pad, right - pad, bottom - pad)
+    }
+
+    /**
+     * Draws one object's dot with a soft halo beneath it and, if selected, a
+     * ring around it - shared by [drawPanel] and [draw3DView] so both use
+     * exactly the same visual language for "this is an object" /
+     * "this is the one you're driving."
+     */
+    private fun drawObjectDot(canvas: Canvas, px: Float, py: Float, radius: Float, color: Int, isSelected: Boolean) {
+        objectGlowPaint.color = color
+        objectGlowPaint.alpha = 70
+        canvas.drawCircle(px, py, radius * 2f, objectGlowPaint)
+        objectPaint.color = color
+        canvas.drawCircle(px, py, radius, objectPaint)
+        if (isSelected) {
+            canvas.drawCircle(px, py, radius + 10f, selectedRingPaint)
         }
     }
 
@@ -244,16 +360,14 @@ class RoomView @JvmOverloads constructor(
         state: FloatArray,
         objectCount: Int,
         future: FloatArray?,
+        statusText: String?,
     ) {
-        val labelHeight = 48f
-        val margin = 32f
-        val panelLeft = left + margin
-        val panelTop = top + labelHeight + margin
-        val panelRight = right - margin
-        val panelBottom = bottom - margin
+        val content = drawCard(canvas, left, top, right, bottom, "3D track", statusText, statsPaint)
+        val panelLeft = content.left
+        val panelTop = content.top
+        val panelRight = content.right
+        val panelBottom = content.bottom
         if (panelRight <= panelLeft || panelBottom <= panelTop) return
-
-        canvas.drawText("3D track", left, top + labelHeight - 12f, labelPaint)
 
         val panelW = panelRight - panelLeft
         val panelH = panelBottom - panelTop
@@ -325,11 +439,7 @@ class RoomView @JvmOverloads constructor(
             val isSelected = state[i * 4 + 3] != 0f
             val (px, py) = project(state[i * 4], state[i * 4 + 1], state[i * 4 + 2])
                 .let { it[0] to it[1] }
-            objectPaint.color = objectColor(i)
-            canvas.drawCircle(px, py, 16f, objectPaint)
-            if (isSelected) {
-                canvas.drawCircle(px, py, 24f, selectedRingPaint)
-            }
+            drawObjectDot(canvas, px, py, 16f, objectColor(i), isSelected)
         }
     }
 
@@ -340,6 +450,8 @@ class RoomView @JvmOverloads constructor(
         right: Float,
         bottom: Float,
         title: String,
+        status: String?,
+        statusPaint: Paint?,
         state: FloatArray,
         objectCount: Int,
         horizontal: (Int) -> Float,
@@ -347,16 +459,27 @@ class RoomView @JvmOverloads constructor(
         verticalIsHeight: Boolean,
         showTrajectoryGuide: Boolean,
     ) {
-        val labelHeight = 48f
-        val margin = 32f
-        val roomLeft = left + margin
-        val roomTop = top + labelHeight + margin
-        val roomRight = right - margin
-        val roomBottom = bottom - margin
-        if (roomRight <= roomLeft || roomBottom <= roomTop) return
+        val content = drawCard(canvas, left, top, right, bottom, title, status, statusPaint)
+        if (content.right <= content.left || content.bottom <= content.top) return
 
-        canvas.drawText(title, left, top + labelHeight - 12f, labelPaint)
-        canvas.drawRect(roomLeft, roomTop, roomRight, roomBottom, roomPaint)
+        // The room itself is square in normalized coordinates (both x and y
+        // range over the same [0,1] room-fraction scale - oamd.hpp's own
+        // Position contract) - plotting it into a non-square content rect
+        // would stretch one axis relative to the other and misrepresent
+        // real distances (the trajectory guide circle would render as an
+        // ellipse even though it's a genuine circle in room-space). Now that
+        // top-down/elevation sit side by side rather than stacked, their
+        // cards are routinely much wider than tall, so this can no longer be
+        // left to "the card happens to be roughly square" the way it could
+        // when panels were stacked - centre a true square plot inside
+        // whatever rectangle the card actually gives.
+        val availW = content.right - content.left
+        val availH = content.bottom - content.top
+        val roomSize = minOf(availW, availH)
+        val roomLeft = content.left + (availW - roomSize) / 2f
+        val roomTop = content.top + (availH - roomSize) / 2f
+        val roomRight = roomLeft + roomSize
+        val roomBottom = roomTop + roomSize
 
         val roomWidth = roomRight - roomLeft
         val roomHeight = roomBottom - roomTop
@@ -408,11 +531,7 @@ class RoomView @JvmOverloads constructor(
             val px = roomLeft + nx * roomWidth
             val py = roomTop + ny * roomHeight
 
-            objectPaint.color = objectColor(i)
-            canvas.drawCircle(px, py, radius, objectPaint)
-            if (isSelected) {
-                canvas.drawCircle(px, py, radius + 8f, selectedRingPaint)
-            }
+            drawObjectDot(canvas, px, py, radius, objectColor(i), isSelected)
         }
 
         if (verticalIsHeight) {
@@ -433,16 +552,7 @@ class RoomView @JvmOverloads constructor(
         // this one to match.
         private const val kTrajectoryGuideRadius = 0.45f
 
-        // Distinct, high-contrast hues; cycles if ever more objects than
-        // colors, but kObjects (3, see live_cursor.cpp) is well under this.
-        private val kObjectColors = intArrayOf(
-            Color.rgb(229, 57, 53),   // red
-            Color.rgb(67, 160, 71),   // green
-            Color.rgb(30, 136, 229),  // blue
-            Color.rgb(251, 192, 45),  // amber
-        )
-
-        private fun objectColor(index: Int): Int = kObjectColors[index % kObjectColors.size]
+        private fun objectColor(index: Int): Int = Theme.objectColors[index % Theme.objectColors.size]
 
         // Classic "2:1 video-game" isometric projection constants: x and y
         // both project onto 30-degree diagonal screen directions, z

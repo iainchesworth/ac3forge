@@ -36,6 +36,8 @@
 
 #include <jni.h>
 
+#include <android/asset_manager.h>
+#include <android/asset_manager_jni.h>
 #include <android/log.h>
 
 #include <algorithm>
@@ -147,6 +149,25 @@ ac3::oba::Position trajectory_position(int obj, double time_s) {
             .z = p.height_amp * std::sin(height_angle)};
 }
 
+// Distance-based loudness: without this, an object sounded exactly as loud
+// swinging past the listener at the room centre as it did out at the far
+// edge of its orbit - correct panning direction, but no actual sense of
+// "coming toward me" versus "far away". Inverse-square-ish, clamped with a
+// floor so the far end of an orbit (~1 room-unit out, given the widened
+// trajectory radii/heights above) is quieter but never silent - going
+// fully silent would fight the "isolate and track it" point of the
+// pause/mute feature rather than complement it.
+constexpr double kDistanceFalloffK = 1.0;
+constexpr double kDistanceAttenFloor = 0.4;
+double distance_attenuation(const ac3::oba::Position& pos) {
+    const double dx = pos.x - 0.5;
+    const double dy = pos.y - 0.5;
+    const double dz = pos.z;  // z is already centred on the listener's ear height
+    const double dist_sq = dx * dx + dy * dy + dz * dz;
+    const double atten = 1.0 / (1.0 + kDistanceFalloffK * dist_sq);
+    return std::max(atten, kDistanceAttenFloor);
+}
+
 // The lead object's voice: a plain sine, however correctly panned, is a
 // genuinely bad choice for demonstrating precise 3D localization by ear -
 // real-device testing confirmed it as "muddy", not a discrete point source.
@@ -182,6 +203,61 @@ float next_noise_sample() {
     return static_cast<float>(static_cast<std::int32_t>(g_noise_state)) * (1.0f / 2147483648.0f);
 }
 
+// The lead object's bundled voice: a seamlessly-looping, offline-rendered
+// rotorcraft sample (rotor thump + tail rotor + engine drone + blade-slap
+// noise + rumble - see tools/gen_lead_voice.py-style generation, richer than
+// this tight real-time loop could afford per-sample on this SoC) rather than
+// the live tone+noise synthesis above. Set once from Kotlin
+// (MainActivity.onCreate, before nativeStartLiveCursor) via
+// nativeSetAssetManager - a plain AAssetManager*, not wrapped in any
+// lifetime-tracking type, since the Java-side AssetManager (and therefore
+// this pointer) outlives the whole process once set. A raw pointer, not a
+// GlobalRef-held jobject: AAssetManager_fromJava's returned native handle
+// stays valid independent of any JNI local/global ref bookkeeping.
+std::atomic<AAssetManager*> g_asset_manager{nullptr};
+constexpr char kLeadVoiceAsset[] = "lead_voice_48k_mono_s16le.raw";
+
+// Loads kLeadVoiceAsset fully into memory as [-1,1] float samples. Returns an
+// empty vector (never throws/aborts) if no AAssetManager has been set yet, if
+// the asset is missing from this particular build/packaging, or if the read
+// comes back short - run_loop() below treats an empty result as "fall back
+// to the live rotor+noise synthesis", not as a fatal error, since a missing
+// bundled asset is a real, recoverable packaging-boundary condition, not
+// something internal code can just assume never happens.
+std::vector<float> load_lead_voice_sample() {
+    AAssetManager* mgr = g_asset_manager.load(std::memory_order_relaxed);
+    if (mgr == nullptr) {
+        __android_log_print(ANDROID_LOG_WARN, kLogTag,
+                            "no AAssetManager set - lead object will use live-synthesized voice");
+        return {};
+    }
+    AAsset* asset = AAssetManager_open(mgr, kLeadVoiceAsset, AASSET_MODE_BUFFER);
+    if (asset == nullptr) {
+        __android_log_print(ANDROID_LOG_WARN, kLogTag,
+                            "asset '%s' not found - lead object will use live-synthesized voice",
+                            kLeadVoiceAsset);
+        return {};
+    }
+    const off_t length = AAsset_getLength(asset);
+    std::vector<std::int16_t> pcm(static_cast<std::size_t>(length) / sizeof(std::int16_t));
+    const int read_bytes = AAsset_read(asset, pcm.data(), static_cast<std::size_t>(length));
+    AAsset_close(asset);
+    if (read_bytes != length || pcm.empty()) {
+        __android_log_print(ANDROID_LOG_WARN, kLogTag,
+                            "asset '%s' read incomplete (%d/%lld bytes) - lead object will use "
+                            "live-synthesized voice",
+                            kLeadVoiceAsset, read_bytes, static_cast<long long>(length));
+        return {};
+    }
+    std::vector<float> samples(pcm.size());
+    for (std::size_t i = 0; i < pcm.size(); ++i) {
+        samples[i] = static_cast<float>(pcm[i]) * (1.0f / 32768.0f);
+    }
+    __android_log_print(ANDROID_LOG_INFO, kLogTag, "loaded lead voice asset: %zu samples (%.2fs)",
+                        samples.size(), static_cast<double>(samples.size()) / kSampleRate);
+    return samples;
+}
+
 std::thread g_worker;
 std::atomic_bool g_stop_requested{false};
 std::atomic_bool g_running{false};
@@ -211,6 +287,17 @@ struct StreamStats {
     // top of it. "Restart everything that was paused" on play is therefore
     // just un-muting: the ambient objects never stopped moving, only sounding.
     std::atomic_bool ambient_muted{false};
+    // How long the last encode_frame() call actually took - for the on-
+    // screen "encode headroom" readout (real-time viability was a genuine,
+    // previously-hit problem on this SoC - see this file's own header - so
+    // showing the live number rather than just asserting it stays fast is
+    // worth doing).
+    std::atomic<float> encode_ms{0.0f};
+    // AC-3 coded order (L, C, R, Ls, Rs, LFE) - see AtmosEncoder::bed()'s own
+    // comment. RMS level per channel of the REAL, actually-encoded 5.1 bed,
+    // not an approximation from the room-position math - see run_loop()'s
+    // own comment on where this is computed. For the speaker-activity meter.
+    std::array<std::atomic<float>, 6> channel_levels{};
 };
 
 StreamStats& stream_stats() {
@@ -293,6 +380,17 @@ public:
         return placements_;
     }
 
+    // Instantly zeroes the selected object's deflection, rather than waiting
+    // out kDeflectionDecayPerFrame's own ~1.5s time constant - called from a
+    // long-press of A/center (InputController.kt), replacing what used to be
+    // "cycle selected object" there (a no-op with a single interactive
+    // object anyway) with something a presenter can actually use: a crisp,
+    // on-demand "and... reset" moment instead of watching it drift back.
+    void snap_selected() {
+        std::lock_guard lock(mutex_);
+        deflection_[static_cast<std::size_t>(selected_)] = Deflection{};
+    }
+
     // Adds (dx, dy, dz) to the selected interactive object's deflection,
     // clamped to the bounding box around its trajectory - see
     // InputController.kt for how dx/dy/dz are derived from the stick/D-pad
@@ -372,6 +470,13 @@ void run_loop() {
     double rotor_phase = 0.0;
     const double rotor_step = 2.0 * std::numbers::pi * kLeadRotorHz / kSampleRate;
 
+    // The lead's bundled voice, if this build has one packaged and an
+    // AAssetManager was registered before this thread started (see
+    // load_lead_voice_sample()'s own comment). Empty means "use the live
+    // rotor+tone+noise synthesis below instead" - never a fatal condition.
+    const std::vector<float> lead_sample = load_lead_voice_sample();
+    std::size_t lead_sample_pos = 0;
+
     // Wall-clock frame pacing, not a producer to drain (see header comment):
     // one AC-3 frame is exactly kSamplesPerFrame/48000 seconds.
     const auto frame_period = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
@@ -394,6 +499,18 @@ void run_loop() {
 
     std::uint64_t frames = 0;
     while (!g_stop_requested.load(std::memory_order_acquire)) {
+        // Placement is advanced FIRST, before the tone synthesis below reads
+        // it for distance_attenuation() - this frame's positions have to be
+        // known before this frame's samples can reflect how far each object
+        // currently sits from the listener. time_s is computed here too
+        // (moved up from after synthesis) for the same reason: the position
+        // this loop iteration encodes should be timestamped from the START
+        // of the work it does, not after several hundred microseconds of
+        // sample generation have already elapsed.
+        const double time_s =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time).count();
+        const auto placement = live_cursor_state().advance(time_s);
+
         const bool ambient_muted = stream_stats().ambient_muted.load(std::memory_order_relaxed);
         for (int obj = 0; obj < kObjects; ++obj) {
             auto& tone = tones[static_cast<std::size_t>(obj)];
@@ -402,9 +519,24 @@ void run_loop() {
             const bool is_lead = obj < kInteractiveObjects;
             // Muting only silences the ambient objects' audio, never the
             // lead's - see StreamStats::ambient_muted's own comment.
-            const auto tone_gain = kToneGain[static_cast<std::size_t>(obj)] *
-                                   ((!is_lead && ambient_muted) ? 0.0 : 1.0);
-            if (is_lead) {
+            // distance_attenuation() reads THIS frame's own placement -
+            // real position-based loudness, not merely correct panning
+            // direction; see that function's own comment.
+            const auto tone_gain =
+                kToneGain[static_cast<std::size_t>(obj)] *
+                ((!is_lead && ambient_muted) ? 0.0 : 1.0) *
+                distance_attenuation(placement[static_cast<std::size_t>(obj)].position);
+            if (is_lead && !lead_sample.empty()) {
+                // The bundled asset already has its own rotor/tail-rotor/
+                // engine/blade-slap structure baked in offline - no live
+                // envelope or noise mixing needed here, just loop playback
+                // through the same tone_gain/soft_limit chain every voice
+                // goes through.
+                for (std::size_t n = 0; n < tone.size(); ++n) {
+                    tone[n] = soft_limit(static_cast<float>(tone_gain) * lead_sample[lead_sample_pos]);
+                    lead_sample_pos = (lead_sample_pos + 1) % lead_sample.size();
+                }
+            } else if (is_lead) {
                 for (std::size_t n = 0; n < tone.size(); ++n) {
                     // See kLeadRotorHz's own comment for why this is a
                     // rhythmic, sharpened envelope over a tone+noise mix
@@ -437,15 +569,45 @@ void run_loop() {
             ph = std::fmod(ph, 2.0 * std::numbers::pi);
         }
         const std::vector<std::span<const float>> views(tones.begin(), tones.end());
-        const double time_s =
-            std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time).count();
-        const auto placement = live_cursor_state().advance(time_s);
 
+        // Timed for the on-screen "encode headroom" readout - this loop's
+        // own real-time viability was a genuine, previously-hit problem on
+        // this SoC (see this file's own header comment on the MDCT fix), so
+        // showing the live number is worth more here than it would be in
+        // most encode loops.
+        const auto encode_start = std::chrono::steady_clock::now();
         auto unit = encoder.encode_frame(views, placement);
+        const auto encode_elapsed_ms =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                       encode_start)
+                .count();
+        stream_stats().encode_ms.store(static_cast<float>(encode_elapsed_ms),
+                                       std::memory_order_relaxed);
         if (!unit) {
             __android_log_print(ANDROID_LOG_ERROR, kLogTag, "encode_frame failed: %d",
                                 static_cast<int>(unit.error()));
             break;
+        }
+
+        // For the speaker-activity meter: RMS level of each of the six REAL
+        // bed channels this frame actually encoded (AtmosEncoder::bed(), AC-3
+        // coded order L/C/R/Ls/Rs/LFE) - not a guess derived from the room
+        // position math, the literal audio a legacy decoder hears. x4.0 is a
+        // fixed display gain (typical per-channel RMS with three panned
+        // objects sits well under 1.0; without some boost the meter would
+        // barely move) - visual only, has no effect on the encoded audio.
+        {
+            const auto bed = encoder.bed();
+            for (std::size_t ch = 0; ch < bed.size() && ch < 6; ++ch) {
+                double sum_sq = 0.0;
+                for (const float sample : bed[ch]) {
+                    sum_sq += static_cast<double>(sample) * static_cast<double>(sample);
+                }
+                const double rms =
+                    bed[ch].empty() ? 0.0 : std::sqrt(sum_sq / static_cast<double>(bed[ch].size()));
+                const float level = static_cast<float>(std::clamp(rms * 4.0, 0.0, 1.0));
+                stream_stats().channel_levels[ch].store(level, std::memory_order_relaxed);
+            }
         }
 
         // Right after encode, before IEC61937 wrapping - unsigned by default
@@ -561,6 +723,17 @@ Java_com_ac3forge_shield_NativeBridge_nativeStopLiveCursor(JNIEnv* /*env*/, jcla
     }
 }
 
+// Called once from MainActivity.onCreate, before nativeStartLiveCursor - see
+// g_asset_manager's own comment. AAssetManager_fromJava's returned handle is
+// tied to the passed-in AssetManager object's lifetime; MainActivity passes
+// its own Context.getAssets() result, which lives for the whole process, so
+// no GlobalRef/cleanup is needed here.
+extern "C" JNIEXPORT void JNICALL
+Java_com_ac3forge_shield_NativeBridge_nativeSetAssetManager(JNIEnv* env, jclass /*clazz*/,
+                                                              jobject asset_manager) {
+    g_asset_manager.store(AAssetManager_fromJava(env, asset_manager), std::memory_order_relaxed);
+}
+
 // Called from InputController.kt's animation ticker, roughly once per UI
 // frame (~16ms) - NOT once per raw MotionEvent/KeyEvent, so a stick or held
 // D-pad direction biases the object smoothly rather than in per-event jumps.
@@ -581,6 +754,14 @@ extern "C" JNIEXPORT jint JNICALL
 Java_com_ac3forge_shield_NativeBridge_nativeCycleSelectedObject(JNIEnv* /*env*/,
                                                                  jclass /*clazz*/) {
     return live_cursor_state().cycle_selected();
+}
+
+// Called from InputController.kt's long-press handling. See
+// LiveCursorState::snap_selected's own comment.
+extern "C" JNIEXPORT void JNICALL
+Java_com_ac3forge_shield_NativeBridge_nativeSnapSelectedToCourse(JNIEnv* /*env*/,
+                                                                  jclass /*clazz*/) {
+    live_cursor_state().snap_selected();
 }
 
 // For the room visualization (a later pass): one flat array, 4 floats per
@@ -667,14 +848,47 @@ Java_com_ac3forge_shield_NativeBridge_nativeGetFutureLeadTrajectory(JNIEnv* env,
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_ac3forge_shield_NativeBridge_nativeGetStreamStatsText(JNIEnv* env, jclass /*clazz*/) {
     auto& s = stream_stats();
-    char buf[160];
-    std::snprintf(buf, sizeof buf, "frame %llu | bursts %llu/%llu (%llu lost) | %s%s",
-                  static_cast<unsigned long long>(s.frames.load(std::memory_order_relaxed)),
+    // Frame count dropped and "lost" only appended when actually nonzero -
+    // the 3D track card that hosts this text got considerably narrower once
+    // top-down/elevation moved beside it instead of behind it (see
+    // RoomView.kt's layout rebalance), and the full "frame N | bursts ...
+    // (0 lost) | ..." string no longer fit at any font size worth reading -
+    // confirmed clipped on a real device screenshot. Frame count was the
+    // least useful field to a viewer anyway; "0 lost" is the expected,
+    // non-event case and not worth the width when it's the common case.
+    const auto underruns = s.underruns.load(std::memory_order_relaxed);
+    char loss_buf[24] = "";
+    if (underruns > 0) {
+        std::snprintf(loss_buf, sizeof loss_buf, " (%llu lost)",
+                      static_cast<unsigned long long>(underruns));
+    }
+    char buf[192];
+    std::snprintf(buf, sizeof buf,
+                  "bursts %llu/%llu%s | encode %.1fms/32ms | %s%s",
                   static_cast<unsigned long long>(s.bursts_rendered.load(std::memory_order_relaxed)),
                   static_cast<unsigned long long>(s.bursts_submitted.load(std::memory_order_relaxed)),
-                  static_cast<unsigned long long>(s.underruns.load(std::memory_order_relaxed)),
+                  loss_buf,
+                  static_cast<double>(s.encode_ms.load(std::memory_order_relaxed)),
                   s.signed_stream.load(std::memory_order_relaxed) ? "Atmos (signed)"
                                                                    : "5.1 bed (unsigned)",
                   s.ambient_muted.load(std::memory_order_relaxed) ? " | ambient muted" : "");
     return env->NewStringUTF(buf);
+}
+
+// For the speaker-activity meter (RoomView.kt / a small dedicated channel-
+// meter view) - 6 floats, AC-3 coded order (L, C, R, Ls, Rs, LFE), see
+// StreamStats::channel_levels's own comment for what they represent.
+extern "C" JNIEXPORT jfloatArray JNICALL
+Java_com_ac3forge_shield_NativeBridge_nativeGetChannelLevels(JNIEnv* env, jclass /*clazz*/) {
+    jfloatArray result = env->NewFloatArray(6);
+    if (result == nullptr) {
+        return nullptr;
+    }
+    std::array<jfloat, 6> flat{};
+    auto& s = stream_stats();
+    for (std::size_t ch = 0; ch < 6; ++ch) {
+        flat[ch] = s.channel_levels[ch].load(std::memory_order_relaxed);
+    }
+    env->SetFloatArrayRegion(result, 0, 6, flat.data());
+    return result;
 }

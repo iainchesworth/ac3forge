@@ -46,7 +46,9 @@ target_compile_features(ac3forge_jni PRIVATE cxx_std_23)
 # src/audio/src/platform/android/passthrough.cpp (linked in transitively via
 # ac3::audio, which already declares its own aaudio/log deps - see
 # src/audio/CMakeLists.txt's ANDROID branch).
-target_link_libraries(ac3forge_jni PRIVATE ac3::forge ac3::audio log)
+# android: android/asset_manager_jni.h (AAssetManager_fromJava), used by
+# live_cursor.cpp to load the bundled lead-object voice sample.
+target_link_libraries(ac3forge_jni PRIVATE ac3::forge ac3::audio log android)
 
 # Optional, non-clean-room: the local-only RE-derived EMDF Atmos signer -
 # same option, same overlay, same FATAL_ERROR guard (via the

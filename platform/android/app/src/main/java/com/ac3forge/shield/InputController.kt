@@ -30,8 +30,10 @@ import kotlin.math.abs
  *    not a Shield Controller happens to also be connected.
  *
  * The D-pad's second axis (up/down) is [axisMode]-dependent: X/Y by default
- * (up/down biases the object further into/out of the room, same sense as
- * the analog stick), or X/Z (up/down biases height) after toggling - the
+ * (up biases the object toward the front wall/listener-facing direction,
+ * down toward the back - room-anchored, not screen- or stick-relative, and
+ * matching the analog stick's already-correct sense of "push away from you"
+ * meaning forward), or X/Z (up/down biases height) after toggling - the
  * remote's only way to reach height at all, since it has no second stick or
  * shoulder buttons. Toggled by a SHORT press of the centre/select button -
  * deliberately immediate, not gated behind a long-press hold: on the basic
@@ -65,6 +67,16 @@ class InputController {
         private set
 
     @Volatile private var ambientMuted = false
+
+    /**
+     * Invoked once per handled input event (stick motion, D-pad, buttons) -
+     * never for events this controller doesn't recognize. Set by
+     * MainActivity to dismiss the first-launch orientation cue on first real
+     * input and to reset the idle/attract-prompt timer. Deliberately a plain
+     * callback rather than this class owning any idle/UI-timing logic itself
+     * - that's presentation concern, not input-mapping concern.
+     */
+    var onInputActivity: (() -> Unit)? = null
 
     // Set by onKeyLongPress, read (and cleared) by onKeyUp: the framework
     // calls onKeyDown once immediately and, if still held past the long-press
@@ -130,14 +142,26 @@ class InputController {
             return false
         }
         stickX = deadzone(event.getAxisValue(MotionEvent.AXIS_X))
-        // oamd.hpp's room y runs front (0) to back (1); MotionEvent's AXIS_Y
-        // is positive pushing the stick DOWN/back on the physical pad, which
-        // reads naturally as "into the room" already pointed the right way,
-        // so this is NOT flipped - only AXIS_Z (right stick vertical) is,
-        // since pushing that stick UP should raise the object, the opposite
-        // of AXIS_Z's own positive-is-down convention.
+        // oamd.hpp's room y runs front (0, where the listener faces - see
+        // Position's own comment) to back (1). MotionEvent's AXIS_Y is
+        // positive pushing the stick DOWN/toward the player, which already
+        // reads as "pull it toward me" = backward = increasing y, so this is
+        // NOT flipped - only AXIS_Z (right stick vertical) is, since pushing
+        // that stick UP should raise the object, the opposite of AXIS_Z's
+        // own positive-is-down convention. The D-pad's UP/DOWN keys (below)
+        // needed the equivalent flip applied explicitly, since a button has
+        // no physical "pushed away from you" motion to read the sense from
+        // the way a stick does.
         stickY = deadzone(event.getAxisValue(MotionEvent.AXIS_Y))
         stickZ = deadzone(-event.getAxisValue(MotionEvent.AXIS_Z))
+        // Past the same deadzone real movement uses, not merely "an event
+        // arrived" - some controllers deliver a low-level trickle of
+        // ACTION_MOVE events even at physical rest, which would otherwise
+        // defeat the whole point of the idle/attract-prompt timer this
+        // drives.
+        if (stickX != 0f || stickY != 0f || stickZ != 0f) {
+            onInputActivity?.invoke()
+        }
         return true
     }
 
@@ -146,6 +170,12 @@ class InputController {
      * code) for [KeyEvent.startTracking] below - Returns true if handled.
      */
     fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        val handled = onKeyDownInternal(keyCode, event)
+        if (handled) onInputActivity?.invoke()
+        return handled
+    }
+
+    private fun onKeyDownInternal(keyCode: Int, event: KeyEvent): Boolean {
         return when (keyCode) {
             KeyEvent.KEYCODE_DPAD_LEFT -> {
                 dpadX = -1f
@@ -155,15 +185,23 @@ class InputController {
                 dpadX = 1f
                 true
             }
-            // See onGenericMotionEvent's comment: "up" means further into the
-            // room (X/Y mode) or higher (X/Z mode), same non-flipped sense as
-            // AXIS_Y/AXIS_Z respectively.
+            // Room-anchored, not "into the room": the listener sits facing
+            // the front wall (oamd.hpp's y=0 - see Position's own comment),
+            // the way anyone sitting in front of a screen actually faces -
+            // so "up"/forward is TOWARD that wall (decreasing y), matching
+            // both the analog stick (pushing it away from you already means
+            // forward, unchanged below) and the top-down panel's own screen
+            // layout (RoomView.kt draws the front wall at the top). This was
+            // previously inverted here only, not on the stick - real-device
+            // testing surfaced it as the two input methods disagreeing with
+            // each other, not just "feels backwards." X/Z mode: up still
+            // means higher, unaffected by any of this.
             KeyEvent.KEYCODE_DPAD_UP -> {
-                dpadSecondary = 1f
+                dpadSecondary = -1f
                 true
             }
             KeyEvent.KEYCODE_DPAD_DOWN -> {
-                dpadSecondary = -1f
+                dpadSecondary = 1f
                 true
             }
             // Otherwise a no-op beyond consuming the event: which action
@@ -250,12 +288,20 @@ class InputController {
         }
     }
 
-    /** Call from Activity.onKeyLongPress. Returns true if handled. */
+    /**
+     * Call from Activity.onKeyLongPress. Returns true if handled.
+     *
+     * A presenter's "and... reset" button: instantly snaps the selected
+     * object back onto its planned course rather than waiting out the
+     * usual ~1.5s spring-back decay. Replaces what used to be here (cycling
+     * the selected object) - a no-op with a single interactive object, so
+     * there was nothing real lost by repurposing the gesture.
+     */
     fun onKeyLongPress(keyCode: Int): Boolean {
         return when (keyCode) {
             KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER,
             KeyEvent.KEYCODE_BUTTON_A -> {
-                NativeBridge.nativeCycleSelectedObject()
+                NativeBridge.nativeSnapSelectedToCourse()
                 longPressConsumed = true
                 true
             }
