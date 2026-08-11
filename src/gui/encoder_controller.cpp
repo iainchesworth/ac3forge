@@ -224,6 +224,11 @@ std::vector<float> interleave_reordered(std::span<const std::vector<float>> chan
 
 struct EncoderController::Source {
     ac3::io::WavData wav;
+    // "orbit51.wav" (or the raw path if it was never a local file) - what
+    // sourceModel/sourceShapes label this source with, and what a repeated
+    // add of the same file overwrites rather than duplicates would need to
+    // disambiguate.
+    QString path;
 };
 
 EncoderController::EncoderController(QObject* parent) : QObject(parent) {
@@ -978,6 +983,43 @@ QString EncoderController::effectiveLabel() const {
     return channelShapeName();
 }
 
+std::vector<plan::SourceShape> EncoderController::sourceShapes() const {
+    std::vector<plan::SourceShape> shapes;
+    if (!source_) {
+        return shapes;
+    }
+    shapes.push_back({.channels = source_->wav.channels.size(),
+                      .label = QFileInfo(source_->path).fileName().toStdString()});
+    for (const auto& extra : extra_sources_) {
+        shapes.push_back({.channels = extra->wav.channels.size(),
+                          .label = QFileInfo(extra->path).fileName().toStdString()});
+    }
+    return shapes;
+}
+
+std::optional<plan::Routing> EncoderController::routingForSources(const plan::ChannelPlan& target,
+                                                                   const plan::Plan& p) const {
+    if (!source_) {
+        return std::nullopt;
+    }
+    if (!has_explicit_assignment_) {
+        if (!extra_sources_.empty()) {
+            // Automatic panning only ever meant something for one source;
+            // several with no explicit assignment is refused the same way
+            // ac3cli's src=/map= refuses it (see main.cpp's
+            // routing_for_sources) rather than inventing an automatic
+            // multi-file blend nothing else here defines.
+            return std::nullopt;
+        }
+        return plan::route(target, source_->wav.channels.size(), p.meta.cmixlev,
+                           p.meta.surmixlev);
+    }
+    const auto shapes = sourceShapes();
+    return target.bed_acmod == ac3::Acmod::kDualMono
+              ? plan::dual_mono_routing(shapes, assignment_)
+              : plan::route(target, shapes, assignment_);
+}
+
 void EncoderController::refreshRouting() {
     const auto p = currentPlan();
     const auto label = effectiveLabel();
@@ -999,8 +1041,14 @@ void EncoderController::refreshRouting() {
     }
 
     const auto cp = effectiveChannelPlan();
-    const auto routing = plan::route(cp, source_->wav.channels.size(), p.meta.cmixlev,
-                                     p.meta.surmixlev);
+    if (!has_explicit_assignment_ && !extra_sources_.empty()) {
+        routing_summary_ = QStringLiteral("%1 sources loaded — set an assignment for each "
+                                          "channel below.")
+                               .arg(static_cast<int>(extra_sources_.size()) + 1);
+        emit routingChanged();
+        return;
+    }
+    const auto routing = routingForSources(cp, p);
     if (!routing) {
         routing_summary_ = QStringLiteral("%1 source channels — %2")
                                .arg(source_->wav.channels.size())
@@ -1195,8 +1243,7 @@ std::vector<bool> EncoderController::fedChannels() const {
     if (!source_) {
         return std::vector<bool>(count, true);
     }
-    const auto routing = plan::route(cp, source_->wav.channels.size(), p.meta.cmixlev,
-                                     p.meta.surmixlev);
+    const auto routing = routingForSources(cp, p);
     if (!routing) {
         return std::vector<bool>(count, true);
     }
@@ -2185,6 +2232,14 @@ void EncoderController::loadSourceFile(const QUrl& url) {
         source_ready_ = false;
         source_path_ = path;
         source_info_.clear();
+        // Loading a new primary - successfully or not - always starts a
+        // fresh source list: an extra or an assignment made sense relative
+        // to whatever was loaded before, and there is no honest way to
+        // carry either over to a source that failed to load at all.
+        extra_sources_.clear();
+        assignment_ = plan::Assignment{};
+        touched_channels_.clear();
+        has_explicit_assignment_ = false;
         object_count_ = 0;
         refreshObjectConfigs();
         clearLayout();
@@ -2248,7 +2303,13 @@ void EncoderController::loadSourceFile(const QUrl& url) {
                        .arg(channels == 1 ? QString() : QStringLiteral("s"));
     object_count_ = static_cast<int>(std::min<std::size_t>(channels, 15));
     refreshObjectConfigs();
-    source_ = std::make_unique<Source>(Source{std::move(*wav)});
+    // Same reasoning as the failure branch above - a fresh primary starts a
+    // fresh source list, even when the read itself succeeds.
+    extra_sources_.clear();
+    assignment_ = plan::Assignment{};
+    touched_channels_.clear();
+    has_explicit_assignment_ = false;
+    source_ = std::make_unique<Source>(Source{std::move(*wav), path});
     source_path_ = path;
     source_ready_ = problem.isEmpty();
     emit sourceChanged();
@@ -2291,6 +2352,198 @@ void EncoderController::loadSourceFile(const QUrl& url) {
     setStatus(source_ready_ ? QStringLiteral("Ready to encode %1.").arg(QFileInfo(path).fileName())
                             : QStringLiteral("Cannot encode %1: %2")
                                   .arg(QFileInfo(path).fileName(), problem));
+}
+
+// ---------------------------------------------------------------------------
+// Multi-source input and the assignment table
+// ---------------------------------------------------------------------------
+
+QVariantList EncoderController::sourceModel() const {
+    QVariantList out;
+    if (!source_) {
+        return out;
+    }
+    auto addRow = [&](const QString& path, const ac3::io::WavData& wav, bool primary) {
+        QVariantMap row;
+        row[QStringLiteral("index")] = static_cast<int>(out.size());
+        row[QStringLiteral("label")] = QFileInfo(path).fileName();
+        row[QStringLiteral("path")] = path;
+        row[QStringLiteral("channels")] = static_cast<int>(wav.channels.size());
+        row[QStringLiteral("primary")] = primary;
+        out.append(row);
+    };
+    addRow(source_->path, source_->wav, true);
+    for (const auto& extra : extra_sources_) {
+        addRow(extra->path, extra->wav, false);
+    }
+    return out;
+}
+
+QVariantList EncoderController::assignmentRows() const {
+    QVariantList out;
+    const auto shapes = sourceShapes();
+    for (std::size_t s = 0; s < shapes.size(); ++s) {
+        for (std::size_t c = 0; c < shapes[s].channels; ++c) {
+            QVariantMap row;
+            row[QStringLiteral("source")] = static_cast<int>(s);
+            row[QStringLiteral("channel")] = static_cast<int>(c);
+            row[QStringLiteral("sourceLabel")] = QString::fromStdString(shapes[s].label);
+            row[QStringLiteral("destToken")] =
+                to_qstring(plan::format_destination(assignment_.at(s, c)));
+            out.append(row);
+        }
+    }
+    return out;
+}
+
+QStringList EncoderController::unassignedWarnings() const {
+    QStringList out;
+    if (!has_explicit_assignment_ && extra_sources_.empty()) {
+        // Automatic single-source routing accounts for every source channel
+        // by construction - there is nothing here to warn about. More than
+        // one source with nothing explicit set yet is the OTHER thing
+        // routingForSources refuses to guess at (see its own comment), so
+        // that case warns even before setAssignment has been called once -
+        // every one of those channels genuinely goes nowhere right now.
+        return out;
+    }
+    const auto shapes = sourceShapes();
+    for (const auto& [s, c] : assignment_.unassigned(shapes)) {
+        // Assignment::unassigned() cannot distinguish a channel explicitly
+        // set to "none" from one nobody has visited at all (see
+        // touched_channels_'s own comment) - subtracting this set is what
+        // lets an intentional "none" actually silence the warning instead
+        // of nagging forever.
+        if (touched_channels_.contains({s, c})) {
+            continue;
+        }
+        out.append(QStringLiteral("%1 ch %2 is loaded but goes nowhere")
+                       .arg(QString::fromStdString(shapes[s].label))
+                       .arg(c + 1));
+    }
+    return out;
+}
+
+void EncoderController::refreshAfterSourceListChange() {
+    const auto shapes = sourceShapes();
+    std::size_t channels = 0;
+    for (const auto& shape : shapes) {
+        channels += shape.channels;
+    }
+    object_count_ = static_cast<int>(std::min<std::size_t>(channels, 15));
+    refreshObjectConfigs();
+    emit sourceChanged();
+    refreshRouting();
+    if (extra_sources_.empty()) {
+        // Back to exactly one source - loadSourceFile's own "what it holds"
+        // preview already set a status line the last time the primary
+        // changed, and there is nothing new to say here.
+        return;
+    }
+    // No per-file "what it holds" preview for multi-source yet - which
+    // source's channels would even own which meter label is an Assign-table
+    // question, not a layout one (see the handoff's own "meters read the
+    // one inventory" framing). Meters stay at whatever the last real
+    // routing left them; this status line is the immediate, honest summary
+    // instead.
+    setStatus(QStringLiteral("%1 sources loaded — set an assignment for each channel below.")
+                  .arg(static_cast<int>(shapes.size())));
+}
+
+void EncoderController::addSourceFile(const QUrl& url) {
+    if (!source_) {
+        // No primary yet - the first file loaded through either entry point
+        // becomes it, so a caller offering one "add a source" affordance
+        // never has to know which entry point to use first.
+        loadSourceFile(url);
+        return;
+    }
+    const QString path = url.isLocalFile() ? url.toLocalFile() : url.toString();
+    auto wav = ac3::io::read_wav(path.toStdString());
+    if (!wav) {
+        setStatus(QStringLiteral("Could not read %1: %2")
+                      .arg(QFileInfo(path).fileName(),
+                           QString::fromUtf8(ac3::io::describe(wav.error()).data(),
+                                             static_cast<qsizetype>(
+                                                 ac3::io::describe(wav.error()).size()))));
+        return;
+    }
+    if (wav->sample_rate != source_->wav.sample_rate) {
+        // plan::render has no notion of resampling, and a silently
+        // mismatched pair would drift apart rather than error - the same
+        // reasoning ac3cli's own load_sources() gives for the identical
+        // check (see main.cpp).
+        setStatus(QStringLiteral("%1 is %2 Hz, but the loaded source is %3 Hz — every source "
+                                 "must share a sample rate.")
+                      .arg(QFileInfo(path).fileName())
+                      .arg(wav->sample_rate)
+                      .arg(source_->wav.sample_rate));
+        return;
+    }
+    extra_sources_.push_back(std::make_unique<Source>(Source{std::move(*wav), path}));
+    refreshAfterSourceListChange();
+}
+
+void EncoderController::removeSource(int index) {
+    if (index == 0) {
+        // The primary going away drops everything else with it - there is
+        // no honest way to guess which extra, if any, should be promoted in
+        // its place. Mirrors loadSourceFile's own reset-on-failure path.
+        source_.reset();
+        source_ready_ = false;
+        source_path_.clear();
+        source_info_.clear();
+        extra_sources_.clear();
+        assignment_ = plan::Assignment{};
+        touched_channels_.clear();
+        has_explicit_assignment_ = false;
+        object_count_ = 0;
+        refreshObjectConfigs();
+        clearLayout();
+        emit sourceChanged();
+        setStatus(QStringLiteral("Choose a WAV file, or record from a capture device."));
+        return;
+    }
+    const auto extra_index = static_cast<std::size_t>(index - 1);
+    if (!source_ || extra_index >= extra_sources_.size()) {
+        return;
+    }
+    extra_sources_.erase(extra_sources_.begin() + static_cast<std::ptrdiff_t>(extra_index));
+    // The removed source's rows addressed positions by index, and every
+    // later source's index just shifted down by one - there is no honest
+    // way to guess which of its old rows survive at the new numbering, so
+    // this clears and asks for the assignment to be redone rather than risk
+    // silently misrouting a channel. Automatic routing resumes on its own
+    // once exactly one source is left (see routingForSources).
+    assignment_ = plan::Assignment{};
+    touched_channels_.clear();
+    has_explicit_assignment_ = !extra_sources_.empty();
+    refreshAfterSourceListChange();
+}
+
+void EncoderController::setAssignment(int sourceIndex, int channel, const QString& destToken) {
+    if (!source_ || sourceIndex < 0 || channel < 0) {
+        return;
+    }
+    const auto dest = plan::parse_destination(destToken.toStdString());
+    if (!dest) {
+        return;
+    }
+    assignment_.set(static_cast<std::size_t>(sourceIndex), static_cast<std::size_t>(channel),
+                    *dest);
+    touched_channels_.insert({static_cast<std::size_t>(sourceIndex),
+                              static_cast<std::size_t>(channel)});
+    has_explicit_assignment_ = true;
+    emit sourceChanged();
+    refreshRouting();
+}
+
+void EncoderController::clearAssignment() {
+    assignment_ = plan::Assignment{};
+    touched_channels_.clear();
+    has_explicit_assignment_ = false;
+    emit sourceChanged();
+    refreshRouting();
 }
 
 // ---------------------------------------------------------------------------
@@ -2352,6 +2605,20 @@ void EncoderController::encodeTo(const QUrl& url) {
         return;
     }
 
+    // Built and validated here, once, rather than inside encodeChannels -
+    // the same routing the pre-encode preview (refreshRouting/fedChannels)
+    // already agreed on, not a second computation that could disagree with
+    // it. Object mode needs none of this: it has no Routing at all.
+    const auto cp = plan::resolve(p);
+    const auto routing = atmos_enabled_ ? std::nullopt : routingForSources(cp, p);
+    if (!atmos_enabled_ && !routing) {
+        setStatus(extra_sources_.empty()
+                      ? to_qstring(plan::describe(plan::PlanError::kNoSourceLayout))
+                      : QStringLiteral("Set an assignment for every loaded channel before "
+                                       "encoding."));
+        return;
+    }
+
     const QString path = url.isLocalFile() ? url.toLocalFile() : url.toString();
     output_path_ = path;
     emit outputChanged();
@@ -2363,30 +2630,33 @@ void EncoderController::encodeTo(const QUrl& url) {
     setStatus(QStringLiteral("Encoding…"));
 
     const auto sample_rate = source_->wav.sample_rate;
-    // The WAV payload is copied into the worker so the GUI thread stays free
-    // to swap the loaded source while an encode runs.
+    // Concatenated in source order (source 0 first) - the same flattening
+    // Assignment/Routing already assume, and the identity permutation for
+    // the single-source case, so nothing here changes when only one source
+    // is loaded. The WAV payload is copied into the worker so the GUI
+    // thread stays free to swap the loaded sources while an encode runs.
     std::vector<std::vector<float>> planes = source_->wav.channels;
+    for (const auto& extra : extra_sources_) {
+        planes.insert(planes.end(), extra->wav.channels.begin(), extra->wav.channels.end());
+    }
 
     if (atmos_enabled_) {
         encodeObjects(path, std::move(planes), sample_rate);
         return;
     }
-    encodeChannels(path, std::move(planes), sample_rate);
+    encodeChannels(path, std::move(planes), *routing, sample_rate);
 }
 
 void EncoderController::encodeChannels(const QString& path,
                                        std::vector<std::vector<float>> planes,
+                                       const plan::Routing& routing,
                                        std::uint32_t sample_rate) {
     auto p = currentPlan();
     const auto cp = plan::resolve(p);
     const auto label = effectiveLabel();
-    const auto routing = plan::route(cp, planes.size(), p.meta.cmixlev, p.meta.surmixlev);
-    if (!routing) {
-        setBusy(false);
-        setStatus(to_qstring(plan::describe(plan::PlanError::kNoSourceLayout)));
-        emit encodeFinished(false, status());
-        return;
-    }
+    // routing is already built and validated by encodeTo, via
+    // routingForSources - this function cannot silently disagree with what
+    // the pre-encode preview already showed.
 
     // §5.4.2.8 wants dialogue level below full scale, and measuring it needs
     // the whole programme (the BS.1770 relative gate does), so it happens once
@@ -2420,7 +2690,7 @@ void EncoderController::encodeChannels(const QString& path,
     setMetering(true);
 
     const bool eac3 = p.codec == plan::Codec::kEac3;
-    std::ignore = QtConcurrent::run([this, path, p, routing = *routing, cp, sample_rate,
+    std::ignore = QtConcurrent::run([this, path, p, routing, cp, sample_rate,
                                      eac3, label, planes = std::move(planes)]() mutable {
         const auto coded_count = static_cast<std::size_t>(routing.coded_channels);
         // Heap-allocated, not stack: each carries a multi-KB internal history
@@ -2432,7 +2702,14 @@ void EncoderController::encodeChannels(const QString& path,
         ac3::analysis::LevelMeter meter{cp.bed_acmod, cp.bed_lfe, sample_rate,
                                         static_cast<int>(coded_count)};
 
-        const std::size_t total = planes.front().size();
+        // The longest loaded channel, not just channel 0's - a run with
+        // several sources of different lengths covers all of them (each
+        // shorter one below simply pads with silence past its own end)
+        // rather than truncating to whichever happens to be shortest.
+        std::size_t total = 0;
+        for (const auto& channel : planes) {
+            total = std::max(total, channel.size());
+        }
         std::vector<std::vector<float>> source(planes.size(),
                                                std::vector<float>(ac3::kSamplesPerFrame));
         std::vector<std::vector<float>> block(coded_count,
@@ -2464,9 +2741,13 @@ void EncoderController::encodeChannels(const QString& path,
             // sees only the real ones, so padding cannot pull the RMS down.
             const auto valid = std::min<std::size_t>(ac3::kSamplesPerFrame, total - start);
             for (std::size_t ch = 0; ch < planes.size(); ++ch) {
+                // Each channel's OWN length, not the run's overall total: a
+                // shorter source among several pads with silence from where
+                // IT ends, not from wherever the longest one does.
+                const auto len = planes[ch].size();
                 for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
                     const std::size_t at = start + static_cast<std::size_t>(i);
-                    source[ch][static_cast<std::size_t>(i)] = at < total ? planes[ch][at] : 0.0f;
+                    source[ch][static_cast<std::size_t>(i)] = at < len ? planes[ch][at] : 0.0f;
                 }
             }
             plan::render(routing, in, out, ac3::kSamplesPerFrame);
@@ -2626,7 +2907,13 @@ void EncoderController::encodeObjects(const QString& path,
 
         ac3::analysis::LevelMeter meter{ac3::Acmod::k3_2, true, sample_rate};
 
-        const std::size_t total = planes.front().size();
+        // The longest of the channels actually used as an object - see
+        // encodeChannels' identical reasoning for why this is a max, not
+        // just channel 0's length, once more than one source is in play.
+        std::size_t total = 0;
+        for (std::size_t ch = 0; ch < nobjects; ++ch) {
+            total = std::max(total, planes[ch].size());
+        }
         std::vector<std::vector<float>> block(nobjects,
                                               std::vector<float>(ac3::kSamplesPerFrame));
         std::vector<std::span<const float>> views(nobjects);
@@ -2644,9 +2931,10 @@ void EncoderController::encodeObjects(const QString& path,
             }
             const auto valid = std::min<std::size_t>(ac3::kSamplesPerFrame, total - start);
             for (std::size_t ch = 0; ch < nobjects; ++ch) {
+                const auto len = planes[ch].size();
                 for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
                     const std::size_t at = start + static_cast<std::size_t>(i);
-                    block[ch][static_cast<std::size_t>(i)] = at < total ? planes[ch][at] : 0.0f;
+                    block[ch][static_cast<std::size_t>(i)] = at < len ? planes[ch][at] : 0.0f;
                 }
                 views[ch] = block[ch];
             }
