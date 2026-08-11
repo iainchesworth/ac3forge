@@ -183,6 +183,66 @@ Wikipedia's Meridian Lossless Packing page, the Hydrogenaudio wiki entry, and Ro
 "Lossless Compression of Audio Data" textbook chapter. None describe the algorithm in
 implementable detail; useful only for vocabulary and pointing at further primary citations.
 
+### What the two patents actually describe
+
+Read in this session (Google Patents' rendering of each). The AES papers themselves are still
+unread — every free mirror tried (scispace, decoy.iki.fi, ResearchGate) either 403'd or failed
+TLS; the Stuart/Craven Tokyo paper downloaded as a raw PDF but this session had no PDF-page
+renderer available to read it. What follows comes from the patents alone.
+
+!!! warning "Caveat before this drives any code"
+    The quotes below are an AI-summarized read of Google Patents' web rendering, not a direct
+    read of the primary USPTO document. Good enough to plan against; not good enough to cite
+    verbatim in a code comment without first checking the fragment against the actual patent
+    PDF (`image-ppubs.uspto.gov/dirsearch-public/print/downloadPdf/6891482` and `/7193538`) —
+    the same discipline `core/crc16.hpp` and friends already apply to A/52 section numbers.
+
+**Prediction (US 6,891,482 B2).** The encoding filter is
+`1 / [1 + B(z⁻¹)] × [1 + A(z⁻¹)]`, where A and B are FIR filters with rational coefficients
+(shared denominator, e.g. all coefficients of the form m/16 or m/64). A worked third-order
+example bounds each coefficient to a range like `-192 ≤ 64a₁ ≤ 192`. The loop structure: a
+summing node feeds an integer rounding quantizer with unity step size (so its output is always
+integer-valued and exactly representable), and that output feeds back through filter B to the
+same summing node. Per-block state variables are the first *n* input and output samples (for an
+*n*th-order filter), transmitted so a restart point can initialize the loop exactly.
+
+**Entropy coding (US 6,891,482 B2).** Not a single fixed Huffman table: 17 tables, selected
+per block by the block's peak signal level (signal-adaptive, Laplacian-PDF-shaped). Only the 4
+most-significant *varying* bits of the residual are Huffman-coded; the remaining
+less-significant bits are sent unaltered/uncoded after the Huffman word. Quoted overhead versus
+an optimal entropy coder: "typically less than optimal by only about 0.1 to 0.3 bit/sample."
+
+**Matrixing (US 7,193,538 B2).** Multichannel decorrelation is a cascade of **Primitive Matrix
+Quantisers (PMQs)**, each modifying one channel by adding proportions of the others while
+staying exactly invertible — restricted to matrices with determinant 1, which is why encoded
+coefficients get scaled (e.g. by 4/3) and the decoder applies the compensating inverse scale.
+This directly explains several `restart_header()` fields the bitstream-description PDF names
+but doesn't define the *purpose* of:
+
+  - `dither_seed` (u(23)) — PMQ quantization needs synchronized dither between encoder and
+    decoder to stay lossless; the patent calls this "diamond dither" (sum of two independent
+    rectangular-PDF sequences → triangular PDF), seeded and regenerated identically on both
+    sides from this field.
+  - `max_shift` (s(4)) — the patent's `output_shift`: downmix coefficients can push the result
+    past 24-bit range, so the encoder pre-scales by a power of two and the decoder applies the
+    compensating shift before clipping, rather than constraining coefficients to unacceptably
+    low levels.
+  - `max_lsbs` (u(5)) — the patent's LSB-bypass path: a PMQ with a sub-unity gain coefficient
+    (e.g. ±½) produces one extra bit of precision the main path can't carry; that bit rides
+    separately and gets shifted back in in the decoder.
+  - `lossless_check` (u(8)) — an 8-bit parity word the encoder computes over the *actual*
+    (multichannel) or *simulated* (downmix) output before transmission, so a decoder can detect
+    an algorithmic mismatch rather than silently losing losslessness; each channel's word is
+    bit-rotated by its channel number so an identical error across channels is still caught.
+  - `ch_assign[]` (u(6) per channel) — recovers channel order after the encoder permutes
+    channels via partial pivoting (favouring the first two channels for the 2-channel downmix
+    substream).
+
+None of this is final — it needs the AES papers (systems-level framing) and a direct read of
+the patent PDFs (not just an AI summary of them) before it's solid enough to write `block_data()`
+against. But it's enough to know the shape of the remaining work, and it already retroactively
+explains fields `sync.hpp`'s next increment (`restart_header()`) will need to carry.
+
 ## v1 scope
 
 Given the size of the gap above, initial implementation targets the fully-specified 2/6/8-channel
