@@ -43,15 +43,24 @@ target_link_libraries(mux_mkv PRIVATE matroska::matroska)
 # single custom target every other example depends on avoids that without
 # serializing the examples' own compiles against each other.)
 #
-# Gated on the real BUILD_SHARED_LIBS variable, not left unconditional and
-# relying on TARGET_RUNTIME_DLLS expanding to nothing for a static build:
+# Gated on BUILD_SHARED_LIBS AND WIN32, not left unconditional and relying
+# on TARGET_RUNTIME_DLLS expanding to nothing when it doesn't apply:
 # `cmake -E copy_if_different` with zero source arguments is a hard error
 # ("Usage: ..."), not the graceful no-op that would make an always-on custom
-# target safe either way - confirmed by actually running a static configure
-# with this unconditional, not assumed. ac3cli/ac3gui/tests don't need any
-# of this regardless of BUILD_SHARED_LIBS - they already share
-# ${CMAKE_BINARY_DIR}/bin with the DLLs directly.
-if(BUILD_SHARED_LIBS)
+# target safe either way - confirmed twice over by actually configuring,
+# not assumed either time. A static build is the first case (nothing to
+# copy at all). A shared *Linux* build is the second, found only by
+# actually building config-linux-llvm-shared in WSL: TARGET_RUNTIME_DLLS is
+# a Windows-only generator expression (CMake docs: "may not be used on
+# other platforms") and is empty there too, for a real reason rather than
+# an oversight - Linux resolves a build-tree .so via an automatically
+# computed RPATH pointing straight at wherever it actually sits, so
+# mux_mkv/ac3cli/ac3tests/etc. all just find libac3forge.so and
+# libmatroska.so without any of this copying, unlike Windows' same-
+# directory-only DLL search. ac3cli/ac3gui/tests don't need any of this
+# either, on any platform - they already share ${CMAKE_BINARY_DIR}/bin
+# with the DLLs directly (Windows), or already work via RPATH (Linux/macOS).
+if(BUILD_SHARED_LIBS AND WIN32)
     add_custom_target(examples_copy_runtime_dlls
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "$<TARGET_RUNTIME_DLLS:mux_mkv>"
