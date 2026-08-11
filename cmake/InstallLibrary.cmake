@@ -11,6 +11,11 @@
 # and add_subdirectory(src/matroska), before include(Packaging) - CPack's
 # own library component (cmake/Packaging.cmake) packages exactly what gets
 # install()'d here.
+#
+# Every install() rule below carries COMPONENT library: without one, CPack
+# files it under its own "Unspecified" component, inconsistent once
+# component-based packaging is on (see cmake/Packaging.cmake) - same reason
+# src/cli/CMakeLists.txt's ac3cli install() carries COMPONENT runtime.
 # ---------------------------------------------------------------------------
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
@@ -30,21 +35,23 @@ include(CMakePackageConfigHelpers)
 # part of any export set.
 install(TARGETS forge_objects forge_static forge_shared
     EXPORT ac3forgeTargets
-    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
-    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-    ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT library
+    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT library
+    ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT library)
 
 install(TARGETS matroska_objects matroska_static matroska_shared
     EXPORT matroskaTargets
-    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
-    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-    ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT library
+    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT library
+    ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT library)
 
 # Source headers, from both libraries' include/ trees.
 install(DIRECTORY "${PROJECT_SOURCE_DIR}/src/lib/include/"
-    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+    COMPONENT library)
 install(DIRECTORY "${PROJECT_SOURCE_DIR}/src/matroska/include/"
-    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+    COMPONENT library)
 
 # Generated headers - ac3/version.hpp (from ac3/version.hpp.in) and the two
 # generate_export_header() outputs - live in each library's own binary dir,
@@ -56,9 +63,11 @@ install(DIRECTORY "${PROJECT_SOURCE_DIR}/src/matroska/include/"
 install(FILES
         "${CMAKE_BINARY_DIR}/src/lib/generated/ac3/version.hpp"
         "${CMAKE_BINARY_DIR}/src/lib/generated/ac3/export.hpp"
-    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/ac3")
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/ac3"
+    COMPONENT library)
 install(FILES "${CMAKE_BINARY_DIR}/src/matroska/generated/matroska/export.hpp"
-    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/matroska")
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/matroska"
+    COMPONENT library)
 
 # The config file find_package(ac3forge) actually loads. No find_dependency()
 # calls needed in ac3forgeConfig.cmake.in: with the platform-audio code
@@ -85,14 +94,17 @@ write_basic_package_version_file(
 install(FILES
         "${CMAKE_CURRENT_BINARY_DIR}/ac3forgeConfig.cmake"
         "${CMAKE_CURRENT_BINARY_DIR}/ac3forgeConfigVersion.cmake"
-    DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/ac3forge")
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/ac3forge"
+    COMPONENT library)
 
 install(EXPORT ac3forgeTargets
     FILE ac3forgeTargets.cmake
     NAMESPACE ac3::
-    DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/ac3forge")
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/ac3forge"
+    COMPONENT library)
 
 install(EXPORT matroskaTargets
     FILE matroskaTargets.cmake
     NAMESPACE matroska::
-    DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/ac3forge")
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/ac3forge"
+    COMPONENT library)

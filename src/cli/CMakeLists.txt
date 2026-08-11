@@ -29,6 +29,9 @@ endif()
 # landed yet.
 include(GNUInstallDirs)
 
+# COMPONENT runtime: without one, CPack files this under its own
+# "Unspecified" component, inconsistent once component-based packaging is
+# on for the library (see cmake/InstallLibrary.cmake, cmake/Packaging.cmake).
 install(TARGETS ac3cli
-    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
-    BUNDLE DESTINATION ".")
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT runtime
+    BUNDLE DESTINATION "." COMPONENT runtime)
