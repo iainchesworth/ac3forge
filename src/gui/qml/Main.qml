@@ -765,6 +765,15 @@ ApplicationWindow {
                                 Layout.alignment: Qt.AlignHCenter
                                 visible: EncoderController.surround
                             }
+
+                            Text {
+                                Layout.fillWidth: true
+                                visible: EncoderController.hasLevels && EncoderController.dualMono
+                                text: qsTr("No room to draw: dual mono has no soundstage.")
+                                color: Theme.textMuted
+                                font.pixelSize: Theme.fontSmall
+                                horizontalAlignment: Text.AlignHCenter
+                            }
                         }
 
                         Text {
@@ -1062,20 +1071,47 @@ ApplicationWindow {
                                     Layout.fillWidth: true
                                     spacing: 6
 
+                                    // 1+1 is always bedChoices[0] - drawn apart from
+                                    // the seven location-mask beds with a rule
+                                    // rather than sharing their row, so it reads as
+                                    // categorically different (a bed, not a
+                                    // soundstage) without fighting Fusion's own
+                                    // button chrome for a literal dashed border.
+                                    Button {
+                                        objectName: "bedDualMonoButton"
+                                        text: EncoderController.bedChoices[0].id
+                                        highlighted: EncoderController.bedIndex === 0
+                                        enabled: !EncoderController.busy
+                                                 && !EncoderController.atmosEnabled
+                                        onClicked: EncoderController.bedIndex = 0
+
+                                        ToolTip.visible: hovered
+                                        ToolTip.text: qsTr("Dual mono — two independent programmes, not a stereo pair")
+                                    }
+
+                                    Rectangle {
+                                        Layout.preferredWidth: 1
+                                        Layout.fillHeight: true
+                                        color: Theme.divider
+                                    }
+
                                     Repeater {
-                                        model: EncoderController.bedChoices
+                                        // bedChoices[0] is the dual-mono button above;
+                                        // this repeater is every other bed, offset by
+                                        // one so its own bedIndex stays correct.
+                                        model: EncoderController.bedChoices.length - 1
 
                                         delegate: Button {
-                                            required property var modelData
                                             required property int index
-                                            text: modelData.id
-                                            highlighted: EncoderController.bedIndex === index
+                                            readonly property var choice: EncoderController.bedChoices[index + 1]
+                                            text: choice.id
+                                            highlighted: EncoderController.bedIndex === index + 1
                                             enabled: !EncoderController.busy
                                                      && !EncoderController.atmosEnabled
-                                            onClicked: EncoderController.bedIndex = index
+                                            onClicked: EncoderController.bedIndex = index + 1
 
                                             ToolTip.visible: hovered
-                                            ToolTip.text: modelData.channels
+                                            ToolTip.text: choice.channels
                                         }
                                     }
 
@@ -1083,7 +1119,7 @@ ApplicationWindow {
                                         text: qsTr("LFE")
                                         checked: EncoderController.bedLfe
                                         enabled: !EncoderController.busy
-                                                 && !EncoderController.atmosEnabled
+                                                 && !EncoderController.bedLfeLocked
                                         onToggled: EncoderController.bedLfe = checked
                                     }
 

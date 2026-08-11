@@ -114,6 +114,18 @@ class EncoderController : public QObject {
     // offers AC-3 mono and stereo, and this must not remove that).
     Q_PROPERTY(QVariantList bedChoices READ bedChoices CONSTANT)
     Q_PROPERTY(bool bedLfe READ bedLfe WRITE setBedLfe NOTIFY planChanged)
+    // 1+1 is a bed, not a layout (the handoff's own framing): two
+    // independent programmes sharing one syncframe, not a spatial pair -
+    // drawn first among the bed buttons and, unlike every other bed, with
+    // nothing else able to sit alongside it. QML's hook for styling it and
+    // the Programme 2 metadata block distinctly, rather than every reader
+    // re-deriving "bedIndex 0" == dual mono for themselves.
+    Q_PROPERTY(bool dualMono READ dualMono NOTIFY planChanged)
+    // True for object mode (as extrasLocked already was) OR dual mono - an
+    // independent LFE has no meaning once the bed is two mono programmes
+    // instead of a soundfield, so selecting 1+1 clears and locks it exactly
+    // as it locks the extras below.
+    Q_PROPERTY(bool bedLfeLocked READ bedLfeLocked NOTIFY planChanged)
     // Five rows {id, label, channels, checked, enabled, reason}: `enabled` is
     // false when ticking (or, for an already-ticked row, UNticking) would
     // leave chanmap::allocate() unable to satisfy the result - over the
@@ -162,6 +174,13 @@ class EncoderController : public QObject {
     Q_PROPERTY(double dialogueDb READ dialogueDb WRITE setDialogueDb NOTIFY planChanged)
     Q_PROPERTY(int dialnorm READ dialnorm WRITE setDialnorm NOTIFY planChanged)
     Q_PROPERTY(bool measureDialnorm READ measureDialnorm WRITE setMeasureDialnorm NOTIFY planChanged)
+    // Programme 2's own dialnorm (§5.4.2.16) - meaningless outside dual mono,
+    // where it exists because §5.4.2.8's dialnorm is program 1's and the two
+    // never share a downmix to average across. Same shape as dialnorm/
+    // measureDialnorm; QML gates visibility on dualMono rather than these
+    // hiding themselves, matching every other metadata field here.
+    Q_PROPERTY(int dialnorm2 READ dialnorm2 WRITE setDialnorm2 NOTIFY planChanged)
+    Q_PROPERTY(bool measureDialnorm2 READ measureDialnorm2 WRITE setMeasureDialnorm2 NOTIFY planChanged)
     Q_PROPERTY(int cmixIndex READ cmixIndex WRITE setCmixIndex NOTIFY planChanged)
     Q_PROPERTY(QStringList cmixNames READ cmixNames CONSTANT)
     Q_PROPERTY(int surmixIndex READ surmixIndex WRITE setSurmixIndex NOTIFY planChanged)
@@ -282,9 +301,11 @@ public:
     [[nodiscard]] int bedIndex() const;
     [[nodiscard]] QVariantList bedChoices() const;
     [[nodiscard]] bool bedLfe() const { return bed_lfe_; }
+    [[nodiscard]] bool dualMono() const { return isDualMono(); }
+    [[nodiscard]] bool bedLfeLocked() const { return atmos_enabled_ || isDualMono(); }
     [[nodiscard]] QVariantList extrasModel() const;
     [[nodiscard]] bool extrasLocked() const {
-        return atmos_enabled_ || codec_ == ac3::plan::Codec::kAc3;
+        return atmos_enabled_ || isDualMono() || codec_ == ac3::plan::Codec::kAc3;
     }
     [[nodiscard]] QString channelShapeName() const;
     [[nodiscard]] int channelBudgetUsed() const;
@@ -310,6 +331,8 @@ public:
     [[nodiscard]] double dialogueDb() const { return dialogue_db_; }
     [[nodiscard]] int dialnorm() const { return meta_.dialnorm; }
     [[nodiscard]] bool measureDialnorm() const { return meta_.measure_dialnorm; }
+    [[nodiscard]] int dialnorm2() const { return meta_.dialnorm2; }
+    [[nodiscard]] bool measureDialnorm2() const { return meta_.measure_dialnorm2; }
     [[nodiscard]] int cmixIndex() const { return static_cast<int>(meta_.cmixlev); }
     [[nodiscard]] QStringList cmixNames() const;
     [[nodiscard]] int surmixIndex() const { return static_cast<int>(meta_.surmixlev); }
@@ -326,9 +349,14 @@ public:
     [[nodiscard]] QString layoutName() const { return layout_name_; }
     [[nodiscard]] bool hasLevels() const { return !channel_names_.isEmpty(); }
     // Two or more full-bandwidth channels make a soundfield worth drawing;
-    // mono, and no source at all, do not.
+    // mono, and no source at all, do not. Dual mono's Table 5.8 entry
+    // reuses nfchans=2 (the same "not a layout" placeholder acmod_map's own
+    // comment names), but Ch1/Ch2 are unrelated programmes with no
+    // soundstage between them - fullbw_channel_count alone would say
+    // otherwise, so this checks acmod_ directly rather than trust it here.
     [[nodiscard]] bool surround() const {
-        return hasLevels() && ac3::fullbw_channel_count(acmod_) >= 2;
+        return hasLevels() && acmod_ != ac3::Acmod::kDualMono &&
+              ac3::fullbw_channel_count(acmod_) >= 2;
     }
     [[nodiscard]] QVariantList channelLevels() const { return channel_levels_; }
     [[nodiscard]] QVariantMap soundfield() const { return soundfield_; }
@@ -371,6 +399,8 @@ public:
     void setDialogueDb(double db);
     void setDialnorm(int value);
     void setMeasureDialnorm(bool on);
+    void setDialnorm2(int value);
+    void setMeasureDialnorm2(bool on);
     void setCmixIndex(int index);
     void setSurmixIndex(int index);
     void setMixmeta(bool on);
@@ -526,6 +556,12 @@ private:
     // What the routing summary calls this plan: "5.1 bed" for object mode,
     // else the derived shape name (channelShapeName()).
     [[nodiscard]] QString effectiveLabel() const;
+    // bed_acmod_ == kDualMono - checked often enough (currentPlan(),
+    // channelShapeName(), extrasLocked()...) to name once. 1+1 is a bed, not
+    // a location mask (see kBeds' own comment and acmod_map's "not a
+    // layout" one in eac3_tables.hpp), so every one of those call sites has
+    // to branch on this rather than run the general chanmap path.
+    [[nodiscard]] bool isDualMono() const { return bed_acmod_ == ac3::Acmod::kDualMono; }
 
     // The primary source plus every extra, in load order - the same
     // concatenation order encodeTo() builds `planes` in, and what
