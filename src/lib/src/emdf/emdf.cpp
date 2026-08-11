@@ -88,12 +88,23 @@ std::vector<std::byte> build_container(std::span<const Payload> payloads, int gr
 
     // §H.2.2.4. What the protection bits actually contain is "implementation
     // dependent and not defined", so no decoder can check them against an
-    // algorithm it does not know; the shortest legal primary field carrying
-    // zero is therefore both compliant and honest. 0b00 is reserved for the
-    // primary length, so eight bits is the floor.
-    container.put(0b01, 2);  // protection_length_primary: 8 bits
-    container.put(0b00, 2);  // protection_length_secondary: absent
-    container.put(0, 8);     // protection_bits_primary
+    // algorithm it does not know - zero-filled is both compliant and honest
+    // regardless of width. But width itself is not free: real Dolby encoders
+    // reserve 32 bits primary + 8 bits secondary (confirmed against an
+    // unmodified commercial Atmos-in-DD+ disc, byte-identical shape to this),
+    // and a decoder that validates the field at all reads exactly that many
+    // bits as the tag - a shorter reservation leaves nowhere for a real,
+    // full-length tag to go. This clean-room encoder still cannot produce
+    // that tag itself (the algorithm is undefined-by-spec, i.e. Dolby's to
+    // know), so these bits stay zero here regardless; matching the width is
+    // what leaves room for the optional, local-only quarantine signer (see
+    // src/quarantine/README.md) to fill them in correctly after the fact,
+    // without the codec depending on it in any way - an unsigned build's
+    // stream is bit-for-bit the same shape either way, just zero-filled.
+    container.put(0b10, 2);  // protection_length_primary: 32 bits
+    container.put(0b01, 2);  // protection_length_secondary: 8 bits
+    container.put(0, 32);    // protection_bits_primary
+    container.put(0, 8);     // protection_bits_secondary
 
     // take() zero-pads to the byte boundary, which is exactly what §H.2.2.1.2
     // asks for: the bits between the end of the container and the boundary
