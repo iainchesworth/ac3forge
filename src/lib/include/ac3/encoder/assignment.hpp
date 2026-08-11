@@ -12,6 +12,7 @@
 
 #include "ac3/core/eac3_tables.hpp"
 #include "ac3/encoder/plan.hpp"
+#include "ac3/export.hpp"
 
 // Multi-source input: an explicit alternative to route()'s automatic,
 // direction-based panning. route() places ONE source onto a target by where
@@ -61,7 +62,7 @@ struct SourceShape {
 // inline with SourceShape, so a caller can grow or shrink its source list
 // without renumbering assignments it already made for channels that did not
 // move.
-class Assignment {
+class AC3FORGE_EXPORT Assignment {
    public:
     void set(std::size_t source, std::size_t channel, Destination dest);
     void clear(std::size_t source, std::size_t channel) {
@@ -104,9 +105,9 @@ class Assignment {
 // assignment is free to leave both programme slots unset, or even (for a
 // target that is not dual mono) unused entirely; dual_mono_routing() is
 // where that shape is required.
-[[nodiscard]] std::optional<Routing> route(const ChannelPlan& target,
-                                           std::span<const SourceShape> sources,
-                                           const Assignment& assignment);
+[[nodiscard]] AC3FORGE_EXPORT std::optional<Routing> route(const ChannelPlan& target,
+                                                            std::span<const SourceShape> sources,
+                                                            const Assignment& assignment);
 
 // Dual mono's routing, expressed as one particular assignment: exactly one
 // channel on kProgramme1 and one on kProgramme2, nothing else required of
@@ -119,8 +120,8 @@ class Assignment {
 // either programme has zero or more than one channel assigned to it - dual
 // mono's two programmes are each a single channel, never a mix (§E1.3, no
 // downmix between them).
-[[nodiscard]] std::optional<Routing> dual_mono_routing(std::span<const SourceShape> sources,
-                                                        const Assignment& assignment);
+[[nodiscard]] AC3FORGE_EXPORT std::optional<Routing> dual_mono_routing(
+    std::span<const SourceShape> sources, const Assignment& assignment);
 
 // Every E-AC-3-forcing choice in one place, generalising plan::carries():
 // an immersive target (any dependent substream), VBR, any Annex E tool
@@ -129,17 +130,17 @@ class Assignment {
 // instead of hand-testing each condition, so a new promotion trigger is
 // added here once rather than at every call site that would otherwise
 // duplicate plan::carries()'s logic.
-[[nodiscard]] Codec derive_codec(const ChannelPlan& target, const Tools& tools,
-                                 const Metadata& meta,
-                                 const std::optional<eac3::VbrConfig>& vbr,
-                                 SampleRate sample_rate);
+[[nodiscard]] AC3FORGE_EXPORT Codec derive_codec(const ChannelPlan& target, const Tools& tools,
+                                                 const Metadata& meta,
+                                                 const std::optional<eac3::VbrConfig>& vbr,
+                                                 SampleRate sample_rate);
 
 // The `map=` token grammar's destination spelling: a Table E2.5 location
 // name (as eac3::chanmap::name() prints it, e.g. "Ls", "LFE2"), "obj", "p1",
 // "p2", or "none" for an explicit, silence-the-warning unassigned. The
 // inverse of parse_destination - round-trips the way format_channels
 // already round-trips through parse_channels.
-[[nodiscard]] std::string format_destination(Destination dest);
-[[nodiscard]] std::optional<Destination> parse_destination(std::string_view token);
+[[nodiscard]] AC3FORGE_EXPORT std::string format_destination(Destination dest);
+[[nodiscard]] AC3FORGE_EXPORT std::optional<Destination> parse_destination(std::string_view token);
 
 }  // namespace ac3::plan

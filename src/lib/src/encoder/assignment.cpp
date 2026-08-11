@@ -1,6 +1,7 @@
 #include "ac3/encoder/assignment.hpp"
 
 #include <algorithm>
+#include <cassert>
 
 namespace ac3::plan {
 
@@ -106,7 +107,13 @@ std::optional<Routing> route(const ChannelPlan& target, std::span<const SourceSh
                 if (coded[coded_index].location != dest.location) {
                     continue;
                 }
-                out.gain[coded_index * total + *flat] = 1.0;
+                // c is always < sources[s].channels (the loop bound above),
+                // and flat_index only returns nullopt for an out-of-range
+                // channel - never provable from here, since NDEBUG (which
+                // the static-analysis build defines) drops assert() as a
+                // narrowing check for this analysis.
+                assert(flat.has_value());
+                out.gain[coded_index * total + *flat] = 1.0;  // NOLINT(bugprone-unchecked-optional-access)
                 found = true;
             }
             if (!found) {
