@@ -72,7 +72,8 @@ const Twiddles2& twiddles2() {
 template <int NLen>
 struct ForwardCosTable {
     static constexpr int kHalf = NLen / 2;
-    std::array<std::array<double, NLen>, kHalf> value{};
+    std::array<std::array<double, static_cast<std::size_t>(NLen)>, static_cast<std::size_t>(kHalf)>
+        value{};
     explicit ForwardCosTable(double alpha) {
         for (int k = 0; k < kHalf; ++k) {
             const double factor = 2.0 * k + 1.0;
