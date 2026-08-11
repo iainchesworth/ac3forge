@@ -16,8 +16,10 @@ this project currently knows versus still has to work out before it can be built
     For `block_data()` itself - the one piece neither Dolby document specifies - two of its
     three DSP stages now exist as standalone, round-trip-tested primitives, independent of
     Dolby's exact wire format (which remains unknown): `matrix.hpp` (the lossless
-    Primitive-Matrix-Quantiser cascade) and `rice.hpp` (Golomb-Rice entropy coding, a genuinely
-    public-domain algorithm). The lossless IIR/FIR predictor loop (Figs. 10/11 in the AES
+    Primitive-Matrix-Quantiser cascade) and `rice.hpp` (Golomb-Rice entropy coding - a
+    well-tested stand-in, now known NOT to be MLP's actual mechanism; see [What "Lossless Coding
+    for Audio Discs" adds](#what-lossless-coding-for-audio-discs-adds) - real MLP uses
+    block-adaptive Huffman tables). The lossless IIR/FIR predictor loop (Figs. 10/11 in the AES
     papers) is the remaining DSP primitive; actually packing any of this into `block_data()`'s
     real bitstream still needs a source more precise than the paraphrased patent/paper
     descriptions available so far. See [What's confirmed versus what's still
@@ -180,12 +182,11 @@ newly-identified candidate, found only via the ones already read.
   at high sample rates, content the JAES paper already restates. No accessible copy was found
   this session either, so it isn't worth chasing further unless a specific gap shows up later
   that the patent + JAES paper's Figs. 8–11 don't cover.
-- **New candidate, not yet read**: Craven, P. G.; Gerzon, M. A. — *"Lossless Coding for Audio
-  Discs"*, *J. Audio Eng. Soc.*, Vol. 44, No. 9, pp. 706–720, 1996 September. Found via both
-  read papers' reference lists (their [7]/[6]) — a full peer-reviewed journal article (not a
-  convention preprint), predates the JAES 2004 paper by 8 years, and is the source both later
-  papers point to for depth on lossless coding technique generally. The single most promising
-  remaining source for `block_data()` detail the read papers gloss over at a systems level.
+- **Read.** Craven, P. G.; Gerzon, M. A. — *"Lossless Coding for Audio Discs"*, *J. Audio Eng.
+  Soc.*, Vol. 44, No. 9, pp. 706–720, 1996 September. The deepest and earliest of the three
+  papers read this session — see [What this paper adds](#what-lossless-coding-for-audio-discs-adds)
+  below. It significantly sharpens (and partly corrects) the entropy-coding picture the later
+  papers left ambiguous.
 
 **Patents (primary, algorithmic detail, foundational IP) — read:**
 
@@ -314,6 +315,49 @@ framing the patents (written for claims, not exposition) don't bother with:
   peak/average data-rate reduction figures (4 bit/sample peak @48 kHz, 8 @96 kHz, 9 @192 kHz)
   and the Tokyo paper's decoder complexity figures (≈27 MIPS for 2-channel @192 kHz, ≈40 MIPS
   for 6-channel @96 kHz) are real published numbers a working implementation should land near.
+
+### What "Lossless Coding for Audio Discs" adds
+
+This 1996 paper is earlier and more foundational than the other two — it develops the ideas from
+first principles rather than describing a finished system, and in doing so gives real mechanism
+detail the later, more polished papers only gesture at.
+
+- **Entropy coding is genuine table-driven Huffman coding, not Rice/Golomb coding** — this is a
+  real correction to the working hypothesis in [What the AES papers
+  add](#what-the-aes-papers-add-to-the-patent-account) above. The paper walks through a full
+  worked example: a synthetic distribution split into a "near" range and a "far" range, one bit
+  spent to say which range a value falls in, then a fixed-width field for the value within that
+  range — and a second worked example with an explicit input-value-to-codeword table for a
+  seven-level distribution, netting real bits-per-sample figures against plain PCM. Critically,
+  it also confirms the adaptive-table mechanism the patent's "17 tables" almost certainly refers
+  to: the encoder keeps "a selection of decoding tables available" and picks whichever suits the
+  current block's sample-value distribution, block by block. `ac3::mlp::rice` (Golomb-Rice) is
+  therefore best understood as a well-defined, testable *stand-in* for this stage — a reasonable
+  near-optimal choice for a Laplacian source, and not a wasted primitive — but not a confirmed
+  match for MLP's actual mechanism, which is table-selected Huffman. Implementing a real
+  MLP-shaped entropy coder needs an actual Huffman table (or table family), not just a Rice
+  parameter.
+- **Predictor state transmission and block-length tradeoffs are explained, not just asserted.**
+  At the start of each block a restart needs the filter's own delay-memory state — "these
+  internal filter data... are termed 'initialization data'" — and a higher filter order directly
+  means more of this per-block overhead, which is the actual reason real designs stay around
+  3rd–4th order rather than going higher (the earlier sources stated the practical order limit;
+  this paper explains why it exists as a real cost/benefit tradeoff, not a rule of thumb).
+- **Error containment motivates the restart-point architecture directly.** IIR predictor errors
+  recirculate indefinitely once introduced, and Huffman coding's variable-length codewords let a
+  single bit error desynchronize the decoder from the encoder — both problems are bounded by
+  packing "full initialisation and restart information" into every block, i.e. exactly the
+  `restart_header()` mechanism already implemented in `ac3::mlp`, now with a first-principles
+  rationale rather than just a bit-layout table to transcribe.
+- **Determinism was a first-order design constraint from the start**, not an incidental
+  refinement: cross-platform bit-exact output "must give bit-exact identical outputs" between
+  independently implemented encoder/decoder predictor pairs is called out explicitly, predating
+  the patent's more mechanical fixed-point/rational-coefficient solution to the same problem.
+- One divergence from the eventual TrueHD/Blu-ray profile, not a contradiction: this paper's own
+  provisional 1996 proposal used block lengths as low as 384 samples, wider than the
+  confirmed 40–160-sample blocks in the actual FBA syntax (`mlp_tables.hpp`'s
+  `samples_per_access_unit`) — later tuning during MLP's evolution into TrueHD, not a conflict
+  to resolve.
 
 ## v1 scope
 

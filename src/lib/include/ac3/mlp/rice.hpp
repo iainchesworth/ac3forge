@@ -10,19 +10,24 @@
 // Theory, 1966; Rice, "Some Practical Universal Noise Coding Techniques",
 // JPL Publication 79-22, 1979) - a public-domain entropy code, independent
 // of and predating MLP, for a geometrically/Laplacian-distributed
-// non-negative source. Both AES papers (see docs/concepts/truehd-mlp.md)
-// describe MLP's entropy stage in exactly these terms: "Audio signals often
-// have a Laplacian distribution... The Rice code provides a simple and
-// near-optimal way of encoding such a signal."
+// non-negative source.
 //
-// This is NOT yet wired to block_data()'s actual bit-level codeword format -
-// neither Dolby document specifies it, and the patent's account (17
-// signal-adaptive Huffman tables, selected by peak level) hasn't been
-// reconciled against this Rice-code framing yet; a per-block Rice parameter
-// k chosen from peak level is a very plausible reading of "17 tables," but
-// that's a hypothesis, not a confirmed equivalence - see
-// docs/concepts/truehd-mlp.md's "What the AES papers add" section. What's
-// implemented here is provably correct on its own terms (round-trips any
+// UPDATE: Craven & Gerzon's "Lossless Coding for Audio Discs" (JAES Vol. 44
+// No. 9, 1996) - the deepest of the three MLP papers read so far - makes
+// clear this is NOT what MLP actually does. MLP's entropy stage is genuine
+// table-driven Huffman coding: a block-adaptive selection among several
+// prefix-code tables matched to Laplacian-shaped statistics, not a
+// parameterised Rice code. This reconciles the patent's "17 tables" account
+// (docs/concepts/truehd-mlp.md's "What the two patents actually describe")
+// with the earlier AES papers' looser "Rice code... near-optimal" framing:
+// the papers were describing the general problem class Rice coding also
+// solves well, not literally claiming MLP implements textbook Rice coding.
+//
+// This module is kept as a well-defined, testable, near-optimal-for-Laplacian
+// STAND-IN, not a claim to match block_data()'s real codeword format - that
+// needs an actual Huffman table (or table family), not a Rice parameter. See
+// docs/concepts/truehd-mlp.md's "What 'Lossless Coding for Audio Discs' adds"
+// section. What's implemented here is provably correct on its own terms (round-trips any
 // input, matches the well-known public algorithm), independent of whether
 // it turns out to be MLP's literal wire format.
 
