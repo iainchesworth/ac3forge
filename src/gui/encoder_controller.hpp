@@ -12,12 +12,15 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <span>
+#include <utility>
 #include <vector>
 
 #include "ac3/analysis/levels.hpp"
 #include "ac3/capture/capture.hpp"
 #include "ac3/core/tables.hpp"
+#include "ac3/encoder/assignment.hpp"
 #include "ac3/encoder/plan.hpp"
 #include "ac3/oba/motion.hpp"
 #include "ac3/oba/oamd.hpp"
@@ -42,6 +45,30 @@ class EncoderController : public QObject {
     Q_PROPERTY(QString sourcePath READ sourcePath NOTIFY sourceChanged)
     Q_PROPERTY(QString sourceInfo READ sourceInfo NOTIFY sourceChanged)
     Q_PROPERTY(bool sourceReady READ sourceReady NOTIFY sourceChanged)
+    // Multi-source input: the primary source (loadSourceFile) plus whatever
+    // addSourceFile has added since, one row per loaded source -
+    // {index, label, path, channels, primary}. Index 0 is always the primary
+    // (removeSource(0) drops everything rather than promoting an extra,
+    // since there is no honest way to guess which one should take its
+    // place). With exactly one source loaded this is a single row and
+    // nothing else here changes anything - see routingForSources().
+    Q_PROPERTY(QVariantList sourceModel READ sourceModel NOTIFY sourceChanged)
+    // One row per (source, channel) sourceModel declares -
+    // {source, channel, sourceLabel, destToken} - destToken in
+    // plan::parse_destination's own vocabulary ("L", "obj", "p1", "p2",
+    // "none"), so setAssignment's argument is always something this list
+    // itself already printed. Every row exists whether or not it has been
+    // explicitly assigned yet (an unset one reads "none"), so a caller can
+    // always render one row per channel rather than special-casing the gap.
+    Q_PROPERTY(QVariantList assignmentRows READ assignmentRows NOTIFY sourceChanged)
+    // "<source> ch <n> is loaded but goes nowhere" - plan::Assignment::
+    // unassigned()'s inventory in prose. Empty only when automatic
+    // single-source routing applies (see routingForSources) - every source
+    // channel is accounted for by construction there; with more than one
+    // source, every channel warns until it has actually been given a
+    // destination, even before setAssignment has been called for the first
+    // time.
+    Q_PROPERTY(QStringList unassignedWarnings READ unassignedWarnings NOTIFY sourceChanged)
     Q_PROPERTY(QString outputPath READ outputPath NOTIFY outputChanged)
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
@@ -228,6 +255,9 @@ public:
     [[nodiscard]] QString sourcePath() const { return source_path_; }
     [[nodiscard]] QString sourceInfo() const { return source_info_; }
     [[nodiscard]] bool sourceReady() const { return source_ready_; }
+    [[nodiscard]] QVariantList sourceModel() const;
+    [[nodiscard]] QVariantList assignmentRows() const;
+    [[nodiscard]] QStringList unassignedWarnings() const;
     [[nodiscard]] QString outputPath() const { return output_path_; }
     [[nodiscard]] QString status() const { return status_; }
     [[nodiscard]] bool busy() const { return busy_; }
@@ -389,6 +419,34 @@ public:
     Q_INVOKABLE [[nodiscard]] QVariantMap evaluateObjectPath(int objectIndex, double timeS) const;
 
     Q_INVOKABLE void loadSourceFile(const QUrl& url);
+    // Adds another source alongside whatever is already loaded - or, if
+    // nothing is loaded yet, is exactly loadSourceFile (so a caller offering
+    // one "add a source" affordance never has to know which entry point to
+    // use first). Refuses (with a status message, the same convention
+    // loadSourceFile's own failures use) a sample rate that does not match
+    // the sources already loaded - plan::render has no notion of
+    // resampling, and a silent mismatch would drift rather than error.
+    Q_INVOKABLE void addSourceFile(const QUrl& url);
+    // index 0 (the primary) drops every loaded source and the assignment
+    // with it - see sourceModel's own doc comment on why. Removing any
+    // other index clears the assignment table rather than trying to shift
+    // its rows down: they addressed positions by index, every later
+    // source's index just changed, and guessing which old row survives is
+    // exactly the kind of silently-maybe-wrong behaviour this surface
+    // exists to avoid (plan::Assignment's own doc comment makes the same
+    // call for an unassigned channel).
+    Q_INVOKABLE void removeSource(int index);
+    // destToken is whatever assignmentRows already printed for a row, or
+    // any token plan::parse_destination accepts - the same vocabulary
+    // ac3cli's map= takes, so a GUI selection and a hand-typed command line
+    // can never disagree about what a token means. Silently ignored if it
+    // does not parse, same convention as toggleExtra/applyChannelPreset.
+    Q_INVOKABLE void setAssignment(int sourceIndex, int channel, const QString& destToken);
+    // Back to automatic routing - only meaningful with exactly one source
+    // loaded (see routingForSources); with more than one, clearing merely
+    // empties the table, since automatic panning has no defined meaning
+    // across several sources.
+    Q_INVOKABLE void clearAssignment();
     Q_INVOKABLE void encodeTo(const QUrl& url);
     Q_INVOKABLE void cancel();
     Q_INVOKABLE [[nodiscard]] QString suggestedOutputName() const;
@@ -469,11 +527,39 @@ private:
     // else the derived shape name (channelShapeName()).
     [[nodiscard]] QString effectiveLabel() const;
 
+    // The primary source plus every extra, in load order - the same
+    // concatenation order encodeTo() builds `planes` in, and what
+    // ac3::plan::Assignment's (source, channel) addressing means here.
+    // Empty when nothing is loaded.
+    [[nodiscard]] std::vector<ac3::plan::SourceShape> sourceShapes() const;
+    // The routing a run should actually use: automatic single-source panning
+    // when exactly one source is loaded and nothing has been assigned
+    // explicitly (byte-identical to what this controller has always done),
+    // else the explicit Assignment - dual mono routed through
+    // dual_mono_routing() rather than the general location-based route(),
+    // for the same reason ac3cli's own routing_for_sources() picks between
+    // them (see main.cpp). Returns nullopt if nothing is loaded, if more
+    // than one source is loaded with no explicit assignment (automatic
+    // panning has no defined meaning there), or if the assignment/automatic
+    // routing itself cannot be built.
+    [[nodiscard]] std::optional<ac3::plan::Routing> routingForSources(
+        const ac3::plan::ChannelPlan& target, const ac3::plan::Plan& p) const;
+    // The object-count/meter-preview/status bookkeeping addSourceFile and
+    // removeSource both need after the source list changes - loadSourceFile
+    // keeps its own equivalent tail untouched (see its own comments) rather
+    // than sharing this, so replacing the primary source can never behave
+    // differently because of a refactor here.
+    void refreshAfterSourceListChange();
+
     // Channels through the plan and out as AC-3 or E-AC-3. One worker for
     // both: they differ only in which encoder object runs, and everything
     // around it - routing, metering, progress, the container - is identical.
+    // `routing` is already built and validated by the caller (encodeTo, via
+    // routingForSources) rather than recomputed here, so this function
+    // cannot silently disagree with what the pre-encode preview already
+    // showed.
     void encodeChannels(const QString& path, std::vector<std::vector<float>> planes,
-                        std::uint32_t sample_rate);
+                        const ac3::plan::Routing& routing, std::uint32_t sample_rate);
     // One object per source channel, over a 5.1 bed. `planes` is the source's
     // own channels; unlike the channel path they are not routed anywhere,
     // because an object is not a speaker feed.
@@ -634,6 +720,24 @@ private:
     QVariantMap soundfield_;
 
     std::unique_ptr<Source> source_;
+    // Everything beyond the primary, in load order - source index (n+1) in
+    // sourceShapes()/Assignment addressing. Always empty with the single-
+    // source behaviour every existing call site (still) assumes.
+    std::vector<std::unique_ptr<Source>> extra_sources_;
+    // Empty (every row implicitly kUnassigned) until setAssignment is
+    // called at least once; see routingForSources for what that means for
+    // which routing actually gets used.
+    ac3::plan::Assignment assignment_;
+    bool has_explicit_assignment_ = false;
+    // Every (source, channel) setAssignment has ever been called for, "none"
+    // included - Assignment itself cannot tell an explicit "none" apart from
+    // a channel nobody has visited yet (see assignment.hpp's own doc
+    // comment; parse_assignment works around the same gap differently, by
+    // tracking coverage locally while it still has a token to blame). Reset
+    // everywhere assignment_ itself is reset, so unassignedWarnings can
+    // subtract this from Assignment::unassigned()'s raw inventory and stop
+    // nagging about a channel the user deliberately silenced.
+    std::set<std::pair<std::size_t, std::size_t>> touched_channels_;
     std::unique_ptr<ac3::capture::Capture> capture_;
     std::atomic_bool cancel_requested_{false};
     std::atomic_bool stop_recording_{false};

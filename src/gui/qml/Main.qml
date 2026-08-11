@@ -186,6 +186,13 @@ ApplicationWindow {
         onAccepted: EncoderController.loadSourceFile(selectedFile)
     }
 
+    FileDialog {
+        id: addSourceDialog
+        title: qsTr("Add another source")
+        nameFilters: [qsTr("WAV audio (*.wav)"), qsTr("All files (*)")]
+        onAccepted: EncoderController.addSourceFile(selectedFile)
+    }
+
     // The suffix and the filter follow the plan rather than being typed, so a
     // .ac3 file can never end up holding E-AC-3. Both are set when the dialog
     // is opened: outputSuffix() is a method, and a binding to it would go
@@ -353,6 +360,98 @@ ApplicationWindow {
                                     color: EncoderController.sourceReady ? Theme.good : Theme.textMuted
                                     font.pixelSize: Theme.fontSmall
                                     visible: text.length > 0
+                                }
+                            }
+
+                            Button {
+                                objectName: "addSourceButton"
+                                text: qsTr("Add source…")
+                                enabled: EncoderController.sourceReady && !EncoderController.busy
+                                onClicked: addSourceDialog.open()
+                            }
+                        }
+
+                        // ---- multi-source list + assignment -----------------------
+                        // Functional first cut, not the handoff's full Assign table
+                        // (that needs the Guided/Advanced/Expert tiers it is meant to
+                        // live behind - see docs/design/handoff-workbench). Only
+                        // appears once a second source exists; a single loaded file
+                        // keeps using the plain path/info line above, unchanged.
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            Layout.topMargin: 8
+                            spacing: 4
+                            visible: EncoderController.sourceModel.length > 1
+
+                            Repeater {
+                                model: EncoderController.sourceModel
+                                delegate: RowLayout {
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    spacing: Theme.gap
+
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: qsTr("%1 · %2 ch").arg(modelData.label)
+                                                                .arg(modelData.channels)
+                                        color: Theme.text
+                                        font.pixelSize: Theme.fontSmall
+                                        elide: Text.ElideMiddle
+                                    }
+                                    Button {
+                                        text: qsTr("Remove")
+                                        flat: true
+                                        onClicked: EncoderController.removeSource(modelData.index)
+                                    }
+                                }
+                            }
+
+                            Text {
+                                text: qsTr("ASSIGN EACH CHANNEL")
+                                font.pixelSize: 10
+                                font.letterSpacing: 1
+                                color: Theme.textMuted
+                            }
+                            Repeater {
+                                model: EncoderController.assignmentRows
+                                delegate: RowLayout {
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    spacing: Theme.gap
+
+                                    Text {
+                                        Layout.preferredWidth: 160
+                                        text: qsTr("%1 ch %2").arg(modelData.sourceLabel)
+                                                              .arg(modelData.channel + 1)
+                                        color: Theme.text
+                                        font.pixelSize: Theme.fontSmall
+                                        elide: Text.ElideMiddle
+                                    }
+                                    // A location name (e.g. "L", "Ls"), "obj", "p1",
+                                    // "p2" or "none" - EncoderController.
+                                    // setAssignment's own vocabulary
+                                    // (plan::parse_destination), typed directly
+                                    // rather than picked from a dropdown until the
+                                    // Assign table proper exists.
+                                    TextField {
+                                        Layout.preferredWidth: 80
+                                        text: modelData.destToken
+                                        font.family: "monospace"
+                                        font.pixelSize: Theme.fontSmall
+                                        onEditingFinished: EncoderController.setAssignment(
+                                                               modelData.source, modelData.channel, text)
+                                    }
+                                }
+                            }
+                            Repeater {
+                                model: EncoderController.unassignedWarnings
+                                delegate: Text {
+                                    required property string modelData
+                                    Layout.fillWidth: true
+                                    text: modelData
+                                    color: Theme.accent
+                                    font.pixelSize: Theme.fontSmall
+                                    wrapMode: Text.WordWrap
                                 }
                             }
                         }
