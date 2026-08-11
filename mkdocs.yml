@@ -92,6 +92,7 @@ nav:
   - GUI guide:
       - Window layout: gui/index.md
       - Loading a source: gui/loading-a-source.md
+      - Multi-source & assignment: gui/source-assignment.md
       - Format & channels: gui/format-and-channels.md
       - Coding tools: gui/coding-tools.md
       - Metadata: gui/metadata.md

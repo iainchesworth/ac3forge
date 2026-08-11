@@ -99,6 +99,55 @@ both forms. `dialnorm2=` above sets Ch2's own dialnorm; `heavy`/`drc` apply to b
 independently, each getting its own compressor. `decode` writes Ch1/Ch2 back out in that same
 order, and `levels` names them `Ch1`/`Ch2` rather than a speaker position that would not apply.
 
+## Source options (`encode`/`eac3-encode`): `src=` and `map=`
+
+```text
+source options (encode/eac3-encode; any order, after the positional arguments):
+  src=<path>        an additional input source; repeat for more than one
+  map=<spec>        <source>.<channel>[-<channel2>]:<dest>[,...] - dest is a channel name, obj,
+                     p1, p2 or none; a channel range is only legal with obj or none
+                     once given, every loaded channel must appear - explicit 'none' silences
+                     the goes-nowhere warning without giving it anywhere to go
+```
+
+`src=` loads another WAV alongside `in.wav` (source index 0), in the order given — `src=a.wav
+src=b.wav` makes `a.wav` source 1 and `b.wav` source 2. Every source must share `in.wav`'s sample
+rate.
+
+With exactly one source (no `src=` at all), `map=` is not needed: the existing automatic
+single-source panning applies, byte-identical to a plain `ac3cli encode`/`eac3-encode` invocation
+that predates this option — omitting `map=` is defined to behave exactly as if `src=`/`map=` did
+not exist. With more than one source, `map=` becomes mandatory: automatic panning has no defined
+meaning across several files, so every loaded channel needs an explicit entry (or an explicit
+`none`) before the encode will run.
+
+Each `map=` entry is `<source>.<channel>:<dest>`, comma-separated, `<channel>` 0-indexed. A
+channel *range* (`<channel>-<channel2>`) is only legal when `<dest>` is `obj` or `none` — a
+location or a programme names exactly one channel, so a range there would be ambiguous about
+which one it means. Two entries naming the same location, or more than one entry per dual-mono
+programme, is refused.
+
+```bash
+ac3cli eac3-encode roundtrip-stereo.wav out.ec3 384 none 51 \
+    src=roundtrip-51.wav \
+    map=0.0:C,0.1:none,1.0:L,1.1:R,1.2:none,1.3:LFE,1.4:Ls,1.5:Rs
+```
+
+`roundtrip-stereo.wav`'s left channel (source 0, channel 0) carries the centre; its right channel
+is explicitly silenced. `roundtrip-51.wav` (source 1) fills the rest, with its own centre channel
+(`1.2`) also sent nowhere so it doesn't collide with the first source's. `[vbr]` and `[in2.wav]`
+are both skippable here even though they come earlier in `eac3-encode`'s own positional order —
+the parser treats the first token containing `=` as the start of the trailing options, whichever
+positional slot would otherwise have been next.
+
+`dialnorm=auto`/`dialnorm2=auto` are not yet supported alongside `src=`/`map=` — pass an explicit
+`dialnorm=<1..31>` (and `dialnorm2=` for `1+1`) instead; measuring loudness per source is a later
+extension, not a hole in the routing itself.
+
+The GUI's own multi-source Format-tab table (**Add source…** plus a per-channel assignment field)
+is a direct front end over this same grammar — see
+[GUI → Multi-source & assignment](../gui/source-assignment.md).
+
 ## Command-specific notes
 
 - **`mkv`** reads format, packet boundaries, sample rate and channel count from the bitstream
