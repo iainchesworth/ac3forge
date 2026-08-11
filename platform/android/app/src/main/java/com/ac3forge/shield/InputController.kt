@@ -9,7 +9,7 @@ import kotlin.math.abs
 /**
  * Shield Controller (analog sticks + shoulder buttons + D-pad) and basic
  * Shield remote (D-pad only) input, both mapped to the same
- * [NativeBridge.nativeDeflectSelectedObject]/[NativeBridge.nativeCycleSelectedObject]
+ * [NativeBridge.nativeDeflectSelectedObject]/[NativeBridge.nativeSnapSelectedToCourse]
  * calls - see live_cursor.cpp's LiveCursorState for what actually consumes
  * these. Every input source here BIASES the selected object off its own
  * pre-planned trajectory rather than moving it outright; release the input
@@ -40,9 +40,10 @@ import kotlin.math.abs
  * remote this is the ONLY way to reach height, and real-device testing found
  * a long-press-to-switch felt sluggish for something that needs switching
  * back and forth rapidly while actively shaping a path in real time. A LONG
- * press of the same button instead cycles the selected object (currently a
- * no-op with a single interactive object, kept for when a second one
- * exists) - see [onKeyLongPress]/[onKeyUp]'s disambiguation.
+ * press of the same button instead instantly snaps the selected object back
+ * onto its planned course - a presenter's "and... reset" button, rather than
+ * waiting out the usual ~1.5s spring-back decay - see
+ * [onKeyLongPress]/[onKeyUp]'s disambiguation.
  *
  * No explicit InputDevice source detection/hot-plug listener: both schemes
  * are handled reactively as events arrive (onGenericMotionEvent only ever
@@ -82,7 +83,7 @@ class InputController {
     // calls onKeyDown once immediately and, if still held past the long-press
     // threshold, onKeyLongPress - onKeyUp always follows eventually either
     // way, so this is what tells it whether the long-press action already
-    // fired (cycle the selected object) or the release should still count as
+    // fired (snap back to course) or the release should still count as
     // a short press (toggle axis mode).
     private var longPressConsumed = false
 

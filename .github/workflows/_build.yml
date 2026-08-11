@@ -638,15 +638,13 @@ jobs:
   # shield_quarantine_hook.hpp's signing_available(). Every build this job
   # produces is the safe, bed51-equivalent unsigned app.
   #
-  # continue-on-error, unlike every packageable desktop leg: this is a
-  # brand-new CI job, never yet proven green by a real run the way
-  # macos-llvm was before its own `experimental: true` line came off (see
-  # this file's header) - promote it the same way, by deleting this line
-  # once a real run has gone green.
+  # Promoted (no continue-on-error) the same way macos-llvm was: three
+  # consecutive real, hosted-runner runs went green
+  # (feature/shield-atmos-platform's own PR #61 and the two Android-focused
+  # pushes after it) before this line came off - see this file's header.
   build-android:
     name: Android (Shield)
     runs-on: ubuntu-latest
-    continue-on-error: true
     permissions:
       contents: read
     steps:

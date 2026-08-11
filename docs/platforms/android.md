@@ -12,6 +12,8 @@ Distribution is **personal sideload only, via `adb install` — never the Play S
 deliberate choice, not a placeholder: the app can be built with the [quarantine signer](#the-quarantine-signer-dependency)
 enabled, and that build must never leave the user's own device (see below).
 
+![Live dashboard: 3D trail view, top-down and elevation panels, speaker-activity meter](screenshots/android-dashboard.png)
+
 ## What's reused, what's new
 
 `ac3::forge` (`src/lib/`) — the codec, `AtmosEncoder`, IEC 61937 framing — is fully
@@ -118,6 +120,26 @@ triad rather than an arbitrary tone set — `kToneHz`/`kToneGain`) are **never t
 they exist purely so the demo has more than one voice to show sound mixing/interaction between.
 Only the lead is driven by [Input](#input-shield-controller-and-basic-remote-both) below.
 
+**The lead's own voice is a bundled, seamlessly-looping sample, not a bare tone.** A plain sine,
+however correctly panned, gives the ear almost nothing to localize by — no onset transient for
+azimuth (interaural time/level difference) cues, and no high-frequency content at all for the
+pinna-filtered spectral cues elevation localization actually relies on; real-device testing
+confirmed it as "muddy," not a discrete point source. `assets/lead_voice_48k_mono_s16le.raw` (a
+layered rotor-thump/tail-rotor/engine-drone/blade-slap mix, generated offline via FFT-based
+spectral synthesis — random phase per frequency bin at exact multiples of `1/duration`, so the
+inverse-FFT result is naturally periodic with no click at the loop seam) is loaded once at startup
+through `AAssetManager` and looped sample-by-sample through the same `tone_gain`/distance-falloff/
+soft-limiter chain every object's voice passes through. Missing the asset (an older build, or a
+packaging issue) is not fatal: `live_cursor.cpp` falls back to a live-synthesized rotor-envelope
+tone+noise mix instead of silence.
+
+**Distance-based loudness falloff.** Without it, an object sounded exactly as loud swinging past the
+listener at the room's centre as it did out at the far edge of its own orbit — correct panning
+direction, but no sense of "coming toward me" versus "far away." An inverse-square-ish falloff
+(`distance_attenuation()`, clamped with a floor so the far end of an orbit is quieter but never
+silent — fully silent would fight the pause/mute isolation feature's own point) is applied as an
+extra per-object, per-frame gain multiplier, computed from that frame's own placement.
+
 ## Input: Shield Controller and basic remote, both
 
 `InputController.kt` supports both devices this app is meant to run under, detected at the event
@@ -138,10 +160,16 @@ so the object drifts back onto its planned course on its own rather than needing
   always biases x; up/down biases **either** y (further into/out of the room) **or** z (height),
   depending on `axisMode` — the remote's only way to reach height at all, since it has no second
   stick or shoulder buttons.
-- **Axis-mode toggle**: a **long press** of D-pad-center/Enter/A (`onKeyLongPress`) flips
-  `axisMode` between X/Y and X/Z; a **short press** of the same key still cycles the selected
-  object (`onKeyUp`, only fires the cycle if the long-press branch didn't already consume the
-  press). `RoomView.kt` shows the current mode live, bottom-left of the room panels.
+- **Axis-mode toggle**: a **short press** of D-pad-center/Enter/A (`onKeyUp`, only fires if the
+  long-press branch below didn't already consume the press) flips `axisMode` between X/Y and X/Z —
+  deliberately immediate, not gated behind a hold, since real-device testing found a long-press-to-
+  switch felt sluggish for something that needs switching back and forth rapidly while actively
+  shaping a path. The top-down panel's header shows the current mode live (`D-PAD → DEPTH`/`D-PAD →
+  HEIGHT`).
+- **Snap back to course**: a **long press** of the same key (`onKeyLongPress`) instantly zeroes the
+  selected object's deflection instead of waiting out the usual ~1.5s spring-back decay — a
+  presenter's "and… reset" button. Replaced what used to be here (cycling the selected object, a
+  no-op with only one interactive object).
 
 Either way, input is coalesced to **at most one JNI call per animation frame**, never per raw input
 event — the native side (`live_cursor.cpp`'s `LiveCursorState`, mutex-protected) advances once per
@@ -151,20 +179,102 @@ encode frame, independent of how often Kotlin's ticker calls in.
 
 `RoomView.kt` is a plain `View` (not a `SurfaceView` — a handful of `drawCircle`/`drawLine` calls
 per frame doesn't justify a `SurfaceView`'s own render thread and `SurfaceHolder` lifecycle),
-invalidated once per vsync via `Choreographer.postFrameCallback`. It draws two panels side by side,
-both reading the same `NativeBridge.nativeGetObjectState()` snapshot the encode loop just built for
-that frame: a top-down X/Y view and a side-elevation X/Z view, with the selected (lead) object
-ringed. Verified against real device screenshots (`adb shell screencap`) that positions track both
-controller/remote input and the encode loop's own state exactly (prior to today's trajectory/
-deflection rewrite — see [What has and has not been verified](#what-has-and-has-not-been-verified)).
+invalidated once per vsync via `Choreographer.postFrameCallback`. Three panels, all reading the same
+`NativeBridge.nativeGetObjectState()` snapshot the encode loop just built for that frame, laid out
+as rounded cards on a shared dark palette (`Theme.kt` — one file of colors/corner-radii/spacing so
+this view, `ChannelMeterView`, and `MainActivity`'s own chrome all read as one dashboard instead of
+three separately-tuned screens):
 
-Three demoability additions on top of the raw positions: a white diamond marking the listener at
-the room's exact centre (both panels' (0.5, 0.5) — see [Objects](#objects-one-interactive-lead-two-ambient-all-on-pre-planned-orbits)
-above), a faint dashed guide circle on the top-down panel showing the lead object's planned orbit
-so a viewer can see it pushed off course and springing back rather than just a dot moving with no
-reference (`kTrajectoryGuideRadius`, duplicated from `live_cursor.cpp`'s `kTrajectory[0].radius` —
-kept in sync by comment on both ends, not queried over JNI, since it's fixed at compile time on
-both), and a live axis-mode readout at the bottom of the view.
+- **3D track** (left, square) — a tilted isometric ("2:1 video-game style") projection showing all
+  three room axes at once, plus the lead object's own trail (recent history behind it, faded;
+  planned course ahead of it, queried fresh from native each frame with no deflection, since future
+  input can't be known) with a drop-line from each trail point straight down to the floor, so height
+  reads as an unambiguous vertical offset rather than a diagonal easy to misjudge in an oblique
+  projection. Small `FRONT`/`BACK`/`LEFT`/`RIGHT` callouts sit just outside the floor plan's own
+  edges — the one panel where the tilted angle alone doesn't make orientation obvious at a glance.
+  Deliberately square, not a wide rectangle: the isometric projection's own natural bounding box is
+  close to square, so a wider container mostly added dead margin rather than more visible content.
+  Its header also carries a live encode-stats readout (`bursts N/N | encode X.Xms/32ms | Atmos
+  (signed)`, underruns only appended when actually nonzero) — real-time viability was a genuine,
+  previously-hit problem on this SoC (see
+  [Real-time performance](#real-time-performance-relwithdebinfo-and-a-real-mdct-bug-it-uncovered)
+  below), so showing the live number is worth more here than in most encode loops.
+- **Top-down (X/Y)** and **elevation (X/Z)** (right, side by side, not stacked — each gets the full
+  panel height this way instead of half of it) — the selected (lead) object ringed, a white diamond
+  marking the listener at the room's exact centre (both panels' (0.5, 0.5) — see
+  [Objects](#objects-one-interactive-lead-two-ambient-all-on-pre-planned-orbits) above), and, on the
+  top-down panel, a faint dashed guide circle showing the lead's planned orbit so a viewer can see it
+  pushed off course and springing back rather than just a dot moving with no reference
+  (`kTrajectoryGuideRadius`, duplicated from `live_cursor.cpp`'s `kTrajectory[0].radius` — kept in
+  sync by comment on both ends, not queried over JNI, since it's fixed at compile time on both). Each
+  panel's own plotted room stays a true square, centred inside whatever rectangle its card actually
+  is — both axes share the same normalized `[0,1]` scale, so a non-square plot would stretch one
+  axis relative to the other and turn the (genuinely circular) guide into a misleading ellipse.
+- **Speaker activity (bed)** (bottom-left, alongside the control hints, not its own full-width row —
+  kept deliberately compact, since it's "interesting, but doesn't need to be prominent") — a
+  segmented, LED-style meter per real bed channel (`StreamStats::channel_levels`, sourced from
+  `AtmosEncoder::bed()` — the literal audio a legacy 5.1 decoder hears, not a guess from the room-
+  position math), with a bottom-to-top color ramp and a slowly-decaying peak-hold line, the same
+  "catch the loudest recent moment" behavior a real hardware VU meter has.
+
+Two transient overlays, sharing one `TextView` (mutually exclusive by construction) rather than
+competing for the same screen space:
+
+- **First-launch orientation cue** — "This is the front wall / Up on the stick/D-pad = toward the
+  screen," shown once, the first time the receiver becomes ready (immediately at launch, or after
+  some [waiting](#hdmi-receiver-resilience-waiting-not-crashing) — never while still waiting, which
+  would just be confusing). Dismissed by the first real input, or auto-fades after 5s.
+- **Idle/attract prompt** — "Press any button to take control," shown after 14s of no input (a demo
+  left alone between visitors should invite the next person, not just sit there), dismissed the
+  instant real input resumes.
+
+![First-launch orientation cue over the 3D track panel](screenshots/android-orientation-cue.png)
+
+## HDMI receiver resilience: waiting, not crashing
+
+Earlier hands-on use surfaced a real annoyance: if the AVR/receiver was off (or not yet HDMI-
+negotiated) at launch, or got powered off mid-session, the app just sat there having silently done
+nothing — the only fix was a force-restart, timed for whenever the receiver happened to be ready.
+`MainActivity.reconcileReceiverState()` closes that gap: `nativeStartLiveCursor()` is no longer
+called unconditionally in `onCreate` — it's gated on the receiver actually accepting E-AC3 right
+now, re-evaluated on every `AudioManager.ACTION_HDMI_AUDIO_PLUG` broadcast (the system's own
+"HDMI audio route capabilities changed" signal — receiver on/off, input switched, EDID
+renegotiated) and on a slow (2.5s) periodic fallback, since that broadcast isn't guaranteed on every
+real AVR power-off (some receivers don't change their reported EDID/HPD state on standby). A
+persistent, full-screen "Waiting for receiver…" interstitial covers the dashboard until then, and
+disappears on its own once streaming actually starts — no restart, ever.
+
+![Waiting-for-receiver interstitial, shown until the AVR is detected](screenshots/android-waiting-for-receiver.png)
+
+!!! warning "`AudioTrack.isDirectPlaybackSupported()` blocks indefinitely against your own active track"
+    Getting this right took two real bugs found on hardware, not just review — worth stating
+    explicitly so neither is rediscovered the hard way again:
+
+    **The capability probe hangs, not fails, if called while a direct `AudioTrack` on the same
+    route is already open or still opening.** The obvious design — poll
+    `isDirectPlaybackSupported()` on a timer regardless of state, start/stop the loop based on the
+    result — froze the whole Activity on its own splash screen forever (main thread confirmed idle
+    via `dumpsys`, no exception, the encode loop itself kept streaming happily underneath) the
+    moment that poll landed while the loop's `AudioTrack` was live, almost certainly audio-policy-
+    manager lock contention rather than a bug in the probe itself. The same hang recurred calling
+    it again moments after `nativeStartLiveCursor()`, before that background thread's own
+    `AudioTrack.Builder().build().play()` had resolved — opening a track contends the same way an
+    already-playing one does. `reconcileReceiverState()` now probes capability **only** when
+    `NativeBridge.nativeIsLiveCursorRunning()` is false *and* no start attempt is still within a
+    3s grace period (`START_ATTEMPT_GRACE_MS`); detecting a receiver disappearing **while already
+    streaming** instead watches `NativeBridge.nativeGetUnderrunCount()` (the same
+    `StreamStats::underruns` counter `submit()` already tracked) for a rise, since a real AVR loss
+    shows up as failed `AudioTrack.write()` calls, and this needs no further call into
+    `AudioTrack` at all.
+
+    **A view's default visibility has to match its state variable's own default, or the first
+    "no change" transition never applies either.** The waiting overlay started `GONE` while
+    `receiverReady` started `false` (Kotlin's own default) — consistent-looking, but
+    `setReceiverReady()` only touches the view on an actual *change* (`ready == receiverReady`
+    short-circuits otherwise), so a receiver absent from the very first check (`false -> false`,
+    no change) left the overlay hidden and the full (empty, zeroed) dashboard showing instead —
+    confirmed on a real device screenshot. Fixed by defaulting the overlay to `VISIBLE`, matching
+    `receiverReady`'s own `false` default.
 
 ## The quarantine signer dependency
 
@@ -254,21 +364,23 @@ GitHub Release alongside the Windows/Linux/macOS packages (checksummed, GPG-sign
 build-provenance-attested exactly like every other package — `release.yml`'s artifact globs all
 include `*.apk`).
 
-This job is marked `continue-on-error: true` — it has been validated to parse as valid YAML and to
-mirror the project's own established toolchain-pinning conventions, but, unlike the desktop legs,
-has not yet actually run on GitHub's hosted runners even once. Drop that line once a real CI run
-has gone green, the same promotion process every other experimental leg in `_build.yml` has
-followed (see that file's own header comment).
+**Promoted, not experimental.** This job used to run `continue-on-error: true`, before it had ever
+actually run on GitHub's hosted runners. It has since gone green three consecutive times on real
+hosted runners (`feature/shield-atmos-platform`'s own PR history) — comfortably past the bar
+`macos-llvm` was promoted at — so that line is gone: a `build-android` failure now blocks like
+every other required leg.
 
 ## What has and has not been verified
 
 !!! note "Verified on real hardware"
-    Installed, launched, and run on the developer's own Shield (Tegra X1 SoC) connected to a real
-    AV receiver over HDMI. The encode loop holds exact real-time cadence (32.0ms/frame, zero
+    Installed, launched, and run repeatedly on the developer's own Shield (Tegra X1 SoC) connected
+    to a real AV receiver over HDMI, across every round of feature work described on this page, not
+    just the initial one. The encode loop holds exact real-time cadence (32.0ms/frame, zero
     underruns) for extended runs. Both Shield Controller analog input and D-pad/remote-style input
-    (verified via `adb shell input keyevent` injection) move the correct object and the room
-    visualization tracks the encode loop's own state — all against the app's earlier, single-fixed-object
-    shape, before today's trajectory/deflection/ambient-object rewrite (below).
+    (the latter verified via `adb shell input keyevent` injection) move the correct object; the
+    pre-planned orbit trajectory, input-driven deflection with spring-back, the snap-back long
+    press, the axis-mode toggle, and the two ambient objects have all been exercised live and the
+    room visualization tracks the encode loop's own state throughout.
 
     **The quarantine-signed build's object audio has been confirmed reconstructable on the real
     receiver** — not just the always-audible panned bed. With the delta-bit-allocation fix
@@ -280,18 +392,32 @@ followed (see that file's own header comment).
     encoder/signer pair, though the general caveat there still applies to any *other* clean-room
     encoder without its own quarantine signer.
 
+    **The bundled lead-voice asset loads and streams cleanly** (`loaded lead voice asset: 192000
+    samples (4.00s)` in logcat, zero underruns through extended runs), and the dashboard redesign —
+    the 3D/top-down/elevation three-panel layout, the speaker-activity meter, the first-launch
+    orientation cue, and the idle/attract prompt — has been confirmed rendering correctly via real
+    device screenshots (`adb shell screencap`), not just compiled.
+
+    **HDMI receiver resilience** (see [that section](#hdmi-receiver-resilience-waiting-not-crashing)
+    above) has been verified in full on real hardware, including the two scenarios that can only be
+    tested by physically power-cycling the AVR — turning the receiver on after the app has already
+    launched waiting, and losing the receiver mid-session — both confirmed working without a
+    force-restart. The happy path (receiver already on at launch) and the waiting-screen UI itself
+    were verified directly; the two power-cycle scenarios were confirmed by the developer on the
+    physical device.
+
     Both the release (unsigned) and local-signed debug builds install and launch without crashing;
     the release build's logcat confirms `object container: bed51 (omitted, unsigned build)` — the
-    safe public default actually takes effect, not just compiles.
+    safe public default actually takes effect, not just compiles. `build-android` has itself now run
+    green three consecutive times on GitHub's hosted runners — see [Release / CI](#release-ci) above.
 
 !!! warning "Not yet verified"
-    Today's rewrite — the pre-planned orbit trajectory, input-driven deflection with spring-back,
-    the two ambient objects, and the D-pad axis-mode toggle — has been built and installed but not
-    yet exercised live: the real AV receiver was in use for something else by the time this landed,
-    so the on-device motion/audio verification above is from the app's prior, simpler shape. Compile-
-    and static-review-verified only for the new logic (`LiveCursorState::advance`/`deflect_selected`,
-    `InputController`'s long-press disambiguation) until the receiver is free again. The
-    `build-android` CI job itself is likewise unverified end to end — see
-    [Release / CI](#release-ci) above. `tests/platform/android/` covers only the device-free logic
-    (burst sizing, carrier rate, render-device construction), built and run on the normal
-    desktop-hosted CTest suite, not the app itself.
+    `tests/platform/android/` covers only the device-free logic (burst sizing, carrier rate,
+    render-device construction), built and run on the normal desktop-hosted CTest suite — there is
+    no automated on-device or instrumented test for anything in this section; every claim above is
+    manual verification on one specific Shield + receiver pair, not a repeatable check. Other Android
+    TV hardware (a different SoC, a different receiver's own EDID/HDMI behavior) is untested. This
+    is also the only platform page in the project where anything has actually run on real target
+    hardware with a real receiver attached — a platform's CI legs passing (Linux's `alsa` backend
+    included) is a materially different claim than this page's "installed and run on a real device"
+    one, and should not be read as implying the latter.
