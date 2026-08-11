@@ -620,6 +620,14 @@ private:
     // ac3::plan::Assignment's (source, channel) addressing means here.
     // Empty when nothing is loaded.
     [[nodiscard]] std::vector<ac3::plan::SourceShape> sourceShapes() const;
+    // objectModel()'s own sourceLabel for object `flatIndex` (a concatenated
+    // index into sourceShapes(), the same addressing planes/Assignment use):
+    // "Ch <n>" with exactly one source loaded - unchanged from what this has
+    // always shown - else "<file> ch <n>", the same "<source> ch <n>"
+    // phrasing assignmentRows()/unassignedWarnings() already use, so an
+    // object and the channel it came from are named the same way everywhere
+    // this app names one.
+    [[nodiscard]] QString objectSourceLabel(std::size_t flatIndex) const;
     // The routing a run should actually use: automatic single-source panning
     // when exactly one source is loaded and nothing has been assigned
     // explicitly (byte-identical to what this controller has always done),
@@ -657,7 +665,14 @@ private:
     // that survives the change and spreading newly-added ones out along x
     // instead of defaulting them all onto the same overlapping point (the
     // design brief's own complaint about the single-point-plus-spread model).
-    // Called wherever object_count_ is set.
+    // Called wherever object_count_ is set. Preserving by INDEX is only
+    // honest when indices themselves have not shifted underneath - true for
+    // a grown/shrunk primary (loadSourceFile always starts fresh anyway) and
+    // for addSourceFile (a new source's channels only ever append past the
+    // old count) - so removeSource() clears object_configs_/
+    // object_keyframes_ itself first for a non-primary removal, the same
+    // "clear rather than risk silently reattaching to the wrong channel"
+    // call assignment_ already makes there, before this ever runs.
     void refreshObjectConfigs();
     // The shared lookup addObjectKeyframe/removeObjectKeyframe/
     // objectKeyframes/evaluateObjectPath all build on: object_keyframes_'s
