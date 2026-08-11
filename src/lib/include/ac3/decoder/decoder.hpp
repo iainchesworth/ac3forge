@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <expected>
 #include <map>
 #include <optional>
@@ -196,25 +197,32 @@ class AC3FORGE_EXPORT Eac3Decoder {
     // Decodes one access unit — an independent substream followed by its
     // dependents, exactly as split_access_units delimits them — and renders it.
     //
-    // Unlike decode_substream, this does not support transient pre-noise
-    // processing: assembling one access unit needs every one of its
-    // substreams ready in the SAME call, and a substream held back by
-    // decode_substream would otherwise mean discarding whichever other
-    // substreams already were ready this call, or caching them across an
-    // unbounded number of further calls for a case this project's own
-    // encoder does not produce (every substream of one access unit turns the
-    // tool on or off together). A stream where any substream sets transproce
-    // is recognised and refused (kUnsupported) here, the same stance this
-    // project takes elsewhere for syntax it does not implement - use
-    // decode_substream directly for a stream that needs it.
-    [[nodiscard]] std::expected<DecodedAccessUnit, DecodeError> decode_access_unit(
+    // Same std::nullopt convention as decode_substream, for the same reason:
+    // assembling one access unit needs every one of its substreams ready in
+    // the SAME call, and decode_substream can hold one back independently of
+    // the others (§3.7's transient pre-noise processing is a per-substream
+    // flag). When that happens, whichever OTHER substreams of this access
+    // unit already released this call are held in an internal per-identity
+    // cache until the rest catch up - so nothing already-ready is discarded,
+    // and a later call finishes the assembly once every identity this
+    // program uses has a result waiting. A stream that never uses the tool
+    // is unaffected: every substream releases every call, so the cache never
+    // holds more than one call's worth at a time and every call returns a
+    // populated result immediately.
+    [[nodiscard]] std::expected<std::optional<DecodedAccessUnit>, DecodeError> decode_access_unit(
         std::span<const std::byte> unit);
 
     // Releases whichever frames transient pre-noise processing is still
     // holding back, one per substream identity that has one pending - empty
     // if none does, which covers every stream that never used the tool.
     // Call once, after the last decode_substream/decode_access_unit call for
-    // a stream, to avoid silently dropping its final frame(s).
+    // a stream, to avoid silently dropping its final frame(s). Drains BOTH
+    // decode_substream's own pending frame and decode_access_unit's
+    // assembly cache (see its own doc comment) - a caller that only ever
+    // used decode_access_unit and wants the very last program's worth of
+    // audio out of a stream that ends mid-hold-back gets raw per-substream
+    // results here rather than one final assembled DecodedAccessUnit,
+    // since by definition the assembly never completed.
     [[nodiscard]] std::vector<DecodedSubstream> flush();
 
    private:
@@ -226,6 +234,17 @@ class AC3FORGE_EXPORT Eac3Decoder {
     // sets transproce, and stays in it (buffering one frame at a time) for
     // the rest of the stream - see decode_substream's own doc comment.
     std::map<int, DecodedSubstream> pending_;
+    // decode_access_unit's own assembly cache: a substream identity's
+    // RELEASED (by decode_substream) results, oldest first, waiting for
+    // every other identity the same call's frames named to also have one -
+    // see decode_access_unit's own doc comment. A queue rather than a single
+    // slot: one identity can release several times while another is still
+    // catching up (a dependent that never uses the tool releases every call,
+    // while the independent using it lags by one), and an already-queued,
+    // not-yet-assembled result must never be overwritten by a later one for
+    // the same identity - that would silently splice two different points
+    // in time into one access unit.
+    std::map<int, std::deque<DecodedSubstream>> pending_au_parts_;
 };
 
 // Split a raw elementary stream into syncframes by sync word and declared

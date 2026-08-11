@@ -928,16 +928,17 @@ TEST_CASE("every E-AC-3 layout encodes real audio and decodes back to its speake
         for (int frame = 0; frame < kFrames; ++frame) {
             const auto decoded = decoder.decode_access_unit((*units)[static_cast<std::size_t>(frame)]);
             REQUIRE(decoded.has_value());
-            CHECK(static_cast<int>(decoded->channels.size()) == info.rendered);
+            REQUIRE(decoded->has_value());
+            CHECK(static_cast<int>((*decoded)->channels.size()) == info.rendered);
             if (frame < kSkipFrames) {
                 continue;
             }
             if (pcm.empty()) {
-                pcm.resize(decoded->channels.size());
+                pcm.resize((*decoded)->channels.size());
             }
-            for (std::size_t ch = 0; ch < decoded->channels.size(); ++ch) {
-                pcm[ch].insert(pcm[ch].end(), decoded->channels[ch].begin(),
-                               decoded->channels[ch].end());
+            for (std::size_t ch = 0; ch < (*decoded)->channels.size(); ++ch) {
+                pcm[ch].insert(pcm[ch].end(), (*decoded)->channels[ch].begin(),
+                               (*decoded)->channels[ch].end());
             }
         }
 
@@ -1042,16 +1043,17 @@ TEST_CASE("a custom channel selection encodes real audio and decodes back to its
     for (int frame = 0; frame < kFrames; ++frame) {
         const auto decoded = decoder.decode_access_unit((*units)[static_cast<std::size_t>(frame)]);
         REQUIRE(decoded.has_value());
-        CHECK(static_cast<int>(decoded->channels.size()) == rendered);
+        REQUIRE(decoded->has_value());
+        CHECK(static_cast<int>((*decoded)->channels.size()) == rendered);
         if (frame < kSkipFrames) {
             continue;
         }
         if (pcm.empty()) {
-            pcm.resize(decoded->channels.size());
+            pcm.resize((*decoded)->channels.size());
         }
-        for (std::size_t ch = 0; ch < decoded->channels.size(); ++ch) {
-            pcm[ch].insert(pcm[ch].end(), decoded->channels[ch].begin(),
-                           decoded->channels[ch].end());
+        for (std::size_t ch = 0; ch < (*decoded)->channels.size(); ++ch) {
+            pcm[ch].insert(pcm[ch].end(), (*decoded)->channels[ch].begin(),
+                           (*decoded)->channels[ch].end());
         }
     }
     for (std::size_t ch = 0; ch < pcm.size(); ++ch) {
@@ -1162,16 +1164,17 @@ TEST_CASE("a boundary sixteen-channel custom selection encodes real audio and "
     for (int frame = 0; frame < kFrames; ++frame) {
         const auto decoded = decoder.decode_access_unit((*units)[static_cast<std::size_t>(frame)]);
         REQUIRE(decoded.has_value());
-        CHECK(static_cast<int>(decoded->channels.size()) == rendered);
+        REQUIRE(decoded->has_value());
+        CHECK(static_cast<int>((*decoded)->channels.size()) == rendered);
         if (frame < kSkipFrames) {
             continue;
         }
         if (pcm.empty()) {
-            pcm.resize(decoded->channels.size());
+            pcm.resize((*decoded)->channels.size());
         }
-        for (std::size_t ch = 0; ch < decoded->channels.size(); ++ch) {
-            pcm[ch].insert(pcm[ch].end(), decoded->channels[ch].begin(),
-                           decoded->channels[ch].end());
+        for (std::size_t ch = 0; ch < (*decoded)->channels.size(); ++ch) {
+            pcm[ch].insert(pcm[ch].end(), (*decoded)->channels[ch].begin(),
+                           (*decoded)->channels[ch].end());
         }
     }
     for (std::size_t ch = 0; ch < pcm.size(); ++ch) {

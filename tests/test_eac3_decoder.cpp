@@ -186,15 +186,16 @@ RoundTrip round_trip(const LayoutCase& layout, int frames) {
     for (const auto& unit : *units) {
         const auto decoded = decoder.decode_access_unit(unit);
         REQUIRE(decoded.has_value());
+        REQUIRE(decoded->has_value());
         if (rt.rendered.empty()) {
-            rt.layout = decoded->layout;
-            rt.substreams = decoded->substream_count;
-            rt.rendered.resize(decoded->channels.size());
+            rt.layout = (*decoded)->layout;
+            rt.substreams = (*decoded)->substream_count;
+            rt.rendered.resize((*decoded)->channels.size());
         }
-        REQUIRE(decoded->channels.size() == rt.rendered.size());
-        for (std::size_t ch = 0; ch < decoded->channels.size(); ++ch) {
-            rt.rendered[ch].insert(rt.rendered[ch].end(), decoded->channels[ch].begin(),
-                                   decoded->channels[ch].end());
+        REQUIRE((*decoded)->channels.size() == rt.rendered.size());
+        for (std::size_t ch = 0; ch < (*decoded)->channels.size(); ++ch) {
+            rt.rendered[ch].insert(rt.rendered[ch].end(), (*decoded)->channels[ch].begin(),
+                                   (*decoded)->channels[ch].end());
         }
     }
     return rt;
@@ -542,9 +543,10 @@ TEST_CASE("E-AC-3 dual mono codes two independent programmes, never one into the
     ac3::Eac3Decoder unit_decoder;
     const auto au = unit_decoder.decode_access_unit(units->back());
     REQUIRE(au.has_value());
-    CHECK(au->acmod == Acmod::kDualMono);
-    CHECK(au->layout.count == 0);
-    REQUIRE(au->channels.size() == 2);
+    REQUIRE(au->has_value());
+    CHECK((*au)->acmod == Acmod::kDualMono);
+    CHECK((*au)->layout.count == 0);
+    REQUIRE((*au)->channels.size() == 2);
 }
 
 TEST_CASE("bsid at bit 40 picks the framing", "[eac3][decoder]") {
@@ -693,11 +695,12 @@ TEST_CASE("VBR access units of differing size still decode correctly",
     for (const auto& access_unit : *units) {
         const auto decoded = decoder.decode_access_unit(access_unit);
         REQUIRE(decoded.has_value());
-        REQUIRE(decoded->channels.size() == 2);
-        rendered_l.insert(rendered_l.end(), decoded->channels[0].begin(),
-                          decoded->channels[0].end());
-        rendered_r.insert(rendered_r.end(), decoded->channels[1].begin(),
-                          decoded->channels[1].end());
+        REQUIRE(decoded->has_value());
+        REQUIRE((*decoded)->channels.size() == 2);
+        rendered_l.insert(rendered_l.end(), (*decoded)->channels[0].begin(),
+                          (*decoded)->channels[0].end());
+        rendered_r.insert(rendered_r.end(), (*decoded)->channels[1].begin(),
+                          (*decoded)->channels[1].end());
     }
     CHECK(snr_db(want_l, rendered_l) > 20.0);
     CHECK(snr_db(want_r, rendered_r) > 20.0);
@@ -1279,6 +1282,108 @@ TEST_CASE("transient pre-noise processing holds a frame back then releases it co
     CHECK(remaining[0].channels.size() == nchans);
 }
 
+TEST_CASE("decode_access_unit queues a substream that keeps releasing while its "
+          "sibling is held back, rather than overwriting the queued entry",
+          "[eac3][decoder][transient_prenoise]") {
+    // Only the independent substream ever sets transient_prenoise, so only IT
+    // can start lagging by a frame. The dependent releases every call, same as
+    // a stream that never used the tool at all - which is exactly the
+    // asymmetry that a single-slot cache (rather than a per-identity queue)
+    // would corrupt: the dependent's still-unconsumed release from the call
+    // that triggered the hold-back must survive until the independent catches
+    // up, not get replaced by the dependent's NEXT release.
+    const ac3::eac3::AccessUnitConfig cfg{
+        .independent = {.bitrate_kbps = 192, .acmod = ac3::Acmod::k2_0, .transient_prenoise = true},
+        .dependents = {{.bitrate_kbps = 96,
+                        .acmod = ac3::Acmod::k2_0,
+                        .chanmap = ac3::eac3::chanmap::k512Height}}};
+    ac3::eac3::AccessUnitEncoder encoder{cfg};
+    REQUIRE(encoder.channel_count() == 4);
+    ac3::Eac3Decoder decoder;
+
+    const std::vector<float> silence(ac3::kSamplesPerFrame, 0.0f);
+    std::vector<std::span<const float>> silent_views(4, silence);
+
+    // Silence never triggers the tool, so both substreams release every call
+    // and the whole unit is ready immediately - same as a decoder that never
+    // saw the tool at all.
+    for (int f = 0; f < 2; ++f) {
+        const auto unit = encoder.encode_access_unit(silent_views);
+        REQUIRE(unit.has_value());
+        const auto decoded = decoder.decode_access_unit(unit->bytes);
+        REQUIRE(decoded.has_value());
+        REQUIRE(decoded->has_value());
+    }
+
+    constexpr int kOnset = 960;
+    std::vector<float> transient(static_cast<std::size_t>(ac3::kSamplesPerFrame), 0.0f);
+    for (int n = kOnset; n < ac3::kSamplesPerFrame; ++n) {
+        transient[static_cast<std::size_t>(n)] = static_cast<float>(
+            0.9 * std::sin(2.0 * std::numbers::pi * 1000.0 * static_cast<double>(n) / 48000.0));
+    }
+    // The independent's channels carry the transient; the dependent's stay
+    // silent and never set transproce themselves.
+    std::vector<std::span<const float>> transient_views{transient, transient, silence, silence};
+    const auto transient_unit = encoder.encode_access_unit(transient_views);
+    REQUIRE(transient_unit.has_value());
+
+    // The independent turns transproce on and holds back; the dependent
+    // releases immediately as always. Because assembling the access unit
+    // needs both, the whole call must come back empty - the dependent's
+    // already-ready result gets queued, not discarded.
+    const auto held = decoder.decode_access_unit(transient_unit->bytes);
+    REQUIRE(held.has_value());
+    CHECK_FALSE(held->has_value());
+
+    const auto after_unit = encoder.encode_access_unit(silent_views);
+    REQUIRE(after_unit.has_value());
+
+    // This call's own frames both release immediately, but the correct
+    // assembly pairs the independent's newly-released (transient-corrected)
+    // result with the DEPENDENT'S RESULT FROM THE PREVIOUS CALL - not this
+    // one. A single-slot cache would have overwritten that previous entry
+    // with this call's dependent release instead of queuing it, silently
+    // splicing two different time instants into one access unit.
+    const auto released = decoder.decode_access_unit(after_unit->bytes);
+    REQUIRE(released.has_value());
+    REQUIRE(released->has_value());
+    REQUIRE((*released)->channels.size() == 4);
+
+    // Every channel is silent up to the transient, whether that is the
+    // independent's corrected pre-echo region or the dependent's constant
+    // silence - a wrong pairing (e.g. the "after" call's own silent frame
+    // standing in for the independent) would pass this just as well, so it
+    // is checked together with the energy assertion below rather than alone.
+    double pre_energy = 0.0;
+    double post_energy = 0.0;
+    for (const auto& channel : (*released)->channels) {
+        for (int n = 0; n < kOnset - 256; ++n) {
+            const double v = static_cast<double>(channel[static_cast<std::size_t>(n)]);
+            pre_energy += v * v;
+        }
+        for (int n = kOnset; n < ac3::kSamplesPerFrame; ++n) {
+            const double v = static_cast<double>(channel[static_cast<std::size_t>(n)]);
+            post_energy += v * v;
+        }
+    }
+    CHECK(pre_energy < 1e-4);
+    // Confirms this really is the transient access unit's data (paired
+    // correctly) and not two silent frames misassembled together.
+    CHECK(post_energy > 1.0);
+
+    // Two things are still held at end-of-stream, and flush() must surface
+    // both: decode_substream's OWN one-frame lag on the independent (the
+    // "after" call's independent frame, buffered there and not yet released
+    // to decode_access_unit at all - a 4th call would be needed for that),
+    // and the dependent's matching "after" release, still queued in
+    // decode_access_unit's assembly cache waiting for that independent frame
+    // to catch up to it.
+    auto remaining = decoder.flush();
+    REQUIRE(remaining.size() == 2);
+    CHECK(remaining[0].channels.size() == 2);
+    CHECK(remaining[1].channels.size() == 2);
+}
+
 namespace {
 
 // Real, two-tone audio at an arbitrary rate - separate from tone_frame()/
@@ -1350,11 +1455,12 @@ TEST_CASE("E-AC-3 encodes and decodes real audio at fscod2 half rates",
             // stream scans correctly).
             const auto decoded = decoder.decode_access_unit(unit->bytes);
             REQUIRE(decoded.has_value());
-            CHECK(decoded->sample_rate == c.rate);
-            REQUIRE(decoded->channels.size() == 2);
+            REQUIRE(decoded->has_value());
+            CHECK((*decoded)->sample_rate == c.rate);
+            REQUIRE((*decoded)->channels.size() == 2);
             for (std::size_t ch = 0; ch < 2; ++ch) {
-                rendered[ch].insert(rendered[ch].end(), decoded->channels[ch].begin(),
-                                    decoded->channels[ch].end());
+                rendered[ch].insert(rendered[ch].end(), (*decoded)->channels[ch].begin(),
+                                    (*decoded)->channels[ch].end());
             }
         }
         // Real audio, not silence: §7.2.2.1.1's all-zero allocation would

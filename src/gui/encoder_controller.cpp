@@ -1841,10 +1841,15 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device, bool mon
                 std::optional<std::vector<float>> to_play;
                 if (eac3) {
                     const auto decoded = eac3_monitor_decoder.decode_access_unit(unit_bytes);
-                    if (decoded) {
-                        const auto order = plan::wav_order(std::span{decoded->layout.items}.first(
-                            static_cast<std::size_t>(decoded->layout.count)));
-                        to_play = interleave_reordered(decoded->channels, order);
+                    // §3.7: decoded->has_value() is false exactly when this
+                    // access unit is being held back pending transient
+                    // pre-noise processing (decode_access_unit's own doc
+                    // comment) - live monitoring just waits for the next one.
+                    if (decoded && decoded->has_value()) {
+                        const auto order =
+                            plan::wav_order(std::span{(*decoded)->layout.items}.first(
+                                static_cast<std::size_t>((*decoded)->layout.count)));
+                        to_play = interleave_reordered((*decoded)->channels, order);
                     }
                 } else {
                     const auto decoded = ac3_monitor_decoder->decode_frame(unit_bytes);

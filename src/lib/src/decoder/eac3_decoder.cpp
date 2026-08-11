@@ -1687,15 +1687,26 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
 
 std::vector<DecodedSubstream> Eac3Decoder::flush() {
     std::vector<DecodedSubstream> ready;
-    ready.reserve(pending_.size());
+    ready.reserve(pending_.size() + pending_au_parts_.size());
     for (auto& [key, substream] : pending_) {
         ready.push_back(std::move(substream));
     }
     pending_.clear();
+    // decode_access_unit's own assembly cache: whatever is left here is one
+    // or more substreams whose sibling(s) never caught up before the stream
+    // ended, so there is no complete DecodedAccessUnit to hand back for
+    // them - the raw substreams, oldest first, are the best this can do (see
+    // flush()'s own doc comment).
+    for (auto& [key, queue] : pending_au_parts_) {
+        for (auto& substream : queue) {
+            ready.push_back(std::move(substream));
+        }
+    }
+    pending_au_parts_.clear();
     return ready;
 }
 
-std::expected<DecodedAccessUnit, DecodeError> Eac3Decoder::decode_access_unit(
+std::expected<std::optional<DecodedAccessUnit>, DecodeError> Eac3Decoder::decode_access_unit(
     std::span<const std::byte> unit) {
     const auto frames = split_frames(unit);
     if (!frames) {
@@ -1705,27 +1716,52 @@ std::expected<DecodedAccessUnit, DecodeError> Eac3Decoder::decode_access_unit(
         return std::unexpected(DecodeError::kInvalidStream);
     }
 
-    std::vector<DecodedSubstream> substreams;
-    substreams.reserve(frames->size());
+    // §3.7: each frame's substream identity is needed below regardless of
+    // whether decode_substream releases it or holds it back this call - a
+    // held-back frame has no DecodedSubstream to read strmtyp/substreamid
+    // from, so bsi is parsed here too. This is the same parse
+    // decode_substream itself does a moment later; cheap enough that
+    // duplicating it beats threading the key back out through decode_substream's
+    // own return type.
+    std::vector<int> keys;
+    keys.reserve(frames->size());
     for (const auto& frame : *frames) {
+        BitReader peek{frame};
+        const auto bsi = parse_bsi(peek, frame.size());
+        if (!bsi) {
+            return std::unexpected(bsi.error());
+        }
+        keys.push_back(static_cast<int>(bsi->strmtyp) * 8 + bsi->substreamid);
+
         auto decoded = decode_substream(frame);
         if (!decoded) {
             return std::unexpected(decoded.error());
         }
-        if (!decoded->has_value()) {
-            // §3.7: this substream's frame is being held back pending
-            // transient pre-noise processing (decode_substream's own doc
-            // comment). decode_access_unit does not cache the OTHER
-            // substreams already decoded this call while waiting for this
-            // one to catch up - that would mean holding an unbounded amount
-            // of state across calls for a case this project's own encoder
-            // does not produce (every substream of one access unit turns
-            // the tool on or off together). A caller that needs a stream
-            // where substreams buffer independently should call
-            // decode_substream directly instead.
-            return std::unexpected(DecodeError::kUnsupported);
+        if (decoded->has_value()) {
+            pending_au_parts_[keys.back()].push_back(std::move(**decoded));
         }
-        substreams.push_back(std::move(**decoded));
+        // A held-back frame adds nothing to this identity's queue - whatever
+        // it already holds (if anything, from an earlier call) is still
+        // waiting in order, and remains what completes the assembly below
+        // once every other identity also has one queued.
+    }
+
+    // Every identity this call's frames named must have at least one queued,
+    // released result before there is a complete access unit to assemble. A
+    // stream that never uses transient pre-noise processing always does:
+    // every substream releases every call, so this is never false for it.
+    for (const int key : keys) {
+        const auto it = pending_au_parts_.find(key);
+        if (it == pending_au_parts_.end() || it->second.empty()) {
+            return std::optional<DecodedAccessUnit>(std::nullopt);
+        }
+    }
+    std::vector<DecodedSubstream> substreams;
+    substreams.reserve(keys.size());
+    for (const int key : keys) {
+        auto& queue = pending_au_parts_.at(key);
+        substreams.push_back(std::move(queue.front()));
+        queue.pop_front();
     }
     const auto& lead = substreams.front();
     if (lead.strmtyp == StreamType::kDependent) {
@@ -1760,7 +1796,7 @@ std::expected<DecodedAccessUnit, DecodeError> Eac3Decoder::decode_access_unit(
     // `layout` empty to say plainly that there is no spatial layout to report.
     if (lead.acmod == Acmod::kDualMono) {
         out.channels = lead.channels;
-        return out;
+        return std::optional<DecodedAccessUnit>(std::move(out));
     }
 
     // §E3.8.2: the bed's locations, then every dependent's unioned in. A
@@ -1795,7 +1831,7 @@ std::expected<DecodedAccessUnit, DecodeError> Eac3Decoder::decode_access_unit(
                 sub.channels[static_cast<std::size_t>(i)];
         }
     }
-    return out;
+    return std::optional<DecodedAccessUnit>(std::move(out));
 }
 
 }  // namespace ac3
