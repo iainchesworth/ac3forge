@@ -803,6 +803,22 @@ private:
     // common case) falls back to the object's static ObjectConfig placement
     // in encodeObjects, held constant for the whole file.
     QHash<int, std::vector<ac3::oba::Keyframe>> object_keyframes_;
+    // A snapshot of object_configs_/object_keyframes_/selected_object_index_
+    // as they stood before a live Atmos session resized them to the CAPTURE
+    // DEVICE's channel count instead of a loaded file's (see
+    // startLiveSession's own comment on why that resize happens at all).
+    // Restored once the session ends (runLiveSession's completion callback),
+    // so an unrelated live excursion can never permanently clobber authored
+    // object placements/motion a loaded file already had. nullopt means
+    // nothing needs restoring - no session has resized anything yet, or the
+    // device's channel count already matched and nothing was touched.
+    struct LiveObjectBackup {
+        int count = 0;
+        std::vector<ObjectConfig> configs;
+        QHash<int, std::vector<ac3::oba::Keyframe>> keyframes;
+        int selected_index = 0;
+    };
+    std::optional<LiveObjectBackup> live_object_backup_;
 
     QVariantList runs_;
     int current_run_id_ = -1;
