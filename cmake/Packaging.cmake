@@ -96,6 +96,75 @@ elseif(UNIX)
     endif()
 endif()
 
+# ---------------------------------------------------------------------------
+# Library component: a second, separate download alongside the existing
+# ac3cli/ac3gui package - headers + .lib/.dll/.a/.so + CMake package config
+# for a third party consuming ac3::forge/matroska::matroska via
+# find_package(ac3forge) (see cmake/InstallLibrary.cmake). Everything
+# install()'d without an explicit COMPONENT falls into CPack's own
+# "Unspecified" component, which is why ac3cli/ac3gui and every
+# InstallLibrary.cmake rule now carry one explicitly.
+#
+# CPACK_ARCHIVE_COMPONENT_INSTALL is specifically the Archive generator
+# family's (ZIP/TGZ) own component-install switch - it does not affect
+# NSIS/DEB/RPM/DragNDrop, each of which has its own separate
+# CPACK_<GENERATOR>_COMPONENT_INSTALL flag, left off here deliberately:
+#   - NSIS: a component installer can't also produce a second standalone
+#     download the way a second archive naturally can - splitting it would
+#     need an entirely different NSIS packaging shape, not a flag flip.
+#   - DEB/RPM: a correct runtime/-dev split needs NAMELINK_COMPONENT on the
+#     library install() rules plus per-component Depends metadata (the
+#     shared lib's .so needs to depend on the exact -dev package providing
+#     its headers) - real work, a separate initiative if ever wanted, not
+#     something to bolt on as a side effect of the archive split here.
+#   - DragNDrop: no macOS host to build or verify this against at all (see
+#     the DragNDrop branch above).
+# So today: ZIP (Windows/Linux) and TGZ (macOS/Linux) split into two
+# archives per platform; NSIS/DEB/RPM/DragNDrop stay exactly as they were,
+# one monolithic package bundling every component together.
+set(CPACK_COMPONENTS_ALL runtime library)
+set(CPACK_ARCHIVE_COMPONENT_INSTALL ON)
+# IGNORE, not the default (which nests each component under a per-group
+# subdirectory inside one archive): two components both wanting to be a
+# single independent top-level archive, not two directories inside one.
+set(CPACK_COMPONENTS_GROUPING IGNORE)
+
+# Per-component filename overrides so the existing ac3cli/ac3gui archive's
+# name doesn't change now that it is formally "the runtime component"
+# rather than "everything". Without an override, a component archive's
+# default name appends the component's own name (e.g. -runtime/-library) -
+# the runtime override below exists purely to suppress that suffix and keep
+# today's exact filename; the library override chooses the name explicitly
+# rather than accepting CPack's default "-library" suffix, matching the
+# ac3forge-dev-* convention docs/releasing.md documents.
+#
+# CPACK_SYSTEM_NAME and CPACK_PACKAGE_FILE_NAME are NOT usable here despite
+# looking already computed above - both are actually filled in by the
+# include(CPack) module itself, further down, not by any of the set() calls
+# in this file: confirmed by an empty CPACK_SYSTEM_NAME producing a real
+# "ac3forge-dev-0.2.0-beta.1-.zip" (trailing hyphen, no platform) and the
+# runtime override silently no-op'ing back to CPack's own "-runtime"
+# suffixed default, from an actual cpack --preset pack-windows-msvc run, not
+# assumed. Setting both explicitly here, before include(CPack), replicates
+# CPack's own default computation (win32/win64 on Windows, the bare
+# CMAKE_SYSTEM_NAME elsewhere; NAME-VERSION-SYSTEM for the base filename) so
+# today's existing filename is unchanged, and include(CPack) leaves an
+# already-set variable alone rather than recomputing it.
+if(WIN32)
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        set(CPACK_SYSTEM_NAME "win64")
+    else()
+        set(CPACK_SYSTEM_NAME "win32")
+    endif()
+else()
+    set(CPACK_SYSTEM_NAME "${CMAKE_SYSTEM_NAME}")
+endif()
+set(CPACK_PACKAGE_FILE_NAME
+    "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION_MAJOR}.${CPACK_PACKAGE_VERSION_MINOR}.${CPACK_PACKAGE_VERSION_PATCH}-${CPACK_SYSTEM_NAME}")
+
+set(CPACK_ARCHIVE_RUNTIME_FILE_NAME "${CPACK_PACKAGE_FILE_NAME}")
+set(CPACK_ARCHIVE_LIBRARY_FILE_NAME "ac3forge-dev-${PROJECT_VERSION_FULL}-${CPACK_SYSTEM_NAME}")
+
 include(CPack)
 
 # Lets `cpack` be triggered from inside an IDE's target list (e.g. Visual

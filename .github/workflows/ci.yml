@@ -200,7 +200,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docs_re='^(docs/|LICENSE$|mkdocs\.yml$|requirements-docs\.txt$|\.github/workflows/docs\.yml$|.*\.md$)'
+          docs_re='^(docs/|LICENSE$|mkdocs\.yml$|requirements-docs\.(in|txt)$|\.github/workflows/docs\.yml$|.*\.md$)'
 
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             files=$(gh api --paginate "repos/$REPO/pulls/${{ github.event.pull_request.number }}/files" --jq '.[].filename')
@@ -355,8 +355,10 @@ jobs:
       # system scope) - --break-system-packages is safe here specifically
       # because this container is thrown away at the end of the job, unlike a
       # real machine where that flag risks the system's own Python tooling.
+      # requirements-coverage.txt is a pip-compile --generate-hashes lock (see
+      # its own header for how to regenerate) so this install is hash-pinned.
       - name: Install gcovr
-        run: pip install --quiet --break-system-packages gcovr
+        run: pip install --quiet --break-system-packages --require-hashes -r requirements-coverage.txt
 
       - name: Configure
         shell: bash
@@ -614,8 +616,11 @@ jobs:
         with:
           vcpkg-commit: "eaca4a577b6b678c6e10252754b6988a61746c19"
 
+      # requirements-ffmpeg-validate.txt is a pip-compile --generate-hashes
+      # lock (see its own header for how to regenerate) so this install is
+      # hash-pinned.
       - name: Install numpy
-        run: pip install --quiet --break-system-packages numpy
+        run: pip install --quiet --break-system-packages --require-hashes -r requirements-ffmpeg-validate.txt
 
       - name: Report ffmpeg version
         run: ffmpeg -version | head -1

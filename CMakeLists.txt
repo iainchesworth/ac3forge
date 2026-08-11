@@ -110,6 +110,13 @@ endif()
 # depends on nothing of ac3::forge and knows nothing about AC-3.
 add_subdirectory(src/matroska)
 
+# install()/find_package(ac3forge) support for ac3::forge and
+# matroska::matroska - after both add_subdirectory() calls above (needs
+# their targets to exist), before include(Packaging) (CPack's library
+# component packages exactly what gets install()'d here). Deliberately not
+# ac3::audio - see cmake/InstallLibrary.cmake's own header comment.
+include(InstallLibrary)
+
 if(AC3FORGE_BUILD_CLI)
     add_subdirectory(src/cli)
 endif()

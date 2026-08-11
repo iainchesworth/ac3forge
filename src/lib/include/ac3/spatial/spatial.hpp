@@ -5,6 +5,8 @@
 #include <span>
 #include <vector>
 
+#include "ac3/export.hpp"
+
 // The spatial/object layer: applications place and move mono sources around
 // the listener; the renderer turns the scene into a 5.1 channel bed that
 // feeds the AC-3 encoder (or any other sink — nothing here knows about
@@ -43,7 +45,7 @@ using PanGains = std::array<double, kBedChannels>;
 
 // Energy-normalized pairwise pan of a direction (degrees, CCW from front,
 // any value; normalized internally) onto the 5.1 ring.
-[[nodiscard]] PanGains pan_azimuth(double azimuth_deg);
+[[nodiscard]] AC3FORGE_EXPORT PanGains pan_azimuth(double azimuth_deg);
 
 // The same pan onto an ARBITRARY horizontal ring, which is what any layout
 // wider than 5.1 needs: 7.1 puts its side surrounds at 90° and its rears at
@@ -57,8 +59,8 @@ using PanGains = std::array<double, kBedChannels>;
 // is singular and both gains solve negative. Across such an arc this
 // crossfades at constant power instead, which agrees with the pairwise
 // solution at both edges and never drops the source into silence.
-void pan_ring(double azimuth_deg, std::span<const double> ring_azimuth_deg,
-              std::span<double> gains);
+AC3FORGE_EXPORT void pan_ring(double azimuth_deg, std::span<const double> ring_azimuth_deg,
+                              std::span<double> gains);
 
 // The same pan, addressed by a room-anchored position instead of an angle:
 // x runs 0 at the left wall to 1 at the right and y 0 at the front wall to 1
@@ -74,7 +76,7 @@ void pan_ring(double azimuth_deg, std::span<const double> ring_azimuth_deg,
 // The consequence is worth stating plainly: two sources at the same azimuth
 // and different heights get IDENTICAL bed gains, and nothing downstream can
 // tell them apart from the bed alone.
-[[nodiscard]] PanGains pan_room(double x, double y);
+[[nodiscard]] AC3FORGE_EXPORT PanGains pan_room(double x, double y);
 
 struct ObjectState {
     double azimuth_deg = 0.0;
@@ -85,8 +87,8 @@ struct ObjectState {
 // Renders mono objects into a 5.1 bed (5 fullbw channels + LFE), one
 // 256-sample block at a time, ramping each object's channel gains linearly
 // from the previous block's values to the current targets.
-class BedRenderer {
-public:
+class AC3FORGE_EXPORT BedRenderer {
+   public:
     // Returns the object's index. Call before rendering starts (allocates).
     std::size_t add_object(const ObjectState& initial);
 
@@ -97,7 +99,7 @@ public:
     void render_block(std::span<const std::span<const float>> audio,
                       std::span<const std::span<float>> bed);
 
-private:
+   private:
     struct Slot {
         ObjectState target;
         PanGains current_gains{};

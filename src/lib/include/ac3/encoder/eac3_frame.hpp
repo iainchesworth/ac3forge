@@ -12,6 +12,7 @@
 #include "ac3/core/tables.hpp"
 #include "ac3/encoder/silent_frame.hpp"  // FrameError
 #include "ac3/encoder/transient.hpp"
+#include "ac3/export.hpp"
 #include "ac3/meta/drc.hpp"
 #include "ac3/meta/mixing.hpp"
 
@@ -209,8 +210,8 @@ struct FrameConfig {
 // this is just the exact bit budget rounded to whole 16-bit words.
 [[nodiscard]] constexpr std::uint32_t frame_words(SampleRate sample_rate,
                                                   std::uint32_t bitrate_kbps) {
-    const std::uint64_t bits = static_cast<std::uint64_t>(bitrate_kbps) * 1000 *
-                               kSamplesPerFrame / sample_rate_hz(sample_rate);
+    const std::uint64_t bits = static_cast<std::uint64_t>(bitrate_kbps) * 1000 * kSamplesPerFrame /
+                               sample_rate_hz(sample_rate);
     return static_cast<std::uint32_t>(bits / 16);
 }
 
@@ -228,7 +229,7 @@ inline constexpr std::uint32_t kMaxFrameWords = 2048;
 // padding; the padding is what gets pushed in front of it.
 using AuxPayload = std::span<const std::byte>;
 
-[[nodiscard]] std::expected<std::vector<std::byte>, FrameError> build_silent_frame(
+[[nodiscard]] AC3FORGE_EXPORT std::expected<std::vector<std::byte>, FrameError> build_silent_frame(
     const FrameConfig& config, AuxPayload aux = {});
 
 // The §7.7 words for one frame, separated from FrameConfig because they change
@@ -247,8 +248,8 @@ struct FrameMetadata {
 // decoders are exercised on: frame-level exponent strategies (Table E2.10
 // code 0 - D15 in block 0, reused for the other five) and frame-level SNR
 // offsets. Long blocks only; the Annex E tools are opt-in per FrameConfig.
-class FrameEncoder {
-public:
+class AC3FORGE_EXPORT FrameEncoder {
+   public:
     explicit FrameEncoder(const FrameConfig& config);
 
     // channels: the full-bandwidth channels in AC-3 order (Table 5.8),
@@ -263,19 +264,28 @@ public:
     // each substream's word to that substream's channels - so disagreement
     // does not average out, it tilts the mix.
     [[nodiscard]] std::expected<std::vector<std::byte>, FrameError> encode_frame(
-        std::span<const std::span<const float>> channels, const FrameMetadata& metadata, AuxPayload aux = {});
+        std::span<const std::span<const float>> channels, const FrameMetadata& metadata,
+        AuxPayload aux = {});
 
     [[nodiscard]] const FrameConfig& config() const { return config_; }
     [[nodiscard]] int channel_count() const {
         return fullbw_channel_count(config_.acmod) + (config_.lfe ? 1 : 0);
     }
 
-private:
+   private:
     FrameConfig config_;
     std::array<std::array<double, 256>, 6> history_{};  // MDCT overlap per channel
     // One per full-bandwidth channel (§8.2.2 excludes the LFE): stateful
     // across frames, like history_ above.
     std::vector<TransientDetector> transient_detectors_;
+    // Per-(channel, block) scratch for the MDCT pass, reused rather than
+    // stack-declared inside encode_frame (PREfast's C6262 flagged the
+    // function's stack frame) - see the AC-3 FrameEncoder for why reuse
+    // across iterations and calls changes nothing observable.
+    std::array<double, 512> time_scratch_{};
+    std::array<double, 512> windowed_scratch_{};
+    std::array<double, 128> half1_scratch_{};
+    std::array<double, 128> half2_scratch_{};
     // Smoothed across frames: see the AC-3 FrameEncoder for why they cannot be
     // per-frame objects.
     std::optional<meta::RangeController> range_;
@@ -298,7 +308,7 @@ struct AccessUnitConfig {
 // wire. Nothing may sit between them and they may not be reordered - a decoder
 // finds each substream by walking sync word and frmsiz, so the concatenation
 // IS the framing.
-struct AccessUnit {
+struct AC3FORGE_EXPORT AccessUnit {
     std::vector<std::byte> bytes;
     // Byte length of each substream frame, independent first; sums to
     // bytes.size(). Retained because crc2 is per substream, so anything that
@@ -315,20 +325,20 @@ struct AccessUnit {
 // CBR only. Under VBR the word count follows the content, so it cannot be
 // known before a frame is actually encoded - callers must not call this when
 // any substream's FrameConfig::vbr is set.
-[[nodiscard]] std::uint32_t access_unit_words(const AccessUnitConfig& config);
+[[nodiscard]] AC3FORGE_EXPORT std::uint32_t access_unit_words(const AccessUnitConfig& config);
 
 // TS 103 420 §8.2 fixes which substream carries the container: the LAST
 // dependent substream if the access unit has any, otherwise the independent
 // one. The object metadata describes the whole program, so it may not arrive
 // before every substream that contributes to it.
-[[nodiscard]] std::expected<AccessUnit, FrameError> build_silent_access_unit(
+[[nodiscard]] AC3FORGE_EXPORT std::expected<AccessUnit, FrameError> build_silent_access_unit(
     const AccessUnitConfig& config, AuxPayload aux = {});
 
 // Real audio across an independent substream and its dependents. One
 // FrameEncoder per substream: each keeps its own MDCT overlap and runs its own
 // SNR search against its own share of the rate.
-class AccessUnitEncoder {
-public:
+class AC3FORGE_EXPORT AccessUnitEncoder {
+   public:
     explicit AccessUnitEncoder(const AccessUnitConfig& config);
 
     // channels: every channel of the access unit grouped by substream in
@@ -341,7 +351,7 @@ public:
     // Summed across substreams: the span count encode_access_unit expects.
     [[nodiscard]] int channel_count() const;
 
-private:
+   private:
     AccessUnitConfig config_;
     std::vector<FrameEncoder> substreams_;
     // The programme's own controllers, measured on the INDEPENDENT substream's

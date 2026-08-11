@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "ac3/core/tables.hpp"
+#include "ac3/export.hpp"
 
 // The Annex E tables that both sides of the codec need. An encoder writes a
 // chanmap and a decoder reads one; a frame exponent strategy is a table
@@ -116,22 +117,22 @@ namespace chanmap {
 // class's enumerators against outer-scope declarations of the same name even
 // though they are never reachable unqualified, so the two vocabularies need
 // distinct spellings to build warning-clean everywhere.
-inline constexpr std::uint16_t kLeftBit = 0x8000;          // bit 0
-inline constexpr std::uint16_t kCentreBit = 0x4000;        // bit 1
-inline constexpr std::uint16_t kRightBit = 0x2000;         // bit 2
-inline constexpr std::uint16_t kLeftSurroundBit = 0x1000;  // bit 3
-inline constexpr std::uint16_t kRightSurroundBit = 0x0800; // bit 4
-inline constexpr std::uint16_t kLcRcBit = 0x0400;          // bit 5  (pair)
-inline constexpr std::uint16_t kLrsRrsBit = 0x0200;        // bit 6  (pair)
-inline constexpr std::uint16_t kCsBit = 0x0100;            // bit 7
-inline constexpr std::uint16_t kTsBit = 0x0080;            // bit 8
-inline constexpr std::uint16_t kLsdRsdBit = 0x0040;        // bit 9  (pair)
-inline constexpr std::uint16_t kLwRwBit = 0x0020;          // bit 10 (pair)
-inline constexpr std::uint16_t kVhlVhrBit = 0x0010;        // bit 11 (pair)
-inline constexpr std::uint16_t kVhcBit = 0x0008;           // bit 12
-inline constexpr std::uint16_t kLtsRtsBit = 0x0004;        // bit 13 (pair)
-inline constexpr std::uint16_t kLfe2Bit = 0x0002;          // bit 14
-inline constexpr std::uint16_t kLfeBit = 0x0001;           // bit 15
+inline constexpr std::uint16_t kLeftBit = 0x8000;           // bit 0
+inline constexpr std::uint16_t kCentreBit = 0x4000;         // bit 1
+inline constexpr std::uint16_t kRightBit = 0x2000;          // bit 2
+inline constexpr std::uint16_t kLeftSurroundBit = 0x1000;   // bit 3
+inline constexpr std::uint16_t kRightSurroundBit = 0x0800;  // bit 4
+inline constexpr std::uint16_t kLcRcBit = 0x0400;           // bit 5  (pair)
+inline constexpr std::uint16_t kLrsRrsBit = 0x0200;         // bit 6  (pair)
+inline constexpr std::uint16_t kCsBit = 0x0100;             // bit 7
+inline constexpr std::uint16_t kTsBit = 0x0080;             // bit 8
+inline constexpr std::uint16_t kLsdRsdBit = 0x0040;         // bit 9  (pair)
+inline constexpr std::uint16_t kLwRwBit = 0x0020;           // bit 10 (pair)
+inline constexpr std::uint16_t kVhlVhrBit = 0x0010;         // bit 11 (pair)
+inline constexpr std::uint16_t kVhcBit = 0x0008;            // bit 12
+inline constexpr std::uint16_t kLtsRtsBit = 0x0004;         // bit 13 (pair)
+inline constexpr std::uint16_t kLfe2Bit = 0x0002;           // bit 14
+inline constexpr std::uint16_t kLfeBit = 0x0001;            // bit 15
 
 inline constexpr std::uint16_t kPairs =
     kLcRcBit | kLrsRrsBit | kLsdRsdBit | kLwRwBit | kVhlVhrBit | kLtsRtsBit;
@@ -140,8 +141,7 @@ inline constexpr std::uint16_t kPairs =
 // channels the substream's acmod and lfeon code, and the coded order to
 // follow the enabled bits from bit 0 downwards.
 [[nodiscard]] constexpr int channel_count(std::uint16_t map) {
-    return std::popcount(map) +
-           std::popcount(static_cast<std::uint16_t>(map & kPairs));
+    return std::popcount(map) + std::popcount(static_cast<std::uint16_t>(map & kPairs));
 }
 
 // One speaker feed. A pair location expands to two adjacent enumerators, in
@@ -176,9 +176,8 @@ inline constexpr int kMaxChannels = 22;
 
 [[nodiscard]] constexpr std::string_view name(Location location) {
     constexpr std::array<std::string_view, kMaxChannels> names = {
-        "L",   "C",   "R",   "Ls",  "Rs",  "Lc",  "Rc",  "Lrs",
-        "Rrs", "Cs",  "Ts",  "Lsd", "Rsd", "Lw",  "Rw",  "Vhl",
-        "Vhr", "Vhc", "Lts", "Rts", "LFE2", "LFE"};
+        "L",   "C",   "R",  "Ls", "Rs",  "Lc",  "Rc",  "Lrs", "Rrs", "Cs",   "Ts",
+        "Lsd", "Rsd", "Lw", "Rw", "Vhl", "Vhr", "Vhc", "Lts", "Rts", "LFE2", "LFE"};
     return names[static_cast<std::size_t>(location)];
 }
 
@@ -191,9 +190,7 @@ struct Layout {
         return items[static_cast<std::size_t>(index)];
     }
     [[nodiscard]] constexpr auto begin() const { return items.begin(); }
-    [[nodiscard]] constexpr auto end() const {
-        return std::next(items.begin(), count);
-    }
+    [[nodiscard]] constexpr auto end() const { return std::next(items.begin(), count); }
     // Where a location sits in this layout, or -1.
     [[nodiscard]] constexpr int index_of(Location location) const {
         for (int i = 0; i < count; ++i) {
@@ -215,8 +212,7 @@ struct Layout {
         // adjacent, so the first location of bit n is n plus the number of
         // pair bits below it.
         const auto above = static_cast<std::uint16_t>(~(0xFFFFu >> bit));
-        const auto lower_pairs =
-            std::popcount(static_cast<std::uint16_t>(kPairs & above));
+        const auto lower_pairs = std::popcount(static_cast<std::uint16_t>(kPairs & above));
         auto location = static_cast<Location>(bit + lower_pairs);
         out.items[static_cast<std::size_t>(out.count++)] = location;
         if ((kPairs & (0x8000u >> bit)) != 0) {
@@ -234,17 +230,16 @@ struct Layout {
 // and is rejected before this is ever consulted.
 [[nodiscard]] constexpr std::uint16_t acmod_map(Acmod acmod, bool lfe) {
     constexpr std::array<std::uint16_t, 8> fbw = {
-        kLeftBit | kRightBit,                                             // 1+1 (not a layout)
-        kCentreBit,                                                       // 1/0
-        kLeftBit | kRightBit,                                             // 2/0
-        kLeftBit | kCentreBit | kRightBit,                                // 3/0
-        kLeftBit | kRightBit | kCsBit,                                    // 2/1
-        kLeftBit | kCentreBit | kRightBit | kCsBit,                       // 3/1
-        kLeftBit | kRightBit | kLeftSurroundBit | kRightSurroundBit,      // 2/2
+        kLeftBit | kRightBit,                                         // 1+1 (not a layout)
+        kCentreBit,                                                   // 1/0
+        kLeftBit | kRightBit,                                         // 2/0
+        kLeftBit | kCentreBit | kRightBit,                            // 3/0
+        kLeftBit | kRightBit | kCsBit,                                // 2/1
+        kLeftBit | kCentreBit | kRightBit | kCsBit,                   // 3/1
+        kLeftBit | kRightBit | kLeftSurroundBit | kRightSurroundBit,  // 2/2
         kLeftBit | kCentreBit | kRightBit | kLeftSurroundBit | kRightSurroundBit,  // 3/2
     };
-    return static_cast<std::uint16_t>(fbw[static_cast<std::uint8_t>(acmod)] |
-                                      (lfe ? kLfeBit : 0));
+    return static_cast<std::uint16_t>(fbw[static_cast<std::uint8_t>(acmod)] | (lfe ? kLfeBit : 0));
 }
 
 // Canonical 7.1: the dependent replaces the bed's surrounds and adds the two
@@ -319,10 +314,10 @@ inline constexpr int kMaxSubstreamChannels = kMaxSubstreamFullbw + 1;
 enum class AllocationError : std::uint8_t {
     kTooManyChannels,  // §E3.8.2: the request needs more than 16 rendered channels
     kNoBedFit,         // no Table 5.8 acmod's own channels are a subset of the request
-    kOrphanLfe2,       // LFE2 was requested with no full-bandwidth channel left to share its substream
+    kOrphanLfe2,  // LFE2 was requested with no full-bandwidth channel left to share its substream
 };
 
-[[nodiscard]] std::string_view describe(AllocationError error);
+[[nodiscard]] AC3FORGE_EXPORT std::string_view describe(AllocationError error);
 
 // The Table 5.8 acmod/lfeon that code exactly the channels `mask` names, or
 // nullopt if no combination does - which happens only when `mask` asks for
@@ -331,11 +326,12 @@ enum class AllocationError : std::uint8_t {
 // both code four), so a fixed preference (documented at the definition)
 // breaks the tie; existing named layouts are built to agree with that choice,
 // so this is not a free-standing decision, it is what they already assume.
-[[nodiscard]] std::optional<std::pair<Acmod, bool>> acmod_for_chanmap(std::uint16_t mask);
+[[nodiscard]] AC3FORGE_EXPORT std::optional<std::pair<Acmod, bool>> acmod_for_chanmap(
+    std::uint16_t mask);
 
 // The inverse of name(): the Table E2.5 location a display name (as name()
 // prints it, e.g. "Ls", "LFE2") stands for, or nullopt for anything else.
-[[nodiscard]] std::optional<Location> parse_location(std::string_view name);
+[[nodiscard]] AC3FORGE_EXPORT std::optional<Location> parse_location(std::string_view name);
 
 // A concrete, general E-AC-3 channel plan: the independent substream's own
 // acmod/lfeon (Table 5.8 - only a dependent may carry a custom chanmap, so
@@ -355,7 +351,8 @@ struct ChannelPlan {
 // shapes, and among those that fit, the widest one leaves the least for
 // dependents to carry. Everything `locations` asks for that the bed cannot
 // express is packed into dependents of at most kMaxSubstreamChannels each.
-[[nodiscard]] std::expected<ChannelPlan, AllocationError> allocate(std::uint16_t locations);
+[[nodiscard]] AC3FORGE_EXPORT std::expected<ChannelPlan, AllocationError> allocate(
+    std::uint16_t locations);
 
 }  // namespace chanmap
 

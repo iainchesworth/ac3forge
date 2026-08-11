@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <memory>
 #include <numbers>
 #include <span>
 #include <utility>
@@ -41,11 +42,13 @@ void write(std::vector<std::byte>& stream, std::span<const std::byte> frame) {
 }  // namespace
 
 int main() {
-    ac3::FrameEncoder encoder{{
+    // Heap-allocated: FrameEncoder carries several KB of MDCT scratch/history
+    // state (PREfast's C6262).
+    auto encoder = std::make_unique<ac3::FrameEncoder>(ac3::EncoderConfig{
         .bitrate_kbps = 448,
         .acmod = ac3::Acmod::k3_2,  // L, C, R, SL, SR
         .lfe = true,
-    }};
+    });
 
     // Table 5.8 order, LFE last, exactly kSamplesPerFrame (1536) samples each.
     std::vector<std::vector<float>> pcm(6, std::vector<float>(ac3::kSamplesPerFrame));
@@ -57,7 +60,7 @@ int main() {
     for (int frame = 0; frame < 31; ++frame) {  // 48000 / 1536, near enough
         fill_with_audio(pcm, frame, 48000.0);
 
-        const auto encoded = encoder.encode_frame(views);
+        const auto encoded = encoder->encode_frame(views);
         if (!encoded) {
             std::printf("encode failed: %d\n", std::to_underlying(encoded.error()));
             return 1;

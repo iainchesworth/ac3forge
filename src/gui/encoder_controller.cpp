@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cmath>
 #include <fstream>
+#include <memory>
 #include <numbers>
 #include <optional>
 #include <span>
@@ -1451,7 +1452,7 @@ void EncoderController::playToReceiver(int deviceIndex) {
                         for (const auto& unit : *units) {
                             std::vector<std::byte> burst;
                             if (eac3) {
-                                const auto result = eac3_packer.push(unit);
+                                auto result = eac3_packer.push(unit);
                                 if (!result) {
                                     break;
                                 }
@@ -1710,18 +1711,24 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device, bool mon
                                      routing = std::move(routing), nobjects, channels,
                                      sample_rate, monitor, passthrough, write_to_disk,
                                      file_path]() mutable {
-        ac3::FrameEncoder ac3_encoder{plan::ac3_config(p)};
-        ac3::eac3::AccessUnitEncoder eac3_encoder{plan::eac3_config(p)};
-        std::optional<ac3::oba::AtmosEncoder> atmos_encoder;
+        // Heap-allocated: each of these carries a multi-KB internal history/
+        // delay buffer, and stacking all four on this lambda's frame (which
+        // PREfast's C6262 flagged) pushed it well past what's comfortable for
+        // a worker-thread stack. Constructed once here, at session start, not
+        // per audio frame - the make_unique cost is paid once, not in the
+        // hot loop below.
+        auto ac3_encoder = std::make_unique<ac3::FrameEncoder>(plan::ac3_config(p));
+        auto eac3_encoder = std::make_unique<ac3::eac3::AccessUnitEncoder>(plan::eac3_config(p));
+        std::unique_ptr<ac3::oba::AtmosEncoder> atmos_encoder;
         if (atmos) {
-            atmos_encoder.emplace(
+            atmos_encoder = std::make_unique<ac3::oba::AtmosEncoder>(
                 ac3::oba::AtmosConfig{.sample_rate = p.sample_rate,
                                       .bitrate_kbps = p.bitrate_kbps,
                                       .dialnorm = p.meta.dialnorm,
                                       .num_bands_idx = 4},
                 static_cast<int>(nobjects));
         }
-        ac3::FrameDecoder ac3_monitor_decoder;
+        auto ac3_monitor_decoder = std::make_unique<ac3::FrameDecoder>();
         ac3::Eac3Decoder eac3_monitor_decoder;
         ac3::iec61937::Eac3BurstPacker eac3_packer;
 
@@ -1816,13 +1823,13 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device, bool mon
                 plan::render(*routing, chan_in, chan_out, ac3::kSamplesPerFrame);
                 meter.process(chan_views);
                 if (eac3) {
-                    const auto unit = eac3_encoder.encode_access_unit(chan_views);
+                    const auto unit = eac3_encoder->encode_access_unit(chan_views);
                     if (!unit) {
                         break;
                     }
                     unit_bytes = unit->bytes;
                 } else {
-                    const auto frame = ac3_encoder.encode_frame(chan_views);
+                    const auto frame = ac3_encoder->encode_frame(chan_views);
                     if (!frame) {
                         break;
                     }
@@ -1840,7 +1847,7 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device, bool mon
                         to_play = interleave_reordered(decoded->channels, order);
                     }
                 } else {
-                    const auto decoded = ac3_monitor_decoder.decode_frame(unit_bytes);
+                    const auto decoded = ac3_monitor_decoder->decode_frame(unit_bytes);
                     if (decoded) {
                         const auto order =
                             ac3::io::wav_channel_order(decoded->acmod, decoded->lfe);
@@ -1858,7 +1865,7 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device, bool mon
             if (passthrough) {
                 std::optional<std::vector<std::byte>> burst;
                 if (eac3) {
-                    const auto packed = eac3_packer.push(unit_bytes);
+                    auto packed = eac3_packer.push(unit_bytes);
                     if (packed && *packed) {
                         burst = std::move(**packed);
                     }
@@ -2052,8 +2059,12 @@ void EncoderController::startRecording(int deviceIndex, const QUrl& url) {
     std::ignore = QtConcurrent::run([this, path, p, routing = *routing, channels, sample_rate,
                                      cp, eac3]() {
         const auto coded_count = static_cast<std::size_t>(routing.coded_channels);
-        ac3::FrameEncoder ac3_encoder{plan::ac3_config(p)};
-        ac3::eac3::AccessUnitEncoder eac3_encoder{plan::eac3_config(p)};
+        // Heap-allocated, not stack: each carries a multi-KB internal history
+        // buffer, and both together pushed this lambda's stack frame well
+        // past what's comfortable for a worker thread (PREfast's C6262).
+        // Constructed once here, at recording start, not per audio frame.
+        auto ac3_encoder = std::make_unique<ac3::FrameEncoder>(plan::ac3_config(p));
+        auto eac3_encoder = std::make_unique<ac3::eac3::AccessUnitEncoder>(plan::eac3_config(p));
         ac3::analysis::LevelMeter meter{cp.bed_acmod, cp.bed_lfe, sample_rate,
                                         static_cast<int>(coded_count)};
 
@@ -2102,13 +2113,13 @@ void EncoderController::startRecording(int deviceIndex, const QUrl& url) {
             meter.process(views);
 
             if (eac3) {
-                const auto unit = eac3_encoder.encode_access_unit(views);
+                const auto unit = eac3_encoder->encode_access_unit(views);
                 if (!unit) {
                     break;
                 }
                 frames.push_back(unit->bytes);
             } else {
-                const auto frame = ac3_encoder.encode_frame(views);
+                const auto frame = ac3_encoder->encode_frame(views);
                 if (!frame) {
                     break;
                 }
@@ -2412,8 +2423,12 @@ void EncoderController::encodeChannels(const QString& path,
     std::ignore = QtConcurrent::run([this, path, p, routing = *routing, cp, sample_rate,
                                      eac3, label, planes = std::move(planes)]() mutable {
         const auto coded_count = static_cast<std::size_t>(routing.coded_channels);
-        ac3::FrameEncoder ac3_encoder{plan::ac3_config(p)};
-        ac3::eac3::AccessUnitEncoder eac3_encoder{plan::eac3_config(p)};
+        // Heap-allocated, not stack: each carries a multi-KB internal history
+        // buffer, and both together pushed this lambda's stack frame well
+        // past what's comfortable for a worker thread (PREfast's C6262).
+        // Constructed once here, at encode start, not per audio frame.
+        auto ac3_encoder = std::make_unique<ac3::FrameEncoder>(plan::ac3_config(p));
+        auto eac3_encoder = std::make_unique<ac3::eac3::AccessUnitEncoder>(plan::eac3_config(p));
         ac3::analysis::LevelMeter meter{cp.bed_acmod, cp.bed_lfe, sample_rate,
                                         static_cast<int>(coded_count)};
 
@@ -2461,7 +2476,7 @@ void EncoderController::encodeChannels(const QString& path,
             meter.process(metered);
 
             if (eac3) {
-                const auto unit = eac3_encoder.encode_access_unit(views);
+                const auto unit = eac3_encoder->encode_access_unit(views);
                 if (!unit) {
                     problem = QStringLiteral(
                         "The encoder cannot express this configuration — a wider layout needs "
@@ -2471,7 +2486,7 @@ void EncoderController::encodeChannels(const QString& path,
                 bytes += unit->bytes.size();
                 frames.push_back(unit->bytes);
             } else {
-                const auto frame = ac3_encoder.encode_frame(views);
+                const auto frame = ac3_encoder->encode_frame(views);
                 if (!frame) {
                     problem = QStringLiteral("The encoder rejected the settings — AC-3 takes "
                                              "only the 19 nominal rates of Table 5.18.");

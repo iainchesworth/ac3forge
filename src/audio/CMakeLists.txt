@@ -17,8 +17,17 @@
 # pack S/PDIF bursts. iec61937 itself has no platform dependency and stays in
 # ac3::forge - it is pure codec-adjacent byte framing, also used standalone
 # by ac3cli's file-based `spdif` command.
+#
+# Always STATIC, deliberately, regardless of the ambient BUILD_SHARED_LIBS a
+# whole-project configure might set for ac3::forge/matroska::matroska's own
+# benefit (see src/lib/CMakeLists.txt): this target carries no export
+# annotations at all, so building it SHARED produces a DLL with nothing
+# exported and no usable import library - a link failure for every in-tree
+# consumer, not a working shared ac3audio. It isn't part of the distributed
+# package (see the header comment above), so there is no packaging reason to
+# give it the same static+shared treatment ac3::forge/matroska::matroska get.
 # ---------------------------------------------------------------------------
-add_library(ac3audio)
+add_library(ac3audio STATIC)
 add_library(ac3::audio ALIAS ac3audio)
 
 target_include_directories(ac3audio

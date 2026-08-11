@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "ac3/core/tables.hpp"
+#include "ac3/export.hpp"
 
 // Reading the shape of an AC-3 or E-AC-3 elementary stream back off the wire.
 //
@@ -37,7 +38,7 @@ enum class ScanError : std::uint8_t {
     kTruncated,
 };
 
-[[nodiscard]] std::string_view describe(ScanError error);
+[[nodiscard]] AC3FORGE_EXPORT std::string_view describe(ScanError error);
 
 struct ScannedStream {
     StreamKind kind = StreamKind::kAc3;
@@ -55,7 +56,7 @@ struct ScannedStream {
     std::size_t substreams_per_unit = 0;
 };
 
-[[nodiscard]] std::expected<ScannedStream, ScanError> scan(
+[[nodiscard]] AC3FORGE_EXPORT std::expected<ScannedStream, ScanError> scan(
     std::span<const std::byte> stream);
 
 }  // namespace ac3::io

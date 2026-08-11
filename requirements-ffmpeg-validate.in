@@ -1,0 +1,5 @@
+# numpy for ci.yml's ffmpeg-validate job (tools/quality_race.py and friends).
+# Regenerate the lock after any change here with:
+#   python -m piptools compile --generate-hashes --strip-extras \
+#     --output-file=requirements-ffmpeg-validate.txt requirements-ffmpeg-validate.in
+numpy

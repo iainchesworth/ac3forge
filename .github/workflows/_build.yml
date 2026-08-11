@@ -282,7 +282,7 @@ jobs:
       - name: Install ffmpeg (Windows)
         if: matrix.gold_reference && runner.os == 'Windows'
         shell: bash
-        run: choco install ffmpeg -y --no-progress
+        run: choco install ffmpeg -y --no-progress --requirechecksums
 
       - name: Install ffmpeg (macOS)
         if: matrix.gold_reference && runner.os == 'macOS'
@@ -301,7 +301,7 @@ jobs:
           set -euo pipefail
           case "$RUNNER_OS" in
             macOS)   brew install ninja ;;
-            Windows) choco install ninja -y --no-progress ;;
+            Windows) choco install ninja -y --no-progress --requirechecksums ;;
           esac
 
       # AC3FORGE_BUILD_GUI is ON only on the two Windows presets (see
@@ -522,6 +522,30 @@ jobs:
           }
           cmake --build build/no-alsa -- -k 0
           ctest --test-dir build/no-alsa
+
+      # Proves BUILD_SHARED_LIBS=ON actually works before it ships in a real
+      # release: ac3::forge_shared/matroska::matroska_shared existing and
+      # configuring cleanly (already exercised by every leg's normal
+      # config-<preset> build, since both variants are always built
+      # regardless of BUILD_SHARED_LIBS - see src/lib/CMakeLists.txt) is not
+      # the same claim as every in-tree consumer actually linking and
+      # running against the real .so - ac3cli/ac3tests/every example,
+      # including mux_mkv, the one that needs libmatroska.so alongside
+      # libac3forge.so. On linux-llvm only, the same "one extra pass inside
+      # an existing leg, not a new matrix entry" shape as the ALSA fallback
+      # step above - confirmed locally in WSL2 Ubuntu before landing here,
+      # not assumed: 304/304 tests passed, and `ldd bin/ac3cli` showed both
+      # .so files resolved via the build tree's own automatic RPATH, with
+      # nothing here needing to place them next to the executable the way
+      # examples/CMakeLists.txt's Windows-only DLL-copy step does.
+      - name: Configure, build and test with BUILD_SHARED_LIBS=ON
+        if: matrix.preset == 'linux-llvm'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --preset config-linux-llvm-shared
+          cmake --build build/config-linux-llvm-shared -- -k 0
+          ctest --preset test-linux-llvm-shared
 
       # Packaging. windows-msvc always packages, on every push, as a
       # continuous smoke test of the packaging path itself - it is the only

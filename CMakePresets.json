@@ -125,6 +125,14 @@
         "AC3FORGE_BUILD_EXAMPLES": "OFF"
       }
     },
+    {
+      "name": "shared-libs",
+      "hidden": true,
+      "description": "BUILD_SHARED_LIBS=ON, proving ac3::forge_shared/matroska::matroska_shared actually work - not just that the CMake topology configures, but that every in-tree consumer (ac3cli/ac3gui/ac3tests/examples) links and runs against the real .so, including the one example that also needs matroska's .so alongside ac3forge's. See .github/workflows/_build.yml's 'Configure, build and test with BUILD_SHARED_LIBS=ON' step, which runs this as an extra pass inside the existing linux-llvm leg rather than a new matrix entry - the same shape as the alsa_fallback step below it.",
+      "cacheVariables": {
+        "BUILD_SHARED_LIBS": "ON"
+      }
+    },
 
     {
       "name": "config-windows-msvc",
@@ -185,6 +193,11 @@
       "name": "config-linux-gcc-coverage",
       "inherits": [ "debug", "linux-gcc", "coverage", "core" ],
       "displayName": "Linux GCC Coverage"
+    },
+    {
+      "name": "config-linux-llvm-shared",
+      "inherits": [ "debug", "linux-llvm", "shared-libs", "core" ],
+      "displayName": "Linux LLVM Shared (BUILD_SHARED_LIBS=ON)"
     }
   ],
 
@@ -248,6 +261,11 @@
       "name": "build-linux-gcc-coverage",
       "configurePreset": "config-linux-gcc-coverage",
       "displayName": "Linux GCC Coverage"
+    },
+    {
+      "name": "build-linux-llvm-shared",
+      "configurePreset": "config-linux-llvm-shared",
+      "displayName": "Linux LLVM Shared (BUILD_SHARED_LIBS=ON)"
     }
   ],
 
@@ -342,6 +360,13 @@
       "name": "test-linux-gcc-coverage",
       "configurePreset": "config-linux-gcc-coverage",
       "displayName": "Linux GCC Coverage Tests",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+    },
+    {
+      "name": "test-linux-llvm-shared",
+      "configurePreset": "config-linux-llvm-shared",
+      "displayName": "Linux LLVM Shared Tests",
       "output": { "outputOnFailure": true },
       "execution": { "noTestsAction": "error", "stopOnFailure": false }
     }

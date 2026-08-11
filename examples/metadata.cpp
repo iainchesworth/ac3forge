@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <memory>
 #include <numbers>
 #include <span>
 #include <utility>
@@ -66,7 +67,9 @@ int main() {
     std::printf("measured %.2f LKFS -> dialnorm %d\n", lkfs.value_or(0.0), dialnorm);
 
     // --- pass two: encode with the metadata --------------------------------
-    ac3::FrameEncoder encoder{{
+    // Heap-allocated: FrameEncoder carries several KB of MDCT scratch/history
+    // state (PREfast's C6262).
+    auto encoder = std::make_unique<ac3::FrameEncoder>(ac3::EncoderConfig{
         .bitrate_kbps = 448,
         .dialnorm = dialnorm,
         .acmod = kAcmod,
@@ -82,12 +85,12 @@ int main() {
         // acmod is, so the heavy-compression peak detector consults them too.
         .cmixlev = ac3::meta::CentreMixLevel::kMinus4_5dB,
         .surmixlev = ac3::meta::SurroundMixLevel::kMinus6dB,
-    }};
+    });
 
     std::vector<std::byte> stream;
     for (int frame = 0; frame < kFrames; ++frame) {
         fill(pcm, frame);
-        const auto encoded = encoder.encode_frame(views);
+        const auto encoded = encoder->encode_frame(views);
         if (!encoded) {
             std::printf("encode failed: %d\n", std::to_underlying(encoded.error()));
             return 1;
