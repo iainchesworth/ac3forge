@@ -723,6 +723,36 @@ Java_com_ac3forge_shield_NativeBridge_nativeStopLiveCursor(JNIEnv* /*env*/, jcla
     }
 }
 
+// Whether the encode loop is actually up, not just "was nativeStartLiveCursor
+// called" - the two can disagree: run_loop() returns immediately, before
+// setting g_running, if PassthroughSink::start() fails (e.g. no receiver
+// currently accepting E-AC3, HDMI not negotiated yet), and
+// nativeStartLiveCursor() itself returns true as soon as the worker thread
+// is SPAWNED, not once it has actually succeeded - it has no way to wait for
+// that without blocking the caller. MainActivity's own receiver-availability
+// polling reads this to notice a start that silently failed (as opposed to
+// one that's still spinning up) and retry, rather than requiring the user to
+// force-restart the app once their AVR is actually on - see MainActivity's
+// own reconcileReceiverState().
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_ac3forge_shield_NativeBridge_nativeIsLiveCursorRunning(JNIEnv* /*env*/, jclass /*clazz*/) {
+    return g_running.load(std::memory_order_acquire) ? JNI_TRUE : JNI_FALSE;
+}
+
+// The running-total underrun count (StreamStats::underruns) - how
+// MainActivity's reconcileReceiverState() detects a receiver disappearing
+// WHILE the encode loop is already streaming, without ever calling
+// AudioTrack.isDirectPlaybackSupported() again while a direct AudioTrack is
+// open: that call blocks indefinitely against an actively-playing direct
+// track on the same route (confirmed hanging on real hardware - audio
+// policy manager lock contention, not a bug in the probe itself). A rising
+// underrun count while running is a safe, purely-numeric signal instead -
+// see MainActivity's own comment for how it's used.
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_ac3forge_shield_NativeBridge_nativeGetUnderrunCount(JNIEnv* /*env*/, jclass /*clazz*/) {
+    return static_cast<jlong>(stream_stats().underruns.load(std::memory_order_relaxed));
+}
+
 // Called once from MainActivity.onCreate, before nativeStartLiveCursor - see
 // g_asset_manager's own comment. AAssetManager_fromJava's returned handle is
 // tied to the passed-in AssetManager object's lifetime; MainActivity passes

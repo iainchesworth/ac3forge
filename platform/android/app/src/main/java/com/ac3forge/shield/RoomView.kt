@@ -121,11 +121,22 @@ class RoomView @JvmOverloads constructor(
     }
     private val modePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Theme.colorWarn
-        textSize = 24f
+        textSize = 19f
     }
     private val statsPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Theme.colorAccent
-        textSize = 24f
+        textSize = 19f
+    }
+    // Small, centre-aligned orientation callouts on the 3D floor plan
+    // ("front"/"back"/"left"/"right") - see draw3DView's own comment on
+    // where these get placed. Deliberately its own Paint, not a reuse of
+    // labelPaint (which is left-aligned, for the "ceiling"/"floor" strings
+    // elsewhere), and smaller than that one too - this is a light-touch
+    // orientation cue, not a panel label competing for attention.
+    private val axisLabelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Theme.colorTextMuted
+        textSize = 22f
+        textAlign = Paint.Align.CENTER
     }
     private val trailPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
@@ -337,6 +348,14 @@ class RoomView @JvmOverloads constructor(
         }
     }
 
+    // draw3DView's own FRONT/BACK/LEFT/RIGHT floor callouts - a tiny helper
+    // only to keep those four call sites from repeating axisLabelPaint's
+    // vertical-centring offset (Paint has no built-in "centre on both axes"
+    // mode, only horizontal via textAlign).
+    private fun drawAxisLabel(canvas: Canvas, at: FloatArray, text: String) {
+        canvas.drawText(text, at[0], at[1] + 8f, axisLabelPaint)
+    }
+
     /**
      * A tilted isometric projection ("2:1 video-game" style: x and y both
      * project onto diagonal screen directions, z projects straight up) so
@@ -398,6 +417,21 @@ class RoomView @JvmOverloads constructor(
                 floorCorners[(i + 1) % floorCorners.size][1], -1f)
             canvas.drawLine(a[0], a[1], b[0], b[1], roomPaint)
         }
+
+        // Orientation callouts on the floor, just outside each wall's own
+        // edge - this is the one panel where a first-time viewer has no
+        // other cue which way is which (the top-down/elevation panels next
+        // to it are already labelled by their own axes, and the tilted
+        // isometric angle alone doesn't make "front" obvious at a glance).
+        // oamd.hpp's Position contract: x=0 left wall -> x=1 right wall,
+        // y=0 front wall (where the listener faces) -> y=1 back wall - see
+        // that header's own comment. Placed at each wall's midpoint, offset
+        // slightly past the floor's own edge so the text sits clear of the
+        // wireframe and any object sitting near that wall.
+        drawAxisLabel(canvas, project(0.5f, -0.16f, -1f), "FRONT")
+        drawAxisLabel(canvas, project(0.5f, 1.16f, -1f), "BACK")
+        drawAxisLabel(canvas, project(-0.16f, 0.5f, -1f), "LEFT")
+        drawAxisLabel(canvas, project(1.16f, 0.5f, -1f), "RIGHT")
 
         // The trail: history (already-traversed, real positions) then "now"
         // then future (planned course ahead, no deflection). A single

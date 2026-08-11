@@ -47,6 +47,30 @@ object NativeBridge {
     external fun nativeStopLiveCursor()
 
     /**
+     * Whether the encode loop's worker thread is actually up, distinct from
+     * "was nativeStartLiveCursor called" - PassthroughSink::start() fails
+     * fast (and the thread exits immediately, before this ever becomes true)
+     * if no receiver currently accepts E-AC3/Atmos, e.g. an AVR that's off
+     * or not yet HDMI-negotiated at the moment nativeStartLiveCursor() was
+     * called. MainActivity polls this (see its own reconcileReceiverState())
+     * to notice that case and retry once the receiver actually shows up,
+     * instead of requiring the user to force-restart the app.
+     */
+    external fun nativeIsLiveCursorRunning(): Boolean
+
+    /**
+     * The running-total count of failed AudioTrack writes since the encode
+     * loop last started - how reconcileReceiverState() notices a receiver
+     * disappearing WHILE already streaming, without calling
+     * [PassthroughBridge.isDirectPlaybackSupported] again while a direct
+     * AudioTrack is open: that call BLOCKS INDEFINITELY against an
+     * actively-playing direct track on the same route (confirmed hanging on
+     * real hardware, not a hypothetical) - a rising underrun count is a
+     * safe, purely-numeric alternative signal.
+     */
+    external fun nativeGetUnderrunCount(): Long
+
+    /**
      * Hands the app's [android.content.res.AssetManager] to native so the
      * encode loop can load the bundled lead-object voice sample
      * (assets/lead_voice_48k_mono_s16le.raw) from its own thread. Must be

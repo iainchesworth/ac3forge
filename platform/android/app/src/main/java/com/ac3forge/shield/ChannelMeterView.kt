@@ -4,7 +4,6 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.RectF
 import android.os.SystemClock
 import android.util.AttributeSet
 import android.view.Choreographer
@@ -33,9 +32,12 @@ import android.view.View
  * A fixed-height row, not overlaid on RoomView: this app already hit real
  * layout bugs once from overlaying text on views that had no reserved space
  * for it (see MainActivity's own history) - a proper sibling view in the
- * same LinearLayout avoids repeating that. Styled as the same rounded-card
- * chrome RoomView's own panels use (see [Theme]) so this reads as a fourth
- * panel in the same dashboard, not a separately-designed strip bolted on.
+ * same LinearLayout avoids repeating that. Shares [Theme]'s colors/type for
+ * the title, but deliberately has no card background/border of its own
+ * (unlike RoomView's panels) - it sits in the bottom bar next to the
+ * control-hints text, not as a standalone dashboard panel, and hands-on
+ * feedback was that a bounding rectangle here just read as visual noise; a
+ * title plus a divider line is enough to mark it as its own section.
  */
 class ChannelMeterView @JvmOverloads constructor(
     context: Context,
@@ -52,15 +54,6 @@ class ChannelMeterView @JvmOverloads constructor(
         }
     }
 
-    private val cardBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.FILL
-        color = Theme.colorSurface
-    }
-    private val cardBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeWidth = 2f
-        color = Theme.colorSurfaceBorder
-    }
     private val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Theme.colorTextSecondary
         textSize = 22f
@@ -83,8 +76,6 @@ class ChannelMeterView @JvmOverloads constructor(
         textSize = 20f
         textAlign = Paint.Align.CENTER
     }
-
-    private val cardRect = RectF()
 
     // Per-channel peak-hold state: the highest level seen recently, decaying
     // at PEAK_DECAY_PER_SEC toward the current level every frame rather than
@@ -123,11 +114,13 @@ class ChannelMeterView @JvmOverloads constructor(
         val dtS = if (lastDrawMs == 0L) 0f else ((nowMs - lastDrawMs) / 1000f).coerceIn(0f, 0.25f)
         lastDrawMs = nowMs
 
+        // No card background/border here (unlike RoomView's panels) - this
+        // sits in the bottom bar next to the control-hints text, not as a
+        // standalone dashboard panel, and hands-on feedback was that a
+        // bounding rectangle around it read as more "boxed in" than this
+        // small a strip needs; the title + divider line alone already mark
+        // it as its own section.
         val pad = 20f
-        cardRect.set(0f, 0f, width.toFloat(), height.toFloat())
-        canvas.drawRoundRect(cardRect, Theme.cornerRadiusSmall, Theme.cornerRadiusSmall, cardBgPaint)
-        canvas.drawRoundRect(cardRect, Theme.cornerRadiusSmall, Theme.cornerRadiusSmall, cardBorderPaint)
-
         val titleBaseline = pad + 16f
         canvas.drawText("SPEAKER ACTIVITY (BED)", pad, titleBaseline, titlePaint)
         val dividerY = titleBaseline + 12f
