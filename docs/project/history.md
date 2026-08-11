@@ -347,3 +347,35 @@ than a separate system — `ac3::plan::channel_plan_for(id)` is a one-line looku
   stacked together. What it still refuses: enhanced coupling, transient pre-noise processing,
   and (defensively, since this project's own encoder never emits it) the Annex E default
   coupling band structure.
+- `ac3gui`'s multi-source input: `ac3::plan::Assignment` (`assignment.hpp`), a sparse
+  `(source, channel) → destination` table shared by the CLI's new `src=`/`map=` options and the
+  GUI's own per-channel table, so a hand-typed command line and a GUI selection can never
+  disagree about what a token means. Automatic single-source panning is unchanged and still the
+  default with nothing loaded to disagree about it; `map=`/the GUI table only become mandatory
+  once a second source is added.
+- Dual mono and E-AC-3 VBR (both already at the library/CLI level — see above) exposed in the
+  GUI: `1+1` as a selectable bed, drawn apart from the seven Table 5.8 shapes rather than folded
+  into them, and a Rate mode (CBR/VBR) control on the Format tab, gated to E-AC-3 + file output
+  (a live session always runs CBR — IEC 61937 passthrough bursts are fixed-size per access unit).
+- The Basic/Advanced two-tier control replaced with Guided/Advanced/Expert: Guided is new, a
+  five-step wizard (Source, Format, Rate mode, Loudness, Review) over the exact same controller
+  state the other two tiers read and write, so switching tiers mid-session is a lossless round
+  trip by construction rather than a second copy of the state to reconcile. Advanced and Expert
+  are the old Basic and Advanced, one notch further apart.
+- Object mode's per-object bookkeeping made aware that an object's index can mean a different
+  (source, channel) once more than one file is loaded: `objectModel`'s own source label names
+  the file an object came from once there is more than one to distinguish, and removing a
+  non-primary source now resets authored object placements/motion rather than risk one silently
+  reattaching to a different channel that shifted into the same index.
+- Live session's own remaining disagreements with the rest of the app closed: starting a live
+  Atmos session no longer permanently overwrites a loaded file's own authored objects (saved and
+  restored around the session instead), a warning appears before Start if VBR is on (a live
+  session always drops it), and the window title reflects an active session the same way it
+  already did for a plain recording.
+- `ac3gui --smoke-shot` (`src/gui/main.cpp`): grabs a window screenshot without encoding
+  anything, for documentation screenshots where a specific UI state matters and a completed run
+  in the strip would be noise. The existing `--smoke`/`--smoke-record`/`--smoke-live` property
+  mechanism gained two special-cased tokens alongside it — `preset=` (invokes
+  `applyChannelPreset()`) and `src2=` (invokes `addSourceFile()`) — plus a fallback to the root
+  QML window's own properties (`tier=`, `currentTab=`) for the handful of things that
+  deliberately live off `EncoderController`.

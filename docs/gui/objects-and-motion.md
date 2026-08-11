@@ -1,8 +1,10 @@
 # Objects & motion
 
-The Objects tab is always present (Basic and Advanced alike), and starts with a single
-**Encode as objects** switch. Off, it's out of the way entirely. On, it takes over the format
-choice:
+The Objects tab is always present in Advanced and Expert (Guided keeps object placement and the
+multi-source assignment table out of its own step sequence — both are inherently non-linear, which
+a five-step wizard has nowhere honest to put; switch to Advanced or Expert to reach them), and
+starts with a single **Encode as objects** switch. Off, it's out of the way entirely. On, it takes
+over the format choice:
 
 ![Objects mode on: 5.1 bed, JOC + OAMD, room plan, object list, motion timeline](screenshots/objects-tab.png)
 
@@ -25,9 +27,13 @@ point aims at it).
 - **Room — plan** (left): a top-down grid, front/rear, X/Z on the floor. Drag a marker to place an
   object; the current selection's X/Y/Z coordinates show beneath the grid.
 - **Objects** (right): one row per object — source channel, X/Y/Z, an assigned motion path, LFE
-  send, and keyframe count. Each selected object gets a **Height** slider (Y axis — height changes
-  the metadata, not the bed itself, since a 5.1 ring has no speakers above it) and an **LFE send**
-  slider.
+  send, and keyframe count. With exactly one source loaded, the **Source** column reads `Ch <n>`;
+  with more than one (see [Multi-source & assignment](source-assignment.md)), it reads
+  `<file> ch <n>` instead, so an object's row always names which loaded file it actually came
+  from — an object is addressed the same flat (source, channel) way `map=`/the assignment table
+  address a channel, just carried through into object mode instead of being routed onto a bed.
+  Each selected object gets a **Height** slider (Y axis — height changes the metadata, not the bed
+  itself, since a 5.1 ring has no speakers above it) and an **LFE send** slider.
 
 ## Motion
 
