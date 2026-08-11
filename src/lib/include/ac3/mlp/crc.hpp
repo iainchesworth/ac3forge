@@ -63,4 +63,39 @@ inline constexpr auto kMajorSyncCrcTable = make_major_sync_crc_table();
     return crc;
 }
 
+// §4.7.2: restart_header_CRC, x^8 + x^4 + x^3 + x^2 + 1, zero-initialized
+// register. Unlike major_sync_crc above, this is bit-serial rather than
+// byte-table-driven: restart_header() ends with ch_assign[], a
+// max_matrix_chan-dependent array, so the CRC's covered span is generally
+// NOT a whole number of bytes (§3.2.1 only guarantees a restart point's
+// *start* falls on a 16-bit boundary, not everything inside it). `data`
+// holds ceil(bit_count/8) bytes, MSB first per byte - typically a BitWriter's
+// take(), whose own trailing zero-padding bits beyond `bit_count` are
+// harmless since this stops reading at exactly `bit_count`.
+//
+// The document does not give restart_header_CRC an explicit bit-serial
+// algorithm the way §4.6.7 does for substream_CRC; this applies the same
+// generic per-bit reduction major_sync_crc's table encodes, generalised to a
+// partial final byte, which is the standard construction for an
+// MSB-first, non-reflected, zero-init CRC of this shape.
+[[nodiscard]] constexpr std::uint8_t restart_header_crc(std::span<const std::byte> data,
+                                                         std::size_t bit_count) {
+    // x^4 + x^3 + x^2 + 1 = 0x10 + 0x8 + 0x4 + 0x1 = 0x1D (x^8 is the
+    // implicit register-width term, dropped the same way as major_sync_crc's
+    // own polynomial constant).
+    constexpr std::uint8_t kPolynomial = 0x1D;
+    std::uint8_t crc = 0;
+    for (std::size_t i = 0; i < bit_count; ++i) {
+        const std::size_t byte_index = i >> 3;
+        const int bit_in_byte = 7 - static_cast<int>(i & 7);
+        const auto bit = (std::to_integer<std::uint32_t>(data[byte_index]) >> bit_in_byte) & 1;
+        const auto msb = (crc >> 7) & 1;
+        crc = static_cast<std::uint8_t>(crc << 1);
+        if (((msb ^ bit) & 1) != 0) {
+            crc ^= kPolynomial;
+        }
+    }
+    return crc;
+}
+
 }  // namespace ac3::mlp

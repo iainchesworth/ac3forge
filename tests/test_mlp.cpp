@@ -8,6 +8,7 @@
 
 #include "ac3/mlp/crc.hpp"
 #include "ac3/mlp/mlp_tables.hpp"
+#include "ac3/mlp/restart_header.hpp"
 #include "ac3/mlp/sync.hpp"
 
 // Covers only what's fully specified and built so far: mlp_sync's
@@ -249,4 +250,162 @@ TEST_CASE("is_restart_sync_word_valid: Table 20", "[mlp]") {
     CHECK(ac3::mlp::is_restart_sync_word_valid(2, ac3::mlp::kRestartSyncWordSubstream2));
     CHECK(ac3::mlp::is_restart_sync_word_valid(3, ac3::mlp::kRestartSyncWordSubstream3));
     CHECK_FALSE(ac3::mlp::is_restart_sync_word_valid(4, ac3::mlp::kRestartSyncWordSubstream0));
+}
+
+TEST_CASE("restart_header_crc: appending the CRC drives the register to zero", "[mlp]") {
+    // Same property-based check as major_sync_crc's, generalised to a
+    // non-byte-aligned bit count - the one restart_header_crc actually has
+    // to handle correctly (see crc.hpp's comment on why).
+    std::mt19937 rng(0x31EA31EB);
+    std::uniform_int_distribution<int> byte_dist(0, 255);
+    std::uniform_int_distribution<int> len_dist(1, 64);
+    std::uniform_int_distribution<int> extra_bits_dist(0, 7);
+
+    for (int trial = 0; trial < 100; ++trial) {
+        std::vector<std::byte> msg(static_cast<std::size_t>(len_dist(rng)));
+        for (auto& b : msg) {
+            b = static_cast<std::byte>(byte_dist(rng));
+        }
+        const auto bit_count = msg.size() * 8 - static_cast<std::size_t>(extra_bits_dist(rng));
+        const std::uint8_t crc = ac3::mlp::restart_header_crc(msg, bit_count);
+
+        // Splice the CRC's 8 bits in immediately after bit_count, matching
+        // what build_restart_header() does via put_bits()/put(), then
+        // re-run the CRC over the extended span - it should land on zero.
+        ac3::BitWriter w;
+        w.put_bits(msg, bit_count);
+        w.put(crc, 8);
+        const auto with_crc = w.take();
+        CHECK(ac3::mlp::restart_header_crc(with_crc, bit_count + 8) == 0x00);
+    }
+}
+
+namespace {
+
+ac3::mlp::RestartHeader make_restart_header(int substream_index, int max_matrix_chan) {
+    ac3::mlp::RestartHeader header{};
+    header.substream_index = substream_index;
+    header.restart_sync_word = substream_index == 0   ? ac3::mlp::kRestartSyncWordSubstream0
+                                : substream_index == 2 ? ac3::mlp::kRestartSyncWordSubstream2
+                                                        : ac3::mlp::kRestartSyncWordSubstream3;
+    header.output_timing = 12345;
+    header.min_chan = 0;
+    header.max_chan = static_cast<std::uint8_t>(max_matrix_chan);
+    header.max_matrix_chan = static_cast<std::uint8_t>(max_matrix_chan);
+    header.dither_shift = 5;
+    header.dither_seed = 0x5A5A5A;
+    header.max_shift = -3;
+    header.max_lsbs = 7;
+    header.max_bits_a = 20;
+    header.max_bits_b = 24;
+    header.error_protect = false;
+    header.lossless_check = 0xB7;
+    header.channel_assignment.resize(static_cast<std::size_t>(max_matrix_chan) + 1);
+    for (std::size_t i = 0; i < header.channel_assignment.size(); ++i) {
+        header.channel_assignment[i] = static_cast<std::uint8_t>(i);
+    }
+    return header;
+}
+
+}  // namespace
+
+TEST_CASE("restart_header round trip: substream 0, single channel", "[mlp]") {
+    const auto header = make_restart_header(0, 0);
+
+    ac3::BitWriter w;
+    const auto bits_written = ac3::mlp::build_restart_header(w, header);
+    const auto bytes = w.take();
+    CHECK(bits_written <= bytes.size() * 8);
+    CHECK(bits_written > bytes.size() * 8 - 8);  // take() pads less than a byte
+
+    ac3::mlp::RestartHeader parsed{};
+    REQUIRE(ac3::mlp::parse_restart_header(bytes, 0, parsed));
+
+    CHECK(parsed.restart_sync_word == header.restart_sync_word);
+    CHECK(parsed.output_timing == header.output_timing);
+    CHECK(parsed.max_matrix_chan == header.max_matrix_chan);
+    CHECK(parsed.dither_seed == header.dither_seed);
+    CHECK(parsed.max_shift == header.max_shift);
+    CHECK(parsed.lossless_check == header.lossless_check);
+    CHECK(parsed.channel_assignment == header.channel_assignment);
+}
+
+TEST_CASE("restart_header round trip: non-byte-aligned body (7 matrix channels)", "[mlp]") {
+    // max_matrix_chan = 6 -> 7 ch_assign entries * 6 bits = 42 bits, which
+    // (per crc.hpp's comment) does not land the trailing CRC on a byte
+    // boundary - the case that actually exercises restart_header_crc's bit-
+    // serial path and put_bits()'s partial-byte splicing.
+    const auto header = make_restart_header(2, 6);
+
+    ac3::BitWriter w;
+    const auto bits_written = ac3::mlp::build_restart_header(w, header);
+    CHECK(bits_written % 8 != 0);
+    const auto bytes = w.take();
+
+    ac3::mlp::RestartHeader parsed{};
+    REQUIRE(ac3::mlp::parse_restart_header(bytes, 2, parsed));
+
+    CHECK(parsed.max_matrix_chan == 6);
+    CHECK(parsed.channel_assignment == header.channel_assignment);
+    CHECK(parsed.max_bits_a == header.max_bits_a);
+    CHECK(parsed.max_bits_b == header.max_bits_b);
+    CHECK(parsed.dither_shift == header.dither_shift);
+    CHECK(parsed.max_lsbs == header.max_lsbs);
+}
+
+TEST_CASE("restart_header round trip: every legal max_matrix_chan value", "[mlp]") {
+    for (int max_matrix_chan = 0; max_matrix_chan <= 15; ++max_matrix_chan) {
+        CAPTURE(max_matrix_chan);
+        const auto header = make_restart_header(3, max_matrix_chan);
+
+        ac3::BitWriter w;
+        (void)ac3::mlp::build_restart_header(w, header);
+        const auto bytes = w.take();
+
+        ac3::mlp::RestartHeader parsed{};
+        REQUIRE(ac3::mlp::parse_restart_header(bytes, 3, parsed));
+        CHECK(parsed.channel_assignment == header.channel_assignment);
+    }
+}
+
+TEST_CASE("parse_restart_header rejects a corrupted CRC", "[mlp]") {
+    const auto header = make_restart_header(0, 3);
+    ac3::BitWriter w;
+    (void)ac3::mlp::build_restart_header(w, header);
+    auto bytes = w.take();
+    bytes.back() ^= std::byte{0xFF};
+
+    ac3::mlp::RestartHeader parsed{};
+    CHECK_FALSE(ac3::mlp::parse_restart_header(bytes, 0, parsed));
+}
+
+TEST_CASE("parse_restart_header rejects a substream mismatch", "[mlp]") {
+    const auto header = make_restart_header(0, 3);
+    ac3::BitWriter w;
+    (void)ac3::mlp::build_restart_header(w, header);
+    const auto bytes = w.take();
+
+    ac3::mlp::RestartHeader parsed{};
+    CHECK_FALSE(ac3::mlp::parse_restart_header(bytes, 2, parsed));
+}
+
+TEST_CASE("build_restart_header composes into an ongoing writer without extra padding", "[mlp]") {
+    // The actual reason put_bits() exists: two structures back to back in
+    // one writer - the way substream_directory's segments eventually will
+    // be assembled - with no padding sneaking in between them. bit_count()
+    // being exactly the sum of what each call reported is the property that
+    // matters; whichever of the two ends up byte-aligned (not always the
+    // first) is incidental to this particular pair of header shapes.
+    const auto first = make_restart_header(0, 2);
+    const auto second = make_restart_header(2, 1);
+
+    ac3::BitWriter w;
+    const auto first_bits = ac3::mlp::build_restart_header(w, first);
+    const auto second_bits = ac3::mlp::build_restart_header(w, second);
+    CHECK(w.bit_count() == first_bits + second_bits);
+
+    const auto bytes = w.take();
+    ac3::mlp::RestartHeader parsed_first{};
+    REQUIRE(ac3::mlp::parse_restart_header(bytes, 0, parsed_first));
+    CHECK(parsed_first.channel_assignment == first.channel_assignment);
 }

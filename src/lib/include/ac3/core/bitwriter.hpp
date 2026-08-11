@@ -27,6 +27,28 @@ public:
 
     void put_bit(bool bit) { put(bit ? 1u : 0u, 1); }
 
+    // Append the first `bits` bits of `data` (MSB first, matching put()'s own
+    // packing), for splicing in bit-exact content assembled elsewhere - e.g.
+    // a sub-structure built in its own BitWriter, whose own trailing CRC was
+    // computed over its exact (possibly non-byte-aligned) bit count via
+    // bit_count(), and now needs joining into an ongoing bitstream without
+    // introducing the padding take()/byte_align() would add. `data` must
+    // hold at least ceil(bits/8) bytes; bits in its final byte beyond `bits`
+    // are ignored, not required to be zero.
+    void put_bits(std::span<const std::byte> data, std::size_t bits) {
+        std::size_t remaining = bits;
+        std::size_t byte_index = 0;
+        while (remaining >= 8) {
+            put(std::to_integer<std::uint32_t>(data[byte_index]), 8);
+            ++byte_index;
+            remaining -= 8;
+        }
+        if (remaining != 0) {
+            const auto last = std::to_integer<std::uint32_t>(data[byte_index]);
+            put(last >> (8 - remaining), static_cast<int>(remaining));
+        }
+    }
+
     // Zero-pad to the next byte boundary. Syncframes are an integral number of
     // 16-bit words, so a fully packed frame always ends byte-aligned; this is
     // for tests and partial assemblies.
