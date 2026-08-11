@@ -328,6 +328,7 @@ ApplicationWindow {
                             spacing: Theme.gap
 
                             Button {
+                                objectName: "chooseWavButton"
                                 text: qsTr("Choose WAV…")
                                 enabled: !EncoderController.busy
                                 onClicked: openDialog.open()

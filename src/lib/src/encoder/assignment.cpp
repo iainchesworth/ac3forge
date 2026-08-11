@@ -49,12 +49,11 @@ namespace {
 // nullopt only when `channel` is out of range for `source` - `source` itself
 // is trusted, since every caller below gets it from iterating `sources`.
 [[nodiscard]] std::optional<std::size_t> flat_index(std::span<const SourceShape> sources,
-                                                     std::size_t source, std::size_t channel) {
+                                                    std::size_t source, std::size_t channel) {
     std::size_t offset = 0;
     for (std::size_t s = 0; s < sources.size(); ++s) {
         if (s == source) {
-            return channel < sources[s].channels ? std::optional(offset + channel)
-                                                  : std::nullopt;
+            return channel < sources[s].channels ? std::optional(offset + channel) : std::nullopt;
         }
         offset += sources[s].channels;
     }
@@ -106,10 +105,10 @@ std::optional<Routing> route(const ChannelPlan& target, std::span<const SourceSh
                 if (coded[coded_index].location != dest.location) {
                     continue;
                 }
-                // flat_index() only returns nullopt when `channel` is out of
-                // range for `source` (see its own comment) - c is bounded by
-                // `c < sources[s].channels` in the loop just above, the exact
-                // condition that keeps it in range, so this is always set.
+                // c < sources[s].channels by the loop bound above, and that is
+                // flat_index's only nullopt case (see its comment) - flat is
+                // always engaged here. clang-tidy can't see across the loop
+                // condition into the callee, hence the suppression.
                 // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
                 out.gain[coded_index * total + *flat] = 1.0;
                 found = true;
@@ -153,11 +152,16 @@ Codec derive_codec(const ChannelPlan& target, const Tools& tools, const Metadata
 
 std::string format_destination(Destination dest) {
     switch (dest.kind) {
-        case DestinationKind::kUnassigned: return "none";
-        case DestinationKind::kLocation: return std::string{eac3::chanmap::name(dest.location)};
-        case DestinationKind::kObject: return "obj";
-        case DestinationKind::kProgramme1: return "p1";
-        case DestinationKind::kProgramme2: return "p2";
+        case DestinationKind::kUnassigned:
+            return "none";
+        case DestinationKind::kLocation:
+            return std::string{eac3::chanmap::name(dest.location)};
+        case DestinationKind::kObject:
+            return "obj";
+        case DestinationKind::kProgramme1:
+            return "p1";
+        case DestinationKind::kProgramme2:
+            return "p2";
     }
     return "none";  // unreachable; every DestinationKind is handled above
 }

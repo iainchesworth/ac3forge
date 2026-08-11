@@ -65,9 +65,7 @@ struct SourceShape {
 class AC3FORGE_EXPORT Assignment {
    public:
     void set(std::size_t source, std::size_t channel, Destination dest);
-    void clear(std::size_t source, std::size_t channel) {
-        set(source, channel, Destination{});
-    }
+    void clear(std::size_t source, std::size_t channel) { set(source, channel, Destination{}); }
     [[nodiscard]] Destination at(std::size_t source, std::size_t channel) const;
 
     // Every (source, channel) that is kUnassigned AND within `sources`'
@@ -106,8 +104,8 @@ class AC3FORGE_EXPORT Assignment {
 // target that is not dual mono) unused entirely; dual_mono_routing() is
 // where that shape is required.
 [[nodiscard]] AC3FORGE_EXPORT std::optional<Routing> route(const ChannelPlan& target,
-                                                            std::span<const SourceShape> sources,
-                                                            const Assignment& assignment);
+                                                           std::span<const SourceShape> sources,
+                                                           const Assignment& assignment);
 
 // Dual mono's routing, expressed as one particular assignment: exactly one
 // channel on kProgramme1 and one on kProgramme2, nothing else required of
@@ -131,9 +129,9 @@ class AC3FORGE_EXPORT Assignment {
 // added here once rather than at every call site that would otherwise
 // duplicate plan::carries()'s logic.
 [[nodiscard]] AC3FORGE_EXPORT Codec derive_codec(const ChannelPlan& target, const Tools& tools,
-                                                  const Metadata& meta,
-                                                  const std::optional<eac3::VbrConfig>& vbr,
-                                                  SampleRate sample_rate);
+                                                 const Metadata& meta,
+                                                 const std::optional<eac3::VbrConfig>& vbr,
+                                                 SampleRate sample_rate);
 
 // The `map=` token grammar's destination spelling: a Table E2.5 location
 // name (as eac3::chanmap::name() prints it, e.g. "Ls", "LFE2"), "obj", "p1",
