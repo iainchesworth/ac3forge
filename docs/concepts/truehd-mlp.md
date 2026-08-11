@@ -6,14 +6,14 @@ unrelated lineage that happens to also carry Dolby Atmos. This page explains wha
 different, how Atmos rides inside it (which is *not* how Atmos rides inside E-AC-3), and what
 this project currently knows versus still has to work out before it can be built.
 
-!!! note "Status: mlp_sync/major_sync_info framing landed; the audio-carrying layer has not"
+!!! note "Status: mlp_sync/major_sync_info and restart_header() framing landed; block_data() has not"
     `ac3::mlp` (`src/lib/include/ac3/mlp/`, `src/lib/src/mlp/`) currently implements
-    `mlp_sync`'s `check_nibble` and `major_sync_info()` - format_sync, format_info's channel
-    presentations, `channel_meaning()`, and the major-sync CRC - built and round-trip tested
-    against the confirmed syntax below. `substream_directory`, `substream_segment()`,
-    `block()`, `restart_header()`, `EXTRA_DATA()` and, above all, `block_data()`'s compression
-    algorithm are not implemented yet - see [What's confirmed versus what's still
-    open](#whats-confirmed-versus-whats-still-open).
+    `mlp_sync`'s `check_nibble` and `major_sync_info()` (`sync.hpp`) - format_sync, format_info's
+    channel presentations, `channel_meaning()`, the major-sync CRC - and `restart_header()`
+    (`restart_header.hpp`), both built and round-trip tested against the confirmed syntax below.
+    `substream_directory`, `substream_segment()`, `block()`'s own header, `EXTRA_DATA()` and,
+    above all, `block_data()`'s compression algorithm are not implemented yet - see [What's
+    confirmed versus what's still open](#whats-confirmed-versus-whats-still-open).
 
 ## A different lineage: lossless, not perceptual
 
@@ -145,27 +145,41 @@ AC-3/E-AC-3: as a black-box decode oracle to check output against, never as a so
 
 ### Candidate sources for the core algorithm
 
-Surveyed but not yet read in full — this is the reading list Phase 1 works from, not a
-confirmation that every detail needed is actually in them. Two independent primary families
-exist: academic papers by MLP's original inventors, and the foundational (now-expired) patent.
+Two independent primary families exist: academic papers by MLP's original inventors, and the
+foundational (now-expired) patent family. Three of the papers and both key patents have now
+been read in full (the user supplied PDFs for the papers directly); one further paper is a
+newly-identified candidate, found only via the ones already read.
 
 **Academic papers (primary):**
 
-- Gerzon, M. A.; Craven, P. G.; Stuart, J. R.; Law, M. J.; Wilson, R. J. — *"The MLP Lossless
-  Compression System for PCM Audio"*, AES 17th International Conference on High-Quality Audio
-  Coding, Florence, September 1999 (Paper 17-006). The seminal MLP paper: covers the matrix
-  transform, prediction, and MLP's four data-rate-reduction strategies at a systems level.
-  Sits in the (likely paywalled) AES E-Library; free mirrors exist (scispace, ResearchGate,
-  Semantic Scholar) and should be checked for one that actually downloads cleanly.
+- **Read.** Gerzon, M. A.; Craven, P. G.; Stuart, J. R.; Law, M. J.; Wilson, R. J. — *"The MLP
+  Lossless Compression System for PCM Audio"*, AES 17th International Conference on
+  High-Quality Audio Coding, Florence, 1999 September; revised 2003 December, published in
+  *J. Audio Eng. Soc.*, Vol. 52, No. 3, 2004 March, pp. 243–260. The fullest of the three papers
+  read this session — see [What the AES papers
+  add](#what-the-aes-papers-add-to-the-patent-account) below.
+- **Read.** Stuart, J. R.; Craven, P. G.; Gerzon, M. A.; Law, M. J.; Wilson, R. J. — *"MLP
+  Lossless Compression"*, AES 9th Regional Convention, Tokyo. Explicitly "an abbreviated version
+  of [the JAES paper above]" — same content, same figures, no material technical detail beyond
+  it. Worth keeping as a source only because it independently confirms decoder complexity
+  figures (≈27 MIPS for 2-channel @192 kHz, ≈40 MIPS for 6-channel @96 kHz) the JAES paper
+  doesn't state.
 - Craven, P. G.; Law, M. J.; Stuart, J. R. — *"Lossless Compression Using IIR Prediction
-  Filters"*, AES 102nd Convention, Munich, March 1997 (Preprint 4415). Narrower and more
-  directly useful for `block_data()`'s prediction stage: addresses the specific hard problem of
-  using IIR filters losslessly despite fractional coefficients and rounding behaviour.
-- Stuart, J. R.; Craven, P. G. — *"MLP Lossless Compression"*, AES 9th Regional Convention,
-  Tokyo. A freely-hosted copy exists; not yet read in this session (no PDF renderer available at
-  research time) — read in full before relying on it.
+  Filters"*, AES 102nd Convention, Munich, March 1997 (Preprint 4415). **Dropped from the active
+  reading list** — its own citation trail shows it isn't the source of the actual predictor
+  architecture: the JAES paper's §4.4 attributes Figs. 10/11 (the real algorithm) to the patent
+  (their ref [8]), and cites this preprint (their ref [9]) only for motivating *why* IIR matters
+  at high sample rates, content the JAES paper already restates. No accessible copy was found
+  this session either, so it isn't worth chasing further unless a specific gap shows up later
+  that the patent + JAES paper's Figs. 8–11 don't cover.
+- **New candidate, not yet read**: Craven, P. G.; Gerzon, M. A. — *"Lossless Coding for Audio
+  Discs"*, *J. Audio Eng. Soc.*, Vol. 44, No. 9, pp. 706–720, 1996 September. Found via both
+  read papers' reference lists (their [7]/[6]) — a full peer-reviewed journal article (not a
+  convention preprint), predates the JAES 2004 paper by 8 years, and is the source both later
+  papers point to for depth on lossless coding technique generally. The single most promising
+  remaining source for `block_data()` detail the read papers gloss over at a systems level.
 
-**Patents (primary, algorithmic detail, foundational IP):**
+**Patents (primary, algorithmic detail, foundational IP) — read:**
 
 - **US 6,891,482 B2** — *"Lossless coding method for waveform data"* (Craven & Gerzon;
   originally Meridian Lossless Packing Limited, later Dolby Laboratories Licensing Corp.;
@@ -176,7 +190,8 @@ exist: academic papers by MLP's original inventors, and the foundational (now-ex
 - **US 7,193,538 B2** — *"Matrix improvements to lossless encoding and decoding"* (Gerzon &
   Craven, same assignee lineage). Follow-on patent specifically about the matrixing stage.
 - Same-invention family, for reference if more filing-history detail is needed:
-  **WO1996037048A2**, **US20040125003A1**, **CA2585240C**.
+  **WO1996037048A2** (the international application both papers' reference lists cite directly
+  as PCT/GB96/01164, filed 1996 May), **US20040125003A1**, **CA2585240C**.
 
 **Tertiary (orientation only — not citable as an algorithm source per the clean-room rule):**
 Wikipedia's Meridian Lossless Packing page, the Hydrogenaudio wiki entry, and Robert C. Maher's
@@ -185,10 +200,8 @@ implementable detail; useful only for vocabulary and pointing at further primary
 
 ### What the two patents actually describe
 
-Read in this session (Google Patents' rendering of each). The AES papers themselves are still
-unread — every free mirror tried (scispace, decoy.iki.fi, ResearchGate) either 403'd or failed
-TLS; the Stuart/Craven Tokyo paper downloaded as a raw PDF but this session had no PDF-page
-renderer available to read it. What follows comes from the patents alone.
+Read via Google Patents' rendering of each (not yet cross-checked against the primary USPTO
+PDF — see the caveat below).
 
 !!! warning "Caveat before this drives any code"
     The quotes below are an AI-summarized read of Google Patents' web rendering, not a direct
@@ -238,10 +251,61 @@ but doesn't define the *purpose* of:
     channels via partial pivoting (favouring the first two channels for the 2-channel downmix
     substream).
 
-None of this is final — it needs the AES papers (systems-level framing) and a direct read of
-the patent PDFs (not just an AI summary of them) before it's solid enough to write `block_data()`
-against. But it's enough to know the shape of the remaining work, and it already retroactively
-explains fields `sync.hpp`'s next increment (`restart_header()`) will need to carry.
+None of this is final — it needs a direct read of the patent PDFs themselves (not just an AI
+summary of them) before it's solid enough to write `block_data()` against. But it's enough to
+know the shape of the remaining work, and it already explains several `restart_header()` fields
+(see [restart_header.hpp](https://github.com/iainchesworth/ac3forge/blob/main/src/lib/include/ac3/mlp/restart_header.hpp),
+which packs them at their documented positions with this same provisional-semantics caveat).
+
+### What the AES papers add to the patent account
+
+The JAES 2004 paper (Gerzon, Craven, Stuart, Law, Wilson) is the fullest of the three read this
+session — the Tokyo paper is an earlier, strictly shorter version of the same material. Both
+independently corroborate the patents' account rather than contradicting it, and add systems-level
+framing the patents (written for claims, not exposition) don't bother with:
+
+- **The matrix stage is confirmed from a second angle.** Fig. 4 shows the same structure as the
+  patent's PMQ cascade, just in the paper's own notation: each "affine transformation" modifies
+  one channel by adding a quantized linear combination of the others (`m_coeff[1,2]`,
+  `m_coeff[1,3]`, `m_coeff[1,4]` feeding a summing node and quantizer `Q`), with the encoder and
+  decoder sides being exact mirrors of each other. "A trivial (though important) example" is a
+  stereo mix rotating from L/R to sum/difference.
+- **Prediction is IIR-capable up to 8th order**, confirmed explicitly ("The encoder is free to
+  select IIR or FIR filters up to eighth order from a wide palette") — the patent's worked
+  example was only 3rd-order, so this sets the real upper bound. Figs. 8–11 give the same
+  encoder/decoder block structure as the patent's `1/[1+B(z⁻¹)] × [1+A(z⁻¹)]`, framed as: a
+  conventional FIR/IIR predictor doesn't survive lossless round-tripping because IIR filters
+  with fractional coefficients "cannot be exactly implemented since representation of the
+  recirculating signal requires an ever-increasing word length" — the fix is quantizing *inside*
+  the feedback loop (their Fig. 10/11) so only finite-precision values ever recirculate.
+- **Entropy coding is framed around Rice coding, not "17 Huffman tables" as such** — though the
+  two aren't necessarily in tension: "audio signals often have a Laplacian distribution... The
+  Rice code provides a simple and near-optimal way of encoding such a signal... and has the
+  advantage that encoding and decoding need not use tables," but "the Rice code is not used
+  unconditionally, the MLP encoder may choose from a number of entropy coding methods,"
+  including plain PCM as a fallback for pathological "peak-level RPDF (all values equally
+  probable) white noise" the encoder shouldn't try to compress. A parameterized Rice code and a
+  small family of matched Huffman tables are two ways of describing the same near-Laplacian-optimal
+  coding — the patent's account may just be describing a concrete table-driven implementation of
+  what these papers describe more abstractly. Worth resolving explicitly once `block_data()`
+  implementation starts, not assumed equivalent without checking.
+- **`lsb_bypass` is a real, named signal path in both papers' own block diagrams** (Fig. 3/21 of
+  the JAES paper, Fig. 3/16 of the Tokyo paper) — independent confirmation of the patent's
+  LSB-bypass account for `max_lsbs`, beyond the patent alone.
+- **"Decoder lossless self-check" is listed as one of MLP's defining novel techniques** in both
+  papers' §3, without bit-level detail — corroborates `lossless_check`'s purpose (the patent's
+  account of *how* is still the only source for the actual mechanism).
+- **Channel ceiling reconciled.** Both AES papers state MLP supports "up to 63 audio channels" —
+  not 32. This isn't a conflict with the TrueHD-specific bitstream-description document's
+  32-channel figure (from `16ch_channel_count`'s 5-bit, "one less than count" field): 63 is the
+  general MLP architecture's ceiling (`ch_assign[]` is `u(6)`, i.e. 0–63), while 32 is the
+  ceiling the *TrueHD/Blu-ray FBA profile specifically* exposes through its own narrower
+  presentation-count field. The general format goes wider than what this project's target
+  profile can address.
+- **Concrete validation targets for Phase 4**, once there's a real encoder to check: Table 1's
+  peak/average data-rate reduction figures (4 bit/sample peak @48 kHz, 8 @96 kHz, 9 @192 kHz)
+  and the Tokyo paper's decoder complexity figures (≈27 MIPS for 2-channel @192 kHz, ≈40 MIPS
+  for 6-channel @96 kHz) are real published numbers a working implementation should land near.
 
 ## v1 scope
 
@@ -250,26 +314,38 @@ presentations (stereo through 7.1) and the core lossless codec — not the `16ch
 tier or Atmos, which stay deferred until the per-frame object metadata question is resolved.
 
 !!! example "See it in code"
-    - [References](#references) below — the two source documents this page is built from
-    - Implementation not yet started; this section will link to the relevant library pages once
-      the core codec lands.
+    - [`src/lib/include/ac3/mlp/`](https://github.com/iainchesworth/ac3forge/tree/main/src/lib/include/ac3/mlp) /
+      [`src/lib/src/mlp/`](https://github.com/iainchesworth/ac3forge/tree/main/src/lib/src/mlp) —
+      `mlp_sync`/`major_sync_info()` (`sync.hpp`) and `restart_header()` (`restart_header.hpp`),
+      the two framing increments built so far
+    - [References](#references) below — every source document this page is built from
 
 ## References
 
-**Bitstream framing and metadata** — saved under
-[`docs/reference/`](https://github.com/iainchesworth/ac3forge/tree/main/docs/reference) for
-citation:
+All saved under [`docs/reference/`](https://github.com/iainchesworth/ac3forge/tree/main/docs/reference)
+for citation:
+
+**Bitstream framing and metadata:**
 
 - *Dolby TrueHD (MLP) bitstreams within the ISO base media file format* (Dolby Laboratories,
   2019) — ISOBMFF/MP4 muxing rules, `MLPSampleEntry`/`MLPSpecificBox`, access-unit-to-sample
   mapping. Does not cover the core algorithm.
 - *Dolby TrueHD (MLP) high-level bitstream description* (Dolby Laboratories, 7 February 2018) —
-  the full external/internal bitstream syntax this page is built from. Explicitly does not cover
-  the core audio encoding/decoding algorithm.
+  the full external/internal bitstream syntax `sync.hpp`/`restart_header.hpp` are built from.
+  Explicitly does not cover the core audio encoding/decoding algorithm.
 
 **Core compression algorithm** — see [Candidate sources for the core
-algorithm](#candidate-sources-for-the-core-algorithm) above; not yet saved to `docs/reference/`
-pending a full read-through in Phase 1.
+algorithm](#candidate-sources-for-the-core-algorithm) and [What the AES papers
+add](#what-the-aes-papers-add-to-the-patent-account) above for what each says; two read in full
+this session and saved:
+
+- Gerzon, Craven, Stuart, Law, Wilson, *"The MLP Lossless Compression System for PCM Audio"*,
+  *J. Audio Eng. Soc.*, Vol. 52, No. 3, 2004 March.
+- Stuart, Craven, Gerzon, Law, Wilson, *"MLP Lossless Compression"*, AES 9th Regional
+  Convention, Tokyo.
+
+The two patents (US 6,891,482 B2, US 7,193,538 B2) are fully public via Google Patents/USPTO and
+not duplicated into `docs/reference/` — no download needed, just the patent number.
 
 !!! note "Trademarks"
     "Dolby", "Dolby TrueHD" and "MLP Lossless" are trademarks of Dolby Laboratories. ac3forge is
