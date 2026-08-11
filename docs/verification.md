@@ -123,6 +123,11 @@ covered where it's most relevant rather than repeated here:
   hardware; exclusive-mode passthrough bitstreaming has not been.
 - [Linux](platforms/linux.md#what-has-and-has-not-been-verified) — the ALSA backend is verified
   headless only; no real S/PDIF or HDMI output has been tried.
+- [Android (Shield Atmos Demo)](platforms/android.md#what-has-and-has-not-been-verified) — the
+  most thoroughly hardware-verified platform in the project: real E-AC-3/Atmos passthrough over
+  HDMI to a real AV receiver, with object audio confirmed reconstructable (not just the panned
+  bed). Verification specific to this one Android app on this one Shield + receiver pair, not a
+  general claim about Android as a platform.
 - [Atmos & JOC](concepts/atmos-joc.md#two-honest-limitations) — Dolby's own decoder gates object
   decoding on an authenticity tag this project doesn't produce, and objects sharing a direction
   can't be perfectly separated. Neither is a conformance gap.

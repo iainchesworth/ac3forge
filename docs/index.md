@@ -90,7 +90,7 @@ channel layout including 7.1.4.
 | `matroska::matroska` | A standalone MKV muxer. Links nothing from `ac3::forge` and knows nothing about AC-3. |
 | `ac3::sinks::iec61937` | S/PDIF burst packing: AC-3 byte-exact against FFmpeg's `spdif` muxer; E-AC-3 (`Eac3BurstPacker`) verified against FFmpeg's `spdif_header_eac3` and Microsoft's own IEC 61937 documentation (both independently fetched, not recalled — see the caveats below). |
 | `ac3::capture` | Live input/loopback capture — WASAPI on Windows, ALSA on Linux — through a lock-free SPSC ring. |
-| `ac3::sinks::PassthroughSink` | Exclusive-mode/direct bitstream output, AC-3 or E-AC-3 — WASAPI on Windows, ALSA on Linux. See the caveats below (Windows hardware-confirmed; the ALSA backend is not). |
+| `ac3::sinks::PassthroughSink` | Exclusive-mode/direct bitstream output, AC-3 or E-AC-3 — WASAPI on Windows, ALSA on Linux, JNI-bridged `AudioTrack` on Android. See the caveats below (Windows and Android hardware-confirmed; the ALSA backend is not). |
 | `ac3::sinks::MonitorSink` | Shared-mode PCM playback — WASAPI or ALSA: a non-bitstreamed preview/monitor path that decodes what is being encoded and plays it back on an ordinary output. Confirmed against real Windows hardware. |
 | `ac3::analysis` | Peak/RMS metering with console ballistics, and the Gerzon energy vector over the BS.775 ring. |
 
@@ -113,8 +113,12 @@ load-bearing enough to flag up front:
 !!! warning "No Linux audio has been tried against real hardware"
     The ALSA backend was verified headless (including against ALSA's software `null` device,
     under ASan+UBSan) because the available Linux environment is WSL2, which has no sound
-    devices at all. Nothing has been bitstreamed to an actual S/PDIF or HDMI output, and no AV
-    receiver has been asked to lock onto it.
+    devices at all. Nothing has been bitstreamed to an actual S/PDIF or HDMI output on Linux, and
+    no AV receiver has been asked to lock onto it there. This is a genuine gap, not one this
+    project's other real-hardware confirmations paper over — `PassthroughSink`'s Android backend
+    (see [Shield Atmos Demo](platforms/android.md)) has been confirmed bitstreaming real E-AC-3/
+    Atmos to a real AV receiver over HDMI, which validates the sink abstraction and burst-packing
+    logic in general, but says nothing about ALSA's own implementation specifically.
 
 Also not implemented at all: enhanced coupling and transient pre-noise processing. Variable bit
 rate is E-AC-3 only — AC-3's frame size indexes Table 5.18 rather than stating a word count
