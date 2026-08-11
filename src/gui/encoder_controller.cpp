@@ -338,10 +338,11 @@ QVariantList EncoderController::objectModel() const {
         const auto keyframes = sortedKeyframes(static_cast<int>(i));
         QVariantMap row;
         row[QStringLiteral("index")] = static_cast<int>(i);
-        // Objects are the source's own channels, one each, so the honest
-        // name for where one comes from is which channel it is - there is no
-        // richer source layout to name it from once it has become an object.
-        row[QStringLiteral("sourceLabel")] = QStringLiteral("Ch %1").arg(i + 1);
+        // Objects are a channel, one each, so the honest name for where one
+        // comes from is which channel it is - and, once more than one
+        // source is loaded, which FILE that channel is in (see
+        // objectSourceLabel's own comment).
+        row[QStringLiteral("sourceLabel")] = objectSourceLabel(i);
         row[QStringLiteral("x")] = config.x;
         row[QStringLiteral("y")] = config.y;
         row[QStringLiteral("z")] = config.z;
@@ -1142,6 +1143,29 @@ std::vector<plan::SourceShape> EncoderController::sourceShapes() const {
     return shapes;
 }
 
+QString EncoderController::objectSourceLabel(std::size_t flatIndex) const {
+    const auto shapes = sourceShapes();
+    // Exactly one source: unchanged from what objectModel() has always
+    // shown - there is nothing a filename would add over a plain channel
+    // number when only one file is in play.
+    if (shapes.size() <= 1) {
+        return QStringLiteral("Ch %1").arg(flatIndex + 1);
+    }
+    std::size_t base = 0;
+    for (const auto& shape : shapes) {
+        if (flatIndex < base + shape.channels) {
+            return QStringLiteral("%1 ch %2")
+                .arg(QString::fromStdString(shape.label))
+                .arg(flatIndex - base + 1);
+        }
+        base += shape.channels;
+    }
+    // Past every loaded source's channels - object_count_ is capped to the
+    // sum of them (see refreshAfterSourceListChange), so this is defensive
+    // only, not a path real state reaches.
+    return QStringLiteral("Ch %1").arg(flatIndex + 1);
+}
+
 std::optional<plan::Routing> EncoderController::routingForSources(const plan::ChannelPlan& target,
                                                                    const plan::Plan& p) const {
     if (!source_) {
@@ -1484,6 +1508,15 @@ void EncoderController::refreshObjectConfigs() {
     for (const auto key : stale) {
         object_keyframes_.remove(key);
     }
+    // objectModel's own NOTIFY - every call site above sets object_count_
+    // and calls this, but only ever emits sourceChanged() itself
+    // afterwards. objectModel reads object_configs_/object_keyframes_, not
+    // anything sourceChanged() already covers, so without this the Objects
+    // tab's list, room plan and markers would keep showing whatever set of
+    // objects was there before a new file (or a different-length one) was
+    // loaded, until something else happened to touch an individual object
+    // and emit this incidentally.
+    emit objectsChanged();
 }
 
 void EncoderController::clearLayout() {
@@ -2680,6 +2713,19 @@ void EncoderController::removeSource(int index) {
     assignment_ = plan::Assignment{};
     touched_channels_.clear();
     has_explicit_assignment_ = !extra_sources_.empty();
+    // Object mode addresses objects by the exact same shifted-index scheme
+    // (object i is flat channel i across sourceShapes(), the same
+    // addressing Assignment uses) - a position or authored path set for
+    // object 6 meant a specific channel of a specific file, and the removal
+    // above may have moved a DIFFERENT channel into index 6. Clearing
+    // rather than silently reattaching motion to the wrong source is the
+    // same call assignment_'s own reset just made; refreshAfterSourceListChange()
+    // below rebuilds fresh defaults for whatever the new count is, via
+    // refreshObjectConfigs() - see its own comment on why preserving by
+    // index is only honest when nothing shifted underneath it.
+    object_configs_.clear();
+    object_keyframes_.clear();
+    selected_object_index_ = 0;
     refreshAfterSourceListChange();
 }
 
