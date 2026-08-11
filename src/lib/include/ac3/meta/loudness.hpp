@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "ac3/core/tables.hpp"
+#include "ac3/export.hpp"
 
 // Programme loudness to ITU-R BS.1770-4, and the dialnorm (§5.4.2.8) that
 // follows from it.
@@ -29,8 +30,8 @@
 
 namespace ac3::meta {
 
-class LoudnessMeter {
-public:
+class AC3FORGE_EXPORT LoudnessMeter {
+   public:
     // Channel weights follow BS.1770 Table 3: unity for the front channels,
     // +1.5 dB for the surrounds, and the LFE excluded outright.
     LoudnessMeter(SampleRate rate, Acmod acmod, bool lfe);
@@ -46,7 +47,7 @@ public:
 
     [[nodiscard]] int channel_count() const { return channels_; }
 
-private:
+   private:
     void push_block();
 
     // BS.1770 K-weighting: a high-shelf pre-filter then the RLB high-pass,
@@ -86,6 +87,6 @@ private:
 // 1..31. A programme louder than −1 LKFS or quieter than −31 clamps; the
 // clamp at 31 is why a stream that never measured anything says 31, and why
 // 31 is a poor default rather than a neutral one.
-[[nodiscard]] int dialnorm_from_lkfs(double lkfs);
+[[nodiscard]] AC3FORGE_EXPORT int dialnorm_from_lkfs(double lkfs);
 
 }  // namespace ac3::meta

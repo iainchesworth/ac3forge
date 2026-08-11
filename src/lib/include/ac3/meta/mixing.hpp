@@ -6,6 +6,7 @@
 #include <span>
 
 #include "ac3/core/tables.hpp"
+#include "ac3/export.hpp"
 
 // Mixing and downmix metadata, and the §7.8 downmix the values feed.
 //
@@ -71,32 +72,46 @@ enum class DownmixMode : std::uint8_t {
 
 [[nodiscard]] constexpr double coefficient(CentreMixLevel value) {
     switch (value) {
-        case CentreMixLevel::kMinus3dB: return level::kMinus3dB;
-        case CentreMixLevel::kMinus4_5dB: return level::kMinus4_5dB;
-        case CentreMixLevel::kMinus6dB: return level::kMinus6dB;
+        case CentreMixLevel::kMinus3dB:
+            return level::kMinus3dB;
+        case CentreMixLevel::kMinus4_5dB:
+            return level::kMinus4_5dB;
+        case CentreMixLevel::kMinus6dB:
+            return level::kMinus6dB;
     }
     return level::kMinus4_5dB;
 }
 
 [[nodiscard]] constexpr double coefficient(SurroundMixLevel value) {
     switch (value) {
-        case SurroundMixLevel::kMinus3dB: return level::kMinus3dB;
-        case SurroundMixLevel::kMinus6dB: return level::kMinus6dB;
-        case SurroundMixLevel::kSilent: return level::kSilent;
+        case SurroundMixLevel::kMinus3dB:
+            return level::kMinus3dB;
+        case SurroundMixLevel::kMinus6dB:
+            return level::kMinus6dB;
+        case SurroundMixLevel::kSilent:
+            return level::kSilent;
     }
     return level::kMinus6dB;
 }
 
 [[nodiscard]] constexpr double coefficient(MixLevel value) {
     switch (value) {
-        case MixLevel::kPlus3dB: return level::kPlus3dB;
-        case MixLevel::kPlus1_5dB: return level::kPlus1_5dB;
-        case MixLevel::kUnity: return level::kUnity;
-        case MixLevel::kMinus1_5dB: return level::kMinus1_5dB;
-        case MixLevel::kMinus3dB: return level::kMinus3dB;
-        case MixLevel::kMinus4_5dB: return level::kMinus4_5dB;
-        case MixLevel::kMinus6dB: return level::kMinus6dB;
-        case MixLevel::kSilent: return level::kSilent;
+        case MixLevel::kPlus3dB:
+            return level::kPlus3dB;
+        case MixLevel::kPlus1_5dB:
+            return level::kPlus1_5dB;
+        case MixLevel::kUnity:
+            return level::kUnity;
+        case MixLevel::kMinus1_5dB:
+            return level::kMinus1_5dB;
+        case MixLevel::kMinus3dB:
+            return level::kMinus3dB;
+        case MixLevel::kMinus4_5dB:
+            return level::kMinus4_5dB;
+        case MixLevel::kMinus6dB:
+            return level::kMinus6dB;
+        case MixLevel::kSilent:
+            return level::kSilent;
     }
     return level::kMinus3dB;
 }
@@ -143,12 +158,14 @@ struct DownmixCoefficients {
 };
 
 // Lo/Ro: the plain stereo fold-down, and the one a mono sum is taken from.
-[[nodiscard]] DownmixCoefficients stereo_downmix(Acmod acmod, double clev, double slev);
+[[nodiscard]] AC3FORGE_EXPORT DownmixCoefficients stereo_downmix(Acmod acmod, double clev,
+                                                                 double slev);
 
 // §7.8's "output_mode == 1/0" branch: left and right at −3 dB, centre at
 // clev + 3 dB, each surround at slev − 3 dB, then normalised. This is the
 // signal §7.7.2 promises to keep under a ceiling.
-[[nodiscard]] std::array<double, 5> mono_downmix(Acmod acmod, double clev, double slev);
+[[nodiscard]] AC3FORGE_EXPORT std::array<double, 5> mono_downmix(Acmod acmod, double clev,
+                                                                 double slev);
 
 // True peak of the mono downmix, in dBFS. channels holds the full-bandwidth
 // channels in coded order; any LFE span is ignored.
@@ -160,11 +177,11 @@ struct DownmixCoefficients {
 // frame that has just gone quiet carries a generous gain over a block that
 // still holds the loud tail. Pass an empty span when there is no history to
 // account for (the first frame, or a caller that only wants this frame).
-[[nodiscard]] double mono_downmix_peak_dbfs(
+[[nodiscard]] AC3FORGE_EXPORT double mono_downmix_peak_dbfs(
     std::span<const std::array<double, 256>> history,
     std::span<const std::span<const float>> channels, Acmod acmod, double clev, double slev);
 
-[[nodiscard]] double mono_downmix_peak_dbfs(std::span<const std::span<const float>> channels,
-                                            Acmod acmod, double clev, double slev);
+[[nodiscard]] AC3FORGE_EXPORT double mono_downmix_peak_dbfs(
+    std::span<const std::span<const float>> channels, Acmod acmod, double clev, double slev);
 
 }  // namespace ac3::meta

@@ -115,15 +115,27 @@ windows-msvc, linux-gcc and macos-llvm. windows-llvm and linux-llvm still catch
 compiler-specific bugs in full, every push; they just don't produce a second, redundantly
 canonical zip that a downloader would have no way to choose between.
 
-| Platform | Leg | Packages |
-|---|---|---|
-| Windows | windows-msvc | `.zip`, `.exe` (NSIS, if `makensis` is on the runner) |
-| Linux | linux-gcc | `.tar.gz`, `.deb`, `.rpm` |
-| macOS | macos-llvm | `.tar.gz`, `.dmg` |
+| Platform | Leg | End-user packages | Library (`ac3forge-dev-*`) |
+|---|---|---|---|
+| Windows | windows-msvc | `.zip`, `.exe` (NSIS, if `makensis` is on the runner) | `.zip` |
+| Linux | linux-gcc | `.tar.gz`, `.deb`, `.rpm` | `.tar.gz` |
+| macOS | macos-llvm | `.tar.gz`, `.dmg` | `.tar.gz` |
+
+The end-user packages are `ac3cli`/`ac3gui` (CPack's `runtime` component). The library packages
+are a second, independent download for a third party consuming `ac3::forge`/
+`matroska::matroska` via `find_package(ac3forge)` (see
+[docs/library/index.md](library/index.md)) - headers, static and shared libraries, and the
+CMake package config, but neither `ac3cli`/`ac3gui` nor `ac3::audio` (live capture/monitor/
+passthrough stays a CLI/GUI-internal detail, not part of what's installed here). Archive-only
+(ZIP/TGZ) for now, one per platform regardless of compiler leg, same reasoning as the end-user
+package above - not NSIS (a component installer can't also produce a second standalone
+download), not DEB/RPM (a correct runtime/`-dev` split needs per-component `Depends` metadata,
+a separate initiative if ever wanted), not DragNDrop (no macOS host to build or verify it
+against at all).
 
 No leg is `experimental: true` any more (see `ci.yml`'s status table), so all three package
 for real rather than best-effort - a packaging failure on any of them blocks the release the
-same as a build or test failure would. Every package gets a `.sha512`
+same as a build or test failure would. Every package - end-user or library - gets a `.sha512`
 (`CPACK_PACKAGE_CHECKSUM` in `cmake/Packaging.cmake`), an aggregate `SHA512SUMS` manifest,
 keyless Sigstore/OIDC build provenance, and an SPDX SBOM covering the whole release artifact
 set - see Verifying a download below. GPG signatures are additional and only appear once a

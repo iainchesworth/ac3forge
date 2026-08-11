@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <span>
 
+#include "ac3/export.hpp"
+
 // Channel coupling (A/52 §7.4, §8.2.4-8.2.5): above a chosen frequency the
 // coupled channels stop carrying their own coefficients and share a single
 // coupling channel, with per-channel per-band coupling coordinates restoring
@@ -36,22 +38,23 @@ inline constexpr int kSubBands = 18;
 // cplbndstrc, one bit per sub-band after the first, and AC-3 always transmits
 // it - unlike Annex E, which also offers a default table.
 struct BandLayout {
-    int count = 0;                          // ncplbnd
-    std::array<int, kSubBands> start{};     // first bin of each band, absolute
-    std::array<int, kSubBands> size{};      // bins in each band
+    int count = 0;                       // ncplbnd
+    std::array<int, kSubBands> start{};  // first bin of each band, absolute
+    std::array<int, kSubBands> size{};   // bins in each band
 };
 
 // structure[i] set merges sub-band i into the band before it; structure[0] is
 // never consulted, because the first sub-band always opens a band. Indices
 // count from the FIRST COUPLED sub-band, which is how cplbndstrc is numbered.
-[[nodiscard]] BandLayout group_bands(int cplbegf, int subbands, std::span<const bool> structure);
+[[nodiscard]] AC3FORGE_EXPORT BandLayout group_bands(int cplbegf, int subbands,
+                                                     std::span<const bool> structure);
 
 // The structure this encoder asks for. A coordinate restores a band's level,
 // so a band wants to be about as wide as the ear's own resolution up there:
 // critical bandwidth is roughly 2 kHz at 10 kHz and 4 kHz at 15, against a
 // sub-band's 1125 Hz. The bands therefore widen with frequency, and how many
 // there are depends on where coupling starts as well as how far it runs.
-[[nodiscard]] std::array<bool, kSubBands> band_structure(int cplbegf, int subbands);
+[[nodiscard]] AC3FORGE_EXPORT std::array<bool, kSubBands> band_structure(int cplbegf, int subbands);
 
 // The transmitted form of one coupling coordinate (§7.4.3). The master is
 // per channel, shared by all of that channel's bands; exponent and mantissa
@@ -72,17 +75,17 @@ inline constexpr int kSpxMantissaBits = 2;
 
 // Reconstruct exactly as the decoder does (§7.4.3), so the encoder can see
 // the value the decoder will actually apply.
-[[nodiscard]] double decode_coordinate(Coordinate coordinate, int master,
-                                       int mantissa_bits = kCplMantissaBits);
+[[nodiscard]] AC3FORGE_EXPORT double decode_coordinate(Coordinate coordinate, int master,
+                                                       int mantissa_bits = kCplMantissaBits);
 
 // Quantize a linear coupling coordinate for a given per-channel master.
 // Values are clamped into the representable range rather than wrapping.
-[[nodiscard]] Coordinate quantize_coordinate(double value, int master,
-                                             int mantissa_bits = kCplMantissaBits);
+[[nodiscard]] AC3FORGE_EXPORT Coordinate quantize_coordinate(double value, int master,
+                                                             int mantissa_bits = kCplMantissaBits);
 
 // The smallest master (0..3) that keeps every coordinate in `values`
 // representable. The master buys 3 exponent steps at a time, extending the
 // range downward by 54 dB in total.
-[[nodiscard]] int choose_master(std::span<const double> values);
+[[nodiscard]] AC3FORGE_EXPORT int choose_master(std::span<const double> values);
 
 }  // namespace ac3::coupling

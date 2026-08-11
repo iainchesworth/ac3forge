@@ -11,6 +11,7 @@
 #include "ac3/core/tables.hpp"
 #include "ac3/encoder/silent_frame.hpp"  // FrameError, SkipPlan/plan_padding
 #include "ac3/encoder/transient.hpp"
+#include "ac3/export.hpp"
 #include "ac3/meta/drc.hpp"
 #include "ac3/meta/mixing.hpp"
 
@@ -31,11 +32,11 @@ namespace ac3 {
 struct EncoderConfig {
     SampleRate sample_rate = SampleRate::k48000;
     std::uint32_t bitrate_kbps = 192;
-    int dialnorm = 31;       // 1..31 (§5.4.2.8)
+    int dialnorm = 31;  // 1..31 (§5.4.2.8)
     // §5.4.2.16: Ch2's dialnorm, required when acmod is kDualMono (1+1) and
     // meaningless otherwise — the two programmes are levelled independently.
     std::optional<int> dialnorm2 = std::nullopt;
-    int chbwcod = -1;        // fbw bandwidth code 0..60; -1 = auto from bitrate
+    int chbwcod = -1;  // fbw bandwidth code 0..60; -1 = auto from bitrate
     Acmod acmod = Acmod::k2_0;
     bool lfe = false;
     // Channel coupling (§7.4): above the coupling frequency the fbw channels
@@ -63,8 +64,8 @@ struct EncoderConfig {
     meta::SurroundMixLevel surmixlev = meta::SurroundMixLevel::kMinus6dB;
 };
 
-class FrameEncoder {
-public:
+class AC3FORGE_EXPORT FrameEncoder {
+   public:
     explicit FrameEncoder(const EncoderConfig& config);
 
     // channels: the full-bandwidth channels in AC-3 order (Table 5.8: e.g.
@@ -79,7 +80,7 @@ public:
         return fullbw_channel_count(config_.acmod) + (config_.lfe ? 1 : 0);
     }
 
-private:
+   private:
     EncoderConfig config_;
     std::array<std::array<double, 256>, 6> history_{};  // MDCT overlap per channel
     // One per full-bandwidth channel (§8.2.2 excludes the LFE): stateful
@@ -97,7 +98,7 @@ private:
     std::array<double, 512> windowed_scratch_{};
     std::array<double, 128> half1_scratch_{};
     std::array<double, 128> half2_scratch_{};
-    std::uint64_t rate_accumulator_ = 0;                // ideal-bits Bresenham state
+    std::uint64_t rate_accumulator_ = 0;  // ideal-bits Bresenham state
     std::uint64_t words_emitted_ = 0;
     // Both controllers smooth their gain over time, so they have to outlive a
     // frame - a per-frame instance would restart the attack every 32 ms.

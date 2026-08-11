@@ -3,9 +3,35 @@
 The public API is the headers under `src/lib/include/ac3/`. Link `ac3::forge`; link
 `matroska::matroska` as well if you want the container writer.
 
+**In-tree** (this repo `add_subdirectory`'d into a larger build, or as a git submodule):
+
 ```cmake
 target_link_libraries(your_target PRIVATE ac3::forge)
 ```
+
+`ac3::forge` resolves to whichever of the static or shared build the enclosing project's
+`BUILD_SHARED_LIBS` asks for.
+
+**Installed package**, from an `ac3forge-dev-*` package (see
+[docs/releasing.md](../releasing.md#what-gets-published)) or a local `cmake --install`:
+
+```cmake
+find_package(ac3forge REQUIRED)
+target_link_libraries(your_target PRIVATE ac3::forge_static)   # or ac3::forge_shared
+```
+
+An installed package has no ambient `BUILD_SHARED_LIBS` default to resolve against, so it
+exports both variants explicitly rather than a bare `ac3::forge` — pick the one you want.
+Neither the package nor the codec itself has any dependency of its own to find: no
+`find_dependency()` calls, no system or third-party library, static or shared.
+
+Live audio — capture, monitor playback, IEC 61937 passthrough — is `ac3::audio`
+(`src/audio/`), a separate target `ac3cli`/`ac3gui` link alongside `ac3::forge` for their own
+live-audio commands. It is **not** part of the distributed package: it isn't installed, isn't
+exported, and `find_package(ac3forge)` says nothing about it. A consumer wanting live capture
+on their own platform provides their own audio I/O and feeds the resulting PCM to the codec API
+below directly — `ac3::audio` exists to serve this project's own CLI/GUI, not as something a
+third party is expected to link.
 
 Every code block in this section is an excerpt from a program in
 [`examples/`](../../examples/). Those are build targets and `ctest` entries, so a snippet that
