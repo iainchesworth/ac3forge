@@ -55,11 +55,16 @@ citations — are in [What it does](docs/index.md#what-it-does).
 
 ## What it does not do
 
-Enhanced coupling and transient pre-noise processing aren't implemented. AC-3 has no VBR — its
-frame size indexes a fixed table rather than stating a word count, so it stays CBR; E-AC-3
-supports both. Object streams from here are spec-correct but won't decode as *objects* in
-Dolby's own decoder: it gates that on an authenticity tag this project doesn't produce, which is
-a licensing gate, not a conformance failure.
+Enhanced coupling (`cpl+ecpl`) and transient pre-noise processing (`tpn`) are both implemented,
+each with a known MVP limitation worth knowing before enabling it: enhanced coupling's encoder
+always sends angle/chaos as zero (an amplitude-only fit), which degrades if two channels' content
+shares one narrow coupling band; transient pre-noise processing's decoder buffers one frame at a
+time once a stream turns it on, so a caller must call `Eac3Decoder::flush()` at end-of-stream or
+lose the last held-back frame. AC-3 has no VBR — its frame size indexes a fixed table rather than
+stating a word count, so it stays CBR; E-AC-3 supports both. Object streams from here are
+spec-correct but won't decode as *objects* in Dolby's own decoder: it gates that on an
+authenticity tag this project doesn't produce, which is a licensing gate, not a conformance
+failure.
 
 What that means for object reconstruction, which streams FFmpeg can check independently versus
 which only the in-repo decoder can, and what has and hasn't been confirmed against real audio

@@ -515,7 +515,8 @@ TEST_CASE("E-AC-3 dual mono codes two independent programmes, never one into the
         REQUIRE(frames->size() == 1);
         const auto decoded = substream_decoder.decode_substream(frames->front());
         REQUIRE(decoded.has_value());
-        last_substream = *decoded;
+        REQUIRE(decoded->has_value());
+        last_substream = **decoded;
     }
     CHECK(last_substream.acmod == Acmod::kDualMono);
     CHECK(last_substream.dialnorm == 27);
@@ -594,29 +595,32 @@ TEST_CASE("the dependent substream's own fields survive the round trip",
 
     const auto lead = decoder.decode_substream(unit->substream(0));
     REQUIRE(lead.has_value());
-    CHECK(lead->strmtyp == ac3::eac3::StreamType::kIndependent);
-    CHECK(lead->substreamid == 0);
-    CHECK(lead->acmod == ac3::Acmod::k3_2);
-    CHECK(lead->lfe);
-    CHECK(!lead->chanmap.has_value());
-    CHECK(lead->channels.size() == 6);
+    REQUIRE(lead->has_value());
+    CHECK((*lead)->strmtyp == ac3::eac3::StreamType::kIndependent);
+    CHECK((*lead)->substreamid == 0);
+    CHECK((*lead)->acmod == ac3::Acmod::k3_2);
+    CHECK((*lead)->lfe);
+    CHECK(!(*lead)->chanmap.has_value());
+    CHECK((*lead)->channels.size() == 6);
 
     const auto first = decoder.decode_substream(unit->substream(1));
     REQUIRE(first.has_value());
-    CHECK(first->strmtyp == ac3::eac3::StreamType::kDependent);
+    REQUIRE(first->has_value());
+    CHECK((*first)->strmtyp == ac3::eac3::StreamType::kDependent);
     // §E2.3.1.2: a dependent's id starts again at 0 in its own numbering space.
-    CHECK(first->substreamid == 0);
-    CHECK(first->chanmap == ac3::eac3::chanmap::k71Rear);
-    CHECK(first->channels.size() == 4);
+    CHECK((*first)->substreamid == 0);
+    CHECK((*first)->chanmap == ac3::eac3::chanmap::k71Rear);
+    CHECK((*first)->channels.size() == 4);
     // §E3.8.5: compre marks the LAST dependent of the program, so the first of
     // two must not carry it.
-    CHECK(!first->last_dependent);
+    CHECK(!(*first)->last_dependent);
 
     const auto second = decoder.decode_substream(unit->substream(2));
     REQUIRE(second.has_value());
-    CHECK(second->substreamid == 1);
-    CHECK(second->chanmap == ac3::eac3::chanmap::kTopQuad);
-    CHECK(second->last_dependent);
+    REQUIRE(second->has_value());
+    CHECK((*second)->substreamid == 1);
+    CHECK((*second)->chanmap == ac3::eac3::chanmap::kTopQuad);
+    CHECK((*second)->last_dependent);
 }
 
 namespace {
@@ -743,6 +747,90 @@ TEST_CASE("E-AC-3 coupling round-trips are near-transparent", "[eac3][decoder][c
             CAPTURE(ch, ac3::eac3::chanmap::name(layout.speakers[ch].location));
             CHECK(snr_db(rt.source[ch], rt.rendered[ch]) > 20.0);
         }
+    }
+}
+
+TEST_CASE("E-AC-3 enhanced coupling round-trips are near-transparent",
+          "[eac3][decoder][coupling][enhanced_coupling]") {
+    // Same shapes as standard coupling's own round-trip test above, with
+    // .enhanced = true selecting §E3.5 instead of §7.4/§E3.3.
+    using ac3::Acmod;
+    auto cpl_stereo =
+        ac3::eac3::FrameConfig{.bitrate_kbps = 192, .coupling = true, .enhanced = true};
+    auto cpl_bed = bed(192);
+    cpl_bed.coupling = true;
+    cpl_bed.enhanced = true;
+
+    const std::vector<double> bed_tones = {1000.0, 800.0, 1200.0, 600.0, 1400.0, 60.0};
+    const std::vector<Speaker> bed_speakers = {
+        {Location::kLeft, 1000.0},         {Location::kCentre, 800.0},
+        {Location::kRight, 1200.0},        {Location::kLeftSurround, 600.0},
+        {Location::kRightSurround, 1400.0}, {Location::kLfe, 60.0}};
+
+    const std::vector<LayoutCase> cases = {
+        {.name = "stereo ecpl",
+         .config = {.independent = cpl_stereo},
+         .tones = {1000.0, 1600.0},
+         .speakers = {{Location::kLeft, 1000.0}, {Location::kRight, 1600.0}}},
+        {.name = "5.1 ecpl (auto ecplbegf)",
+         .config = {.independent = cpl_bed},
+         .tones = bed_tones,
+         .speakers = bed_speakers},
+    };
+
+    for (const auto& layout : cases) {
+        CAPTURE(layout.name);
+        const auto rt = round_trip(layout, 5);
+        REQUIRE(rt.rendered.size() == layout.speakers.size());
+        for (std::size_t ch = 0; ch < layout.speakers.size(); ++ch) {
+            CAPTURE(ch, ac3::eac3::chanmap::name(layout.speakers[ch].location));
+            CHECK(snr_db(rt.source[ch], rt.rendered[ch]) > 20.0);
+        }
+    }
+}
+
+TEST_CASE("E-AC-3 enhanced coupling degrades gracefully when two channels share "
+          "one narrow band",
+          "[eac3][decoder][coupling][enhanced_coupling]") {
+    // ecplbegf pinned to 0 starts the coupled region at bin 13 - enhanced
+    // coupling's lowest possible sub-band, only 6 bins wide (§E3.5.2's
+    // Table E3.7). With R's and Rs's tones (1200/1400 Hz, bins ~12.8/~14.9)
+    // both landing inside that one band, this decoder's amplitude-only MVP
+    // (ecplangle/ecplchaos always 0 - see CouplingPlan::ecplamp) has no way
+    // to represent their different per-bin shapes within it: amplitude is a
+    // single scalar per band, so both channels reconstruct as the same
+    // shared shape at two different overall levels, not their own true
+    // waveforms. This is a real, known quality gap in the MVP - a genuine
+    // angle/chaos fit (deferred, see the same note) is what §3.5 has that
+    // amplitude-only coupling does not - not a decode bug: the standard
+    // round-trip test above stays at the same 20 dB bar as standard
+    // coupling for every case that does NOT force two channels into one
+    // narrow band. This test exists to catch a REGRESSION (a stream that
+    // stops decoding, or degrades further than this), not to demand
+    // transparency this MVP cannot yet deliver.
+    auto cpl_bed_pinned = bed(192);
+    cpl_bed_pinned.coupling = true;
+    cpl_bed_pinned.enhanced = true;
+    cpl_bed_pinned.cplbegf = 0;
+    const LayoutCase layout{
+        .name = "5.1 ecpl (ecplbegf pinned to 0)",
+        .config = {.independent = cpl_bed_pinned},
+        .tones = {1000.0, 800.0, 1200.0, 600.0, 1400.0, 60.0},
+        .speakers = {{Location::kLeft, 1000.0},
+                     {Location::kCentre, 800.0},
+                     {Location::kRight, 1200.0},
+                     {Location::kLeftSurround, 600.0},
+                     {Location::kRightSurround, 1400.0},
+                     {Location::kLfe, 60.0}}};
+    const auto rt = round_trip(layout, 5);
+    REQUIRE(rt.rendered.size() == layout.speakers.size());
+    for (std::size_t ch = 0; ch < layout.speakers.size(); ++ch) {
+        CAPTURE(ch, ac3::eac3::chanmap::name(layout.speakers[ch].location));
+        // L, C, Ls and LFE's tones sit below bin 13 (uncoupled at this
+        // pin), so those stay near-transparent; only R and Rs share the
+        // narrow band described above.
+        const bool shares_the_narrow_band = ch == 2 || ch == 4;
+        CHECK(snr_db(rt.source[ch], rt.rendered[ch]) > (shares_the_narrow_band ? 3.0 : 20.0));
     }
 }
 
@@ -978,10 +1066,22 @@ TEST_CASE("the E-AC-3 decoder rejects malformed coupling streams",
     constexpr std::size_t kCplbndstrceBit = kCplendfBit + 4;
     ac3::Eac3Decoder decoder;
 
-    SECTION("ecplinu set: enhanced coupling is recognised and refused") {
+    SECTION("ecplinu set on an otherwise-standard-coupling stream fails rather than misdecodes") {
+        // The decoder now actually implements enhanced coupling (§E3.5)
+        // rather than refusing it outright, so flipping this one bit no
+        // longer hits a blanket "unsupported" check - it makes the decoder
+        // read the rest of the block as enhanced coupling geometry and
+        // coordinates, which this stream was never encoded as. That must
+        // still fail somehow (most likely kInvalidStream from a bogus
+        // sub-band range, though which exact check trips depends on the
+        // specific garbage bits that follow) - what actually matters is
+        // that a single corrupted bit here cannot make the rest of the
+        // frame decode as something plausible. A genuine enhanced-coupling
+        // round-trip - a real encoded stream, decoded successfully - is
+        // covered once the encoder can produce one (see test_eac3.cpp).
         auto broken = whole;
         patch_bits(broken, kEcplinuBit, 1, 1);
-        CHECK(decoder.decode_access_unit(broken).error() == ac3::DecodeError::kUnsupported);
+        CHECK_FALSE(decoder.decode_access_unit(broken).has_value());
     }
     SECTION("cplbndstrce cleared: the Annex E default band table is refused, not guessed at") {
         auto broken = whole;
@@ -1080,9 +1180,10 @@ TEST_CASE("a real transient triggers block switching and decodes without pre-ech
 
     const auto decoded = decoder.decode_substream(*frame);
     REQUIRE(decoded.has_value());
+    REQUIRE(decoded->has_value());
 
     bool any_switched = false;
-    for (const auto& channel : decoded->blksw) {
+    for (const auto& channel : (*decoded)->blksw) {
         for (const bool sw : channel) {
             any_switched = any_switched || sw;
         }
@@ -1093,11 +1194,81 @@ TEST_CASE("a real transient triggers block switching and decodes without pre-ech
         double pre_energy = 0.0;
         for (int n = 0; n < kOnset - 256; ++n) {
             const double v =
-                static_cast<double>(decoded->channels[ch][static_cast<std::size_t>(n)]);
+                static_cast<double>((*decoded)->channels[ch][static_cast<std::size_t>(n)]);
             pre_energy += v * v;
         }
         CHECK(pre_energy < 1e-4);
     }
+}
+
+TEST_CASE("transient pre-noise processing holds a frame back then releases it corrected",
+          "[eac3][decoder][transient_prenoise]") {
+    // Same transient shape as the block-switching test above - this
+    // encoder's own heuristic (see FrameConfig::transient_prenoise's doc
+    // comment) signals a correction exactly where blksw also fires, so the
+    // same onset exercises both.
+    ac3::eac3::FrameEncoder encoder{
+        {.bitrate_kbps = 192, .acmod = ac3::Acmod::k2_0, .transient_prenoise = true}};
+    ac3::Eac3Decoder decoder;
+    const auto nchans = static_cast<std::size_t>(encoder.channel_count());
+
+    const std::vector<float> silence(ac3::kSamplesPerFrame, 0.0f);
+    std::vector<std::span<const float>> silence_views(nchans, silence);
+    for (int f = 0; f < 2; ++f) {
+        const auto frame = encoder.encode_frame(silence_views);
+        REQUIRE(frame.has_value());
+        const auto decoded = decoder.decode_substream(*frame);
+        REQUIRE(decoded.has_value());
+        // Silence never switches a block, so the tool never triggers here -
+        // every one of these frames is ready immediately, same as a decoder
+        // that never saw the tool at all.
+        REQUIRE(decoded->has_value());
+    }
+
+    constexpr int kOnset = 960;
+    std::vector<float> transient(static_cast<std::size_t>(ac3::kSamplesPerFrame), 0.0f);
+    for (int n = kOnset; n < ac3::kSamplesPerFrame; ++n) {
+        transient[static_cast<std::size_t>(n)] = static_cast<float>(
+            0.9 * std::sin(2.0 * std::numbers::pi * 1000.0 * static_cast<double>(n) / 48000.0));
+    }
+    std::vector<std::span<const float>> transient_views(nchans, transient);
+    const auto transient_frame = encoder.encode_frame(transient_views);
+    REQUIRE(transient_frame.has_value());
+
+    // This frame turns transproce on, so decode_substream has nothing ready
+    // to return yet - the correction it signals can reach back into the
+    // PREVIOUS (already-decoded, silent) frame, which is only known once
+    // this one has been parsed.
+    const auto held = decoder.decode_substream(*transient_frame);
+    REQUIRE(held.has_value());
+    CHECK_FALSE(held->has_value());
+
+    // One more frame (silent again) releases the transient frame, now with
+    // its own correction applied.
+    const auto after = encoder.encode_frame(silence_views);
+    REQUIRE(after.has_value());
+    const auto released = decoder.decode_substream(*after);
+    REQUIRE(released.has_value());
+    REQUIRE(released->has_value());
+
+    for (std::size_t ch = 0; ch < nchans; ++ch) {
+        double pre_energy = 0.0;
+        for (int n = 0; n < kOnset - 256; ++n) {
+            const double v =
+                static_cast<double>((*released)->channels[ch][static_cast<std::size_t>(n)]);
+            pre_energy += v * v;
+        }
+        CHECK(pre_energy < 1e-4);
+    }
+
+    // Once a substream identity has used the tool even once, it stays in
+    // buffered mode for the rest of the stream (decode_substream's own doc
+    // comment) - so the "after" frame decoded above is itself now the one
+    // being held back, regardless of whether IT set transproce. flush() is
+    // what a caller must call at end-of-stream to not silently lose it.
+    auto remaining = decoder.flush();
+    REQUIRE(remaining.size() == 1);
+    CHECK(remaining[0].channels.size() == nchans);
 }
 
 namespace {

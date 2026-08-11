@@ -116,9 +116,11 @@ load-bearing enough to flag up front:
     devices at all. Nothing has been bitstreamed to an actual S/PDIF or HDMI output, and no AV
     receiver has been asked to lock onto it.
 
-Also not implemented at all: enhanced coupling and transient pre-noise processing. Variable bit
-rate is E-AC-3 only — AC-3's frame size indexes Table 5.18 rather than stating a word count
-directly, so it has no equivalent and stays CBR.
+Enhanced coupling and transient pre-noise processing are both implemented (see
+[Decoding](library/decoding.md) and the `ecpl`/`tpn` tool tokens), each with a known MVP
+limitation - see [What it does not do](../README.md#what-it-does-not-do). Variable bit rate is
+E-AC-3 only — AC-3's frame size indexes Table 5.18 rather than stating a word count directly, so
+it has no equivalent and stays CBR.
 
 ## Where to go next
 

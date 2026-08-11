@@ -35,7 +35,6 @@ constexpr int kFrmExpStrategyCode = 0;  // Table E2.10 row 0: D15 R R R R R
 // that the DCT concentrates, above it the loud block smears across all six.
 constexpr double kAhtStationaryRatio = 10.0;
 constexpr int kSnroffststr = 0;    // one SNR offset pair for the whole frame
-constexpr int kTransproce = 0;     // no transient pre-noise processing
 constexpr int kDithflage = 1;      // sent explicitly: the DEFAULT when absent is
                                    // dither ON, which would fill every zero-bit
                                    // bin with noise and make "silence" audible
@@ -185,6 +184,10 @@ struct ChannelPlan {
 // or none, which is also the only shape that leaves ncplregs at 1.
 struct CouplingPlan {
     bool in_use = false;
+    // §E3.5: enhanced coupling instead of standard - mutually exclusive with
+    // everything below `endmant` that is standard-coupling-specific
+    // (structure/bands/master/coords), which stay unused when this is set.
+    bool enhanced = false;
     int begf = 0;
     int endf = 0;
     int strtmant = 0;
@@ -192,14 +195,24 @@ struct CouplingPlan {
     int nsubnd = 0;
     std::array<bool, kMaxSubBands> structure{};
     BandLayout bands{};
+    // --- enhanced coupling only (valid when `enhanced`) ---
+    int ecpl_begin_subbnd = 0;
+    int ecpl_end_subbnd = 0;
+    std::array<bool, kEcplSubBands> ecpl_structure{};
+    BandLayout ecpl_bands{};
+    // Amplitude only (§3.5.4's angle/chaos are fixed at zero - see the MVP
+    // note where these are computed): [blk][ch][bnd], band-indexed like
+    // ecpl_bands.
+    std::vector<int> ecplamp;
     int fleak = 0;
     int sleak = 0;
     // Coordinates go out in blocks 0, 2 and 4 and are reused in between
     // (§8.2.4.1). A reusing block holds a copy of what was actually sent, so
     // the encoder's own view of the decoder's state is never a special case.
+    // Applies to both standard and enhanced coupling's own coordinate cadence.
     std::array<bool, kBlocksPerFrame> send{};
-    std::vector<int> master;                   // [blk][ch]
-    std::vector<coupling::Coordinate> coords;  // [blk][ch][bnd]
+    std::vector<int> master;                   // [blk][ch] - standard coupling only
+    std::vector<coupling::Coordinate> coords;  // [blk][ch][bnd] - standard coupling only
 };
 
 // Everything the spectral extension tool contributes. There is no shared
@@ -233,6 +246,14 @@ struct Payload {
     int csnroffst = 0;
     int fsnroffst = 0;
     bool ahte = false;  // some stream uses the adaptive hybrid transform
+    // §3.7: sized to nfchans wherever set at all (transproce implies every
+    // vector below is). This encoder's own heuristic - see where these are
+    // filled in, right after block switching is decided - not a spec
+    // requirement: only decoder reconstruction (§3.7.2) is normative here.
+    bool transproce = false;
+    std::vector<bool> chintransproc;
+    std::vector<int> transprocloc;  // samples, already *4 from the wire field
+    std::vector<int> transproclen;  // samples
     CouplingPlan cpl;
     SpxPlan spx;
     std::vector<ChannelPlan> chans;
@@ -255,6 +276,22 @@ struct Payload {
 // block 0.
 [[nodiscard]] int rematrix_band_count(const CouplingPlan& cpl, const SpxPlan& spx) {
     if (cpl.in_use) {
+        // §3.3.2: enhanced coupling has its own table, keyed off
+        // ecplbegf (held in cpl.begf the same way standard's cplbegf is)
+        // rather than a parameter substitution into standard's formula -
+        // its sub-band table starts at a different frequency.
+        if (cpl.enhanced) {
+            if (cpl.begf == 0) {
+                return 0;
+            }
+            if (cpl.begf == 1) {
+                return 1;
+            }
+            if (cpl.begf == 2) {
+                return 2;
+            }
+            return cpl.begf < 5 ? 3 : 4;
+        }
         if (cpl.begf == 0) {
             return 2;
         }
@@ -493,7 +530,7 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
     w.put(kExpstre, 1);
     w.put(payload.ahte ? 1 : 0, 1);
     w.put(kSnroffststr, 2);
-    w.put(kTransproce, 1);
+    w.put(payload.transproce ? 1 : 0, 1);
     w.put(blkswe ? 1 : 0, 1);
     w.put(kDithflage, 1);
     w.put(kBamode, 1);
@@ -554,9 +591,23 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
     // all-zero allocation, hence no mantissa data at all.
     w.put(static_cast<std::uint32_t>(payload.csnroffst), 6);  // frmcsnroffst
     w.put(static_cast<std::uint32_t>(payload.fsnroffst), 4);  // frmfsnroffst
-    // transproce == 0 contributes nothing. The attenuation codes are
-    // per channel and frame-constant, which is why they live here and not in
-    // the blocks.
+    // §2.3.2.21-23: one flag plus, where set, a location/length pair per
+    // full-bandwidth channel. transprocloc is written at its wire
+    // resolution (4 samples) - payload.transprocloc is already in samples,
+    // so it is divided back down here, the mirror of the decoder's *4 at
+    // parse time.
+    if (payload.transproce) {
+        for (int ch = 0; ch < nfchans; ++ch) {
+            const auto uch = static_cast<std::size_t>(ch);
+            w.put(payload.chintransproc[uch] ? 1 : 0, 1);  // chintransproc[ch]
+            if (payload.chintransproc[uch]) {
+                w.put(static_cast<std::uint32_t>(payload.transprocloc[uch] / 4), 10);
+                w.put(static_cast<std::uint32_t>(payload.transproclen[uch]), 8);
+            }
+        }
+    }
+    // The attenuation codes are per channel and frame-constant, which is why
+    // they live here and not in the blocks.
     if (spx.atten) {
         for (int ch = 0; ch < nfchans; ++ch) {
             const int code = spx.attencod[static_cast<std::size_t>(ch)];
@@ -663,39 +714,59 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
         // Coupling strategy. cplstre[0] is implied 1, so block 0 carries one;
         // blocks 1-5 sent cplstre 0 in audfrm, so they carry none at all.
         if (cpl.in_use && first) {
-            w.put(0, 1);  // ecplinu: standard coupling, not enhanced
+            w.put(cpl.enhanced ? 1 : 0, 1);  // ecplinu
             // 2/0 is the one mode where chincpl is not transmitted: both
-            // channels are coupled by definition.
+            // channels are coupled by definition. Common to both coupling
+            // modes.
             if (config.acmod != Acmod::k2_0) {
                 for (int ch = 0; ch < nfchans; ++ch) {
                     w.put(1, 1);  // chincpl[ch]: every fbw channel couples
                 }
+            } else if (!cpl.enhanced) {
+                w.put(0, 1);  // phsflginu: no phase restoration (standard-only field)
+            }
+            if (!cpl.enhanced) {
+                w.put(static_cast<std::uint32_t>(cpl.begf), 4);
+                // §E3.3.1: with spectral extension in use cplendf is derived
+                // from spxbegf rather than transmitted, so that the coupling
+                // region ends exactly where synthesis begins.
+                if (!spx.in_use) {
+                    w.put(static_cast<std::uint32_t>(cpl.endf), 4);
+                }
+                // The banding structure is sent rather than defaulted.
+                // Leaving cplbndstrce at 0 would hand the decoder Table
+                // E2.12's default, which is NOT one band per sub-band and
+                // whose indexing the standard pins to the array's first
+                // element being sub-band cplbegf (§5.4.3.13) - a reading real
+                // decoders do not share. ncplsubnd - 1 bits a frame settles
+                // the question outright.
+                w.put(1, 1);  // cplbndstrce
+                for (int sbnd = 1; sbnd < cpl.nsubnd; ++sbnd) {
+                    w.put(cpl.structure[static_cast<std::size_t>(sbnd)] ? 1 : 0, 1);
+                }
             } else {
-                w.put(0, 1);  // phsflginu: no phase restoration
-            }
-            w.put(static_cast<std::uint32_t>(cpl.begf), 4);
-            // §E3.3.1: with spectral extension in use cplendf is derived from
-            // spxbegf rather than transmitted, so that the coupling region
-            // ends exactly where synthesis begins.
-            if (!spx.in_use) {
-                w.put(static_cast<std::uint32_t>(cpl.endf), 4);
-            }
-            // The banding structure is sent rather than defaulted. Leaving
-            // cplbndstrce at 0 would hand the decoder Table E2.12's default,
-            // which is NOT one band per sub-band and whose indexing the
-            // standard pins to the array's first element being sub-band
-            // cplbegf (§5.4.3.13) - a reading real decoders do not share.
-            // ncplsubnd - 1 bits a frame settles the question outright.
-            w.put(1, 1);  // cplbndstrce
-            for (int sbnd = 1; sbnd < cpl.nsubnd; ++sbnd) {
-                w.put(cpl.structure[static_cast<std::size_t>(sbnd)] ? 1 : 0, 1);
+                w.put(static_cast<std::uint32_t>(cpl.begf), 4);  // ecplbegf
+                // Enhanced coupling never combines with spx in this encoder
+                // (see where cpl.enhanced is decided), so ecplendf is always
+                // transmitted here.
+                w.put(static_cast<std::uint32_t>(cpl.endf), 4);  // ecplendf
+                // Table E2.13's default is unambiguous (unlike standard
+                // coupling's), but this encoder still transmits an explicit
+                // structure - one bit of policy consistency with standard
+                // coupling above rather than a spec requirement.
+                w.put(1, 1);  // ecplbndstrce
+                const int first_sbnd = std::max(9, cpl.ecpl_begin_subbnd + 1);
+                for (int sbnd = first_sbnd; sbnd < cpl.ecpl_end_subbnd; ++sbnd) {
+                    w.put(cpl.ecpl_structure[static_cast<std::size_t>(sbnd)] ? 1 : 0, 1);
+                }
             }
         }
 
-        // Coupling coordinates. firstcplcos[ch] starts at 1, so block 0's
-        // cplcoe is implied 1 and not transmitted - one bit per channel that
-        // AC-3 does send and Annex E does not.
-        if (cpl.in_use) {
+        // Coupling coordinates. firstcplcos[ch]/firstchincpl start at 1/-1
+        // respectively, so block 0's per-channel "must send" state is implied
+        // rather than transmitted - the same shape for both coupling modes,
+        // differing only in what gets sent once that is settled.
+        if (cpl.in_use && !cpl.enhanced) {
             const bool send = cpl.send[static_cast<std::size_t>(blk)];
             for (int ch = 0; ch < nfchans; ++ch) {
                 if (!first) {
@@ -716,6 +787,48 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
                 }
             }
             // phsflginu == 0, so no phase flags follow.
+        } else if (cpl.in_use) {
+            // §E2.3.3.20-26: this encoder always couples channel 0 first
+            // (every fbw channel couples, chincpl never partial), so
+            // firstchincpl is always 0 and angle/chaos are never transmitted
+            // for it. ecplangle/ecplchaos are always sent as index 0 (angle
+            // 0.0, chaos 0.0) for every other channel - see CouplingPlan::
+            // ecplamp's own note on why this encoder does not yet fit a real
+            // angle/chaos. ecpltrans is always 0: no per-block transient
+            // tuning yet either.
+            w.put(0, 1);  // ecplangleintrp: no interpolation
+            const bool send = cpl.send[static_cast<std::size_t>(blk)];
+            const auto nbnd_e = static_cast<std::size_t>(std::max(cpl.ecpl_bands.count, 1));
+            for (int ch = 0; ch < nfchans; ++ch) {
+                const bool first_time = first;
+                if (!first_time) {
+                    w.put(send ? 1 : 0, 1);  // ecplparam1e[ch]
+                    if (ch > 0) {
+                        w.put(send ? 1 : 0, 1);  // ecplparam2e[ch]
+                    }
+                }
+                const bool param1 = first_time || send;
+                const bool param2 = ch > 0 && (first_time || send);
+                if (param1) {
+                    const auto at = (static_cast<std::size_t>(blk) *
+                                         static_cast<std::size_t>(nfchans) +
+                                     static_cast<std::size_t>(ch)) *
+                                    nbnd_e;
+                    for (int bnd = 0; bnd < cpl.ecpl_bands.count; ++bnd) {
+                        w.put(static_cast<std::uint32_t>(cpl.ecplamp[at + static_cast<std::size_t>(bnd)]),
+                              5);
+                    }
+                }
+                if (param2) {
+                    for (int bnd = 0; bnd < cpl.ecpl_bands.count; ++bnd) {
+                        w.put(0, 6);  // ecplangle: index 0 -> angle 0.0
+                        w.put(0, 3);  // ecplchaos: index 0 -> chaos 0.0
+                    }
+                }
+                if (ch > 0) {
+                    w.put(0, 1);  // ecpltrans[ch]
+                }
+            }
         }
 
         if (config.acmod == Acmod::k2_0) {
@@ -1240,11 +1353,68 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         }
     }
 
+    // §3.7: transient pre-noise processing. Reuses the block-switch decision
+    // above rather than a second, independent transient detector - a channel
+    // gets a correction exactly where it also short-transforms. The chosen
+    // location is the first switched block's own leading edge (already a
+    // multiple of 4, so nothing is lost rounding transprocloc to the wire
+    // field's 4-sample resolution) and translen is a fixed, conservative 0:
+    // the shortest legal correction window, covering exactly the block
+    // boundary immediately before the switch with no extra margin. Neither
+    // choice is spec-mandated - only decoder reconstruction (§3.7.2) is
+    // normative - so both are this encoder's own starting heuristic, a
+    // baseline to tune once real listening (not just round-trip decode)
+    // guides it.
+    if (config_.transient_prenoise) {
+        payload.chintransproc.assign(static_cast<std::size_t>(nfchans), false);
+        payload.transprocloc.assign(static_cast<std::size_t>(nfchans), 0);
+        payload.transproclen.assign(static_cast<std::size_t>(nfchans), 0);
+        for (int ch = 0; ch < nfchans; ++ch) {
+            for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
+                if (blksw[static_cast<std::size_t>(ch)][static_cast<std::size_t>(blk)]) {
+                    payload.chintransproc[static_cast<std::size_t>(ch)] = true;
+                    payload.transprocloc[static_cast<std::size_t>(ch)] = blk * kSamplesPerBlock;
+                    payload.transproclen[static_cast<std::size_t>(ch)] = 0;
+                    payload.transproce = true;
+                    break;
+                }
+            }
+        }
+    }
+
     // §E2.2.3 gates the whole coupling element on acmod > 0x1, so 1/0 and the
     // rejected 1+1 cannot couple however the caller asks.
     cpl.in_use =
         config_.coupling && static_cast<std::uint8_t>(config_.acmod) > 0x1 && !any_switched;
-    if (cpl.in_use) {
+    // Enhanced coupling does not combine with spectral extension here: the
+    // spx gain/blend measurement further down reconstructs the coupled
+    // channels' low band the way the DECODER will see it, using the
+    // standard-coupling coordinate math directly (coupling::decode_coordinate)
+    // - extending that to enhanced coupling's FFT-based reconstruction as
+    // well is a real but separable follow-up, not required for a correct,
+    // conformant enhanced-coupling stream on its own.
+    cpl.enhanced = cpl.in_use && config_.enhanced && !spx.in_use;
+    if (cpl.enhanced) {
+        // begf/endf are read as ecplbegf/ecplendf CODES here, the same field
+        // reused rather than duplicated - config_.cplbegf's existing
+        // rate-dependent default lands on a real enhanced sub-band for every
+        // value it produces (checked against Table E3.8 directly), so there
+        // is no need for a second heuristic tuned to the different (13-start,
+        // narrower-at-the-bottom) sub-band table.
+        cpl.begf = std::clamp(config_.cplbegf >= 0
+                                  ? config_.cplbegf
+                                  : default_cplbegf(tool_reference_kbps, nfchans),
+                              0, 15);
+        cpl.ecpl_begin_subbnd = ecpl_begin_subbnd(cpl.begf);
+        cpl.endf = 15;  // top of the coded spectrum, same convention as standard
+        cpl.ecpl_end_subbnd = ecpl_end_subbnd(cpl.endf);
+        cpl.strtmant = kEcplSubBandTab[static_cast<std::size_t>(cpl.ecpl_begin_subbnd)];
+        cpl.endmant = kEcplSubBandTab[static_cast<std::size_t>(cpl.ecpl_end_subbnd)];
+        std::copy_n(kDefaultEcplBandStructure.begin(), kEcplSubBands,
+                   cpl.ecpl_structure.begin());
+        cpl.ecpl_bands =
+            ecpl_group_bands(cpl.ecpl_begin_subbnd, cpl.ecpl_end_subbnd, cpl.ecpl_structure);
+    } else if (cpl.in_use) {
         cpl.begf = std::clamp(config_.cplbegf >= 0
                                   ? config_.cplbegf
                                   : default_cplbegf(tool_reference_kbps, nfchans),
@@ -1266,17 +1436,20 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                 cpl.begf = std::min(cpl.begf, cpl.endf + 2);
             }
         }
+        if (cpl.in_use) {
+            cpl.strtmant = kCplFirstBin + kCplBinsPerSubBand * cpl.begf;
+            cpl.endmant = kCplFirstBin + kCplBinsPerSubBand * (cpl.endf + 3);
+            cpl.nsubnd = 3 + cpl.endf - cpl.begf;
+            assert(cpl.nsubnd >= 1);
+            assert(!spx.in_use || cpl.endmant == spx.startmant);
+            std::copy_n(kDefaultCplBandStructure.begin(), cpl.nsubnd, cpl.structure.begin());
+            cpl.bands = group_bands(cpl.strtmant, cpl.nsubnd, kCplBinsPerSubBand,
+                                    std::span{cpl.structure});
+        }
     }
-    if (cpl.in_use) {
-        cpl.strtmant = kCplFirstBin + kCplBinsPerSubBand * cpl.begf;
-        cpl.endmant = kCplFirstBin + kCplBinsPerSubBand * (cpl.endf + 3);
-        cpl.nsubnd = 3 + cpl.endf - cpl.begf;
-        assert(cpl.nsubnd >= 1);
-        assert(!spx.in_use || cpl.endmant == spx.startmant);
-        std::copy_n(kDefaultCplBandStructure.begin(), cpl.nsubnd, cpl.structure.begin());
-        cpl.bands = group_bands(cpl.strtmant, cpl.nsubnd, kCplBinsPerSubBand,
-                                std::span{cpl.structure});
-    }
+    // Keep the invariant solid for everything downstream: `enhanced` never
+    // holds when `in_use` does not, whichever branch above cleared it.
+    cpl.enhanced = cpl.enhanced && cpl.in_use;
 
     // §E3.3.3: whichever tool takes over first sets the coded bandwidth.
     const int fbw_endmant = cpl.in_use    ? cpl.strtmant
@@ -1352,9 +1525,10 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         cpl.coords.assign(cpl.master.size() * nbnd, {});
         std::vector<double> values(nbnd, 0.0);
 
-        // §7.4.1: the coupling channel is the AVERAGE of the coupled
-        // channels' coefficients. The divisor is not a free parameter, and
-        // this encoder measured both ways it can be got wrong.
+        // §7.4.1/§3.5.2: the coupling channel is the AVERAGE of the coupled
+        // channels' coefficients, in exactly the same way whether standard or
+        // enhanced coupling is selected. The divisor is not a free parameter,
+        // and this encoder measured both ways it can be got wrong.
         //
         // Scaling the shared channel UP - normalising each band, or the whole
         // region, to unit peak - looks attractive because it makes the
@@ -1385,48 +1559,145 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                 }
                 shared[static_cast<std::size_t>(bin)] = sum;
             }
-            for (int ch = 0; ch < nfchans; ++ch) {
-                for (int bnd = 0; bnd < cpl.bands.count; ++bnd) {
-                    const int low = cpl.bands.start[static_cast<std::size_t>(bnd)];
-                    const int high = low + cpl.bands.size[static_cast<std::size_t>(bnd)];
-                    double power_ch = 0.0;
-                    double power_sum = 0.0;
-                    for (int bin = low; bin < high; ++bin) {
-                        const double value =
-                            coeffs_at(ch, blk)[static_cast<std::size_t>(bin)];
-                        const double summed = shared[static_cast<std::size_t>(bin)];
-                        power_ch += value * value;
-                        power_sum += summed * summed;
-                    }
-                    // The decoder computes channel = coupling * coordinate * 8
-                    // and the stored coupling is sum / scale, so the
-                    // coordinate that restores this band's energy is
-                    // sqrt(E_ch / E_sum) * scale / 8.
-                    const double ratio =
-                        power_sum > 0.0 ? std::sqrt(power_ch / power_sum) : 0.0;
-                    values[static_cast<std::size_t>(bnd)] = ratio * scale / 8.0;
-                }
-                const int chosen = coupling::choose_master(values);
-                cpl.master[coord_slot(blk, ch)] = chosen;
-                for (int bnd = 0; bnd < cpl.bands.count; ++bnd) {
-                    cpl.coords[coord_slot(blk, ch) * nbnd + static_cast<std::size_t>(bnd)] =
-                        coupling::quantize_coordinate(values[static_cast<std::size_t>(bnd)],
-                                                      chosen);
-                }
-            }
-            // A block that reuses coordinates must reuse the ones actually
-            // transmitted, or encoder and decoder diverge from block 1 on.
-            if (!cpl.send[static_cast<std::size_t>(blk)]) {
+            // Standard coupling's own per-band coordinate. Enhanced coupling
+            // computes its amplitude-only coordinate in a second pass below,
+            // once every block's shared channel (divided by scale, right
+            // after this loop) is available - its reconstruction needs a
+            // block's NEIGHBORS, which standard coupling's plain per-band
+            // ratio never does.
+            if (!cpl.enhanced) {
                 for (int ch = 0; ch < nfchans; ++ch) {
-                    cpl.master[coord_slot(blk, ch)] = cpl.master[coord_slot(blk - 1, ch)];
-                    for (std::size_t bnd = 0; bnd < nbnd; ++bnd) {
-                        cpl.coords[coord_slot(blk, ch) * nbnd + bnd] =
-                            cpl.coords[coord_slot(blk - 1, ch) * nbnd + bnd];
+                    for (int bnd = 0; bnd < cpl.bands.count; ++bnd) {
+                        const int low = cpl.bands.start[static_cast<std::size_t>(bnd)];
+                        const int high = low + cpl.bands.size[static_cast<std::size_t>(bnd)];
+                        double power_ch = 0.0;
+                        double power_sum = 0.0;
+                        for (int bin = low; bin < high; ++bin) {
+                            const double value =
+                                coeffs_at(ch, blk)[static_cast<std::size_t>(bin)];
+                            const double summed = shared[static_cast<std::size_t>(bin)];
+                            power_ch += value * value;
+                            power_sum += summed * summed;
+                        }
+                        // The decoder computes channel = coupling * coordinate
+                        // * 8 and the stored coupling is sum / scale, so the
+                        // coordinate that restores this band's energy is
+                        // sqrt(E_ch / E_sum) * scale / 8.
+                        const double ratio =
+                            power_sum > 0.0 ? std::sqrt(power_ch / power_sum) : 0.0;
+                        values[static_cast<std::size_t>(bnd)] = ratio * scale / 8.0;
+                    }
+                    const int chosen = coupling::choose_master(values);
+                    cpl.master[coord_slot(blk, ch)] = chosen;
+                    for (int bnd = 0; bnd < cpl.bands.count; ++bnd) {
+                        cpl.coords[coord_slot(blk, ch) * nbnd + static_cast<std::size_t>(bnd)] =
+                            coupling::quantize_coordinate(values[static_cast<std::size_t>(bnd)],
+                                                          chosen);
+                    }
+                }
+                // A block that reuses coordinates must reuse the ones
+                // actually transmitted, or encoder and decoder diverge from
+                // block 1 on.
+                if (!cpl.send[static_cast<std::size_t>(blk)]) {
+                    for (int ch = 0; ch < nfchans; ++ch) {
+                        cpl.master[coord_slot(blk, ch)] = cpl.master[coord_slot(blk - 1, ch)];
+                        for (std::size_t bnd = 0; bnd < nbnd; ++bnd) {
+                            cpl.coords[coord_slot(blk, ch) * nbnd + bnd] =
+                                cpl.coords[coord_slot(blk - 1, ch) * nbnd + bnd];
+                        }
                     }
                 }
             }
+            // Standard coupling divides by nfchans because its decoder-side
+            // formula (coordinate * 8) has room built in to boost a quiet
+            // mean back up. Enhanced coupling's decoder formula has no such
+            // headroom - ecplamp only ever attenuates (Table E3.10 tops out
+            // at 0 dB) - and ecpl_channel_spectrum's own reconstruction
+            // pathway (IMDCT -> overlap -> window -> DFT -> fold) measures as
+            // exactly 0.5x on the way back out, for every bin and block
+            // tried, regardless of content (verified directly against
+            // ecpl_channel_spectrum/ecpl_channel_coefficients rather than
+            // assumed). So the transmitted content here is the RAW sum,
+            // doubled to cancel that 0.5x, landing the per-channel amplitude
+            // fit below on the same sqrt(power_ch / power_sum) shape standard
+            // coupling's own ratio already uses successfully - just against
+            // this pathway's reconstruction of that sum instead of the sum
+            // itself.
             for (int bin = cpl.strtmant; bin < cpl.endmant; ++bin) {
-                shared[static_cast<std::size_t>(bin)] /= scale;
+                if (cpl.enhanced) {
+                    shared[static_cast<std::size_t>(bin)] *= 2.0;
+                } else {
+                    shared[static_cast<std::size_t>(bin)] /= scale;
+                }
+            }
+        }
+
+        // §3.5.5's amplitude-only fit (this encoder always sends angle == 0,
+        // chaos == 0, ecpltrans == 0 - see CouplingPlan::ecplamp): reconstruct
+        // the same non-aliased spectrum the decoder will (§3.5.5.1), fold it
+        // through amp == 1/angle == 0 to get the shared, channel-independent
+        // baseline every channel's own amplitude scales, then fit that
+        // amplitude per band exactly the way standard coupling above fits its
+        // plain coordinate - sqrt of a power ratio, just against this
+        // baseline instead of the raw shared sum.
+        if (cpl.enhanced) {
+            const auto nbnd_e = static_cast<std::size_t>(std::max(cpl.ecpl_bands.count, 1));
+            cpl.ecplamp.assign(static_cast<std::size_t>(kBlocksPerFrame) *
+                                   static_cast<std::size_t>(nfchans) * nbnd_e,
+                               0);
+            const auto ecpl_slot = [&](int blk, int ch) {
+                return (static_cast<std::size_t>(blk) * static_cast<std::size_t>(nfchans) +
+                       static_cast<std::size_t>(ch)) *
+                      nbnd_e;
+            };
+            static constexpr std::array<double, 256> kZero{};
+            const int bins = cpl.endmant - cpl.strtmant;
+            std::vector<double> unity_amp(static_cast<std::size_t>(bins), 1.0);
+            std::vector<double> zero_angle(static_cast<std::size_t>(bins), 0.0);
+            std::vector<double> amp_values(nbnd_e, 0.0);
+            for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
+                const auto& prev = blk > 0 ? coeffs_at(cpl_stream, blk - 1) : kZero;
+                const auto& curr = coeffs_at(cpl_stream, blk);
+                const auto& next =
+                    blk + 1 < kBlocksPerFrame ? coeffs_at(cpl_stream, blk + 1) : kZero;
+                std::array<double, 256> zr{};
+                std::array<double, 256> zi{};
+                ecpl_channel_spectrum(prev, curr, next, zr, zi);
+                std::array<double, 256> baseline{};
+                ecpl_channel_coefficients(zr, zi, unity_amp, zero_angle, cpl.strtmant,
+                                          cpl.endmant, baseline);
+
+                for (int ch = 0; ch < nfchans; ++ch) {
+                    for (int bnd = 0; bnd < cpl.ecpl_bands.count; ++bnd) {
+                        const int low = cpl.ecpl_bands.start[static_cast<std::size_t>(bnd)];
+                        const int high = low + cpl.ecpl_bands.size[static_cast<std::size_t>(bnd)];
+                        double power_ch = 0.0;
+                        double power_f = 0.0;
+                        for (int bin = low; bin < high; ++bin) {
+                            const double value =
+                                coeffs_at(ch, blk)[static_cast<std::size_t>(bin)];
+                            const double f = baseline[static_cast<std::size_t>(bin)];
+                            power_ch += value * value;
+                            power_f += f * f;
+                        }
+                        const double ratio = power_f > 0.0 ? std::sqrt(power_ch / power_f) : 0.0;
+                        amp_values[static_cast<std::size_t>(bnd)] = ratio;
+                    }
+                    if (cpl.send[static_cast<std::size_t>(blk)]) {
+                        for (int bnd = 0; bnd < cpl.ecpl_bands.count; ++bnd) {
+                            cpl.ecplamp[ecpl_slot(blk, ch) + static_cast<std::size_t>(bnd)] =
+                                quantize_ecplamp(amp_values[static_cast<std::size_t>(bnd)]);
+                        }
+                    } else {
+                        // Same reuse rule as standard coupling's coordinates:
+                        // a block that does not resend must repeat exactly
+                        // what the previous one sent.
+                        for (std::size_t bnd = 0; bnd < nbnd_e; ++bnd) {
+                            cpl.ecplamp[ecpl_slot(blk, ch) + bnd] =
+                                cpl.ecplamp[ecpl_slot(blk - 1, ch) + bnd];
+                        }
+                    }
+                }
             }
         }
     }

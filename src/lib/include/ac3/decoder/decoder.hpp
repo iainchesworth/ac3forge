@@ -34,10 +34,15 @@
 // E-AC-3 scope (Annex E, bsid 11-16): the whole of Tables E1.2/E1.3/E1.4 as
 // syntax — every metadata payload is walked correctly whether or not its
 // contents are used — plus dependent substreams, chanmap and the §E3.8.2
-// render. The coding tools Annex E adds on top of AC-3 (AHT, spectral
-// extension, enhanced coupling, transient pre-noise processing) are parsed far
-// enough to be recognised and then refused, again rather than mis-decoded.
-// This is the only oracle 7.1.4 has: FFmpeg rejects any frame with
+// render. Every coding tool Annex E adds on top of AC-3 is implemented: AHT,
+// spectral extension, enhanced coupling (§E3.5) and transient pre-noise
+// processing (§3.7) - individually or all stacked together. Two syntax
+// corners inside those tools are still recognised and refused rather than
+// mis-decoded (enhanced coupling's angle-interpolation flag, Annex E's
+// default coupling band structure), because no stream this project's own
+// encoder produces exercises them. Transient pre-noise processing has one
+// consequence for this class's own API: see decode_substream and flush()
+// below. This is the only oracle 7.1.4 has: FFmpeg rejects any frame with
 // substreamid != 0, so a stream with two dependent substreams cannot be
 // checked against it in any container.
 //
@@ -176,19 +181,51 @@ class AC3FORGE_EXPORT Eac3Decoder {
     // so the substreams of successive access units stay independent of each
     // other; a caller stepping through syncframes by hand gets the same audio
     // as one calling decode_access_unit.
-    [[nodiscard]] std::expected<DecodedSubstream, DecodeError> decode_substream(
+    //
+    // Returns std::nullopt exactly when a frame's PCM is being held back
+    // pending transient pre-noise processing (§3.7): a stream's very first
+    // frame that turns transproce on has nothing ready to return yet, because
+    // whether a correction reaches back into it is only known once the NEXT
+    // frame has been parsed. A stream that never uses the tool always gets a
+    // populated result immediately - this holding-back is the exception, not
+    // the common case. Call flush() once at end-of-stream to collect
+    // whichever frame is still held back, if any.
+    [[nodiscard]] std::expected<std::optional<DecodedSubstream>, DecodeError> decode_substream(
         std::span<const std::byte> frame);
 
     // Decodes one access unit — an independent substream followed by its
     // dependents, exactly as split_access_units delimits them — and renders it.
+    //
+    // Unlike decode_substream, this does not support transient pre-noise
+    // processing: assembling one access unit needs every one of its
+    // substreams ready in the SAME call, and a substream held back by
+    // decode_substream would otherwise mean discarding whichever other
+    // substreams already were ready this call, or caching them across an
+    // unbounded number of further calls for a case this project's own
+    // encoder does not produce (every substream of one access unit turns the
+    // tool on or off together). A stream where any substream sets transproce
+    // is recognised and refused (kUnsupported) here, the same stance this
+    // project takes elsewhere for syntax it does not implement - use
+    // decode_substream directly for a stream that needs it.
     [[nodiscard]] std::expected<DecodedAccessUnit, DecodeError> decode_access_unit(
         std::span<const std::byte> unit);
+
+    // Releases whichever frames transient pre-noise processing is still
+    // holding back, one per substream identity that has one pending - empty
+    // if none does, which covers every stream that never used the tool.
+    // Call once, after the last decode_substream/decode_access_unit call for
+    // a stream, to avoid silently dropping its final frame(s).
+    [[nodiscard]] std::vector<DecodedSubstream> flush();
 
    private:
     // Keyed by strmtyp and substreamid together: a dependent's id lives in its
     // own numbering space (§E2.3.1.2), so id alone does not identify a
     // substream. At most six coded channels each (3/2 plus LFE).
     std::map<int, std::array<std::array<double, 256>, 6>> delay_;
+    // A substream identity enters this map the first time one of its frames
+    // sets transproce, and stays in it (buffering one frame at a time) for
+    // the rest of the stream - see decode_substream's own doc comment.
+    std::map<int, DecodedSubstream> pending_;
 };
 
 // Split a raw elementary stream into syncframes by sync word and declared
