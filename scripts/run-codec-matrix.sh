@@ -11,10 +11,11 @@
 # Every stream this script produces also gets FFmpeg's independent strict
 # decode (CONTRIBUTING.md's "Oracles" list, #2) alongside the in-repo
 # decoder's `run decode`, per the verification-gap table in README.md:
-#   - The in-repo decoder reads every Annex E tool combination now (coupling,
-#     spectral extension, AHT, and any combination including 7.1.4 with all
-#     three at once), so every `run decode` below is a real, asserted
-#     round-trip - there is nothing left to tolerate a known refusal against.
+#   - The in-repo decoder reads every Annex E tool combination now (standard
+#     and enhanced coupling, spectral extension, AHT, transient pre-noise
+#     processing, and any combination including 7.1.4 with several at once),
+#     so every `run decode` below is a real, asserted round-trip - there is
+#     nothing left to tolerate a known refusal against.
 #   - FFmpeg still has no oracle at all for 7.1.4 (`714`): its
 #     ff_ac3_parse_header rejects a second dependent substream's
 #     `substreamid != 0` in every container tried, regardless of which Annex
@@ -23,6 +24,12 @@
 #     failure against, and skipping (not tolerating) is what keeps this
 #     script from silently claiming FFmpeg coverage it does not have. The
 #     in-repo decoder is checked at 7.1.4 same as everywhere else.
+#   - Same story, different reason, for enhanced coupling (`ecpl`) and
+#     transient pre-noise processing (`tpn`): FFmpeg's own Annex E parser has
+#     never read either tool's syntax at all, so there is no "known refusal"
+#     to tolerate, just no oracle - see docs/verification.md's own note.
+#     Those streams skip the FFmpeg check too; the in-repo decoder round trip
+#     still covers them.
 #
 # Usage: run-codec-matrix.sh <path-to-ac3cli> [workdir]
 # Exits non-zero on the first command that fails (a sanitizer violation exits
@@ -147,6 +154,19 @@ for tools in cpl spx aht all "spx+aht" "cpl:4+spx:5" "aht:0" "all+atten:2" "all+
     run eac3-encode bootstrap_51.wav "eac3enc_${safe}.ec3" 192 "$tools" 51
     run decode "eac3enc_${safe}.ec3" "eac3enc_${safe}.wav"
     run_ffmpeg_check "eac3enc_${safe}.ec3"
+done
+
+# Enhanced coupling (ecpl) and transient pre-noise processing (tpn): unlike
+# every tool combination above, FFmpeg's own Annex E parser has never read
+# either one's syntax at all - not a known, tolerated refusal the way 714 is
+# below, just no model of the bits at all - so these skip the FFmpeg check
+# entirely rather than being tolerated, same convention as 714. The in-repo
+# decoder round trip (`run decode`) still covers every one of these.
+for tools in "cpl+ecpl" tpn "cpl+ecpl+tpn"; do
+    safe=$(echo "$tools" | tr ':+' '__')
+    run eac3-encode bootstrap_51.wav "eac3enc_${safe}.ec3" 192 "$tools" 51
+    run decode "eac3enc_${safe}.ec3" "eac3enc_${safe}.wav"
+    echo "    [skip] eac3enc_${safe}.ec3: no FFmpeg oracle for ecpl/tpn (docs/verification.md) - the in-repo decoder is still checked above"
 done
 
 # Wider layouts: a genuine round trip with no tools, plus a tool-enabled

@@ -347,3 +347,46 @@ than a separate system — `ac3::plan::channel_plan_for(id)` is a one-line looku
   stacked together. What it still refuses: enhanced coupling, transient pre-noise processing,
   and (defensively, since this project's own encoder never emits it) the Annex E default
   coupling band structure.
+
+## Enhanced coupling and transient pre-noise processing
+
+The two Annex E tools left refused above are now implemented on both encoder and decoder, closing
+the last gap in the tool table. Enhanced coupling (§E3.5) reuses the existing coupling machinery's
+shape but not its content: 22 sub-bands instead of 18, amplitude/angle/chaos-quantized complex
+coordinates instead of per-band scale factors, and a genuinely new decode path — §3.5.5's four
+steps, built on a new `dft512` (a direct O(N²) complex DFT; correctness-by-transcription first,
+same stance as the MDCT before it) rather than anything the MDCT machinery already had. A real
+§3.3.2 `nrematbd` conformance bug (the enhanced-coupling branch of the rematrix band count formula
+was missing on both sides, and the decoder's `ecplbegf` was a local variable losing its value
+exactly where that formula needed it) and a systematic 2:1 gain error in the FFT reconstruction
+path were both found by testing, not by inspection. The encoder's own coordinate fit is an MVP:
+amplitude-only, `angle`/`chaos` always zero, documented in `FrameConfig::enhanced`'s own comment
+and covered by a dedicated lower-threshold regression test rather than silently accepted. Enhanced
+coupling composes with spectral extension the same way standard coupling always has — the initial
+implementation didn't (a conditionally-emitted `ecplendf` was missing its `spx.in_use` guard),
+closed as an immediate follow-up.
+
+Transient pre-noise processing (§3.7) is architecturally unrelated to coupling: a post-IMDCT PCM
+correction that time-scale-synthesizes over quantization pre-echo ahead of a coded transient,
+reusing the same `TransientDetector` block switching already relies on rather than a second
+independent one. Its consequence is entirely on the decoder's calling convention, not its DSP:
+`transprocloc` can address samples in the *previous* frame, so a correction can't be finalized
+until the *next* frame's fields are known, meaning `Eac3Decoder::decode_substream` holds one frame
+back at a time once a stream turns the tool on and a new `Eac3Decoder::flush()` is required to
+collect the last one at end-of-stream. `decode_access_unit` initially punted on the general case —
+refusing any access unit where a substream used the tool — because the tool is a per-substream
+flag and an access unit needs every substream ready in the same call. Built out properly instead:
+substreams that release early are queued per identity (`std::deque`, not a single slot) until the
+lagging one catches up. That queue mattered for real — the first version used a single-slot cache,
+which a test built specifically to catch it (an independent using the tool lagging behind a
+dependent that never does) proved would silently overwrite a still-unconsumed result and splice
+two different time instants into one corrupted access unit.
+
+Neither tool has any external decode oracle — FFmpeg's own Annex E parser has never read either
+one's syntax, which is weaker than 7.1.4's situation (a syntax it reads but rejects on one field):
+it has no model of the bits at all, so strict-decoding a stream that uses either tool isn't merely
+unavailable, it would reject a correctly-formed stream on syntax it doesn't recognise. Verification
+is self-consistency only: round-trip unit tests in `tests/test_eac3_decoder.cpp`, and
+`tools/quality_race.py`'s CI gate, extended with a `decode_scores_ours` path that decodes through
+this project's own `ac3cli decode` instead of FFmpeg for exactly these two tools, with SNR/LSD
+floors sized off a real measured run rather than guessed.

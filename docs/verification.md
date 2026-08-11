@@ -77,6 +77,7 @@ only the in-repo decoder can read is checked against itself, not against anythin
 | E-AC-3 7.1.4 (two dependents) | no | yes |
 | E-AC-3 with cpl / spx / aht | yes | yes |
 | E-AC-3 7.1.4 with Annex E tools | no | yes |
+| E-AC-3 with enhanced coupling (`ecpl`) or transient pre-noise processing (`tpn`) | no | yes |
 | E-AC-3 `fscod2` half rates (24/22.05/16 kHz) | header only | yes |
 
 **7.1.4 has no external oracle at all.** For that one layout, encoder and decoder are checked
@@ -93,6 +94,16 @@ decoded 32 E-AC-3 access units (3 substreams each) -> out.wav
 
 Fourteen channels are coded and twelve are rendered: per §E3.8.2 the dependent's Ls and Rs
 replace the bed's rather than adding to them.
+
+**Enhanced coupling and transient pre-noise processing have no external oracle at all — not even
+the partial one 7.1.4 gets.** FFmpeg's own Annex E parser was never written to read either
+tool's syntax, so it doesn't reject these streams the way it does a second dependent substream —
+it has no model of the bits at all, which makes `-xerror` unusable as a check here rather than
+merely unavailable. `tools/quality_race.py`'s CI gate (`decode_scores_ours`) scores both through
+this project's own decoder instead, the same self-consistency posture 7.1.4 falls back to, with
+one weaker guarantee than 7.1.4 has: a defect both the encoder and decoder agree on — a
+misreading of the spec shared by both sides rather than a one-sided bug — would not be caught by
+either the CI gate or the round-trip unit tests in `tests/test_eac3_decoder.cpp`.
 
 **`fscod2` audio content has no external decode oracle at all — not even Dolby's own.**
 `ffprobe` walks every syncframe of a reduced-rate stream correctly (frame count, exact byte size,

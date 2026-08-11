@@ -79,6 +79,17 @@ it. Call `Eac3Decoder::flush()` once at end-of-stream to collect whichever frame
 back — a stream that never uses the tool is completely unaffected, every call returns immediately
 as before.
 
+`Eac3Decoder::decode_access_unit` builds on the same convention rather than refusing it: an
+access unit needs every one of its substreams ready in the same call, and the tool is a
+per-substream flag, so one substream turning it on does not have to stall the others. Whichever
+substreams already released this call are queued (per substream identity, oldest first) until the
+lagging one catches up, so nothing already-decoded is discarded or, worse, silently paired with
+the wrong instant in time — a dependent that never uses the tool can keep releasing every call
+while an independent that does falls one frame behind, and each call still assembles the correct
+pairing once every identity has something waiting. `flush()` drains both caches: whichever frame
+`decode_substream` itself is still holding, and whichever substream results are still queued
+waiting for a sibling.
+
 Block switching (§8.2.2/§7.9) decodes on both, and is reported back: `DecodedFrame::blksw` /
 `DecodedSubstream::blksw` gives, per full-bandwidth channel per block, whether that block used the
 short transform — the same tier of diagnostic as `dynrng`, exposing what the encoder decided

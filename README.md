@@ -60,7 +60,10 @@ each with a known MVP limitation worth knowing before enabling it: enhanced coup
 always sends angle/chaos as zero (an amplitude-only fit), which degrades if two channels' content
 shares one narrow coupling band; transient pre-noise processing's decoder buffers one frame at a
 time once a stream turns it on, so a caller must call `Eac3Decoder::flush()` at end-of-stream or
-lose the last held-back frame. AC-3 has no VBR — its frame size indexes a fixed table rather than
+lose the last held-back frame. That buffering is per substream, not per stream — `decode_access_unit`
+assembles a whole access unit correctly even when only some of its substreams turn the tool on,
+queuing whichever ones release early rather than dropping or misaligning them, and `flush()` drains
+both its own assembly cache and each substream's held-back frame. AC-3 has no VBR — its frame size indexes a fixed table rather than
 stating a word count, so it stays CBR; E-AC-3 supports both. Object streams from here are
 spec-correct but won't decode as *objects* in Dolby's own decoder: it gates that on an
 authenticity tag this project doesn't produce, which is a licensing gate, not a conformance

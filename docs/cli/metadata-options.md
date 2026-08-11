@@ -34,14 +34,21 @@ that page's config fields.
 Annex E coding tools, `+`-joined:
 
 ```text
-tools:  Annex E coding tools, '+'-joined — none | cpl | spx | aht | all (cpl:N / spx:N pin a band edge, aht:N the gain mode)
+tools:  Annex E coding tools, '+'-joined — none | cpl | spx | aht | tpn | all
+        (cpl:N / spx:N pin a band edge, aht:N the gain mode, ecpl selects
+        enhanced coupling instead of standard, tpn selects transient
+        pre-noise processing)
         cpl:N / spx:N pin that tool's band edge (e.g. cpl:4+spx:5);
         aht:N pins the GAQ mode — aht:0 is AHT with GAQ switched off;
-        atten:N pins the SPX notch depth, noatten removes it
+        atten:N pins the SPX notch depth, noatten removes it;
+        ecpl only takes effect alongside cpl (e.g. cpl+ecpl)
 ```
 
 Example: `tools=cpl+spx:5+aht:0` turns on coupling (auto band edge), spectral extension pinned
-to band 5, and AHT with GAQ off.
+to band 5, and AHT with GAQ off. `tools=cpl+ecpl+tpn` turns on enhanced coupling (auto band edge)
+and transient pre-noise processing together — `ecpl` and `tpn` are independent tools, not
+alternatives to each other or to `spx`/`aht`, so any combination `parse_tools` accepts is legal
+here. `all` does not currently imply `ecpl` or `tpn`; name them explicitly to get either.
 
 ## The `vbr` token (`eac3-encode` only)
 
