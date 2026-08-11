@@ -127,3 +127,14 @@ target_link_libraries(ac3tests
 
 include(Catch)
 catch_discover_tests(ac3tests)
+
+# ---------------------------------------------------------------------------
+# ac3perf - real-time throughput regression guards, deliberately a SEPARATE
+# binary/target from ac3tests rather than a couple more source files added to
+# it. A throughput assertion is a different kind of check from the rest of
+# the suite: environment-sensitive (see test_performance.cpp's ASan slack),
+# meant to be read as a number as much as a pass/fail, and not something a
+# quick correctness-only run (`ctest -E Performance`, say) should have to
+# carry. Catch2 is already resolved above; this target just reuses it.
+# ---------------------------------------------------------------------------
+add_subdirectory(performance)
