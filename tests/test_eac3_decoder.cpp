@@ -760,6 +760,10 @@ TEST_CASE("E-AC-3 enhanced coupling round-trips are near-transparent",
     auto cpl_bed = bed(192);
     cpl_bed.coupling = true;
     cpl_bed.enhanced = true;
+    auto cpl_spx_bed = bed(192);
+    cpl_spx_bed.coupling = true;
+    cpl_spx_bed.enhanced = true;
+    cpl_spx_bed.spx = true;
 
     const std::vector<double> bed_tones = {1000.0, 800.0, 1200.0, 600.0, 1400.0, 60.0};
     const std::vector<Speaker> bed_speakers = {
@@ -774,6 +778,10 @@ TEST_CASE("E-AC-3 enhanced coupling round-trips are near-transparent",
          .speakers = {{Location::kLeft, 1000.0}, {Location::kRight, 1600.0}}},
         {.name = "5.1 ecpl (auto ecplbegf)",
          .config = {.independent = cpl_bed},
+         .tones = bed_tones,
+         .speakers = bed_speakers},
+        {.name = "5.1 ecpl + spx together",
+         .config = {.independent = cpl_spx_bed},
          .tones = bed_tones,
          .speakers = bed_speakers},
     };

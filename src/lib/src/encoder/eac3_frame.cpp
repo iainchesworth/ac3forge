@@ -746,10 +746,13 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
                 }
             } else {
                 w.put(static_cast<std::uint32_t>(cpl.begf), 4);  // ecplbegf
-                // Enhanced coupling never combines with spx in this encoder
-                // (see where cpl.enhanced is decided), so ecplendf is always
-                // transmitted here.
-                w.put(static_cast<std::uint32_t>(cpl.endf), 4);  // ecplendf
+                // §E3.5's own analogue of §E3.3.1: with spectral extension in
+                // use, ecplendf is derived from spxbegf instead of
+                // transmitted, so the enhanced coupling region ends exactly
+                // where synthesis begins.
+                if (!spx.in_use) {
+                    w.put(static_cast<std::uint32_t>(cpl.endf), 4);  // ecplendf
+                }
                 // Table E2.13's default is unambiguous (unlike standard
                 // coupling's), but this encoder still transmits an explicit
                 // structure - one bit of policy consistency with standard
@@ -1386,34 +1389,41 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     // rejected 1+1 cannot couple however the caller asks.
     cpl.in_use =
         config_.coupling && static_cast<std::uint8_t>(config_.acmod) > 0x1 && !any_switched;
-    // Enhanced coupling does not combine with spectral extension here: the
-    // spx gain/blend measurement further down reconstructs the coupled
-    // channels' low band the way the DECODER will see it, using the
-    // standard-coupling coordinate math directly (coupling::decode_coordinate)
-    // - extending that to enhanced coupling's FFT-based reconstruction as
-    // well is a real but separable follow-up, not required for a correct,
-    // conformant enhanced-coupling stream on its own.
-    cpl.enhanced = cpl.in_use && config_.enhanced && !spx.in_use;
+    cpl.enhanced = cpl.in_use && config_.enhanced;
     if (cpl.enhanced) {
-        // begf/endf are read as ecplbegf/ecplendf CODES here, the same field
-        // reused rather than duplicated - config_.cplbegf's existing
-        // rate-dependent default lands on a real enhanced sub-band for every
-        // value it produces (checked against Table E3.8 directly), so there
-        // is no need for a second heuristic tuned to the different (13-start,
-        // narrower-at-the-bottom) sub-band table.
+        // begf is read as ecplbegf here, the same field reused rather than
+        // duplicated - config_.cplbegf's existing rate-dependent default
+        // lands on a real enhanced sub-band for every value it produces
+        // (checked against Table E3.8 directly), so there is no need for a
+        // second heuristic tuned to the different (13-start, narrower-at-
+        // the-bottom) sub-band table.
         cpl.begf = std::clamp(config_.cplbegf >= 0
                                   ? config_.cplbegf
                                   : default_cplbegf(tool_reference_kbps, nfchans),
                               0, 15);
         cpl.ecpl_begin_subbnd = ecpl_begin_subbnd(cpl.begf);
-        cpl.endf = 15;  // top of the coded spectrum, same convention as standard
-        cpl.ecpl_end_subbnd = ecpl_end_subbnd(cpl.endf);
-        cpl.strtmant = kEcplSubBandTab[static_cast<std::size_t>(cpl.ecpl_begin_subbnd)];
-        cpl.endmant = kEcplSubBandTab[static_cast<std::size_t>(cpl.ecpl_end_subbnd)];
-        std::copy_n(kDefaultEcplBandStructure.begin(), kEcplSubBands,
-                   cpl.ecpl_structure.begin());
-        cpl.ecpl_bands =
-            ecpl_group_bands(cpl.ecpl_begin_subbnd, cpl.ecpl_end_subbnd, cpl.ecpl_structure);
+        if (spx.in_use) {
+            // §E3.5's own analogue of §E3.3.1: ecplendf is not transmitted
+            // when spx is active, and enhanced coupling's region ends
+            // exactly where synthesis begins instead.
+            cpl.ecpl_end_subbnd = ecpl_end_subbnd_from_spx(spx.begf);
+            if (cpl.ecpl_end_subbnd <= cpl.ecpl_begin_subbnd) {
+                cpl.in_use = false;  // synthesis starts below where coupling could
+                cpl.enhanced = false;
+            }
+        } else {
+            cpl.endf = 15;  // top of the coded spectrum, same convention as standard
+            cpl.ecpl_end_subbnd = ecpl_end_subbnd(cpl.endf);
+        }
+        if (cpl.in_use) {
+            cpl.strtmant = kEcplSubBandTab[static_cast<std::size_t>(cpl.ecpl_begin_subbnd)];
+            cpl.endmant = kEcplSubBandTab[static_cast<std::size_t>(cpl.ecpl_end_subbnd)];
+            assert(!spx.in_use || cpl.endmant == spx.startmant);
+            std::copy_n(kDefaultEcplBandStructure.begin(), kEcplSubBands,
+                       cpl.ecpl_structure.begin());
+            cpl.ecpl_bands =
+                ecpl_group_bands(cpl.ecpl_begin_subbnd, cpl.ecpl_end_subbnd, cpl.ecpl_structure);
+        }
     } else if (cpl.in_use) {
         cpl.begf = std::clamp(config_.cplbegf >= 0
                                   ? config_.cplbegf
@@ -2279,8 +2289,11 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         std::vector<double> band_rms(spx_nbnd, 0.0);
         // The decoder's own reconstruction: quantize, dequantize, undo the
         // exponent. bap 0 with dither off is exactly zero, which is the case
-        // that matters.
-        const auto rebuild = [&](int s, int blk, int from, int to) {
+        // that matters. `dst` is `recon` at every call site but one: enhanced
+        // coupling's own copy-source reconstruction below reuses this same
+        // logic for a NEIGHBORING block, which must not disturb `recon`
+        // (this block's own reconstruction) while doing so.
+        const auto rebuild = [&](int s, int blk, int from, int to, std::span<double> dst) {
             const auto& plan = payload.chans[static_cast<std::size_t>(s)];
             if (plan.aht) {
                 // The AHT path already holds its reconstructed coefficients,
@@ -2289,7 +2302,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                 for (int bin = from; bin < to; ++bin) {
                     std::array<double, kBlocksPerFrameSize> blocks{};
                     aht_inverse(plan.aht_coeffs[static_cast<std::size_t>(bin)], blocks);
-                    recon[static_cast<std::size_t>(bin)] =
+                    dst[static_cast<std::size_t>(bin)] =
                         std::ldexp(blocks[static_cast<std::size_t>(blk)],
                                    -plan.decoded[static_cast<std::size_t>(bin)]);
                 }
@@ -2303,13 +2316,13 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                     // zero here. This is the case that makes the whole
                     // reconstruction worth doing rather than reusing the
                     // encoder's own coefficients.
-                    recon[static_cast<std::size_t>(bin)] = 0.0;
+                    dst[static_cast<std::size_t>(bin)] = 0.0;
                     continue;
                 }
                 const int exp = plan.decoded[static_cast<std::size_t>(bin)];
                 const auto mantissa = static_cast<std::int32_t>(
                     static_cast<std::int64_t>(block[static_cast<std::size_t>(bin)]) << exp);
-                recon[static_cast<std::size_t>(bin)] =
+                dst[static_cast<std::size_t>(bin)] =
                     std::ldexp(dequantize_mantissa(quantize_mantissa(mantissa, bap), bap),
                                -exp);
             }
@@ -2333,12 +2346,12 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                     std::span{coeffs_at(ch, blk)}
                         .subspan(static_cast<std::size_t>(spx.startmant),
                                  static_cast<std::size_t>(spx.endmant - spx.startmant)));
-                rebuild(ch, blk, 0, payload.chans[static_cast<std::size_t>(ch)].endmant);
+                rebuild(ch, blk, 0, payload.chans[static_cast<std::size_t>(ch)].endmant, recon);
                 // With coupling below the extension region, part of the copy
                 // source is not this channel's own coded data at all - it is
-                // the shared channel scaled by this channel's coordinate.
-                if (cpl.in_use) {
-                    rebuild(cpl_stream, blk, cpl.strtmant, cpl.endmant);
+                // reconstructed from the shared coupling channel.
+                if (cpl.in_use && !cpl.enhanced) {
+                    rebuild(cpl_stream, blk, cpl.strtmant, cpl.endmant, recon);
                     for (int bnd = 0; bnd < cpl.bands.count; ++bnd) {
                         const double coord = coupling::decode_coordinate(
                             cpl.coords[at * nbnd + static_cast<std::size_t>(bnd)],
@@ -2349,6 +2362,59 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                             recon[static_cast<std::size_t>(bin)] *= coord * 8.0;
                         }
                     }
+                } else if (cpl.in_use) {
+                    // §3.5.5: the same neighbor-aware FFT reconstruction the
+                    // decoder runs, applied to the quantized (not the ideal
+                    // pre-quantization) coupling channel content - this is
+                    // the copy source spx measures, so it has to be what the
+                    // decoder will actually hold. A neighbor is zero exactly
+                    // where the decoder's own reconstruction treats it as
+                    // zero: outside this frame, or a block that did not
+                    // itself couple.
+                    static constexpr std::array<double, 256> kZero{};
+                    const auto neighbor = [&](int b) {
+                        std::array<double, 256> dst{};
+                        if (b < 0 || b >= kBlocksPerFrame) {
+                            return dst;
+                        }
+                        rebuild(cpl_stream, b, cpl.strtmant, cpl.endmant, dst);
+                        return dst;
+                    };
+                    const auto prev = blk > 0 ? neighbor(blk - 1) : kZero;
+                    const auto curr = neighbor(blk);
+                    const auto next = blk + 1 < kBlocksPerFrame ? neighbor(blk + 1) : kZero;
+                    std::array<double, 256> zr{};
+                    std::array<double, 256> zi{};
+                    ecpl_channel_spectrum(prev, curr, next, zr, zi);
+
+                    const int bins = cpl.endmant - cpl.strtmant;
+                    std::vector<double> amp_bin(static_cast<std::size_t>(bins));
+                    std::vector<double> angle_bin(static_cast<std::size_t>(bins), 0.0);
+                    const auto nbnd_e = static_cast<std::size_t>(std::max(cpl.ecpl_bands.count, 1));
+                    const auto ecpl_at =
+                        (static_cast<std::size_t>(blk) * static_cast<std::size_t>(nfchans) +
+                        static_cast<std::size_t>(ch)) *
+                       nbnd_e;
+                    std::size_t cursor = 0;
+                    for (int bnd = 0; bnd < cpl.ecpl_bands.count; ++bnd) {
+                        const double amp =
+                            decode_ecplamp(cpl.ecplamp[ecpl_at + static_cast<std::size_t>(bnd)]);
+                        const int width = cpl.ecpl_bands.size[static_cast<std::size_t>(bnd)];
+                        for (int i = 0; i < width; ++i) {
+                            amp_bin[cursor++] = amp;
+                        }
+                    }
+                    // ecpl_channel_coefficients writes a fixed-256 span (the
+                    // shape every other caller of it, decoder included,
+                    // already has natively); `recon` is sized to spx.startmant
+                    // instead, so the result is copied back into it rather
+                    // than passed directly.
+                    std::array<double, 256> recon_scratch{};
+                    ecpl_channel_coefficients(zr, zi, amp_bin, angle_bin, cpl.strtmant,
+                                              cpl.endmant, recon_scratch);
+                    std::copy(recon_scratch.begin() + cpl.strtmant,
+                             recon_scratch.begin() + cpl.endmant,
+                             recon.begin() + cpl.strtmant);
                 }
 
                 // §E3.6.4.1: copy bands up from the source region, wrapping
