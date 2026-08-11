@@ -1,0 +1,5 @@
+# Scratch files a tst_*.qml test writes (e.g. an encodeTo() destination) -
+# the directory itself is tracked so it always exists to write into; its
+# contents never are.
+*
+!.gitignore

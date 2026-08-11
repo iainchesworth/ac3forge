@@ -12,6 +12,7 @@
 
 #include "ac3/core/eac3_tables.hpp"
 #include "ac3/core/tables.hpp"
+#include "ac3/export.hpp"
 
 // The in-repo AC-3 / E-AC-3 decoder — the validation pyramid's strongest
 // correctness anchor (fully normative, shares tables/bit-allocation/exponents/
@@ -57,7 +58,7 @@ enum class DecodeError : std::uint8_t {
     kInvalidStream,
 };
 
-[[nodiscard]] std::string_view describe(DecodeError error);
+[[nodiscard]] AC3FORGE_EXPORT std::string_view describe(DecodeError error);
 
 struct DecoderConfig {
     // §7.7.1's "Partial Compression": the dynrng word may be scaled so that a
@@ -102,8 +103,8 @@ struct DecodedFrame {
     std::vector<std::vector<float>> channels;
 };
 
-class FrameDecoder {
-public:
+class AC3FORGE_EXPORT FrameDecoder {
+   public:
     FrameDecoder() = default;
     explicit FrameDecoder(const DecoderConfig& config) : config_(config) {}
 
@@ -111,7 +112,7 @@ public:
     [[nodiscard]] std::expected<DecodedFrame, DecodeError> decode_frame(
         std::span<const std::byte> frame);
 
-private:
+   private:
     DecoderConfig config_{};
     std::array<std::array<double, 256>, 6> delay_{};  // overlap-add state
 };
@@ -169,8 +170,8 @@ struct DecodedAccessUnit {
     std::vector<std::vector<float>> channels;  // parallel to layout, except dual mono
 };
 
-class Eac3Decoder {
-public:
+class AC3FORGE_EXPORT Eac3Decoder {
+   public:
     // Decodes one syncframe. Overlap-add state is kept per substream identity,
     // so the substreams of successive access units stay independent of each
     // other; a caller stepping through syncframes by hand gets the same audio
@@ -183,7 +184,7 @@ public:
     [[nodiscard]] std::expected<DecodedAccessUnit, DecodeError> decode_access_unit(
         std::span<const std::byte> unit);
 
-private:
+   private:
     // Keyed by strmtyp and substreamid together: a dependent's id lives in its
     // own numbering space (§E2.3.1.2), so id alone does not identify a
     // substream. At most six coded channels each (3/2 plus LFE).
@@ -192,17 +193,18 @@ private:
 
 // Split a raw elementary stream into syncframes by sync word and declared
 // size. Handles both generations; bsid at bit 40 decides which.
-[[nodiscard]] std::expected<std::vector<std::span<const std::byte>>, DecodeError> split_frames(
-    std::span<const std::byte> stream);
+[[nodiscard]] AC3FORGE_EXPORT std::expected<std::vector<std::span<const std::byte>>, DecodeError>
+split_frames(std::span<const std::byte> stream);
 
 // Group those syncframes into access units. A new one begins at each
 // independent substream, and the spans returned are the concatenations the
 // bitstream itself defines.
-[[nodiscard]] std::expected<std::vector<std::span<const std::byte>>, DecodeError>
+[[nodiscard]] AC3FORGE_EXPORT std::expected<std::vector<std::span<const std::byte>>, DecodeError>
 split_access_units(std::span<const std::byte> stream);
 
 // bsid at bit 40, without committing to either layout. Fails only if the span
 // is too short to hold a header.
-[[nodiscard]] std::expected<int, DecodeError> stream_bsid(std::span<const std::byte> frame);
+[[nodiscard]] AC3FORGE_EXPORT std::expected<int, DecodeError> stream_bsid(
+    std::span<const std::byte> frame);
 
 }  // namespace ac3

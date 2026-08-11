@@ -5,6 +5,7 @@
 #include <span>
 #include <vector>
 
+#include "ac3/export.hpp"
 #include "ac3/oba/joc_tables.hpp"
 
 // Joint Object Coding - ETSI TS 103 420 clause 6. The tool that gets more
@@ -77,10 +78,10 @@ struct FrameParameters {
 
 // §6.6.4's quantizer, and its inverse. The step is 820/(4096*(1+fine)) and the
 // origin sits at nquant/2, so code nquant/2 is exactly zero gain.
-[[nodiscard]] int quantize(double coefficient, bool fine_quant);
-[[nodiscard]] double dequantize(int code, bool fine_quant);
+[[nodiscard]] AC3FORGE_EXPORT int quantize(double coefficient, bool fine_quant);
+[[nodiscard]] AC3FORGE_EXPORT double dequantize(int code, bool fine_quant);
 
 // One joc() payload (§6.2.1), padded to whole bytes for emdf_payload_size.
-[[nodiscard]] std::vector<std::byte> build_payload(const FrameParameters& params);
+[[nodiscard]] AC3FORGE_EXPORT std::vector<std::byte> build_payload(const FrameParameters& params);
 
 }  // namespace ac3::joc

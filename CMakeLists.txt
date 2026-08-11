@@ -77,6 +77,16 @@ option(AC3FORGE_BUILD_FUZZERS "Build libFuzzer harnesses (Clang only; see fuzz/)
 option(AC3FORGE_QUARANTINE_SIGNER
     "Build the RE-derived (non-clean-room, local-only) EMDF Atmos protection signer" OFF)
 
+# enable_testing() has to run before ANY add_subdirectory() that might contain
+# an add_test() call, not merely before tests/ itself - CTest silently drops
+# an add_test() registered from a directory processed earlier in the same
+# configure pass (confirmed the hard way: src/gui/tests/'s ac3gui_qml_tests
+# was invisible to `ctest -N` until this moved here). Calling it unconditionally
+# is harmless when AC3FORGE_BUILD_TESTS is OFF - nothing calls add_test() then.
+if(AC3FORGE_BUILD_TESTS)
+    enable_testing()
+endif()
+
 # ---------------------------------------------------------------------------
 # Targets
 # ---------------------------------------------------------------------------
@@ -106,6 +116,13 @@ endif()
 # depends on nothing of ac3::forge and knows nothing about AC-3.
 add_subdirectory(src/matroska)
 
+# install()/find_package(ac3forge) support for ac3::forge and
+# matroska::matroska - after both add_subdirectory() calls above (needs
+# their targets to exist), before include(Packaging) (CPack's library
+# component packages exactly what gets install()'d here). Deliberately not
+# ac3::audio - see cmake/InstallLibrary.cmake's own header comment.
+include(InstallLibrary)
+
 if(AC3FORGE_BUILD_CLI)
     add_subdirectory(src/cli)
 endif()
@@ -115,7 +132,6 @@ if(AC3FORGE_BUILD_GUI)
 endif()
 
 if(AC3FORGE_BUILD_TESTS)
-    enable_testing()
     add_subdirectory(tests)
 endif()
 

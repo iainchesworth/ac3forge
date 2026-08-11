@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <span>
 
+#include "ac3/export.hpp"
+
 // The Annex E coding tools' shared machinery: the sub-band groupings that
 // coupling and spectral extension both express their coordinates over.
 //
@@ -24,9 +26,9 @@ inline constexpr int kMaxSubBands = 22;
 inline constexpr std::size_t kBlocksPerFrameSize = 6;
 
 struct BandLayout {
-    int count = 0;                                // bands
-    std::array<int, kMaxSubBands> start{};        // first bin, absolute
-    std::array<int, kMaxSubBands> size{};         // bins in the band
+    int count = 0;                          // bands
+    std::array<int, kMaxSubBands> start{};  // first bin, absolute
+    std::array<int, kMaxSubBands> size{};   // bins in the band
 };
 
 // Group `subbands` consecutive sub-bands of `bins_per_subband` bins each,
@@ -35,8 +37,9 @@ struct BandLayout {
 // always opens a band (§E2.3.3.8: "the first band is assumed to be '0' and
 // not sent"). `structure` is indexed from the FIRST sub-band of the region,
 // so a caller whose default table is indexed absolutely must slice it.
-[[nodiscard]] BandLayout group_bands(int first_bin, int subbands, int bins_per_subband,
-                                     std::span<const bool> structure);
+[[nodiscard]] AC3FORGE_EXPORT BandLayout group_bands(int first_bin, int subbands,
+                                                     int bins_per_subband,
+                                                     std::span<const bool> structure);
 
 // Table E2.12, the structure a decoder falls back on when cplbndstrce is 0 in
 // the first coupled block. It is used here as the SHAPE worth asking for - it
@@ -120,7 +123,7 @@ inline constexpr int kSpxAttenCodes = 32;
 // Table E3.14 is 2^(-(spxattencod + 1) * (index + 1) / 15) throughout - all 96
 // of its entries agree with this to within the precision it prints them at, so
 // there is nothing to transcribe and nothing to get wrong transcribing.
-[[nodiscard]] double spx_attenuation(int spxattencod, int index);
+[[nodiscard]] AC3FORGE_EXPORT double spx_attenuation(int spxattencod, int index);
 
 // Apply the notch to a synthesized region, in place. `synth` covers the
 // extension region from `startmant` upwards; `bands` and `wrapflag` say where
@@ -133,8 +136,9 @@ inline constexpr int kSpxAttenCodes = 32;
 // same two taps land on the end of the previous band, which very much is
 // ours, and dropping them would leave the encoder's idea of that band's
 // energy too high.
-void spx_apply_notch(std::span<double> synth, int startmant, const BandLayout& bands,
-                     std::span<const bool> wrapflag, int spxattencod);
+AC3FORGE_EXPORT void spx_apply_notch(std::span<double> synth, int startmant,
+                                     const BandLayout& bands, std::span<const bool> wrapflag,
+                                     int spxattencod);
 
 // §E3.6.4.2.1: how much of a band's synthesized content is pseudo-random
 // noise versus the translated low-band copy, encode and decode alike -
@@ -142,7 +146,8 @@ void spx_apply_notch(std::span<double> synth, int startmant, const BandLayout& b
 // band in the coefficient domain; `endmant` is the extension region's
 // exclusive end (spx_band_start(spx_end_subbnd)); `blend` is the transmitted
 // spxblnd (0..31).
-[[nodiscard]] double spx_noise_ratio(int band_start, int band_size, int endmant, int blend);
+[[nodiscard]] AC3FORGE_EXPORT double spx_noise_ratio(int band_start, int band_size, int endmant,
+                                                     int blend);
 
 // §E3.6.4.2.4's noise(): "a pseudo-random number generated from a zero-mean,
 // unity-variance noise generator." The standard deliberately leaves the exact
@@ -152,7 +157,7 @@ void spx_apply_notch(std::span<double> synth, int startmant, const BandLayout& b
 // mapped onto a symmetric ±sqrt(3) uniform distribution (variance a²/3, so
 // a = sqrt(3) gives variance 1 with zero mean by symmetry). Deterministic:
 // the same stream always decodes to the same PCM.
-struct SpxNoise {
+struct AC3FORGE_EXPORT SpxNoise {
     std::uint32_t state = 0x9E3779B9U;  // never zero, or xorshift sticks at 0
     [[nodiscard]] double next();
 };
@@ -171,32 +176,32 @@ struct SpxNoise {
 // is the same sum scaled by 1/6 (and a further 1/sqrt(2) at j = 0).
 // `blocks` are the six normalised MDCT coefficients of one bin; `out` takes
 // the six AHT coefficients.
-void aht_forward(std::span<const double, kBlocksPerFrameSize> blocks,
-                 std::span<double, kBlocksPerFrameSize> out);
+AC3FORGE_EXPORT void aht_forward(std::span<const double, kBlocksPerFrameSize> blocks,
+                                 std::span<double, kBlocksPerFrameSize> out);
 
 // The decoder's direction, so the encoder can see what it will reconstruct.
-void aht_inverse(std::span<const double, kBlocksPerFrameSize> coefficients,
-                 std::span<double, kBlocksPerFrameSize> out);
+AC3FORGE_EXPORT void aht_inverse(std::span<const double, kBlocksPerFrameSize> coefficients,
+                                 std::span<double, kBlocksPerFrameSize> out);
 
 // Table E3.2: mantissa bits per coefficient for the scalar hebap range 8-19.
 // Outside it the answer is not a per-coefficient width at all - hebap 0 codes
 // nothing and 1-7 code all six coefficients as one VQ index - so those return
 // zero and the caller must handle them.
 [[nodiscard]] constexpr int aht_mantissa_bits(int hebap) {
-    constexpr std::array<int, 20> kBits = {0, 0, 0, 0, 0, 0, 0, 0, 3,  4,
+    constexpr std::array<int, 20> kBits = {0, 0, 0, 0, 0, 0,  0,  0,  3,  4,
                                            5, 6, 7, 8, 9, 10, 11, 12, 14, 16};
     return hebap >= 0 && hebap < 20 ? kBits[static_cast<std::size_t>(hebap)] : 0;
 }
 
 // Bits one bin costs for the WHOLE frame under AHT: one VQ index in the
 // vector range, six scalar mantissas above it.
-[[nodiscard]] int aht_bin_bits(int hebap);
+[[nodiscard]] AC3FORGE_EXPORT int aht_bin_bits(int hebap);
 
 // Nearest codebook entry for a bin's six coefficients, by Euclidean distance
 // (§E3.4.4.1). hebap must be in 1..7. Writes the reconstruction the decoder
 // will use back into `values`.
-[[nodiscard]] int aht_vector_quantize(std::span<double, kBlocksPerFrameSize> values,
-                                      int hebap);
+[[nodiscard]] AC3FORGE_EXPORT int aht_vector_quantize(std::span<double, kBlocksPerFrameSize> values,
+                                                      int hebap);
 
 // --- gain-adaptive quantization (§E3.4.4.2) --------------------------------
 // A variable-length layer over the scalar range. The encoder may amplify a
@@ -213,11 +218,13 @@ void aht_inverse(std::span<const double, kBlocksPerFrameSize> coefficients,
 
 // Table E3.3: which gains a mode permits. Mode 0 permits only unity, which is
 // GAQ switched off.
-[[nodiscard]] std::span<const int> aht_gaq_gains(int gaqmod);
+[[nodiscard]] AC3FORGE_EXPORT std::span<const int> aht_gaq_gains(int gaqmod);
 
 // §E3.4.2: at and above this hebap a bin carries no gain word and falls back
 // to the unity-gain quantizer, whatever the mode.
-[[nodiscard]] constexpr int aht_gaq_endbap(int gaqmod) { return gaqmod < 2 ? 12 : 17; }
+[[nodiscard]] constexpr int aht_gaq_endbap(int gaqmod) {
+    return gaqmod < 2 ? 12 : 17;
+}
 
 // Whether a bin carries a gain word. Note the standard's gaqbin is tri-state:
 // this is the "1" case, and hebap >= endbap is the "-1" case, which differs
@@ -237,20 +244,20 @@ struct AhtMantissaCode {
     double recon = 0.0;
 };
 
-[[nodiscard]] AhtMantissaCode aht_quantize_mantissa(double value, int mantissa_bits,
-                                                    int gain);
+[[nodiscard]] AC3FORGE_EXPORT AhtMantissaCode aht_quantize_mantissa(double value, int mantissa_bits,
+                                                                    int gain);
 
 // What one bin's six mantissas cost at a given gain, tags and escapes
 // included. This is why an AHT frame's size cannot be known without
 // quantizing it.
-[[nodiscard]] int aht_bin_gaq_bits(std::span<const double, kBlocksPerFrameSize> values,
-                                   int mantissa_bits, int gain);
+[[nodiscard]] AC3FORGE_EXPORT int aht_bin_gaq_bits(
+    std::span<const double, kBlocksPerFrameSize> values, int mantissa_bits, int gain);
 
 // The cheapest gain a mode allows for this bin. Distortion barely moves
 // between gains - each is about 2^m - 1 reconstruction points either way, just
 // spaced differently - so bits are the whole objective.
-[[nodiscard]] int aht_choose_gain(std::span<const double, kBlocksPerFrameSize> values,
-                                  int mantissa_bits, int gaqmod);
+[[nodiscard]] AC3FORGE_EXPORT int aht_choose_gain(
+    std::span<const double, kBlocksPerFrameSize> values, int mantissa_bits, int gaqmod);
 
 // §E3.4.2: gain words transmitted for `active` gain-carrying bins. Modes 1
 // and 2 send one bit each; mode 3 packs three bins' three-state gains into a
@@ -262,7 +269,9 @@ struct AhtMantissaCode {
     return gaqmod == 3 ? (active + 2) / 3 : active;
 }
 
-[[nodiscard]] constexpr int aht_gaq_gain_bits(int gaqmod) { return gaqmod == 3 ? 5 : 1; }
+[[nodiscard]] constexpr int aht_gaq_gain_bits(int gaqmod) {
+    return gaqmod == 3 ? 5 : 1;
+}
 
 // Table E3.4: the three-state gain as it is packed, 1 -> 0, 2 -> 1, 4 -> 2.
 [[nodiscard]] constexpr int aht_gaq_mapped(int gain) {
@@ -285,7 +294,8 @@ struct AhtMantissaCode {
 // small/large bit counts this derives internally are the exact ones
 // aht_quantize_mantissa derives when producing them, so the two stay in
 // lockstep by construction rather than by keeping two tables in sync.
-[[nodiscard]] double aht_dequantize_mantissa(std::uint32_t code, std::uint32_t escape,
-                                             bool has_escape, int mantissa_bits, int gain);
+[[nodiscard]] AC3FORGE_EXPORT double aht_dequantize_mantissa(std::uint32_t code,
+                                                             std::uint32_t escape, bool has_escape,
+                                                             int mantissa_bits, int gain);
 
 }  // namespace ac3::eac3

@@ -358,8 +358,14 @@ found there and CI now builds and smoke-tests it on both Linux legs — see
 `cmake --build --preset build-windows-msvc --target pack-ac3forge` runs the same thing from
 inside an IDE's target list instead of the command line.
 
-Only `ac3cli` and `ac3gui` are installed/packaged; `ac3::forge` and `matroska::matroska` are
-link-only libraries, not a public API this project ships standalone.
+`ac3cli`/`ac3gui` and `ac3::forge`/`matroska::matroska` are both installed and packaged, as two
+independent CPack components (`runtime` and `library`) - a second `ac3forge-dev-*` archive
+alongside the usual end-user one, for a third party consuming the codec via
+`find_package(ac3forge)` rather than running it as a program. See
+[Using ac3::forge](library/index.md) for the CMake side and
+[docs/releasing.md](releasing.md#what-gets-published) for exactly what ships where.
+`ac3::audio` (live capture/monitor/passthrough, `src/audio/`) stays link-only and unpackaged -
+a CLI/GUI implementation detail, not part of either component.
 
 CI packages the `windows-msvc` leg on every push and uploads the result as a workflow
 artifact (`.github/workflows/_build.yml`), so the packaging path is exercised continuously
