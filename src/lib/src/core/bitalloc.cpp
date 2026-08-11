@@ -10,6 +10,7 @@
 
 #include "ac3/core/aht_tables.hpp"
 #include "ac3/core/bitalloc_tables.hpp"
+#include "ac3/internal/profiling.hpp"
 
 namespace ac3 {
 
@@ -110,6 +111,7 @@ int slow_gain(int sgaincod) {
 void compute_bit_allocation(std::span<const std::uint8_t> exps, SampleRate sample_rate,
                             const BitAllocCodes& codes, int csnroffst, int fsnroffst,
                             std::span<std::uint8_t> bap, const BitAllocRegion& region) {
+    AC3_ZONE_SCOPED_N("compute_bit_allocation");
     assert(exps.size() == bap.size());
     const int end = static_cast<int>(exps.size());
     assert(end >= 1 && end <= 253);

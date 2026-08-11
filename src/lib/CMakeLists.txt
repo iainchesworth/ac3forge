@@ -115,4 +115,4 @@ target_include_directories(ac3forge
 
 target_compile_features(ac3forge PUBLIC cxx_std_23)
 
-target_link_libraries(ac3forge PRIVATE ac3::warnings ac3::coverage)
+target_link_libraries(ac3forge PRIVATE ac3::warnings ac3::coverage ac3::tracy)

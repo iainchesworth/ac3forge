@@ -13,6 +13,7 @@
 #include "ac3/core/window.hpp"
 #include "ac3/encoder/coupling.hpp"
 #include "ac3/encoder/eac3_tools.hpp"
+#include "ac3/internal/profiling.hpp"
 
 namespace ac3::eac3 {
 
@@ -1124,6 +1125,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
 std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     std::span<const std::span<const float>> channels, const FrameMetadata& metadata,
     AuxPayload aux) {
+    AC3_ZONE_SCOPED_N("FrameEncoder::encode_frame");
     if (const auto ok = validate(config_); !ok) {
         return std::unexpected(ok.error());
     }
@@ -1295,6 +1297,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     };
 
     // --- 2. MDCT ------------------------------------------------------------
+    AC3_ZONE_BEGIN(zone_mdct, "step2_mdct");
     std::vector<std::array<double, 256>> coeffs(
         static_cast<std::size_t>(streams) * kBlocksPerFrame);
     const auto coeffs_at = [&](int s, int blk) -> std::array<double, 256>& {
@@ -1338,6 +1341,8 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                 static_cast<double>(pcm[static_cast<std::size_t>(1280 + n)]);
         }
     }
+
+    AC3_ZONE_END(zone_mdct);
 
     // --- 3. Coupling: the shared channel and its coordinates ---------------
     const auto nbnd = static_cast<std::size_t>(std::max(cpl.bands.count, 1));
@@ -1467,6 +1472,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     }
 
     // --- 5. Fixed point and one frame-constant exponent set per stream -----
+    AC3_ZONE_BEGIN(zone_exponents, "step5_exponents");
     // Table E2.10 code 0 sends D15 in block 0 and reuses it for the other
     // five, so a bin's exponent has to accommodate its LOUDEST block. The
     // smallest exponent across the frame is that bin's worst case; anything
@@ -1611,6 +1617,8 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         }
     }
 
+    AC3_ZONE_END(zone_exponents);
+
     // --- 6. Coupling leak seeds ---------------------------------------------
     // The coupling channel's allocation starts above the low-frequency region
     // entirely, so instead of running lowcomp it continues the masking decay
@@ -1670,6 +1678,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     std::vector<std::span<const std::uint8_t>> bap_views;
     bap_views.reserve(static_cast<std::size_t>(streams));
     const auto bits_at = [&](int composite) {
+        AC3_ZONE_SCOPED_N("bits_at");
         bap_views.clear();
         std::uint32_t aht_bits = 0;
         for (int s = 0; s < streams; ++s) {
@@ -1707,6 +1716,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     // control; VBR reuses it only as a fallback, for when a quality target
     // would need more words than an explicit max_kbps bound allows.
     const auto search = [&](std::uint32_t budget) {
+        AC3_ZONE_SCOPED_N("search");
         int lo = 0;
         int hi = 1023;
         while (lo < hi) {
@@ -1879,6 +1889,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     payload.fsnroffst = lo & 15;
 
     // --- 8. Mantissa tokens per block --------------------------------------
+    AC3_ZONE_BEGIN(zone_mantissas, "step8_mantissa_tokens");
     // §E2.2.4 ordering: each fbw channel's mantissas, with the coupling
     // channel's inserted right after the FIRST coupled channel, then the LFE.
     std::size_t token_bits = 0;
@@ -1984,6 +1995,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     // block after the first lands at the wrong bit offset.
     assert(token_bits == mantissa_bits);
     (void)token_bits;
+    AC3_ZONE_END(zone_mantissas);
 
     // --- 9. Spectral extension coordinates ----------------------------------
     // Last, because the gains have to be measured against what the DECODER
