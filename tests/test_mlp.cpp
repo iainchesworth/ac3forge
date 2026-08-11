@@ -3,12 +3,15 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <random>
 #include <vector>
 
 #include "ac3/mlp/crc.hpp"
+#include "ac3/mlp/matrix.hpp"
 #include "ac3/mlp/mlp_tables.hpp"
 #include "ac3/mlp/restart_header.hpp"
+#include "ac3/mlp/rice.hpp"
 #include "ac3/mlp/sync.hpp"
 
 // Covers only what's fully specified and built so far: mlp_sync's
@@ -408,4 +411,146 @@ TEST_CASE("build_restart_header composes into an ongoing writer without extra pa
     ac3::mlp::RestartHeader parsed_first{};
     REQUIRE(ac3::mlp::parse_restart_header(bytes, 0, parsed_first));
     CHECK(parsed_first.channel_assignment == first.channel_assignment);
+}
+
+// --- rice --------------------------------------------------------------
+
+TEST_CASE("rice::zigzag round trip across the full int32_t range", "[mlp]") {
+    for (const std::int32_t value :
+         {0, 1, -1, 2, -2, 1000, -1000, std::numeric_limits<std::int32_t>::max(),
+          std::numeric_limits<std::int32_t>::min(), std::numeric_limits<std::int32_t>::min() + 1}) {
+        CAPTURE(value);
+        CHECK(ac3::mlp::rice::zigzag_decode(ac3::mlp::rice::zigzag_encode(value)) == value);
+    }
+
+    std::mt19937 rng(0x7196);
+    std::uniform_int_distribution<std::int32_t> dist(std::numeric_limits<std::int32_t>::min(),
+                                                      std::numeric_limits<std::int32_t>::max());
+    for (int trial = 0; trial < 500; ++trial) {
+        const auto value = dist(rng);
+        CHECK(ac3::mlp::rice::zigzag_decode(ac3::mlp::rice::zigzag_encode(value)) == value);
+    }
+}
+
+TEST_CASE("rice::zigzag maps small magnitudes to small non-negative codes", "[mlp]") {
+    // 0,-1,1,-2,2,... -> 0,1,2,3,4,... - the property that makes zigzag the
+    // right map for a two-sided Laplacian source ahead of a code built for
+    // magnitudes.
+    CHECK(ac3::mlp::rice::zigzag_encode(0) == 0);
+    CHECK(ac3::mlp::rice::zigzag_encode(-1) == 1);
+    CHECK(ac3::mlp::rice::zigzag_encode(1) == 2);
+    CHECK(ac3::mlp::rice::zigzag_encode(-2) == 3);
+    CHECK(ac3::mlp::rice::zigzag_encode(2) == 4);
+}
+
+TEST_CASE("rice::encode/decode round trip for every k, many values", "[mlp]") {
+    std::mt19937 rng(0x31EB);
+    std::uniform_int_distribution<std::uint32_t> value_dist(0, 1u << 20);
+
+    for (int k = 0; k <= 16; ++k) {
+        CAPTURE(k);
+        for (int trial = 0; trial < 50; ++trial) {
+            const auto value = value_dist(rng);
+            ac3::BitWriter w;
+            ac3::mlp::rice::encode(w, value, k);
+            CHECK(static_cast<int>(w.bit_count()) == ac3::mlp::rice::encoded_length(value, k));
+
+            const auto bytes = w.take();
+            ac3::BitReader r(bytes);
+            CHECK(ac3::mlp::rice::decode(r, k) == value);
+        }
+    }
+}
+
+TEST_CASE("rice::encode: k=0 degenerates to plain unary", "[mlp]") {
+    for (const std::uint32_t value : {0u, 1u, 5u, 20u}) {
+        ac3::BitWriter w;
+        ac3::mlp::rice::encode(w, value, 0);
+        CHECK(w.bit_count() == value + 1);
+    }
+}
+
+TEST_CASE("rice::encoded_length grows with k for small values, shrinks for large", "[mlp]") {
+    // A large k wastes bits on a small value (the k-bit remainder field
+    // dominates); a small k wastes bits on a large value (the unary
+    // quotient dominates) - this is *why* MLP picks k adaptively per block.
+    CHECK(ac3::mlp::rice::encoded_length(0, 8) > ac3::mlp::rice::encoded_length(0, 0));
+    CHECK(ac3::mlp::rice::encoded_length(1u << 20, 0) > ac3::mlp::rice::encoded_length(1u << 20, 8));
+}
+
+// --- matrix --------------------------------------------------------------
+
+TEST_CASE("matrix::quantize rounds half away from zero", "[mlp]") {
+    CHECK(ac3::mlp::matrix::quantize(0, 4) == 0);
+    CHECK(ac3::mlp::matrix::quantize(8, 4) == 1);    // exact
+    CHECK(ac3::mlp::matrix::quantize(7, 4) == 0);    // rounds down (< half)
+    CHECK(ac3::mlp::matrix::quantize(-7, 4) == 0);
+    CHECK(ac3::mlp::matrix::quantize(9, 4) == 1);
+    CHECK(ac3::mlp::matrix::quantize(-9, 4) == -1);
+    CHECK(ac3::mlp::matrix::quantize(100, 0) == 100);  // shift 0 is a no-op
+}
+
+TEST_CASE("matrix: sum/difference rotation round trips", "[mlp]") {
+    // JAES 2004 Sec. 4.1's own example: "the tendency of the matrix process
+    // to rotate a stereo mix from left/right to sum/difference."
+    // channel 0 <- L + R (sum), channel 1 stays R; a second step recovers L
+    // = sum - R is implicit in the decode direction, this just exercises
+    // one lifting step directly.
+    const std::array<ac3::mlp::matrix::Step, 1> steps{
+        {0, 0, {{1, 1}}}  // target=0 (L), shift=0, add 1*R
+    };
+
+    std::array<std::int64_t, 2> samples{100, 40};  // {L, R}
+    ac3::mlp::matrix::encode_cascade(steps, samples);
+    CHECK(samples[0] == 140);  // L' = L + R
+    CHECK(samples[1] == 40);   // R unchanged
+
+    ac3::mlp::matrix::decode_cascade(steps, samples);
+    CHECK(samples[0] == 100);
+    CHECK(samples[1] == 40);
+}
+
+TEST_CASE("matrix: random cascades round trip exactly", "[mlp]") {
+    std::mt19937 rng(0x6D6C70);
+    std::uniform_int_distribution<int> channel_count_dist(2, 6);
+    std::uniform_int_distribution<std::int32_t> numerator_dist(-64, 64);
+    std::uniform_int_distribution<int> shift_dist(0, 6);
+    std::uniform_int_distribution<std::int64_t> sample_dist(-(1 << 20), 1 << 20);
+    std::uniform_int_distribution<int> step_count_dist(1, 8);
+
+    for (int trial = 0; trial < 200; ++trial) {
+        const int channels = channel_count_dist(rng);
+        const int step_count = step_count_dist(rng);
+
+        std::vector<ac3::mlp::matrix::Step> steps;
+        for (int s = 0; s < step_count; ++s) {
+            ac3::mlp::matrix::Step step;
+            step.target = s % channels;
+            step.shift = shift_dist(rng);
+            for (int ch = 0; ch < channels; ++ch) {
+                if (ch != step.target) {
+                    step.terms.emplace_back(ch, numerator_dist(rng));
+                }
+            }
+            steps.push_back(std::move(step));
+        }
+
+        std::vector<std::int64_t> original(static_cast<std::size_t>(channels));
+        for (auto& v : original) {
+            v = sample_dist(rng);
+        }
+
+        auto samples = original;
+        ac3::mlp::matrix::encode_cascade(steps, samples);
+        ac3::mlp::matrix::decode_cascade(steps, samples);
+
+        CHECK(samples == original);
+    }
+}
+
+TEST_CASE("matrix: empty cascade is a no-op", "[mlp]") {
+    std::array<std::int64_t, 3> samples{1, 2, 3};
+    const std::array<ac3::mlp::matrix::Step, 0> steps{};
+    ac3::mlp::matrix::encode_cascade(steps, samples);
+    CHECK(samples == std::array<std::int64_t, 3>{1, 2, 3});
 }

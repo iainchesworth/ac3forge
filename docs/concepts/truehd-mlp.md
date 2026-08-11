@@ -6,14 +6,22 @@ unrelated lineage that happens to also carry Dolby Atmos. This page explains wha
 different, how Atmos rides inside it (which is *not* how Atmos rides inside E-AC-3), and what
 this project currently knows versus still has to work out before it can be built.
 
-!!! note "Status: mlp_sync/major_sync_info and restart_header() framing landed; block_data() has not"
-    `ac3::mlp` (`src/lib/include/ac3/mlp/`, `src/lib/src/mlp/`) currently implements
-    `mlp_sync`'s `check_nibble` and `major_sync_info()` (`sync.hpp`) - format_sync, format_info's
-    channel presentations, `channel_meaning()`, the major-sync CRC - and `restart_header()`
+!!! note "Status: framing landed; block_data()'s DSP primitives started, not yet wired to a bitstream"
+    `ac3::mlp` (`src/lib/include/ac3/mlp/`, `src/lib/src/mlp/`) implements `mlp_sync`'s
+    `check_nibble` and `major_sync_info()` (`sync.hpp`) and `restart_header()`
     (`restart_header.hpp`), both built and round-trip tested against the confirmed syntax below.
-    `substream_directory`, `substream_segment()`, `block()`'s own header, `EXTRA_DATA()` and,
-    above all, `block_data()`'s compression algorithm are not implemented yet - see [What's
-    confirmed versus what's still open](#whats-confirmed-versus-whats-still-open).
+    `substream_directory`, `substream_segment()`, `block()`'s own header and `EXTRA_DATA()` are
+    not implemented yet.
+    
+    For `block_data()` itself - the one piece neither Dolby document specifies - two of its
+    three DSP stages now exist as standalone, round-trip-tested primitives, independent of
+    Dolby's exact wire format (which remains unknown): `matrix.hpp` (the lossless
+    Primitive-Matrix-Quantiser cascade) and `rice.hpp` (Golomb-Rice entropy coding, a genuinely
+    public-domain algorithm). The lossless IIR/FIR predictor loop (Figs. 10/11 in the AES
+    papers) is the remaining DSP primitive; actually packing any of this into `block_data()`'s
+    real bitstream still needs a source more precise than the paraphrased patent/paper
+    descriptions available so far. See [What's confirmed versus what's still
+    open](#whats-confirmed-versus-whats-still-open).
 
 ## A different lineage: lossless, not perceptual
 
