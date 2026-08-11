@@ -8,9 +8,31 @@
 # capture, monitor playback and IEC 61937 delivery are ac3::audio
 # (src/audio/), a separate target ac3cli/ac3gui link alongside this one -
 # see that target's own header comment.
+#
+# Built and installed as BOTH a static and a shared library - a distributed
+# package can't know in advance which a downstream consumer wants. One
+# OBJECT library compiles the sources exactly once; ac3forge_static and
+# ac3forge_shared are thin archive/DLL wrappers around the same object code
+# (a single add_library() can't be both STATIC and SHARED at once). In-tree
+# consumers (ac3cli/ac3gui/tests) link the plain ac3::forge alias, which
+# resolves to whichever variant BUILD_SHARED_LIBS asks for; an installed
+# package has no such ambient default, so it exports both variants under
+# their own names, ac3::forge_static / ac3::forge_shared.
 # ---------------------------------------------------------------------------
-add_library(ac3forge)
-add_library(ac3::forge ALIAS ac3forge)
+add_library(ac3forge_objects OBJECT)
+add_library(ac3forge_static STATIC)
+add_library(ac3forge_shared SHARED)
+
+target_link_libraries(ac3forge_static PUBLIC ac3forge_objects)
+target_link_libraries(ac3forge_shared PUBLIC ac3forge_objects)
+
+add_library(ac3::forge_static ALIAS ac3forge_static)
+add_library(ac3::forge_shared ALIAS ac3forge_shared)
+if(BUILD_SHARED_LIBS)
+    add_library(ac3::forge ALIAS ac3forge_shared)
+else()
+    add_library(ac3::forge ALIAS ac3forge_static)
+endif()
 
 # --- Version + git stamp ---------------------------------------------------
 find_package(Git QUIET)
@@ -75,7 +97,7 @@ add_custom_target(ac3forge_version ALL
 
 # Everything here is portable: bitstream, DSP, containers, measurement. The
 # OS-specific code is selected further down, out of this list.
-target_sources(ac3forge
+target_sources(ac3forge_objects
     PRIVATE
         src/analysis/levels.cpp
         src/core/bitalloc.cpp
@@ -105,14 +127,98 @@ target_sources(ac3forge
         src/spatial/spatial.cpp
         src/version.cpp)
 
-add_dependencies(ac3forge ac3forge_version)
+add_dependencies(ac3forge_objects ac3forge_version)
 
-target_include_directories(ac3forge
+target_include_directories(ac3forge_objects
     PUBLIC
         "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
         "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/generated>"
         "$<INSTALL_INTERFACE:include>")
 
-target_compile_features(ac3forge PUBLIC cxx_std_23)
+target_compile_features(ac3forge_objects PUBLIC cxx_std_23)
 
-target_link_libraries(ac3forge PRIVATE ac3::warnings ac3::coverage)
+target_link_libraries(ac3forge_objects PRIVATE ac3::warnings ac3::coverage)
+
+# --- Static+shared plumbing -------------------------------------------------
+# PIC is required for any object code that might end up in a shared library
+# (mandatory on Linux/macOS, ignored by MSVC) - the same objects feed
+# ac3forge_static too, but a static archive being built PIC costs nothing.
+# Hidden visibility by default + explicit AC3FORGE_EXPORT annotation (see
+# ac3/export.hpp's callers) is the standard pattern: only the intentionally
+# public API surfaces across the .so/.dll boundary, everything else - helper
+# functions, implementation detail classes - stays invisible outside it.
+set_target_properties(ac3forge_objects PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON)
+
+# MSVC's C4251 ("class X needs to have dll-interface...") fires for every
+# PRIVATE STL-typed member of an AC3FORGE_EXPORT class - std::vector/std::map/
+# std::optional fields that are pure implementation detail, never touched by
+# a caller except through the class's own (exported) methods. That's exactly
+# the case this warning can't tell apart from a genuinely unsafe one, so it's
+# suppressed here rather than by scattering non-portable
+# #pragma warning(disable:) through headers GCC/Clang also compile (see
+# cmake/CompilerWarnings.cmake's own MSVC-vs-portable split for the same
+# reasoning). Scoped to this target, not ac3::warnings globally: it's a
+# consequence of exporting a library, not a project-wide warning policy call.
+#
+# PUBLIC, not PRIVATE: the warning fires wherever a translation unit parses
+# the dllexport/dllimport-decorated class definition, not only inside
+# ac3forge_objects's own compilation - a consumer built against
+# ac3::forge_shared (ac3cli/ac3gui/tests/examples, once BUILD_SHARED_LIBS=ON)
+# includes these same headers under the dllimport branch and hits the
+# identical warning in its own translation units. ac3::forge_static's
+# consumers never see it (AC3FORGE_STATIC_DEFINE strips the decoration
+# entirely), so this is a no-op for them, not an unwanted suppression.
+target_compile_options(ac3forge_objects PUBLIC "$<$<CXX_COMPILER_ID:MSVC>:/wd4251>")
+
+# generate_export_header() normally adds the "building the DLL" compile
+# definition to the target it's called on (here, ac3forge_shared) - but
+# ac3forge_shared has no sources of its own, everything actually compiles
+# via ac3forge_objects, so that auto-added definition would never reach the
+# code it's meant to affect. Setting DEFINE_SYMBOL explicitly and adding it
+# to ac3forge_objects by hand closes that gap. The object code is therefore
+# always compiled as if building the DLL (dllexport, not dllimport) - this
+# is harmless for the objects that end up in ac3forge_static too: a plain
+# (non-decorated) consumer of the static archive still resolves the same
+# underlying symbol names, dllexport just also lets those symbols export
+# through a DLL if one were ever built from them, which ac3forge_static
+# itself isn't. AC3FORGE_STATIC_DEFINE is what a static consumer needs
+# instead, so the generated header emits no import/export decoration at
+# all - see the target_compile_definitions on ac3forge_static below.
+#
+# The generated header keeps the .hpp extension and generated/ac3/ layout
+# every other generated header here already uses (ac3/version.hpp), rather
+# than generate_export_header's own .h default, so nothing that already
+# includes "ac3/export.hpp" (every annotated header) needs to change.
+include(GenerateExportHeader)
+# DEFINE_SYMBOL is a target property generate_export_header() reads (not one
+# of its own function keywords) to decide which #ifdef the generated header
+# guards the dllexport branch with - set explicitly since it would otherwise
+# default to ac3forge_shared_EXPORTS, and it's ac3forge_objects that must
+# actually define it (see above).
+set_target_properties(ac3forge_shared PROPERTIES DEFINE_SYMBOL "AC3FORGE_BUILDING_SHARED")
+generate_export_header(ac3forge_shared
+    BASE_NAME AC3FORGE
+    EXPORT_MACRO_NAME AC3FORGE_EXPORT
+    EXPORT_FILE_NAME "${CMAKE_CURRENT_BINARY_DIR}/generated/ac3/export.hpp"
+    DEFINE_NO_DEPRECATED
+    STATIC_DEFINE AC3FORGE_STATIC_DEFINE)
+target_compile_definitions(ac3forge_objects PRIVATE AC3FORGE_BUILDING_SHARED)
+target_compile_definitions(ac3forge_static PUBLIC AC3FORGE_STATIC_DEFINE)
+
+# SOVERSION is the full version, not just the major component: pre-1.0, no
+# ABI-compatibility promise holds across any two releases, so there is no
+# meaningful "compatible" version range narrower than an exact match.
+set_target_properties(ac3forge_shared PROPERTIES
+    VERSION "${PROJECT_VERSION}"
+    SOVERSION "${PROJECT_VERSION}")
+
+# On Windows, ac3forge_shared's import library and ac3forge_static's archive
+# would otherwise both be named ac3forge.lib in the same output directory -
+# name the static one distinctly so installing both side by side doesn't
+# clobber either. ac3forge_shared keeps the plain "ac3forge" name (-> the
+# ac3forge.dll a consumer actually expects).
+set_target_properties(ac3forge_shared PROPERTIES OUTPUT_NAME "ac3forge")
+set_target_properties(ac3forge_static PROPERTIES OUTPUT_NAME "ac3forge_static")
