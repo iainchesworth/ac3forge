@@ -2843,9 +2843,18 @@ void EncoderController::encodeTo(const QUrl& url) {
     // the same routing the pre-encode preview (refreshRouting/fedChannels)
     // already agreed on, not a second computation that could disagree with
     // it. Object mode needs none of this: it has no Routing at all.
+    //
+    // Snapshotted rather than re-read from atmos_enabled_ below: setBusy(true)
+    // doesn't happen until after emit outputChanged() a few lines down, and
+    // setAtmosEnabled() only guards on busy_ - a direct-connection slot
+    // reacting to that signal could flip atmos_enabled_ before this function
+    // reaches its second check, leaving `routing` stale relative to it (and,
+    // in the object_mode-flipped-false case, dereferencing an empty
+    // optional). object_mode pins both decisions to the same read.
+    const bool object_mode = atmos_enabled_;
     const auto cp = plan::resolve(p);
-    const auto routing = atmos_enabled_ ? std::nullopt : routingForSources(cp, p);
-    if (!atmos_enabled_ && !routing) {
+    const auto routing = object_mode ? std::nullopt : routingForSources(cp, p);
+    if (!object_mode && !routing) {
         setStatus(extra_sources_.empty()
                       ? to_qstring(plan::describe(plan::PlanError::kNoSourceLayout))
                       : QStringLiteral("Set an assignment for every loaded channel before "
@@ -2874,7 +2883,7 @@ void EncoderController::encodeTo(const QUrl& url) {
         planes.insert(planes.end(), extra->wav.channels.begin(), extra->wav.channels.end());
     }
 
-    if (atmos_enabled_) {
+    if (object_mode) {
         encodeObjects(path, std::move(planes), sample_rate);
         return;
     }
