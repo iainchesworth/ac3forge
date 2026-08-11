@@ -327,3 +327,86 @@ TEST_CASE("destination tokens round-trip through format/parse", "[assignment]") 
     CHECK(ac3::plan::format_destination({.kind = DestinationKind::kUnassigned}) == "none");
     CHECK_FALSE(ac3::plan::parse_destination("not-a-real-token").has_value());
 }
+
+// ---------------------------------------------------------------------------
+// parse_assignment / format_assignment - the map= spec, whole
+// ---------------------------------------------------------------------------
+
+TEST_CASE("parse_assignment reads a full map= spec, one entry per channel", "[assignment]") {
+    const std::vector<SourceShape> sources{{.channels = 2, .label = "a.wav"},
+                                           {.channels = 1, .label = "b.wav"}};
+    Assignment assignment;
+    REQUIRE(ac3::plan::parse_assignment("0.0:L,0.1:R,1.0:LFE", sources, assignment));
+    CHECK(assignment.at(0, 0) == to_location(Location::kLeft));
+    CHECK(assignment.at(0, 1) == to_location(Location::kRight));
+    CHECK(assignment.at(1, 0) == to_location(Location::kLfe));
+}
+
+TEST_CASE("parse_assignment expands a channel range for obj and none only", "[assignment]") {
+    const std::vector<SourceShape> sources{{.channels = 4, .label = "a.wav"}};
+
+    Assignment objects;
+    REQUIRE(ac3::plan::parse_assignment("0.0-3:obj", sources, objects));
+    for (std::size_t c = 0; c < 4; ++c) {
+        CHECK(objects.at(0, c).kind == DestinationKind::kObject);
+    }
+
+    Assignment none;
+    REQUIRE(ac3::plan::parse_assignment("0.0-3:none", sources, none));
+    for (std::size_t c = 0; c < 4; ++c) {
+        CHECK(none.at(0, c).kind == DestinationKind::kUnassigned);
+    }
+
+    // A location names exactly one channel - a range there is ambiguous
+    // about which one it means, so it is rejected rather than guessed at.
+    Assignment rejected;
+    CHECK_FALSE(ac3::plan::parse_assignment("0.0-3:L", sources, rejected));
+}
+
+TEST_CASE("parse_assignment requires every declared channel to appear", "[assignment]") {
+    const std::vector<SourceShape> sources{{.channels = 2, .label = "a.wav"}};
+    Assignment assignment;
+    // Channel 1 is never mentioned - not even as "none".
+    CHECK_FALSE(ac3::plan::parse_assignment("0.0:L", sources, assignment));
+}
+
+TEST_CASE("parse_assignment rejects a channel mentioned twice", "[assignment]") {
+    const std::vector<SourceShape> sources{{.channels = 1, .label = "a.wav"}};
+    Assignment assignment;
+    CHECK_FALSE(ac3::plan::parse_assignment("0.0:L,0.0:R", sources, assignment));
+}
+
+TEST_CASE("parse_assignment rejects an out-of-range source or channel", "[assignment]") {
+    const std::vector<SourceShape> sources{{.channels = 1, .label = "a.wav"}};
+    Assignment assignment;
+    CHECK_FALSE(ac3::plan::parse_assignment("1.0:L", sources, assignment));   // no source 1
+    CHECK_FALSE(ac3::plan::parse_assignment("0.1:L", sources, assignment));  // no channel 1
+}
+
+TEST_CASE("parse_assignment rejects malformed text outright", "[assignment]") {
+    const std::vector<SourceShape> sources{{.channels = 1, .label = "a.wav"}};
+    Assignment assignment;
+    CHECK_FALSE(ac3::plan::parse_assignment("", sources, assignment));
+    CHECK_FALSE(ac3::plan::parse_assignment("0.0", sources, assignment));         // no ':'
+    CHECK_FALSE(ac3::plan::parse_assignment("0:L", sources, assignment));         // no '.'
+    CHECK_FALSE(ac3::plan::parse_assignment("0.0:bogus", sources, assignment));   // bad dest
+}
+
+TEST_CASE("format_assignment round-trips through parse_assignment", "[assignment]") {
+    const std::vector<SourceShape> sources{{.channels = 2, .label = "a.wav"},
+                                           {.channels = 2, .label = "b.wav"}};
+    Assignment original;
+    original.set(0, 0, to_location(Location::kLeft));
+    original.set(0, 1, to_location(Location::kRight));
+    original.set(1, 0, {.kind = DestinationKind::kObject});
+    original.set(1, 1, {.kind = DestinationKind::kUnassigned});
+
+    const auto text = ac3::plan::format_assignment(sources, original);
+    Assignment roundtripped;
+    REQUIRE(ac3::plan::parse_assignment(text, sources, roundtripped));
+    for (std::size_t s = 0; s < sources.size(); ++s) {
+        for (std::size_t c = 0; c < sources[s].channels; ++c) {
+            CHECK(roundtripped.at(s, c) == original.at(s, c));
+        }
+    }
+}

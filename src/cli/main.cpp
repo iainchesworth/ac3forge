@@ -23,6 +23,7 @@
 #include "ac3/analysis/levels.hpp"
 #include "ac3/capture/capture.hpp"
 #include "ac3/decoder/decoder.hpp"
+#include "ac3/encoder/assignment.hpp"
 #include "ac3/encoder/eac3_frame.hpp"
 #include "ac3/encoder/encoder.hpp"
 #include "ac3/encoder/plan.hpp"
@@ -84,15 +85,35 @@ void print_meta_usage() {
     std::println("  mixmeta           E-AC-3 only: emit the mixmdate group (Table E1.2)");
     std::println("  lfemix=<0..31>|off      E-AC-3 LFE mix level, 10-code dB (§E2.3.1.11)");
     std::println("  dmixmod=ltrt|loro|none  preferred stereo downmix (Table D2.2)");
+    std::println();
+    std::println("source options (encode/eac3-encode; any order, after the positional "
+                 "arguments):");
+    std::println("  src=<path>        an additional input source; repeat for more than one");
+    std::println("  map=<spec>        {}", plan::kAssignmentSyntax);
+    std::println("                    once given, every loaded channel must appear - explicit "
+                 "'none' silences the goes-nowhere warning without giving it anywhere to go");
 }
 
-// The encode-side group is ac3::plan::Metadata verbatim; only the decode-side
-// scale is local, because nothing an encoder is configured with corresponds
-// to it.
-struct MetaOptions {
+// Everything a command accepts after its positional arguments, in any order.
+// The metadata group is ac3::plan::Metadata verbatim; drc_scale is decode-
+// side local, because nothing an encoder is configured with corresponds to
+// it; sources/map_spec describe routing rather than metadata, but share this
+// same trailing-options surface (parse_options) the way dialnorm2= already
+// shares it despite being layout-1+1-specific - a command that has no use
+// for a field simply never sets it.
+struct Options {
     plan::Metadata p{};
     // Decoder side, for 'decode'.
     double drc_scale = 0.0;
+    // Each src= occurrence, in order given - additional input sources beyond
+    // the primary positional argument. encode/eac3-encode only; empty unless
+    // multi-source input is in play.
+    std::vector<std::string> sources;
+    // The raw map= text, if given - parsed into a plan::Assignment once the
+    // sources are loaded and their channel counts are known, which
+    // parse_options itself cannot do (it only sees command-line text, not
+    // opened files).
+    std::optional<std::string> map_spec;
 };
 
 bool parse_double(std::string_view text, double& out) {
@@ -104,7 +125,7 @@ bool parse_double(std::string_view text, double& out) {
 
 // Returns false and prints the offending token on anything unrecognised: a
 // silently ignored metadata flag looks exactly like metadata that did not work.
-bool parse_meta_options(std::span<char*> tokens, MetaOptions& out) {
+bool parse_options(std::span<char*> tokens, Options& out) {
     for (char* raw : tokens) {
         const std::string_view token{raw};
         const auto eq = token.find('=');
@@ -232,6 +253,22 @@ bool parse_meta_options(std::span<char*> tokens, MetaOptions& out) {
                 std::println(stderr, "error: dmixmod must be ltrt, loro or none (Table D2.2)");
                 return false;
             }
+            continue;
+        }
+        if (key == "src") {
+            if (value.empty()) {
+                std::println(stderr, "error: src= needs a file path");
+                return false;
+            }
+            out.sources.emplace_back(value);
+            continue;
+        }
+        if (key == "map") {
+            if (value.empty()) {
+                std::println(stderr, "error: map= needs a spec ({})", plan::kAssignmentSyntax);
+                return false;
+            }
+            out.map_spec = std::string{value};
             continue;
         }
         std::println(stderr, "error: unknown option '{}'", token);
@@ -552,7 +589,7 @@ bool resolve_layout(std::string_view name, plan::Codec codec, plan::Plan& plan, 
 
 int run_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_t bitrate,
              std::uint32_t freq_hz, std::uint32_t amplitude_pct, std::string_view layout,
-             bool couple_flag, const MetaOptions& meta) {
+             bool couple_flag, const Options& meta) {
     // A layout may be suffixed with "c" to turn channel coupling on (51c). A
     // bare 'couple' token does the same, so the flag that works for 'encode'
     // is not silently ignored here.
@@ -685,7 +722,7 @@ int run_mkv(std::string_view in_path, std::string_view out_path) {
 
 int run_eac3_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_t bitrate,
                   std::uint32_t freq_hz, std::uint32_t amplitude_pct, std::string_view layout,
-                  const MetaOptions& meta) {
+                  const Options& meta) {
     plan::Plan p{.codec = plan::Codec::kEac3, .bitrate_kbps = bitrate, .meta = meta.p};
     std::string label;
     if (!resolve_layout(layout, plan::Codec::kEac3, p, label)) {
@@ -779,6 +816,122 @@ std::optional<plan::Routing> routing_or_error(const plan::Plan& p, std::size_t c
     return routing;
 }
 
+// --- multi-source input (src=/map=) ------------------------------------------
+//
+// The primary positional file plus every src= path, opened and shaped -
+// separate from the classic single-file/in2.wav path below, which stays
+// completely untouched so a command line that never mentions src=/map=
+// behaves exactly as it always has, byte for byte. This is deliberately not
+// unified with that path: the two have genuinely different data shapes (one
+// ac3::io::WavData vs several), and duplicating the small amount that does
+// overlap costs far less than a shared abstraction would risk.
+
+struct LoadedSources {
+    std::vector<ac3::io::WavData> wavs;
+    std::vector<plan::SourceShape> shapes;
+    std::uint32_t sample_rate = 0;
+    // The longest source's frame count, not the primary file's - a run
+    // covers everything any loaded source carries. Each source still holds
+    // its own last real sample past its own end (see gather_frame), so a
+    // short source does not go silent early relative to a long one.
+    std::size_t total_frames = 0;
+};
+
+// Opens `in_path` plus every path in `extra`, in that order, and checks they
+// all share one sample rate - plan::render has no notion of resampling, and
+// a silently mismatched pair would drift apart rather than error.
+std::optional<LoadedSources> load_sources(std::string_view in_path,
+                                          std::span<const std::string> extra) {
+    auto primary = ac3::io::read_wav(std::string{in_path});
+    if (!primary) {
+        std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(primary.error()));
+        return std::nullopt;
+    }
+    LoadedSources out;
+    out.sample_rate = primary->sample_rate;
+    out.total_frames = primary->frame_count();
+    out.shapes.push_back({.channels = primary->channels.size(), .label = std::string{in_path}});
+    out.wavs.push_back(std::move(*primary));
+
+    for (const auto& path : extra) {
+        auto wav = ac3::io::read_wav(path);
+        if (!wav) {
+            std::println(stderr, "error: {}: {}", path, ac3::io::describe(wav.error()));
+            return std::nullopt;
+        }
+        if (wav->sample_rate != out.sample_rate) {
+            std::println(stderr,
+                         "error: {} is {} Hz, but {} is {} Hz - every source must share a "
+                         "sample rate",
+                         path, wav->sample_rate, in_path, out.sample_rate);
+            return std::nullopt;
+        }
+        out.total_frames = std::max(out.total_frames, wav->frame_count());
+        out.shapes.push_back({.channels = wav->channels.size(), .label = path});
+        out.wavs.push_back(std::move(*wav));
+    }
+    return out;
+}
+
+// The routing for a loaded, possibly multi-source run: explicit assignment
+// when map= was given, else exactly routing_or_error's single-source
+// automatic panning - map= is opt-in, so omitting it is defined to behave
+// exactly as if src=/map= did not exist at all. Dual mono is routed through
+// dual_mono_routing rather than the general location-based route(): a 1+1
+// target has no soundstage for a location token to mean anything on, so
+// map= for it names programmes (p1/p2), not locations.
+std::optional<plan::Routing> routing_for_sources(const plan::Plan& p, const LoadedSources& sources,
+                                                 const std::optional<std::string>& map_spec) {
+    if (!map_spec) {
+        if (sources.shapes.size() > 1) {
+            std::println(stderr,
+                         "error: more than one source needs map= to say where each channel "
+                         "goes ({})",
+                         plan::kAssignmentSyntax);
+            return std::nullopt;
+        }
+        return routing_or_error(p, sources.shapes.front().channels);
+    }
+    plan::Assignment assignment;
+    if (!plan::parse_assignment(*map_spec, sources.shapes, assignment)) {
+        std::println(stderr, "error: bad map= spec ({})", plan::kAssignmentSyntax);
+        return std::nullopt;
+    }
+    const auto target = plan::resolve(p);
+    auto routing = target.bed_acmod == ac3::Acmod::kDualMono
+                      ? plan::dual_mono_routing(sources.shapes, assignment)
+                      : plan::route(target, sources.shapes, assignment);
+    if (!routing) {
+        std::println(stderr, "error: map= does not resolve to a valid routing for this format");
+        return std::nullopt;
+    }
+    return routing;
+}
+
+// Fills `dest` (one entry per flattened source channel, source 0 first) with
+// samples [start, start + kSamplesPerFrame) from `sources`, holding each
+// source's own last real sample past its own end - independently per
+// source, the same tail padding the classic path already applies to its one
+// file, so a short source loaded alongside a long one goes silent-by-
+// holding at its own end rather than at whichever source happens to be
+// shortest overall.
+void gather_frame(const LoadedSources& sources, std::size_t start,
+                  std::vector<std::vector<float>>& dest) {
+    std::size_t flat = 0;
+    for (const auto& wav : sources.wavs) {
+        const std::size_t total = wav.frame_count();
+        for (const auto& channel : wav.channels) {
+            const float hold = total > 0 ? channel[total - 1] : 0.0f;
+            auto& out = dest[flat];
+            for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+                const std::size_t at = start + static_cast<std::size_t>(i);
+                out[static_cast<std::size_t>(i)] = at < total ? channel[at] : hold;
+            }
+            ++flat;
+        }
+    }
+}
+
 // Says what the routing did, so a run that quietly left half a layout silent
 // is visible rather than something to be discovered later on the meters.
 // `label` is whatever resolve_layout printed for this plan - a named
@@ -809,10 +962,141 @@ void print_routing(const plan::Plan& p, const plan::Routing& routing, std::strin
 // Real program material through the E-AC-3 path. The tone generators above
 // exercise field placement; only recorded-style material exercises the coding
 // decisions, which is what the Annex E tools are judged on.
+// The same encode as run_eac3_encode below, but for a possibly multi-source
+// run (src=/map= given). Loudness auto-measurement is not supported here
+// yet - measuring the right audio needs the RENDERED bed/programme content,
+// not raw per-source channels, since which channel is "L" or "Ls" now
+// depends on the assignment rather than file order; dialnorm/dialnorm2 must
+// be given explicitly until that lands.
+int run_eac3_encode_multi(std::string_view in_path, std::string_view out_path,
+                          std::uint32_t bitrate, std::string_view tools,
+                          std::string_view layout, std::string_view vbr, const Options& meta) {
+    auto sources = load_sources(in_path, meta.sources);
+    if (!sources) {
+        return 1;
+    }
+    const auto sr = wav_sample_rate(sources->sample_rate, "E-AC-3", true);
+    if (!sr) {
+        return 1;
+    }
+    plan::Plan p{.codec = plan::Codec::kEac3,
+                 .sample_rate = *sr,
+                 .bitrate_kbps = bitrate,
+                 .meta = meta.p};
+    std::string label;
+    if (layout.empty()) {
+        std::size_t total_channels = 0;
+        for (const auto& shape : sources->shapes) {
+            total_channels += shape.channels;
+        }
+        const auto id = plan::layout_for_source(total_channels);
+        if (!id) {
+            std::println(stderr, "error: {} channels - {}", total_channels,
+                         plan::describe(plan::PlanError::kNoSourceLayout));
+            return 1;
+        }
+        p.layout = *id;
+        label = std::string(plan::layout(*id).label);
+    } else if (!resolve_layout(layout, plan::Codec::kEac3, p, label)) {
+        return 1;
+    }
+
+    if (!tools_or_error(tools, p.tools)) {
+        return 1;
+    }
+    if (!vbr_or_error(vbr, p.vbr)) {
+        return 1;
+    }
+    if (p.meta.measure_dialnorm || p.meta.measure_dialnorm2) {
+        std::println(stderr,
+                     "error: dialnorm=auto/dialnorm2=auto are not yet supported with src=/"
+                     "map= - pass dialnorm=<1..31> (and dialnorm2=<1..31> for 1+1) explicitly");
+        return 1;
+    }
+
+    const auto routing = routing_for_sources(p, *sources, meta.map_spec);
+    if (!routing) {
+        return 1;
+    }
+
+    ac3::eac3::AccessUnitEncoder encoder{plan::eac3_config(p)};
+    const auto nchans = static_cast<std::size_t>(routing->coded_channels);
+    assert(static_cast<int>(nchans) == encoder.channel_count());
+    const std::size_t total = sources->total_frames;
+    const auto source_channels = static_cast<std::size_t>(routing->source_channels);
+
+    std::vector<std::vector<float>> source(source_channels,
+                                           std::vector<float>(ac3::kSamplesPerFrame));
+    std::vector<std::vector<float>> block(nchans, std::vector<float>(ac3::kSamplesPerFrame));
+    std::vector<std::span<const float>> in(source_channels);
+    std::vector<std::span<float>> out(nchans);
+    std::vector<std::span<const float>> views(nchans);
+    for (std::size_t c = 0; c < nchans; ++c) {
+        out[c] = block[c];
+        views[c] = block[c];
+    }
+    std::vector<std::vector<std::byte>> frames;
+    for (std::size_t start = 0; start < total; start += ac3::kSamplesPerFrame) {
+        gather_frame(*sources, start, source);
+        for (std::size_t c = 0; c < source_channels; ++c) {
+            in[c] = source[c];
+        }
+        plan::render(*routing, in, out, ac3::kSamplesPerFrame);
+        auto unit = encoder.encode_access_unit(views);
+        if (!unit) {
+            std::println(stderr, "error: the encoder cannot express this configuration");
+            return 1;
+        }
+        frames.push_back(std::move(unit->bytes));
+    }
+    if (!write_frames(out_path, frames)) {
+        return 1;
+    }
+    if (p.vbr) {
+        // bitrate_kbps is only the nominal reference vbr's tool heuristics
+        // used, not a target - what a VBR run actually spent is the sizes it
+        // produced, so that is what gets reported instead of one number.
+        std::size_t min_bytes = frames.empty() ? 0 : frames.front().size();
+        std::size_t max_bytes = 0;
+        std::size_t total_bytes = 0;
+        for (const auto& frame : frames) {
+            min_bytes = std::min(min_bytes, frame.size());
+            max_bytes = std::max(max_bytes, frame.size());
+            total_bytes += frame.size();
+        }
+        const double mean_bytes = frames.empty() ? 0.0
+                                                  : static_cast<double>(total_bytes) /
+                                                        static_cast<double>(frames.size());
+        const double mean_kbps = mean_bytes * 8.0 * static_cast<double>(sources->sample_rate) /
+                                 (1000.0 * ac3::kSamplesPerFrame);
+        std::println("encoded {} E-AC-3 access units (vbr {}, {} Hz, {}, {} coded channels, "
+                     "tools: {}) to {}",
+                     frames.size(), plan::format_vbr(p.vbr), sources->sample_rate, label, nchans,
+                     plan::format_tools(p.tools), out_path);
+        std::println("  access unit size: {}-{} bytes, {:.0f} bytes mean (~{:.0f} kbps mean)",
+                     min_bytes, max_bytes, mean_bytes, mean_kbps);
+    } else {
+        std::println("encoded {} E-AC-3 access units ({} kbps, {} Hz, {}, {} coded channels, "
+                     "tools: {}) to {}",
+                     frames.size(), bitrate, sources->sample_rate, label, nchans,
+                     plan::format_tools(p.tools), out_path);
+    }
+    print_routing(p, *routing, label);
+    return 0;
+}
+
 int run_eac3_encode(std::string_view in_path, std::string_view out_path,
                     std::uint32_t bitrate, std::string_view tools, std::string_view layout,
-                    std::string_view vbr, const MetaOptions& meta,
+                    std::string_view vbr, const Options& meta,
                     std::string_view in2_path = {}) {
+    if (!meta.sources.empty() || meta.map_spec) {
+        if (!in2_path.empty()) {
+            std::println(stderr,
+                         "error: use either a second positional file or src=/map=, not both");
+            return 1;
+        }
+        return run_eac3_encode_multi(in_path, out_path, bitrate, tools, layout, vbr, meta);
+    }
     auto wav = ac3::io::read_wav(std::string{in_path});
     if (!wav) {
         std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(wav.error()));
@@ -957,7 +1241,7 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
 // worth doing at all: a 5.1 bed cannot carry them, and the object metadata can.
 int run_atmos(std::string_view out_path, std::uint32_t seconds, std::uint32_t bitrate,
               std::uint32_t objects, std::uint32_t orbit_seconds, std::string_view mode,
-              const MetaOptions& meta) {
+              const Options& meta) {
     if (objects < 1 || objects > 15) {
         std::println(stderr, "error: 1 to 15 objects (the bed's LFE is the 16th, "
                              "and TS 103 420 §8.3.2.2 caps the total at 16)");
@@ -1103,7 +1387,7 @@ std::optional<std::vector<std::vector<ac3::oba::Keyframe>>> parse_path_file(
 // An object index the file never mentions holds still at room centre, the
 // same fallback the GUI uses for an object with no authored path.
 int run_atmos_path(std::string_view out_path, std::string_view paths_path, std::uint32_t seconds,
-                   std::uint32_t bitrate, std::uint32_t objects_arg, const MetaOptions& meta) {
+                   std::uint32_t bitrate, std::uint32_t objects_arg, const Options& meta) {
     const auto parsed = parse_path_file(paths_path);
     if (!parsed) {
         return 1;
@@ -1199,7 +1483,7 @@ int run_atmos_path(std::string_view out_path, std::string_view paths_path, std::
 // front ends can be compared on the same file.
 int run_atmos_encode(std::string_view in_path, std::string_view out_path,
                      std::uint32_t bitrate, std::uint32_t objects,
-                     const MetaOptions& meta) {
+                     const Options& meta) {
     const auto wav = ac3::io::read_wav(std::string{in_path});
     if (!wav) {
         std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(wav.error()));
@@ -1319,7 +1603,7 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
 }
 
 int run_orbit(std::string_view out_path, std::uint32_t seconds, std::uint32_t bitrate,
-              std::uint32_t orbit_seconds, const MetaOptions& meta) {
+              std::uint32_t orbit_seconds, const Options& meta) {
     ac3::spatial::BedRenderer renderer;
     const auto object =
         renderer.add_object({.azimuth_deg = 0.0, .gain = 0.7, .lfe_send = 0.15});
@@ -1516,9 +1800,119 @@ int run_record(std::string_view out_path, std::uint32_t seconds, std::uint32_t b
     return 0;
 }
 
+// The same encode as run_encode below, but for a possibly multi-source run
+// (src=/map= given) - see run_eac3_encode_multi for why this is a separate
+// function rather than a shared path with the classic single-file one, and
+// why loudness auto-measurement is not supported here yet.
+int run_encode_multi(std::string_view in_path, std::string_view out_path, std::uint32_t bitrate,
+                     bool couple, std::string_view layout, const Options& meta) {
+    auto sources = load_sources(in_path, meta.sources);
+    if (!sources) {
+        return 1;
+    }
+    const auto sr = wav_sample_rate(sources->sample_rate, "AC-3", false);
+    if (!sr) {
+        return 1;
+    }
+    plan::Plan p{.codec = plan::Codec::kAc3,
+                 .sample_rate = *sr,
+                 .bitrate_kbps = bitrate,
+                 .meta = meta.p};
+    std::string label;
+    if (layout.empty()) {
+        std::size_t total_channels = 0;
+        for (const auto& shape : sources->shapes) {
+            total_channels += shape.channels;
+        }
+        const auto id = plan::layout_for_source(total_channels);
+        if (!id || !plan::carries(plan::Codec::kAc3, *id)) {
+            std::println(stderr,
+                         "error: encode handles 1 to 6 channels ({} given); no AC-3 coding "
+                         "mode is wider than 3/2 + LFE",
+                         total_channels);
+            return 1;
+        }
+        p.layout = *id;
+        label = std::string(plan::layout(*id).label);
+    } else if (!resolve_layout(layout, plan::Codec::kAc3, p, label)) {
+        return 1;
+    }
+    p.tools.coupling = couple;
+    if (const auto bad = plan::validate(p)) {
+        std::println(stderr, "error: {}", plan::describe(*bad));
+        return 1;
+    }
+    if (p.meta.measure_dialnorm || p.meta.measure_dialnorm2) {
+        std::println(stderr,
+                     "error: dialnorm=auto/dialnorm2=auto are not yet supported with src=/"
+                     "map= - pass dialnorm=<1..31> (and dialnorm2=<1..31> for 1+1) explicitly");
+        return 1;
+    }
+
+    const auto routing = routing_for_sources(p, *sources, meta.map_spec);
+    if (!routing) {
+        return 1;
+    }
+
+    const auto config = plan::ac3_config(p);
+    auto encoder = std::make_unique<ac3::FrameEncoder>(config);
+    ac3::analysis::LevelMeter meter{config.acmod, config.lfe, sources->sample_rate};
+    const auto nchans = static_cast<std::size_t>(routing->coded_channels);
+    const std::size_t total = sources->total_frames;
+    const auto source_channels = static_cast<std::size_t>(routing->source_channels);
+
+    std::vector<std::vector<float>> source(source_channels,
+                                           std::vector<float>(ac3::kSamplesPerFrame));
+    std::vector<std::vector<float>> block(nchans, std::vector<float>(ac3::kSamplesPerFrame));
+    std::vector<std::span<const float>> in(source_channels);
+    std::vector<std::span<float>> out(nchans);
+    std::vector<std::span<const float>> views(nchans);
+    std::vector<std::span<const float>> metered(nchans);
+    for (std::size_t c = 0; c < nchans; ++c) {
+        out[c] = block[c];
+        views[c] = block[c];
+    }
+    std::vector<std::vector<std::byte>> frames;
+    for (std::size_t start = 0; start < total; start += ac3::kSamplesPerFrame) {
+        const auto valid = std::min<std::size_t>(ac3::kSamplesPerFrame, total - start);
+        gather_frame(*sources, start, source);
+        for (std::size_t c = 0; c < source_channels; ++c) {
+            in[c] = source[c];
+        }
+        plan::render(*routing, in, out, ac3::kSamplesPerFrame);
+        for (std::size_t c = 0; c < nchans; ++c) {
+            metered[c] = std::span{block[c]}.first(valid);
+        }
+        meter.process(metered);
+        auto frame = encoder->encode_frame(views);
+        if (!frame) {
+            std::println(stderr, "error: bitrate must be a legal AC-3 rate");
+            return 1;
+        }
+        frames.push_back(std::move(*frame));
+    }
+    if (!write_frames(out_path, frames)) {
+        return 1;
+    }
+    std::println("encoded {} frames ({} kbps, {} Hz, {}) to {}", frames.size(), bitrate,
+                 sources->sample_rate, ac3::analysis::layout_name(config.acmod, config.lfe),
+                 out_path);
+    print_routing(p, *routing, label);
+    print_channel_summary(meter);
+    return 0;
+}
+
 int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_t bitrate,
-               bool couple, std::string_view layout, const MetaOptions& meta,
+               bool couple, std::string_view layout, const Options& meta,
                std::string_view in2_path = {}) {
+    if (!meta.sources.empty() || meta.map_spec) {
+        if (!in2_path.empty()) {
+            std::println(stderr,
+                         "error: use either a second positional file or src=/map=, not both");
+            return 1;
+        }
+        return run_encode_multi(in_path, out_path, bitrate, couple, layout, meta);
+    }
     auto wav = ac3::io::read_wav(std::string{in_path});
     if (!wav) {
         std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(wav.error()));
@@ -1726,7 +2120,7 @@ int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path
 }
 
 int run_decode(std::string_view in_path, std::string_view out_path,
-               const MetaOptions& meta) {
+               const Options& meta) {
     const auto stream = read_all(in_path);
     if (stream.empty()) {
         std::println(stderr, "error: cannot read {}", in_path);
@@ -2277,7 +2671,7 @@ int run_play(std::string_view in_path, int device_index) {
 
 
 int run_eac3_silence(std::string_view out_path, std::uint32_t seconds, std::uint32_t bitrate,
-                     std::string_view layout, const MetaOptions& meta) {
+                     std::string_view layout, const Options& meta) {
     plan::Plan p{.codec = plan::Codec::kEac3, .bitrate_kbps = bitrate, .meta = meta.p};
     std::string label;
     if (!resolve_layout(layout, plan::Codec::kEac3, p, label)) {
@@ -2758,7 +3152,7 @@ int run_live(std::string_view out_path, int capture_device, std::uint32_t second
 
 struct Args {
     std::span<char* const> a;
-    const MetaOptions& meta;
+    const Options& meta;
     bool couple;
 
     [[nodiscard]] std::string_view str(std::size_t i, std::string_view fallback = {}) const {
@@ -2875,7 +3269,9 @@ constexpr std::array<Command, 21> kCommands{{
                          x.i32(6, -2), x.str(7, "channels"));
      }},
     {"encode", 3, "<in.wav> <out.ac3> [bitrate_kbps] [layout] [in2.wav]",
-     "in2.wav: layout 1+1's Ch2, when Ch1 is a separate mono file", Needs::kNothing,
+     "in2.wav: layout 1+1's Ch2, when Ch1 is a separate mono file; or use src=/map= "
+     "for more than one source",
+     Needs::kNothing,
      [](const Args& x) {
          return run_encode(x.str(1), x.str(2), x.u32(3, 192), x.couple, x.str(4), x.meta,
                            x.str(5));
@@ -2893,7 +3289,9 @@ constexpr std::array<Command, 21> kCommands{{
      }},
     {"eac3-encode", 3,
      "<in.wav> <out.ec3> [bitrate_kbps] [tools] [layout] [vbr] [in2.wav]",
-     "in2.wav: layout 1+1's Ch2, when Ch1 is a separate mono file", Needs::kNothing,
+     "in2.wav: layout 1+1's Ch2, when Ch1 is a separate mono file; or use src=/map= "
+     "for more than one source",
+     Needs::kNothing,
      [](const Args& x) {
          return run_eac3_encode(x.str(1), x.str(2), x.u32(3, 192), x.str(4, "none"), x.str(5),
                                 x.str(6, "off"), x.meta, x.str(7));
@@ -3066,8 +3464,8 @@ int run_main(int argc, char** argv) {
         }
         (is_option ? options : args).push_back(raw[i]);
     }
-    MetaOptions meta;
-    if (!parse_meta_options(options, meta)) {
+    Options meta;
+    if (!parse_options(options, meta)) {
         return 1;
     }
     if (args.empty()) {
