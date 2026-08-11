@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "ac3/core/bitwriter.hpp"
+#include "ac3/export.hpp"
 
 // The Extensible Metadata Delivery Format - ETSI TS 102 366 Annex H. A/52:2018
 // Annex H defers to it wholesale rather than restating it, so this is the one
@@ -33,8 +34,8 @@ inline constexpr std::uint16_t kSyncWord = 0x5838;
 // carries the value MINUS the offset (2^n + 2^2n + ... + 2^(k-1)n), which is
 // what stops the encodings overlapping: every value has exactly one shortest
 // form, and the decoder recovers the offset from the group count alone.
-void put_variable_bits(BitWriter& w, std::uint32_t value, int group_bits);
-[[nodiscard]] int variable_bits_size(std::uint32_t value, int group_bits);
+AC3FORGE_EXPORT void put_variable_bits(BitWriter& w, std::uint32_t value, int group_bits);
+[[nodiscard]] AC3FORGE_EXPORT int variable_bits_size(std::uint32_t value, int group_bits);
 
 // Table H.2.3 assigns 0x1..0x7 and reserves the rest; TS 103 420 Table 55
 // claims two of the reserved values for object audio.
@@ -57,7 +58,7 @@ struct Payload {
 // configuration this encoder ever needs and the only one a JOC decoder will
 // accept. `groupid` ties the OAMD and JOC payloads together and must be equal
 // for both.
-[[nodiscard]] std::vector<std::byte> build_container(std::span<const Payload> payloads,
-                                                     int groupid = 0);
+[[nodiscard]] AC3FORGE_EXPORT std::vector<std::byte> build_container(
+    std::span<const Payload> payloads, int groupid = 0);
 
 }  // namespace ac3::emdf

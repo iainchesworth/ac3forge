@@ -37,12 +37,18 @@ endif()
 # sanitize-recover=undefined turns a UBSan report into a process abort
 # libFuzzer can catch and minimize, rather than a warning it would otherwise
 # print and run straight past.
-target_compile_options(ac3forge PUBLIC
+#
+# Set on forge_objects, not the forge_static/forge_shared wrapper
+# targets: the actual codec sources compile there (see src/lib/CMakeLists.txt),
+# and PUBLIC on an OBJECT library's usage requirements still propagates
+# through PUBLIC target_link_libraries(forge_static PUBLIC forge_objects)
+# to whatever finally links ac3::forge - here, each fuzz harness below.
+target_compile_options(forge_objects PUBLIC
     -fsanitize=address,undefined,fuzzer-no-link
     -fno-sanitize-recover=undefined
     -fno-omit-frame-pointer
     -g)
-target_link_options(ac3forge PUBLIC -fsanitize=address,undefined,fuzzer-no-link)
+target_link_options(forge_objects PUBLIC -fsanitize=address,undefined,fuzzer-no-link)
 
 add_custom_target(ac3forge_fuzzers)
 

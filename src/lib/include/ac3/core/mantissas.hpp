@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "ac3/core/bitreader.hpp"
+#include "ac3/export.hpp"
 
 // Mantissa quantization and grouping (A/52 §7.3).
 //
@@ -23,7 +24,7 @@ namespace ac3 {
 
 // Bits per directly-coded mantissa (0 for the grouped baps 1, 2, 4 and for
 // bap 0) — Table 7.18 qntztab.
-inline constexpr std::array<int, 16> kBapBits = {0, 0, 0, 3, 0, 4, 5, 6,
+inline constexpr std::array<int, 16> kBapBits = {0, 0, 0, 3,  0,  4,  5,  6,
                                                  7, 8, 9, 10, 11, 12, 14, 16};
 
 // Levels of the symmetric quantizers (bap 1-5).
@@ -33,10 +34,10 @@ inline constexpr std::array<int, 6> kSymmetricLevels = {0, 3, 5, 7, 11, 15};
 // exponent, representing [-1, 1)) to its bap's code. Symmetric baps return
 // the level index; asymmetric baps return the qntztab-bit two's-complement
 // pattern.
-[[nodiscard]] std::uint32_t quantize_mantissa(std::int32_t mantissa, int bap);
+[[nodiscard]] AC3FORGE_EXPORT std::uint32_t quantize_mantissa(std::int32_t mantissa, int bap);
 
 // Reconstruction value in [-1, 1) for a code (test/decoder use).
-[[nodiscard]] double dequantize_mantissa(std::uint32_t code, int bap);
+[[nodiscard]] AC3FORGE_EXPORT double dequantize_mantissa(std::uint32_t code, int bap);
 
 // One bitstream write: `bits` bits of `value`.
 struct MantissaToken {
@@ -48,8 +49,8 @@ struct MantissaToken {
 // add() mantissas in bitstream order (channel 0 all bins, then channel 1,
 // ...); finish_block() pads partial groups with dummy zero codes and
 // backfills group codewords. tokens() then yields the exact writes.
-class MantissaBlockWriter {
-public:
+class AC3FORGE_EXPORT MantissaBlockWriter {
+   public:
     void add(std::int32_t mantissa, int bap);
     // A pre-formed codeword of a known width, placed in sequence with the
     // rest. The adaptive hybrid transform needs this: its codewords are VQ
@@ -62,7 +63,7 @@ public:
     [[nodiscard]] std::size_t bit_count() const { return bit_count_; }
     [[nodiscard]] const std::vector<MantissaToken>& tokens() const { return tokens_; }
 
-private:
+   private:
     struct PendingGroup {
         int token_index = -1;
         int count = 0;
@@ -83,7 +84,7 @@ private:
 // Fast bit count for one block given per-channel bap arrays — must equal
 // what MantissaBlockWriter emits (property-tested). Grouped baps cost
 // ceil(count/members) codewords per block.
-[[nodiscard]] std::size_t mantissa_bits_per_block(
+[[nodiscard]] AC3FORGE_EXPORT std::size_t mantissa_bits_per_block(
     std::span<const std::span<const std::uint8_t>> channel_baps);
 
 // The mirror of MantissaBlockWriter: reads ONE audio block's mantissas in
@@ -92,11 +93,11 @@ private:
 // unpacked remainder forward. State is shared across exponent sets within a
 // block and discarded at block end, where the writer's dummy padding sits.
 // AC-3 and E-AC-3 group mantissas identically, so both decoders use this.
-class MantissaBlockReader {
-public:
+class AC3FORGE_EXPORT MantissaBlockReader {
+   public:
     [[nodiscard]] std::uint32_t read(BitReader& reader, int bap);
 
-private:
+   private:
     struct Cache {
         int remaining = 0;
         std::array<std::uint32_t, 2> values{};

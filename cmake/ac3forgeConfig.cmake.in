@@ -1,0 +1,9 @@
+@PACKAGE_INIT@
+
+# Two independent, dependency-free libraries in one package - see
+# cmake/InstallLibrary.cmake for why they're separate EXPORT sets sharing
+# this one Config file rather than a single combined export.
+include("${CMAKE_CURRENT_LIST_DIR}/ac3forgeTargets.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/matroskaTargets.cmake")
+
+check_required_components(ac3forge)
