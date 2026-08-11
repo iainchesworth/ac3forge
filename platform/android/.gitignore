@@ -1,0 +1,15 @@
+# Per-machine SDK path - never portable, never committed.
+local.properties
+
+# Gradle/AGP build output.
+.gradle/
+build/
+app/build/
+app/.cxx/
+*.apk
+*.aab
+
+# IDE.
+.idea/
+*.iml
+.DS_Store
