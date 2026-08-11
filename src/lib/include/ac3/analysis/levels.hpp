@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "ac3/core/tables.hpp"
+#include "ac3/export.hpp"
 
 // Signal analysis for the front ends: what each channel is carrying, in the
 // units a meter needs. This is presentation-side work, not codec work, but it
@@ -26,7 +27,7 @@ inline constexpr double kFloorDb = -120.0;
 // where it actually lands.
 inline constexpr float kFullScale = 32767.0f / 32768.0f;
 
-[[nodiscard]] double to_dbfs(double linear);
+[[nodiscard]] AC3FORGE_EXPORT double to_dbfs(double linear);
 
 // Position of `db` on a meter scaled linearly in decibels from `floor_db` to
 // 0 dBFS, clamped to [0, 1]. Shared so that a bar in the GUI and a bar in the
@@ -45,16 +46,17 @@ inline constexpr float kFullScale = 32767.0f / 32768.0f;
 // A/52 Table 5.8 channel array ordering. `index` runs over the full-bandwidth
 // channels in that order, with the LFE last when present; an out-of-range
 // index gives an empty view.
-[[nodiscard]] std::string_view channel_name(Acmod acmod, bool lfe, int index);
+[[nodiscard]] AC3FORGE_EXPORT std::string_view channel_name(Acmod acmod, bool lfe, int index);
 
 // The layout in the spec's own front/rear notation, e.g. "3/2 + LFE".
-[[nodiscard]] std::string_view layout_name(Acmod acmod, bool lfe);
+[[nodiscard]] AC3FORGE_EXPORT std::string_view layout_name(Acmod acmod, bool lfe);
 
 // Loudspeaker azimuth for a channel: degrees counterclockwise from front, on
 // the same ITU-R BS.775 ring the spatial renderer pans over. Empty for the
 // LFE, which carries no direction, and for 1+1 dual mono, whose two channels
 // are unrelated programs rather than one soundfield.
-[[nodiscard]] std::optional<double> channel_azimuth_deg(Acmod acmod, bool lfe, int index);
+[[nodiscard]] AC3FORGE_EXPORT std::optional<double> channel_azimuth_deg(Acmod acmod, bool lfe,
+                                                                        int index);
 
 struct MeterBallistics {
     // One-pole averaging time for the RMS bar. 300 ms is the familiar
@@ -79,7 +81,7 @@ struct ChannelLevel {
 // Unweighted statistics over everything fed so far. A file report wants these
 // rather than levels(): ballistics exist to make a moving display readable,
 // and would only smear a question that has an exact answer.
-struct ChannelSummary {
+struct AC3FORGE_EXPORT ChannelSummary {
     double peak = 0.0;  // linear
     double sum_squares = 0.0;
     std::uint64_t samples = 0;
@@ -94,8 +96,8 @@ struct ChannelSummary {
 // display (levels(), ballistic) and the end-of-run report (summary(), exact);
 // a single pass over the samples serves both, which is the point — the two
 // front ends must not disagree about what a signal contains.
-class LevelMeter {
-public:
+class AC3FORGE_EXPORT LevelMeter {
+   public:
     LevelMeter(Acmod acmod, bool lfe, std::uint32_t sample_rate,
                const MeterBallistics& ballistics = {});
 
@@ -133,7 +135,7 @@ public:
     // Drops both the ballistic state and the accumulated summary.
     void reset();
 
-private:
+   private:
     // One channel's worth of block statistics, advanced over `seconds`.
     void advance(std::size_t channel, double block_peak, double mean_square, double seconds);
 
@@ -160,6 +162,7 @@ struct SoundfieldVector {
 // Computed from the integrated RMS of the full-bandwidth channels only: the
 // LFE has no direction to contribute, and a subwoofer's level would otherwise
 // swamp the sum.
-[[nodiscard]] SoundfieldVector energy_vector(std::span<const ChannelLevel> levels, Acmod acmod);
+[[nodiscard]] AC3FORGE_EXPORT SoundfieldVector energy_vector(std::span<const ChannelLevel> levels,
+                                                             Acmod acmod);
 
 }  // namespace ac3::analysis

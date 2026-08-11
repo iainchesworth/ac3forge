@@ -5,6 +5,8 @@
 #include <span>
 #include <vector>
 
+#include "ac3/export.hpp"
+
 // Object Audio Metadata - ETSI TS 103 420 clause 5. The payload that says what
 // the objects ARE: how many, where each one sits in the room, how loud, and
 // which of them are nailed to speakers rather than free to move.
@@ -49,7 +51,7 @@ struct DynamicObject {
 // index 9 being the most significant of the 10-bit field.
 namespace bed {
 
-inline constexpr std::uint16_t kLR = 1 << 9;      // 2 channels
+inline constexpr std::uint16_t kLR = 1 << 9;  // 2 channels
 inline constexpr std::uint16_t kC = 1 << 8;
 inline constexpr std::uint16_t kLfe = 1 << 7;
 inline constexpr std::uint16_t kLsRs = 1 << 6;    // 2
@@ -60,8 +62,7 @@ inline constexpr std::uint16_t kTblTbr = 1 << 2;  // 2
 inline constexpr std::uint16_t kLwRw = 1 << 1;    // 2
 inline constexpr std::uint16_t kLfe2 = 1 << 0;
 
-inline constexpr std::uint16_t kPairs =
-    kLR | kLsRs | kLbRb | kTflTfr | kTslTsr | kTblTbr | kLwRw;
+inline constexpr std::uint16_t kPairs = kLR | kLsRs | kLbRb | kTflTfr | kTslTsr | kTblTbr | kLwRw;
 
 inline constexpr std::uint16_t k51 = kLR | kC | kLfe | kLsRs;
 
@@ -101,8 +102,8 @@ static_assert(channel_count(kLfe) == 1);
 // dynamic ones.
 struct Program {
     bool dynamic_only = true;
-    bool lfe = true;                // b_lfe_present, dynamic_only branch only
-    std::uint16_t bed = 0;          // bed instance, when !dynamic_only
+    bool lfe = true;        // b_lfe_present, dynamic_only branch only
+    std::uint16_t bed = 0;  // bed instance, when !dynamic_only
     int dynamic_objects = 0;
 };
 
@@ -114,8 +115,8 @@ struct Program {
 // Objects in the program, LFE first. This is object_count in the payload and
 // complexity_index_type_a in addbsi (TS 103 420 §8.3.2.2).
 [[nodiscard]] constexpr int object_count(const Program& program) {
-    const int fixed = program.dynamic_only ? (program.lfe ? 1 : 0)
-                                           : bed::channel_count(program.bed);
+    const int fixed =
+        program.dynamic_only ? (program.lfe ? 1 : 0) : bed::channel_count(program.bed);
     return fixed + program.dynamic_objects;
 }
 
@@ -138,7 +139,7 @@ struct Program {
 // complexity_index_type_a at 16 objects and §6.3.2.4 caps joc_num_objects at
 // the same. A stream that got past this would be rejected by the frame writer
 // (FrameError::kInvalidObjectAudio) before any of it reached a file.
-[[nodiscard]] std::vector<std::byte> build_payload(const Program& program,
-                                                   std::span<const DynamicObject> objects);
+[[nodiscard]] AC3FORGE_EXPORT std::vector<std::byte> build_payload(
+    const Program& program, std::span<const DynamicObject> objects);
 
 }  // namespace ac3::oba

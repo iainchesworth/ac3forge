@@ -7,6 +7,7 @@
 
 #include "ac3/core/tables.hpp"
 #include "ac3/encoder/eac3_frame.hpp"
+#include "ac3/export.hpp"
 #include "ac3/oba/joc.hpp"
 #include "ac3/oba/oamd.hpp"
 #include "ac3/spatial/spatial.hpp"
@@ -80,8 +81,8 @@ struct ObjectPlacement {
     double lfe_send = 0.0;
 };
 
-class AtmosEncoder {
-public:
+class AC3FORGE_EXPORT AtmosEncoder {
+   public:
     AtmosEncoder(const AtmosConfig& config, int objects);
 
     // objects: one kSamplesPerFrame mono span per object, in the order the
@@ -105,7 +106,7 @@ public:
     // quantization. Its channel axis is JOC's order (Table 53), not AC-3's.
     [[nodiscard]] const joc::FrameParameters& parameters() const { return params_; }
 
-private:
+   private:
     AtmosConfig config_;
     int objects_ = 0;
     Program program_{};

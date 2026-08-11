@@ -4,6 +4,7 @@
 #include <span>
 
 #include "ac3/core/tables.hpp"
+#include "ac3/export.hpp"
 
 // Transient detection (A/52 §8.2.2): the basic-encoder recipe that decides
 // blksw[ch], the one-bit-per-channel-per-block flag driving block switching.
@@ -19,8 +20,8 @@ namespace ac3 {
 // the last segment on level j of the tree calculated immediately prior to
 // the current tree") persist from one 512-sample analysis window to the
 // next, so state belongs to the channel's stream, not to a single call.
-class TransientDetector {
-public:
+class AC3FORGE_EXPORT TransientDetector {
+   public:
     explicit TransientDetector(SampleRate sample_rate);
 
     // time[0..511]: this channel's 512-sample analysis window - the same
@@ -31,7 +32,7 @@ public:
     // in the SECOND half, per §8.2.2's own definition of the flag.
     bool detect(std::span<const double, 512> time);
 
-private:
+   private:
     // Direct-form-I biquad section, cascaded two-deep as §8.2.2 literally
     // specifies ("cascaded biquad direct form I IIR filter"), each an RBJ
     // audio-EQ-cookbook high-pass at the mandated 8 kHz cutoff with a

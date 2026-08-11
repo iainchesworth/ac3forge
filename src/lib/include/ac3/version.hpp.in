@@ -6,6 +6,8 @@
 #include <string>
 #include <string_view>
 
+#include "ac3/export.hpp"
+
 namespace ac3 {
 
 // Semantic version (https://semver.org).
@@ -33,6 +35,6 @@ inline constexpr std::string_view build_target = "@AC3FORGE_BUILD_TARGET@";
 
 // A multi-line, human-readable version + build-provenance block, suitable for
 // `--version` output or an About dialog.
-[[nodiscard]] std::string version_details();
+[[nodiscard]] AC3FORGE_EXPORT std::string version_details();
 
 }  // namespace ac3
