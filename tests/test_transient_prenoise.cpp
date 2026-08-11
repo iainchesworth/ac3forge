@@ -136,7 +136,7 @@ TEST_CASE("apply_transient_prenoise reduces energy where a transient's pre-noise
     double noisy_energy = 0.0;
     for (int samp = ac3::kTransientPrenoiseTC1; samp < tot_corr_len - ac3::kTransientPrenoiseTC2;
         ++samp) {
-        const double v = pcm[static_cast<std::size_t>(start_samp + samp)];
+        const double v = static_cast<double>(pcm[static_cast<std::size_t>(start_samp + samp)]);
         noisy_energy += v * v;
     }
 
@@ -145,7 +145,7 @@ TEST_CASE("apply_transient_prenoise reduces energy where a transient's pre-noise
     double corrected_energy = 0.0;
     for (int samp = ac3::kTransientPrenoiseTC1; samp < tot_corr_len - ac3::kTransientPrenoiseTC2;
         ++samp) {
-        const double v = pcm[static_cast<std::size_t>(start_samp + samp)];
+        const double v = static_cast<double>(pcm[static_cast<std::size_t>(start_samp + samp)]);
         corrected_energy += v * v;
     }
     CHECK(corrected_energy < noisy_energy * 0.01);

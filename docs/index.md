@@ -129,7 +129,8 @@ load-bearing enough to flag up front:
 
 Enhanced coupling and transient pre-noise processing are both implemented (see
 [Decoding](library/decoding.md) and the `ecpl`/`tpn` tool tokens), each with a known MVP
-limitation - see [What it does not do](../README.md#what-it-does-not-do). Neither has an
+limitation - see [What it does not do](https://github.com/iainchesworth/ac3forge/blob/main/README.md#what-it-does-not-do).
+Neither has an
 external decode oracle at all - not even the FFmpeg-can't-but-the-in-repo-decoder-can situation
 7.1.4 is in, since FFmpeg's own Annex E parser has never read either tool's syntax - so
 `tools/quality_race.py`'s CI gate scores both through this project's own decoder instead (see

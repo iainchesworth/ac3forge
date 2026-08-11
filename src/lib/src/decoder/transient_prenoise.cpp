@@ -15,27 +15,28 @@ namespace {
 // A raised-cosine (Hann-shaped) cross-fade, the family the spec's own text
 // names as giving good results (§3.7.2: "standard Hanning windows"). fade_in
 // runs 0 -> 1, fade_out is its complement 1 -> 0, both length N.
-template <int N>
+template <std::size_t N>
 struct CrossFade {
     std::array<float, N> fade_in{};
     std::array<float, N> fade_out{};
     CrossFade() {
         constexpr double kPi = std::numbers::pi;
-        for (int n = 0; n < N; ++n) {
-            const double in = 0.5 * (1.0 - std::cos(kPi * n / (N - 1)));
-            fade_in[static_cast<std::size_t>(n)] = static_cast<float>(in);
-            fade_out[static_cast<std::size_t>(n)] = static_cast<float>(1.0 - in);
+        for (std::size_t n = 0; n < N; ++n) {
+            const double in =
+                0.5 * (1.0 - std::cos(kPi * static_cast<double>(n) / static_cast<double>(N - 1)));
+            fade_in[n] = static_cast<float>(in);
+            fade_out[n] = static_cast<float>(1.0 - in);
         }
     }
 };
 
-const CrossFade<kTransientPrenoiseTC1>& tc1_windows() {
-    static const CrossFade<kTransientPrenoiseTC1> w;
+const CrossFade<static_cast<std::size_t>(kTransientPrenoiseTC1)>& tc1_windows() {
+    static const CrossFade<static_cast<std::size_t>(kTransientPrenoiseTC1)> w;
     return w;
 }
 
-const CrossFade<kTransientPrenoiseTC2>& tc2_windows() {
-    static const CrossFade<kTransientPrenoiseTC2> w;
+const CrossFade<static_cast<std::size_t>(kTransientPrenoiseTC2)>& tc2_windows() {
+    static const CrossFade<static_cast<std::size_t>(kTransientPrenoiseTC2)> w;
     return w;
 }
 

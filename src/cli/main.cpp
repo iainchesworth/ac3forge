@@ -2073,13 +2073,13 @@ int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path
             // own doc comment) - nothing new to append yet, not an error.
             continue;
         }
+        const auto& out = **decoded;
         if (pcm.empty()) {
-            first = **decoded;
-            pcm.resize((*decoded)->channels.size());
+            first = out;
+            pcm.resize(out.channels.size());
         }
-        for (std::size_t ch = 0; ch < (*decoded)->channels.size(); ++ch) {
-            pcm[ch].insert(pcm[ch].end(), (*decoded)->channels[ch].begin(),
-                           (*decoded)->channels[ch].end());
+        for (std::size_t ch = 0; ch < out.channels.size(); ++ch) {
+            pcm[ch].insert(pcm[ch].end(), out.channels[ch].begin(), out.channels[ch].end());
         }
     }
     // Whatever transient pre-noise processing was still holding back at
@@ -2281,16 +2281,17 @@ int run_levels_eac3(std::span<const std::byte> stream, std::string_view in_path)
             // rather than draining decoder.flush() for a metering tool.
             continue;
         }
+        const auto& out = **decoded;
         if (totals.empty()) {
-            first = **decoded;
-            totals.resize((*decoded)->channels.size());
+            first = out;
+            totals.resize(out.channels.size());
             std::println("{}: {} access units, {} substreams each, {} channels, {} Hz",
-                         in_path, units->size(), (*decoded)->substream_count,
-                         (*decoded)->channels.size(), sample_rate_hz((*decoded)->sample_rate));
+                         in_path, units->size(), out.substream_count,
+                         out.channels.size(), sample_rate_hz(out.sample_rate));
         }
-        for (std::size_t ch = 0; ch < (*decoded)->channels.size(); ++ch) {
+        for (std::size_t ch = 0; ch < out.channels.size(); ++ch) {
             auto& stats = totals[ch];
-            for (const float sample : (*decoded)->channels[ch]) {
+            for (const float sample : out.channels[ch]) {
                 const double magnitude = std::abs(static_cast<double>(sample));
                 stats.peak = std::max(stats.peak, magnitude);
                 stats.sum_squares += magnitude * magnitude;
@@ -2797,30 +2798,30 @@ int run_monitor(std::string_view in_path, int device_index) {
                 // than draining decoder.flush() mid-stream.
                 continue;
             }
+            const auto& out = **decoded;
             if (order.empty()) {
                 // Dual mono has no Table E2.5 location to order by - `layout`
                 // is left empty for exactly that case - so Ch1/Ch2 monitor in
                 // coded order, same as everywhere else this comes up.
-                if ((*decoded)->acmod == ac3::Acmod::kDualMono) {
-                    order.resize((*decoded)->channels.size());
+                if (out.acmod == ac3::Acmod::kDualMono) {
+                    order.resize(out.channels.size());
                     for (std::size_t i = 0; i < order.size(); ++i) {
                         order[i] = i;
                     }
                 } else {
-                    order = plan::wav_order(
-                        std::span{(*decoded)->layout.items}.first(
-                            static_cast<std::size_t>((*decoded)->layout.count)));
+                    order = plan::wav_order(std::span{out.layout.items}.first(
+                        static_cast<std::size_t>(out.layout.count)));
                 }
-                const auto started = sink.start(device_id, sample_rate_hz((*decoded)->sample_rate),
+                const auto started = sink.start(device_id, sample_rate_hz(out.sample_rate),
                                                 static_cast<std::uint16_t>(order.size()));
                 if (!started) {
                     std::println(stderr, "error: {}", ac3::sinks::describe(started.error()));
                     return 1;
                 }
                 std::println("monitoring {} ({} channels, {} Hz) on \"{}\"…", in_path,
-                             order.size(), sample_rate_hz((*decoded)->sample_rate), device_name);
+                             order.size(), sample_rate_hz(out.sample_rate), device_name);
             }
-            play(interleave_reordered((*decoded)->channels, order));
+            play(interleave_reordered(out.channels, order));
             ++units_played;
         }
     } else {
