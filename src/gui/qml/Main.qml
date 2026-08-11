@@ -148,8 +148,11 @@ ApplicationWindow {
         const codec = EncoderController.codecNames[EncoderController.codecIndex] || "";
         const shape = EncoderController.atmosEnabled
                       ? qsTr("5.1") : EncoderController.channelShapeName;
-        return qsTr("%1 · %2 · %3 kbps · .%4")
-            .arg(codec).arg(shape).arg(EncoderController.bitrateKbps)
+        const rate = EncoderController.vbrAvailable && EncoderController.vbrEnabled
+                     ? qsTr("quality %1").arg(EncoderController.vbrQuality)
+                     : qsTr("%1 kbps").arg(EncoderController.bitrateKbps);
+        return qsTr("%1 · %2 · %3 · .%4")
+            .arg(codec).arg(shape).arg(rate)
             .arg(EncoderController.outputSuffix());
     }
     // ac3cli's actual [layout] argument takes either a preset name or this
@@ -174,9 +177,17 @@ ApplicationWindow {
             return ["ac3cli", "encode", source, out, rate,
                     EncoderController.channelLocationsText].join(" ");
         }
-        return ["ac3cli", "eac3-encode", source, out, rate,
-                EncoderController.toolsToken.length > 0 ? EncoderController.toolsToken : "none",
-                EncoderController.channelLocationsText].join(" ");
+        const parts = ["ac3cli", "eac3-encode", source, out, rate,
+                       EncoderController.toolsToken.length > 0
+                           ? EncoderController.toolsToken : "none",
+                       EncoderController.channelLocationsText];
+        // [vbr] is the next positional after [layout] - only appended when
+        // actually on, so the common CBR case stays exactly what it always
+        // was rather than growing a trailing "off" nobody typed.
+        if (EncoderController.vbrAvailable && EncoderController.vbrEnabled) {
+            parts.push(EncoderController.vbrToken);
+        }
+        return parts.join(" ");
     }
 
     FileDialog {
@@ -1051,6 +1062,153 @@ ApplicationWindow {
                                         model: EncoderController.containerNames
                                         currentIndex: EncoderController.containerIndex
                                         onActivated: EncoderController.containerIndex = currentIndex
+                                    }
+                                }
+
+                                // ---- variable bit rate: E-AC-3, file output only -------------
+                                // Not object mode, not a live session (see vbrAvailable()'s own
+                                // comment on why) - the row itself disappears rather than
+                                // showing a control that would silently do nothing.
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    Layout.topMargin: Theme.gap
+                                    visible: EncoderController.vbrAvailable
+                                    spacing: Theme.gap
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: Theme.gap
+
+                                        Text {
+                                            text: qsTr("Rate mode")
+                                            color: Theme.text
+                                            font.pixelSize: Theme.fontNormal
+                                        }
+                                        SegmentedControl {
+                                            objectName: "rateModeControl"
+                                            model: [{ value: "cbr", label: qsTr("CBR") },
+                                                    { value: "vbr", label: qsTr("VBR") }]
+                                            currentValue: EncoderController.vbrEnabled ? "vbr" : "cbr"
+                                            onSelected: (value) =>
+                                                EncoderController.vbrEnabled = value === "vbr"
+                                        }
+                                        Item { Layout.fillWidth: true }
+                                    }
+
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        Layout.leftMargin: Theme.gap
+                                        visible: EncoderController.vbrEnabled
+                                        spacing: 4
+
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            Text {
+                                                text: qsTr("Quality")
+                                                color: Theme.neutral600
+                                                font.pixelSize: 10
+                                            }
+                                            Item { Layout.fillWidth: true }
+                                            Text {
+                                                text: EncoderController.vbrQuality
+                                                color: Theme.text
+                                                font.pixelSize: 11
+                                                font.family: "monospace"
+                                            }
+                                        }
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            spacing: Theme.gap
+
+                                            Text {
+                                                text: qsTr("0 · smallest")
+                                                color: Theme.textMuted
+                                                font.pixelSize: Theme.fontSmall
+                                            }
+                                            Slider {
+                                                objectName: "vbrQualitySlider"
+                                                Layout.fillWidth: true
+                                                from: 0
+                                                to: 100
+                                                stepSize: 1
+                                                value: EncoderController.vbrQuality
+                                                onMoved: EncoderController.vbrQuality =
+                                                             Math.round(value)
+                                            }
+                                            Text {
+                                                text: qsTr("100 · best")
+                                                color: Theme.textMuted
+                                                font.pixelSize: Theme.fontSmall
+                                            }
+                                        }
+
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            spacing: Theme.gap
+
+                                            CheckBox {
+                                                id: vbrMinCheck
+                                                objectName: "vbrMinCheck"
+                                                text: qsTr("Minimum")
+                                                checked: EncoderController.vbrMinEnabled
+                                                onToggled: EncoderController.vbrMinEnabled = checked
+                                            }
+                                            SpinBox {
+                                                objectName: "vbrMinSpin"
+                                                from: 32
+                                                to: 6144
+                                                stepSize: 32
+                                                enabled: vbrMinCheck.checked
+                                                value: EncoderController.vbrMinKbps
+                                                onValueModified: EncoderController.vbrMinKbps = value
+                                            }
+
+                                            CheckBox {
+                                                id: vbrMaxCheck
+                                                objectName: "vbrMaxCheck"
+                                                text: qsTr("Maximum")
+                                                checked: EncoderController.vbrMaxEnabled
+                                                onToggled: EncoderController.vbrMaxEnabled = checked
+                                            }
+                                            SpinBox {
+                                                objectName: "vbrMaxSpin"
+                                                from: 32
+                                                to: 6144
+                                                stepSize: 32
+                                                enabled: vbrMaxCheck.checked
+                                                value: EncoderController.vbrMaxKbps
+                                                onValueModified: EncoderController.vbrMaxKbps = value
+                                            }
+                                            Item { Layout.fillWidth: true }
+                                        }
+
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: (EncoderController.vbrMinEnabled
+                                                   ? qsTr("≥ %1 kbps").arg(EncoderController.vbrMinKbps)
+                                                   : qsTr("no floor"))
+                                                  + " · " +
+                                                  (EncoderController.vbrMaxEnabled
+                                                   ? qsTr("≤ %1 kbps").arg(EncoderController.vbrMaxKbps)
+                                                   : qsTr("no ceiling"))
+                                            color: Theme.textMuted
+                                            font.pixelSize: Theme.fontSmall
+                                        }
+
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: qsTr("Quality is encoder-relative, not a fixed target — bit cost rises steeply above roughly half the range, so a high quality with no maximum will often refuse real programme material outright. Bit rate above still feeds the coupling/spectral-extension frequency defaults, not a target rate.")
+                                            color: Theme.textMuted
+                                            font.pixelSize: Theme.fontSmall
+                                            wrapMode: Text.WordWrap
+                                        }
+
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: qsTr("ac3cli vbr token:  %1").arg(EncoderController.vbrToken)
+                                            color: Theme.textMuted
+                                            font.pixelSize: Theme.fontSmall
+                                        }
                                     }
                                 }
 
@@ -2677,13 +2835,13 @@ ApplicationWindow {
                                         font.pixelSize: 12
                                         color: Theme.text
                                         text: encoding
-                                              ? qsTr("%1 · %2 · %3 kbps · %4%")
+                                              ? qsTr("%1 · %2 · %3 · %4%")
                                                 .arg(modelData.id).arg(modelData.filename)
-                                                .arg(modelData.bitrateKbps)
+                                                .arg(modelData.rateText)
                                                 .arg(Math.round(EncoderController.progress * 100))
-                                              : qsTr("%1 · %2 · %3 kbps · %4%5")
+                                              : qsTr("%1 · %2 · %3 · %4%5")
                                                 .arg(modelData.id).arg(modelData.filename)
-                                                .arg(modelData.bitrateKbps).arg(modelData.durationText)
+                                                .arg(modelData.rateText).arg(modelData.durationText)
                                                 .arg(modelData.sizeText.length > 0
                                                      ? " · " + modelData.sizeText : "")
                                     }

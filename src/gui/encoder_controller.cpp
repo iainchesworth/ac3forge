@@ -453,6 +453,22 @@ QString EncoderController::toolsToken() const {
     return to_qstring(plan::format_tools(tools_));
 }
 
+QString EncoderController::vbrToken() const {
+    std::optional<ac3::eac3::VbrConfig> vbr;
+    if (vbr_enabled_) {
+        ac3::eac3::VbrConfig config;
+        config.quality = static_cast<double>(vbr_quality_) / 100.0;
+        if (vbr_min_enabled_) {
+            config.min_kbps = vbr_min_kbps_;
+        }
+        if (vbr_max_enabled_) {
+            config.max_kbps = vbr_max_kbps_;
+        }
+        vbr = config;
+    }
+    return to_qstring(plan::format_vbr(vbr));
+}
+
 QStringList EncoderController::drcNames() const {
     QStringList names{QStringLiteral("none")};
     for (const auto id : kDrcProfiles) {
@@ -485,6 +501,57 @@ void EncoderController::setBitrateKbps(int kbps) {
         return;
     }
     bitrate_kbps_ = kbps;
+    emit planChanged();
+}
+
+void EncoderController::setVbrEnabled(bool on) {
+    if (on == vbr_enabled_ || busy_) {
+        return;
+    }
+    vbr_enabled_ = on;
+    emit planChanged();
+}
+
+void EncoderController::setVbrQuality(int value) {
+    const int clamped = std::clamp(value, 0, 100);
+    if (clamped == vbr_quality_ || busy_) {
+        return;
+    }
+    vbr_quality_ = clamped;
+    emit planChanged();
+}
+
+void EncoderController::setVbrMinEnabled(bool on) {
+    if (on == vbr_min_enabled_ || busy_) {
+        return;
+    }
+    vbr_min_enabled_ = on;
+    emit planChanged();
+}
+
+void EncoderController::setVbrMinKbps(int value) {
+    const auto clamped = static_cast<std::uint32_t>(std::clamp(value, 32, 6144));
+    if (clamped == vbr_min_kbps_ || busy_) {
+        return;
+    }
+    vbr_min_kbps_ = clamped;
+    emit planChanged();
+}
+
+void EncoderController::setVbrMaxEnabled(bool on) {
+    if (on == vbr_max_enabled_ || busy_) {
+        return;
+    }
+    vbr_max_enabled_ = on;
+    emit planChanged();
+}
+
+void EncoderController::setVbrMaxKbps(int value) {
+    const auto clamped = static_cast<std::uint32_t>(std::clamp(value, 32, 6144));
+    if (clamped == vbr_max_kbps_ || busy_) {
+        return;
+    }
+    vbr_max_kbps_ = clamped;
     emit planChanged();
 }
 
@@ -1030,6 +1097,23 @@ plan::Plan EncoderController::currentPlan() const {
             p.sample_rate = *rate;
         }
     }
+    // Gated here rather than trusted from vbrEnabled() alone: a user can
+    // switch codec (or turn object mode on) after ticking VBR, and this is
+    // what keeps the plan internally consistent regardless - validate()
+    // rejects vbr set alongside AC-3 outright (PlanError::kVbrNeedsEac3),
+    // so a stale vbr_enabled_ left over from an E-AC-3 session would
+    // otherwise refuse an AC-3 encode for no reason visible on screen.
+    if (vbr_enabled_ && codec_ == plan::Codec::kEac3 && !atmos_enabled_) {
+        ac3::eac3::VbrConfig vbr;
+        vbr.quality = static_cast<double>(vbr_quality_) / 100.0;
+        if (vbr_min_enabled_) {
+            vbr.min_kbps = vbr_min_kbps_;
+        }
+        if (vbr_max_enabled_) {
+            vbr.max_kbps = vbr_max_kbps_;
+        }
+        p.vbr = vbr;
+    }
     return p;
 }
 
@@ -1219,6 +1303,13 @@ void EncoderController::startRun(const QString& path) {
     run[QStringLiteral("status")] = QStringLiteral("encoding");
     run[QStringLiteral("sizeText")] = QString();
     run[QStringLiteral("detail")] = QString();
+    // A VBR run has no target rate to show while it is still running - only
+    // the quality it is aiming for. finishRun() replaces this with the real
+    // avg/min/max once the run's actual frame sizes are known.
+    run[QStringLiteral("rateText")] =
+        (vbr_enabled_ && codec_ == plan::Codec::kEac3 && !atmos_enabled_)
+            ? QStringLiteral("VBR q%1").arg(vbr_quality_)
+            : QStringLiteral("%1 kbps").arg(bitrate_kbps_);
     // Newest first, matching the run strip's own reading order.
     runs_.prepend(run);
     current_run_id_ = next_run_id_;
@@ -1249,9 +1340,13 @@ void EncoderController::finishRun(bool ok, const QString& message) {
         if (match.hasMatch()) {
             run[QStringLiteral("sizeText")] = match.captured(1);
         }
+        if (!pending_rate_text_.isEmpty()) {
+            run[QStringLiteral("rateText")] = pending_rate_text_;
+        }
         variant = run;
         break;
     }
+    pending_rate_text_.clear();
     current_run_id_ = -1;
     emit runsChanged();
 }
@@ -1773,6 +1868,12 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device, bool mon
                                        bool passthrough, bool write_to_disk, QString file_path) {
     auto p = currentPlan();
     p.sample_rate = *to_sample_rate(device.sample_rate);
+    // Passthrough bursts are fixed-size per access unit, and a live session
+    // has no "finished run" to summarize a variable rate against even when
+    // nothing is listening on the passthrough leg - so a live session always
+    // runs CBR, regardless of what the Format tab's Rate mode control
+    // currently holds (see vbrAvailable()'s own comment).
+    p.vbr = std::nullopt;
     const bool atmos = atmos_enabled_;
     const bool eac3 = atmos || p.codec == plan::Codec::kEac3;
 
@@ -2814,6 +2915,12 @@ void EncoderController::encodeChannels(const QString& path,
 
         std::vector<std::vector<std::byte>> frames;
         std::uint64_t bytes = 0;
+        // Only meaningful when p.vbr is set - CBR's frame size barely moves,
+        // so tracking it unconditionally costs nothing and keeps the loop
+        // below from needing a vbr-only branch. min starts at 0 ("unset")
+        // rather than SIZE_MAX so the first frame always replaces it.
+        std::size_t min_frame_bytes = 0;
+        std::size_t max_frame_bytes = 0;
         bool cancelled = false;
         QString problem;
         auto published_at = std::chrono::steady_clock::now() - kPublishInterval;
@@ -2851,6 +2958,10 @@ void EncoderController::encodeChannels(const QString& path,
                     break;
                 }
                 bytes += unit->bytes.size();
+                min_frame_bytes =
+                    min_frame_bytes == 0 ? unit->bytes.size()
+                                        : std::min(min_frame_bytes, unit->bytes.size());
+                max_frame_bytes = std::max(max_frame_bytes, unit->bytes.size());
                 frames.push_back(unit->bytes);
             } else {
                 const auto frame = ac3_encoder->encode_frame(views);
@@ -2896,8 +3007,9 @@ void EncoderController::encodeChannels(const QString& path,
         }
 
         const auto count = frames.size();
-        QMetaObject::invokeMethod(this, [this, count, bytes, cancelled, problem, label, eac3,
-                                         totals = std::move(totals)] {
+        QMetaObject::invokeMethod(this, [this, count, bytes, min_frame_bytes, max_frame_bytes,
+                                         cancelled, problem, label, eac3, vbr = p.vbr,
+                                         sample_rate, totals = std::move(totals)] {
             setBusy(false);
             setMetering(false);
             setProgress(cancelled ? 0.0 : 1.0);
@@ -2913,6 +3025,27 @@ void EncoderController::encodeChannels(const QString& path,
                                                 : QStringLiteral("frames"))
                               .arg(bytes / 1024)
                               .arg(QFileInfo(output_path_).fileName()));
+            }
+            if (!cancelled && problem.isEmpty()) {
+                // A VBR run has no target rate to report - only what it
+                // actually spent, the same "what it did" framing the CLI's
+                // own VBR report uses (main.cpp's run_eac3_encode_multi).
+                if (vbr && count > 0) {
+                    const auto kbps = [sample_rate](double frame_bytes) {
+                        return std::lround(frame_bytes * 8.0 * static_cast<double>(sample_rate) /
+                                           (1000.0 * static_cast<double>(ac3::kSamplesPerFrame)));
+                    };
+                    const double mean_bytes =
+                        static_cast<double>(bytes) / static_cast<double>(count);
+                    pending_rate_text_ =
+                        QStringLiteral("VBR q%1 · avg %2 kbps (%3–%4)")
+                            .arg(std::lround(vbr->quality * 100))
+                            .arg(kbps(mean_bytes))
+                            .arg(kbps(static_cast<double>(min_frame_bytes)))
+                            .arg(kbps(static_cast<double>(max_frame_bytes)));
+                } else {
+                    pending_rate_text_ = QStringLiteral("%1 kbps").arg(bitrate_kbps_);
+                }
             }
             emit encodeFinished(!cancelled && problem.isEmpty(), status());
         });
