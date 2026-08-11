@@ -11,27 +11,36 @@
 #
 # Built and installed as BOTH a static and a shared library - a distributed
 # package can't know in advance which a downstream consumer wants. One
-# OBJECT library compiles the sources exactly once; ac3forge_static and
-# ac3forge_shared are thin archive/DLL wrappers around the same object code
+# OBJECT library compiles the sources exactly once; forge_static and
+# forge_shared are thin archive/DLL wrappers around the same object code
 # (a single add_library() can't be both STATIC and SHARED at once). In-tree
 # consumers (ac3cli/ac3gui/tests) link the plain ac3::forge alias, which
 # resolves to whichever variant BUILD_SHARED_LIBS asks for; an installed
 # package has no such ambient default, so it exports both variants under
 # their own names, ac3::forge_static / ac3::forge_shared.
+#
+# The raw target names are forge_objects/forge_static/forge_shared, not
+# ac3forge_*: install(EXPORT ... NAMESPACE ac3::) prepends the namespace to
+# whatever the target is actually named, so an ac3forge_static target would
+# export as the stuttering ac3::ac3forge_static, not ac3::forge_static - the
+# leading "ac3" only needs to appear once, either in the target's own name or
+# the namespace, never both. (matroska::matroska's own targets don't have
+# this problem: matroska_static under the matroska:: namespace already lands
+# on the intended matroska::matroska_static with no stutter.)
 # ---------------------------------------------------------------------------
-add_library(ac3forge_objects OBJECT)
-add_library(ac3forge_static STATIC)
-add_library(ac3forge_shared SHARED)
+add_library(forge_objects OBJECT)
+add_library(forge_static STATIC)
+add_library(forge_shared SHARED)
 
-target_link_libraries(ac3forge_static PUBLIC ac3forge_objects)
-target_link_libraries(ac3forge_shared PUBLIC ac3forge_objects)
+target_link_libraries(forge_static PUBLIC forge_objects)
+target_link_libraries(forge_shared PUBLIC forge_objects)
 
-add_library(ac3::forge_static ALIAS ac3forge_static)
-add_library(ac3::forge_shared ALIAS ac3forge_shared)
+add_library(ac3::forge_static ALIAS forge_static)
+add_library(ac3::forge_shared ALIAS forge_shared)
 if(BUILD_SHARED_LIBS)
-    add_library(ac3::forge ALIAS ac3forge_shared)
+    add_library(ac3::forge ALIAS forge_shared)
 else()
-    add_library(ac3::forge ALIAS ac3forge_static)
+    add_library(ac3::forge ALIAS forge_static)
 endif()
 
 # --- Version + git stamp ---------------------------------------------------
@@ -97,7 +106,7 @@ add_custom_target(ac3forge_version ALL
 
 # Everything here is portable: bitstream, DSP, containers, measurement. The
 # OS-specific code is selected further down, out of this list.
-target_sources(ac3forge_objects
+target_sources(forge_objects
     PRIVATE
         src/analysis/levels.cpp
         src/core/bitalloc.cpp
@@ -127,27 +136,37 @@ target_sources(ac3forge_objects
         src/spatial/spatial.cpp
         src/version.cpp)
 
-add_dependencies(ac3forge_objects ac3forge_version)
+add_dependencies(forge_objects ac3forge_version)
 
-target_include_directories(ac3forge_objects
+target_include_directories(forge_objects
     PUBLIC
         "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
         "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/generated>"
         "$<INSTALL_INTERFACE:include>")
 
-target_compile_features(ac3forge_objects PUBLIC cxx_std_23)
+target_compile_features(forge_objects PUBLIC cxx_std_23)
 
-target_link_libraries(ac3forge_objects PRIVATE ac3::warnings ac3::coverage)
+# $<BUILD_INTERFACE:...> wrapping, not a plain PRIVATE link: ac3::warnings/
+# ac3::coverage are dev-only interface targets that must never propagate to
+# an installed consumer regardless - but OBJECT libraries specifically
+# require install(EXPORT) to be able to resolve every dependency they have,
+# PRIVATE included, since a .o file's compile-time requirements aren't fully
+# self-contained the way a finished .lib/.dll's are. Wrapping makes the
+# dependency invisible to the export graph outright, which is what "dev-only,
+# never for a consumer" actually means here, not "somehow also exported."
+target_link_libraries(forge_objects PRIVATE
+    "$<BUILD_INTERFACE:ac3::warnings>"
+    "$<BUILD_INTERFACE:ac3::coverage>")
 
 # --- Static+shared plumbing -------------------------------------------------
 # PIC is required for any object code that might end up in a shared library
 # (mandatory on Linux/macOS, ignored by MSVC) - the same objects feed
-# ac3forge_static too, but a static archive being built PIC costs nothing.
+# forge_static too, but a static archive being built PIC costs nothing.
 # Hidden visibility by default + explicit AC3FORGE_EXPORT annotation (see
 # ac3/export.hpp's callers) is the standard pattern: only the intentionally
 # public API surfaces across the .so/.dll boundary, everything else - helper
 # functions, implementation detail classes - stays invisible outside it.
-set_target_properties(ac3forge_objects PROPERTIES
+set_target_properties(forge_objects PROPERTIES
     POSITION_INDEPENDENT_CODE ON
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON)
@@ -165,28 +184,28 @@ set_target_properties(ac3forge_objects PROPERTIES
 #
 # PUBLIC, not PRIVATE: the warning fires wherever a translation unit parses
 # the dllexport/dllimport-decorated class definition, not only inside
-# ac3forge_objects's own compilation - a consumer built against
+# forge_objects's own compilation - a consumer built against
 # ac3::forge_shared (ac3cli/ac3gui/tests/examples, once BUILD_SHARED_LIBS=ON)
 # includes these same headers under the dllimport branch and hits the
 # identical warning in its own translation units. ac3::forge_static's
 # consumers never see it (AC3FORGE_STATIC_DEFINE strips the decoration
 # entirely), so this is a no-op for them, not an unwanted suppression.
-target_compile_options(ac3forge_objects PUBLIC "$<$<CXX_COMPILER_ID:MSVC>:/wd4251>")
+target_compile_options(forge_objects PUBLIC "$<$<CXX_COMPILER_ID:MSVC>:/wd4251>")
 
 # generate_export_header() normally adds the "building the DLL" compile
-# definition to the target it's called on (here, ac3forge_shared) - but
-# ac3forge_shared has no sources of its own, everything actually compiles
-# via ac3forge_objects, so that auto-added definition would never reach the
+# definition to the target it's called on (here, forge_shared) - but
+# forge_shared has no sources of its own, everything actually compiles
+# via forge_objects, so that auto-added definition would never reach the
 # code it's meant to affect. Setting DEFINE_SYMBOL explicitly and adding it
-# to ac3forge_objects by hand closes that gap. The object code is therefore
+# to forge_objects by hand closes that gap. The object code is therefore
 # always compiled as if building the DLL (dllexport, not dllimport) - this
-# is harmless for the objects that end up in ac3forge_static too: a plain
+# is harmless for the objects that end up in forge_static too: a plain
 # (non-decorated) consumer of the static archive still resolves the same
 # underlying symbol names, dllexport just also lets those symbols export
-# through a DLL if one were ever built from them, which ac3forge_static
+# through a DLL if one were ever built from them, which forge_static
 # itself isn't. AC3FORGE_STATIC_DEFINE is what a static consumer needs
 # instead, so the generated header emits no import/export decoration at
-# all - see the target_compile_definitions on ac3forge_static below.
+# all - see the target_compile_definitions on forge_static below.
 #
 # The generated header keeps the .hpp extension and generated/ac3/ layout
 # every other generated header here already uses (ac3/version.hpp), rather
@@ -196,29 +215,31 @@ include(GenerateExportHeader)
 # DEFINE_SYMBOL is a target property generate_export_header() reads (not one
 # of its own function keywords) to decide which #ifdef the generated header
 # guards the dllexport branch with - set explicitly since it would otherwise
-# default to ac3forge_shared_EXPORTS, and it's ac3forge_objects that must
+# default to forge_shared_EXPORTS, and it's forge_objects that must
 # actually define it (see above).
-set_target_properties(ac3forge_shared PROPERTIES DEFINE_SYMBOL "AC3FORGE_BUILDING_SHARED")
-generate_export_header(ac3forge_shared
+set_target_properties(forge_shared PROPERTIES DEFINE_SYMBOL "AC3FORGE_BUILDING_SHARED")
+generate_export_header(forge_shared
     BASE_NAME AC3FORGE
     EXPORT_MACRO_NAME AC3FORGE_EXPORT
     EXPORT_FILE_NAME "${CMAKE_CURRENT_BINARY_DIR}/generated/ac3/export.hpp"
     DEFINE_NO_DEPRECATED
     STATIC_DEFINE AC3FORGE_STATIC_DEFINE)
-target_compile_definitions(ac3forge_objects PRIVATE AC3FORGE_BUILDING_SHARED)
-target_compile_definitions(ac3forge_static PUBLIC AC3FORGE_STATIC_DEFINE)
+target_compile_definitions(forge_objects PRIVATE AC3FORGE_BUILDING_SHARED)
+target_compile_definitions(forge_static PUBLIC AC3FORGE_STATIC_DEFINE)
 
 # SOVERSION is the full version, not just the major component: pre-1.0, no
 # ABI-compatibility promise holds across any two releases, so there is no
 # meaningful "compatible" version range narrower than an exact match.
-set_target_properties(ac3forge_shared PROPERTIES
+set_target_properties(forge_shared PROPERTIES
     VERSION "${PROJECT_VERSION}"
     SOVERSION "${PROJECT_VERSION}")
 
-# On Windows, ac3forge_shared's import library and ac3forge_static's archive
+# On Windows, forge_shared's import library and forge_static's archive
 # would otherwise both be named ac3forge.lib in the same output directory -
 # name the static one distinctly so installing both side by side doesn't
-# clobber either. ac3forge_shared keeps the plain "ac3forge" name (-> the
-# ac3forge.dll a consumer actually expects).
-set_target_properties(ac3forge_shared PROPERTIES OUTPUT_NAME "ac3forge")
-set_target_properties(ac3forge_static PROPERTIES OUTPUT_NAME "ac3forge_static")
+# clobber either. forge_shared keeps the plain "ac3forge" name (-> the
+# ac3forge.dll a consumer actually expects). These are the installed
+# filenames a consumer sees, deliberately unrelated to the CMake target
+# names above.
+set_target_properties(forge_shared PROPERTIES OUTPUT_NAME "ac3forge")
+set_target_properties(forge_static PROPERTIES OUTPUT_NAME "ac3forge_static")

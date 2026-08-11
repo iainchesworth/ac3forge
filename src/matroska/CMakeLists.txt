@@ -38,7 +38,10 @@ target_include_directories(matroska_objects
 
 target_compile_features(matroska_objects PUBLIC cxx_std_23)
 
-target_link_libraries(matroska_objects PRIVATE ac3::warnings)
+# $<BUILD_INTERFACE:...> wrapping - see src/lib/CMakeLists.txt's identical
+# ac3forge_objects treatment for why a plain PRIVATE link isn't enough for
+# an OBJECT library that's part of an install(EXPORT) set.
+target_link_libraries(matroska_objects PRIVATE "$<BUILD_INTERFACE:ac3::warnings>")
 
 set_target_properties(matroska_objects PROPERTIES
     POSITION_INDEPENDENT_CODE ON
