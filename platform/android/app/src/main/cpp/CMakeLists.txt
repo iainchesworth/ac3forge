@@ -47,3 +47,18 @@ target_compile_features(ac3forge_jni PRIVATE cxx_std_23)
 # ac3::audio, which already declares its own aaudio/log deps - see
 # src/audio/CMakeLists.txt's ANDROID branch).
 target_link_libraries(ac3forge_jni PRIVATE ac3::forge ac3::audio log)
+
+# Optional, non-clean-room: the local-only RE-derived EMDF Atmos signer -
+# same option, same overlay, same FATAL_ERROR guard (via the
+# add_subdirectory() above) as ac3cli's own src/cli/CMakeLists.txt, just a
+# different (per-frame) call site. live_cursor.cpp calls
+# shield_quarantine_hook.hpp unconditionally; exactly one of the two
+# implementations below is ever compiled, so it needs no #ifdef - see that
+# header's own comment. Off by default: a normal build (including this
+# app's on develop/main) neither sees nor references src/quarantine.
+if(AC3FORGE_QUARANTINE_SIGNER)
+    target_sources(ac3forge_jni PRIVATE shield_quarantine_hook_enabled.cpp)
+    target_link_libraries(ac3forge_jni PRIVATE ac3::quarantine)
+else()
+    target_sources(ac3forge_jni PRIVATE shield_quarantine_hook_stub.cpp)
+endif()

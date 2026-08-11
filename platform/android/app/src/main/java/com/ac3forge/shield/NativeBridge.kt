@@ -45,4 +45,23 @@ object NativeBridge {
      */
     external fun nativeStartLiveCursor(): Boolean
     external fun nativeStopLiveCursor()
+
+    /**
+     * Nudges the currently-selected object's position by (dx, dy, dz),
+     * clamped to the room on the native side. Called from
+     * [InputController]'s animation ticker roughly once per frame, already
+     * scaled by stick magnitude/speed/elapsed-time or a fixed D-pad step -
+     * never called once per raw input event. See live_cursor.cpp's
+     * LiveCursorState.
+     */
+    external fun nativeMoveSelectedObject(dx: Float, dy: Float, dz: Float)
+
+    /** Moves the selection to the next object; returns the new selected index. */
+    external fun nativeCycleSelectedObject(): Int
+
+    /**
+     * kObjects*4 floats: (x, y, z, isSelected) per object, in native's fixed
+     * object order. For the room visualization.
+     */
+    external fun nativeGetObjectState(): FloatArray
 }
