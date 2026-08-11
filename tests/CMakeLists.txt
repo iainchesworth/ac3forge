@@ -66,6 +66,7 @@ add_executable(ac3tests
     test_mantissas.cpp
     test_matroska.cpp
     test_mdct.cpp
+    test_mlp.cpp
     test_oba.cpp
     test_plan.cpp
     test_ring_buffer.cpp

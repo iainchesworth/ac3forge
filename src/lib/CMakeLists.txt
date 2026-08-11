@@ -125,6 +125,7 @@ target_sources(forge_objects
         src/encoder/plan.cpp
         src/encoder/transient.cpp
         src/io/elementary.cpp
+        src/mlp/sync.cpp
         src/io/wav.cpp
         src/meta/drc.cpp
         src/meta/loudness.cpp

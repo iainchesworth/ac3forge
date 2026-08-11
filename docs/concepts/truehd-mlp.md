@@ -6,10 +6,14 @@ unrelated lineage that happens to also carry Dolby Atmos. This page explains wha
 different, how Atmos rides inside it (which is *not* how Atmos rides inside E-AC-3), and what
 this project currently knows versus still has to work out before it can be built.
 
-!!! note "Status: design doc, not yet implemented"
-    This page describes the bitstream as understood from Dolby's own published
-    documentation (see [References](#references)) ahead of writing any TrueHD code. It will be
-    kept up to date as implementation proceeds.
+!!! note "Status: mlp_sync/major_sync_info framing landed; the audio-carrying layer has not"
+    `ac3::mlp` (`src/lib/include/ac3/mlp/`, `src/lib/src/mlp/`) currently implements
+    `mlp_sync`'s `check_nibble` and `major_sync_info()` - format_sync, format_info's channel
+    presentations, `channel_meaning()`, and the major-sync CRC - built and round-trip tested
+    against the confirmed syntax below. `substream_directory`, `substream_segment()`,
+    `block()`, `restart_header()`, `EXTRA_DATA()` and, above all, `block_data()`'s compression
+    algorithm are not implemented yet - see [What's confirmed versus what's still
+    open](#whats-confirmed-versus-whats-still-open).
 
 ## A different lineage: lossless, not perceptual
 
