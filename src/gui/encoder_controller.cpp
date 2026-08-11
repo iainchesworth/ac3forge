@@ -105,8 +105,11 @@ struct BedInfo {
     const char* id;  // matches the handoff's own ids: "1/0" .. "3/2"
 };
 
-// In the handoff's own display order.
-constexpr std::array<BedInfo, 7> kBeds{{
+// In the handoff's own display order - 1+1 first, "drawn ... with a dashed
+// border so it reads as categorically different" (it is a bed, not a
+// location mask; see EncoderController::isDualMono()'s own comment).
+constexpr std::array<BedInfo, 8> kBeds{{
+    {ac3::Acmod::kDualMono, "1+1"},
     {ac3::Acmod::k1_0, "1/0"},
     {ac3::Acmod::k2_0, "2/0"},
     {ac3::Acmod::k3_0, "3/0"},
@@ -132,7 +135,16 @@ constexpr std::array<ExtraInfo, 5> kExtras{{
 
 // Space-joined location names for a bed's own full-bandwidth channels, e.g.
 // "L C R Ls Rs" for 3/2 - what the bed button shows beneath its id.
+//
+// acmod_map(kDualMono, ...) answers "L R" - a placeholder Table E2.5 bits
+// happen to need, documented at its own definition as "not a layout" and
+// "rejected before it's ever consulted" for real encoding. It is not
+// rejected here, so this has to name the actual thing instead: two
+// programmes, not a stereo pair.
 QString bed_channel_names(ac3::Acmod acmod) {
+    if (acmod == ac3::Acmod::kDualMono) {
+        return QStringLiteral("Program 1 · Program 2");
+    }
     QStringList names;
     for (const auto location : ac3::eac3::chanmap::expand(
              ac3::eac3::chanmap::acmod_map(acmod, false))) {
@@ -342,6 +354,9 @@ QVariantList EncoderController::objectModel() const {
 }
 
 QString EncoderController::channelShapeName() const {
+    if (isDualMono()) {
+        return QStringLiteral("1+1");
+    }
     using ac3::eac3::chanmap::Location;
     int ear = 0;
     int lfe_count = 0;
@@ -373,10 +388,22 @@ QString EncoderController::channelShapeName() const {
 }
 
 int EncoderController::channelBudgetUsed() const {
+    // Ch1 and Ch2 - always exactly two positions, independent of the
+    // 16-position budget the location-mask beds below share.
+    if (isDualMono()) {
+        return 2;
+    }
     return ac3::eac3::chanmap::channel_count(currentLocationMask());
 }
 
 QString EncoderController::channelLocationsText() const {
+    // "1+1" is a named layout, the same token ac3cli's own [layout]
+    // argument takes for it (see resolve_layout()) - not a Table E2.5
+    // location list, so format_channels()'s comma-separated form has
+    // nothing to format here.
+    if (isDualMono()) {
+        return QStringLiteral("1+1");
+    }
     return to_qstring(plan::format_channels(currentLocationMask()));
 }
 
@@ -488,12 +515,20 @@ void EncoderController::setBedIndex(int index) {
         return;
     }
     bed_acmod_ = acmod;
+    if (acmod == ac3::Acmod::kDualMono) {
+        // "Selecting it clears the LFE, extras and objects" - objects are
+        // already unreachable here (atmos_enabled_ already refused above,
+        // same as it does for every other bed change), so LFE and extras
+        // are the only state left to clear.
+        bed_lfe_ = false;
+        extras_mask_ = 0;
+    }
     emit planChanged();
     refreshRouting();
 }
 
 void EncoderController::setBedLfe(bool on) {
-    if (busy_ || atmos_enabled_ || on == bed_lfe_) {
+    if (busy_ || atmos_enabled_ || isDualMono() || on == bed_lfe_) {
         return;
     }
     bed_lfe_ = on;
@@ -700,6 +735,23 @@ void EncoderController::setMeasureDialnorm(bool on) {
         return;
     }
     meta_.measure_dialnorm = on;
+    emit planChanged();
+}
+
+void EncoderController::setDialnorm2(int value) {
+    const int clamped = std::clamp(value, 1, 31);
+    if (clamped == meta_.dialnorm2) {
+        return;
+    }
+    meta_.dialnorm2 = clamped;
+    emit planChanged();
+}
+
+void EncoderController::setMeasureDialnorm2(bool on) {
+    if (on == meta_.measure_dialnorm2) {
+        return;
+    }
+    meta_.measure_dialnorm2 = on;
     emit planChanged();
 }
 
@@ -961,7 +1013,16 @@ plan::Plan EncoderController::currentPlan() const {
     // Object mode always codes its own 5.1 bed: JOC reconstructs from five
     // channels (§6.3.2.2) and the LFE is outside the matrix entirely, so the
     // bed/LFE/extras picker's own state is beside the point while it is on.
-    if (!atmos_enabled_) {
+    if (atmos_enabled_) {
+        // p.layout stays the default 5.1 above; nothing else to set.
+    } else if (isDualMono()) {
+        // 1+1 names a layout, not a location mask - custom_locations has no
+        // way to express "two independent programmes" (see isDualMono()'s
+        // own comment), so this is the one bed that goes through
+        // plan.layout instead, the same as ac3cli's own resolve_layout()
+        // does for a named "1+1" argument.
+        p.layout = plan::LayoutId::kDualMono;
+    } else {
         p.custom_locations = currentLocationMask();
     }
     if (source_) {
@@ -2658,6 +2719,23 @@ void EncoderController::encodeChannels(const QString& path,
     // routingForSources - this function cannot silently disagree with what
     // the pre-encode preview already showed.
 
+    // Dual mono has no "whole programme" for the block below to gate-measure
+    // over - Ch1 and Ch2 are unrelated (§E1.3, no downmix between them), so
+    // a single BS.1770 pass across both would measure a blend of two
+    // different things rather than either one. ac3cli's own dual-mono path
+    // measures each programme independently instead (measured_dialnorm_channel
+    // in main.cpp); this controller does not have that machinery yet, so -
+    // matching the same scope cut Part 3 already made for src=/map= - it
+    // asks for both values explicitly rather than measuring one of them
+    // wrong.
+    if (isDualMono() && (p.meta.measure_dialnorm || p.meta.measure_dialnorm2)) {
+        setBusy(false);
+        setStatus(QStringLiteral("dialnorm=auto is not yet supported for 1+1 dual mono - set "
+                                 "both programmes' dialnorm by hand."));
+        emit encodeFinished(false, status());
+        return;
+    }
+
     // §5.4.2.8 wants dialogue level below full scale, and measuring it needs
     // the whole programme (the BS.1770 relative gate does), so it happens once
     // here rather than per frame. The layout it measures is the OUTPUT's,
@@ -2681,10 +2759,18 @@ void EncoderController::encodeChannels(const QString& path,
     }
 
     const auto coded = plan::coded_channels(cp);
-    const auto names = plan::coded_channel_names(cp);
+    // coded_channel_names() answers "L"/"R" for dual mono - acmod_map's own
+    // placeholder for a pair of Table E2.5 bits 1+1 needs but is not
+    // actually a location (see bed_channel_names()'s identical override).
+    // The meters get the honest names instead.
     QStringList labels;
-    for (const auto& name : names) {
-        labels.append(QString::fromStdString(name));
+    if (isDualMono()) {
+        labels = {QStringLiteral("Program 1"), QStringLiteral("Program 2")};
+    } else {
+        const auto names = plan::coded_channel_names(cp);
+        for (const auto& name : names) {
+            labels.append(QString::fromStdString(name));
+        }
     }
     setLayout(cp.bed_acmod, cp.bed_lfe, labels, label, coded, fedChannels());
     setMetering(true);

@@ -51,9 +51,17 @@ ColumnLayout {
             }
             CheckBox {
                 text: qsTr("measure")
-                enabled: !EncoderController.busy
+                // Auto-measurement needs each programme measured on its own
+                // (see the Programme 2 block below) - encodeChannels refuses
+                // it for dual mono rather than measuring the wrong thing, so
+                // the control is disabled here instead of offering something
+                // that would fail at encode time.
+                enabled: !EncoderController.busy && !EncoderController.dualMono
                 checked: EncoderController.measureDialnorm
                 onToggled: EncoderController.measureDialnorm = checked
+
+                ToolTip.visible: !enabled && hovered
+                ToolTip.text: qsTr("Not yet supported for dual mono — set both programmes' dialnorm by hand.")
             }
         }
     }
@@ -64,5 +72,44 @@ ColumnLayout {
         color: Theme.textMuted
         font.pixelSize: Theme.fontSmall
         wrapMode: Text.WordWrap
+    }
+
+    // Programme 2's own dialnorm (§5.4.2.16) - dual mono only. Ch1 and Ch2
+    // never share a downmix to average across (§E1.3), so each programme
+    // states its own dialogue level rather than reusing the one above.
+    GridLayout {
+        Layout.fillWidth: true
+        Layout.topMargin: Theme.gap
+        columns: 2
+        columnSpacing: Theme.gap
+        rowSpacing: Theme.gap
+        visible: EncoderController.dualMono
+
+        Text {
+            text: qsTr("dialnorm — programme 2")
+            color: Theme.text
+            font.pixelSize: Theme.fontNormal
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: Theme.gap
+
+            SpinBox {
+                from: 1
+                to: 31
+                enabled: !EncoderController.busy && !EncoderController.measureDialnorm2
+                value: EncoderController.dialnorm2
+                onValueModified: EncoderController.dialnorm2 = value
+            }
+            CheckBox {
+                text: qsTr("measure")
+                enabled: false
+                checked: EncoderController.measureDialnorm2
+                onToggled: EncoderController.measureDialnorm2 = checked
+
+                ToolTip.visible: hovered
+                ToolTip.text: qsTr("Not yet supported for dual mono — set both programmes' dialnorm by hand.")
+            }
+        }
     }
 }
