@@ -158,13 +158,14 @@ inline constexpr std::string_view kAssignmentSyntax =
 // rather than a gap to default silently. Returns false on any of that,
 // leaving `out` partially written, the same reject-rather-than-continue rule
 // the other parse_* functions already follow.
-[[nodiscard]] bool parse_assignment(std::string_view text, std::span<const SourceShape> sources,
-                                    Assignment& out);
+[[nodiscard]] AC3FORGE_EXPORT bool parse_assignment(std::string_view text,
+                                                    std::span<const SourceShape> sources,
+                                                    Assignment& out);
 
 // The inverse, in (source, then channel) order - one entry per declared
 // channel, so it always satisfies parse_assignment's completeness
 // requirement. Round-trips through parse_assignment.
-[[nodiscard]] std::string format_assignment(std::span<const SourceShape> sources,
-                                            const Assignment& assignment);
+[[nodiscard]] AC3FORGE_EXPORT std::string format_assignment(std::span<const SourceShape> sources,
+                                                             const Assignment& assignment);
 
 }  // namespace ac3::plan
