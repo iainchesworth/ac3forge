@@ -8,4 +8,6 @@ namespace ac3shield {
 
 bool maybe_sign_atmos_unit(std::vector<std::byte>& /*unit*/) { return false; }
 
+bool signing_available() { return false; }
+
 }  // namespace ac3shield

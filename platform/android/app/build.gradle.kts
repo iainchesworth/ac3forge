@@ -1,7 +1,29 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
+
+// Personal, local-only opt-in for the RE-derived quarantine signer overlay
+// (src/quarantine - gitignored, never committed, see that directory's own
+// README.md). OFF by default so THIS file - committed, and what CI/a public
+// release builds - always ships the safe (bed51-equivalent, see
+// shield_quarantine_hook.hpp's signing_available()) unsigned app. Turn it on
+// for your own local builds only, by adding one line to
+// platform/android/local.properties - itself gitignored and per-machine
+// already (see that file's header) - never edit this committed file to
+// flip it:
+//   ac3forge.quarantineSigner=true
+// See docs/platforms/android.md's "quarantine signer dependency" section.
+val localProperties = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.exists()) {
+        file.inputStream().use { load(it) }
+    }
+}
+val quarantineSignerEnabled =
+    (localProperties.getProperty("ac3forge.quarantineSigner") ?: "false").toBoolean()
 
 android {
     namespace = "com.ac3forge.shield"
@@ -77,12 +99,42 @@ android {
             externalNativeBuild {
                 cmake {
                     arguments += listOf("-DCMAKE_BUILD_TYPE=RelWithDebInfo")
+                    // See quarantineSignerEnabled's own comment above this
+                    // file's android {} block - governed by a gitignored
+                    // local.properties entry, never hardcoded here.
+                    if (quarantineSignerEnabled) {
+                        arguments += listOf("-DAC3FORGE_QUARANTINE_SIGNER=ON")
+                    }
                 }
             }
         }
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // Debug-keystore signed, not unsigned: this app is sideload-only
+            // (adb install / a GitHub release asset), never the Play Store,
+            // so there is no separate release keystore to provision - an
+            // unsigned release APK would not be directly installable at all,
+            // and a dedicated key would only matter for an update-signature
+            // check the Play Store performs and this distribution model
+            // never goes through. See docs/platforms/android.md.
+            signingConfig = signingConfigs.getByName("debug")
+            // Same reasoning as the debug build type's own comment above:
+            // without an explicit CMAKE_BUILD_TYPE this native side would
+            // build with whatever CMake's own default is (effectively
+            // unoptimized) - the exact ~13x-too-slow-for-real-time problem
+            // that comment describes, just for the variant that actually
+            // ships. Release, not RelWithDebInfo: this is the shipped
+            // artifact, not a local debugging build, so there is no reason
+            // to carry debug symbols in it.
+            externalNativeBuild {
+                cmake {
+                    arguments += listOf("-DCMAKE_BUILD_TYPE=Release")
+                    if (quarantineSignerEnabled) {
+                        arguments += listOf("-DAC3FORGE_QUARANTINE_SIGNER=ON")
+                    }
+                }
+            }
         }
     }
 

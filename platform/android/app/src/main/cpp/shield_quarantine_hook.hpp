@@ -35,4 +35,16 @@ namespace ac3shield {
 // unit carries no EMDF container to sign at all.
 [[nodiscard]] bool maybe_sign_atmos_unit(std::vector<std::byte>& unit);
 
+// Whether this build can sign at all - true only in the enabled TU (compiled
+// only when the gitignored src/quarantine overlay is present and
+// -DAC3FORGE_QUARANTINE_SIGNER=ON). live_cursor.cpp reads this once at
+// startup to decide whether to emit the OAMD/JOC object container in the
+// first place: per AtmosConfig::emit_object_metadata's own comment, carrying
+// an unsigned container is not a safe degraded mode on a decoder that
+// validates the emdf_protection field - it is a hard refusal, not a
+// fallback-to-5.1. A public build (this function returning false) omits the
+// container entirely instead, the same bed51 mode ac3cli's --mode flag
+// exposes, so the released app is always safe to play on any receiver.
+[[nodiscard]] bool signing_available();
+
 }  // namespace ac3shield

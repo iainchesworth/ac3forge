@@ -38,7 +38,7 @@ set(AC3FORGE_BUILD_FUZZERS OFF CACHE BOOL "" FORCE)
 # mirroring the relative path the way it does for an in-tree subdirectory.
 add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../../../../.." ac3forge_build)
 
-add_library(ac3forge_jni SHARED jni_entry.cpp live_cursor.cpp)
+add_library(ac3forge_jni SHARED jni_entry.cpp live_cursor.cpp file_replay.cpp)
 
 target_compile_features(ac3forge_jni PRIVATE cxx_std_23)
 

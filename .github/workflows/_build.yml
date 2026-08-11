@@ -584,6 +584,107 @@ jobs:
             packages/*.dmg.sha512
           if-no-files-found: error
 
+  # The Shield app (platform/android): a Gradle/NDK build, not a CMake preset
+  # leg, so it is its own job rather than a `build` matrix entry - there is
+  # no config-android/build-android/pack-android preset to reuse, and trying
+  # to force this into the same matrix shape as the CMake legs above would
+  # buy nothing. debug builds every push (this job's own continuous
+  # smoke test, same role windows-msvc's always-on Package step plays for
+  # the desktop legs - proves the Gradle/CMake/NDK toolchain and every
+  # native source file still build); release only builds - and is uploaded -
+  # for an actual release (do_package), matching release_package's "only the
+  # canonical shipped build" reasoning on the desktop legs.
+  #
+  # Never signs: CI has no src/quarantine/ (gitignored, never committed) and
+  # no platform/android/local.properties entry to turn the quarantine signer
+  # on even if it did - see build.gradle.kts's quarantineSignerEnabled and
+  # shield_quarantine_hook.hpp's signing_available(). Every build this job
+  # produces is the safe, bed51-equivalent unsigned app.
+  #
+  # continue-on-error, unlike every packageable desktop leg: this is a
+  # brand-new CI job, never yet proven green by a real run the way
+  # macos-llvm was before its own `experimental: true` line came off (see
+  # this file's header) - promote it the same way, by deleting this line
+  # once a real run has gone green.
+  build-android:
+    name: Android (Shield)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: ${{ inputs.fetch_depth }}
+
+      # ubuntu-latest ships several Temurin JDKs preinstalled, each with its
+      # own JAVA_HOME_<version>_X64 env var (see actions/runner-images) -
+      # selecting one this way needs no extra pinned action for a JDK AGP
+      # already requires (compileOptions targets 17 - see build.gradle.kts).
+      - name: Select JDK 17
+        shell: bash
+        run: echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+
+      # The Android SDK cmdline-tools ship preinstalled on this image
+      # (ANDROID_HOME already set), but not necessarily the exact NDK version
+      # build.gradle.kts pins (26.1.10909125, see docs/platforms/android.md) -
+      # install it explicitly rather than trust whatever the image happens to
+      # have cached, the same reasoning every other toolchain step in this
+      # workflow already follows. `yes | sdkmanager --licenses` can exit
+      # non-zero even after accepting everything (the piped `yes` closes
+      # before sdkmanager reads EOF) - a known quirk, not a real failure - so
+      # only the actual NDK install below is allowed to fail the job.
+      - name: Install pinned Android NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;26.1.10909125"
+
+      - name: Build debug APK
+        working-directory: platform/android
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew :app:assembleDebug --console=plain
+
+      - name: Build release APK
+        if: inputs.do_package
+        working-directory: platform/android
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :app:assembleRelease --console=plain
+
+      # Named/versioned and checksummed the same way cpack's own output is
+      # (see the desktop legs' Package step above), so this artifact fits the
+      # same release-artifacts/*.apk glob release.yml's jobs already use for
+      # every other platform's package.
+      - name: Stage release APK
+        if: inputs.do_package
+        shell: bash
+        env:
+          VERSION_TAG_INPUT: ${{ inputs.version_tag }}
+        run: |
+          set -euo pipefail
+          version="${VERSION_TAG_INPUT:-0.0.0-dev}"
+          mkdir -p packages
+          cp platform/android/app/build/outputs/apk/release/app-release.apk \
+             "packages/ac3forge-shield-${version}.apk"
+          ( cd packages && sha512sum "ac3forge-shield-${version}.apk" > "ac3forge-shield-${version}.apk.sha512" )
+
+      - name: Upload package artifacts
+        if: inputs.do_package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: packages-android
+          path: |
+            packages/*.apk
+            packages/*.apk.sha512
+          if-no-files-found: error
+
   # Persists this run's gold-reference SNR numbers (docs/quality-trend.md) so
   # they outlive the CI run that produced them, instead of only ever living in
   # a log that ages out. One job, not one push per leg: `needs: build` waits

@@ -47,14 +47,16 @@ object NativeBridge {
     external fun nativeStopLiveCursor()
 
     /**
-     * Nudges the currently-selected object's position by (dx, dy, dz),
-     * clamped to the room on the native side. Called from
-     * [InputController]'s animation ticker roughly once per frame, already
-     * scaled by stick magnitude/speed/elapsed-time or a fixed D-pad step -
-     * never called once per raw input event. See live_cursor.cpp's
-     * LiveCursorState.
+     * Biases the currently-selected object's position by (dx, dy, dz) away
+     * from its pre-planned trajectory, clamped to a bounding box on the
+     * native side. Called from [InputController]'s animation ticker roughly
+     * once per frame, already scaled by stick magnitude/speed/elapsed-time
+     * or a held D-pad direction x speed x elapsed-time - never called once
+     * per raw input event. The bias decays back to zero on its own, every
+     * encode frame, whether or not this is called again - see
+     * live_cursor.cpp's LiveCursorState::advance/deflect_selected.
      */
-    external fun nativeMoveSelectedObject(dx: Float, dy: Float, dz: Float)
+    external fun nativeDeflectSelectedObject(dx: Float, dy: Float, dz: Float)
 
     /** Moves the selection to the next object; returns the new selected index. */
     external fun nativeCycleSelectedObject(): Int
@@ -64,4 +66,17 @@ object NativeBridge {
      * object order. For the room visualization.
      */
     external fun nativeGetObjectState(): FloatArray
+
+    /**
+     * Diagnostic-only: streams a real, already-encoded AC-3/E-AC-3 file
+     * (e.g. an audio track pulled from a commercial Dolby Atmos demo MKV,
+     * unmodified) through the same PassthroughSink path the live cursor
+     * uses - see file_replay.cpp. Blocks until the whole file has been
+     * submitted and drained; call off the main thread. Independent of
+     * [nativeStartLiveCursor] - does not touch LiveCursorState. Requires
+     * [registerPassthroughBridge] to have run first, same as the live
+     * cursor. Returns false on read/parse/sink-start failure (see logcat
+     * tag ac3forge.shield.file_replay for why).
+     */
+    external fun nativePlayEac3File(path: String): Boolean
 }

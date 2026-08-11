@@ -223,7 +223,8 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           artifacts=(release-artifacts/*.deb release-artifacts/*.rpm release-artifacts/*.tar.gz
-                     release-artifacts/*.zip release-artifacts/*.exe release-artifacts/*.dmg)
+                     release-artifacts/*.zip release-artifacts/*.exe release-artifacts/*.dmg
+                     release-artifacts/*.apk)
           if [ ${#artifacts[@]} -eq 0 ]; then
             echo "::error::no package artifacts were downloaded - every platform failed to build"
             exit 1
@@ -277,7 +278,8 @@ jobs:
 
           shopt -s nullglob
           artifacts=(release-artifacts/*.deb release-artifacts/*.rpm release-artifacts/*.tar.gz
-                     release-artifacts/*.zip release-artifacts/*.exe release-artifacts/*.dmg)
+                     release-artifacts/*.zip release-artifacts/*.exe release-artifacts/*.dmg
+                     release-artifacts/*.apk)
 
           sign() {
             gpg --batch --yes --pinentry-mode loopback --passphrase-fd 3 --armor \
@@ -316,6 +318,7 @@ jobs:
             release-artifacts/*.zip
             release-artifacts/*.exe
             release-artifacts/*.dmg
+            release-artifacts/*.apk
 
       # actions/attest-sbom is deprecated (GitHub folded it into the generic
       # actions/attest action - confirmed by v0.2.0-beta.1's real run, which
@@ -332,6 +335,7 @@ jobs:
             release-artifacts/*.zip
             release-artifacts/*.exe
             release-artifacts/*.dmg
+            release-artifacts/*.apk
           sbom-path: release-artifacts/ac3forge-${{ needs.resolve-version.outputs.version }}.spdx.json
 
       # Only for workflow_dispatch: a tag-push run already has its tag (that
