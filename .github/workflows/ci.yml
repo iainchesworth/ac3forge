@@ -380,9 +380,16 @@ jobs:
         shell: bash
         run: cmake --build --preset build-linux-gcc-coverage -- -k 0
 
+      # -LE Performance: gcov's per-basic-block instrumentation adds real,
+      # measurable overhead - a coverage build has no more business being
+      # held to a hard real-time budget than the linux-llvm-asan-ubsan leg
+      # does (same reasoning, see that matrix entry's own comment). This
+      # job's question is "how much of src/lib executes", not "how fast" -
+      # tests/performance/'s own suite covers the latter on a genuinely
+      # optimized build.
       - name: Test
         shell: bash
-        run: ctest --preset test-linux-gcc-coverage
+        run: ctest --preset test-linux-gcc-coverage -LE Performance
 
       # --gcov-ignore-parse-errors=suspicious_hits.warn: mdct.cpp's
       # ForwardCosTable-driven hot loop (src/core/mdct.cpp) trips a documented
