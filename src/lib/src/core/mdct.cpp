@@ -54,17 +54,63 @@ const Twiddles2& twiddles2() {
 // §8.2.3.2 direct form, generalized over the transform length and alpha:
 // alpha = 0/N=512 is the long transform; alpha = -1/+1 at N=256 are the two
 // halves of a block-switched block.
-void mdct_forward_core(std::span<const double> windowed, int n_len, double alpha,
-                        std::span<double> coeffs) {
-    for (int k = 0; k < n_len / 2; ++k) {
-        double sum = 0.0;
-        const double factor = 2.0 * k + 1.0;
-        for (int n = 0; n < n_len; ++n) {
-            const double phase = (2.0 * kPi / (4.0 * n_len)) * (2.0 * n + 1.0) * factor +
-                                  (kPi / 4.0) * factor * (1.0 + alpha);
-            sum += windowed[static_cast<std::size_t>(n)] * std::cos(phase);
+//
+// cos(phase) depends only on (k, n, alpha), never on the windowed signal
+// itself, and alpha only ever takes the three values above - so it is the
+// same fixed N_len x (N_len/2) matrix on every call. This used to compute
+// std::cos(phase) fresh inside the loop below, exactly like the inverse
+// transform's own step 3 does NOT (imdct512_windowed/imdct256_pair_windowed
+// precompute their twiddle factors via Twiddles/Twiddles2 above and reuse
+// them). Measured with Tracy (docs/platforms/android.md's performance
+// investigation): that recomputation was ~79% of the ENTIRE encoder's
+// per-frame cost - 131,072 std::cos() calls per 512-point transform, 36
+// transforms a frame (6 channels x 6 blocks). Precomputing the matrix once,
+// the same way the inverse transform already does, produces bit-identical
+// coefficients (same phase formula, same std::cos(), same accumulation
+// order - only WHEN it runs changes) while removing that cost from the hot
+// path entirely.
+template <int NLen>
+struct ForwardCosTable {
+    static constexpr int kHalf = NLen / 2;
+    std::array<std::array<double, static_cast<std::size_t>(NLen)>, static_cast<std::size_t>(kHalf)>
+        value{};
+    explicit ForwardCosTable(double alpha) {
+        for (int k = 0; k < kHalf; ++k) {
+            const double factor = 2.0 * k + 1.0;
+            for (int n = 0; n < NLen; ++n) {
+                const double phase = (2.0 * kPi / (4.0 * NLen)) * (2.0 * n + 1.0) * factor +
+                                      (kPi / 4.0) * factor * (1.0 + alpha);
+                value[static_cast<std::size_t>(k)][static_cast<std::size_t>(n)] = std::cos(phase);
+            }
         }
-        coeffs[static_cast<std::size_t>(k)] = (-2.0 / n_len) * sum;
+    }
+};
+
+const ForwardCosTable<512>& forward_cos_table_long() {
+    static const ForwardCosTable<512> t(0.0);
+    return t;
+}
+
+const ForwardCosTable<256>& forward_cos_table_first() {
+    static const ForwardCosTable<256> t(-1.0);
+    return t;
+}
+
+const ForwardCosTable<256>& forward_cos_table_second() {
+    static const ForwardCosTable<256> t(1.0);
+    return t;
+}
+
+template <int NLen>
+void mdct_forward_core(std::span<const double> windowed, const ForwardCosTable<NLen>& table,
+                       std::span<double> coeffs) {
+    for (int k = 0; k < NLen / 2; ++k) {
+        double sum = 0.0;
+        for (int n = 0; n < NLen; ++n) {
+            sum += windowed[static_cast<std::size_t>(n)] *
+                   table.value[static_cast<std::size_t>(k)][static_cast<std::size_t>(n)];
+        }
+        coeffs[static_cast<std::size_t>(k)] = (-2.0 / NLen) * sum;
     }
 }
 
@@ -78,15 +124,15 @@ void apply_analysis_window(std::span<const double, 512> x, std::span<double, 512
 }
 
 void mdct512_forward(std::span<const double, 512> windowed, std::span<double, 256> coeffs) {
-    mdct_forward_core(windowed, kN, 0.0, coeffs);
+    mdct_forward_core<512>(windowed, forward_cos_table_long(), coeffs);
 }
 
 void mdct256_forward_first(std::span<const double, 256> windowed, std::span<double, 128> coeffs) {
-    mdct_forward_core(windowed, 256, -1.0, coeffs);
+    mdct_forward_core<256>(windowed, forward_cos_table_first(), coeffs);
 }
 
 void mdct256_forward_second(std::span<const double, 256> windowed, std::span<double, 128> coeffs) {
-    mdct_forward_core(windowed, 256, 1.0, coeffs);
+    mdct_forward_core<256>(windowed, forward_cos_table_second(), coeffs);
 }
 
 void imdct512_windowed(std::span<const double, 256> coeffs, std::span<double, 512> x) {

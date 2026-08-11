@@ -70,6 +70,7 @@ nav:
           - Windows: platforms/windows.md
           - Linux: platforms/linux.md
           - macOS (TBD): platforms/macos.md
+          - Android (NVIDIA Shield): platforms/android.md
   - Concepts:
       - Overview: concepts/index.md
       - AC-3 & E-AC-3: concepts/ac3-eac3.md
@@ -101,3 +102,4 @@ nav:
       - Releasing: releasing.md
       - History: project/history.md
       - Quality trend: quality-trend.md
+      - Performance trend: performance-trend.md

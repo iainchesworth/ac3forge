@@ -132,9 +132,10 @@ TEST_CASE("EMDF container carries its payloads verbatim", "[emdf]") {
     }
 
     CHECK(r.read(5) == 0);      // the payload list terminates
-    CHECK(r.read(2) == 0b01);   // protection_length_primary: 8 bits
-    CHECK(r.read(2) == 0b00);   // protection_length_secondary: absent
-    CHECK(r.read(8) == 0);      // protection_bits_primary
+    CHECK(r.read(2) == 0b10);   // protection_length_primary: 32 bits
+    CHECK(r.read(2) == 0b01);   // protection_length_secondary: 8 bits
+    CHECK(r.read(32) == 0);     // protection_bits_primary
+    CHECK(r.read(8) == 0);      // protection_bits_secondary
     CHECK_FALSE(r.overflowed());
 }
 

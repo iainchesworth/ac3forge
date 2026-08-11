@@ -46,6 +46,10 @@ include(Sanitizers)
 # linux-gcc-coverage preset in CMakePresets.json); a plain configure is unaffected.
 include(Coverage)
 
+# ac3::tracy, off unless -DAC3FORGE_ENABLE_TRACY=ON (and vcpkg's "profiling"
+# manifest feature resolved - see vcpkg.json); a plain configure is unaffected.
+include(Tracy)
+
 # Sources carry spec citations with non-ASCII glyphs (section marks, degrees,
 # arrows). Tell MSVC both the source and execution charsets are UTF-8 so it
 # neither mis-decodes them nor warns; harmless everywhere else.

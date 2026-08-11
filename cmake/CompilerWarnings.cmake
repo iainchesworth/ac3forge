@@ -73,11 +73,22 @@ endif()
 # site* (our test .cpp) rather than the system header the macro is defined
 # in, so every TEST_CASE call across the whole suite trips it. Not ours to
 # fix - it is Catch2's own macro body - so not ours to warn about, matching
-# the rationale immediately below for generated Qt sources. Both GCC and
-# older Clang silently accept an unrecognized -Wno-* flag (only positive -W
-# flags warn as "unknown-warning-option"), so this needs no version guard.
-target_compile_options(ac3_warnings INTERFACE
-    "$<$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>>:-Wno-c2y-extensions>")
+# the rationale immediately below for generated Qt sources.
+#
+# CORRECTION: the "older Clang silently accepts an unrecognized -Wno-* flag"
+# assumption this comment used to make is wrong, found compiling for Android
+# with NDK r26's bundled Clang 17.0.2 (see docs/platforms/android.md) - that
+# Clang errors with "-Werror,-Wunknown-warning-option" on -Wno-c2y-extensions
+# because -Wc2y-extensions itself did not exist yet (C2y diagnostics landed
+# upstream well after 17), so THIS project's own -Werror turns the unknown
+# flag into a hard failure rather than a silent no-op. So this DOES need a
+# version guard after all - real config-time if(), not a generator
+# expression, since the compiler version is fixed at configure time and
+# does not vary per-config the way COMPILER_ID conceivably could.
+if(CMAKE_CXX_COMPILER_ID MATCHES "^(Clang|AppleClang)$" AND
+   CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 20)
+    target_compile_options(ac3_warnings INTERFACE -Wno-c2y-extensions)
+endif()
 
 # ---------------------------------------------------------------------------
 # AC3_WARNINGS_OFF_FLAG - switches every warning off for one source file.
