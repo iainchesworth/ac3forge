@@ -22,16 +22,20 @@ ApplicationWindow {
     visible: true
     color: Theme.background
 
-    // "live capture" is approximated from `recording` until the input model
-    // is unified (the handoff's "one input, with a source selector") - that
-    // lands with the channel-model checkpoint, alongside the Monitor
-    // behaviour change it depends on.
     function baseName(path) {
         const normalized = path.replace(/\\/g, "/");
         const slash = normalized.lastIndexOf("/");
         return slash >= 0 ? normalized.substring(slash + 1) : normalized;
     }
-    readonly property string sourceLabel: EncoderController.recording
+    // recording (startRecording, capture+encode+file only) and liveActive
+    // (startLiveSession, capture+encode+optional monitor/passthrough/disk)
+    // are the two capture-driven states distinct from a loaded file - see
+    // EncoderController's own header comment on why they stay separate
+    // properties rather than one. Both read the same "live capture" label
+    // here: which of the two is running is already visible from the tab bar
+    // (liveActive alone switches to the Live session tab) and the run strip,
+    // so the window title does not need to repeat that distinction too.
+    readonly property string sourceLabel: (EncoderController.recording || EncoderController.liveActive)
                                            ? qsTr("live capture")
                                            : (EncoderController.sourcePath.length > 0
                                               ? window.baseName(EncoderController.sourcePath)
@@ -583,6 +587,29 @@ ApplicationWindow {
                             font.pixelSize: Theme.fontSmall
                             wrapMode: Text.WordWrap
                             visible: EncoderController.captureSupported
+                        }
+
+                        // Rate mode lives on the Format tab, shared with plain file
+                        // encoding - nothing there knows whether the NEXT thing
+                        // clicked is Encode or Start live session, so this is the one
+                        // place close enough to Start to say so before it is too late
+                        // to matter. runLiveSession always drops vbr and runs CBR
+                        // (IEC 61937 passthrough bursts are fixed-size per access
+                        // unit - see EncoderController::vbrAvailable()'s own comment).
+                        // Not gated on captureSupported like the rest of this card -
+                        // it stays true (and testable without a real capture device
+                        // present) whether or not one happens to be plugged in right
+                        // now, since VBR/live disagreeing is true either way.
+                        Text {
+                            objectName: "liveVbrWarning"
+                            Layout.fillWidth: true
+                            visible: !EncoderController.liveActive
+                                     && EncoderController.vbrAvailable
+                                     && EncoderController.vbrEnabled
+                            text: qsTr("VBR is on, but a live session always runs at the fixed bit rate above — variable bit rate needs a finished run to report, which a live session never has.")
+                            color: Theme.accent
+                            font.pixelSize: Theme.fontSmall
+                            wrapMode: Text.WordWrap
                         }
 
                         Text {

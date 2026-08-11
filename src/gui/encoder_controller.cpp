@@ -1853,6 +1853,17 @@ void EncoderController::startLiveSession(int captureDeviceIndex, bool monitor,
         // that never opened a file at all.
         const int nobjects = std::min<int>(static_cast<int>(device.channels), 15);
         if (object_count_ != nobjects) {
+            // Whatever is here right now is a loaded file's own object
+            // state (or a previous live session's, already the device's own
+            // shape - either way object_count_ would already equal
+            // nobjects and this branch would not run) - save it before
+            // resizing over it, so it comes back once this session ends
+            // instead of staying clobbered by an unrelated capture device's
+            // channel count (see LiveObjectBackup's own comment).
+            live_object_backup_ = LiveObjectBackup{.count = object_count_,
+                                                   .configs = object_configs_,
+                                                   .keyframes = object_keyframes_,
+                                                   .selected_index = selected_object_index_};
             object_count_ = nobjects;
             refreshObjectConfigs();
             emit sourceChanged();
@@ -2185,6 +2196,21 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device, bool mon
             }
             live_active_ = false;
             live_reconnecting_ = false;
+            // Whatever a loaded file (or nothing at all) had before this
+            // session resized object_configs_ to the capture device's
+            // channel count - see startLiveSession's own comment and
+            // LiveObjectBackup's. Only set when that resize actually ran,
+            // so a non-Atmos or already-matching-shape session leaves
+            // object state untouched, exactly as before this existed.
+            if (live_object_backup_) {
+                object_count_ = live_object_backup_->count;
+                object_configs_ = std::move(live_object_backup_->configs);
+                object_keyframes_ = std::move(live_object_backup_->keyframes);
+                selected_object_index_ = live_object_backup_->selected_index;
+                live_object_backup_.reset();
+                emit objectsChanged();
+                emit sourceChanged();
+            }
             setBusy(false);
             setMetering(false);
             publishLevels(totals);
