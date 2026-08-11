@@ -45,6 +45,7 @@ endif()
 
 add_executable(ac3tests
     test_analysis.cpp
+    test_assignment.cpp
     test_atmos.cpp
     test_atmos_motion.cpp
     test_audio_backend.cpp

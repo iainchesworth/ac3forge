@@ -86,6 +86,7 @@ target_sources(ac3forge
         src/decoder/decoder.cpp
         src/decoder/eac3_decoder.cpp
         src/emdf/emdf.cpp
+        src/encoder/assignment.cpp
         src/encoder/coupling.cpp
         src/encoder/eac3_frame.cpp
         src/encoder/eac3_tools.cpp
