@@ -46,6 +46,10 @@ include(Sanitizers)
 # linux-gcc-coverage preset in CMakePresets.json); a plain configure is unaffected.
 include(Coverage)
 
+# ac3::tracy, off unless -DAC3FORGE_ENABLE_TRACY=ON (and vcpkg's "profiling"
+# manifest feature resolved - see vcpkg.json); a plain configure is unaffected.
+include(Tracy)
+
 # Sources carry spec citations with non-ASCII glyphs (section marks, degrees,
 # arrows). Tell MSVC both the source and execution charsets are UTF-8 so it
 # neither mis-decodes them nor warns; harmless everywhere else.
@@ -76,6 +80,16 @@ option(AC3FORGE_BUILD_FUZZERS "Build libFuzzer harnesses (Clang only; see fuzz/)
 # normal build neither sees nor references it.
 option(AC3FORGE_QUARANTINE_SIGNER
     "Build the RE-derived (non-clean-room, local-only) EMDF Atmos protection signer" OFF)
+
+# enable_testing() has to run before ANY add_subdirectory() that might contain
+# an add_test() call, not merely before tests/ itself - CTest silently drops
+# an add_test() registered from a directory processed earlier in the same
+# configure pass (confirmed the hard way: src/gui/tests/'s ac3gui_qml_tests
+# was invisible to `ctest -N` until this moved here). Calling it unconditionally
+# is harmless when AC3FORGE_BUILD_TESTS is OFF - nothing calls add_test() then.
+if(AC3FORGE_BUILD_TESTS)
+    enable_testing()
+endif()
 
 # ---------------------------------------------------------------------------
 # Targets
@@ -122,7 +136,6 @@ if(AC3FORGE_BUILD_GUI)
 endif()
 
 if(AC3FORGE_BUILD_TESTS)
-    enable_testing()
     add_subdirectory(tests)
 endif()
 

@@ -8,12 +8,22 @@ regardless of which tab is active on the right.
 **Choose WAV…** opens a file picker; the chosen path (middle-elided) and a summary line appear
 beneath it once loaded — sample rate, channel count, and duration:
 
-![A 12-channel WAV loaded: 48000 Hz, 12 channels, 0:08](screenshots/loading-a-source-loaded.png)
+![A 6-channel WAV loaded: 48000 Hz, 6 channels, 0:01](screenshots/loading-a-source-loaded.png)
 
 The card reports the channel *count*, not a layout name — the output layout is chosen
 independently on the [Format tab](format-and-channels.md) and need not match the source. A source
 narrower than the chosen output layout leaves the missing channels silent; a wider one folds down
-per §7.8 using the centre/surround downmix levels on the [Metadata tab](metadata.md).
+per §7.8 using the centre/surround downmix levels on the [Metadata tab](metadata.md), *unless*
+more than one source is loaded — see below.
+
+### Loading more than one source
+
+An **Add source…** button (enabled once the first file is ready) appends another WAV rather than
+replacing the primary — every source must share a sample rate, or the add is refused with a
+status message naming the mismatch. With two or more sources loaded, the automatic fold-down
+above no longer applies: every loaded channel needs an explicit destination (a speaker position,
+an object, or a dual-mono programme) before an encode can run. That table — and what happens when
+a source is removed — is its own page: [Multi-source & assignment](source-assignment.md).
 
 ## Live capture
 
@@ -41,11 +51,14 @@ named and ordered as A/52 Table 5.8 defines them, with a −60…0 dB tick scale
 ![Channel meters populated after a run, 7.1.4 E-AC-3](screenshots/channel-levels-live.png)
 
 A **Coded / Rendered** toggle switches between the coded-channel view above and what those
-channels actually render to on playback — the two differ whenever a dependent substream replaces
-part of the bed rather than adding to it (§E3.8.2), which is why a 7.1.4 layout meters 14 coded
-channels for 12 speakers. During a run, a red dot and the word **live** replace the "peak and RMS
-over the whole signal" label while metering updates in real time; once the run finishes, the bars
-show the final peak/RMS for the whole file, with per-channel **CLIP** indicators.
+channels actually render to on playback — the two differ whenever a dependent substream's own
+transmitted channels replace part of the bed rather than adding to it (§E3.8.2). The channel
+picker's own presets (built through `chanmap::allocate()`, not the older named-layout table) keep
+coded and rendered equal for every combination reachable from the Format tab today, so this only
+shows up with a hand-built custom selection wide enough to need it. During a run, a red dot and
+the word **live** replace the "peak and RMS over the whole signal" label while metering updates in
+real time; once the run finishes, the bars show the final peak/RMS for the whole file, with
+per-channel **CLIP** indicators.
 
 A channel nothing feeds is drawn at reduced opacity and reads `-∞`, so "correctly silent" stays
 distinguishable from "meter wired to nothing."

@@ -12,12 +12,15 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <span>
+#include <utility>
 #include <vector>
 
 #include "ac3/analysis/levels.hpp"
 #include "ac3/capture/capture.hpp"
 #include "ac3/core/tables.hpp"
+#include "ac3/encoder/assignment.hpp"
 #include "ac3/encoder/plan.hpp"
 #include "ac3/oba/motion.hpp"
 #include "ac3/oba/oamd.hpp"
@@ -42,6 +45,30 @@ class EncoderController : public QObject {
     Q_PROPERTY(QString sourcePath READ sourcePath NOTIFY sourceChanged)
     Q_PROPERTY(QString sourceInfo READ sourceInfo NOTIFY sourceChanged)
     Q_PROPERTY(bool sourceReady READ sourceReady NOTIFY sourceChanged)
+    // Multi-source input: the primary source (loadSourceFile) plus whatever
+    // addSourceFile has added since, one row per loaded source -
+    // {index, label, path, channels, primary}. Index 0 is always the primary
+    // (removeSource(0) drops everything rather than promoting an extra,
+    // since there is no honest way to guess which one should take its
+    // place). With exactly one source loaded this is a single row and
+    // nothing else here changes anything - see routingForSources().
+    Q_PROPERTY(QVariantList sourceModel READ sourceModel NOTIFY sourceChanged)
+    // One row per (source, channel) sourceModel declares -
+    // {source, channel, sourceLabel, destToken} - destToken in
+    // plan::parse_destination's own vocabulary ("L", "obj", "p1", "p2",
+    // "none"), so setAssignment's argument is always something this list
+    // itself already printed. Every row exists whether or not it has been
+    // explicitly assigned yet (an unset one reads "none"), so a caller can
+    // always render one row per channel rather than special-casing the gap.
+    Q_PROPERTY(QVariantList assignmentRows READ assignmentRows NOTIFY sourceChanged)
+    // "<source> ch <n> is loaded but goes nowhere" - plan::Assignment::
+    // unassigned()'s inventory in prose. Empty only when automatic
+    // single-source routing applies (see routingForSources) - every source
+    // channel is accounted for by construction there; with more than one
+    // source, every channel warns until it has actually been given a
+    // destination, even before setAssignment has been called for the first
+    // time.
+    Q_PROPERTY(QStringList unassignedWarnings READ unassignedWarnings NOTIFY sourceChanged)
     Q_PROPERTY(QString outputPath READ outputPath NOTIFY outputChanged)
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
@@ -49,13 +76,49 @@ class EncoderController : public QObject {
     // Encoding is a job with a history, not a modal moment: one entry per
     // file encode (not a live recording, which already has its own elapsed-
     // time readout), newest first. Each is {id, filename, bitrateKbps,
-    // durationText, status ("encoding"|"done"|"failed"|"cancelled"),
-    // sizeText, detail}. There is at most one "encoding" entry at a time
-    // (busy_ gates a new run), and its live progress is read off the
-    // existing `progress` property rather than duplicated per entry.
+    // rateText, durationText, status ("encoding"|"done"|"failed"|
+    // "cancelled"), sizeText, detail}. rateText is what the run strip
+    // actually displays - "384 kbps" for CBR, or, once a VBR run finishes,
+    // "VBR q75 · avg 512 kbps (384-704)": a VBR run has no target rate to
+    // show while "encoding" (only the quality it is aiming for), and a real
+    // one to report once its actual frame sizes are known (see
+    // encodeChannels' completion callback and finishRun()). There is at
+    // most one "encoding" entry at a time (busy_ gates a new run), and its
+    // live progress is read off the existing `progress` property rather
+    // than duplicated per entry.
     Q_PROPERTY(QVariantList runs READ runs NOTIFY runsChanged)
     Q_PROPERTY(int bitrateKbps READ bitrateKbps WRITE setBitrateKbps NOTIFY planChanged)
     Q_PROPERTY(QVariantList bitrates READ bitrates NOTIFY planChanged)
+    // ---- variable bit rate (E-AC-3, file output only) ---------------------
+    // A quality target (with optional independent min/max kbps bounds)
+    // replaces bitrate_kbps-driven CBR sizing - eac3-encode's own [vbr]
+    // positional, in exactly plan::parse_vbr's grammar (kVbrSyntax), so the
+    // command bar's line is always something ac3cli would actually parse.
+    // Not available for AC-3 (validate() rejects it, PlanError::
+    // kVbrNeedsEac3), object mode (a fixed 5.1 bed with no [vbr] argument of
+    // its own), or a live session (IEC 61937 passthrough bursts are
+    // fixed-size per access unit and nothing here renegotiates burst framing
+    // mid-stream, so a live session always runs CBR regardless of what this
+    // holds - see runLiveSession()). bitrate_kbps above still matters in VBR
+    // mode: it keeps feeding the coupling/spx begin-frequency defaults, the
+    // same job it always had, not a target rate.
+    Q_PROPERTY(bool vbrAvailable READ vbrAvailable NOTIFY planChanged)
+    Q_PROPERTY(bool vbrEnabled READ vbrEnabled WRITE setVbrEnabled NOTIFY planChanged)
+    // 0-100 (default 75): linearly maps onto VbrConfig::quality's own [0,1]
+    // range. A preference does not need two decimals of precision, so this
+    // is an int rather than the raw double the library takes.
+    Q_PROPERTY(int vbrQuality READ vbrQuality WRITE setVbrQuality NOTIFY planChanged)
+    // Presence lives on the checkbox, never a sentinel value: unticked means
+    // no bound at all, not a default one - matching VbrConfig::min_kbps/
+    // max_kbps's own optional<> shape exactly rather than smuggling "off"
+    // into some number nobody would ever legitimately choose.
+    Q_PROPERTY(bool vbrMinEnabled READ vbrMinEnabled WRITE setVbrMinEnabled NOTIFY planChanged)
+    Q_PROPERTY(int vbrMinKbps READ vbrMinKbps WRITE setVbrMinKbps NOTIFY planChanged)
+    Q_PROPERTY(bool vbrMaxEnabled READ vbrMaxEnabled WRITE setVbrMaxEnabled NOTIFY planChanged)
+    Q_PROPERTY(int vbrMaxKbps READ vbrMaxKbps WRITE setVbrMaxKbps NOTIFY planChanged)
+    // plan::format_vbr() of the settings above - the exact [vbr] token
+    // ac3cli's eac3-encode takes, so the command bar can paste it verbatim.
+    Q_PROPERTY(QString vbrToken READ vbrToken NOTIFY planChanged)
     Q_PROPERTY(QStringList captureDevices READ captureDevices NOTIFY captureDevicesChanged)
     Q_PROPERTY(bool captureSupported READ captureSupported NOTIFY captureDevicesChanged)
     Q_PROPERTY(QStringList outputDevices READ outputDevices NOTIFY outputDevicesChanged)
@@ -87,6 +150,18 @@ class EncoderController : public QObject {
     // offers AC-3 mono and stereo, and this must not remove that).
     Q_PROPERTY(QVariantList bedChoices READ bedChoices CONSTANT)
     Q_PROPERTY(bool bedLfe READ bedLfe WRITE setBedLfe NOTIFY planChanged)
+    // 1+1 is a bed, not a layout (the handoff's own framing): two
+    // independent programmes sharing one syncframe, not a spatial pair -
+    // drawn first among the bed buttons and, unlike every other bed, with
+    // nothing else able to sit alongside it. QML's hook for styling it and
+    // the Programme 2 metadata block distinctly, rather than every reader
+    // re-deriving "bedIndex 0" == dual mono for themselves.
+    Q_PROPERTY(bool dualMono READ dualMono NOTIFY planChanged)
+    // True for object mode (as extrasLocked already was) OR dual mono - an
+    // independent LFE has no meaning once the bed is two mono programmes
+    // instead of a soundfield, so selecting 1+1 clears and locks it exactly
+    // as it locks the extras below.
+    Q_PROPERTY(bool bedLfeLocked READ bedLfeLocked NOTIFY planChanged)
     // Five rows {id, label, channels, checked, enabled, reason}: `enabled` is
     // false when ticking (or, for an already-ticked row, UNticking) would
     // leave chanmap::allocate() unable to satisfy the result - over the
@@ -135,6 +210,13 @@ class EncoderController : public QObject {
     Q_PROPERTY(double dialogueDb READ dialogueDb WRITE setDialogueDb NOTIFY planChanged)
     Q_PROPERTY(int dialnorm READ dialnorm WRITE setDialnorm NOTIFY planChanged)
     Q_PROPERTY(bool measureDialnorm READ measureDialnorm WRITE setMeasureDialnorm NOTIFY planChanged)
+    // Programme 2's own dialnorm (§5.4.2.16) - meaningless outside dual mono,
+    // where it exists because §5.4.2.8's dialnorm is program 1's and the two
+    // never share a downmix to average across. Same shape as dialnorm/
+    // measureDialnorm; QML gates visibility on dualMono rather than these
+    // hiding themselves, matching every other metadata field here.
+    Q_PROPERTY(int dialnorm2 READ dialnorm2 WRITE setDialnorm2 NOTIFY planChanged)
+    Q_PROPERTY(bool measureDialnorm2 READ measureDialnorm2 WRITE setMeasureDialnorm2 NOTIFY planChanged)
     Q_PROPERTY(int cmixIndex READ cmixIndex WRITE setCmixIndex NOTIFY planChanged)
     Q_PROPERTY(QStringList cmixNames READ cmixNames CONSTANT)
     Q_PROPERTY(int surmixIndex READ surmixIndex WRITE setSurmixIndex NOTIFY planChanged)
@@ -228,6 +310,9 @@ public:
     [[nodiscard]] QString sourcePath() const { return source_path_; }
     [[nodiscard]] QString sourceInfo() const { return source_info_; }
     [[nodiscard]] bool sourceReady() const { return source_ready_; }
+    [[nodiscard]] QVariantList sourceModel() const;
+    [[nodiscard]] QVariantList assignmentRows() const;
+    [[nodiscard]] QStringList unassignedWarnings() const;
     [[nodiscard]] QString outputPath() const { return output_path_; }
     [[nodiscard]] QString status() const { return status_; }
     [[nodiscard]] bool busy() const { return busy_; }
@@ -235,6 +320,16 @@ public:
     [[nodiscard]] QVariantList runs() const { return runs_; }
     [[nodiscard]] int bitrateKbps() const { return bitrate_kbps_; }
     [[nodiscard]] QVariantList bitrates() const;
+    [[nodiscard]] bool vbrAvailable() const {
+        return codec_ == ac3::plan::Codec::kEac3 && !atmos_enabled_ && !live_active_;
+    }
+    [[nodiscard]] bool vbrEnabled() const { return vbr_enabled_; }
+    [[nodiscard]] int vbrQuality() const { return vbr_quality_; }
+    [[nodiscard]] bool vbrMinEnabled() const { return vbr_min_enabled_; }
+    [[nodiscard]] int vbrMinKbps() const { return static_cast<int>(vbr_min_kbps_); }
+    [[nodiscard]] bool vbrMaxEnabled() const { return vbr_max_enabled_; }
+    [[nodiscard]] int vbrMaxKbps() const { return static_cast<int>(vbr_max_kbps_); }
+    [[nodiscard]] QString vbrToken() const;
     [[nodiscard]] QStringList captureDevices() const { return capture_devices_; }
     [[nodiscard]] bool captureSupported() const { return !capture_devices_.isEmpty(); }
     [[nodiscard]] QStringList outputDevices() const { return output_devices_; }
@@ -252,9 +347,11 @@ public:
     [[nodiscard]] int bedIndex() const;
     [[nodiscard]] QVariantList bedChoices() const;
     [[nodiscard]] bool bedLfe() const { return bed_lfe_; }
+    [[nodiscard]] bool dualMono() const { return isDualMono(); }
+    [[nodiscard]] bool bedLfeLocked() const { return atmos_enabled_ || isDualMono(); }
     [[nodiscard]] QVariantList extrasModel() const;
     [[nodiscard]] bool extrasLocked() const {
-        return atmos_enabled_ || codec_ == ac3::plan::Codec::kAc3;
+        return atmos_enabled_ || isDualMono() || codec_ == ac3::plan::Codec::kAc3;
     }
     [[nodiscard]] QString channelShapeName() const;
     [[nodiscard]] int channelBudgetUsed() const;
@@ -280,6 +377,8 @@ public:
     [[nodiscard]] double dialogueDb() const { return dialogue_db_; }
     [[nodiscard]] int dialnorm() const { return meta_.dialnorm; }
     [[nodiscard]] bool measureDialnorm() const { return meta_.measure_dialnorm; }
+    [[nodiscard]] int dialnorm2() const { return meta_.dialnorm2; }
+    [[nodiscard]] bool measureDialnorm2() const { return meta_.measure_dialnorm2; }
     [[nodiscard]] int cmixIndex() const { return static_cast<int>(meta_.cmixlev); }
     [[nodiscard]] QStringList cmixNames() const;
     [[nodiscard]] int surmixIndex() const { return static_cast<int>(meta_.surmixlev); }
@@ -296,9 +395,14 @@ public:
     [[nodiscard]] QString layoutName() const { return layout_name_; }
     [[nodiscard]] bool hasLevels() const { return !channel_names_.isEmpty(); }
     // Two or more full-bandwidth channels make a soundfield worth drawing;
-    // mono, and no source at all, do not.
+    // mono, and no source at all, do not. Dual mono's Table 5.8 entry
+    // reuses nfchans=2 (the same "not a layout" placeholder acmod_map's own
+    // comment names), but Ch1/Ch2 are unrelated programmes with no
+    // soundstage between them - fullbw_channel_count alone would say
+    // otherwise, so this checks acmod_ directly rather than trust it here.
     [[nodiscard]] bool surround() const {
-        return hasLevels() && ac3::fullbw_channel_count(acmod_) >= 2;
+        return hasLevels() && acmod_ != ac3::Acmod::kDualMono &&
+              ac3::fullbw_channel_count(acmod_) >= 2;
     }
     [[nodiscard]] QVariantList channelLevels() const { return channel_levels_; }
     [[nodiscard]] QVariantMap soundfield() const { return soundfield_; }
@@ -324,6 +428,12 @@ public:
     [[nodiscard]] double liveLatencyMs() const { return live_latency_ms_; }
 
     void setBitrateKbps(int kbps);
+    void setVbrEnabled(bool on);
+    void setVbrQuality(int value);
+    void setVbrMinEnabled(bool on);
+    void setVbrMinKbps(int value);
+    void setVbrMaxEnabled(bool on);
+    void setVbrMaxKbps(int value);
     void setCodecIndex(int index);
     void setBedIndex(int index);
     void setBedLfe(bool on);
@@ -341,6 +451,8 @@ public:
     void setDialogueDb(double db);
     void setDialnorm(int value);
     void setMeasureDialnorm(bool on);
+    void setDialnorm2(int value);
+    void setMeasureDialnorm2(bool on);
     void setCmixIndex(int index);
     void setSurmixIndex(int index);
     void setMixmeta(bool on);
@@ -389,6 +501,34 @@ public:
     Q_INVOKABLE [[nodiscard]] QVariantMap evaluateObjectPath(int objectIndex, double timeS) const;
 
     Q_INVOKABLE void loadSourceFile(const QUrl& url);
+    // Adds another source alongside whatever is already loaded - or, if
+    // nothing is loaded yet, is exactly loadSourceFile (so a caller offering
+    // one "add a source" affordance never has to know which entry point to
+    // use first). Refuses (with a status message, the same convention
+    // loadSourceFile's own failures use) a sample rate that does not match
+    // the sources already loaded - plan::render has no notion of
+    // resampling, and a silent mismatch would drift rather than error.
+    Q_INVOKABLE void addSourceFile(const QUrl& url);
+    // index 0 (the primary) drops every loaded source and the assignment
+    // with it - see sourceModel's own doc comment on why. Removing any
+    // other index clears the assignment table rather than trying to shift
+    // its rows down: they addressed positions by index, every later
+    // source's index just changed, and guessing which old row survives is
+    // exactly the kind of silently-maybe-wrong behaviour this surface
+    // exists to avoid (plan::Assignment's own doc comment makes the same
+    // call for an unassigned channel).
+    Q_INVOKABLE void removeSource(int index);
+    // destToken is whatever assignmentRows already printed for a row, or
+    // any token plan::parse_destination accepts - the same vocabulary
+    // ac3cli's map= takes, so a GUI selection and a hand-typed command line
+    // can never disagree about what a token means. Silently ignored if it
+    // does not parse, same convention as toggleExtra/applyChannelPreset.
+    Q_INVOKABLE void setAssignment(int sourceIndex, int channel, const QString& destToken);
+    // Back to automatic routing - only meaningful with exactly one source
+    // loaded (see routingForSources); with more than one, clearing merely
+    // empties the table, since automatic panning has no defined meaning
+    // across several sources.
+    Q_INVOKABLE void clearAssignment();
     Q_INVOKABLE void encodeTo(const QUrl& url);
     Q_INVOKABLE void cancel();
     Q_INVOKABLE [[nodiscard]] QString suggestedOutputName() const;
@@ -468,12 +608,54 @@ private:
     // What the routing summary calls this plan: "5.1 bed" for object mode,
     // else the derived shape name (channelShapeName()).
     [[nodiscard]] QString effectiveLabel() const;
+    // bed_acmod_ == kDualMono - checked often enough (currentPlan(),
+    // channelShapeName(), extrasLocked()...) to name once. 1+1 is a bed, not
+    // a location mask (see kBeds' own comment and acmod_map's "not a
+    // layout" one in eac3_tables.hpp), so every one of those call sites has
+    // to branch on this rather than run the general chanmap path.
+    [[nodiscard]] bool isDualMono() const { return bed_acmod_ == ac3::Acmod::kDualMono; }
+
+    // The primary source plus every extra, in load order - the same
+    // concatenation order encodeTo() builds `planes` in, and what
+    // ac3::plan::Assignment's (source, channel) addressing means here.
+    // Empty when nothing is loaded.
+    [[nodiscard]] std::vector<ac3::plan::SourceShape> sourceShapes() const;
+    // objectModel()'s own sourceLabel for object `flatIndex` (a concatenated
+    // index into sourceShapes(), the same addressing planes/Assignment use):
+    // "Ch <n>" with exactly one source loaded - unchanged from what this has
+    // always shown - else "<file> ch <n>", the same "<source> ch <n>"
+    // phrasing assignmentRows()/unassignedWarnings() already use, so an
+    // object and the channel it came from are named the same way everywhere
+    // this app names one.
+    [[nodiscard]] QString objectSourceLabel(std::size_t flatIndex) const;
+    // The routing a run should actually use: automatic single-source panning
+    // when exactly one source is loaded and nothing has been assigned
+    // explicitly (byte-identical to what this controller has always done),
+    // else the explicit Assignment - dual mono routed through
+    // dual_mono_routing() rather than the general location-based route(),
+    // for the same reason ac3cli's own routing_for_sources() picks between
+    // them (see main.cpp). Returns nullopt if nothing is loaded, if more
+    // than one source is loaded with no explicit assignment (automatic
+    // panning has no defined meaning there), or if the assignment/automatic
+    // routing itself cannot be built.
+    [[nodiscard]] std::optional<ac3::plan::Routing> routingForSources(
+        const ac3::plan::ChannelPlan& target, const ac3::plan::Plan& p) const;
+    // The object-count/meter-preview/status bookkeeping addSourceFile and
+    // removeSource both need after the source list changes - loadSourceFile
+    // keeps its own equivalent tail untouched (see its own comments) rather
+    // than sharing this, so replacing the primary source can never behave
+    // differently because of a refactor here.
+    void refreshAfterSourceListChange();
 
     // Channels through the plan and out as AC-3 or E-AC-3. One worker for
     // both: they differ only in which encoder object runs, and everything
     // around it - routing, metering, progress, the container - is identical.
+    // `routing` is already built and validated by the caller (encodeTo, via
+    // routingForSources) rather than recomputed here, so this function
+    // cannot silently disagree with what the pre-encode preview already
+    // showed.
     void encodeChannels(const QString& path, std::vector<std::vector<float>> planes,
-                        std::uint32_t sample_rate);
+                        const ac3::plan::Routing& routing, std::uint32_t sample_rate);
     // One object per source channel, over a 5.1 bed. `planes` is the source's
     // own channels; unlike the channel path they are not routed anywhere,
     // because an object is not a speaker feed.
@@ -483,7 +665,14 @@ private:
     // that survives the change and spreading newly-added ones out along x
     // instead of defaulting them all onto the same overlapping point (the
     // design brief's own complaint about the single-point-plus-spread model).
-    // Called wherever object_count_ is set.
+    // Called wherever object_count_ is set. Preserving by INDEX is only
+    // honest when indices themselves have not shifted underneath - true for
+    // a grown/shrunk primary (loadSourceFile always starts fresh anyway) and
+    // for addSourceFile (a new source's channels only ever append past the
+    // old count) - so removeSource() clears object_configs_/
+    // object_keyframes_ itself first for a non-primary removal, the same
+    // "clear rather than risk silently reattaching to the wrong channel"
+    // call assignment_ already makes there, before this ever runs.
     void refreshObjectConfigs();
     // The shared lookup addObjectKeyframe/removeObjectKeyframe/
     // objectKeyframes/evaluateObjectPath all build on: object_keyframes_'s
@@ -567,6 +756,12 @@ private:
     double progress_ = 0.0;
     double recorded_seconds_ = 0.0;
     int bitrate_kbps_ = 192;
+    bool vbr_enabled_ = false;
+    int vbr_quality_ = 75;
+    bool vbr_min_enabled_ = false;
+    std::uint32_t vbr_min_kbps_ = 192;
+    bool vbr_max_enabled_ = false;
+    std::uint32_t vbr_max_kbps_ = 640;
 
     ac3::plan::Codec codec_ = ac3::plan::Codec::kAc3;
     // Tier 1: the bed and its independent LFE. Defaults to stereo, matching
@@ -608,10 +803,33 @@ private:
     // common case) falls back to the object's static ObjectConfig placement
     // in encodeObjects, held constant for the whole file.
     QHash<int, std::vector<ac3::oba::Keyframe>> object_keyframes_;
+    // A snapshot of object_configs_/object_keyframes_/selected_object_index_
+    // as they stood before a live Atmos session resized them to the CAPTURE
+    // DEVICE's channel count instead of a loaded file's (see
+    // startLiveSession's own comment on why that resize happens at all).
+    // Restored once the session ends (runLiveSession's completion callback),
+    // so an unrelated live excursion can never permanently clobber authored
+    // object placements/motion a loaded file already had. nullopt means
+    // nothing needs restoring - no session has resized anything yet, or the
+    // device's channel count already matched and nothing was touched.
+    struct LiveObjectBackup {
+        int count = 0;
+        std::vector<ObjectConfig> configs;
+        QHash<int, std::vector<ac3::oba::Keyframe>> keyframes;
+        int selected_index = 0;
+    };
+    std::optional<LiveObjectBackup> live_object_backup_;
 
     QVariantList runs_;
     int current_run_id_ = -1;
     int next_run_id_ = 1;
+    // Set right before encodeChannels' completion callback emits
+    // encodeFinished, consumed once by finishRun() and cleared - the "NNN
+    // kbps" or, for a VBR run, "VBR q75 · avg 512 kbps (384-704)" text the
+    // run strip shows once a run is no longer "encoding". startRun() already
+    // wrote a live-appropriate placeholder into the same run's rateText;
+    // this is what replaces it once the real per-frame sizes are known.
+    QString pending_rate_text_;
 
     bool playing_ = false;
     QStringList capture_devices_;
@@ -634,6 +852,24 @@ private:
     QVariantMap soundfield_;
 
     std::unique_ptr<Source> source_;
+    // Everything beyond the primary, in load order - source index (n+1) in
+    // sourceShapes()/Assignment addressing. Always empty with the single-
+    // source behaviour every existing call site (still) assumes.
+    std::vector<std::unique_ptr<Source>> extra_sources_;
+    // Empty (every row implicitly kUnassigned) until setAssignment is
+    // called at least once; see routingForSources for what that means for
+    // which routing actually gets used.
+    ac3::plan::Assignment assignment_;
+    bool has_explicit_assignment_ = false;
+    // Every (source, channel) setAssignment has ever been called for, "none"
+    // included - Assignment itself cannot tell an explicit "none" apart from
+    // a channel nobody has visited yet (see assignment.hpp's own doc
+    // comment; parse_assignment works around the same gap differently, by
+    // tracking coverage locally while it still has a token to blame). Reset
+    // everywhere assignment_ itself is reset, so unassignedWarnings can
+    // subtract this from Assignment::unassigned()'s raw inventory and stop
+    // nagging about a channel the user deliberately silenced.
+    std::set<std::pair<std::size_t, std::size_t>> touched_channels_;
     std::unique_ptr<ac3::capture::Capture> capture_;
     std::atomic_bool cancel_requested_{false};
     std::atomic_bool stop_recording_{false};

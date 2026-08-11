@@ -105,6 +105,14 @@ if(AC3FORGE_AUDIO_BACKEND STREQUAL "alsa")
     # interface and deliberately not installed - it is on the include path for
     # this target only, and only in this configuration.
     target_include_directories(ac3tests PRIVATE "${AC3FORGE_AUDIO_BACKEND_DIR}")
+elseif(AC3FORGE_AUDIO_BACKEND STREQUAL "android")
+    # Desktop-hosted ac3tests never actually selects the android backend (it
+    # only exists under NDK cross-compilation, which this target is not) -
+    # this branch is future-proofing should that ever change, matching the
+    # alsa branch's shape exactly rather than assuming android can never
+    # reach here.
+    target_sources(ac3tests PRIVATE platform/android/test_android_support.cpp)
+    target_include_directories(ac3tests PRIVATE "${AC3FORGE_AUDIO_BACKEND_DIR}")
 endif()
 
 target_include_directories(ac3tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -120,3 +128,14 @@ target_link_libraries(ac3tests
 
 include(Catch)
 catch_discover_tests(ac3tests)
+
+# ---------------------------------------------------------------------------
+# ac3perf - real-time throughput regression guards, deliberately a SEPARATE
+# binary/target from ac3tests rather than a couple more source files added to
+# it. A throughput assertion is a different kind of check from the rest of
+# the suite: environment-sensitive (see test_performance.cpp's ASan slack),
+# meant to be read as a number as much as a pass/fail, and not something a
+# quick correctness-only run (`ctest -E Performance`, say) should have to
+# carry. Catch2 is already resolved above; this target just reuses it.
+# ---------------------------------------------------------------------------
+add_subdirectory(performance)

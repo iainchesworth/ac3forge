@@ -12,6 +12,81 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 
 ## [Unreleased]
 
+## [0.3.0-beta.1] - 2026-08-11
+
+Second tagged release. Adds a native Android app on NVIDIA Shield TV, packaged
+`find_package(ac3forge)` libraries for third-party consumers, explicit multi-source channel
+assignment, and a GUI tier split for first-time users through experts.
+
+### Dolby Atmos objects and multi-source encoding
+
+- **Explicit multi-source channel assignment** alongside automatic routing — `ac3cli`'s encode
+  commands take `src=`/`map=` to assign specific input files/channels to specific output
+  channels and objects, instead of relying purely on automatic layout inference.
+- Object mode now addresses objects by source, not a stale positional index, so multi-source
+  sessions keep object identity stable as sources are added or reordered.
+
+### GUI
+
+- **Guided/Advanced/Expert tier split**: a real step-by-step wizard for first-time users, with
+  Advanced and Expert tiers exposing the same controls power users had before.
+- Multi-source input and an explicit per-channel assignment surface in the GUI, mirroring the
+  CLI's `src=`/`map=`.
+- **Dual mono (1+1) as a bed**, not a distinct layout — it now feeds the same object/motion
+  pipeline as any other bed.
+- **Variable bit rate** as a selectable GUI rate mode (a quality target with optional min/max
+  kbps bounds), alongside CBR.
+- Live sessions no longer clobber a file's authored objects when a live capture starts, and warn
+  before silently dropping VBR settings that don't apply live.
+- A Qt Quick Test harness drives the real `EncoderController` end-to-end, not a mock, for GUI
+  regression coverage.
+
+### Android (Shield) — new platform
+
+- **ac3forge on NVIDIA Shield TV**: a native Android app (`platform/android/`) pairing
+  `ac3::forge`/`ac3::audio` via JNI with a live Atmos demo — authored object trajectories,
+  deflection, and ambient object motion, encoded and rendered on-device.
+- HDMI receiver resilience hardening for the Shield demo, so a receiver renegotiating format
+  mid-playback doesn't drop the session.
+- Ships as a debug-signed `.apk` this release — see Known gaps.
+
+### Library and packaging
+
+- **`find_package(ac3forge)` support**: `ac3::forge` and `matroska::matroska` now build as
+  proper static and shared CMake targets with `install()`/export support, so a third-party
+  project can consume them without vendoring the source tree. `ac3::audio` (live capture/
+  monitor/passthrough) stays CLI/GUI-internal, not part of what's installed.
+- `ac3::forge` split into a platform-independent codec core plus `ac3::audio`, clearing the way
+  for the library package above and for platforms — like Android — that only want the codec.
+
+### Quality and packaging infrastructure
+
+- Quality-trend dashboard redesign (readability, tightened gate thresholds) and a fix for CI
+  concurrency dropping quality data mid-run.
+- A round of security hardening prompted by OpenSSF Scorecard: hash-pinned CI tool installs,
+  commit-SHA-pinned GitHub Actions (replacing tag-pinned ones), a `SECURITY.md`
+  vulnerability-reporting policy, patched CVEs in docs dependencies, branch-protection scoring
+  wired up, and build provenance republished as `.intoto.jsonl` for Scorecard to read.
+- Several MSVC `/analyze` and clang-tidy findings fixed for real: heap-allocating large
+  encoder/decoder objects out of worker-thread stacks, reusing MDCT scratch buffers instead of
+  stack-declaring them per call, and a couple of static-analysis false-positive suppressions.
+
+### Known gaps
+
+- The Shield `.apk` ships debug-signed via Android's default debug keystore — no release
+  keystore is provisioned in this repo yet, so it's a sideload-only build, not one suited for
+  store distribution.
+- Objects will not decode as *objects* in Dolby's own decoder: DD+ JOC gates that on an
+  authenticity tag keyed to a secret embedded in Dolby's decoder binaries, which this project
+  does not produce. The bed still decodes as plain 5.1 anywhere.
+- Exclusive-mode S/PDIF/HDMI passthrough has not been confirmed against real bitstreaming
+  hardware on either platform (no such endpoint was available during development).
+- `fscod2` audio content has no external decode oracle at all, not even Dolby's own Reference
+  Player — verified only by this project's own encoder/decoder round trip.
+
+See [Validation](docs/verification.md) for the full account of what is and isn't independently
+verified, and [docs/project/history.md](docs/project/history.md) for how this was built.
+
 ## [0.2.0-beta.1] - 2026-08-10
 
 First tagged release. ac3forge is a clean-room AC-3 and E-AC-3 encoder and decoder in C++23,

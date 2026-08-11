@@ -63,7 +63,7 @@ target_link_libraries(ac3audio PRIVATE ac3::forge ac3::warnings)
 # parent scope: tests/CMakeLists.txt reads it to add that backend's own
 # device-free tests, the same way this file adds its sources.
 # ---------------------------------------------------------------------------
-if(NOT WIN32 AND NOT LINUX AND NOT APPLE)
+if(NOT WIN32 AND NOT LINUX AND NOT APPLE AND NOT ANDROID)
     message(FATAL_ERROR
         "ac3audio has no platform directory for this system. Add "
         "src/audio/src/platform/<backend>/{audio_backend,capture,passthrough,monitor}.cpp - "
@@ -167,6 +167,39 @@ if(APPLE)
 
     set(AC3FORGE_AUDIO_BACKEND posix)
 endif(APPLE)
+
+if(ANDROID)
+    # -----------------------------------------------------------------------
+    # NVIDIA Shield / Android TV, for the Shield Atmos demo app
+    # (platform/android/app/) - see docs/platforms/android.md.
+    #
+    # Split unlike the other three backends: monitor.cpp is genuine AAudio
+    # (the NDK's native audio API), but passthrough.cpp is a JNI shim to a
+    # Kotlin-owned android.media.AudioTrack, because AAudio has no support
+    # for compressed/IEC 61937 bitstream passthrough at all - see
+    # src/platform/android/audio_backend.cpp's header comment for the full
+    # reasoning. capture.cpp is the no-backend stub: this build has no
+    # microphone/loopback feature to serve.
+    #
+    # ANDROID is set by CMake itself (like WIN32/APPLE) when the NDK's
+    # toolchain file sets CMAKE_SYSTEM_NAME to "Android" - a peer of the
+    # WIN32/LINUX/APPLE checks above, not a special case. Note CMAKE_SYSTEM_
+    # NAME is "Android", not "Linux", for an NDK cross-compile, so the LINUX
+    # block above is never entered here.
+    # -----------------------------------------------------------------------
+    target_sources(ac3audio
+        PRIVATE
+            src/platform/android/audio_backend.cpp
+            src/platform/android/capture.cpp
+            src/platform/android/passthrough.cpp
+            src/platform/android/monitor.cpp)
+
+    # aaudio: monitor.cpp's native playback API. log: android/log.h, used
+    # throughout the backend for diagnostics visible in `adb logcat`.
+    target_link_libraries(ac3audio PRIVATE aaudio log)
+
+    set(AC3FORGE_AUDIO_BACKEND android)
+endif(ANDROID)
 
 set(AC3FORGE_AUDIO_BACKEND "${AC3FORGE_AUDIO_BACKEND}" PARENT_SCOPE)
 set(AC3FORGE_AUDIO_BACKEND_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/${AC3FORGE_AUDIO_BACKEND}"

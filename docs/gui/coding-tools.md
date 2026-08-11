@@ -1,6 +1,6 @@
 # Coding tools
 
-Advanced mode, E-AC-3 only — this tab disappears entirely for AC-3, which doesn't have Annex E.
+Expert tier, E-AC-3 only — this tab disappears entirely for AC-3, which doesn't have Annex E.
 
 Three checkboxes, all off by default:
 
@@ -28,5 +28,5 @@ shows the exact string that reproduces this configuration on the command line �
 
 ## Next
 
-[Metadata](metadata.md) — loudness, downmix, and heavy compression, the rest of what Advanced
-mode adds.
+[Metadata](metadata.md) — loudness, downmix, and heavy compression, the rest of what Expert
+adds.

@@ -26,6 +26,14 @@ Row {
             required property var modelData
             readonly property bool active: modelData.value === root.currentValue
 
+            // One SegmentedControl instance backs several distinct choices
+            // across the app (tier, coded/rendered, file/live...), so a
+            // fixed name would collide; keying on the option's own value
+            // gives every segment, everywhere it's used, a stable, unique
+            // target for Qt Quick Test's findChild - not just the one this
+            // patch's own tests happen to click.
+            objectName: "seg-" + modelData.value
+
             height: root.segHeight
             implicitWidth: label.implicitWidth + 18
             color: active ? Theme.accent : "transparent"

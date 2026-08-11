@@ -141,4 +141,31 @@ class AC3FORGE_EXPORT Assignment {
 [[nodiscard]] AC3FORGE_EXPORT std::string format_destination(Destination dest);
 [[nodiscard]] AC3FORGE_EXPORT std::optional<Destination> parse_destination(std::string_view token);
 
+inline constexpr std::string_view kAssignmentSyntax =
+    "<source>.<channel>[-<channel2>]:<dest>[,...] - dest is a channel name, obj, p1, p2 or "
+    "none; a channel range is only legal with obj or none";
+
+// The `map=` option's whole spec: comma-separated `<source>.<channel>:<dest>`
+// entries (`<channel>` may be a `first-last` range, legal only when `<dest>`
+// is "obj" or "none" - a location or a programme names exactly one channel,
+// so a range there would be ambiguous about which one it means). `<source>`
+// indexes `sources` in load order.
+//
+// Unlike parse_channels/parse_tools/parse_vbr, this ALSO requires every
+// channel `sources` declares to appear in some entry, `none` included -
+// map=, once given, is the sole source of truth for where every loaded
+// channel goes, so a channel it says nothing about is a mistake to report
+// rather than a gap to default silently. Returns false on any of that,
+// leaving `out` partially written, the same reject-rather-than-continue rule
+// the other parse_* functions already follow.
+[[nodiscard]] AC3FORGE_EXPORT bool parse_assignment(std::string_view text,
+                                                    std::span<const SourceShape> sources,
+                                                    Assignment& out);
+
+// The inverse, in (source, then channel) order - one entry per declared
+// channel, so it always satisfies parse_assignment's completeness
+// requirement. Round-trips through parse_assignment.
+[[nodiscard]] AC3FORGE_EXPORT std::string format_assignment(std::span<const SourceShape> sources,
+                                                             const Assignment& assignment);
+
 }  // namespace ac3::plan

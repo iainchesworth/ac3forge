@@ -120,10 +120,11 @@ canonical zip that a downloader would have no way to choose between.
 | Windows | windows-msvc | `.zip`, `.exe` (NSIS, if `makensis` is on the runner) | `.zip` |
 | Linux | linux-gcc | `.tar.gz`, `.deb`, `.rpm` | `.tar.gz` |
 | macOS | macos-llvm | `.tar.gz`, `.dmg` | `.tar.gz` |
+| Android (Shield) | build-android | `.apk` | none - Shield links `ac3::forge`/`ac3::audio` in-tree, it isn't a `find_package(ac3forge)` consumer |
 
-The end-user packages are `ac3cli`/`ac3gui` (CPack's `runtime` component). The library packages
-are a second, independent download for a third party consuming `ac3::forge`/
-`matroska::matroska` via `find_package(ac3forge)` (see
+The end-user packages are `ac3cli`/`ac3gui` (CPack's `runtime` component) on desktop, or the
+Shield app's `.apk` on Android. The library packages are a second, independent download for a
+third party consuming `ac3::forge`/`matroska::matroska` via `find_package(ac3forge)` (see
 [docs/library/index.md](library/index.md)) - headers, static and shared libraries, and the
 CMake package config, but neither `ac3cli`/`ac3gui` nor `ac3::audio` (live capture/monitor/
 passthrough stays a CLI/GUI-internal detail, not part of what's installed here). Archive-only
@@ -133,7 +134,13 @@ download), not DEB/RPM (a correct runtime/`-dev` split needs per-component `Depe
 a separate initiative if ever wanted), not DragNDrop (no macOS host to build or verify it
 against at all).
 
-No leg is `experimental: true` any more (see `ci.yml`'s status table), so all three package
+The Shield `.apk` ships debug-signed via AGP's default debug keystore - no release keystore is
+provisioned in this repo (see `platform/android/app/build.gradle.kts`'s `quarantineSignerEnabled`
+comment, which is about the project's own EMDF/Atmos authenticity signer, not APK code-signing).
+Fine for sideloading onto a Shield in developer mode; a real release keystore is a prerequisite
+before this could ever go through the Play Store.
+
+No leg is `experimental: true` any more (see `ci.yml`'s status table), so all four package
 for real rather than best-effort - a packaging failure on any of them blocks the release the
 same as a build or test failure would. Every package - end-user or library - gets a `.sha512`
 (`CPACK_PACKAGE_CHECKSUM` in `cmake/Packaging.cmake`), an aggregate `SHA512SUMS` manifest,

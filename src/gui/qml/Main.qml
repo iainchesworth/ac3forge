@@ -22,16 +22,20 @@ ApplicationWindow {
     visible: true
     color: Theme.background
 
-    // "live capture" is approximated from `recording` until the input model
-    // is unified (the handoff's "one input, with a source selector") - that
-    // lands with the channel-model checkpoint, alongside the Monitor
-    // behaviour change it depends on.
     function baseName(path) {
         const normalized = path.replace(/\\/g, "/");
         const slash = normalized.lastIndexOf("/");
         return slash >= 0 ? normalized.substring(slash + 1) : normalized;
     }
-    readonly property string sourceLabel: EncoderController.recording
+    // recording (startRecording, capture+encode+file only) and liveActive
+    // (startLiveSession, capture+encode+optional monitor/passthrough/disk)
+    // are the two capture-driven states distinct from a loaded file - see
+    // EncoderController's own header comment on why they stay separate
+    // properties rather than one. Both read the same "live capture" label
+    // here: which of the two is running is already visible from the tab bar
+    // (liveActive alone switches to the Live session tab) and the run strip,
+    // so the window title does not need to repeat that distinction too.
+    readonly property string sourceLabel: (EncoderController.recording || EncoderController.liveActive)
                                            ? qsTr("live capture")
                                            : (EncoderController.sourcePath.length > 0
                                               ? window.baseName(EncoderController.sourcePath)
@@ -66,12 +70,19 @@ ApplicationWindow {
     palette.toolTipText: Theme.text
     palette.placeholderText: Theme.textMuted
 
-    // ---- Basic / Advanced and the tab bar ----------------------------------
-    // Defaults to Basic per the handoff. Which FIELDS a tab shows in each
-    // mode (checkpoint 6) is not implemented yet; this is the shell-level
-    // half - which TABS exist at all - that the handoff specifies as part of
-    // the tab bar itself.
-    property bool advanced: false
+    // ---- Guided / Advanced / Expert and the tab bar ------------------------
+    // "guided" | "advanced" | "expert". Defaults to Guided - a step-by-step
+    // sequence for a new user, over GuidedWizard.qml (appended as the last
+    // StackLayout page below, shown instead of the tab bar + the other
+    // pages, not a fourth tab alongside them). Advanced is what "Basic" used
+    // to mean here - full channel control on one page, no coding-tools/
+    // metadata clutter; Expert is what "Advanced" used to mean - the same
+    // page plus Coding tools, Metadata and Passthrough. Kept as plain QML
+    // state rather than a controller enum: nothing outside this file reads
+    // it (Preferences, which would want to persist a default, is still an
+    // unbuilt placeholder - see preferencesDialog below), so there is
+    // nothing yet for a C++-side property to usefully gate.
+    property string tier: "guided"
     property string currentTab: "format"
     // "coded" | "rendered" - persisted preference, the fourteen-rows-for-
     // twelve-speakers question turned into a mode rather than a puzzle.
@@ -107,7 +118,7 @@ ApplicationWindow {
     readonly property var tabOrder: ["format", "coding", "meta", "objects", "session"]
     readonly property var visibleTabs: {
         const tabs = [{ key: "format", label: qsTr("Format") }];
-        if (advanced) {
+        if (tier === "expert") {
             tabs.push({ key: "coding", label: qsTr("Coding tools") });
             tabs.push({ key: "meta", label: qsTr("Metadata") });
         }
@@ -120,10 +131,11 @@ ApplicationWindow {
         }
         return tabs;
     }
-    onAdvancedChanged: {
-        // Switching to Basic while on a tab it hides falls back to Format
-        // rather than showing an empty panel.
-        if (!advanced && (currentTab === "coding" || currentTab === "meta")) {
+    onTierChanged: {
+        // Leaving Expert while on a tab only it shows falls back to Format
+        // rather than showing an empty panel - covers both Guided (which
+        // shows no tab bar at all) and Advanced.
+        if (tier !== "expert" && (currentTab === "coding" || currentTab === "meta")) {
             currentTab = "format";
         }
     }
@@ -148,8 +160,11 @@ ApplicationWindow {
         const codec = EncoderController.codecNames[EncoderController.codecIndex] || "";
         const shape = EncoderController.atmosEnabled
                       ? qsTr("5.1") : EncoderController.channelShapeName;
-        return qsTr("%1 · %2 · %3 kbps · .%4")
-            .arg(codec).arg(shape).arg(EncoderController.bitrateKbps)
+        const rate = EncoderController.vbrAvailable && EncoderController.vbrEnabled
+                     ? qsTr("quality %1").arg(EncoderController.vbrQuality)
+                     : qsTr("%1 kbps").arg(EncoderController.bitrateKbps);
+        return qsTr("%1 · %2 · %3 · .%4")
+            .arg(codec).arg(shape).arg(rate)
             .arg(EncoderController.outputSuffix());
     }
     // ac3cli's actual [layout] argument takes either a preset name or this
@@ -174,9 +189,17 @@ ApplicationWindow {
             return ["ac3cli", "encode", source, out, rate,
                     EncoderController.channelLocationsText].join(" ");
         }
-        return ["ac3cli", "eac3-encode", source, out, rate,
-                EncoderController.toolsToken.length > 0 ? EncoderController.toolsToken : "none",
-                EncoderController.channelLocationsText].join(" ");
+        const parts = ["ac3cli", "eac3-encode", source, out, rate,
+                       EncoderController.toolsToken.length > 0
+                           ? EncoderController.toolsToken : "none",
+                       EncoderController.channelLocationsText];
+        // [vbr] is the next positional after [layout] - only appended when
+        // actually on, so the common CBR case stays exactly what it always
+        // was rather than growing a trailing "off" nobody typed.
+        if (EncoderController.vbrAvailable && EncoderController.vbrEnabled) {
+            parts.push(EncoderController.vbrToken);
+        }
+        return parts.join(" ");
     }
 
     FileDialog {
@@ -184,6 +207,13 @@ ApplicationWindow {
         title: qsTr("Choose a WAV file")
         nameFilters: [qsTr("WAV audio (*.wav)"), qsTr("All files (*)")]
         onAccepted: EncoderController.loadSourceFile(selectedFile)
+    }
+
+    FileDialog {
+        id: addSourceDialog
+        title: qsTr("Add another source")
+        nameFilters: [qsTr("WAV audio (*.wav)"), qsTr("All files (*)")]
+        onAccepted: EncoderController.addSourceFile(selectedFile)
     }
 
     // The suffix and the filter follow the plan rather than being typed, so a
@@ -289,10 +319,11 @@ ApplicationWindow {
                     color: Theme.textMuted
                 }
                 SegmentedControl {
-                    model: [{ value: "basic", label: qsTr("Basic") },
-                            { value: "advanced", label: qsTr("Advanced") }]
-                    currentValue: window.advanced ? "advanced" : "basic"
-                    onSelected: (value) => window.advanced = value === "advanced"
+                    model: [{ value: "guided", label: qsTr("Guided") },
+                            { value: "advanced", label: qsTr("Advanced") },
+                            { value: "expert", label: qsTr("Expert") }]
+                    currentValue: window.tier
+                    onSelected: (value) => window.tier = value
                 }
                 Button {
                     text: qsTr("Preferences")
@@ -328,6 +359,7 @@ ApplicationWindow {
                             spacing: Theme.gap
 
                             Button {
+                                objectName: "chooseWavButton"
                                 text: qsTr("Choose WAV…")
                                 enabled: !EncoderController.busy
                                 onClicked: openDialog.open()
@@ -352,6 +384,98 @@ ApplicationWindow {
                                     color: EncoderController.sourceReady ? Theme.good : Theme.textMuted
                                     font.pixelSize: Theme.fontSmall
                                     visible: text.length > 0
+                                }
+                            }
+
+                            Button {
+                                objectName: "addSourceButton"
+                                text: qsTr("Add source…")
+                                enabled: EncoderController.sourceReady && !EncoderController.busy
+                                onClicked: addSourceDialog.open()
+                            }
+                        }
+
+                        // ---- multi-source list + assignment -----------------------
+                        // Functional first cut, not the handoff's full Assign table
+                        // (that needs the Guided/Advanced/Expert tiers it is meant to
+                        // live behind - see docs/design/handoff-workbench). Only
+                        // appears once a second source exists; a single loaded file
+                        // keeps using the plain path/info line above, unchanged.
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            Layout.topMargin: 8
+                            spacing: 4
+                            visible: EncoderController.sourceModel.length > 1
+
+                            Repeater {
+                                model: EncoderController.sourceModel
+                                delegate: RowLayout {
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    spacing: Theme.gap
+
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: qsTr("%1 · %2 ch").arg(modelData.label)
+                                                                .arg(modelData.channels)
+                                        color: Theme.text
+                                        font.pixelSize: Theme.fontSmall
+                                        elide: Text.ElideMiddle
+                                    }
+                                    Button {
+                                        text: qsTr("Remove")
+                                        flat: true
+                                        onClicked: EncoderController.removeSource(modelData.index)
+                                    }
+                                }
+                            }
+
+                            Text {
+                                text: qsTr("ASSIGN EACH CHANNEL")
+                                font.pixelSize: 10
+                                font.letterSpacing: 1
+                                color: Theme.textMuted
+                            }
+                            Repeater {
+                                model: EncoderController.assignmentRows
+                                delegate: RowLayout {
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    spacing: Theme.gap
+
+                                    Text {
+                                        Layout.preferredWidth: 160
+                                        text: qsTr("%1 ch %2").arg(modelData.sourceLabel)
+                                                              .arg(modelData.channel + 1)
+                                        color: Theme.text
+                                        font.pixelSize: Theme.fontSmall
+                                        elide: Text.ElideMiddle
+                                    }
+                                    // A location name (e.g. "L", "Ls"), "obj", "p1",
+                                    // "p2" or "none" - EncoderController.
+                                    // setAssignment's own vocabulary
+                                    // (plan::parse_destination), typed directly
+                                    // rather than picked from a dropdown until the
+                                    // Assign table proper exists.
+                                    TextField {
+                                        Layout.preferredWidth: 80
+                                        text: modelData.destToken
+                                        font.family: "monospace"
+                                        font.pixelSize: Theme.fontSmall
+                                        onEditingFinished: EncoderController.setAssignment(
+                                                               modelData.source, modelData.channel, text)
+                                    }
+                                }
+                            }
+                            Repeater {
+                                model: EncoderController.unassignedWarnings
+                                delegate: Text {
+                                    required property string modelData
+                                    Layout.fillWidth: true
+                                    text: modelData
+                                    color: Theme.accent
+                                    font.pixelSize: Theme.fontSmall
+                                    wrapMode: Text.WordWrap
                                 }
                             }
                         }
@@ -463,6 +587,29 @@ ApplicationWindow {
                             font.pixelSize: Theme.fontSmall
                             wrapMode: Text.WordWrap
                             visible: EncoderController.captureSupported
+                        }
+
+                        // Rate mode lives on the Format tab, shared with plain file
+                        // encoding - nothing there knows whether the NEXT thing
+                        // clicked is Encode or Start live session, so this is the one
+                        // place close enough to Start to say so before it is too late
+                        // to matter. runLiveSession always drops vbr and runs CBR
+                        // (IEC 61937 passthrough bursts are fixed-size per access
+                        // unit - see EncoderController::vbrAvailable()'s own comment).
+                        // Not gated on captureSupported like the rest of this card -
+                        // it stays true (and testable without a real capture device
+                        // present) whether or not one happens to be plugged in right
+                        // now, since VBR/live disagreeing is true either way.
+                        Text {
+                            objectName: "liveVbrWarning"
+                            Layout.fillWidth: true
+                            visible: !EncoderController.liveActive
+                                     && EncoderController.vbrAvailable
+                                     && EncoderController.vbrEnabled
+                            text: qsTr("VBR is on, but a live session always runs at the fixed bit rate above — variable bit rate needs a finished run to report, which a live session never has.")
+                            color: Theme.accent
+                            font.pixelSize: Theme.fontSmall
+                            wrapMode: Text.WordWrap
                         }
 
                         Text {
@@ -665,6 +812,15 @@ ApplicationWindow {
                                 Layout.alignment: Qt.AlignHCenter
                                 visible: EncoderController.surround
                             }
+
+                            Text {
+                                Layout.fillWidth: true
+                                visible: EncoderController.hasLevels && EncoderController.dualMono
+                                text: qsTr("No room to draw: dual mono has no soundstage.")
+                                color: Theme.textMuted
+                                font.pixelSize: Theme.fontSmall
+                                horizontalAlignment: Text.AlignHCenter
+                            }
                         }
 
                         Text {
@@ -813,10 +969,15 @@ ApplicationWindow {
                 Rectangle { Layout.fillWidth: true; height: 2; color: Theme.divider }
 
                 // ---- tab bar ----------------------------------------------------
+                // Guided has no tabs at all - GuidedWizard.qml, appended as the last
+                // StackLayout page below, takes the whole content area instead. The
+                // divider right after this stays up regardless, as the wizard's own
+                // top border.
                 RowLayout {
                     Layout.fillWidth: true
                     Layout.leftMargin: 24
                     Layout.rightMargin: 24
+                    visible: window.tier !== "guided"
                     spacing: 28
 
                     Repeater {
@@ -866,7 +1027,12 @@ ApplicationWindow {
 
                     StackLayout {
                         width: parent.width
-                        currentIndex: window.tabOrder.indexOf(window.currentTab)
+                        // GuidedWizard is appended as one more page after every entry
+                        // tabOrder names, so its index is always tabOrder.length -
+                        // nothing above needs to know it exists to compute this.
+                        currentIndex: window.tier === "guided"
+                                      ? window.tabOrder.length
+                                      : window.tabOrder.indexOf(window.currentTab)
 
                         // ---- Format ---------------------------------------------
                         ColumnLayout {
@@ -945,6 +1111,15 @@ ApplicationWindow {
                                     }
                                 }
 
+                                // Not object mode, not a live session (see vbrAvailable()'s own
+                                // comment on why) - the panel itself disappears rather than
+                                // showing a control that would silently do nothing. Shared with
+                                // the Guided wizard's own Rate mode step - see VbrPanel.qml.
+                                VbrPanel {
+                                    Layout.fillWidth: true
+                                    Layout.topMargin: Theme.gap
+                                }
+
                                 Rectangle { Layout.fillWidth: true; height: 2; color: Theme.divider }
 
                                 // ---- the channel model: bed + LFE + extras ------------------
@@ -962,20 +1137,47 @@ ApplicationWindow {
                                     Layout.fillWidth: true
                                     spacing: 6
 
+                                    // 1+1 is always bedChoices[0] - drawn apart from
+                                    // the seven location-mask beds with a rule
+                                    // rather than sharing their row, so it reads as
+                                    // categorically different (a bed, not a
+                                    // soundstage) without fighting Fusion's own
+                                    // button chrome for a literal dashed border.
+                                    Button {
+                                        objectName: "bedDualMonoButton"
+                                        text: EncoderController.bedChoices[0].id
+                                        highlighted: EncoderController.bedIndex === 0
+                                        enabled: !EncoderController.busy
+                                                 && !EncoderController.atmosEnabled
+                                        onClicked: EncoderController.bedIndex = 0
+
+                                        ToolTip.visible: hovered
+                                        ToolTip.text: qsTr("Dual mono — two independent programmes, not a stereo pair")
+                                    }
+
+                                    Rectangle {
+                                        Layout.preferredWidth: 1
+                                        Layout.fillHeight: true
+                                        color: Theme.divider
+                                    }
+
                                     Repeater {
-                                        model: EncoderController.bedChoices
+                                        // bedChoices[0] is the dual-mono button above;
+                                        // this repeater is every other bed, offset by
+                                        // one so its own bedIndex stays correct.
+                                        model: EncoderController.bedChoices.length - 1
 
                                         delegate: Button {
-                                            required property var modelData
                                             required property int index
-                                            text: modelData.id
-                                            highlighted: EncoderController.bedIndex === index
+                                            readonly property var choice: EncoderController.bedChoices[index + 1]
+                                            text: choice.id
+                                            highlighted: EncoderController.bedIndex === index + 1
                                             enabled: !EncoderController.busy
                                                      && !EncoderController.atmosEnabled
-                                            onClicked: EncoderController.bedIndex = index
+                                            onClicked: EncoderController.bedIndex = index + 1
 
                                             ToolTip.visible: hovered
-                                            ToolTip.text: modelData.channels
+                                            ToolTip.text: choice.channels
                                         }
                                     }
 
@@ -983,7 +1185,7 @@ ApplicationWindow {
                                         text: qsTr("LFE")
                                         checked: EncoderController.bedLfe
                                         enabled: !EncoderController.busy
-                                                 && !EncoderController.atmosEnabled
+                                                 && !EncoderController.bedLfeLocked
                                         onToggled: EncoderController.bedLfe = checked
                                     }
 
@@ -1063,13 +1265,15 @@ ApplicationWindow {
                                 }
                             }
 
-                            // ---- loudness: Basic only ------------------------------------
-                            // Advanced moves this onto Metadata instead, alongside Downmix,
-                            // so it is never shown twice - same LoudnessGroup component
-                            // either way.
+                            // ---- loudness: Advanced only ---------------------------------
+                            // Expert moves this onto Metadata instead, alongside Downmix, so
+                            // it is never shown twice - same LoudnessGroup component either
+                            // way. Guided has its own copy on the wizard's Loudness step
+                            // (GuidedWizard.qml) rather than sharing this Format-tab card,
+                            // since Guided shows no tab bar for this card to live under.
                             Card {
                                 title: qsTr("Loudness")
-                                visible: !window.advanced
+                                visible: window.tier === "advanced"
 
                                 LoudnessGroup {}
 
@@ -1082,19 +1286,19 @@ ApplicationWindow {
                                     MouseArea {
                                         anchors.fill: parent
                                         cursorShape: Qt.PointingHandCursor
-                                        onClicked: window.advanced = true
+                                        onClicked: window.tier = "expert"
                                     }
                                 }
                             }
 
-                            // ---- passthrough: Advanced only ------------------------------
-                            // Not in the Basic/Advanced section's own list of what Basic
-                            // shows (source, codec, channel picker, bit rate, output path
-                            // and container, Loudness, Objects) - a receiver endpoint is a
-                            // codec-developer concern, not a mix-encoding one.
+                            // ---- passthrough: Expert only --------------------------------
+                            // Not in Advanced's own list of what it shows (source, codec,
+                            // channel picker, bit rate, output path and container, Loudness,
+                            // Objects) - a receiver endpoint is a codec-developer concern,
+                            // not a mix-encoding one.
                             Card {
                                 title: qsTr("Passthrough to a receiver")
-                                visible: window.advanced
+                                visible: window.tier === "expert"
 
                                 RowLayout {
                                     Layout.fillWidth: true
@@ -2485,6 +2689,14 @@ ApplicationWindow {
 
                             Item { Layout.fillHeight: true }
                         }
+
+                        // ---- Guided wizard ---------------------------------------
+                        // Appended last, past every tabOrder entry - see the
+                        // StackLayout's own currentIndex comment above for why
+                        // nothing needs tabOrder to name this page for it to work.
+                        GuidedWizard {
+                            Layout.fillWidth: true
+                        }
                     }
                 }
 
@@ -2541,13 +2753,13 @@ ApplicationWindow {
                                         font.pixelSize: 12
                                         color: Theme.text
                                         text: encoding
-                                              ? qsTr("%1 · %2 · %3 kbps · %4%")
+                                              ? qsTr("%1 · %2 · %3 · %4%")
                                                 .arg(modelData.id).arg(modelData.filename)
-                                                .arg(modelData.bitrateKbps)
+                                                .arg(modelData.rateText)
                                                 .arg(Math.round(EncoderController.progress * 100))
-                                              : qsTr("%1 · %2 · %3 kbps · %4%5")
+                                              : qsTr("%1 · %2 · %3 · %4%5")
                                                 .arg(modelData.id).arg(modelData.filename)
-                                                .arg(modelData.bitrateKbps).arg(modelData.durationText)
+                                                .arg(modelData.rateText).arg(modelData.durationText)
                                                 .arg(modelData.sizeText.length > 0
                                                      ? " · " + modelData.sizeText : "")
                                     }
