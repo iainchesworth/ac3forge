@@ -81,9 +81,21 @@
 # threshold on every leg, and exactly why the gate is SNR-based rather than a
 # bit-exact bitstream comparison.
 #
-# GUI does not gate any ctest entry - it only adds the separate ac3gui build
-# target - so the true baseline (no ALSA, GUI on or off, doesn't matter) is
-# 256/256 everywhere, confirmed directly by this merge's own linux-gcc
+# UPDATE (Qt Quick Test harness): the line above ("GUI does not gate any
+# ctest entry") is no longer true. src/gui/tests/ adds ac3gui_qml_tests, a
+# real ctest entry (label "gui") that Quick-Test-drives the actual
+# EncoderController singleton and Main.qml shell, registered only when
+# AC3FORGE_BUILD_GUI is ON - so it rides the existing GUI axis rather than
+# adding a new one. Verified locally on windows-msvc: builds clean, CTest
+# picks it up with zero changes to this file or _build.yml (the existing
+# `ctest --preset test-<leg>` step already runs every registered test), and
+# all 4 tst_*.qml files / 13 test functions pass. Not yet run on an actual
+# GitHub Actions leg - the "256/256 everywhere" baseline below predates this
+# and needs a `+ 1 gui test` correction the next time any leg's real count is
+# confirmed.
+#
+# The baseline itself (no ALSA, GUI on or off, doesn't matter) is 256/256
+# everywhere, confirmed directly by an earlier merge's own linux-gcc
 # no-ALSA-fallback run. AC3FORGE_WITH_ALSA's tests/platform/alsa/ (see
 # tests/CMakeLists.txt) accounts for the 270-256=14 gap on top of that.
 #
