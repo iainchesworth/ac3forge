@@ -5,6 +5,7 @@
 #include <span>
 
 #include "ac3/core/tables.hpp"
+#include "ac3/export.hpp"
 
 // The A/52 §7.2.2 parametric bit allocation — the decoder-defined heart of
 // AC-3. The decoder recomputes this routine from transmitted parameters
@@ -33,8 +34,8 @@ struct BitAllocCodes {
 
 // Tables 7.11 and 7.8. Exposed because an encoder picking the coupling
 // channel's leak seeds needs the same gains the allocator will apply.
-[[nodiscard]] int fast_gain(int fgaincod);
-[[nodiscard]] int slow_gain(int sgaincod);
+[[nodiscard]] AC3FORGE_EXPORT int fast_gain(int fgaincod);
+[[nodiscard]] AC3FORGE_EXPORT int slow_gain(int sgaincod);
 
 // §7.2.2.1: the composite SNR offset.
 [[nodiscard]] constexpr int snr_offset(int csnroffst, int fsnroffst) {
@@ -47,19 +48,19 @@ struct BitAllocCodes {
 // exactly one such channel. deltnseg == 0 means no segments: the spec's own
 // recommended reset state ("perform no delta alloc" / absent).
 struct DeltaSegments {
-    int deltnseg = 0;                          // 1..8 segments when > 0
-    std::array<std::uint8_t, 8> deltoffst{};   // 5-bit band offsets (Table 5.3/E1.3)
-    std::array<std::uint8_t, 8> deltlen{};     // 4-bit band lengths
-    std::array<std::uint8_t, 8> deltba{};      // 3-bit adjustment codes (Table 5.17)
+    int deltnseg = 0;                         // 1..8 segments when > 0
+    std::array<std::uint8_t, 8> deltoffst{};  // 5-bit band offsets (Table 5.3/E1.3)
+    std::array<std::uint8_t, 8> deltlen{};    // 4-bit band lengths
+    std::array<std::uint8_t, 8> deltba{};     // 3-bit adjustment codes (Table 5.17)
 };
 
 // Where the allocation starts, and - for the coupling channel - the leak
 // state the spec seeds instead of running the low-frequency lowcomp path.
 struct BitAllocRegion {
-    int start = 0;             // strtmant: 0 for fbw and LFE, cplstrtmant for coupling
-    bool coupling = false;     // §7.2.2.4 takes the "else" branch: no lowcomp
-    int cplfleak = 0;          // 3-bit cplfleak, only when coupling
-    int cplsleak = 0;          // 3-bit cplsleak, only when coupling
+    int start = 0;          // strtmant: 0 for fbw and LFE, cplstrtmant for coupling
+    bool coupling = false;  // §7.2.2.4 takes the "else" branch: no lowcomp
+    int cplfleak = 0;       // 3-bit cplfleak, only when coupling
+    int cplsleak = 0;       // 3-bit cplsleak, only when coupling
     // §7.2.2.1.1: the all-zero-SNR mute is a FRAME-WIDE condition - csnroffst
     // together with every fsnroffst, cplfsnroffst and lfefsnroffst. It cannot
     // be decided from one channel's offsets, so the caller evaluates it and
@@ -85,9 +86,11 @@ struct BitAllocRegion {
 // even when the region starts higher, so both span [0, endmant).
 // csnroffst == 0 && fsnroffst == 0 triggers the §7.2.2.1.1 special case
 // (all-zero bap).
-void compute_bit_allocation(std::span<const std::uint8_t> exps, SampleRate sample_rate,
-                            const BitAllocCodes& codes, int csnroffst, int fsnroffst,
-                            std::span<std::uint8_t> bap, const BitAllocRegion& region = {});
+AC3FORGE_EXPORT void compute_bit_allocation(std::span<const std::uint8_t> exps,
+                                            SampleRate sample_rate, const BitAllocCodes& codes,
+                                            int csnroffst, int fsnroffst,
+                                            std::span<std::uint8_t> bap,
+                                            const BitAllocRegion& region = {});
 
 // §7.2.2.6, encoder side. compute_bit_allocation()'s masking curve is built
 // only from the quantized exponent (psd[bin] = 3072 - exps[bin]<<7 — exactly
@@ -104,8 +107,7 @@ void compute_bit_allocation(std::span<const std::uint8_t> exps, SampleRate sampl
 // is that call's BitAllocRegion::start (0 for fbw/LFE, cplstrtmant for
 // coupling) — the segments this returns are meant to populate that same
 // region's `delta` field.
-[[nodiscard]] DeltaSegments choose_delta_segments(std::span<const double> coefficients,
-                                                  std::span<const std::uint8_t> exps,
-                                                  int start);
+[[nodiscard]] AC3FORGE_EXPORT DeltaSegments choose_delta_segments(
+    std::span<const double> coefficients, std::span<const std::uint8_t> exps, int start);
 
 }  // namespace ac3

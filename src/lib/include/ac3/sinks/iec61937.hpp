@@ -7,6 +7,8 @@
 #include <span>
 #include <vector>
 
+#include "ac3/export.hpp"
+
 // IEC 61937 ("S/PDIF burst") packing: an AC-3 or E-AC-3 access unit disguised
 // as 16-bit stereo PCM so AV receivers accept it over S/PDIF or HDMI.
 //
@@ -36,12 +38,12 @@ inline constexpr std::size_t kBurstBytes = 6144;
 inline constexpr std::size_t kEac3BurstBytes = 24576;
 
 enum class WrapError : std::uint8_t {
-    kNotAFrame,       // missing sync word or truncated header
-    kFrameTooLarge,   // cannot happen for legal AC-3 sizes; guarded anyway
+    kNotAFrame,      // missing sync word or truncated header
+    kFrameTooLarge,  // cannot happen for legal AC-3 sizes; guarded anyway
 };
 
 // Wrap exactly one AC-3 syncframe into one 6144-byte burst.
-[[nodiscard]] std::expected<std::vector<std::byte>, WrapError> wrap_frame(
+[[nodiscard]] AC3FORGE_EXPORT std::expected<std::vector<std::byte>, WrapError> wrap_frame(
     std::span<const std::byte> frame);
 
 // Accumulates E-AC-3 access units into IEC 61937 bursts. Feed it whole access
@@ -50,8 +52,8 @@ enum class WrapError : std::uint8_t {
 // returns them) rather than lone syncframes: a dependent's channels only
 // reach the burst if its bytes are included, and a decoder finds them by the
 // same concatenation the elementary stream already uses.
-class Eac3BurstPacker {
-public:
+class AC3FORGE_EXPORT Eac3BurstPacker {
+   public:
     // Returns a completed burst once enough access units have accumulated to
     // cover six blocks, or std::nullopt if more are still needed. bsid, fscod
     // and numblkscod are read from the leading (independent) substream's
@@ -59,7 +61,7 @@ public:
     [[nodiscard]] std::expected<std::optional<std::vector<std::byte>>, WrapError> push(
         std::span<const std::byte> access_unit);
 
-private:
+   private:
     std::vector<std::byte> pending_;
     int blocks_pending_ = 0;
 };

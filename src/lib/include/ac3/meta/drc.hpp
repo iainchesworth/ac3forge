@@ -5,6 +5,7 @@
 #include <string_view>
 
 #include "ac3/core/tables.hpp"
+#include "ac3/export.hpp"
 
 // Dynamic range metadata — A/52 §7.7.
 //
@@ -74,16 +75,16 @@ static_assert(dynrng_gain(kDynrngUnity) == 1.0);
 static_assert(compr_gain(kComprUnity) == 1.0);
 
 // The representable extremes, as the spec states them.
-static_assert(dynrng_gain(0x7F) == 15.75);      // X = 3, Y = 31: +23.95 dB
-static_assert(dynrng_gain(0x80) == 0.0625);     // X = −4, Y = 0: −24.08 dB
-static_assert(compr_gain(0x7F) == 248.0);       // X = 7, Y = 15: +47.89 dB
-static_assert(compr_gain(0x80) == 1.0 / 256.0); // X = −8, Y = 0: −48.16 dB
+static_assert(dynrng_gain(0x7F) == 15.75);       // X = 3, Y = 31: +23.95 dB
+static_assert(dynrng_gain(0x80) == 0.0625);      // X = −4, Y = 0: −24.08 dB
+static_assert(compr_gain(0x7F) == 248.0);        // X = 7, Y = 15: +47.89 dB
+static_assert(compr_gain(0x80) == 1.0 / 256.0);  // X = −8, Y = 0: −48.16 dB
 
 // Nearest representable word for a gain in dB. Nearest is measured on the
 // LINEAR gain, because that is where both formats quantise uniformly; the
 // difference from nearest-in-dB is under a thousandth of a dB.
-[[nodiscard]] std::uint8_t encode_dynrng(double gain_db);
-[[nodiscard]] std::uint8_t encode_compr(double gain_db);
+[[nodiscard]] AC3FORGE_EXPORT std::uint8_t encode_dynrng(double gain_db);
+[[nodiscard]] AC3FORGE_EXPORT std::uint8_t encode_compr(double gain_db);
 
 // The largest representable gain that does NOT EXCEED gain_db. Rounding to
 // nearest can round up by half a step — 0.14 dB for compr — and §7.7.2 exists
@@ -94,9 +95,9 @@ static_assert(compr_gain(0x80) == 1.0 / 256.0); // X = −8, Y = 0: −48.16 dB
 //
 // A gain_db above the format's maximum still clamps to the maximum: that
 // exceeds the request, but the alternative is to mute the programme.
-[[nodiscard]] std::uint8_t encode_compr_at_most(double gain_db);
+[[nodiscard]] AC3FORGE_EXPORT std::uint8_t encode_compr_at_most(double gain_db);
 
-[[nodiscard]] double to_db(double linear_gain);
+[[nodiscard]] AC3FORGE_EXPORT double to_db(double linear_gain);
 
 // --- the compression characteristic ---------------------------------------
 
@@ -116,13 +117,13 @@ static_assert(compr_gain(0x80) == 1.0 / 256.0); // X = −8, Y = 0: −48.16 dB
 // it (edge = null_low − max_boost × boost_ratio) is the only way to keep the
 // curve continuous there, and a step in a gain curve is audible.
 struct Profile {
-    double null_low_db = -31.0;      // unity band, low edge
-    double null_high_db = -26.0;     // unity band, high edge
-    double boost_ratio = 2.0;        // n:1 upward expansion below the null band
-    double max_boost_db = 6.0;       // ceiling on the boost
-    double early_cut_ratio = 2.0;    // n:1 immediately above the null band
-    double early_cut_end_db = -16.0; // where the early cut hands over
-    double cut_ratio = 20.0;         // n:1 above that — effectively a limiter
+    double null_low_db = -31.0;       // unity band, low edge
+    double null_high_db = -26.0;      // unity band, high edge
+    double boost_ratio = 2.0;         // n:1 upward expansion below the null band
+    double max_boost_db = 6.0;        // ceiling on the boost
+    double early_cut_ratio = 2.0;     // n:1 immediately above the null band
+    double early_cut_end_db = -16.0;  // where the early cut hands over
+    double cut_ratio = 20.0;          // n:1 above that — effectively a limiter
     // A/52 says nothing about timing either. 10 ms is short enough to catch a
     // transient inside two 5.3 ms blocks; a release near a second is what
     // keeps the gain from pumping on speech gaps.
@@ -146,9 +147,7 @@ enum class ProfileId : std::uint8_t {
         case ProfileId::kFilmStandard:
             return {};  // the struct's defaults ARE film standard
         case ProfileId::kFilmLight:
-            return {.null_low_db = -41.0,
-                    .null_high_db = -21.0,
-                    .early_cut_end_db = -11.0};
+            return {.null_low_db = -41.0, .null_high_db = -21.0, .early_cut_end_db = -11.0};
         case ProfileId::kMusicStandard:
             return {.max_boost_db = 12.0};
         case ProfileId::kMusicLight:
@@ -166,11 +165,16 @@ enum class ProfileId : std::uint8_t {
 
 [[nodiscard]] constexpr std::string_view profile_name(ProfileId id) {
     switch (id) {
-        case ProfileId::kFilmStandard: return "film-standard";
-        case ProfileId::kFilmLight: return "film-light";
-        case ProfileId::kMusicStandard: return "music-standard";
-        case ProfileId::kMusicLight: return "music-light";
-        case ProfileId::kSpeech: return "speech";
+        case ProfileId::kFilmStandard:
+            return "film-standard";
+        case ProfileId::kFilmLight:
+            return "film-light";
+        case ProfileId::kMusicStandard:
+            return "music-standard";
+        case ProfileId::kMusicLight:
+            return "music-light";
+        case ProfileId::kSpeech:
+            return "speech";
     }
     return "";
 }
@@ -179,7 +183,7 @@ enum class ProfileId : std::uint8_t {
 inline constexpr std::string_view kProfileNames =
     "film-standard | film-light | music-standard | music-light | speech";
 
-[[nodiscard]] bool parse_profile(std::string_view name, ProfileId& out);
+[[nodiscard]] AC3FORGE_EXPORT bool parse_profile(std::string_view name, ProfileId& out);
 
 // The static curve: gain in dB for a dialogue-referenced level in dBFS.
 // Monotonically non-increasing, continuous, and exactly zero across the null
@@ -206,7 +210,7 @@ inline constexpr std::string_view kProfileNames =
 // is excluded here for the same reason BS.1770 excludes it, that a subwoofer
 // channel's energy is not proportional to what the programme sounds like.
 // Returns a large negative number for digital silence rather than −inf.
-[[nodiscard]] double level_dbfs(std::span<const std::span<const float>> channels);
+[[nodiscard]] AC3FORGE_EXPORT double level_dbfs(std::span<const std::span<const float>> channels);
 
 // True peak of a single channel, in dBFS. Dual mono (acmod 0) has no downmix
 // to measure — §7.7.2.2 is explicit that compr applies to Ch1's own signal
@@ -216,14 +220,14 @@ inline constexpr std::string_view kProfileNames =
 // for the same reason mono_downmix_peak_dbfs takes one: the frame that has
 // just gone quiet still owns the loud tail sitting in block 0's window. Pass
 // an empty span when there is none to account for.
-[[nodiscard]] double channel_peak_dbfs(std::span<const double> history,
-                                       std::span<const float> samples);
+[[nodiscard]] AC3FORGE_EXPORT double channel_peak_dbfs(std::span<const double> history,
+                                                       std::span<const float> samples);
 
 // One dynrng word per audio block. State carries across blocks AND frames:
 // the smoothing filter has no idea where a syncframe boundary is, and it must
 // not, or every 32 ms the gain would jump.
-class RangeController {
-public:
+class AC3FORGE_EXPORT RangeController {
+   public:
     RangeController(const Profile& profile, SampleRate rate);
 
     // level: the block's programme level in dBFS, from level_dbfs() above.
@@ -232,7 +236,7 @@ public:
 
     [[nodiscard]] double gain_db() const { return gain_db_; }
 
-private:
+   private:
     Profile profile_;
     double attack_coeff_;
     double release_coeff_;
@@ -265,8 +269,8 @@ struct HeavyConfig {
 // a guarantee about instantaneous peaks and this control signal only updates
 // once per 32 ms frame: a peak that arrives in a frame must be caught by that
 // frame's word or it is not caught at all.
-class HeavyCompressor {
-public:
+class AC3FORGE_EXPORT HeavyCompressor {
+   public:
     HeavyCompressor(const HeavyConfig& config, SampleRate rate);
 
     // peak: the frame's true peak of the §7.8 mono downmix, in dBFS.
@@ -274,7 +278,7 @@ public:
 
     [[nodiscard]] double gain_db() const { return gain_db_; }
 
-private:
+   private:
     HeavyConfig config_;
     double release_step_db_;
     double gain_db_ = 0.0;
