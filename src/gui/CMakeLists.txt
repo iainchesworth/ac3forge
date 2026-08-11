@@ -35,7 +35,9 @@ set(AC3_QML_FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/qml/ChannelMeter.qml"
     "${CMAKE_CURRENT_SOURCE_DIR}/qml/SoundfieldView.qml"
     "${CMAKE_CURRENT_SOURCE_DIR}/qml/SegmentedControl.qml"
-    "${CMAKE_CURRENT_SOURCE_DIR}/qml/LoudnessGroup.qml")
+    "${CMAKE_CURRENT_SOURCE_DIR}/qml/LoudnessGroup.qml"
+    "${CMAKE_CURRENT_SOURCE_DIR}/qml/VbrPanel.qml"
+    "${CMAKE_CURRENT_SOURCE_DIR}/qml/GuidedWizard.qml")
 
 foreach(qml_file IN LISTS AC3_QML_FILES)
     get_filename_component(qml_name "${qml_file}" NAME)
@@ -76,11 +78,16 @@ qt_add_qml_module(ac3gui
 # CMAKE_CURRENT_BINARY_DIR", and matching on that is enough; our own main.cpp
 # and encoder_controller.cpp keep the full set.
 #
-# MSVC is left out via AC3_WARNINGS_OFF_FLAG being empty there: cl has nothing
-# to say about this code under /W4, and /w would only earn a "D9025:
-# overriding '/W4' with '/w'" on every generated file. If a later Qt does emit
-# something cl dislikes, that surfaces as a build failure to look at rather
-# than as silence.
+# MSVC gets a narrower carve-out (see cmake/CompilerWarnings.cmake) rather
+# than the blanket "-w" clang-cl/GCC get: cl has almost nothing to say about
+# this code under /W4 - the one exception found so far is C4702 (unreachable
+# code) in Qt's own <QtQml/qjsprimitivevalue.h>, from the interpreter
+# dispatch qmlcachegen falls back to for GuidedWizard.qml's `var`-typed,
+# closure-driven step list (a JS array of objects, not a fixed set of typed
+# properties - see qmlcache/*/GuidedWizard_qml.cpp.aotstats after a build for
+# exactly which of its bindings took that path). If a later Qt does emit
+# something else cl dislikes, that surfaces as a build failure to look at
+# rather than as silence, the same as it always has.
 #
 # This deliberately misses one generated file: AUTOMOC adds
 # ac3gui_autogen/mocs_compilation.cpp at generate time, which is after this
