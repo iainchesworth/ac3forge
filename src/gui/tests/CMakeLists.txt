@@ -34,6 +34,15 @@ qt_add_qml_module(ac3gui_qmltests
     OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests/Ac3Forge"
     QML_FILES ${AC3_QML_FILES})
 
+# Forces this target's own POST_BUILD windeployqt step (below) to run only
+# after ac3gui's has finished, not just after ac3gui's LINK step - confirmed
+# necessary on a real "build everything" CI run: both windeployqt processes
+# copy the same Qt DLLs into the same shared bin/ output directory, and two
+# of them racing to write e.g. Qt6Core.dll at once fails with "Cannot create
+# a file when that file already exists." A local build of one target at a
+# time never triggers this, which is why it went unnoticed until now.
+add_dependencies(ac3gui_qmltests ac3gui)
+
 # The standard Qt Quick Test hookup: QUICK_TEST_MAIN's generated main() reads
 # this macro to find the tst_*.qml files at run time. -input on the ctest
 # COMMAND line below is a second, redundant way to say the same thing -
