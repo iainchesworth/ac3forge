@@ -100,16 +100,27 @@ endif()
 # failure under -Werror. It is not ours to fix, so it is not ours to warn
 # about: see how src/gui/CMakeLists.txt applies this to the generated sources.
 #
-# Empty on real MSVC, deliberately - not "/w". cl has nothing to say about
-# this generated code under /W4 to begin with (unlike clang-cl and GCC, which
-# do reject some of it - see src/gui/CMakeLists.txt for the specific warning),
-# so adding /w on top of the target's own /W4 achieves nothing except a
+# Not "/w" on real MSVC, deliberately. cl has very little to say about this
+# generated code under /W4 to begin with (unlike clang-cl and GCC, which
+# reject more of it - see src/gui/CMakeLists.txt for the specific warning),
+# so adding /w on top of the target's own /W4 would achieve nothing except a
 # "D9025: overriding '/W4' with '/w'" on every generated file - a warning
 # about the build, appearing on every build, to suppress warnings that were
-# never going to fire. A caller that appends an empty COMPILE_OPTIONS entry
-# gets a harmless no-op, which is exactly what real MSVC should get here.
+# never going to fire.
+#
+# The one thing it DOES have to say: qmlcachegen falls back to interpreted
+# (QJSValue-based) execution for a `var`-typed property whose function it
+# cannot fully compile to native C++ - GuidedWizard.qml's data-driven step
+# list is exactly that shape (a JS array of objects, filtered and searched
+# by closures, not a fixed set of typed properties). The dispatch code Qt's
+# own <QtQml/qjsprimitivevalue.h> generates for that path hits C4702
+# (unreachable code) under cl's optimizer in Qt 6.8, on this MSVC toolset -
+# real code Qt shipped, not a defect introduced here, so /wd4702 is scoped
+# to only that one diagnostic rather than silencing the rest of /W4 the way
+# non-MSVC's "-w" does. If a later Qt/cl combination stops emitting it, the
+# flag becomes a harmless no-op rather than something that needs removing.
 if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
-    set(AC3_WARNINGS_OFF_FLAG "")
+    set(AC3_WARNINGS_OFF_FLAG "/wd4702")
 else()
     # clang-cl accepts the GNU spelling too, so this covers every non-cl case.
     set(AC3_WARNINGS_OFF_FLAG "-w")

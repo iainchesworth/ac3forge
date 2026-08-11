@@ -66,12 +66,19 @@ ApplicationWindow {
     palette.toolTipText: Theme.text
     palette.placeholderText: Theme.textMuted
 
-    // ---- Basic / Advanced and the tab bar ----------------------------------
-    // Defaults to Basic per the handoff. Which FIELDS a tab shows in each
-    // mode (checkpoint 6) is not implemented yet; this is the shell-level
-    // half - which TABS exist at all - that the handoff specifies as part of
-    // the tab bar itself.
-    property bool advanced: false
+    // ---- Guided / Advanced / Expert and the tab bar ------------------------
+    // "guided" | "advanced" | "expert". Defaults to Guided - a step-by-step
+    // sequence for a new user, over GuidedWizard.qml (appended as the last
+    // StackLayout page below, shown instead of the tab bar + the other
+    // pages, not a fourth tab alongside them). Advanced is what "Basic" used
+    // to mean here - full channel control on one page, no coding-tools/
+    // metadata clutter; Expert is what "Advanced" used to mean - the same
+    // page plus Coding tools, Metadata and Passthrough. Kept as plain QML
+    // state rather than a controller enum: nothing outside this file reads
+    // it (Preferences, which would want to persist a default, is still an
+    // unbuilt placeholder - see preferencesDialog below), so there is
+    // nothing yet for a C++-side property to usefully gate.
+    property string tier: "guided"
     property string currentTab: "format"
     // "coded" | "rendered" - persisted preference, the fourteen-rows-for-
     // twelve-speakers question turned into a mode rather than a puzzle.
@@ -107,7 +114,7 @@ ApplicationWindow {
     readonly property var tabOrder: ["format", "coding", "meta", "objects", "session"]
     readonly property var visibleTabs: {
         const tabs = [{ key: "format", label: qsTr("Format") }];
-        if (advanced) {
+        if (tier === "expert") {
             tabs.push({ key: "coding", label: qsTr("Coding tools") });
             tabs.push({ key: "meta", label: qsTr("Metadata") });
         }
@@ -120,10 +127,11 @@ ApplicationWindow {
         }
         return tabs;
     }
-    onAdvancedChanged: {
-        // Switching to Basic while on a tab it hides falls back to Format
-        // rather than showing an empty panel.
-        if (!advanced && (currentTab === "coding" || currentTab === "meta")) {
+    onTierChanged: {
+        // Leaving Expert while on a tab only it shows falls back to Format
+        // rather than showing an empty panel - covers both Guided (which
+        // shows no tab bar at all) and Advanced.
+        if (tier !== "expert" && (currentTab === "coding" || currentTab === "meta")) {
             currentTab = "format";
         }
     }
@@ -307,10 +315,11 @@ ApplicationWindow {
                     color: Theme.textMuted
                 }
                 SegmentedControl {
-                    model: [{ value: "basic", label: qsTr("Basic") },
-                            { value: "advanced", label: qsTr("Advanced") }]
-                    currentValue: window.advanced ? "advanced" : "basic"
-                    onSelected: (value) => window.advanced = value === "advanced"
+                    model: [{ value: "guided", label: qsTr("Guided") },
+                            { value: "advanced", label: qsTr("Advanced") },
+                            { value: "expert", label: qsTr("Expert") }]
+                    currentValue: window.tier
+                    onSelected: (value) => window.tier = value
                 }
                 Button {
                     text: qsTr("Preferences")
@@ -933,10 +942,15 @@ ApplicationWindow {
                 Rectangle { Layout.fillWidth: true; height: 2; color: Theme.divider }
 
                 // ---- tab bar ----------------------------------------------------
+                // Guided has no tabs at all - GuidedWizard.qml, appended as the last
+                // StackLayout page below, takes the whole content area instead. The
+                // divider right after this stays up regardless, as the wizard's own
+                // top border.
                 RowLayout {
                     Layout.fillWidth: true
                     Layout.leftMargin: 24
                     Layout.rightMargin: 24
+                    visible: window.tier !== "guided"
                     spacing: 28
 
                     Repeater {
@@ -986,7 +1000,12 @@ ApplicationWindow {
 
                     StackLayout {
                         width: parent.width
-                        currentIndex: window.tabOrder.indexOf(window.currentTab)
+                        // GuidedWizard is appended as one more page after every entry
+                        // tabOrder names, so its index is always tabOrder.length -
+                        // nothing above needs to know it exists to compute this.
+                        currentIndex: window.tier === "guided"
+                                      ? window.tabOrder.length
+                                      : window.tabOrder.indexOf(window.currentTab)
 
                         // ---- Format ---------------------------------------------
                         ColumnLayout {
@@ -1065,151 +1084,13 @@ ApplicationWindow {
                                     }
                                 }
 
-                                // ---- variable bit rate: E-AC-3, file output only -------------
                                 // Not object mode, not a live session (see vbrAvailable()'s own
-                                // comment on why) - the row itself disappears rather than
-                                // showing a control that would silently do nothing.
-                                ColumnLayout {
+                                // comment on why) - the panel itself disappears rather than
+                                // showing a control that would silently do nothing. Shared with
+                                // the Guided wizard's own Rate mode step - see VbrPanel.qml.
+                                VbrPanel {
                                     Layout.fillWidth: true
                                     Layout.topMargin: Theme.gap
-                                    visible: EncoderController.vbrAvailable
-                                    spacing: Theme.gap
-
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        spacing: Theme.gap
-
-                                        Text {
-                                            text: qsTr("Rate mode")
-                                            color: Theme.text
-                                            font.pixelSize: Theme.fontNormal
-                                        }
-                                        SegmentedControl {
-                                            objectName: "rateModeControl"
-                                            model: [{ value: "cbr", label: qsTr("CBR") },
-                                                    { value: "vbr", label: qsTr("VBR") }]
-                                            currentValue: EncoderController.vbrEnabled ? "vbr" : "cbr"
-                                            onSelected: (value) =>
-                                                EncoderController.vbrEnabled = value === "vbr"
-                                        }
-                                        Item { Layout.fillWidth: true }
-                                    }
-
-                                    ColumnLayout {
-                                        Layout.fillWidth: true
-                                        Layout.leftMargin: Theme.gap
-                                        visible: EncoderController.vbrEnabled
-                                        spacing: 4
-
-                                        RowLayout {
-                                            Layout.fillWidth: true
-                                            Text {
-                                                text: qsTr("Quality")
-                                                color: Theme.neutral600
-                                                font.pixelSize: 10
-                                            }
-                                            Item { Layout.fillWidth: true }
-                                            Text {
-                                                text: EncoderController.vbrQuality
-                                                color: Theme.text
-                                                font.pixelSize: 11
-                                                font.family: "monospace"
-                                            }
-                                        }
-                                        RowLayout {
-                                            Layout.fillWidth: true
-                                            spacing: Theme.gap
-
-                                            Text {
-                                                text: qsTr("0 · smallest")
-                                                color: Theme.textMuted
-                                                font.pixelSize: Theme.fontSmall
-                                            }
-                                            Slider {
-                                                objectName: "vbrQualitySlider"
-                                                Layout.fillWidth: true
-                                                from: 0
-                                                to: 100
-                                                stepSize: 1
-                                                value: EncoderController.vbrQuality
-                                                onMoved: EncoderController.vbrQuality =
-                                                             Math.round(value)
-                                            }
-                                            Text {
-                                                text: qsTr("100 · best")
-                                                color: Theme.textMuted
-                                                font.pixelSize: Theme.fontSmall
-                                            }
-                                        }
-
-                                        RowLayout {
-                                            Layout.fillWidth: true
-                                            spacing: Theme.gap
-
-                                            CheckBox {
-                                                id: vbrMinCheck
-                                                objectName: "vbrMinCheck"
-                                                text: qsTr("Minimum")
-                                                checked: EncoderController.vbrMinEnabled
-                                                onToggled: EncoderController.vbrMinEnabled = checked
-                                            }
-                                            SpinBox {
-                                                objectName: "vbrMinSpin"
-                                                from: 32
-                                                to: 6144
-                                                stepSize: 32
-                                                enabled: vbrMinCheck.checked
-                                                value: EncoderController.vbrMinKbps
-                                                onValueModified: EncoderController.vbrMinKbps = value
-                                            }
-
-                                            CheckBox {
-                                                id: vbrMaxCheck
-                                                objectName: "vbrMaxCheck"
-                                                text: qsTr("Maximum")
-                                                checked: EncoderController.vbrMaxEnabled
-                                                onToggled: EncoderController.vbrMaxEnabled = checked
-                                            }
-                                            SpinBox {
-                                                objectName: "vbrMaxSpin"
-                                                from: 32
-                                                to: 6144
-                                                stepSize: 32
-                                                enabled: vbrMaxCheck.checked
-                                                value: EncoderController.vbrMaxKbps
-                                                onValueModified: EncoderController.vbrMaxKbps = value
-                                            }
-                                            Item { Layout.fillWidth: true }
-                                        }
-
-                                        Text {
-                                            Layout.fillWidth: true
-                                            text: (EncoderController.vbrMinEnabled
-                                                   ? qsTr("≥ %1 kbps").arg(EncoderController.vbrMinKbps)
-                                                   : qsTr("no floor"))
-                                                  + " · " +
-                                                  (EncoderController.vbrMaxEnabled
-                                                   ? qsTr("≤ %1 kbps").arg(EncoderController.vbrMaxKbps)
-                                                   : qsTr("no ceiling"))
-                                            color: Theme.textMuted
-                                            font.pixelSize: Theme.fontSmall
-                                        }
-
-                                        Text {
-                                            Layout.fillWidth: true
-                                            text: qsTr("Quality is encoder-relative, not a fixed target — bit cost rises steeply above roughly half the range, so a high quality with no maximum will often refuse real programme material outright. Bit rate above still feeds the coupling/spectral-extension frequency defaults, not a target rate.")
-                                            color: Theme.textMuted
-                                            font.pixelSize: Theme.fontSmall
-                                            wrapMode: Text.WordWrap
-                                        }
-
-                                        Text {
-                                            Layout.fillWidth: true
-                                            text: qsTr("ac3cli vbr token:  %1").arg(EncoderController.vbrToken)
-                                            color: Theme.textMuted
-                                            font.pixelSize: Theme.fontSmall
-                                        }
-                                    }
                                 }
 
                                 Rectangle { Layout.fillWidth: true; height: 2; color: Theme.divider }
@@ -1357,13 +1238,15 @@ ApplicationWindow {
                                 }
                             }
 
-                            // ---- loudness: Basic only ------------------------------------
-                            // Advanced moves this onto Metadata instead, alongside Downmix,
-                            // so it is never shown twice - same LoudnessGroup component
-                            // either way.
+                            // ---- loudness: Advanced only ---------------------------------
+                            // Expert moves this onto Metadata instead, alongside Downmix, so
+                            // it is never shown twice - same LoudnessGroup component either
+                            // way. Guided has its own copy on the wizard's Loudness step
+                            // (GuidedWizard.qml) rather than sharing this Format-tab card,
+                            // since Guided shows no tab bar for this card to live under.
                             Card {
                                 title: qsTr("Loudness")
-                                visible: !window.advanced
+                                visible: window.tier === "advanced"
 
                                 LoudnessGroup {}
 
@@ -1376,19 +1259,19 @@ ApplicationWindow {
                                     MouseArea {
                                         anchors.fill: parent
                                         cursorShape: Qt.PointingHandCursor
-                                        onClicked: window.advanced = true
+                                        onClicked: window.tier = "expert"
                                     }
                                 }
                             }
 
-                            // ---- passthrough: Advanced only ------------------------------
-                            // Not in the Basic/Advanced section's own list of what Basic
-                            // shows (source, codec, channel picker, bit rate, output path
-                            // and container, Loudness, Objects) - a receiver endpoint is a
-                            // codec-developer concern, not a mix-encoding one.
+                            // ---- passthrough: Expert only --------------------------------
+                            // Not in Advanced's own list of what it shows (source, codec,
+                            // channel picker, bit rate, output path and container, Loudness,
+                            // Objects) - a receiver endpoint is a codec-developer concern,
+                            // not a mix-encoding one.
                             Card {
                                 title: qsTr("Passthrough to a receiver")
-                                visible: window.advanced
+                                visible: window.tier === "expert"
 
                                 RowLayout {
                                     Layout.fillWidth: true
@@ -2778,6 +2661,14 @@ ApplicationWindow {
                             }
 
                             Item { Layout.fillHeight: true }
+                        }
+
+                        // ---- Guided wizard ---------------------------------------
+                        // Appended last, past every tabOrder entry - see the
+                        // StackLayout's own currentIndex comment above for why
+                        // nothing needs tabOrder to name this page for it to work.
+                        GuidedWizard {
+                            Layout.fillWidth: true
                         }
                     }
                 }
