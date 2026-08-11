@@ -76,13 +76,49 @@ class EncoderController : public QObject {
     // Encoding is a job with a history, not a modal moment: one entry per
     // file encode (not a live recording, which already has its own elapsed-
     // time readout), newest first. Each is {id, filename, bitrateKbps,
-    // durationText, status ("encoding"|"done"|"failed"|"cancelled"),
-    // sizeText, detail}. There is at most one "encoding" entry at a time
-    // (busy_ gates a new run), and its live progress is read off the
-    // existing `progress` property rather than duplicated per entry.
+    // rateText, durationText, status ("encoding"|"done"|"failed"|
+    // "cancelled"), sizeText, detail}. rateText is what the run strip
+    // actually displays - "384 kbps" for CBR, or, once a VBR run finishes,
+    // "VBR q75 · avg 512 kbps (384-704)": a VBR run has no target rate to
+    // show while "encoding" (only the quality it is aiming for), and a real
+    // one to report once its actual frame sizes are known (see
+    // encodeChannels' completion callback and finishRun()). There is at
+    // most one "encoding" entry at a time (busy_ gates a new run), and its
+    // live progress is read off the existing `progress` property rather
+    // than duplicated per entry.
     Q_PROPERTY(QVariantList runs READ runs NOTIFY runsChanged)
     Q_PROPERTY(int bitrateKbps READ bitrateKbps WRITE setBitrateKbps NOTIFY planChanged)
     Q_PROPERTY(QVariantList bitrates READ bitrates NOTIFY planChanged)
+    // ---- variable bit rate (E-AC-3, file output only) ---------------------
+    // A quality target (with optional independent min/max kbps bounds)
+    // replaces bitrate_kbps-driven CBR sizing - eac3-encode's own [vbr]
+    // positional, in exactly plan::parse_vbr's grammar (kVbrSyntax), so the
+    // command bar's line is always something ac3cli would actually parse.
+    // Not available for AC-3 (validate() rejects it, PlanError::
+    // kVbrNeedsEac3), object mode (a fixed 5.1 bed with no [vbr] argument of
+    // its own), or a live session (IEC 61937 passthrough bursts are
+    // fixed-size per access unit and nothing here renegotiates burst framing
+    // mid-stream, so a live session always runs CBR regardless of what this
+    // holds - see runLiveSession()). bitrate_kbps above still matters in VBR
+    // mode: it keeps feeding the coupling/spx begin-frequency defaults, the
+    // same job it always had, not a target rate.
+    Q_PROPERTY(bool vbrAvailable READ vbrAvailable NOTIFY planChanged)
+    Q_PROPERTY(bool vbrEnabled READ vbrEnabled WRITE setVbrEnabled NOTIFY planChanged)
+    // 0-100 (default 75): linearly maps onto VbrConfig::quality's own [0,1]
+    // range. A preference does not need two decimals of precision, so this
+    // is an int rather than the raw double the library takes.
+    Q_PROPERTY(int vbrQuality READ vbrQuality WRITE setVbrQuality NOTIFY planChanged)
+    // Presence lives on the checkbox, never a sentinel value: unticked means
+    // no bound at all, not a default one - matching VbrConfig::min_kbps/
+    // max_kbps's own optional<> shape exactly rather than smuggling "off"
+    // into some number nobody would ever legitimately choose.
+    Q_PROPERTY(bool vbrMinEnabled READ vbrMinEnabled WRITE setVbrMinEnabled NOTIFY planChanged)
+    Q_PROPERTY(int vbrMinKbps READ vbrMinKbps WRITE setVbrMinKbps NOTIFY planChanged)
+    Q_PROPERTY(bool vbrMaxEnabled READ vbrMaxEnabled WRITE setVbrMaxEnabled NOTIFY planChanged)
+    Q_PROPERTY(int vbrMaxKbps READ vbrMaxKbps WRITE setVbrMaxKbps NOTIFY planChanged)
+    // plan::format_vbr() of the settings above - the exact [vbr] token
+    // ac3cli's eac3-encode takes, so the command bar can paste it verbatim.
+    Q_PROPERTY(QString vbrToken READ vbrToken NOTIFY planChanged)
     Q_PROPERTY(QStringList captureDevices READ captureDevices NOTIFY captureDevicesChanged)
     Q_PROPERTY(bool captureSupported READ captureSupported NOTIFY captureDevicesChanged)
     Q_PROPERTY(QStringList outputDevices READ outputDevices NOTIFY outputDevicesChanged)
@@ -284,6 +320,16 @@ public:
     [[nodiscard]] QVariantList runs() const { return runs_; }
     [[nodiscard]] int bitrateKbps() const { return bitrate_kbps_; }
     [[nodiscard]] QVariantList bitrates() const;
+    [[nodiscard]] bool vbrAvailable() const {
+        return codec_ == ac3::plan::Codec::kEac3 && !atmos_enabled_ && !live_active_;
+    }
+    [[nodiscard]] bool vbrEnabled() const { return vbr_enabled_; }
+    [[nodiscard]] int vbrQuality() const { return vbr_quality_; }
+    [[nodiscard]] bool vbrMinEnabled() const { return vbr_min_enabled_; }
+    [[nodiscard]] int vbrMinKbps() const { return static_cast<int>(vbr_min_kbps_); }
+    [[nodiscard]] bool vbrMaxEnabled() const { return vbr_max_enabled_; }
+    [[nodiscard]] int vbrMaxKbps() const { return static_cast<int>(vbr_max_kbps_); }
+    [[nodiscard]] QString vbrToken() const;
     [[nodiscard]] QStringList captureDevices() const { return capture_devices_; }
     [[nodiscard]] bool captureSupported() const { return !capture_devices_.isEmpty(); }
     [[nodiscard]] QStringList outputDevices() const { return output_devices_; }
@@ -382,6 +428,12 @@ public:
     [[nodiscard]] double liveLatencyMs() const { return live_latency_ms_; }
 
     void setBitrateKbps(int kbps);
+    void setVbrEnabled(bool on);
+    void setVbrQuality(int value);
+    void setVbrMinEnabled(bool on);
+    void setVbrMinKbps(int value);
+    void setVbrMaxEnabled(bool on);
+    void setVbrMaxKbps(int value);
     void setCodecIndex(int index);
     void setBedIndex(int index);
     void setBedLfe(bool on);
@@ -689,6 +741,12 @@ private:
     double progress_ = 0.0;
     double recorded_seconds_ = 0.0;
     int bitrate_kbps_ = 192;
+    bool vbr_enabled_ = false;
+    int vbr_quality_ = 75;
+    bool vbr_min_enabled_ = false;
+    std::uint32_t vbr_min_kbps_ = 192;
+    bool vbr_max_enabled_ = false;
+    std::uint32_t vbr_max_kbps_ = 640;
 
     ac3::plan::Codec codec_ = ac3::plan::Codec::kAc3;
     // Tier 1: the bed and its independent LFE. Defaults to stereo, matching
@@ -734,6 +792,13 @@ private:
     QVariantList runs_;
     int current_run_id_ = -1;
     int next_run_id_ = 1;
+    // Set right before encodeChannels' completion callback emits
+    // encodeFinished, consumed once by finishRun() and cleared - the "NNN
+    // kbps" or, for a VBR run, "VBR q75 · avg 512 kbps (384-704)" text the
+    // run strip shows once a run is no longer "encoding". startRun() already
+    // wrote a live-appropriate placeholder into the same run's rateText;
+    // this is what replaces it once the real per-frame sizes are known.
+    QString pending_rate_text_;
 
     bool playing_ = false;
     QStringList capture_devices_;
