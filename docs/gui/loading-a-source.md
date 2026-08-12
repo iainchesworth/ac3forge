@@ -1,67 +1,92 @@
 # Loading a source
 
-The left rail — "the signal" — is where audio comes in. It has three cards, always visible
+The left rail — "the signal" — is where audio comes in. Three numbered blocks, always visible
 regardless of which tab is active on the right.
 
-## Source
+## 01 · Input
 
-**Choose WAV…** opens a file picker; the chosen path (middle-elided) and a summary line appear
-beneath it once loaded — sample rate, channel count, and duration:
+One input, with a **File / Live capture** selector at the top — there aren't separate cards for
+the two any more, because they are the same thing to the encoder: a list of sources whose
+channels get routed onto the plan.
 
-![A 6-channel WAV loaded: 48000 Hz, 6 channels, 0:01](screenshots/loading-a-source-loaded.png)
+### File
 
-The card reports the channel *count*, not a layout name — the output layout is chosen
+**Choose WAV…** opens a file picker. Each loaded source gets a row — filename, channel count,
+duration, and a **Remove** button — and a totals strip beneath the list sums the session
+(`RATE 48000 · SOURCES 2 · 8 ch · LENGTH 0:02`):
+
+![A 6-channel WAV loaded, guided tier](screenshots/loading-a-source-loaded.png)
+
+The row reports the channel *count*, not a layout name — the output layout is chosen
 independently on the [Format tab](format-and-channels.md) and need not match the source. A source
 narrower than the chosen output layout leaves the missing channels silent; a wider one folds down
 per §7.8 using the centre/surround downmix levels on the [Metadata tab](metadata.md), *unless*
 more than one source is loaded — see below.
 
-### Loading more than one source
+**+ Add files…** appends another WAV rather than replacing the primary — every source must share
+a sample rate, or the add is refused with a status message naming the mismatch. With two or more
+sources loaded, automatic fold-down no longer applies: every loaded channel needs an explicit
+destination in the [assignment table](source-assignment.md), which the **Assign** link beside the
+button jumps to.
 
-An **Add source…** button (enabled once the first file is ready) appends another WAV rather than
-replacing the primary — every source must share a sample rate, or the add is refused with a
-status message naming the mismatch. With two or more sources loaded, the automatic fold-down
-above no longer applies: every loaded channel needs an explicit destination (a speaker position,
-an object, or a dual-mono programme) before an encode can run. That table — and what happens when
-a source is removed — is its own page: [Multi-source & assignment](source-assignment.md).
-
-## Live capture
+### Live capture
 
 A dropdown of capture endpoints — microphones and playback-device loopbacks, the system default
-marked `[default]` — plus **Refresh** and a **Record…** button that becomes a highlighted **Stop**
-while recording, with a live elapsed-time readout beneath it. A **Monitor** checkbox and device
-picker, an **Also write to disk** checkbox, and a **Start live session…** button sit below that —
-covered in full on [Live capture & session](live-session.md).
+marked `[default]` — plus **Refresh** and three ways to run:
+
+- **Monitor** starts a live session that writes *nothing* — no filename is asked for, the meters
+  and soundfield run against the real encoded-and-decoded-back signal, and the button becomes
+  **Stop**. Checking the signal never commits to a take.
+- **Record…** asks for a filename and captures to it (the button becomes **Stop** with a live
+  elapsed readout).
+- **Start live session…** runs the full capture → encode → monitor/passthrough/disk pipeline —
+  covered on [Live capture & session](live-session.md), along with the VBR note that appears on
+  this block whenever VBR is on.
 
 A capture endpoint feeds the encoder the same way a file does — same format, same layout, same
-metadata — its channels are just routed onto whatever layout is selected on the Format tab, live,
-instead of read from disk.
+metadata — its channels are just routed onto whatever layout is selected, live, instead of read
+from disk.
 
 !!! note "Platform backend"
     Live capture needs the platform's audio backend (WASAPI on Windows, ALSA on Linux). See
     [Platform notes](../platforms/windows.md) for what's actually hardware-confirmed on each OS —
-    the card reports itself unavailable on a build with no backend, rather than failing to load.
+    the block reports itself unavailable on a build with no backend, rather than failing to load.
 
-## Channel levels
+## 02 · Levels
 
-Once a source is loaded, this card shows one meter row per **coded** channel — not per speaker —
-named and ordered as A/52 Table 5.8 defines them, with a −60…0 dB tick scale and a soundfield view
-(EAR LEVEL / CEILING) to the right:
+One meter row per **coded** channel of the current *plan* — named and ordered as A/52 Table 5.8
+and its Annex E extensions define them, under a −60…0 dB scale, with the layout's shape name as
+the block's headline:
 
-![Channel meters populated after a run, 7.1.4 E-AC-3](screenshots/channel-levels-live.png)
+![7.1.4 plan fed by a 6-channel source, after a run](screenshots/channel-levels-live.png)
 
-A **Coded / Rendered** toggle switches between the coded-channel view above and what those
-channels actually render to on playback — the two differ whenever a dependent substream's own
-transmitted channels replace part of the bed rather than adding to it (§E3.8.2). The channel
-picker's own presets (built through `chanmap::allocate()`, not the older named-layout table) keep
-coded and rendered equal for every combination reachable from the Format tab today, so this only
-shows up with a hand-built custom selection wide enough to need it. During a run, a red dot and
-the word **live** replace the "peak and RMS over the whole signal" label while metering updates in
-real time; once the run finishes, the bars show the final peak/RMS for the whole file, with
-per-channel **CLIP** indicators.
+**The meters follow the plan, not just the file.** Loading a source renders it through the actual
+routing in the background and publishes whole-programme peak/RMS per coded channel, so a bed
+click, an extras tick or an [assignment](source-assignment.md) edit answers with real numbers — a
+channel the routing feeds carries its true level, and a channel nothing feeds is drawn at reduced
+opacity reading `-∞`, so "correctly silent" stays distinguishable from "meter wired to nothing."
+The footer counts the same fed set the soundfield dots use (`8 of 12 coded channels fed by the
+assignments.`), on an accent rule whenever something is carried silent.
 
-A channel nothing feeds is drawn at reduced opacity and reads `-∞`, so "correctly silent" stays
-distinguishable from "meter wired to nothing."
+A **Coded / Rendered** toggle switches between every transmitted channel (silent ones included)
+and only what a receiver actually drives — the two differ whenever a dependent substream's own
+channels replace part of the bed (§E3.8.2), and in object mode, where the bed is what the objects
+are panned onto. During a run, a red dot and the word **live** appear beside the headline while
+metering updates in real time (~30 snapshots/sec); once the run finishes, the bars settle on the
+exact whole-file peak/RMS, with per-channel **CLIP** indicators.
+
+## 03 · Soundfield
+
+Two square plan views — **Ear level** and, whenever the plan carries height channels, **Ceiling**
+(a flat ring can't show a ceiling layer, so there are two rings). One dot per position at its
+real angle: **solid when a source feeds it, hollow when the stream carries it silent**, each dot
+brightening with its own live level, plus the energy vector the analysis layer computes. The LFE
+is stated, not drawn — it has no direction, so a caption beneath the rings reads `one
+low-frequency channel · no direction` (or `two independent low-frequency channels` on a 7.2.4)
+instead of a dot pretending it has a place.
+
+A `1+1` dual-mono bed replaces the plans entirely with two named programme cards — dual mono has
+no soundstage to draw (see [Dual mono](format-and-channels.md#dual-mono)).
 
 ## Next
 
