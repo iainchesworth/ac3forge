@@ -17,11 +17,6 @@ namespace ac3 {
 
 namespace {
 
-// Rematrixing bands, coupling not in use (Table 7.25): [low, high] inclusive.
-constexpr std::array<std::array<int, 2>, 4> kRematrixBands = {{
-    {13, 24}, {25, 36}, {37, 60}, {61, 252},
-}};
-
 constexpr bool has_three_front(Acmod acmod) {
     const auto value = static_cast<std::uint8_t>(acmod);
     return (value & 0x1) != 0 && acmod != Acmod::k1_0;

@@ -38,7 +38,7 @@ depend on them.
 | Exponents | D15 / D25 / D45, strategy chosen per block from the reuse span (§8.2.8) | frame-level, Table E2.10 code 0: D15 in block 0, reused for the other five |
 | Coupling | yes (§7.4), begin and end frequencies auto or pinned | yes (§E3.3) |
 | Delta bit allocation | automatic (§7.2.2.6), like rematrixing below — no toggle | automatic, same as AC-3 |
-| Rematrixing | yes, 2/0 (§7.5.3 minimum-power rule) | no — the syntax is written, the flags are always zero |
+| Rematrixing | yes, 2/0 (§7.5.3 minimum-power rule) | yes, 2/0 — the same rule, over Table 7.25's bands clamped to wherever coupling or spectral extension takes over |
 | Annex E tools | — | spectral extension (§E3.6), enhanced coupling (§E3.5), adaptive hybrid transform with GAQ (§E3.4), transient pre-noise processing (§3.7) |
 | Objects | panned to a 5.1 bed (no metadata survives) | OAMD + JOC in an EMDF container (TS 103 420) |
 

@@ -1592,16 +1592,13 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
         if (bsi->acmod == Acmod::k2_0) {
             // §7.5.4: L = L' + R', R = L' - R' in flagged bands, up to the
             // lower bandwidth of the two channels.
-            static constexpr std::array<std::array<int, 2>, 4> kBands = {{
-                {13, 24}, {25, 36}, {37, 60}, {61, 252},
-            }};
             const int cap = std::min(tail.endmant[0], tail.endmant[1]) - 1;
-            for (std::size_t band = 0; band < kBands.size(); ++band) {
+            for (std::size_t band = 0; band < kRematrixBands.size(); ++band) {
                 if (!tail.rematflg[band]) {
                     continue;
                 }
-                const int high = std::min(kBands[band][1], cap);
-                for (int bin = kBands[band][0]; bin <= high; ++bin) {
+                const int high = std::min(kRematrixBands[band][1], cap);
+                for (int bin = kRematrixBands[band][0]; bin <= high; ++bin) {
                     const double l = coeffs[0][static_cast<std::size_t>(bin)];
                     const double rr = coeffs[1][static_cast<std::size_t>(bin)];
                     coeffs[0][static_cast<std::size_t>(bin)] = l + rr;
