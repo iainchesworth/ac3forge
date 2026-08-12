@@ -203,7 +203,8 @@ TEST_CASE("Eac3BurstPacker: real audio, numblkscod 3 bursts every access unit",
         ac3::Eac3Decoder decoder;
         const auto decoded = decoder.decode_access_unit(recovered);
         REQUIRE(decoded.has_value());
-        CHECK(decoded->channels.size() == 2);
+        REQUIRE(decoded->has_value());
+        CHECK((*decoded)->channels.size() == 2);
     }
 }
 

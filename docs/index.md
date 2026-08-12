@@ -39,7 +39,7 @@ depend on them.
 | Coupling | yes (§7.4), begin and end frequencies auto or pinned | yes (§E3.3) |
 | Delta bit allocation | automatic (§7.2.2.6), like rematrixing below — no toggle | automatic, same as AC-3 |
 | Rematrixing | yes, 2/0 (§7.5.3 minimum-power rule) | no — the syntax is written, the flags are always zero |
-| Annex E tools | — | spectral extension (§E3.6), adaptive hybrid transform with GAQ (§E3.4) |
+| Annex E tools | — | spectral extension (§E3.6), enhanced coupling (§E3.5), adaptive hybrid transform with GAQ (§E3.4), transient pre-noise processing (§3.7) |
 | Objects | panned to a 5.1 bed (no metadata survives) | OAMD + JOC in an EMDF container (TS 103 420) |
 
 At 44.1 kHz, CBR needs non-integral frame sizes; the AC-3 encoder alternates between the two
@@ -76,11 +76,18 @@ channel from any other encoder; this project's own just doesn't emit it yet.
 
 The in-repo decoder shares its tables, bit-allocation engine, exponent decoding and IMDCT with
 the encoder. It reads AC-3 (bsid ≤ 8) and E-AC-3 (bsid 11–16), including dependent substreams,
-`chanmap`, and the §E3.8.2 render that lays a dependent's channels over the bed. All three Annex
-E coding tools decode too — channel coupling (§E3.3), spectral extension (§E3.6, including the
-pseudo-random noise blend the standard requires but leaves the exact generator unspecified), and
-the adaptive hybrid transform with GAQ (§E3.4) — individually or all stacked together, at every
-channel layout including 7.1.4.
+`chanmap`, and the §E3.8.2 render that lays a dependent's channels over the bed. Every Annex E
+coding tool decodes too — standard coupling (§E3.3), enhanced coupling (§E3.5, a full FFT-based
+phase-restoring reconstruction over 22 sub-bands), spectral extension (§E3.6, including the
+pseudo-random noise blend the standard requires but leaves the exact generator unspecified), the
+adaptive hybrid transform with GAQ (§E3.4), and transient pre-noise processing (§3.7) —
+individually or all stacked together, at every channel layout including 7.1.4.
+
+Transient pre-noise processing holds a frame back per substream that uses it (see [What it does
+not do](#what-it-does-not-do)), and that holding-back is not just a `decode_substream` detail:
+`Eac3Decoder::decode_access_unit` assembles a whole access unit correctly even when only some of
+its substreams set the flag, queuing whichever substreams release early rather than losing or
+misaligning them against the one still catching up.
 
 ### Other
 
@@ -120,9 +127,16 @@ load-bearing enough to flag up front:
     Atmos to a real AV receiver over HDMI, which validates the sink abstraction and burst-packing
     logic in general, but says nothing about ALSA's own implementation specifically.
 
-Also not implemented at all: enhanced coupling and transient pre-noise processing. Variable bit
-rate is E-AC-3 only — AC-3's frame size indexes Table 5.18 rather than stating a word count
-directly, so it has no equivalent and stays CBR.
+Enhanced coupling and transient pre-noise processing are both implemented (see
+[Decoding](library/decoding.md) and the `ecpl`/`tpn` tool tokens), each with a known MVP
+limitation - see [What it does not do](https://github.com/iainchesworth/ac3forge/blob/main/README.md#what-it-does-not-do).
+Neither has an
+external decode oracle at all - not even the FFmpeg-can't-but-the-in-repo-decoder-can situation
+7.1.4 is in, since FFmpeg's own Annex E parser has never read either tool's syntax - so
+`tools/quality_race.py`'s CI gate scores both through this project's own decoder instead (see
+[Validation](verification.md#where-the-oracles-dont-reach)). Variable bit rate is
+E-AC-3 only — AC-3's frame size indexes Table 5.18 rather than stating a word count directly, so
+it has no equivalent and stays CBR.
 
 ## Where to go next
 

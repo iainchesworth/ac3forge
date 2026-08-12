@@ -112,10 +112,12 @@ target_sources(forge_objects
         src/core/bitalloc.cpp
         src/core/eac3_tables.cpp
         src/core/exponents.cpp
+        src/core/fft.cpp
         src/core/mantissas.cpp
         src/core/mdct.cpp
         src/decoder/decoder.cpp
         src/decoder/eac3_decoder.cpp
+        src/decoder/transient_prenoise.cpp
         src/emdf/emdf.cpp
         src/encoder/assignment.cpp
         src/encoder/coupling.cpp

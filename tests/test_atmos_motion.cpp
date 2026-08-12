@@ -225,12 +225,13 @@ TEST_CASE("a moving object's decoded bed tracks its authored path frame by frame
 
         const auto decoded = decoder.decode_access_unit(unit->bytes);
         REQUIRE(decoded.has_value());
+        REQUIRE(decoded->has_value());
 
         double best = -1.0;
         int best_ch = -1;
         for (int ch = 0; ch < 5; ++ch) {  // full-bandwidth channels only, LFE excluded
             double energy = 0.0;
-            for (const auto v : decoded->channels[static_cast<std::size_t>(ch)]) {
+            for (const auto v : (*decoded)->channels[static_cast<std::size_t>(ch)]) {
                 const double sd = static_cast<double>(v);
                 energy += sd * sd;
             }

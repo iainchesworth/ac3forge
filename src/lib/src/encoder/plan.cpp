@@ -609,6 +609,8 @@ bool parse_tools(std::string_view text, Tools& out) {
             }
         } else if (token == "cpl") {
             out.coupling = true;
+        } else if (token == "ecpl") {
+            out.enhanced = true;
         } else if (token == "spx") {
             out.spx = true;
         } else if (token == "noatten") {
@@ -628,6 +630,8 @@ bool parse_tools(std::string_view text, Tools& out) {
             }
         } else if (token == "aht") {
             out.aht = true;
+        } else if (token == "tpn") {
+            out.transient_prenoise = true;
         } else if (token == "all") {
             out.coupling = true;
             out.spx = true;
@@ -650,6 +654,9 @@ std::string format_tools(const Tools& tools) {
     };
     if (tools.coupling) {
         add(tools.cplbegf >= 0 ? "cpl:" + std::to_string(tools.cplbegf) : std::string{"cpl"});
+        if (tools.enhanced) {
+            add("ecpl");
+        }
     }
     if (tools.spx) {
         add(tools.spxbegf >= 0 ? "spx:" + std::to_string(tools.spxbegf) : std::string{"spx"});
@@ -661,6 +668,9 @@ std::string format_tools(const Tools& tools) {
     }
     if (tools.aht) {
         add(tools.gaqmod >= 0 ? "aht:" + std::to_string(tools.gaqmod) : std::string{"aht"});
+    }
+    if (tools.transient_prenoise) {
+        add("tpn");
     }
     return out.empty() ? std::string{"none"} : out;
 }
@@ -892,12 +902,14 @@ namespace {
 void apply_tools(const Tools& tools, eac3::FrameConfig& config) {
     config.coupling = tools.coupling && fullbw_channel_count(config.acmod) >= 2;
     config.cplbegf = tools.cplbegf;
+    config.enhanced = tools.enhanced;
     config.spx = tools.spx;
     config.spxbegf = tools.spxbegf;
     config.spx_atten = tools.spx_atten;
     config.spxattencod = tools.spxattencod;
     config.aht = tools.aht;
     config.gaqmod = tools.gaqmod;
+    config.transient_prenoise = tools.transient_prenoise;
 }
 
 // A dependent's share of the plan's VBR bounds, halved the same way its

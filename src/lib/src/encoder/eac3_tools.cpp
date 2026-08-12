@@ -8,6 +8,9 @@
 #include <numbers>
 
 #include "ac3/core/aht_tables.hpp"
+#include "ac3/core/fft.hpp"
+#include "ac3/core/mdct.hpp"
+#include "ac3/core/window.hpp"
 
 namespace ac3::eac3 {
 
@@ -320,6 +323,266 @@ BandLayout group_bands(int first_bin, int subbands, int bins_per_subband,
         }
     }
     return out;
+}
+
+BandLayout ecpl_group_bands(int begin_subbnd, int end_subbnd, std::span<const bool> structure) {
+    assert(begin_subbnd >= 0 && end_subbnd <= kEcplSubBands && begin_subbnd < end_subbnd);
+    assert(structure.size() >= static_cast<std::size_t>(end_subbnd));
+
+    BandLayout out;
+    out.count = 1;
+    out.start[0] = kEcplSubBandTab[static_cast<std::size_t>(begin_subbnd)];
+    out.size[0] = kEcplSubBandTab[static_cast<std::size_t>(begin_subbnd) + 1] - out.start[0];
+    for (int sbnd = begin_subbnd + 1; sbnd < end_subbnd; ++sbnd) {
+        const int start = kEcplSubBandTab[static_cast<std::size_t>(sbnd)];
+        const int width = kEcplSubBandTab[static_cast<std::size_t>(sbnd) + 1] - start;
+        const auto band = static_cast<std::size_t>(out.count);
+        if (structure[static_cast<std::size_t>(sbnd)]) {
+            out.size[band - 1] += width;
+        } else {
+            out.start[band] = start;
+            out.size[band] = width;
+            ++out.count;
+        }
+    }
+    return out;
+}
+
+namespace {
+
+// Table E3.10: {exptab, manttab} for ecplamp 0..30. Index 31 is handled as a
+// special case (amplitude 0) rather than stored here.
+constexpr std::array<std::pair<int, int>, 31> kEcplAmpTab = {{
+    {0, 0x20}, {0, 0x1b}, {0, 0x17}, {0, 0x13}, {0, 0x10}, {1, 0x1b}, {1, 0x17}, {1, 0x13},
+    {1, 0x10}, {2, 0x1b}, {2, 0x17}, {2, 0x13}, {2, 0x10}, {3, 0x1b}, {3, 0x17}, {3, 0x13},
+    {3, 0x10}, {4, 0x1b}, {4, 0x17}, {4, 0x13}, {4, 0x10}, {5, 0x1b}, {5, 0x17}, {5, 0x13},
+    {5, 0x10}, {6, 0x1b}, {6, 0x17}, {6, 0x13}, {6, 0x10}, {7, 0x1b}, {7, 0x17},
+}};
+
+}  // namespace
+
+double decode_ecplamp(int ecplamp) {
+    assert(ecplamp >= 0 && ecplamp <= 31);
+    if (ecplamp == 31) {
+        return 0.0;
+    }
+    const auto [exp, mant] = kEcplAmpTab[static_cast<std::size_t>(ecplamp)];
+    return std::ldexp(static_cast<double>(mant) / 32.0, -exp);
+}
+
+int quantize_ecplamp(double value) {
+    if (!(value > 0.0)) {
+        return 31;
+    }
+    int best = 0;
+    double best_error = std::numeric_limits<double>::infinity();
+    for (int i = 0; i < 31; ++i) {
+        const double error = std::abs(decode_ecplamp(i) - value);
+        if (error < best_error) {
+            best_error = error;
+            best = i;
+        }
+    }
+    // A value quieter than every real entry reconstructs closer to silence
+    // (index 31) than to the smallest real step.
+    if (std::abs(0.0 - value) < best_error) {
+        return 31;
+    }
+    return best;
+}
+
+int quantize_ecplangle(double angle) {
+    const long raw = std::lround(angle * 32.0);
+    return static_cast<int>(((raw % 64) + 64) % 64);
+}
+
+int quantize_ecplchaos(double chaos) {
+    return std::clamp(static_cast<int>(std::lround(-chaos * 7.0)), 0, 7);
+}
+
+namespace {
+
+// y[m] = cos(2*pi*(N/4 + 0.5)/N*(m + 0.5)), N = 512, m = 0..255 (§3.5.5.4).
+struct EcplYTable {
+    std::array<double, 256> value{};
+    EcplYTable() {
+        constexpr double kPi = std::numbers::pi;
+        constexpr double kN = 512.0;
+        for (int m = 0; m < 256; ++m) {
+            value[static_cast<std::size_t>(m)] =
+                std::cos(2.0 * kPi * (kN / 4.0 + 0.5) / kN * (static_cast<double>(m) + 0.5));
+        }
+    }
+};
+
+const EcplYTable& ecpl_y() {
+    static const EcplYTable t;
+    return t;
+}
+
+}  // namespace
+
+void ecpl_channel_spectrum(std::span<const double, 256> prev_mant,
+                           std::span<const double, 256> curr_mant,
+                           std::span<const double, 256> next_mant, std::span<double, 256> real_out,
+                           std::span<double, 256> imag_out) {
+    // Step 1: three independent 512-sample normative IMDCTs (§7.9.4.1
+    // steps 1-5, the exact machinery every other coefficient set in this
+    // decoder already goes through).
+    std::array<double, 512> x_prev{};
+    std::array<double, 512> x_curr{};
+    std::array<double, 512> x_next{};
+    imdct512_windowed(prev_mant, x_prev);
+    imdct512_windowed(curr_mant, x_curr);
+    imdct512_windowed(next_mant, x_next);
+
+    // Step 2: overlap the second half of the previous block and the first
+    // half of the next block with the current one.
+    std::array<double, 512> pcm{};
+    for (int n = 0; n < 256; ++n) {
+        pcm[static_cast<std::size_t>(n)] =
+            x_prev[static_cast<std::size_t>(n) + 256] + x_curr[static_cast<std::size_t>(n)];
+        pcm[static_cast<std::size_t>(n) + 256] =
+            x_curr[static_cast<std::size_t>(n) + 256] + x_next[static_cast<std::size_t>(n)];
+    }
+
+    // Step 3: window again and apply the xcos3/xsin3 twiddle so the
+    // subsequent DFT lands as an oddly-stacked filterbank, matching the
+    // MDCT. w[N/2-n-1] mirrors from the OPPOSITE end of the window than
+    // w[n] does for the first half - not the same value as w[n] itself.
+    std::array<double, 512> pcm_real{};
+    std::array<double, 512> pcm_imag{};
+    constexpr double kPi = std::numbers::pi;
+    for (int n = 0; n < 256; ++n) {
+        const auto un = static_cast<std::size_t>(n);
+        const std::size_t un2 = un + 256;
+        const double xcos3_n = std::cos(kPi * static_cast<double>(n) / 512.0);
+        const double xsin3_n = -std::sin(kPi * static_cast<double>(n) / 512.0);
+        const double xcos3_n2 = std::cos(kPi * static_cast<double>(n + 256) / 512.0);
+        const double xsin3_n2 = -std::sin(kPi * static_cast<double>(n + 256) / 512.0);
+        pcm_real[un] = pcm[un] * kAnalysisWindow[un] * xcos3_n;
+        pcm_imag[un] = pcm[un] * kAnalysisWindow[un] * xsin3_n;
+        pcm_real[un2] = pcm[un2] * kAnalysisWindow[255 - un] * xcos3_n2;
+        pcm_imag[un2] = pcm[un2] * kAnalysisWindow[255 - un] * xsin3_n2;
+    }
+
+    // Step 4: the full complex DFT. Only bins 0..255 are ever consumed
+    // downstream (§3.5.5.4), so only those are copied out.
+    std::array<double, 512> zr{};
+    std::array<double, 512> zi{};
+    dft512(pcm_real, pcm_imag, zr, zi);
+    for (int k = 0; k < 256; ++k) {
+        real_out[static_cast<std::size_t>(k)] = zr[static_cast<std::size_t>(k)];
+        imag_out[static_cast<std::size_t>(k)] = zi[static_cast<std::size_t>(k)];
+    }
+}
+
+double ecpl_rand_notrans(int channel, int bin) {
+    // A hash of (channel, bin) rather than a stored table - deterministic
+    // and stable for the stream's lifetime (the spec's two requirements),
+    // without needing per-decoder persistent state to satisfy them. The
+    // exact generator is unspecified by the standard, the same freedom
+    // SpxNoise documents for its own noise generator.
+    std::uint32_t state = static_cast<std::uint32_t>(channel) * 0x9E3779B1U ^
+                          static_cast<std::uint32_t>(bin) * 0x85EBCA77U ^ 0xC2B2AE3DU;
+    state ^= state << 13;
+    state ^= state >> 17;
+    state ^= state << 5;
+    const double unit = static_cast<double>(state) / static_cast<double>(0xFFFFFFFFU);  // [0,1]
+    return unit * 2.0 - 1.0;  // [-1, 1], matching §3.5.5.3's uniform (not unit-variance)
+}
+
+double EcplNoise::next() {
+    state ^= state << 13;
+    state ^= state >> 17;
+    state ^= state << 5;
+    const double unit = static_cast<double>(state) / static_cast<double>(0xFFFFFFFFU);  // [0,1]
+    return unit * 2.0 - 1.0;
+}
+
+void ecpl_amplitudes(std::span<const int> ecplamp, std::span<const int> ecplchaos, bool ecpltrans,
+                     bool is_first_channel, int begin_subbnd, int end_subbnd,
+                     std::span<const bool> structure, std::span<double> amp_out) {
+    int band = -1;
+    std::size_t cursor = 0;
+    for (int sbnd = begin_subbnd; sbnd < end_subbnd; ++sbnd) {
+        if (sbnd == begin_subbnd || !structure[static_cast<std::size_t>(sbnd)]) {
+            ++band;
+        }
+        const auto b = static_cast<std::size_t>(band);
+        double amp = decode_ecplamp(ecplamp[b]);
+        // §3.5.5.2: the chaos modification is skipped for the first coupled
+        // channel (whose chaos is defined as zero) and whenever this
+        // channel's block carries a transient.
+        if (!is_first_channel && !ecpltrans) {
+            amp *= 1.0 + 0.38 * decode_ecplchaos(ecplchaos[b]);
+        }
+        const int start = kEcplSubBandTab[static_cast<std::size_t>(sbnd)];
+        const int width = kEcplSubBandTab[static_cast<std::size_t>(sbnd) + 1] - start;
+        for (int i = 0; i < width; ++i) {
+            amp_out[cursor++] = amp;
+        }
+    }
+}
+
+void ecpl_angles(int channel, std::span<const int> ecplangle, std::span<const int> ecplchaos,
+                 bool ecpltrans, bool is_first_channel, int begin_subbnd, int end_subbnd,
+                 std::span<const bool> structure, EcplNoise& noise, std::span<double> angle_out) {
+    int band = -1;
+    std::size_t cursor = 0;
+    double band_angle = 0.0;
+    double band_chaos = 0.0;
+    double band_rand_trans = 0.0;
+    for (int sbnd = begin_subbnd; sbnd < end_subbnd; ++sbnd) {
+        if (sbnd == begin_subbnd || !structure[static_cast<std::size_t>(sbnd)]) {
+            ++band;
+            const auto b = static_cast<std::size_t>(band);
+            band_angle = is_first_channel ? 0.0 : decode_ecplangle(ecplangle[b]);
+            band_chaos = is_first_channel ? 0.0 : decode_ecplchaos(ecplchaos[b]);
+            // rand_trans is per-BAND (unlike rand_notrans, which is per-bin
+            // and drawn below instead) - one fresh draw per band, every
+            // block, then duplicated across that band's bins same as chaos.
+            if (ecpltrans) {
+                band_rand_trans = noise.next();
+            }
+        }
+        const int start = kEcplSubBandTab[static_cast<std::size_t>(sbnd)];
+        const int width = kEcplSubBandTab[static_cast<std::size_t>(sbnd) + 1] - start;
+        for (int i = 0; i < width; ++i) {
+            const int bin = start + i;
+            const double rand = ecpltrans ? band_rand_trans : ecpl_rand_notrans(channel, bin);
+            double angle = band_angle + band_chaos * rand;
+            if (angle < -1.0) {
+                angle += 2.0;
+            } else if (angle >= 1.0) {
+                angle -= 2.0;
+            }
+            angle_out[cursor++] = angle;
+        }
+    }
+}
+
+void ecpl_channel_coefficients(std::span<const double, 256> real_in,
+                               std::span<const double, 256> imag_in,
+                               std::span<const double> amp_bin, std::span<const double> angle_bin,
+                               int begin_mant, int end_mant, std::span<double, 256> mant_out) {
+    const auto& y = ecpl_y().value;
+    constexpr double kPi = std::numbers::pi;
+    for (int bin = begin_mant; bin < end_mant; ++bin) {
+        const auto idx = static_cast<std::size_t>(bin - begin_mant);
+        const double amp = amp_bin[idx];
+        const double angle = angle_bin[idx];
+        const double c = std::cos(kPi * angle);
+        const double s = std::sin(kPi * angle);
+        const double zr = real_in[static_cast<std::size_t>(bin)];
+        const double zi = imag_in[static_cast<std::size_t>(bin)];
+        const double zr_ch = zr * amp * c - zi * amp * s;
+        const double zi_ch = zi * amp * c + zr * amp * s;
+        // N/2 - 1 - bin, N = 512.
+        const auto mirror = static_cast<std::size_t>(255 - bin);
+        mant_out[static_cast<std::size_t>(bin)] =
+            -2.0 * (y[static_cast<std::size_t>(bin)] * zr_ch + y[mirror] * zi_ch);
+    }
 }
 
 }  // namespace ac3::eac3

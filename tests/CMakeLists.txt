@@ -60,7 +60,9 @@ add_executable(ac3tests
     test_elementary.cpp
     test_emdf.cpp
     test_encoder.cpp
+    test_enhanced_coupling.cpp
     test_exponents.cpp
+    test_fft.cpp
     test_frame.cpp
     test_iec61937.cpp
     test_mantissas.cpp
@@ -71,7 +73,8 @@ add_executable(ac3tests
     test_ring_buffer.cpp
     test_spatial.cpp
     test_tables.cpp
-    test_transient.cpp)
+    test_transient.cpp
+    test_transient_prenoise.cpp)
 
 # ---------------------------------------------------------------------------
 # Toolchain hook: keep a failing assert from opening a modal dialog that hangs
