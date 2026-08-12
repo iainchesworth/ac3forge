@@ -52,8 +52,10 @@ rather than only in that run's CI log.
 
 ## Test suite
 
-279 Catch2 unit tests plus the seven example programs: 286 `ctest` entries on Windows and macOS,
-300 on Linux where the ALSA backend adds 14 tests of its own (`tests/platform/alsa/`).
+337 Catch2 unit tests (`ac3tests` plus the `ac3perf` throughput suite) plus the seven example
+programs: 344 `ctest` entries on macOS (no GUI leg there yet), 345 on Windows and any
+GUI-enabled Linux build (the GUI's Qt Quick Test harness, `ac3gui_qml_tests`, adds one), and 359
+on a Linux CI build with the GUI and the ALSA backend both on (`tests/platform/alsa/` adds 14).
 
 ```bash
 ctest --preset test-windows-msvc-debug

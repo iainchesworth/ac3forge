@@ -12,6 +12,20 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 
 ## [Unreleased]
 
+### E-AC-3 encoding and decoding
+
+- **Enhanced coupling's encoder now fits real angle and chaos coordinates**, closing the last
+  known gap from 0.3.0-beta.1's enhanced coupling work — it no longer sends angle/chaos as zero.
+  Amplitude and angle are solved as an exact 2-variable linear least squares per band (§3.5.5.4's
+  reconstruction is linear in the complex gain a band's amplitude/angle pair expresses); chaos is
+  chosen by searching its 8 legal codes directly against the decoder's own deterministic
+  de-correlation sequence and keeping whichever reconstructs closest to the source, rather than
+  estimated from a statistical proxy. Quality on ordinary material is unchanged (a correlated
+  signal's best fit lands near angle zero anyway); the case the amplitude-only fit could not
+  represent at all — two channels' different content forced into the same narrow coupling band —
+  improves measurably, from a ~3 dB floor to ~6 dB, without threatening the coding tool's own
+  structural limit on how much a single coordinate per band can ever separate.
+
 ## [0.3.0-beta.1] - 2026-08-11
 
 Second tagged release. Adds the two remaining Annex E coding tools (enhanced coupling,
@@ -99,9 +113,8 @@ assignment, and a GUI tier split for first-time users through experts.
   keystore is provisioned in this repo yet, so it's a sideload-only build, not one suited for
   store distribution.
 - Enhanced coupling's encoder always sends angle/chaos as zero (an amplitude-only fit) — quality
-  degrades if two channels' content shares one narrow coupling band. Enhanced coupling and
-  spectral extension are never combined by this encoder, and `decode_access_unit` refuses rather
-  than supports transient pre-noise processing across multiple substreams of one access unit.
+  degrades if two channels' content shares one narrow coupling band. Closed in the next release;
+  see [Unreleased](#unreleased).
 - Objects will not decode as *objects* in Dolby's own decoder: DD+ JOC gates that on an
   authenticity tag keyed to a secret embedded in Dolby's decoder binaries, which this project
   does not produce. The bed still decodes as plain 5.1 anywhere.

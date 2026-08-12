@@ -196,9 +196,10 @@ you dispatched from) hasn't been merged to `main` yet.
 or delete the existing tag first if it was created in error:
 `git push origin :refs/tags/vX.Y.Z && git tag -d vX.Y.Z`.
 
-**No package for a platform in the release** - that leg's `experimental: true` build failed
-(check the run's `build-packages` job); expected until that leg is promoted out of experimental
-in `_build.yml` - see the table in `ci.yml`.
+**No package for a platform in the release** - that leg's `build-packages` job failed for real.
+No leg is `experimental: true` any more (see [What gets published](#what-gets-published) above),
+so a missing package is a genuine failure to investigate, not an expected gap for a
+not-yet-promoted leg - check the run's `build-packages` job.
 
 ## What's deliberately not here
 

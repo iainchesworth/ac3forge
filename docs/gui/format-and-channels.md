@@ -15,10 +15,12 @@ is what the encode plan actually reads:
 ![E-AC-3, 7.1.4 preset, all extras enabled](screenshots/format-eac3-714.png)
 
 The plan strip above the tabs updates live: `E-AC-3 · 7.1.4 · 192 kbps · .ec3` (or, in VBR mode,
-`quality <n>` instead of the kbps figure — see below), with a summary (`12 speakers from 12 coded
-channels · 2 dependent substreams`) and a routing note (`6 source channels rendered onto 7.1.4.
-Silent (the source carries nothing that belongs there): Vhl, Vhr, Lts, Rts` when the source is
-narrower than the chosen layout) beneath it.
+`quality <n>` instead of the kbps figure — see below), with a summary (`12 speakers from 14 coded
+channels · 2 dependent substreams` — 7.1.4's dependents replace some of the bed's own channels
+rather than adding to it, so it codes more channels than it renders; see
+[Metadata options](../cli/metadata-options.md#the-layout-grammar)) and a routing note (`6 source
+channels rendered onto 7.1.4. Silent (the source carries nothing that belongs there): Vhl, Vhr,
+Lts, Rts` when the source is narrower than the chosen layout) beneath it.
 
 ## Rate mode: CBR or VBR
 

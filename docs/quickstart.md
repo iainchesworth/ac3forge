@@ -42,7 +42,7 @@ and machine-local preset overrides.
     `-DAC3FORGE_BUILD_GUI=ON` rather than on by default.
 
 That's it — the vcpkg toolchain file supplies Catch2, the presets pin the exact compiler, and
-`ctest` runs the full suite (279 Catch2 unit tests plus the example programs). See
+`ctest` runs the full suite (337 Catch2 unit tests plus the example programs). See
 [building.md](building.md) for Release presets, the `ci-<platform>` workflow presets that chain
 all three steps in one command, and what to do when no compiler is found.
 
