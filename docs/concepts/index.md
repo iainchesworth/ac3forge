@@ -72,3 +72,6 @@ existing tooling.
   plain AC-3.
 - [Atmos & JOC](atmos-joc.md) — how object-based audio rides inside an ordinary E-AC-3
   stream, and two honest limitations of object coding.
+- [Object signing](object-signing.md) — the keyed EMDF protection tag a licensed decoder checks
+  before reconstructing objects, why the algorithm is in-tree but the key isn't, and how to turn
+  it on.

@@ -71,10 +71,18 @@ add_executable(ac3tests
     test_oba.cpp
     test_plan.cpp
     test_ring_buffer.cpp
+    test_signing.cpp
     test_spatial.cpp
     test_tables.cpp
     test_transient.cpp
     test_transient_prenoise.cpp)
+
+# test_signing.cpp reaches ac3::signing's internal crypto headers (sha256.hpp/
+# hmac_sha256.hpp) to run the FIPS/RFC known-answer vectors directly - they are
+# not part of the target's public API, so put its private src/ dir on this
+# target's include path only, the same pattern the alsa backend's internal
+# header uses below.
+target_include_directories(ac3tests PRIVATE "${CMAKE_SOURCE_DIR}/src/signing/src")
 
 # ---------------------------------------------------------------------------
 # Toolchain hook: keep a failing assert from opening a modal dialog that hangs
@@ -124,6 +132,7 @@ target_link_libraries(ac3tests
     PRIVATE
         ac3::forge
         ac3::audio
+        ac3::signing
         matroska::matroska
         ac3::warnings
         ac3::coverage

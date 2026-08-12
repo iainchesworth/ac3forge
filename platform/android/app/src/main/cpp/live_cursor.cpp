@@ -22,9 +22,9 @@
 // transmitted 5.1 bed (see atmos.hpp's header comment) - a legacy/non-JOC
 // decode still hears it panned across the fixed channel layout, it just
 // cannot reconstruct the object as a separate height-rendered source. The
-// quarantine signer (a later, local-only pass) is what closes that gap; see
-// run_loop()'s emit_objects (ac3shield::signing_available()) for what an
-// unsigned build does instead.
+// object signer (a per-frame pass keyed on the bundled signing.key asset) is
+// what closes that gap; see run_loop()'s emit_objects
+// (ac3shield::signing_available()) for what an unsigned build does instead.
 //
 // Real-time viability history: this was briefly a pre-encode-then-loop-a-
 // buffer diagnostic, because AtmosEncoder::encode_frame() measured at
@@ -58,7 +58,7 @@
 #include "ac3/oba/atmos.hpp"
 #include "ac3/sinks/iec61937.hpp"
 #include "ac3/sinks/passthrough.hpp"
-#include "shield_quarantine_hook.hpp"
+#include "shield_signing_hook.hpp"
 
 namespace {
 
@@ -435,11 +435,16 @@ LiveCursorState& live_cursor_state() {
 }
 
 void run_loop() {
-    // A public (stub-hook) build never signs, so an emitted-but-unsigned
-    // container would be the hard-refusal case AtmosConfig::emit_object_metadata's
-    // own comment warns about, not a graceful 5.1 fallback - omit it entirely
-    // instead (see shield_quarantine_hook.hpp's signing_available() comment).
-    // Only the local, quarantine-signer-enabled build ever sets this true.
+    // Load the bundled signing key (if this build carries one) before deciding
+    // whether to emit the object container: the same AAssetManager the lead
+    // voice uses is already set by now (MainActivity.onCreate registers it
+    // before nativeStartLiveCursor). A build without the key asset leaves
+    // signing unavailable - see shield_signing_hook.hpp.
+    ac3shield::init_signing(g_asset_manager.load(std::memory_order_relaxed));
+    // Without a key, an emitted-but-unsigned container would be the hard-refusal
+    // case AtmosConfig::emit_object_metadata's own comment warns about, not a
+    // graceful 5.1 fallback - omit it entirely instead. Only a build carrying
+    // the signing key asset ever sets this true.
     const bool emit_objects = ac3shield::signing_available();
     stream_stats().signed_stream.store(emit_objects, std::memory_order_relaxed);
     ac3::oba::AtmosEncoder encoder({.bitrate_kbps = 448, .emit_object_metadata = emit_objects},
@@ -610,12 +615,12 @@ void run_loop() {
             }
         }
 
-        // Right after encode, before IEC61937 wrapping - unsigned by default
-        // (returns false, a no-op) on every public build; see
-        // shield_quarantine_hook.hpp. This is the ONLY thing standing
-        // between "objects panned into the bed, audible but not
-        // reconstructable" and "a real Dolby-licensed decoder actually
-        // unlocks the objects" - see [[joc-decoder-auth-gate]].
+        // Right after encode, before IEC61937 wrapping - a no-op (returns
+        // false) on any build without the signing key asset; see
+        // shield_signing_hook.hpp. This is the ONLY thing standing between
+        // "objects panned into the bed, audible but not reconstructable" and
+        // "a real Dolby-licensed decoder actually unlocks the objects" - see
+        // [[joc-decoder-auth-gate]].
         (void)ac3shield::maybe_sign_atmos_unit(unit->bytes);
 
         // push() returns expected<optional<vector<byte>>, WrapError>: the

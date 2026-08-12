@@ -73,14 +73,6 @@ option(AC3FORGE_BUILD_EXAMPLES "Build the documented library examples" ON)
 # compiler.
 option(AC3FORGE_BUILD_FUZZERS "Build libFuzzer harnesses (Clang only; see fuzz/)" OFF)
 
-# NON-CLEAN-ROOM, off by default and NOT tracked on any public branch. src/quarantine
-# is gitignored (and a CI job fails if it is ever committed) because it embeds a key
-# extracted from Dolby's binary. When this option is ON *and* the local overlay is
-# present, ac3cli gains an optional EMDF-protection signer for its Atmos output. A
-# normal build neither sees nor references it.
-option(AC3FORGE_QUARANTINE_SIGNER
-    "Build the RE-derived (non-clean-room, local-only) EMDF Atmos protection signer" OFF)
-
 # enable_testing() has to run before ANY add_subdirectory() that might contain
 # an add_test() call, not merely before tests/ itself - CTest silently drops
 # an add_test() registered from a directory processed earlier in the same
@@ -104,17 +96,13 @@ add_subdirectory(src/lib)
 # linked by examples/ - none of them touch live audio.
 add_subdirectory(src/audio)
 
-# Quarantined, RE-derived signer overlay (off by default; local-only, gitignored).
-# After src/lib so it can reuse the codec's parsing primitives; before src/cli so
-# ac3cli can link it.
-if(AC3FORGE_QUARANTINE_SIGNER)
-    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/quarantine/CMakeLists.txt")
-        message(FATAL_ERROR
-            "AC3FORGE_QUARANTINE_SIGNER=ON but src/quarantine/ is absent. It is a "
-            "local-only overlay (never committed); drop it in before enabling this.")
-    endif()
-    add_subdirectory(src/quarantine)
-endif()
+# The EMDF Atmos object signer (ac3::signing). Clean-room and dependency-free:
+# the HMAC construction and authenticated-region layout are in-tree, and the
+# only secret - the key - is supplied by the operator at runtime, never
+# embedded, so unlike the old quarantine overlay this is committed and built by
+# default. After src/lib so it can reuse the codec's parsing primitives; before
+# src/cli so ac3cli can link it.
+add_subdirectory(src/signing)
 
 # A standalone container writer, kept apart from the codec on purpose: it
 # depends on nothing of ac3::forge and knows nothing about AC-3.

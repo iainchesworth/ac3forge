@@ -31,6 +31,17 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   over the same Table 7.25 bands (Annex E only changes how many of the four are active, not their
   boundaries or the rule itself).
 
+### Atmos object signing
+
+- **The EMDF object signer is now a committed, clean-room library (`ac3::signing`)** rather than a
+  gitignored overlay. The HMAC-SHA-256 construction and the layout of what gets signed are in-tree
+  and dependency-free; the **key** is the only secret and is supplied by the operator at runtime,
+  never embedded and never written to disk. `ac3cli atmos` gains `sign-objects` with
+  `signing-key=<path>` (or the `AC3FORGE_SIGNING_KEY_FILE` / `AC3FORGE_SIGNING_KEY` env vars);
+  signing engages only when both a request and a key are present. The Shield app reads its key from
+  a bundled `signing.key` asset written from the `ATMOS_SIGNING_KEY` CI secret at build
+  time. See [docs/concepts/object-signing.md](docs/concepts/object-signing.md).
+
 ## [0.3.0-beta.1] - 2026-08-11
 
 Second tagged release. Adds the two remaining Annex E coding tools (enhanced coupling,

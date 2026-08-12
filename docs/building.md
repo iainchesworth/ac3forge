@@ -173,7 +173,6 @@ platform/compiler fragment matches your machine.
 | `AC3FORGE_SANITIZERS` | empty | Comma-separated `-fsanitize=` value, e.g. `address,undefined` — see `cmake/Sanitizers.cmake`. Empty is a no-op; GCC/Clang only, MSVC is a configure error. Set via the `-asan-ubsan` preset above rather than by hand. |
 | `AC3FORGE_ENABLE_COVERAGE` | `OFF` | `--coverage` gcov instrumentation over every target it's linked into — see `cmake/Coverage.cmake`. Off is a no-op; GCC/Clang only, other compilers get a configure-time warning and no instrumentation. Set via the `-coverage` preset above rather than by hand. |
 | `AC3FORGE_BUILD_FUZZERS` | `OFF` | Build the libFuzzer harnesses under `fuzz/`. Clang only (GCC and MSVC ship no libFuzzer); use `fuzz/run.sh` rather than this option directly — it configures a dedicated `build/fuzz` with the right compiler. See [`fuzz/README.md`](https://github.com/iainchesworth/ac3forge/blob/main/fuzz/README.md). |
-| `AC3FORGE_QUARANTINE_SIGNER` | `OFF` | Non-clean-room, local-only. Requires a gitignored `src/quarantine/` overlay that is never committed (a CI job fails the build if it ever is) and embeds a key extracted from Dolby's binary. A normal build neither sees nor references it — listed here only because the option itself is public in `CMakeLists.txt`. |
 
 Building the library and CLI alone, with neither Qt nor vcpkg involved:
 

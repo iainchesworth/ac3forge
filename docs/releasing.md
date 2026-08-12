@@ -138,9 +138,9 @@ The Shield `.apk` is signed with a real release keystore when one is provisioned
 "Provisioning the Android release keystore" below), and falls back to AGP's default debug
 keystore cleanly if it isn't - either way it's fine for sideloading onto a Shield in developer
 mode. A release keystore is a prerequisite before this could ever go through the Play Store,
-which sideloading itself doesn't require. (Not to be confused with
-`platform/android/app/build.gradle.kts`'s `quarantineSignerEnabled` - the project's own
-EMDF/Atmos authenticity signer, unrelated to APK code-signing.)
+which sideloading itself doesn't require. (Not to be confused with **object signing** - the EMDF
+Atmos authenticity tag, provisioned separately via the `ATMOS_SIGNING_KEY` secret and
+unrelated to APK code-signing; see "Provisioning the Android object-signing key" below.)
 
 No leg is `experimental: true` any more (see `ci.yml`'s status table), so all four package
 for real rather than best-effort - a packaging failure on any of them blocks the release the
@@ -225,6 +225,32 @@ base64 -w0 ac3forge-shield-release.keystore > ac3forge-shield-release.keystore.b
 
 No key-rotation procedure is documented here for the same reason as the GPG key above - design
 one before an incident forces the question, not during it.
+
+## Provisioning the Android object-signing key (optional, one-time)
+
+Separate from the APK keystore above: this is the EMDF Atmos authenticity key that lets a
+validating decoder reconstruct the objects (see [Object signing](concepts/object-signing.md)). Off
+by default - `build-android` checks whether `ATMOS_SIGNING_KEY` is set and, if not, writes
+no key asset, so the app ships the safe unsigned bed51 stream. **The key is yours to provision; do
+not paste key material into a chat with an agent - do this yourself, locally.**
+
+```bash
+# Base64-encode your 32-byte key file into one line, ready to paste into a
+# GitHub secret. CI writes this base64 verbatim into the app's bundled
+# signing.key asset; the app base64-decodes it at startup (the same
+# decode_signing_key() the desktop CLI uses, which also accepts a raw key).
+base64 -w0 atmos.key > atmos.key.b64
+```
+
+Then, in the GitHub repo, go to Settings > Secrets and variables > Actions and add
+`ATMOS_SIGNING_KEY` - the full contents of `atmos.key.b64` - and delete the local
+`atmos.key.b64` afterward.
+
+!!! danger "A signed APK carries the key"
+    Because the app signs on-device, **any** Shield build with this secret set — the debug APK CI
+    produces on every push included, not just releases — bundles the key as an asset. Treat every
+    such APK as key material: it must never be distributed. A build without the secret is the safe
+    unsigned app.
 
 ## Verifying a download
 
