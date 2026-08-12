@@ -295,10 +295,11 @@ IEC 61937 wrapping, since it streams live rather than writing a file.
 
 **The key is a bundled asset, written from a CI secret.** The desktop CLI takes a key by path or
 env var, but this app signs on-device, so the key has to travel in the APK as an asset,
-`app/src/main/assets/signing.key` (raw key bytes). That file is **gitignored** and is materialized
-at build time — from the `ATMOS_SIGNING_KEY` repository secret in CI
-(`.github/workflows/_build.yml`), or dropped in by hand for a local signed build. `init_signing()`
-loads it once through the same `AAssetManager` the lead-voice asset already uses.
+`app/src/main/assets/signing.key`. That file is **gitignored** and is materialized at build time —
+CI writes the base64 `ATMOS_SIGNING_KEY` secret verbatim into it (`.github/workflows/_build.yml`),
+or you drop one in by hand for a local signed build. `init_signing()` loads it once through the same
+`AAssetManager` the lead-voice asset uses and decodes it (base64 or raw) via the same
+`ac3::signing::decode_signing_key()` the CLI applies.
 
 **Unsigned builds omit the object container entirely, not just leave it unsigned.** An unsigned
 but *present* EMDF container is not a safe degraded mode — per `AtmosConfig::emit_object_metadata`'s
@@ -310,7 +311,7 @@ is set to `signing_available()`, so a keyless build runs the same `bed51` mode `
 exposes — no container at all, always safe, on every receiver — while only a build carrying the key
 ever emits and signs one.
 
-To build a signed APK on your own machine, drop your own `signing.key` (raw key bytes) into
+To build a signed APK on your own machine, drop your own `signing.key` (base64 or raw bytes) into
 `app/src/main/assets/` — gitignored, so `git status` never shows it — and build as normal:
 
 ```bash

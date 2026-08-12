@@ -236,8 +236,9 @@ not paste key material into a chat with an agent - do this yourself, locally.**
 
 ```bash
 # Base64-encode your 32-byte key file into one line, ready to paste into a
-# GitHub secret (the build decodes it straight back to the raw bytes the app
-# reads from its bundled signing.key asset).
+# GitHub secret. CI writes this base64 verbatim into the app's bundled
+# signing.key asset; the app base64-decodes it at startup (the same
+# decode_signing_key() the desktop CLI uses, which also accepts a raw key).
 base64 -w0 atmos.key > atmos.key.b64
 ```
 

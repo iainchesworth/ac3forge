@@ -715,11 +715,12 @@ jobs:
       # whenever the ATMOS_SIGNING_KEY secret is set - on ANY build, debug or
       # release, not gated on do_package - so a debug APK signs too when the key
       # is provisioned. Ordinary runs with no secret skip this entirely and the
-      # app streams unsigned bed51. The secret is base64; it is decoded here to
-      # the raw key bytes shield_signing_hook.cpp reads. The asset lives only on
-      # this runner and is gone when it is torn down; $RUNNER_TEMP is not used
-      # because the app's build has to find it under src/main/assets to package
-      # it. Never uploaded on its own.
+      # app streams unsigned bed51. The secret is base64 and is written verbatim;
+      # shield_signing_hook.cpp's decode_signing_key() base64-decodes it at
+      # startup (the same decode the desktop CLI applies), so no `base64 -d` is
+      # needed here. The asset lives only on this runner and is gone when it is
+      # torn down; $RUNNER_TEMP is not used because the app's build has to find
+      # it under src/main/assets to package it. Never uploaded on its own.
       - name: Materialize Android object-signing key
         if: env.HAVE_ATMOS_KEY == 'true'
         env:
@@ -729,8 +730,8 @@ jobs:
           set -euo pipefail
           asset_dir="platform/android/app/src/main/assets"
           mkdir -p "$asset_dir"
-          base64 -d <<<"$ATMOS_SIGNING_KEY" > "$asset_dir/signing.key"
-          echo "Wrote $asset_dir/signing.key ($(wc -c < "$asset_dir/signing.key") bytes) - object signing enabled."
+          printf '%s' "$ATMOS_SIGNING_KEY" > "$asset_dir/signing.key"
+          echo "Wrote $asset_dir/signing.key ($(wc -c < "$asset_dir/signing.key") base64 chars) - object signing enabled."
 
       - name: Build debug APK
         working-directory: platform/android

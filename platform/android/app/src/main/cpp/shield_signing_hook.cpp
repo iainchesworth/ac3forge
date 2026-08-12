@@ -15,9 +15,11 @@ namespace {
 
 constexpr char kLogTag[] = "ac3forge.shield.signing";
 
-// The bundled key asset. Raw key bytes (not hex) - CI decodes its base64 secret
-// straight to this file (_build.yml), and a local signed build drops the same
-// raw-bytes file in. Gitignored; a build without it is the safe unsigned app.
+// The bundled key asset. Its contents are base64 or raw key bytes - CI writes
+// the base64 ATMOS_SIGNING_KEY secret verbatim into it (_build.yml) and a local
+// signed build can drop in either form; decode_signing_key() below handles
+// both, the same way the desktop CLI does. Gitignored; a build without it is
+// the safe unsigned app.
 constexpr char kSigningKeyAsset[] = "signing.key";
 
 // A function-local static rather than a namespace-scope global, so there is no
@@ -51,10 +53,15 @@ void init_signing(AAssetManager* asset_manager) {
                             kSigningKeyAsset, read_bytes, static_cast<long long>(length));
         return;
     }
-    key_slot() = ac3::signing::SigningKey{std::move(bytes)};
+    auto key = ac3::signing::decode_signing_key(bytes);
+    if (!key) {
+        __android_log_print(ANDROID_LOG_WARN, kLogTag,
+                            "'%s' held no usable key - object signing disabled", kSigningKeyAsset);
+        return;
+    }
+    key_slot() = std::move(*key);
     __android_log_print(ANDROID_LOG_INFO, kLogTag,
-                        "loaded signing key (%d bytes) - object container will be signed",
-                        read_bytes);
+                        "loaded signing key - object container will be signed");
 }
 
 bool signing_available() {

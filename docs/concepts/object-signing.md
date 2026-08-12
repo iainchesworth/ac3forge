@@ -61,6 +61,13 @@ int n = ac3::signing::sign_atmos_stream(stream, key);
 - `load_signing_key()` is a convenience resolver (a path argument, then `AC3FORGE_SIGNING_KEY_FILE`,
   then an inline `AC3FORGE_SIGNING_KEY`) for tools that take a key from the environment; a library
   consumer can ignore it and construct `SigningKey` directly from bytes it obtained however it likes.
+- **Key format: base64 or raw bytes.** `decode_signing_key()` (which `load_signing_key()` uses, and
+  which you can call yourself on bytes you already hold) base64-decodes its input when it is valid
+  base64 — the form a GitHub secret must use, since a secret is text and can't carry a raw binary
+  key — and otherwise takes it as raw key bytes. The two are unambiguous in practice; **hex is not a
+  supported format** (a hex string is itself valid base64, so the two can't be auto-distinguished).
+  So one base64 value works everywhere: as the CI secret, as `AC3FORGE_SIGNING_KEY`, or as a
+  `signing-key=` file — and a raw binary key file decodes to the same bytes.
 
 Everything below is just *how the two front ends in this repository supply their own key* — worked
 examples of the rule above, not additional machinery.
@@ -78,7 +85,7 @@ ac3cli atmos out.ec3 8 448 4 6 objects sign-objects signing-key=/path/to/atmos.k
 - `sign-objects` requests signing.
 - `signing-key=<path>` names the key file (preferred — a path doesn't leak into `ps`/shell history).
 - Or, instead of `signing-key=`, set `AC3FORGE_SIGNING_KEY_FILE` (a path) or `AC3FORGE_SIGNING_KEY`
-  (the key inline, hex or raw) — the same resolver order `load_signing_key()` uses.
+  (the key inline, base64 or raw) — the same resolver order `load_signing_key()` uses.
 
 `sign-objects` with no key anywhere is a hard error (it won't silently ship an unsigned stream); no
 `sign-objects` leaves the container unsigned, and — because an unsigned-but-present container is a
@@ -89,14 +96,16 @@ hard refusal on a validating decoder rather than a graceful fallback — you'll 
 ### Shield app (on-device signing)
 
 The Shield demo signs each frame on the device, so its key has to be present in the APK as a bundled
-asset, `app/src/main/assets/signing.key` (raw key bytes) — **gitignored, never committed**. It is
-materialized from the `ATMOS_SIGNING_KEY` repository secret (base64) at build time:
+asset, `app/src/main/assets/signing.key` — **gitignored, never committed**. It is materialized from
+the `ATMOS_SIGNING_KEY` repository secret at build time, and the app decodes it (base64 or raw)
+through the same `decode_signing_key()` the CLI uses:
 
-- Both `ci.yml` and `release.yml` forward the secret to the `build-android` job, which decodes it
-  into the asset before the Gradle build. Signing is gated purely on the secret being set — so
-  **any** Shield build signs when it is, debug or release. With no secret (or on a fork PR, where
-  secrets don't flow) the step is skipped and the build is the safe, unsigned app.
-- Locally, drop your own `signing.key` (raw bytes) into `app/src/main/assets/` before building.
+- Both `ci.yml` and `release.yml` forward the secret to the `build-android` job, which writes the
+  base64 secret verbatim into the asset before the Gradle build. Signing is gated purely on the
+  secret being set — so **any** Shield build signs when it is, debug or release. With no secret (or
+  on a fork PR, where secrets don't flow) the step is skipped and the build is the safe, unsigned app.
+- Locally, drop your own `signing.key` (base64 or raw bytes) into `app/src/main/assets/` before
+  building.
 
 At startup the app loads the asset; present → the object container is emitted and signed, absent →
 the app streams the unsigned `bed51`-equivalent, always safe on any receiver.

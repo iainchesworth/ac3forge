@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -113,23 +114,26 @@ TEST_CASE("load_signing_key reads a key file", "[signing][key]") {
     namespace fs = std::filesystem;
     const fs::path dir = fs::temp_directory_path();
 
-    SECTION("hex contents decode to bytes, whitespace ignored") {
-        const fs::path p = dir / "ac3forge_test_key_hex.txt";
+    SECTION("base64 contents decode to the raw key, whitespace ignored") {
+        const fs::path p = dir / "ac3forge_test_key_b64.txt";
         {
             std::ofstream out{p};
-            out << "00 01 02 03 ff\n";  // 5 bytes
+            out << "AAECA/8=\n";  // base64 of {00,01,02,03,ff}
         }
         const auto key = ac3::signing::load_signing_key(p.string());
         REQUIRE(key.has_value());
         REQUIRE(key->bytes().size() == 5);
+        CHECK(std::to_integer<int>(key->bytes()[0]) == 0x00);
         CHECK(std::to_integer<int>(key->bytes()[4]) == 0xff);
         fs::remove(p);
     }
 
-    SECTION("non-hex contents are taken as raw bytes") {
+    SECTION("non-base64 contents are taken as raw bytes") {
         const fs::path p = dir / "ac3forge_test_key_raw.bin";
         {
             std::ofstream out{p, std::ios::binary};
+            // 5 bytes: length not a multiple of 4 and '!'/0x01 aren't base64,
+            // so this is unambiguously raw.
             const char raw[] = {'k', 'e', 'y', '!', '\x01'};
             out.write(raw, sizeof raw);
         }
@@ -153,6 +157,58 @@ TEST_CASE("load_signing_key reads a key file", "[signing][key]") {
         REQUIRE_FALSE(key.has_value());
         CHECK(key.error().kind == ac3::signing::KeyErrorKind::kEmpty);
         fs::remove(p);
+    }
+}
+
+TEST_CASE("decode_signing_key accepts base64 or raw, and they agree", "[signing][key]") {
+    const std::vector<std::byte> expected = {std::byte{0x00}, std::byte{0x01}, std::byte{0x02},
+                                             std::byte{0x03}, std::byte{0xff}};
+
+    SECTION("base64 decodes to the key bytes") {
+        const std::string b64 = "AAECA/8=";
+        const auto key = ac3::signing::decode_signing_key(as_bytes(b64));
+        REQUIRE(key.has_value());
+        REQUIRE(key->bytes().size() == expected.size());
+        CHECK(std::equal(key->bytes().begin(), key->bytes().end(), expected.begin()));
+    }
+
+    SECTION("a raw binary key (non-base64 bytes) is taken verbatim") {
+        // 32 bytes of 0xAB - 0xAB is not in the base64 alphabet, so unambiguous.
+        const std::vector<std::byte> raw(32, std::byte{0xAB});
+        const auto key = ac3::signing::decode_signing_key(raw);
+        REQUIRE(key.has_value());
+        REQUIRE(key->bytes().size() == 32);
+        CHECK(std::to_integer<int>(key->bytes()[0]) == 0xAB);
+    }
+
+    SECTION("the base64 form and the raw form of one key produce the same key") {
+        // Raw 32-byte key that contains a non-base64 byte so the raw form can't
+        // be misread as base64; its base64 encoding must decode back to it.
+        std::vector<std::byte> raw(32, std::byte{0xAB});
+        raw[7] = std::byte{0x00};
+        // Encode raw -> base64 here rather than hardcode, so the test can't drift.
+        static constexpr char kAlphabet[] =
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        std::string enc;
+        for (std::size_t i = 0; i < raw.size(); i += 3) {
+            const unsigned b0 = std::to_integer<unsigned>(raw[i]);
+            const unsigned b1 = i + 1 < raw.size() ? std::to_integer<unsigned>(raw[i + 1]) : 0;
+            const unsigned b2 = i + 2 < raw.size() ? std::to_integer<unsigned>(raw[i + 2]) : 0;
+            enc.push_back(kAlphabet[b0 >> 2]);
+            enc.push_back(kAlphabet[((b0 & 0x3) << 4) | (b1 >> 4)]);
+            enc.push_back(i + 1 < raw.size() ? kAlphabet[((b1 & 0xf) << 2) | (b2 >> 6)] : '=');
+            enc.push_back(i + 2 < raw.size() ? kAlphabet[b2 & 0x3f] : '=');
+        }
+        const auto from_raw = ac3::signing::decode_signing_key(raw);
+        const auto from_b64 = ac3::signing::decode_signing_key(as_bytes(enc));
+        REQUIRE(from_raw.has_value());
+        REQUIRE(from_b64.has_value());
+        CHECK(std::equal(from_raw->bytes().begin(), from_raw->bytes().end(),
+                         from_b64->bytes().begin(), from_b64->bytes().end()));
+    }
+
+    SECTION("empty content yields no key") {
+        CHECK_FALSE(ac3::signing::decode_signing_key({}).has_value());
     }
 }
 

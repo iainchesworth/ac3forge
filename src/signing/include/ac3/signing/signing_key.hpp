@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <expected>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -45,7 +46,7 @@ private:
 enum class KeyErrorKind {
     kAbsent,      // no --signing-key, no env var: nothing to load
     kUnreadable,  // a path was given but could not be opened/read
-    kMalformed,   // contents were neither valid hex nor usable raw bytes
+    kMalformed,   // reserved: contents could not be interpreted as a key
     kEmpty,       // a source resolved but held no bytes
 };
 
@@ -54,14 +55,23 @@ struct KeyLoadError {
     std::string message;  // human-facing, already names the source it tried
 };
 
+// Interprets `content` as a key: base64-decoded when it is valid base64 (the
+// CI/secret transport form - a GitHub secret is text and cannot carry a raw
+// binary key), otherwise taken as raw key bytes. Returns nullopt only when the
+// content is empty. This is the single decode every path shares, exposed so a
+// caller that already holds the bytes - the Shield app reading its bundled
+// asset - decodes identically to the CLI. Hex is deliberately not a format: a
+// hex string is itself valid base64, so the two cannot be auto-distinguished.
+// See docs/concepts/object-signing.md.
+[[nodiscard]] std::optional<SigningKey> decode_signing_key(std::span<const std::byte> content);
+
 // Resolves a key from, in order: `explicit_path` if non-empty (the CLI's
 // --signing-key), then $AC3FORGE_SIGNING_KEY_FILE (a path), then
-// $AC3FORGE_SIGNING_KEY (inline). File and inline contents may be either
-// whitespace-delimited hex or raw key bytes - hex is tried first and only
-// falls back to raw when the content is not valid hex. The env fallbacks let
-// CI provide a key without a persisted file while the file form stays the
-// documented default (a value passed inline shows up in `ps`/shell history; a
-// path does not).
+// $AC3FORGE_SIGNING_KEY (inline). File and inline contents are decoded by
+// decode_signing_key() above (base64 or raw). The env fallbacks let CI provide
+// a key without a persisted file while the file form stays the documented
+// default (a value passed inline shows up in `ps`/shell history; a path does
+// not).
 [[nodiscard]] std::expected<SigningKey, KeyLoadError> load_signing_key(
     std::string_view explicit_path);
 
