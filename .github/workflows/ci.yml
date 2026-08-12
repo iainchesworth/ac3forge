@@ -680,6 +680,25 @@ jobs:
       - name: Matrix coverage (every CLI option is exercised somewhere)
         run: python3 tools/check_matrix_coverage.py --cli build/config-linux-llvm/bin/ac3cli
 
+      # Compute-only: scores this build against the same three fixed legs
+      # tools/gen_external_baseline.py measures FFmpeg/DEE against, using
+      # this project's own decoder throughout (see quality_race.py's
+      # race_trend docstring) - neither FFmpeg's nor DEE's encoder ever
+      # runs here. Not yet persisted to quality-history (a later phase);
+      # this step only produces the artifact so the numbers are visible
+      # per-run before that lands.
+      - name: External-encoder landscape trend (compute-only)
+        env:
+          AC3CLI: build/config-linux-llvm/bin/ac3cli
+        run: python3 tools/quality_race.py trend --json-out results/trend.json
+
+      - name: Upload landscape trend
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: external-encoder-landscape-trend
+          path: results/trend.json
+
   # Branch protection points at this one check rather than at each matrix leg,
   # so adding or renaming a leg does not need the protection rule updated.
   # Experimental legs cannot reach it: continue-on-error means the reusable

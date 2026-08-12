@@ -23,11 +23,19 @@ Modes:
                included too, scored through this project's own decoder
                rather than FFmpeg's (see decode_scores_ours) - neither tool
                has an external oracle at all.
+  trend      - the CI-time half of the external-encoder landscape
+               comparison (tools/gen_external_baseline.py is the local-only
+               half that actually invokes FFmpeg/DEE): encodes the three
+               committed fixed legs with THIS build and scores everything
+               through this project's own decoder, so it needs neither
+               FFmpeg nor DEE. Compute-only, no gate; see race_trend().
+               `--json-out PATH` writes the rows as JSON.
 
 Usage (repo root, after building):  python tools/quality_race.py [mode]
 Set AC3CLI to override the ac3cli binary (see CLI below); CI always does.
 """
 
+import json
 import os
 import struct
 import subprocess
@@ -506,6 +514,100 @@ def race_ci(original, source, original_51, source_51):
     print("all CI gate checks passed")
 
 
+# --- Landscape trend mode ----------------------------------------------------
+#
+# The CI-time half of the external-encoder landscape comparison (see
+# tools/gen_external_baseline.py for the local-only half that actually
+# invokes FFmpeg's and Dolby DEE's encoders). This mode never invokes
+# either: it reads the same three committed fixed WAVs
+# gen_external_baseline.py measures FFmpeg/DEE against, encodes them with
+# THIS build, and scores everything through decode_scores_ours_fixed (this
+# project's own decoder) - the same self-consistency pattern race_ci
+# already uses for ecpl/tpn, just applied to every row here rather than a
+# few. Kept in sync with gen_external_baseline.py's LEGS by hand (like
+# EAC3_VARIANTS/EAC3_SELF_VARIANTS already are between race_eac3 and
+# race_ci) - this file must never import that one, since it is explicitly
+# the local-only, never-in-CI script and this mode is the opposite: CI-only,
+# no external encoder ever invoked.
+AUDIO_DIR = REPO / "tests" / "golden" / "audio"
+TREND_LEGS = [
+    dict(name="ac3-51-448", codec="ac3", kbps=448, wav=AUDIO_DIR / "reference_51.wav"),
+    dict(name="eac3-stereo-192", codec="eac3", kbps=192, wav=AUDIO_DIR / "reference_stereo.wav"),
+    dict(name="eac3-51-256", codec="eac3", kbps=256, wav=AUDIO_DIR / "reference_51.wav"),
+]
+
+
+def _trend_encode(wav, kbps, codec, tools, out):
+    if codec == "ac3":
+        run([CLI, "encode", str(wav), str(out), str(kbps)])
+    else:
+        cmd = [CLI, "eac3-encode", str(wav), str(out), str(kbps)]
+        if tools:
+            cmd.append(tools)
+        run(cmd)
+
+
+def race_trend(json_out=None):
+    """One "landscape" row per leg - AC-3's automatic tools, or E-AC-3's
+    "all" (cpl+spx+aht - the number comparable to FFmpeg's/DEE's own
+    automatic best-effort choices, same reasoning as
+    gen_external_baseline.py's invoke_ours) - plus one row per applicable
+    EAC3_VARIANTS/EAC3_SELF_VARIANTS entry on the two E-AC-3 legs, the
+    commit-level per-tool detail. "landscape" and the "all" variant row are
+    the same encode for E-AC-3 (this CLI has no separate "auto, pick per
+    content" heuristic beyond "all" today) - computed once, not twice.
+
+    Compute-only: no pass/fail gate here (that is what `ci` mode is for),
+    just the numbers - persistence to quality-history is a later mode.
+    """
+    print(f"{'leg':<18} | {'row':<10} | {'SNR dB':>7} | {'LSD dB':>6} | "
+          f"{'HF dB':>6} | {'kbps':>6}")
+    print("-" * 68)
+
+    results = []
+    ext = {"ac3": "ac3", "eac3": "ec3"}
+    for leg in TREND_LEGS:
+        name, codec, kbps, wav = leg["name"], leg["codec"], leg["kbps"], leg["wav"]
+        is_eac3 = codec == "eac3"
+        original = read_wav_any(wav)
+        seconds = len(original) / RATE
+
+        rows = [("landscape", "all" if is_eac3 else None)]
+        if is_eac3:
+            rows += list(EAC3_VARIANTS) + list(EAC3_SELF_VARIANTS)
+
+        landscape_cache = {}
+        for row_label, tools in rows:
+            cache_key = tools if is_eac3 else None
+            if cache_key in landscape_cache:
+                snr, lsd, hf, kbps_measured = landscape_cache[cache_key]
+            else:
+                coded = BUILD / f"trend_{name}_{row_label}.{ext[codec]}"
+                _trend_encode(wav, kbps, codec, tools, coded)
+                wav_scratch = BUILD / f"trend_{name}_{row_label}.wav"
+                snr, lsd, hf = decode_scores_ours_fixed(original, coded, wav_scratch)
+                kbps_measured = measured_kbps(coded, seconds)
+                landscape_cache[cache_key] = (snr, lsd, hf, kbps_measured)
+
+            lsd_out = float(lsd) if is_eac3 else None
+            hf_out = float(hf) if is_eac3 else None
+            results.append({
+                "leg": name, "codec": codec, "bitrate_kbps": kbps, "variant": row_label,
+                "snr_db": float(snr), "lsd_db": lsd_out, "hf_db": hf_out,
+                "measured_kbps": float(kbps_measured),
+            })
+            lsd_str = "-" if lsd_out is None else f"{lsd_out:.2f}"
+            hf_str = "-" if hf_out is None else f"{hf_out:+.1f}"
+            print(f"{name:<18} | {row_label:<10} | {snr:>7.2f} | {lsd_str:>6} | "
+                  f"{hf_str:>6} | {kbps_measured:>6.1f}")
+        print()
+
+    if json_out is not None:
+        Path(json_out).parent.mkdir(parents=True, exist_ok=True)
+        Path(json_out).write_text(json.dumps({"rows": results}, indent=2) + "\n")
+        print(f"wrote {json_out}")
+
+
 DRP = Path(r"C:\Program Files\Dolby\Dolby Reference Player")
 
 
@@ -736,9 +838,15 @@ def main():
         source_51 = BUILD / "race_src51.wav"
         write_wav_f32(source_51, make_material_51())
         race_ci(original, source, read_wav_f32(source_51), source_51)
+    elif which == "trend":
+        json_out = None
+        if "--json-out" in sys.argv:
+            json_out = Path(sys.argv[sys.argv.index("--json-out") + 1])
+        race_trend(json_out=json_out)
     else:
         raise SystemExit(
-            f"unknown race '{which}' (ac3 | couple | eac3 | eac3-51 | seam | crosscheck | ci)")
+            f"unknown race '{which}' "
+            f"(ac3 | couple | eac3 | eac3-51 | seam | crosscheck | ci | trend)")
 
 
 if __name__ == "__main__":
