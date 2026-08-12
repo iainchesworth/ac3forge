@@ -57,9 +57,9 @@
           "measured_kbps": 192.512
         },
         "ours_at_baseline_time": {
-          "snr_db": 30.117666244506836,
-          "lsd_db": 2.43163581572027,
-          "hf_db": -2.0284001527672113,
+          "snr_db": 21.655664443969727,
+          "lsd_db": 0.9800096601329651,
+          "hf_db": -0.614782040356936,
           "decoded_with": "ours",
           "measured_kbps": 192.512
         }
@@ -83,9 +83,9 @@
           "reason": "DEE build v6.5.4-dme+b56bc97e drops the Ls channel for discrete 6-channel 5.1 input (confirmed via tone probe, channel-index-locked) - see tools/gen_external_baseline.py's module docstring."
         },
         "ours_at_baseline_time": {
-          "snr_db": 21.63498306274414,
-          "lsd_db": 7.140599441953281,
-          "hf_db": -3.0400620228550226,
+          "snr_db": 31.629106521606445,
+          "lsd_db": 4.783468887121625,
+          "hf_db": 0.13309915936214464,
           "decoded_with": "ours",
           "measured_kbps": 258.8672
         }

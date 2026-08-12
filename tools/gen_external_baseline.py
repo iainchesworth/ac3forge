@@ -202,7 +202,15 @@ def invoke_dee(wav, kbps, codec, layout, out):
 
 def invoke_ours(wav, kbps, is_eac3, out):
     if is_eac3:
-        run([CLI, "eac3-encode", str(wav), str(out), str(kbps)])
+        # "all" (quality_race.py's EAC3_VARIANTS token, cpl+spx+aht): a bare
+        # `eac3-encode` with no tools argument leaves every Annex E tool off
+        # by default (FrameConfig's own defaults - see
+        # docs/library/encoding-eac3.md's table), which would compare
+        # ac3forge with its hands tied against FFmpeg's/DEE's own automatic
+        # best-effort tool selection. AC-3 has no such toggle at all -
+        # coupling/rematrix/delta bit allocation are unconditionally
+        # automatic there - so only the E-AC-3 branch needs this.
+        run([CLI, "eac3-encode", str(wav), str(out), str(kbps), "all"])
     else:
         run([CLI, "encode", str(wav), str(out), str(kbps)])
 
