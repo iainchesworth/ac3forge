@@ -25,6 +25,24 @@ val localProperties = Properties().apply {
 val quarantineSignerEnabled =
     (localProperties.getProperty("ac3forge.quarantineSigner") ?: "false").toBoolean()
 
+// Release-keystore signing, wired to environment variables rather than
+// local.properties: CI (release.yml -> _build.yml's build-android job)
+// decodes the ANDROID_KEYSTORE_BASE64 secret to a runner-temp file and
+// exports these four before invoking assembleRelease. Absent locally and
+// on ordinary CI (secrets aren't exposed there, and assembleDebug never
+// reads a release signingConfig anyway) - releaseSigningAvailable gates
+// both whether the config is created at all and which one `release` uses,
+// so every build path degrades to the debug keystore exactly as before
+// this was wired up, rather than failing when the four env vars are unset.
+val releaseKeystorePath = System.getenv("ANDROID_KEYSTORE_PATH")
+val releaseKeystorePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+val releaseKeyAlias = System.getenv("ANDROID_KEY_ALIAS")
+val releaseKeyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+val releaseSigningAvailable = !releaseKeystorePath.isNullOrBlank() &&
+    !releaseKeystorePassword.isNullOrBlank() &&
+    !releaseKeyAlias.isNullOrBlank() &&
+    !releaseKeyPassword.isNullOrBlank()
+
 android {
     namespace = "com.ac3forge.shield"
     // 36 is what's installed locally; 34 is the target actually exercised -
@@ -71,6 +89,17 @@ android {
     // something changed, not that a different NDK silently got picked.
     ndkVersion = "26.1.10909125"
 
+    signingConfigs {
+        if (releaseSigningAvailable) {
+            create("release") {
+                storeFile = file(releaseKeystorePath!!)
+                storePassword = releaseKeystorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
@@ -111,14 +140,19 @@ android {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // Debug-keystore signed, not unsigned: this app is sideload-only
-            // (adb install / a GitHub release asset), never the Play Store,
-            // so there is no separate release keystore to provision - an
-            // unsigned release APK would not be directly installable at all,
-            // and a dedicated key would only matter for an update-signature
-            // check the Play Store performs and this distribution model
-            // never goes through. See docs/platforms/android.md.
-            signingConfig = signingConfigs.getByName("debug")
+            // Real release keystore when one is provisioned (see
+            // releaseSigningAvailable above); debug-keystore signed
+            // otherwise, not unsigned - an unsigned release APK would not
+            // be directly installable at all. This app is sideload-only
+            // (adb install / a GitHub release asset), never the Play
+            // Store, so a release key only matters for update-signature
+            // continuity across sideloaded installs, not a store
+            // requirement. See docs/platforms/android.md.
+            signingConfig = if (releaseSigningAvailable) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
             // Same reasoning as the debug build type's own comment above:
             // without an explicit CMAKE_BUILD_TYPE this native side would
             // build with whatever CMake's own default is (effectively
