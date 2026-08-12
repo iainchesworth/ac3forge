@@ -82,6 +82,7 @@ nav:
       - Encoding E-AC-3: library/encoding-eac3.md
       - Decoding: library/decoding.md
       - Spatial & Atmos objects: library/spatial-and-atmos.md
+      - A worked scene — station broadcast: library/station-broadcast.md
       - Metadata: library/metadata.md
       - Muxing & sinks: library/muxing-and-sinks.md
       - Header map: library/header-map.md
