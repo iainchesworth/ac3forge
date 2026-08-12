@@ -35,6 +35,12 @@ using Microsoft::WRL::ComPtr;
 // backend: functiondiscoverykeys_devpkey.h needs a fragile include ordering.
 constexpr PROPERTYKEY kPkeyDeviceFriendlyName = {
     {0xa45c254e, 0xdf1c, 0x4efd, {0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0}}, 14};
+// PKEY_Device_DeviceDesc - same fmtid, property id 2: the endpoint's own
+// short description ("Speakers") without the adapter suffix. The fallback
+// when an endpoint has no friendly name at all, which real machines produce
+// (a virtual endpoint whose driver never filled the property in).
+constexpr PROPERTYKEY kPkeyDeviceDescription = {
+    {0xa45c254e, 0xdf1c, 0x4efd, {0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0}}, 2};
 
 // KSDATAFORMAT_SUBTYPE_IEC61937_DOLBY_DIGITAL from ksmedia.h:
 // {00000092-0000-0010-8000-00aa00389b71}. The low 16 bits of Data1 are the
@@ -154,6 +160,31 @@ std::string to_utf8(const wchar_t* wide) {
     return out;
 }
 
+// A display name that is never empty: the friendly name if the endpoint has
+// one, its short description otherwise, else a stand-in carrying the
+// endpoint id. Both front ends put this straight into a device list, where
+// a blank row is indistinguishable from a rendering bug - and the id keeps
+// two unnamed endpoints tellable apart.
+std::string endpoint_display_name(IMMDevice* device, const std::string& id) {
+    ComPtr<IPropertyStore> properties;
+    if (SUCCEEDED(device->OpenPropertyStore(STGM_READ, &properties))) {
+        for (const auto& key : {kPkeyDeviceFriendlyName, kPkeyDeviceDescription}) {
+            PROPVARIANT value;
+            PropVariantInit(&value);
+            std::string name;
+            if (SUCCEEDED(properties->GetValue(key, &value)) && value.vt == VT_LPWSTR &&
+                value.pwszVal != nullptr && value.pwszVal[0] != L'\0') {
+                name = to_utf8(value.pwszVal);
+            }
+            PropVariantClear(&value);
+            if (!name.empty()) {
+                return name;
+            }
+        }
+    }
+    return id.empty() ? std::string{"Unnamed audio endpoint"} : "Unnamed endpoint " + id;
+}
+
 class ComScope {
 public:
     ComScope() : hr_(CoInitializeEx(nullptr, COINIT_MULTITHREADED)) {}
@@ -239,22 +270,16 @@ std::expected<std::vector<RenderDeviceInfo>, PassthroughError> enumerate_render_
         }
         RenderDeviceInfo info;
         LPWSTR id = nullptr;
-        if (SUCCEEDED(device->GetId(&id))) {
-            info.id = to_utf8(id);
-            CoTaskMemFree(id);
+        if (FAILED(device->GetId(&id))) {
+            // An entry without an id names a device nobody can open -
+            // start() is handed the id back, so listing it would only offer
+            // a choice that cannot work.
+            continue;
         }
+        info.id = to_utf8(id);
+        CoTaskMemFree(id);
         info.is_default = !info.id.empty() && info.id == default_id;
-
-        ComPtr<IPropertyStore> properties;
-        if (SUCCEEDED(device->OpenPropertyStore(STGM_READ, &properties))) {
-            PROPVARIANT name;
-            PropVariantInit(&name);
-            if (SUCCEEDED(properties->GetValue(kPkeyDeviceFriendlyName, &name)) &&
-                name.vt == VT_LPWSTR) {
-                info.name = to_utf8(name.pwszVal);
-            }
-            PropVariantClear(&name);
-        }
+        info.name = endpoint_display_name(device.Get(), info.id);
 
         ComPtr<IAudioClient> client;
         if (SUCCEEDED(device->Activate(kIidAudioClient, CLSCTX_ALL, nullptr, &client))) {
