@@ -262,6 +262,12 @@ struct Payload {
     std::vector<int> transproclen;  // samples
     CouplingPlan cpl;
     SpxPlan spx;
+    // §7.5.3, 2/0 only: [blk][band], band-indexed like rematrix_band_count's
+    // own return value (0..3, ac3::kRematrixBands' index). Left at all-false
+    // for every other acmod and for silence, which is exactly "never
+    // rematrixed" - the same bit pattern a stream with nothing to gain from
+    // it would choose anyway.
+    std::array<std::array<bool, 4>, kBlocksPerFrame> rematflg{};
     std::vector<ChannelPlan> chans;
     std::array<std::vector<MantissaToken>, kBlocksPerFrame> mantissas;
     // §7.7.1 words per block. All unity when the config carries no profile,
@@ -277,9 +283,9 @@ struct Payload {
 
 // §E3.3.2: the rematrixing bands cannot reach above whichever tool takes over
 // the spectrum first, so both their count and where the last one stops depend
-// on coupling and spectral extension. Nothing here rematrixes yet, but the
-// COUNT is transmitted, so getting it wrong shifts every later field in
-// block 0.
+// on coupling and spectral extension. The COUNT alone is always transmitted
+// (even at nrematbd == 0, which sends zero rematflg bits, not the field's
+// absence), so getting it wrong shifts every later field in block 0.
 [[nodiscard]] int rematrix_band_count(const CouplingPlan& cpl, const SpxPlan& spx) {
     if (cpl.in_use) {
         // §3.3.2: enhanced coupling has its own table, keyed off
@@ -962,11 +968,23 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
             // Unlike AC-3, block 0's rematstr is IMPLIED 1 rather than
             // transmitted - only later blocks carry the bit. Sending it
             // anyway shifts the rest of the block by one.
+            const int nrematbd = rematrix_band_count(cpl, spx);
             if (!first) {
-                w.put(0, 1);  // rematstr: keep the previous flags
+                const bool send = payload.rematflg[static_cast<std::size_t>(blk)] !=
+                                  payload.rematflg[static_cast<std::size_t>(blk) - 1];
+                w.put(send ? 1 : 0, 1);  // rematstr
+                if (send) {
+                    for (int band = 0; band < nrematbd; ++band) {
+                        w.put(payload.rematflg[static_cast<std::size_t>(blk)]
+                                             [static_cast<std::size_t>(band)]
+                                  ? 1
+                                  : 0,
+                              1);
+                    }
+                }
             } else {
-                for (int band = 0; band < rematrix_band_count(cpl, spx); ++band) {
-                    w.put(0, 1);  // rematflg
+                for (int band = 0; band < nrematbd; ++band) {
+                    w.put(payload.rematflg[0][static_cast<std::size_t>(band)] ? 1 : 0, 1);
                 }
             }
         }
@@ -1861,7 +1879,57 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         }
     }
 
-    // --- 4. Which streams take the adaptive hybrid transform ---------------
+    // --- 4. Rematrixing (2/0 only, §7.5.3) ----------------------------------
+    // The exact same minimum-power decision AC-3's own encoder already makes
+    // (see encoder.cpp): Annex E §3.3's "Modifications to Previously Defined
+    // Parameters" only touches nrematbd (rematrix_band_count above already
+    // accounts for coupling/enhanced coupling/spectral extension there) -
+    // Table 7.25's band boundaries and §7.5's decision rule are untouched, so
+    // there is nothing E-AC-3-specific to derive here beyond which bins are
+    // this channel's OWN to decide about. That is exactly fbw_endmant: below
+    // it a full-bandwidth channel always codes its own coefficients,
+    // whichever tool (if any) takes over above it, so rematrixing - like
+    // AC-3's - clamps its last active band to fbw_endmant - 1 and never
+    // touches a bin coupling or spectral extension will overwrite anyway.
+    if (config_.acmod == Acmod::k2_0) {
+        const int nrematbd = rematrix_band_count(cpl, spx);
+        for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
+            auto& left = coeffs_at(0, blk);
+            auto& right = coeffs_at(1, blk);
+            for (int band = 0; band < nrematbd; ++band) {
+                const int low = kRematrixBands[static_cast<std::size_t>(band)][0];
+                const int high = std::min(kRematrixBands[static_cast<std::size_t>(band)][1],
+                                          fbw_endmant - 1);
+                if (low > high) {
+                    continue;
+                }
+                double power_l = 0.0;
+                double power_r = 0.0;
+                double power_sum = 0.0;
+                double power_diff = 0.0;
+                for (int bin = low; bin <= high; ++bin) {
+                    const double l = left[static_cast<std::size_t>(bin)];
+                    const double r = right[static_cast<std::size_t>(bin)];
+                    power_l += l * l;
+                    power_r += r * r;
+                    power_sum += (l + r) * (l + r);
+                    power_diff += (l - r) * (l - r);
+                }
+                if (std::min(power_sum, power_diff) < std::min(power_l, power_r)) {
+                    payload.rematflg[static_cast<std::size_t>(blk)]
+                                    [static_cast<std::size_t>(band)] = true;
+                    for (int bin = low; bin <= high; ++bin) {
+                        const double l = left[static_cast<std::size_t>(bin)];
+                        const double r = right[static_cast<std::size_t>(bin)];
+                        left[static_cast<std::size_t>(bin)] = 0.5 * (l + r);
+                        right[static_cast<std::size_t>(bin)] = 0.5 * (l - r);
+                    }
+                }
+            }
+        }
+    }
+
+    // --- 5. Which streams take the adaptive hybrid transform ---------------
     // AHT is worth having exactly when the six blocks look alike, because
     // that is when the DCT down each bin collapses them into one large
     // coefficient and five small ones. On a transient it does the opposite -
@@ -1896,7 +1964,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         payload.ahte = payload.ahte || plan.aht;
     }
 
-    // --- 5. Fixed point and one frame-constant exponent set per stream -----
+    // --- 6. Fixed point and one frame-constant exponent set per stream -----
     AC3_ZONE_BEGIN(zone_exponents, "step5_exponents");
     // Table E2.10 code 0 sends D15 in block 0 and reuses it for the other
     // five, so a bin's exponent has to accommodate its LOUDEST block. The
@@ -2044,7 +2112,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
 
     AC3_ZONE_END(zone_exponents);
 
-    // --- 6. Coupling leak seeds ---------------------------------------------
+    // --- 7. Coupling leak seeds ---------------------------------------------
     // The coupling channel's allocation starts above the low-frequency region
     // entirely, so instead of running lowcomp it continues the masking decay
     // from transmitted leak state. Deriving the seeds from the coupling
@@ -2057,7 +2125,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         cpl.sleak = std::clamp((psd - slow_gain(kBamode0Codes.sgaincod) - 768) >> 8, 0, 7);
     }
 
-    // --- 7. SNR-offset search ----------------------------------------------
+    // --- 8. SNR-offset search ----------------------------------------------
     // The side info is offset-independent here (bamode 0, no delta
     // allocation), so it can be measured once and the remainder handed
     // wholly to the mantissas.
@@ -2320,7 +2388,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     payload.csnroffst = lo >> 4;
     payload.fsnroffst = lo & 15;
 
-    // --- 8. Mantissa tokens per block --------------------------------------
+    // --- 9. Mantissa tokens per block --------------------------------------
     AC3_ZONE_BEGIN(zone_mantissas, "step8_mantissa_tokens");
     // §E2.2.4 ordering: each fbw channel's mantissas, with the coupling
     // channel's inserted right after the FIRST coupled channel, then the LFE.
@@ -2429,7 +2497,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     (void)token_bits;
     AC3_ZONE_END(zone_mantissas);
 
-    // --- 9. Spectral extension coordinates ----------------------------------
+    // --- 10. Spectral extension coordinates ---------------------------------
     // Last, because the gains have to be measured against what the DECODER
     // will hold, not against what the encoder started with. The copy source is
     // the baseband this function has just quantized, and at low rates a good

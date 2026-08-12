@@ -353,9 +353,16 @@ TEST_CASE("E-AC-3 coupling places its fields where Annex E puts them",
         }
     }
     // cplbegf 4 is above 2, so all four rematrixing bands survive (§7.5.2.2).
+    // Which SPECIFIC band(s) fire is content-dependent and not this test's
+    // concern - that's a §7.5.3 minimum-power outcome, not field placement -
+    // but wideband_frame's channels are correlated enough that real
+    // rematrixing should engage somewhere, checked as a sanity floor rather
+    // than asserted band-by-band.
+    bool any_rematrixed = false;
     for (int bnd = 0; bnd < 4; ++bnd) {
-        CHECK(reader.read(1) == 0);  // rematflg
+        any_rematrixed = reader.read(1) != 0 || any_rematrixed;
     }
+    CHECK(any_rematrixed);
     // chbwcod is absent for a coupled channel, so the coupling channel's
     // exponents come next: cplabsexp then ncplgrps groups of 7.
     reader.skip(4 + (15 - 4 + 3) * 12 / 3 * 7);
@@ -813,9 +820,14 @@ TEST_CASE("E-AC-3 spectral extension places its fields where Annex E puts them",
     }
     // Coupling is off, so nothing follows before rematrixing - and with only
     // spectral extension in use spxbegf 4 leaves all four bands (§E3.3.2).
+    // Same sanity floor as the coupling placement test's own rematflg check:
+    // some band should fire for correlated content, which band is not this
+    // test's concern.
+    bool any_rematrixed = false;
     for (int bnd = 0; bnd < 4; ++bnd) {
-        CHECK(reader.read(1) == 0);  // rematflg
+        any_rematrixed = reader.read(1) != 0 || any_rematrixed;
     }
+    CHECK(any_rematrixed);
     // chbwcod is NOT sent for a channel in spectral extension: its coded
     // bandwidth is where synthesis begins. So exponents come straight after,
     // and the first field is a 4-bit absolute exponent.

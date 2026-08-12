@@ -25,6 +25,11 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   represent at all — two channels' different content forced into the same narrow coupling band —
   improves measurably, from a ~3 dB floor to ~6 dB, without threatening the coding tool's own
   structural limit on how much a single coordinate per band can ever separate.
+- **E-AC-3 stereo (2/0) rematrixing** — the bitstream syntax and decoder undo path have existed
+  since 0.2.0-beta.1; only the encoder's own §7.5.3 minimum-power decision was missing, and it
+  turned out to need no new logic at all, just the same rule AC-3's own encoder already makes,
+  over the same Table 7.25 bands (Annex E only changes how many of the four are active, not their
+  boundaries or the rule itself).
 
 ## [0.3.0-beta.1] - 2026-08-11
 

@@ -447,3 +447,26 @@ own comment and threshold were updated to say so rather than imply the tool has 
 transparent there. Verified against real gcc-15, clang-21 and MSVC builds before landing, following
 the lesson from the previous merge: a feature exercised only on one compiler locally is not
 verified everywhere the fleet is required to be green.
+
+## E-AC-3 rematrixing
+
+E-AC-3's `acmod` 2/0 rematrixing had always emitted valid but permanently-off syntax — `rematflg`
+unconditionally zero, `rematstr` never claiming a change — even though the bitstream field layout
+and the in-repo decoder's undo path were both already complete. Only the encoder's own §7.5.3
+minimum-power decision was missing, and it turned out to need no new decision logic at all:
+Annex E §3.3's "Modifications to Previously Defined Parameters" touches `nrematbd` (how many of
+Table 7.25's four bands are active, given whichever of coupling/enhanced coupling/spectral
+extension takes over the top of the spectrum first) and nothing else about rematrixing — the band
+boundaries and the decision rule are exactly AC-3's own. `kRematrixBands` (previously a local
+table private to the AC-3 encoder) moved to `ac3/core/tables.hpp` as shared, format-agnostic
+infrastructure, and both decoders' own independent copies of the same four ranges were pointed at
+it too, closing a three-way literal duplication risk that predated this work rather than adding a
+new one.
+
+Two existing bit-placement tests (`tests/test_eac3.cpp`) had hardcoded `rematflg` at zero, true
+only because the encoder never set it before; both now assert genuine engagement (at least one
+band fires) for their already-correlated test material instead, catching the field's PRESENCE
+without pinning a value that is legitimately content-dependent. The existing stereo round-trip
+test's identical-tone case already exercised the decoder's real undo path end to end once
+rematrixing went live, without needing a new test written for it. Verified against real gcc-15,
+clang-21 and MSVC builds, plus clang-tidy, before landing.

@@ -55,6 +55,14 @@ generation only, from AHT for that frame: AHT's own "stationary" premise (§E3.4
 what triggered the switch) already selects against a switching channel most of the time, but the
 exclusion is explicit rather than relying on that correlation.
 
+Rematrixing (§7.5.3) is automatic too, `acmod` 2/0 only, no config field — the same minimum-power
+decision AC-3's own encoder makes (see [Encoding AC-3](encoding-ac3.md)), over the same Table 7.25
+bands. Annex E §3.3's "Modifications to Previously Defined Parameters" only changes how many of
+those bands are active (`nrematbd`, accounting for coupling, enhanced coupling and spectral
+extension all separately taking over the top of the spectrum) — the boundaries and the decision
+rule are untouched, so nothing here needed reinventing beyond that band count and clamping the
+last active band to wherever this channel's own coding actually stops.
+
 `FrameConfig::dialnorm2` (see "Dual mono" in [Encoding AC-3](encoding-ac3.md)) works exactly
 the same way here: set it alongside `dialnorm` when `acmod` is `kDualMono`. Dual mono is always a
 lone independent substream with no dependents — 1+1 has no bed/dependent split to make — so
