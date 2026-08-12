@@ -104,3 +104,5 @@ nav:
       - History: project/history.md
       - Quality trend: quality-trend.md
       - Performance trend: performance-trend.md
+      - Landscape: landscape.md
+      - Tool comparison trend: tool-comparison-trend.md

@@ -680,6 +680,125 @@ jobs:
       - name: Matrix coverage (every CLI option is exercised somewhere)
         run: python3 tools/check_matrix_coverage.py --cli build/config-linux-llvm/bin/ac3cli
 
+      # Compute-only: scores this build against the same three fixed legs
+      # tools/gen_external_baseline.py measures FFmpeg/DEE against, using
+      # this project's own decoder throughout (see quality_race.py's
+      # race_trend docstring) - neither FFmpeg's nor DEE's encoder ever
+      # runs here. Not yet persisted to quality-history (a later phase);
+      # this step only produces the artifact so the numbers are visible
+      # per-run before that lands.
+      - name: External-encoder landscape trend (compute-only)
+        env:
+          AC3CLI: build/config-linux-llvm/bin/ac3cli
+        run: python3 tools/quality_race.py trend --json-out results/trend.json
+
+      - name: Upload landscape trend
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: external-encoder-landscape-trend
+          path: results/trend.json
+
+  # Persists ffmpeg-validate's landscape-trend numbers (see that job's own
+  # comment) to the quality-history branch, same mechanism as
+  # persist-performance-trend beside it - one job downstream of a single
+  # producer job rather than a per-leg matrix, so this is one commit per CI
+  # run, not a race between several. Needs neither a container nor a build:
+  # scripts/append-external-comparison-history.py is stdlib-only, and
+  # tests/golden/external-baseline/manifest.json (the FFmpeg/DEE numbers to
+  # diff against) is a committed file the checkout below already has.
+  persist-external-comparison-trend:
+    name: Publish external-encoder landscape trend
+    needs: ffmpeg-validate
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # persist-credentials: false - same reasoning as persist-performance-
+      # trend's identical checkout: this working tree is only ever read from
+      # (the append script, `git show` on this commit); the "Prepare
+      # quality-history checkout" step below pushes through its own
+      # explicitly-scoped remote instead.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download landscape trend
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: external-encoder-landscape-trend
+          path: results
+
+      # Same mechanic as persist-performance-trend's identical step: plain
+      # git over an HTTPS remote carrying the token, not actions/checkout,
+      # which fails outright if quality-history does not exist yet.
+      - name: Prepare quality-history checkout
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory '*'
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          mkdir -p history
+          cd history
+          if git ls-remote --exit-code --heads "$remote" quality-history >/dev/null 2>&1; then
+            git init -q
+            git remote add origin "$remote"
+            git fetch -q origin quality-history
+            git checkout -q quality-history
+          else
+            git init -q -b quality-history
+            git remote add origin "$remote"
+            git commit -q --allow-empty -m "Initialize quality-history branch"
+          fi
+
+      - name: Append external-comparison history
+        id: append
+        shell: bash
+        env:
+          BRANCH: ${{ github.ref_name }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          commit_date="$(git show -s --format=%cI "$COMMIT_SHA")"
+          python3 scripts/append-external-comparison-history.py \
+            --trend-json results/trend.json \
+            --manifest-json tests/golden/external-baseline/manifest.json \
+            --history-dir history \
+            --branch "$BRANCH" \
+            --commit "$COMMIT_SHA" \
+            --commit-date "$commit_date"
+
+      - name: Commit and push external-comparison-history update
+        shell: bash
+        env:
+          BRANCH: ${{ github.ref_name }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          cd history
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -q -m "External-comparison trend: ${BRANCH}@${COMMIT_SHA}"
+            git push -q origin quality-history
+          fi
+
+      # Deliberately after the push above, not instead of the append step
+      # failing outright - same reasoning as persist-performance-trend's and
+      # append-quality-history.py's identical hard-regression step.
+      - name: Fail on hard external-comparison regression
+        if: steps.append.outputs.hard_regression == 'true'
+        shell: bash
+        run: |
+          echo "::error::A leg/variant's SNR dropped at least 10 dB below its trailing average - see the job log above."
+          exit 1
+
   # Branch protection points at this one check rather than at each matrix leg,
   # so adding or renaming a leg does not need the protection rule updated.
   # Experimental legs cannot reach it: continue-on-error means the reusable
@@ -687,7 +806,7 @@ jobs:
   ci-status:
     name: CI Status
     if: always()
-    needs: [ branch-name, no-quarantine, changes, platform-macros, static-analysis, coverage, build-and-test, ffmpeg-validate, persist-performance-trend ]
+    needs: [ branch-name, no-quarantine, changes, platform-macros, static-analysis, coverage, build-and-test, ffmpeg-validate, persist-performance-trend, persist-external-comparison-trend ]
     runs-on: ubuntu-latest
     steps:
       - name: Gate on required job results
@@ -706,6 +825,7 @@ jobs:
           # 'skipped' on every PR and every push off develop/main (its own
           # `if`) - a pass, not a failure, same as R_TIDY/R_COVERAGE above.
           R_PERF_TREND: ${{ needs.persist-performance-trend.result }}
+          R_EXT_TREND: ${{ needs.persist-external-comparison-trend.result }}
         run: |
           set -euo pipefail
           fail=0
@@ -713,7 +833,8 @@ jobs:
                       "changes:$R_CHANGES" "platform-macros:$R_MACROS" \
                       "static-analysis:$R_TIDY" "coverage:$R_COVERAGE" \
                       "build-and-test:$R_BUILD" "ffmpeg-validate:$R_FFMPEG" \
-                      "persist-performance-trend:$R_PERF_TREND"; do
+                      "persist-performance-trend:$R_PERF_TREND" \
+                      "persist-external-comparison-trend:$R_EXT_TREND"; do
             job="${pair%%:*}"; result="${pair#*:}"
             echo "  $job: $result"
             if [ "$result" = "failure" ] || [ "$result" = "cancelled" ]; then
