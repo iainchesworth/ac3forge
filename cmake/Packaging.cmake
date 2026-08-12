@@ -39,6 +39,12 @@ set(CPACK_PACKAGE_CHECKSUM "SHA512")
 
 set(CPACK_GENERATOR "ZIP")
 
+# Per-generator override, sourced by cpack itself once per generator in a
+# multi-generator run - see cmake/CPackProjectConfig.cmake for why DragNDrop
+# needs one (CPACK_COMPONENTS_GROUPING below is global CPack state, and
+# DragNDrop reads the same value the archive generators use to split).
+set(CPACK_PROJECT_CONFIG_FILE "${CMAKE_CURRENT_LIST_DIR}/CPackProjectConfig.cmake")
+
 if(WIN32)
     find_program(AC3FORGE_MAKENSIS_EXECUTABLE makensis)
     if(AC3FORGE_MAKENSIS_EXECUTABLE)
@@ -48,15 +54,6 @@ if(WIN32)
     endif()
 elseif(APPLE)
     list(APPEND CPACK_GENERATOR "DragNDrop")
-    # Explicit, not relying on the (undocumented, version-dependent) CPack
-    # default: v0.3.0-beta.1's dry run - the first time this generator ever
-    # actually ran, on real macOS CI - showed CPack splits DragNDrop into one
-    # .dmg per CPACK_COMPONENTS_ALL entry unless told not to, contradicting
-    # this file's own component-split rationale below (DragNDrop was meant to
-    # stay one monolithic package, the same reasoning as NSIS/DEB/RPM below -
-    # a split here was never designed or verified, unlike the deliberate
-    # ZIP/TGZ archive split).
-    set(CPACK_DMG_COMPONENT_INSTALL OFF)
 elseif(UNIX)
     list(APPEND CPACK_GENERATOR "TGZ")
 
