@@ -1096,10 +1096,21 @@ TEST_CASE("the E-AC-3 decoder rejects malformed coupling streams",
         patch_bits(broken, kEcplinuBit, 1, 1);
         CHECK_FALSE(decoder.decode_access_unit(broken).has_value());
     }
-    SECTION("cplbndstrce cleared: the Annex E default band table is refused, not guessed at") {
+    SECTION("cplbndstrce cleared without also removing the now-unread structure bits fails") {
+        // The decoder applies Table E2.12 when cplbndstrce is 0 rather than
+        // refusing it (see eac3_tools.hpp's kDefaultCplBandStructure), so
+        // clearing just this one bit no longer hits a blanket "unsupported"
+        // check. This encoder always transmits an explicit structure, so the
+        // ncplsubnd - 1 bits it wrote are still sitting in the stream right
+        // after cplbndstrce; the decoder now skips over them instead of
+        // consuming them, which misaligns every field that follows. That
+        // must still fail somehow - here it trips a downstream range check -
+        // which is what this asserts. A genuine cplbndstrce == 0 stream (no
+        // structure bits present at all) is covered by real interop
+        // fixtures, not a hand-patched one from this project's own encoder.
         auto broken = whole;
         patch_bits(broken, kCplbndstrceBit, 1, 0);
-        CHECK(decoder.decode_access_unit(broken).error() == ac3::DecodeError::kUnsupported);
+        CHECK(decoder.decode_access_unit(broken).error() == ac3::DecodeError::kInvalidStream);
     }
     SECTION("cplbegf past cplendf collapses the coupled region to nothing") {
         auto broken = whole;

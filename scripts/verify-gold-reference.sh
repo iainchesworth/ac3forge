@@ -92,9 +92,14 @@ ffmpeg_strict_decode() {
 
 # One (encode, decode-with-ac3cli, decode-with-ffmpeg, compare) round for a
 # given codec. $1: human label. $2: the file ac3cli just produced. $3: codec
-# label for --json-out. $4: nominal bitrate in kbps for --json-out.
+# label for --json-out. $4: nominal bitrate in kbps for --json-out. $5:
+# min-snr-db override (default MIN_SNR_DB) - separate from the global default
+# because that default is calibrated for streams THIS PROJECT's own encoder
+# produced (see MIN_SNR_DB's own comment); a real third-party encoder's
+# output has no such guarantee and needs its own, separately-justified floor.
 check_one() {
     local label="$1" encoded="$2" codec="$3" bitrate_kbps="$4"
+    local min_snr_db="${5:-$MIN_SNR_DB}"
     local ffmpeg_wav="$WORKDIR/${label}_ffmpeg.wav"
     local our_wav="$WORKDIR/${label}_ours.wav"
 
@@ -107,7 +112,7 @@ check_one() {
     "$CLI" decode "$encoded" "$our_wav" >/dev/null
 
     count=$((count + 1))
-    echo "[$count] $label: SNR vs. FFmpeg's decode (L4-lite, >= ${MIN_SNR_DB} dB)"
+    echo "[$count] $label: SNR vs. FFmpeg's decode (L4-lite, >= ${min_snr_db} dB)"
     local json_args=()
     if [ -n "$RESULTS_JSON_DIR" ]; then
         mkdir -p "$RESULTS_JSON_DIR"
@@ -117,9 +122,9 @@ check_one() {
     # `set -u` treats expanding a zero-element array as an unbound variable -
     # same reasoning as _build.yml's Configure step.
     if [ ${#json_args[@]} -eq 0 ]; then
-        "$PYTHON" "$COMPARE" "$ffmpeg_wav" "$our_wav" --min-snr-db "$MIN_SNR_DB"
+        "$PYTHON" "$COMPARE" "$ffmpeg_wav" "$our_wav" --min-snr-db "$min_snr_db"
     else
-        "$PYTHON" "$COMPARE" "$ffmpeg_wav" "$our_wav" --min-snr-db "$MIN_SNR_DB" "${json_args[@]}"
+        "$PYTHON" "$COMPARE" "$ffmpeg_wav" "$our_wav" --min-snr-db "$min_snr_db" "${json_args[@]}"
     fi
 }
 
@@ -136,5 +141,43 @@ echo "[$count] encode: E-AC-3 5.1 @ 256 kbps (tools=none)"
 # not just tolerate a known refusal, so it stays on the plain-decodable path.
 "$CLI" eac3-encode "$GOLD_WAV" "$WORKDIR/gold.ec3" 256 none 51 >/dev/null
 check_one "eac3" "$WORKDIR/gold.ec3" "eac3" 256
+
+# Third-party interop: cplbndstrce == 0 (Annex E's default coupling band
+# structure, Table E2.12). This project's own encoder always transmits an
+# explicit structure (see eac3_tools.hpp's kDefaultCplBandStructure comment),
+# so nothing above ever exercises this path - only a real third-party
+# encoder does, which is exactly what let a real decoder bug here go
+# unnoticed until FFmpeg's own E-AC-3 output was tried against this decoder
+# for the first time: it refused cplbndstrce == 0 outright (kUnsupported).
+# gold.ec3 above (this project's own encoder) cannot stand in for that, so
+# this checks a real FFmpeg-encoded fixture directly instead of an
+# ac3cli-produced one:
+#   tests/golden/audio/reference_51_eac3_448k_cplbndstrce0.ec3
+#     ffmpeg -y -i tests/golden/audio/reference_51.wav -c:a eac3 -b:a 448k \
+#         tests/golden/audio/reference_51_eac3_448k_cplbndstrce0.ec3
+# Confirmed (ffmpeg 8.0.1) to set cplbndstrce == 0 with cplbegf == 12 in
+# every block - cplbegf != 0 matters: an indexing bug that reads the default
+# table relative to cplbegf instead of absolutely from it would still pass
+# on a stream where cplbegf happens to be 0, so this fixture is deliberately
+# NOT one of those.
+# Measured (ffmpeg 8.0.1, this fixture) at 25.42 dB worst-channel agreement
+# between ac3cli's decode and FFmpeg's own - lower than gold.ac3/gold.ec3's
+# 55 dB floor above because those compare two decodes of a stream THIS
+# PROJECT's own encoder produced, while this compares two decodes of a real
+# third-party bitstream neither side controls. 15 dB stays well clear of
+# that measured floor while still failing hard on the failure modes this
+# fixture exists to catch: a full revert (kUnsupported, no WAV at all) and
+# an indexing bug that reads the table relative to cplbegf instead of
+# absolutely from it (confirmed by hand: with this fixture's cplbegf == 12,
+# that specific bug picks the wrong merge decisions for every coupling band
+# and the corrupted geometry fails outright with kInvalidStream downstream,
+# rather than merely losing fidelity).
+CPLBNDSTRCE0_MIN_SNR_DB=15
+CPLBNDSTRCE0_EC3="$REPO_ROOT/tests/golden/audio/reference_51_eac3_448k_cplbndstrce0.ec3"
+if [ ! -f "$CPLBNDSTRCE0_EC3" ]; then
+    echo "::error::fixture missing: $CPLBNDSTRCE0_EC3" >&2
+    exit 1
+fi
+check_one "eac3_cplbndstrce0" "$CPLBNDSTRCE0_EC3" "eac3" 448 "$CPLBNDSTRCE0_MIN_SNR_DB"
 
 echo "gold reference gate: $count checks passed in $WORKDIR"
