@@ -38,6 +38,12 @@ constexpr DWORD kPollIntervalMs = 5;
 // {a45c254e-df1c-4efd-8020-67d146a850e0}, property id 14.
 constexpr PROPERTYKEY kPkeyDeviceFriendlyName = {
     {0xa45c254e, 0xdf1c, 0x4efd, {0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0}}, 14};
+// PKEY_Device_DeviceDesc - same fmtid, property id 2: the endpoint's own
+// short description ("Microphone") without the adapter suffix. The fallback
+// when an endpoint has no friendly name at all, which real machines produce
+// (a virtual endpoint whose driver never filled the property in).
+constexpr PROPERTYKEY kPkeyDeviceDescription = {
+    {0xa45c254e, 0xdf1c, 0x4efd, {0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0}}, 2};
 
 // The class and interface identifiers, spelled out for a related reason: the
 // SDK declares CLSID_MMDeviceEnumerator and the IAudio* IIDs but ships no
@@ -73,6 +79,31 @@ std::string to_utf8(const wchar_t* wide) {
     std::string out(static_cast<std::size_t>(needed - 1), '\0');
     WideCharToMultiByte(CP_UTF8, 0, wide, -1, out.data(), needed, nullptr, nullptr);
     return out;
+}
+
+// A display name that is never empty: the friendly name if the endpoint has
+// one, its short description otherwise, else a stand-in carrying the
+// endpoint id. Both front ends put this straight into a device list, where
+// a blank row is indistinguishable from a rendering bug - and the id keeps
+// two unnamed endpoints tellable apart.
+std::string endpoint_display_name(IMMDevice* device, const std::string& id) {
+    Microsoft::WRL::ComPtr<IPropertyStore> properties;
+    if (SUCCEEDED(device->OpenPropertyStore(STGM_READ, &properties))) {
+        for (const auto& key : {kPkeyDeviceFriendlyName, kPkeyDeviceDescription}) {
+            PROPVARIANT value;
+            PropVariantInit(&value);
+            std::string name;
+            if (SUCCEEDED(properties->GetValue(key, &value)) && value.vt == VT_LPWSTR &&
+                value.pwszVal != nullptr && value.pwszVal[0] != L'\0') {
+                name = to_utf8(value.pwszVal);
+            }
+            PropVariantClear(&value);
+            if (!name.empty()) {
+                return name;
+            }
+        }
+    }
+    return id.empty() ? std::string{"Unnamed audio endpoint"} : "Unnamed endpoint " + id;
 }
 
 // COM lifetime for one thread. WASAPI is apartment-sensitive, so every thread
@@ -205,22 +236,16 @@ void append_devices(IMMDeviceEnumerator* enumerator, EDataFlow flow, DeviceKind 
         info.kind = kind;
 
         LPWSTR id = nullptr;
-        if (SUCCEEDED(device->GetId(&id))) {
-            info.id = to_utf8(id);
-            CoTaskMemFree(id);
+        if (FAILED(device->GetId(&id))) {
+            // An entry without an id names a device nobody can open -
+            // start() is handed the id back, so listing it would only offer
+            // a choice that cannot work.
+            continue;
         }
+        info.id = to_utf8(id);
+        CoTaskMemFree(id);
         info.is_default = !info.id.empty() && info.id == default_id;
-
-        ComPtr<IPropertyStore> properties;
-        if (SUCCEEDED(device->OpenPropertyStore(STGM_READ, &properties))) {
-            PROPVARIANT name;
-            PropVariantInit(&name);
-            if (SUCCEEDED(properties->GetValue(kPkeyDeviceFriendlyName, &name)) &&
-                name.vt == VT_LPWSTR) {
-                info.name = to_utf8(name.pwszVal);
-            }
-            PropVariantClear(&name);
-        }
+        info.name = endpoint_display_name(device.Get(), info.id);
 
         // The mixer format tells the caller the rate and channel count it
         // will actually receive, before committing to a capture.
