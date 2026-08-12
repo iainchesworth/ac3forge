@@ -41,8 +41,9 @@
 #include "ac3/sinks/passthrough.hpp"
 #include "ac3/spatial/spatial.hpp"
 #include "ac3/version.hpp"
+#include "ac3/signing/emdf_atmos_signer.hpp"
+#include "ac3/signing/signing_key.hpp"
 #include "matroska/matroska.hpp"
-#include "quarantine_hook.hpp"
 
 namespace {
 
@@ -114,6 +115,13 @@ struct Options {
     // parse_options itself cannot do (it only sees command-line text, not
     // opened files).
     std::optional<std::string> map_spec;
+    // Atmos object signing (atmos/atmos-path/atmos-encode). Off unless the
+    // operator both asks (sign-objects) and provides a key - either
+    // signing-key=<path> here, or the AC3FORGE_SIGNING_KEY[_FILE] env vars
+    // load_signing_key() falls back to. The key is never stored by this tool;
+    // see docs/concepts/object-signing.md.
+    bool sign_objects = false;
+    std::optional<std::string> signing_key;
 };
 
 bool parse_double(std::string_view text, double& out) {
@@ -139,6 +147,10 @@ bool parse_options(std::span<char*> tokens, Options& out) {
             } else if (token == "mixmeta") {
                 out.p.mixmeta = true;
             }
+            continue;
+        }
+        if (token == "sign-objects") {
+            out.sign_objects = true;
             continue;
         }
         if (key == "drc") {
@@ -269,6 +281,14 @@ bool parse_options(std::span<char*> tokens, Options& out) {
                 return false;
             }
             out.map_spec = std::string{value};
+            continue;
+        }
+        if (key == "signing-key") {
+            if (value.empty()) {
+                std::println(stderr, "error: signing-key= needs a key file path");
+                return false;
+            }
+            out.signing_key = std::string{value};
             continue;
         }
         std::println(stderr, "error: unknown option '{}'", token);
@@ -1234,6 +1254,36 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
     return 0;
 }
 
+// Applies EMDF object signing to freshly-encoded Atmos units when the operator
+// asked for it (sign-objects) and supplied a key. Returns the number of frames
+// signed, or nullopt if signing was requested but the key could not be loaded
+// (the message is already printed). Not requested -> 0, units untouched. The
+// key comes from the operator at runtime (signing-key=<path> or the
+// AC3FORGE_SIGNING_KEY[_FILE] env vars) and is never stored - see
+// docs/concepts/object-signing.md.
+std::optional<int> apply_object_signing(std::vector<std::vector<std::byte>>& units,
+                                        const Options& meta) {
+    if (!meta.sign_objects) {
+        return 0;
+    }
+    const auto key = ac3::signing::load_signing_key(meta.signing_key.value_or(""));
+    if (!key) {
+        if (key.error().kind == ac3::signing::KeyErrorKind::kAbsent) {
+            std::println(stderr,
+                         "error: sign-objects needs a key — pass signing-key=<path>, or set "
+                         "AC3FORGE_SIGNING_KEY_FILE / AC3FORGE_SIGNING_KEY");
+        } else {
+            std::println(stderr, "error: {}", key.error().message);
+        }
+        return std::nullopt;
+    }
+    int signed_count = 0;
+    for (auto& unit : units) {
+        signed_count += ac3::signing::sign_atmos_stream(unit, *key);
+    }
+    return signed_count;
+}
+
 // Objects moving in three dimensions, out as one 5.1 E-AC-3 stream carrying
 // JOC and OAMD. Each object orbits at its own rate and sits at its own height,
 // so no two of them share a direction for long - which is the condition under
@@ -1322,12 +1372,17 @@ int run_atmos(std::string_view out_path, std::uint32_t seconds, std::uint32_t bi
         }
         out.push_back(std::move(unit->bytes));
     }
-    // Optional, non-clean-room: sign the EMDF protection field so a Dolby
-    // decoder accepts the objects as Atmos. A no-op unless this build was
-    // configured with -DAC3FORGE_QUARANTINE_SIGNER=ON, which requires the
-    // local-only src/quarantine overlay - see quarantine_hook.hpp.
-    if (const int signed_count = ac3cli::maybe_sign_atmos_units(out); signed_count > 0) {
-        std::println("  signed {} frames with the (RE-derived) EMDF protection MAC", signed_count);
+    // Optional object signing: writes the keyed EMDF-protection tag so a
+    // decoder that validates it accepts the JOC objects instead of falling
+    // back to the 5.1 bed. Off unless the operator passes sign-objects with a
+    // key; the algorithm is in-tree (clean-room), only the key is supplied.
+    const auto signed_count = apply_object_signing(out, meta);
+    if (!signed_count) {
+        return 1;
+    }
+    if (*signed_count > 0) {
+        std::println("  signed {} frames' EMDF object container with the supplied key",
+                     *signed_count);
     }
     if (!write_frames(out_path, out)) {
         return 1;
@@ -3496,16 +3551,17 @@ int run_main(int argc, char** argv) {
         return 0;
     }
     // Split the command line into positional arguments and metadata options. An
-    // option is a key=value token or one of the three bare flags, so the
-    // positional arguments keep their places whether options are present or
-    // not, and options may appear in any order.
+    // option is a key=value token or one of the bare flags, so the positional
+    // arguments keep their places whether options are present or not, and
+    // options may appear in any order.
     std::vector<char*> args{};      // args[0] is the command
     std::vector<char*> options{};
     bool couple_flag = false;
     for (std::size_t i = 1; i < raw.size(); ++i) {
         const std::string_view token{raw[i]};
         const bool is_option = token.find('=') != std::string_view::npos ||
-                               token == "couple" || token == "heavy" || token == "mixmeta";
+                               token == "couple" || token == "heavy" || token == "mixmeta" ||
+                               token == "sign-objects";
         if (token == "couple") {
             couple_flag = true;
         }

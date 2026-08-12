@@ -62,6 +62,9 @@ on:
         type: string
         default: ""
     secrets:
+      ANDROID_SIGNING_KEY_BASE64:
+        description: "EMDF object-signing key (raw key bytes), base64-encoded. Passed by release.yml only; unset on ci.yml's call. Decoded into the app's bundled signing.key asset so the Shield app signs Atmos objects on-device. Absent -> the app streams the safe unsigned bed51. A signed APK contains this key and must never be distributed."
+        required: false
       ANDROID_KEYSTORE_BASE64:
         description: "Release keystore, base64-encoded. Passed by release.yml only; unset on ci.yml's call, which never sets do_package for a release APK anyway. See build-android's own comment for why the app still builds fine without it."
         required: false
@@ -642,12 +645,15 @@ jobs:
   # for an actual release (do_package), matching release_package's "only the
   # canonical shipped build" reasoning on the desktop legs.
   #
-  # Never signs with the quarantine signer: CI has no src/quarantine/
-  # (gitignored, never committed) and no platform/android/local.properties
-  # entry to turn it on even if it did - see build.gradle.kts's
-  # quarantineSignerEnabled and shield_quarantine_hook.hpp's
-  # signing_available(). Every build this job produces is the safe,
-  # bed51-equivalent unsigned-object app, regardless of APK signing below.
+  # Object signing (the JOC objects a licensed decoder unlocks) is off unless a
+  # key is provisioned: on ordinary CI (ci.yml) no ANDROID_SIGNING_KEY_BASE64
+  # secret is passed, so "Materialize Android object-signing key" below no-ops
+  # and every build this job produces is the safe, bed51-equivalent
+  # unsigned-object app (shield_signing_hook.hpp's signing_available() returns
+  # false with no key asset). Only release.yml passes the secret, which that
+  # step decodes into the app's bundled signing.key asset. A signed APK
+  # CONTAINS that key and must never be distributed - see
+  # docs/concepts/object-signing.md. This is separate from APK signing below.
   #
   # APK signing is separate from the above and optional: the release build
   # is debug-keystore signed unless ANDROID_KEYSTORE_BASE64 and its three
@@ -695,6 +701,30 @@ jobs:
           set -euo pipefail
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;26.1.10909125"
+
+      # The Shield app signs Atmos objects on-device, so the key has to be in
+      # the APK as an asset (src/main/assets/signing.key, gitignored). Decoded
+      # straight from the secret to raw key bytes - the exact form
+      # shield_signing_hook.cpp reads. release.yml passes the secret; ci.yml
+      # never does, so this no-ops there and the app streams unsigned bed51.
+      # The asset lives only on this runner and is gone when it is torn down;
+      # $RUNNER_TEMP is not used because the app's build has to find it under
+      # src/main/assets to package it. Never uploaded on its own.
+      - name: Materialize Android object-signing key
+        if: inputs.do_package
+        env:
+          ANDROID_SIGNING_KEY_BASE64: ${{ secrets.ANDROID_SIGNING_KEY_BASE64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${ANDROID_SIGNING_KEY_BASE64:-}" ]; then
+            echo "No ANDROID_SIGNING_KEY_BASE64 secret - the app will stream unsigned bed51."
+            exit 0
+          fi
+          asset_dir="platform/android/app/src/main/assets"
+          mkdir -p "$asset_dir"
+          base64 -d <<<"$ANDROID_SIGNING_KEY_BASE64" > "$asset_dir/signing.key"
+          echo "Wrote $asset_dir/signing.key ($(wc -c < "$asset_dir/signing.key") bytes)."
 
       - name: Build debug APK
         working-directory: platform/android

@@ -1,29 +1,15 @@
-import java.util.Properties
-
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
 
-// Personal, local-only opt-in for the RE-derived quarantine signer overlay
-// (src/quarantine - gitignored, never committed, see that directory's own
-// README.md). OFF by default so THIS file - committed, and what CI/a public
-// release builds - always ships the safe (bed51-equivalent, see
-// shield_quarantine_hook.hpp's signing_available()) unsigned app. Turn it on
-// for your own local builds only, by adding one line to
-// platform/android/local.properties - itself gitignored and per-machine
-// already (see that file's header) - never edit this committed file to
-// flip it:
-//   ac3forge.quarantineSigner=true
-// See docs/platforms/android.md's "quarantine signer dependency" section.
-val localProperties = Properties().apply {
-    val file = rootProject.file("local.properties")
-    if (file.exists()) {
-        file.inputStream().use { load(it) }
-    }
-}
-val quarantineSignerEnabled =
-    (localProperties.getProperty("ac3forge.quarantineSigner") ?: "false").toBoolean()
+// Object signing is no longer a build-variant toggle. The signer (ac3::signing)
+// is committed and always compiled; whether the app actually signs is decided
+// at runtime by whether a `signing.key` asset is present (see
+// shield_signing_hook.hpp). That asset is written into src/main/assets/ from a
+// CI secret at build time (.github/workflows/_build.yml) and is gitignored, so
+// this committed file always builds the safe, unsigned bed51 app unless a key
+// asset was provisioned alongside it. See docs/concepts/object-signing.md.
 
 // Release-keystore signing, wired to environment variables rather than
 // local.properties: CI (release.yml -> _build.yml's build-android job)
@@ -128,12 +114,6 @@ android {
             externalNativeBuild {
                 cmake {
                     arguments += listOf("-DCMAKE_BUILD_TYPE=RelWithDebInfo")
-                    // See quarantineSignerEnabled's own comment above this
-                    // file's android {} block - governed by a gitignored
-                    // local.properties entry, never hardcoded here.
-                    if (quarantineSignerEnabled) {
-                        arguments += listOf("-DAC3FORGE_QUARANTINE_SIGNER=ON")
-                    }
                 }
             }
         }
@@ -164,9 +144,6 @@ android {
             externalNativeBuild {
                 cmake {
                     arguments += listOf("-DCMAKE_BUILD_TYPE=Release")
-                    if (quarantineSignerEnabled) {
-                        arguments += listOf("-DAC3FORGE_QUARANTINE_SIGNER=ON")
-                    }
                 }
             }
         }

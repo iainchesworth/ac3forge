@@ -168,6 +168,12 @@ is a direct front end over this same grammar — see
   5.1 bed still plays on a decoder that would otherwise refuse an object container it can't
   validate, instead of falling back to the bed on its own. See
   [Atmos & JOC](../concepts/atmos-joc.md) for why a decoder can tell the difference at all.
+- **`sign-objects`** (with **`signing-key=<path>`**): signs the object container's EMDF protection
+  tag so a validating decoder reconstructs the objects instead of playing the bed. Off unless you
+  pass both — `sign-objects` alone with no key is an error. The key may also come from
+  `AC3FORGE_SIGNING_KEY_FILE` / `AC3FORGE_SIGNING_KEY` instead of `signing-key=`. The key is never
+  stored by the tool; the algorithm is in-tree but the key is yours to provision. Full details in
+  [Object signing](../concepts/object-signing.md).
 
 ## Next
 

@@ -21,11 +21,18 @@ __pycache__/
 # Downloaded standards documents (free from ATSC/ETSI; not redistributed here)
 docs/spec/
 
-# The RE-derived EMDF signer is quarantined and MUST NOT reach a public remote:
-# it embeds a key extracted from Dolby's binary (see its README on its own
-# branch). It lives only on a local branch, never on main/develop. Ignoring it
-# here means it cannot be staged onto an integration branch by accident; a CI
-# "no quarantine on main" check backs this up.
+# The signing key MUST NOT reach a public remote. The EMDF object signer itself
+# (src/signing) is committed clean-room - only the key is secret, supplied at
+# runtime. The desktop tools take it by path/env (never a file in the tree),
+# but the Shield app signs on-device and so reads it from a bundled asset: that
+# asset is written from a CI secret at build time and must never be committed.
+platform/android/app/src/main/assets/signing.key
+
+# The older RE-derived signer OVERLAY predates the committed src/signing and is
+# still quarantined: it additionally embeds the key extracted from Dolby's
+# binary (see its README on its own branch) and must never leave a local
+# branch. Ignoring it here means it cannot be staged by accident; a CI "no
+# quarantine on main" check backs this up.
 src/quarantine/
 
 # Grown fuzzing corpus and crash artifacts (fuzz/run.sh): reproducible from

@@ -38,7 +38,11 @@ set(AC3FORGE_BUILD_FUZZERS OFF CACHE BOOL "" FORCE)
 # mirroring the relative path the way it does for an in-tree subdirectory.
 add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../../../../.." ac3forge_build)
 
-add_library(ac3forge_jni SHARED jni_entry.cpp live_cursor.cpp file_replay.cpp)
+add_library(ac3forge_jni SHARED
+    jni_entry.cpp
+    live_cursor.cpp
+    file_replay.cpp
+    shield_signing_hook.cpp)
 
 target_compile_features(ac3forge_jni PRIVATE cxx_std_23)
 
@@ -47,20 +51,11 @@ target_compile_features(ac3forge_jni PRIVATE cxx_std_23)
 # ac3::audio, which already declares its own aaudio/log deps - see
 # src/audio/CMakeLists.txt's ANDROID branch).
 # android: android/asset_manager_jni.h (AAssetManager_fromJava), used by
-# live_cursor.cpp to load the bundled lead-object voice sample.
-target_link_libraries(ac3forge_jni PRIVATE ac3::forge ac3::audio log android)
-
-# Optional, non-clean-room: the local-only RE-derived EMDF Atmos signer -
-# same option, same overlay, same FATAL_ERROR guard (via the
-# add_subdirectory() above) as ac3cli's own src/cli/CMakeLists.txt, just a
-# different (per-frame) call site. live_cursor.cpp calls
-# shield_quarantine_hook.hpp unconditionally; exactly one of the two
-# implementations below is ever compiled, so it needs no #ifdef - see that
-# header's own comment. Off by default: a normal build (including this
-# app's on develop/main) neither sees nor references src/quarantine.
-if(AC3FORGE_QUARANTINE_SIGNER)
-    target_sources(ac3forge_jni PRIVATE shield_quarantine_hook_enabled.cpp)
-    target_link_libraries(ac3forge_jni PRIVATE ac3::quarantine)
-else()
-    target_sources(ac3forge_jni PRIVATE shield_quarantine_hook_stub.cpp)
-endif()
+# live_cursor.cpp to load the bundled lead-object voice sample and by
+# shield_signing_hook.cpp to load the bundled signing key.
+# ac3::signing: the committed clean-room EMDF object signer (built by the repo
+# root add_subdirectory above, dependency-free). Always linked now - the signer
+# has no embedded secret to keep out of the tree; whether it actually signs
+# depends on the runtime key asset, not on a build variant. See
+# shield_signing_hook.hpp.
+target_link_libraries(ac3forge_jni PRIVATE ac3::forge ac3::audio ac3::signing log android)

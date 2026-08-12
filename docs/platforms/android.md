@@ -9,8 +9,8 @@ tool. This page covers what is specific to Android; for the core library and the
 platforms, see [Building from source](../building.md) and the other pages in this section.
 
 Distribution is **personal sideload only, via `adb install` — never the Play Store**. That is a
-deliberate choice, not a placeholder: the app can be built with the [quarantine signer](#the-quarantine-signer-dependency)
-enabled, and that build must never leave the user's own device (see below).
+deliberate choice, not a placeholder: the app can be built with [object signing](#object-signing)
+enabled, and that build (which carries the key) must never leave the user's own device (see below).
 
 ![Live dashboard: 3D trail view, top-down and elevation panels, speaker-activity meter](screenshots/android-dashboard.png)
 
@@ -276,59 +276,52 @@ disappears on its own once streaming actually starts — no restart, ever.
     confirmed on a real device screenshot. Fixed by defaulting the overlay to `VISIBLE`, matching
     `receiverReady`'s own `false` default.
 
-## The quarantine signer dependency
+## Object signing
 
 !!! warning "Object motion is audible even without this — but not as reconstructable objects"
     `AtmosEncoder` pans every object into the transmitted 5.1 bed regardless of signing status
     (see `atmos.hpp`), so a plain, unsigned build of this app already produces audible movement
-    on any decoder — panned across the fixed channel layout. What the quarantine signer adds is
-    the *object* audio: a real Dolby-licensed decoder gates JOC object decode on a keyed HMAC
-    over the EMDF protection field, which the clean-room encoder cannot itself produce (that key
-    is extracted from Dolby's own binary — not derivable from the spec).
+    on any decoder — panned across the fixed channel layout. What signing adds is the *object*
+    audio: a real Dolby-licensed decoder gates JOC object decode on a keyed HMAC over the EMDF
+    protection field. The algorithm that produces that tag is in-tree; the key it needs is not.
 
-The signer lives in `src/quarantine/`, a gitignored, local-only, RE-derived (non-clean-room)
-overlay — the same one `ac3cli` already optionally links, gated by the same
-`AC3FORGE_QUARANTINE_SIGNER` CMake option and the same `FATAL_ERROR` guard if the option is on but
-the overlay is absent. The app's own seam (`platform/android/app/src/main/cpp/shield_quarantine_hook.{hpp,cpp}`
-+ `_stub.cpp`/`_enabled.cpp`) mirrors `src/cli/quarantine_hook*` exactly in shape, differing only in
-call site: the CLI signs a whole batch after encoding; this app signs **per frame**, immediately
-after `encode_frame()` and before IEC 61937 wrapping, since it streams live rather than writing a
-file. No `#ifdef` at the call site either way — the project's own `scripts/check-platform-macros.ps1`
-forbids that — exactly one of the stub/enabled translation units is ever compiled, selected in
-`platform/android/app/src/main/cpp/CMakeLists.txt`.
+The signer is `ac3::signing` (`src/signing/`) — committed, clean-room and dependency-free, the
+same library `ac3cli` uses. Its full design (what's signed, why the algorithm is committable but
+the key isn't) is in [Object signing](../concepts/object-signing.md); this section covers only what
+is specific to the app. The app's seam is `shield_signing_hook.{hpp,cpp}`, one committed
+translation unit — no stub/enabled split and no CMake option any more, because there is no secret
+in the code to keep out of a build. It signs **per frame**, right after `encode_frame()` and before
+IEC 61937 wrapping, since it streams live rather than writing a file.
+
+**The key is a bundled asset, written from a CI secret.** The desktop CLI takes a key by path or
+env var, but this app signs on-device, so the key has to travel in the APK as an asset,
+`app/src/main/assets/signing.key` (raw key bytes). That file is **gitignored** and is materialized
+at build time — from the `ANDROID_SIGNING_KEY_BASE64` repository secret in CI
+(`.github/workflows/_build.yml`), or dropped in by hand for a local signed build. `init_signing()`
+loads it once through the same `AAssetManager` the lead-voice asset already uses.
 
 **Unsigned builds omit the object container entirely, not just leave it unsigned.** An unsigned
 but *present* EMDF container is not a safe degraded mode — per `AtmosConfig::emit_object_metadata`'s
 own comment, a decoder that validates the `emdf_protection` field treats the container's sync word
 as a commitment to object decoding and refuses the whole stream if it doesn't validate, rather than
-falling back to plain 5.1. `shield_quarantine_hook.hpp`'s `signing_available()` (`true` only in the
-enabled translation unit, and only once `AC3FORGE_SIGN` is actually set) lets `live_cursor.cpp`
-decide this once at startup: `emit_object_metadata` is set to `signing_available()`, so the stub
-(public/CI) build runs the same `bed51` mode `ac3cli --mode bed51` exposes — no container at all,
-always safe, on every receiver — while only the enabled build ever emits and signs one.
+falling back to plain 5.1. `shield_signing_hook.hpp`'s `signing_available()` (`true` only once a key
+asset actually loaded) lets `live_cursor.cpp` decide this once at startup: `emit_object_metadata`
+is set to `signing_available()`, so a keyless build runs the same `bed51` mode `ac3cli mode bed51`
+exposes — no container at all, always safe, on every receiver — while only a build carrying the key
+ever emits and signs one.
 
-**Off by default, and a checked-in file can no longer flip it on by accident.**
-`app/build.gradle.kts` reads a `quarantineSignerEnabled` flag from `platform/android/local.properties`
-— itself gitignored and per-machine already (it also holds `sdk.dir`) — rather than hardcoding the
-CMake argument. The committed `build.gradle.kts` is therefore always safe to build in CI or for a
-public release: `local.properties` doesn't exist there, so the flag reads `false` and every build
-produces the `bed51`-equivalent unsigned app above. To sign on your own machine, add one line to
-your own `local.properties` (never edit `build.gradle.kts` itself):
-
-```properties
-ac3forge.quarantineSigner=true
-```
-
-then build as normal:
+To build a signed APK on your own machine, drop your own `signing.key` (raw key bytes) into
+`app/src/main/assets/` — gitignored, so `git status` never shows it — and build as normal:
 
 ```bash
 ./gradlew assembleDebug --no-daemon
 ```
 
-The resulting APK, like the signer source itself, must never be distributed — sideload it to your
-own Shield via `adb install` and nowhere else. There is nothing to revert afterward: the toggle
-lives entirely in the gitignored `local.properties`, never in a file `git status` would ever show
-as modified.
+!!! danger "A signed APK contains the key"
+    Because the app signs on-device, the key ships **inside** any signed-build APK as that asset —
+    anyone with the APK can extract it. A signed APK is therefore as sensitive as the key itself:
+    sideload it to your own Shield via `adb install` and never distribute it. A build without the
+    asset is the safe unsigned app and has nothing to revert.
 
 ## Building and running
 
@@ -341,9 +334,9 @@ adb -s <shield-ip>:5555 shell am start -n com.ac3forge.shield/.MainActivity
 ```
 
 `local.properties` needs `sdk.dir` pointing at an Android SDK with NDK 26.1.10909125 and CMake
-3.31.6 installed (via Android Studio's SDK Manager, or `sdkmanager --install`), plus, for a local
-signed build, the `ac3forge.quarantineSigner=true` line described
-[above](#the-quarantine-signer-dependency).
+3.31.6 installed (via Android Studio's SDK Manager, or `sdkmanager --install`). For a local *signed*
+build, also drop a `signing.key` asset into `app/src/main/assets/` as described in
+[Object signing](#object-signing).
 
 ## Release / CI
 
@@ -353,13 +346,20 @@ The app builds alongside the desktop packages rather than only ever being hand-b
 version, `26.1.10909125`, the same "don't trust whatever the image happens to cache" reasoning
 every other toolchain step in that workflow already follows) — a continuous smoke test proving the
 Gradle/CMake/NDK toolchain and every native source file still build, the same role `windows-msvc`'s
-always-on packaging step plays for the desktop legs. It never signs: CI has neither `src/quarantine/`
-nor a `local.properties` entry to turn the signer on even if it did.
+always-on packaging step plays for the desktop legs. It never signs objects: ordinary CI is passed
+no `ANDROID_SIGNING_KEY_BASE64` secret, so no key asset is written and every build is the unsigned
+bed51 app.
 
 For an actual release (`release.yml`, `do_package: true`), the same job also builds and stages the
-**release** variant — debug-keystore signed (this app is sideload-only, never the Play Store, so
-there is no separate release keystore to provision), `CMAKE_BUILD_TYPE=Release` — as
-`ac3forge-shield-<version>.apk`, uploaded as a `packages-android` artifact and folded into the
+**release** variant (`CMAKE_BUILD_TYPE=Release`) as `ac3forge-shield-<version>.apk`. Two
+independent, both-optional signatures apply to it. *APK signing:* the APK is signed with a real
+release keystore when `ANDROID_KEYSTORE_BASE64` and its companion secrets are provisioned (see
+`build.gradle.kts`'s `releaseSigningAvailable`), and falls back to the debug keystore otherwise —
+this app is sideload-only, so the release key matters only for update-signature continuity, not a
+store requirement. *Object signing:* independently, if `ANDROID_SIGNING_KEY_BASE64` is provisioned,
+`build-android` decodes it into the `signing.key` asset so the app signs its Atmos objects (a signed
+APK then carries the key and must not be distributed — see [Object signing](#object-signing)). The
+APK is uploaded as a `packages-android` artifact and folded into the
 GitHub Release alongside the Windows/Linux/macOS packages (checksummed, GPG-signed, and
 build-provenance-attested exactly like every other package — `release.yml`'s artifact globs all
 include `*.apk`).
@@ -382,7 +382,7 @@ every other required leg.
     press, the axis-mode toggle, and the two ambient objects have all been exercised live and the
     room visualization tracks the encode loop's own state throughout.
 
-    **The quarantine-signed build's object audio has been confirmed reconstructable on the real
+    **The object-signed build's object audio has been confirmed reconstructable on the real
     receiver** — not just the always-audible panned bed. With the delta-bit-allocation fix
     described in the signer's own history (an unrelated bit-tracking bug that had been silently
     corrupting a large fraction of signed frames) and the real receiver powered on and HDMI-linked,
@@ -390,7 +390,7 @@ every other required leg.
     motion was audible. This resolves what had been an open question in
     [Two honest limitations](../concepts/atmos-joc.md#two-honest-limitations) for this specific
     encoder/signer pair, though the general caveat there still applies to any *other* clean-room
-    encoder without its own quarantine signer.
+    encoder without a matching signing key.
 
     **The bundled lead-voice asset loads and streams cleanly** (`loaded lead voice asset: 192000
     samples (4.00s)` in logcat, zero underruns through extended runs), and the dashboard redesign —
