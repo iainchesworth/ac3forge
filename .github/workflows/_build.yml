@@ -61,6 +61,16 @@ on:
         description: "github.ref_name at the call site, for the same reason as persist_quality_trend above. Empty when persist_quality_trend is false."
         type: string
         default: ""
+    secrets:
+      ANDROID_KEYSTORE_BASE64:
+        description: "Release keystore, base64-encoded. Passed by release.yml only; unset on ci.yml's call, which never sets do_package for a release APK anyway. See build-android's own comment for why the app still builds fine without it."
+        required: false
+      ANDROID_KEYSTORE_PASSWORD:
+        required: false
+      ANDROID_KEY_ALIAS:
+        required: false
+      ANDROID_KEY_PASSWORD:
+        required: false
 
 permissions:
   contents: read
@@ -632,11 +642,20 @@ jobs:
   # for an actual release (do_package), matching release_package's "only the
   # canonical shipped build" reasoning on the desktop legs.
   #
-  # Never signs: CI has no src/quarantine/ (gitignored, never committed) and
-  # no platform/android/local.properties entry to turn the quarantine signer
-  # on even if it did - see build.gradle.kts's quarantineSignerEnabled and
-  # shield_quarantine_hook.hpp's signing_available(). Every build this job
-  # produces is the safe, bed51-equivalent unsigned app.
+  # Never signs with the quarantine signer: CI has no src/quarantine/
+  # (gitignored, never committed) and no platform/android/local.properties
+  # entry to turn it on even if it did - see build.gradle.kts's
+  # quarantineSignerEnabled and shield_quarantine_hook.hpp's
+  # signing_available(). Every build this job produces is the safe,
+  # bed51-equivalent unsigned-object app, regardless of APK signing below.
+  #
+  # APK signing is separate from the above and optional: the release build
+  # is debug-keystore signed unless ANDROID_KEYSTORE_BASE64 and its three
+  # companion secrets are provisioned (release.yml's call only - ci.yml's
+  # never sets do_package for a release APK, so it never needs them), in
+  # which case "Decode release keystore" below makes them available and
+  # build.gradle.kts's releaseSigningAvailable picks up the real key
+  # instead. See the commands in docs/releasing.md for provisioning one.
   #
   # Promoted (no continue-on-error) the same way macos-llvm was: three
   # consecutive real, hosted-runner runs went green
@@ -684,6 +703,38 @@ jobs:
           set -euo pipefail
           chmod +x gradlew
           ./gradlew :app:assembleDebug --console=plain
+
+      # Only meaningful for a release build with a keystore actually
+      # provisioned - release.yml's call passes these four secrets, ci.yml's
+      # never does, so this no-ops there the same way GPG signing is off by
+      # default in release.yml's own github-release job. Secrets flow in via
+      # `env:`, never interpolated straight into the script body, the same
+      # pattern release.yml's "Import GPG signing key" step already uses.
+      # $RUNNER_TEMP, not the repo workspace: never at risk of an
+      # artifact-upload glob picking it up, and gone the moment this runner
+      # is torn down regardless.
+      - name: Decode release keystore
+        if: inputs.do_package
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "No ANDROID_KEYSTORE_BASE64 secret provisioned - assembleRelease will fall back to the debug keystore."
+            exit 0
+          fi
+          keystore_path="$RUNNER_TEMP/ac3forge-shield-release.keystore"
+          base64 -d <<<"$ANDROID_KEYSTORE_BASE64" > "$keystore_path"
+          {
+            echo "ANDROID_KEYSTORE_PATH=$keystore_path"
+            echo "ANDROID_KEYSTORE_PASSWORD=$ANDROID_KEYSTORE_PASSWORD"
+            echo "ANDROID_KEY_ALIAS=$ANDROID_KEY_ALIAS"
+            echo "ANDROID_KEY_PASSWORD=$ANDROID_KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
 
       - name: Build release APK
         if: inputs.do_package
