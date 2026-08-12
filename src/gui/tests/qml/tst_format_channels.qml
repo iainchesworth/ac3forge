@@ -16,6 +16,23 @@ TestCase {
         Main {}
     }
 
+    // A freshly created window's layouts settle on a POLISH pass, which only
+    // runs when the scene graph gets around to a frame - and how soon that
+    // is differs by Qt version and platform plugin (Qt 6.10's offscreen
+    // defers it long enough that a click issued straight after
+    // createTemporaryObject() lands on pre-layout geometry, where the
+    // not-yet-arranged workbench overlaps the header and eats the click;
+    // 6.8 on Windows had polished already). So: don't wait a guessed number
+    // of milliseconds, wait for the observable fact the click depends on -
+    // the header row has laid out, which puts the tier control on the right
+    // half of the window instead of at its implicit-width position.
+    function waitForHeaderLayout(win, seg) {
+        tryVerify(() => {
+            const corner = seg.mapToItem(null, 0, 0);
+            return corner.x > win.width / 2;
+        });
+    }
+
     function test_clickingExpertRevealsTheHiddenTabsAndTheTabBar() {
         const win = createTemporaryObject(mainWindowComponent, testCase);
         verify(win !== null);
@@ -33,6 +50,7 @@ TestCase {
             advancedSeg = findChild(win.contentItem, "seg-advanced");
             return advancedSeg !== null;
         });
+        waitForHeaderLayout(win, advancedSeg);
         mouseClick(advancedSeg);
         compare(win.tier, "advanced");
         // Guided's own tab bar stays hidden while Guided is not selected -
@@ -74,6 +92,7 @@ TestCase {
         // (and findable) regardless of which tier is current.
         const advancedSeg = findChild(win.contentItem, "seg-advanced");
         verify(advancedSeg !== null);
+        waitForHeaderLayout(win, advancedSeg);
         mouseClick(advancedSeg);
         compare(win.tier, "advanced");
         tryVerify(() => !wizardStep.visible);

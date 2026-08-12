@@ -12,10 +12,10 @@ import Ac3Forge
 Dialog {
     id: root
 
-    // Main.qml's Settings instance and the hooks that apply a saved value to
-    // the live session.
+    // Main.qml's Settings instance. Save fires the Dialog's own applied()
+    // signal (declaring a fresh `signal applied()` here would collide with
+    // that inherited signal - Qt flags it as an invalid override).
     property var settings
-    signal applied()
 
     modal: true
     anchors.centerIn: parent
