@@ -806,19 +806,21 @@ TEST_CASE("E-AC-3 enhanced coupling degrades gracefully when two channels share 
     // ecplbegf pinned to 0 starts the coupled region at bin 13 - enhanced
     // coupling's lowest possible sub-band, only 6 bins wide (§E3.5.2's
     // Table E3.7). With R's and Rs's tones (1200/1400 Hz, bins ~12.8/~14.9)
-    // both landing inside that one band, this decoder's amplitude-only MVP
-    // (ecplangle/ecplchaos always 0 - see CouplingPlan::ecplamp) has no way
-    // to represent their different per-bin shapes within it: amplitude is a
-    // single scalar per band, so both channels reconstruct as the same
-    // shared shape at two different overall levels, not their own true
-    // waveforms. This is a real, known quality gap in the MVP - a genuine
-    // angle/chaos fit (deferred, see the same note) is what §3.5 has that
-    // amplitude-only coupling does not - not a decode bug: the standard
-    // round-trip test above stays at the same 20 dB bar as standard
-    // coupling for every case that does NOT force two channels into one
-    // narrow band. This test exists to catch a REGRESSION (a stream that
-    // stops decoding, or degrades further than this), not to demand
-    // transparency this MVP cannot yet deliver.
+    // both landing inside that one band, this is an adversarial case for
+    // ANY single-coordinate-per-band scheme, fit_ecpl_band included: two
+    // genuinely different pure tones sharing 6 bins is more than one
+    // (amplitude, angle, chaos) triple can represent exactly, whatever the
+    // fit - chaos only adds statistical decorrelation, not a deterministic
+    // reconstruction of two distinct per-bin phase patterns. That is a real
+    // property of the coding tool itself, not a gap in this encoder's fit:
+    // measured at ~6 dB after fit_ecpl_band landed, versus ~3 dB from the
+    // amplitude-only fit it replaced - real, worthwhile improvement, just
+    // not transparency this band width structurally cannot deliver. The
+    // standard round-trip test above stays at the same 20 dB bar as
+    // standard coupling for every case that does NOT force two channels
+    // into one narrow band. This test exists to catch a REGRESSION (a
+    // stream that stops decoding, or degrades below the real fit's own
+    // floor), not to demand transparency the tool cannot deliver here.
     auto cpl_bed_pinned = bed(192);
     cpl_bed_pinned.coupling = true;
     cpl_bed_pinned.enhanced = true;
@@ -841,7 +843,7 @@ TEST_CASE("E-AC-3 enhanced coupling degrades gracefully when two channels share 
         // pin), so those stay near-transparent; only R and Rs share the
         // narrow band described above.
         const bool shares_the_narrow_band = ch == 2 || ch == 4;
-        CHECK(snr_db(rt.source[ch], rt.rendered[ch]) > (shares_the_narrow_band ? 3.0 : 20.0));
+        CHECK(snr_db(rt.source[ch], rt.rendered[ch]) > (shares_the_narrow_band ? 5.0 : 20.0));
     }
 }
 

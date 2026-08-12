@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <numbers>
 
 #include "ac3/core/bitalloc.hpp"
 #include "ac3/core/bitwriter.hpp"
@@ -201,10 +202,14 @@ struct CouplingPlan {
     int ecpl_end_subbnd = 0;
     std::array<bool, kEcplSubBands> ecpl_structure{};
     BandLayout ecpl_bands{};
-    // Amplitude only (§3.5.4's angle/chaos are fixed at zero - see the MVP
-    // note where these are computed): [blk][ch][bnd], band-indexed like
-    // ecpl_bands.
+    // §3.5.5 per-band coordinates: [blk][ch][bnd], band-indexed like
+    // ecpl_bands - see fit_ecpl_band's own comment for how angle/chaos are
+    // fit. The first coupled channel's angle/chaos are always defined as
+    // zero and never transmitted (§E2.3.3.20-26), so its slots here just
+    // hold 0 for uniform indexing with every other channel's.
     std::vector<int> ecplamp;
+    std::vector<int> ecplangle;
+    std::vector<int> ecplchaos;
     int fleak = 0;
     int sleak = 0;
     // Coordinates go out in blocks 0, 2 and 4 and are reused in between
@@ -302,6 +307,118 @@ struct Payload {
         return spx.begf < 2 ? 3 : 4;
     }
     return 4;
+}
+
+// §3.5.5's per-band amplitude/angle/chaos fit for a coupled channel other
+// than the first (whose own angle/chaos are always defined as zero and never
+// transmitted - see the emission site's own comment).
+//
+// `baseline_a`/`baseline_b` are this block's shared enhanced coupling
+// channel, already reconstructed via ecpl_channel_coefficients at (amp=1,
+// angle=0) and (amp=1, angle=0.5) respectively, sliced to this band's own
+// bins. Those two are enough to express what ANY (amp, angle) pair would
+// reconstruct, because §3.5.5.4's reconstruction is linear in the complex
+// gain g = amp * exp(i*pi*angle): reconstruction(g)[bin] = g_re *
+// baseline_a[bin] + g_im * baseline_b[bin] (baseline_a is g at (1,0),
+// baseline_b is g at (0,1) - the real and imaginary unit gains). Fitting
+// (g_re, g_im) to minimize squared error against the channel's own real
+// coefficients is therefore a plain 2-variable linear least squares, not an
+// approximation - solved directly below rather than searched.
+//
+// Chaos does not admit the same closed form: §3.5.5.3 adds chaos*noise to
+// the fitted angle independently PER BIN (a discontinuous effect, not
+// another degree of freedom the linear model above can absorb). But
+// ecpl_rand_notrans is a pure, deterministic function of (channel, bin) -
+// the exact sequence the decoder will use - so instead of estimating chaos
+// from some statistical proxy for phase spread, this searches the 8 legal
+// codes directly: for each, reconstruct the band exactly as the decoder
+// would with that code and the already-fitted angle, and keep whichever
+// reconstruction lands closest to the real channel by squared error. Eight
+// evaluations of a handful of bins is cheap, and it answers the question
+// that actually matters - which code's decode ends up closer to the source
+// - rather than a proxy for it.
+struct EcplBandFit {
+    double amp = 0.0;
+    double angle = 0.0;
+    int chaos_code = 0;
+};
+
+[[nodiscard]] EcplBandFit fit_ecpl_band(std::span<const double> channel,
+                                        std::span<const double> baseline_a,
+                                        std::span<const double> baseline_b,
+                                        std::span<const double, 256> zr,
+                                        std::span<const double, 256> zi, int ch, int low) {
+    const std::size_t n = channel.size();
+    double saa = 0.0;
+    double sab = 0.0;
+    double sbb = 0.0;
+    double sac = 0.0;
+    double sbc = 0.0;
+    for (std::size_t i = 0; i < n; ++i) {
+        saa += baseline_a[i] * baseline_a[i];
+        sab += baseline_a[i] * baseline_b[i];
+        sbb += baseline_b[i] * baseline_b[i];
+        sac += baseline_a[i] * channel[i];
+        sbc += baseline_b[i] * channel[i];
+    }
+    const double det = saa * sbb - sab * sab;
+    // A near-singular system means this band's shared-channel content is too
+    // small, or too close to a single real direction, to trust a two-degree
+    // fit - the same "not enough signal" case the old amplitude-only fit
+    // guarded with a single division, just at the tolerance a 2x2 solve
+    // needs. Falls back to that same energy-ratio answer, angle/chaos left
+    // at zero.
+    if (!(det > 1e-12 * std::max(saa * sbb, 1e-30))) {
+        double power_ch = 0.0;
+        for (const double c : channel) {
+            power_ch += c * c;
+        }
+        return {.amp = saa > 0.0 ? std::sqrt(power_ch / saa) : 0.0, .angle = 0.0, .chaos_code = 0};
+    }
+    const double g_re = (sac * sbb - sbc * sab) / det;
+    const double g_im = (saa * sbc - sab * sac) / det;
+    const double amp0 = std::hypot(g_re, g_im);
+    const double angle0 = std::atan2(g_im, g_re) / std::numbers::pi;
+
+    const std::vector<double> amp_scratch(n, amp0);
+    std::vector<double> angle_scratch(n);
+    std::array<double, 256> recon_scratch{};
+    int best_code = 0;
+    double best_err = 0.0;
+    bool have_best = false;
+    for (int code = 0; code < 8; ++code) {
+        const double chaos_val = decode_ecplchaos(code);
+        for (std::size_t i = 0; i < n; ++i) {
+            const int bin = low + static_cast<int>(i);
+            double angle = angle0 + chaos_val * ecpl_rand_notrans(ch, bin);
+            if (angle < -1.0) {
+                angle += 2.0;
+            } else if (angle >= 1.0) {
+                angle -= 2.0;
+            }
+            angle_scratch[i] = angle;
+        }
+        ecpl_channel_coefficients(zr, zi, amp_scratch, angle_scratch, low,
+                                  low + static_cast<int>(n), recon_scratch);
+        double err = 0.0;
+        for (std::size_t i = 0; i < n; ++i) {
+            const double d = channel[i] - recon_scratch[static_cast<std::size_t>(low) + i];
+            err += d * d;
+        }
+        if (!have_best || err < best_err) {
+            have_best = true;
+            best_err = err;
+            best_code = code;
+        }
+    }
+    const double chosen_chaos = decode_ecplchaos(best_code);
+    // ecpl_amplitudes multiplies decode_ecplamp(ecplamp) by (1 + 0.38 *
+    // chaos) for every channel but the first, so what gets quantized and
+    // transmitted has to be pre-divided by that same factor for the
+    // amplitude the decoder reconstructs to land on amp0 - never near zero
+    // (1 + 0.38*chaos spans [0.62, 1.0] over chaos's own [-1, 0] range).
+    const double final_amp = amp0 / (1.0 + 0.38 * chosen_chaos);
+    return {.amp = final_amp, .angle = angle0, .chaos_code = best_code};
 }
 
 // Where coupling should start when the caller does not say. Sub-band 4 - bin
@@ -795,11 +912,9 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
             // §E2.3.3.20-26: this encoder always couples channel 0 first
             // (every fbw channel couples, chincpl never partial), so
             // firstchincpl is always 0 and angle/chaos are never transmitted
-            // for it. ecplangle/ecplchaos are always sent as index 0 (angle
-            // 0.0, chaos 0.0) for every other channel - see CouplingPlan::
-            // ecplamp's own note on why this encoder does not yet fit a real
-            // angle/chaos. ecpltrans is always 0: no per-block transient
-            // tuning yet either.
+            // for it - see fit_ecpl_band for how every other channel's real
+            // angle/chaos are fit. ecpltrans is always 0: no per-block
+            // transient tuning yet.
             w.put(0, 1);  // ecplangleintrp: no interpolation
             const bool send = cpl.send[static_cast<std::size_t>(blk)];
             const auto nbnd_e = static_cast<std::size_t>(std::max(cpl.ecpl_bands.count, 1));
@@ -824,9 +939,17 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
                     }
                 }
                 if (param2) {
+                    const auto at = (static_cast<std::size_t>(blk) *
+                                         static_cast<std::size_t>(nfchans) +
+                                     static_cast<std::size_t>(ch)) *
+                                    nbnd_e;
                     for (int bnd = 0; bnd < cpl.ecpl_bands.count; ++bnd) {
-                        w.put(0, 6);  // ecplangle: index 0 -> angle 0.0
-                        w.put(0, 3);  // ecplchaos: index 0 -> chaos 0.0
+                        w.put(static_cast<std::uint32_t>(
+                                  cpl.ecplangle[at + static_cast<std::size_t>(bnd)]),
+                              6);
+                        w.put(static_cast<std::uint32_t>(
+                                  cpl.ecplchaos[at + static_cast<std::size_t>(bnd)]),
+                              3);
                     }
                 }
                 if (ch > 0) {
@@ -1647,19 +1770,20 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
             }
         }
 
-        // §3.5.5's amplitude-only fit (this encoder always sends angle == 0,
-        // chaos == 0, ecpltrans == 0 - see CouplingPlan::ecplamp): reconstruct
-        // the same non-aliased spectrum the decoder will (§3.5.5.1), fold it
-        // through amp == 1/angle == 0 to get the shared, channel-independent
-        // baseline every channel's own amplitude scales, then fit that
-        // amplitude per band exactly the way standard coupling above fits its
-        // plain coordinate - sqrt of a power ratio, just against this
-        // baseline instead of the raw shared sum.
+        // §3.5.5's per-band amplitude/angle/chaos fit: reconstruct the same
+        // non-aliased spectrum the decoder will (§3.5.5.1), fold it through
+        // (amp=1, angle=0) and (amp=1, angle=0.5) to get the two baselines
+        // fit_ecpl_band needs, then fit every channel but the first (whose
+        // own angle/chaos §E2.3.3.20-26 defines as zero) with it. The first
+        // channel keeps the plain energy-ratio fit standard coupling's own
+        // coordinate above already uses, since angle/chaos are moot for it.
         if (cpl.enhanced) {
             const auto nbnd_e = static_cast<std::size_t>(std::max(cpl.ecpl_bands.count, 1));
-            cpl.ecplamp.assign(static_cast<std::size_t>(kBlocksPerFrame) *
-                                   static_cast<std::size_t>(nfchans) * nbnd_e,
-                               0);
+            const auto ecpl_size = static_cast<std::size_t>(kBlocksPerFrame) *
+                                   static_cast<std::size_t>(nfchans) * nbnd_e;
+            cpl.ecplamp.assign(ecpl_size, 0);
+            cpl.ecplangle.assign(ecpl_size, 0);
+            cpl.ecplchaos.assign(ecpl_size, 0);
             const auto ecpl_slot = [&](int blk, int ch) {
                 return (static_cast<std::size_t>(blk) * static_cast<std::size_t>(nfchans) +
                        static_cast<std::size_t>(ch)) *
@@ -1669,7 +1793,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
             const int bins = cpl.endmant - cpl.strtmant;
             std::vector<double> unity_amp(static_cast<std::size_t>(bins), 1.0);
             std::vector<double> zero_angle(static_cast<std::size_t>(bins), 0.0);
-            std::vector<double> amp_values(nbnd_e, 0.0);
+            std::vector<double> half_angle(static_cast<std::size_t>(bins), 0.5);
             for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
                 const auto& prev = blk > 0 ? coeffs_at(cpl_stream, blk - 1) : kZero;
                 const auto& curr = coeffs_at(cpl_stream, blk);
@@ -1678,30 +1802,46 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                 std::array<double, 256> zr{};
                 std::array<double, 256> zi{};
                 ecpl_channel_spectrum(prev, curr, next, zr, zi);
-                std::array<double, 256> baseline{};
+                std::array<double, 256> baseline_a{};
+                std::array<double, 256> baseline_b{};
                 ecpl_channel_coefficients(zr, zi, unity_amp, zero_angle, cpl.strtmant,
-                                          cpl.endmant, baseline);
+                                          cpl.endmant, baseline_a);
+                ecpl_channel_coefficients(zr, zi, unity_amp, half_angle, cpl.strtmant,
+                                          cpl.endmant, baseline_b);
 
                 for (int ch = 0; ch < nfchans; ++ch) {
-                    for (int bnd = 0; bnd < cpl.ecpl_bands.count; ++bnd) {
-                        const int low = cpl.ecpl_bands.start[static_cast<std::size_t>(bnd)];
-                        const int high = low + cpl.ecpl_bands.size[static_cast<std::size_t>(bnd)];
-                        double power_ch = 0.0;
-                        double power_f = 0.0;
-                        for (int bin = low; bin < high; ++bin) {
-                            const double value =
-                                coeffs_at(ch, blk)[static_cast<std::size_t>(bin)];
-                            const double f = baseline[static_cast<std::size_t>(bin)];
-                            power_ch += value * value;
-                            power_f += f * f;
-                        }
-                        const double ratio = power_f > 0.0 ? std::sqrt(power_ch / power_f) : 0.0;
-                        amp_values[static_cast<std::size_t>(bnd)] = ratio;
-                    }
                     if (cpl.send[static_cast<std::size_t>(blk)]) {
                         for (int bnd = 0; bnd < cpl.ecpl_bands.count; ++bnd) {
-                            cpl.ecplamp[ecpl_slot(blk, ch) + static_cast<std::size_t>(bnd)] =
-                                quantize_ecplamp(amp_values[static_cast<std::size_t>(bnd)]);
+                            const int low = cpl.ecpl_bands.start[static_cast<std::size_t>(bnd)];
+                            const int width = cpl.ecpl_bands.size[static_cast<std::size_t>(bnd)];
+                            const auto ulow = static_cast<std::size_t>(low);
+                            const auto uwidth = static_cast<std::size_t>(width);
+                            const std::span<const double> channel_band{
+                                &coeffs_at(ch, blk)[ulow], uwidth};
+                            const auto slot = ecpl_slot(blk, ch) + static_cast<std::size_t>(bnd);
+                            if (ch == 0) {
+                                double power_ch = 0.0;
+                                double power_f = 0.0;
+                                for (std::size_t i = 0; i < uwidth; ++i) {
+                                    power_ch += channel_band[i] * channel_band[i];
+                                    power_f += baseline_a[ulow + i] * baseline_a[ulow + i];
+                                }
+                                const double ratio =
+                                    power_f > 0.0 ? std::sqrt(power_ch / power_f) : 0.0;
+                                cpl.ecplamp[slot] = quantize_ecplamp(ratio);
+                                cpl.ecplangle[slot] = 0;
+                                cpl.ecplchaos[slot] = 0;
+                            } else {
+                                const std::span<const double> baseline_a_band{
+                                    &baseline_a[ulow], uwidth};
+                                const std::span<const double> baseline_b_band{
+                                    &baseline_b[ulow], uwidth};
+                                const auto fit = fit_ecpl_band(channel_band, baseline_a_band,
+                                                               baseline_b_band, zr, zi, ch, low);
+                                cpl.ecplamp[slot] = quantize_ecplamp(fit.amp);
+                                cpl.ecplangle[slot] = quantize_ecplangle(fit.angle);
+                                cpl.ecplchaos[slot] = fit.chaos_code;
+                            }
                         }
                     } else {
                         // Same reuse rule as standard coupling's coordinates:
@@ -1710,6 +1850,10 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                         for (std::size_t bnd = 0; bnd < nbnd_e; ++bnd) {
                             cpl.ecplamp[ecpl_slot(blk, ch) + bnd] =
                                 cpl.ecplamp[ecpl_slot(blk - 1, ch) + bnd];
+                            cpl.ecplangle[ecpl_slot(blk, ch) + bnd] =
+                                cpl.ecplangle[ecpl_slot(blk - 1, ch) + bnd];
+                            cpl.ecplchaos[ecpl_slot(blk, ch) + bnd] =
+                                cpl.ecplchaos[ecpl_slot(blk - 1, ch) + bnd];
                         }
                     }
                 }
