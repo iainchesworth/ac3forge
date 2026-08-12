@@ -137,6 +137,21 @@ struct Biquad {
         f.a2 = (1.0 - alpha) / a0;
         return f;
     }
+    // Constant 0 dB peak-gain bandpass - the resonators behind the comms
+    // squawk's vowel-ish formants.
+    static Biquad bandpass(double hz, double q) {
+        Biquad f;
+        const double w = kTau * hz * kDt;
+        const double alpha = std::sin(w) / (2.0 * q);
+        const double c = std::cos(w);
+        const double a0 = 1.0 + alpha;
+        f.b0 = alpha / a0;
+        f.b1 = 0.0;
+        f.b2 = -alpha / a0;
+        f.a1 = -2.0 * c / a0;
+        f.a2 = (1.0 - alpha) / a0;
+        return f;
+    }
     double process(double x) {
         const double out = b0 * x + z1;
         z1 = b1 * x - a1 * out + z2;
@@ -177,6 +192,7 @@ enum class Voice : std::uint8_t {
     kPad,
     kTimpani,
     kHarp,
+    kCelesta,
     kCymbal,
     kBoogieLead,
     kBoogieBass,
@@ -188,6 +204,9 @@ struct Note {
     double hz = 440.0;
     double vel = 0.5;
     Voice voice = Voice::kHorn;
+    // When nonzero, the note slurs in from this pitch instead of
+    // re-articulating - assigned automatically for legato brass lines.
+    double glide_hz = 0.0;
 };
 
 double midi_hz(int midi) { return 440.0 * std::pow(2.0, (midi - 69) / 12.0); }
@@ -211,11 +230,17 @@ struct ScoreBuilder {
     }
 };
 
-// A harp figure: sequential plucks, each ringing past the next.
-void arp(ScoreBuilder& s, double t, std::initializer_list<int> midis, double step, double vel) {
+// A harp figure: sequential plucks, each ringing past the next. With
+// `celesta`, each pluck is doubled an octave up by the celesta's glitter -
+// the authorized concert orchestration carries one.
+void arp(ScoreBuilder& s, double t, std::initializer_list<int> midis, double step, double vel,
+         bool celesta = false) {
     double at = t;
     for (const int m : midis) {
         s.note(at, step * 1.9, m, vel, Voice::kHarp);
+        if (celesta) {
+            s.note(at, step * 1.6, m + 12, vel * 0.5, Voice::kCelesta);
+        }
         at += step;
     }
 }
@@ -260,24 +285,31 @@ void statement(ScoreBuilder& s, double t0, double vel, bool doubled, bool contin
         s.note(t0 + 5.25, 2.5, 67, vel * 0.6, Voice::kHorn);
     }
 
-    s.chord(t0, 3.2, {36, 48, 55, 64}, vel * 0.8);
-    s.chord(t0 + 3.2, 3.2, {41, 53, 60, 65}, vel * 0.8);
-    s.chord(t0 + 6.4, 1.6, {43, 55, 59, 62}, vel * 0.75);
+    // On the solo statement the accompaniment steps well back - "solo
+    // trumpet" should mean it. The suspended dominant resolving under the
+    // crest is the cue's own habit.
+    const double pad = doubled ? vel * 0.8 : vel * 0.6;
+    s.chord(t0, 3.2, {36, 48, 55, 64}, pad);
+    s.chord(t0 + 3.2, 3.2, {41, 53, 60, 65}, pad);
+    s.chord(t0 + 6.4, 0.8, {43, 55, 60, 62}, pad * 0.95);  // Gsus4...
+    s.chord(t0 + 7.2, 0.8, {43, 55, 59, 62}, pad);         // ...resolving to G
     s.note(t0, 0.8, 36, vel * 0.9, Voice::kTimpani);
     s.note(t0 + 3.2, 0.8, 41, vel * 0.85, Voice::kTimpani);
     s.note(t0 + 6.4, 0.8, 43, vel * 0.85, Voice::kTimpani);
 
     if (continuation) {
-        // Settling tail: down from the crest and home to C.
+        // Settling tail: down from the crest and home to C, with the
+        // measured cue's accent two bars after the statement.
         s.note(t0 + 8.0, 0.5, 77, vel * 0.9, Voice::kTrumpet);
         s.note(t0 + 8.5, 0.5, 76, vel * 0.85, Voice::kTrumpet);
         s.note(t0 + 9.0, 0.9, 72, vel * 0.85, Voice::kTrumpet);
         s.note(t0 + 9.9, 1.7, 67, vel * 0.75, Voice::kTrumpet);
-        s.chord(t0 + 8.0, 1.6, {41, 53, 57, 65}, vel * 0.7);
-        s.chord(t0 + 9.6, 2.0, {36, 48, 55, 60}, vel * 0.75);
+        s.chord(t0 + 8.0, 1.6, {41, 53, 57, 65}, pad * 0.9);
+        s.chord(t0 + 9.6, 2.0, {36, 48, 55, 60}, pad);
+        s.note(t0 + 8.0, 0.6, 41, vel * 0.7, Voice::kTimpani);
         s.note(t0 + 9.6, 0.8, 36, vel * 0.8, Voice::kTimpani);
     } else {
-        s.chord(t0 + 8.0, 1.6, {36, 48, 55, 60, 67}, vel * 0.8);
+        s.chord(t0 + 8.0, 1.6, {36, 48, 55, 60, 67}, pad);
     }
 }
 
@@ -291,13 +323,13 @@ std::vector<Note> compose_cover() {
     // the "major chords over a major root drone" opening.
     s.chord(2.0, 26.5, {36, 43, 48}, 0.4);
     for (const double base : {2.6, 12.6}) {
-        arp(s, base, {48, 52, 55, 60}, 0.55, 0.35);
-        arp(s, base + 2.5, {48, 53, 55, 60}, 0.55, 0.35);
-        arp(s, base + 5.0, {48, 52, 55, 60}, 0.55, 0.35);
-        arp(s, base + 7.5, {43, 47, 50, 55}, 0.55, 0.35);
+        arp(s, base, {48, 52, 55, 60}, 0.55, 0.35, true);
+        arp(s, base + 2.5, {48, 53, 55, 60}, 0.55, 0.35, true);
+        arp(s, base + 5.0, {48, 52, 55, 60}, 0.55, 0.35, true);
+        arp(s, base + 7.5, {43, 47, 50, 55}, 0.55, 0.35, true);
     }
-    arp(s, 22.6, {48, 52, 55, 60}, 0.55, 0.30);
-    arp(s, 25.1, {48, 53, 55, 60}, 0.55, 0.28);
+    arp(s, 22.6, {48, 52, 55, 60}, 0.55, 0.30, true);
+    arp(s, 25.1, {48, 53, 55, 60}, 0.55, 0.28, true);
 
     // 0:05.5-0:20.5 - the solo call.
     horn_call(s);
@@ -329,18 +361,18 @@ std::vector<Note> compose_cover() {
     s.chord(44.6, 3.2, {50, 57, 60, 65}, 0.40);
     s.chord(47.8, 3.2, {52, 55, 60}, 0.38);
     s.chord(51.0, 3.2, {41, 53, 57, 65}, 0.40);
-    s.chord(54.2, 3.2, {48, 55, 62}, 0.35);
-    s.chord(57.4, 3.0, {43, 55, 60}, 0.35);
+    s.chord(54.2, 3.2, {48, 55, 62}, 0.37);
+    s.chord(57.4, 3.0, {43, 55, 60}, 0.37);
     s.note(44.6, 1.6, 69, 0.35, Voice::kHorn);
     s.note(46.2, 1.6, 67, 0.34, Voice::kHorn);
     s.note(47.8, 2.4, 64, 0.33, Voice::kHorn);
     s.note(50.2, 0.8, 62, 0.32, Voice::kHorn);
     s.note(51.0, 1.6, 65, 0.34, Voice::kHorn);
     s.note(52.6, 1.6, 64, 0.32, Voice::kHorn);
-    s.note(54.2, 2.4, 62, 0.30, Voice::kHorn);
-    s.note(56.6, 3.4, 60, 0.28, Voice::kHorn);
-    arp(s, 53.5, {48, 55, 60}, 0.7, 0.22);
-    arp(s, 56.2, {48, 55, 60, 67}, 0.7, 0.20);
+    s.note(54.2, 2.4, 62, 0.32, Voice::kHorn);
+    s.note(56.6, 3.4, 60, 0.30, Voice::kHorn);
+    arp(s, 53.5, {48, 55, 60}, 0.7, 0.26);
+    arp(s, 56.2, {48, 55, 60, 67}, 0.7, 0.24);
 
     // 1:01 - the reprise re-enters sharply.
     s.note(59.9, 1.1, 60, 0.55, Voice::kCymbal);
@@ -393,9 +425,10 @@ std::vector<Note> compose_cover() {
     s.note(104.0, 4.5, 72, 0.65, Voice::kTrumpet);
     s.note(104.0, 4.0, 79, 0.45, Voice::kTrumpet);
     s.roll(104.0, 2.8, 36, 0.5, 0.8);
-    // Afterglow as the wormhole swallows itself.
-    arp(s, 110.3, {48, 55, 60, 67, 72}, 0.4, 0.18);
-    s.chord(110.5, 3.2, {36, 43, 48}, 0.28);
+    // Afterglow as the wormhole swallows itself - and out well before the
+    // end: the last thing heard must be the room dying, not the band.
+    arp(s, 110.3, {48, 55, 60, 67, 72}, 0.4, 0.16, true);
+    s.chord(110.5, 2.6, {36, 43, 48}, 0.26);
 
     return std::move(s.notes);
 }
@@ -427,11 +460,49 @@ std::vector<Note> compose_boogie() {
 class MusicSynth {
    public:
     explicit MusicSynth(std::vector<Note> notes) : notes_(std::move(notes)) {
+        // Humanize, deterministically: nobody's orchestra is a sequencer.
+        // Every note gets a small timing push, a velocity breath, and a
+        // hair of mistuning, scaled per voice - a soloist is tighter than
+        // a section, and a swell must still land its crash on the beat.
+        Rng jitter{0x0DDBA11u};
+        for (auto& n : notes_) {
+            const auto [dt, tune] = jitter_scale(n.voice);
+            n.t = std::max(0.0, n.t + jitter.bipolar() * dt);
+            n.vel *= 1.0 + jitter.bipolar() * 0.04;
+            n.hz *= 1.0 + jitter.bipolar() * tune;
+        }
         std::ranges::sort(notes_, {}, &Note::t);
+        // Link legato brass lines: a note that starts as a HELD note of the
+        // same voice ends slurs from the old pitch instead of tonguing.
+        // Short previous notes stay tongued (the fanfare pickup must not
+        // smear), and chord-mates are excluded by the start-time guard.
+        std::array<double, 2> last_t{-1e9, -1e9};
+        std::array<double, 2> last_end{-1e9, -1e9};
+        std::array<double, 2> last_hz{0.0, 0.0};
+        std::array<double, 2> last_dur{0.0, 0.0};
+        for (auto& n : notes_) {
+            if (n.voice != Voice::kHorn && n.voice != Voice::kTrumpet) {
+                continue;
+            }
+            const auto v = static_cast<std::size_t>(n.voice == Voice::kTrumpet);
+            const double gap = n.t - last_end[v];
+            const double ratio = last_hz[v] > 0.0 ? n.hz / last_hz[v] : 0.0;
+            if (n.t > last_t[v] + 0.05 && gap > -0.02 && gap < 0.09 &&
+                last_dur[v] >= 0.4 && ratio > 0.63 && ratio < 1.6) {
+                n.glide_hz = last_hz[v];
+            }
+            last_t[v] = n.t;
+            last_end[v] = n.t + n.dur;
+            last_hz[v] = n.hz;
+            last_dur[v] = n.dur;
+        }
     }
 
-    void render(double t0, std::span<double> out) {
-        const double t_end = t0 + static_cast<double>(out.size()) * kDt;
+    // Renders into a dry bus and, when given one, a reverb-send bus with
+    // per-voice amounts - the section seating chart: percussion and
+    // celesta sit deep in the hall, the solo trumpet right up front.
+    void render(double t0, std::span<double> dry, std::span<double> send = {}) {
+        const double t_end = t0 + static_cast<double>(dry.size()) * kDt;
         while (next_ < notes_.size() && notes_[next_].t < t_end) {
             Active a;
             a.note = notes_[next_];
@@ -479,14 +550,22 @@ class MusicSynth {
             ++next_;
             active_.push_back(a);
         }
-        std::ranges::fill(out, 0.0);
+        std::ranges::fill(dry, 0.0);
+        if (!send.empty()) {
+            std::ranges::fill(send, 0.0);
+        }
         for (auto& a : active_) {
-            for (std::size_t i = 0; i < out.size(); ++i) {
+            const double amount = send_amount(a.note.voice);
+            for (std::size_t i = 0; i < dry.size(); ++i) {
                 const double tt = t0 + static_cast<double>(i) * kDt - a.note.t;
                 if (tt < 0.0) {
                     continue;
                 }
-                out[i] += sample(a, tt);
+                const double v = sample(a, tt);
+                dry[i] += v;
+                if (!send.empty()) {
+                    send[i] += v * amount;
+                }
                 if (a.done) {
                     break;
                 }
@@ -529,6 +608,8 @@ class MusicSynth {
                 return 700.0;
             case Voice::kHarp:
                 return std::min(6000.0, 8.0 * n.hz);
+            case Voice::kCelesta:
+                return 8000.0;
             case Voice::kCymbal:
                 return 9000.0;
             case Voice::kBoogieLead:
@@ -537,6 +618,52 @@ class MusicSynth {
                 return 900.0;
         }
         return 2000.0;
+    }
+
+    // Timing / mistuning humanization per voice (seconds, fraction).
+    static std::pair<double, double> jitter_scale(Voice v) {
+        switch (v) {
+            case Voice::kHorn:
+            case Voice::kTrumpet:
+                return {0.008, 0.0009};
+            case Voice::kPad:
+                return {0.018, 0.0};  // detune drift already lives per-saw
+            case Voice::kTimpani:
+                return {0.006, 0.002};
+            case Voice::kHarp:
+                return {0.012, 0.0015};
+            case Voice::kCelesta:
+                return {0.012, 0.0012};
+            case Voice::kCymbal:
+                return {0.0, 0.0};  // the crash must land on the beat
+            case Voice::kBoogieLead:
+            case Voice::kBoogieBass:
+                return {0.02, 0.003};  // the jalopy band is not auditioning
+        }
+        return {0.01, 0.001};
+    }
+
+    static double send_amount(Voice v) {
+        switch (v) {
+            case Voice::kHorn:
+                return 0.42;
+            case Voice::kTrumpet:
+                return 0.28;  // the soloist stands at the front of the stage
+            case Voice::kPad:
+                return 0.38;
+            case Voice::kTimpani:
+                return 0.50;
+            case Voice::kHarp:
+                return 0.33;
+            case Voice::kCelesta:
+                return 0.45;
+            case Voice::kCymbal:
+                return 0.55;
+            case Voice::kBoogieLead:
+            case Voice::kBoogieBass:
+                return 0.0;  // the jalopy has no concert hall
+        }
+        return 0.35;
     }
 
     // Attack/decay/sustain while the note holds, exponential tail after.
@@ -576,13 +703,21 @@ class MusicSynth {
         switch (n.voice) {
             case Voice::kHorn: {
                 const double env = envelope(tt, n.dur, 0.07, 0.22, 0.75, 0.4, a.done);
-                // Scoop into the note from below, the way a hand-stopped
-                // bell speaks; vibrato arrives late and shallow.
-                const double scoop = 1.0 - 0.023 * std::exp(-tt / 0.06);
+                // Slur from the previous pitch on legato lines; otherwise
+                // scoop into the note from below the way a fresh attack
+                // speaks. Breath instability keeps long notes alive.
+                double pitch = n.hz;
+                if (n.glide_hz > 0.0) {
+                    const double s = std::min(tt / 0.07, 1.0);
+                    pitch = n.glide_hz + (n.hz - n.glide_hz) * s * s * (3.0 - 2.0 * s);
+                } else {
+                    pitch *= 1.0 - 0.023 * std::exp(-tt / 0.06);
+                }
+                a.walk[0] += 0.002 * (rng_.bipolar() - a.walk[0]);
                 const double vib =
                     1.0 + 0.0035 * std::clamp((tt - 0.4) / 0.5, 0.0, 1.0) *
                               std::sin(kTau * 4.3 * tt);
-                const double inc = n.hz * scoop * vib * kDt;
+                const double inc = pitch * (1.0 + a.walk[0] * 0.8) * vib * kDt;
                 double raw =
                     0.5 * (blep_saw(a.phase, inc) + blep_saw(a.phase2, inc * 1.0013));
                 raw += 0.06 * std::exp(-tt / 0.05) * a.thump.process(rng_.bipolar());
@@ -595,11 +730,18 @@ class MusicSynth {
             case Voice::kTrumpet: {
                 const double env = envelope(tt, n.dur, 0.03, 0.12, 0.8, 0.28, a.done);
                 const double over = 1.0 + 0.3 * std::exp(-tt / 0.045);  // attack blip
-                const double scoop = 1.0 - 0.016 * std::exp(-tt / 0.03);
+                double pitch = n.hz;
+                if (n.glide_hz > 0.0) {
+                    const double s = std::min(tt / 0.05, 1.0);
+                    pitch = n.glide_hz + (n.hz - n.glide_hz) * s * s * (3.0 - 2.0 * s);
+                } else {
+                    pitch *= 1.0 - 0.016 * std::exp(-tt / 0.03);
+                }
+                a.walk[0] += 0.002 * (rng_.bipolar() - a.walk[0]);
                 const double vib =
                     1.0 + 0.0035 * std::clamp((tt - 0.35) / 0.4, 0.0, 1.0) *
                               std::sin(kTau * 5.6 * tt + 1.0);
-                const double inc = n.hz * scoop * vib * kDt;
+                const double inc = pitch * (1.0 + a.walk[0] * 0.6) * vib * kDt;
                 const double saw = blep_saw(a.phase, inc);
                 const double sq = saw - blep_saw(a.phase2, inc);
                 const double raw = 0.6 * saw + 0.4 * sq;
@@ -628,8 +770,11 @@ class MusicSynth {
                 // Drawn into a local first: two rng_ calls in one expression
                 // would leave the draw order compiler-defined, and the
                 // rendered output must be bit-identical across toolchains.
+                // The bow noise carries a chiff at the attack - the moment
+                // the hairs bite before the tone settles.
                 const double white = rng_.bipolar();
-                const double bow = 0.018 * (white - a.thump.process(rng_.bipolar()));
+                const double bow = (0.018 + 0.05 * std::exp(-tt / 0.12)) *
+                                   (white - a.thump.process(rng_.bipolar()));
                 return (a.timbre.process(sum * 0.2) + bow * env) * env * n.vel * 0.30;
             }
             case Voice::kTimpani: {
@@ -675,10 +820,23 @@ class MusicSynth {
                 a.ks_i = next_i;
                 return out * n.vel * 0.55;
             }
+            case Voice::kCelesta: {
+                // A struck bar: fundamental plus a slightly flat fourth
+                // partial that dies quickly - glitter over the harp.
+                if (tt > 2.5) {
+                    a.done = true;
+                    return 0.0;
+                }
+                a.phase += n.hz * kDt;
+                a.phase2 += n.hz * 3.96 * kDt;
+                const double tone = std::sin(kTau * a.phase) +
+                                    0.35 * std::exp(-tt * 9.0) * std::sin(kTau * a.phase2);
+                return tone * std::exp(-tt * 3.2) * n.vel * 0.16;
+            }
             case Voice::kCymbal: {
                 // A swell into a crash: band-limited noise for the wash,
                 // plus ring-modulated inharmonic partial pairs for the
-                // metal underneath it.
+                // metal underneath it, each pair breathing at its own rate.
                 const double rise = std::min(tt / std::max(n.dur, 0.05), 1.0);
                 const double ring = tt > n.dur ? std::exp(-(tt - n.dur) / 1.4) : rise * rise;
                 if (tt > n.dur + 4.0) {
@@ -690,9 +848,14 @@ class MusicSynth {
                 for (std::size_t k = 0; k < 6; ++k) {
                     a.mphase[k] += kPartial[k] * kDt;
                 }
-                const double metal = std::sin(kTau * a.mphase[0]) * std::sin(kTau * a.mphase[1]) +
-                                     std::sin(kTau * a.mphase[2]) * std::sin(kTau * a.mphase[3]) +
-                                     std::sin(kTau * a.mphase[4]) * std::sin(kTau * a.mphase[5]);
+                double metal = 0.0;
+                for (std::size_t k = 0; k < 3; ++k) {
+                    const double am =
+                        0.72 + 0.28 * std::sin(kTau * (0.6 + 0.17 * static_cast<double>(k)) * tt +
+                                               static_cast<double>(k));
+                    metal += am * std::sin(kTau * a.mphase[2 * k]) *
+                             std::sin(kTau * a.mphase[2 * k + 1]);
+                }
                 const double white = rng_.bipolar();  // sequenced, as in kPad
                 const double sizzle =
                     a.timbre.process(white) - a.thump.process(rng_.bipolar());
@@ -742,6 +905,12 @@ class Hall {
 
     // Returns the wet signal only; the caller chooses the blend.
     double process(double x) {
+        // ~20 ms of pre-delay keeps the direct sound articulate before the
+        // room answers.
+        const double delayed = pre_[pre_i_];
+        pre_[pre_i_] = x;
+        pre_i_ = (pre_i_ + 1) % pre_.size();
+        x = delayed;
         double s = 0.0;
         for (auto& c : combs_) {
             const double y = c.buf[c.i];
@@ -773,6 +942,8 @@ class Hall {
     };
     std::array<Comb, 4> combs_{};
     std::array<Allpass, 2> allpasses_{};
+    std::vector<double> pre_ = std::vector<double>(960, 0.0);
+    std::size_t pre_i_ = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -831,23 +1002,39 @@ class RadioFx {
 // gains, so these only provide character.
 // ---------------------------------------------------------------------------
 
-// Icy shimmer, sparkle pings, and a soft whoosh underneath.
+// Icy shimmer, sparkle pings, micro-crackle, and a swept whoosh: the whole
+// signature brightens, densifies, and opens up around closest approach
+// (~6.5 s) and falls dark again as the comet recedes - a flyby, not a loop.
 class Comet {
    public:
     Comet() {
         hi_.set_cutoff(6000.0);
         lo_.set_cutoff(2000.0);
-        whoosh_.set_cutoff(260.0);
+        turbulence_.set_cutoff(1.2);
     }
-    void render([[maybe_unused]] double t0, std::span<float> out) {
+    void render(double t0, std::span<float> out) {
         for (std::size_t i = 0; i < out.size(); ++i) {
+            const double t = t0 + static_cast<double>(i) * kDt;
+            const double x = (t - 6.5) / 4.0;
+            const double close = std::exp(-x * x);
+            // The wind of the thing passing: resonance-free but swept, with
+            // slow turbulence riding it.
+            whoosh_.set_cutoff(250.0 + 700.0 * close);
+            const double gust = 1.0 + 0.5 * turbulence_.process(rng2_.bipolar()) * 3.0;
+            const double whoosh = whoosh_.process(rng2_.bipolar()) * gust;
             const double white = rng_.bipolar();
-            const double shimmer = hi_.process(white) - lo_.process(white);
-            const double whoosh = whoosh_.process(rng2_.bipolar());
-            if (rng_.next01() < 9.0 * kDt) {
+            const double shimmer =
+                (hi_.process(white) - lo_.process(white)) * (0.5 + 0.8 * close);
+            // Sparkle pings densify near the pass; ice micro-crackle only
+            // exists close up.
+            if (rng_.next01() < (3.0 + 12.0 * close) * kDt) {
                 pings_[next_ping_] = {0.0, 2000.0 + 4000.0 * rng_.next01(),
                                       0.3 + 0.4 * rng_.next01()};
                 next_ping_ = (next_ping_ + 1) % pings_.size();
+            }
+            double crackle = 0.0;
+            if (rng_.next01() < 40.0 * close * kDt) {
+                crackle = 0.35 * rng_.bipolar();
             }
             double ping_sum = 0.0;
             for (auto& p : pings_) {
@@ -862,7 +1049,8 @@ class Comet {
                 }
                 ping_sum += p.amp * env * std::sin(kTau * p.hz * p.t);
             }
-            out[i] += static_cast<float>(0.45 * shimmer + 0.8 * whoosh + 0.5 * ping_sum);
+            out[i] += static_cast<float>(0.45 * shimmer + 0.8 * whoosh + 0.5 * ping_sum +
+                                         crackle);
         }
     }
 
@@ -877,19 +1065,26 @@ class Comet {
     OnePole hi_;
     OnePole lo_;
     OnePole whoosh_;
+    OnePole turbulence_;
     std::array<Ping, 8> pings_{};
     std::size_t next_ping_ = 0;
 };
 
-// A tired freighter: low harmonic stack with a slow throb, plus LF noise.
+// A tired freighter: low harmonic stack with a slow throb, LF noise, and
+// the imperfections that sell age - per-cycle combustion jitter with the
+// occasional outright misfire, exhaust pops on the throb's beat, and loose
+// fittings that clank now and then.
 class EngineRumble {
    public:
-    explicit EngineRumble(double f0) : f0_(f0) { noise_lp_.set_cutoff(130.0); }
-    void render(double t0, double dopp0, double dopp1, std::span<float> out) {
+    explicit EngineRumble(double f0) : f0_(f0) {
+        noise_lp_.set_cutoff(130.0);
+        pop_lp_.set_cutoff(400.0);
+    }
+    void render([[maybe_unused]] double t0, double dopp0, double dopp1,
+                std::span<float> out) {
         constexpr std::array<double, 4> kRatio{1.0, 2.02, 3.05, 4.1};
         constexpr std::array<double, 4> kAmp{1.0, 0.6, 0.35, 0.2};
         for (std::size_t i = 0; i < out.size(); ++i) {
-            const double t = t0 + static_cast<double>(i) * kDt;
             const double mix = static_cast<double>(i) / static_cast<double>(out.size());
             const double f0 = f0_ * (dopp0 + (dopp1 - dopp0) * mix);
             double tone = 0.0;
@@ -897,16 +1092,56 @@ class EngineRumble {
                 phases_[k] += f0 * kRatio[k] * kDt;
                 tone += kAmp[k] * std::sin(kTau * phases_[k]);
             }
-            const double throb = 1.0 + 0.22 * std::sin(kTau * 6.8 * t);
+            // Each throb cycle fires a little differently; roughly one in
+            // sixteen barely fires at all.
+            throb_phase_ += 6.8 * kDt;
+            if (throb_phase_ >= 1.0) {
+                throb_phase_ -= 1.0;
+                const double roll = rng_.next01();
+                cycle_gain_ = roll < 0.06 ? 0.45 : 0.85 + 0.3 * rng_.next01();
+            }
+            const double throb =
+                (1.0 + 0.22 * std::sin(kTau * throb_phase_)) * cycle_gain_;
+            // Exhaust pops ride the throb's exhale.
+            if (rng_.next01() <
+                60.0 * (0.5 + 0.5 * std::sin(kTau * throb_phase_)) * kDt) {
+                pop_env_ = 0.5 + 0.5 * rng_.next01();
+            }
+            pop_env_ *= kPopDecay;
+            const double pop = pop_lp_.process(pop_env_ * rng_.bipolar()) * 1.4;
+            // Something in the hold is not tied down properly.
+            if (clank_env_ < 0.01 && rng_.next01() < 0.5 * kDt) {
+                clank_env_ = 1.0;
+                clank_detune_ = 0.97 + 0.06 * rng_.next01();
+            }
+            clank_env_ *= kClankDecay;
+            double clank = 0.0;
+            if (clank_env_ > 0.01) {
+                constexpr std::array<double, 3> kClankHz{1170.0, 1660.0, 2320.0};
+                for (std::size_t k = 0; k < 3; ++k) {
+                    clank_phase_[k] += kClankHz[k] * clank_detune_ * kDt;
+                    clank += std::sin(kTau * clank_phase_[k]);
+                }
+                clank *= clank_env_ * 0.05;
+            }
             const double noise = noise_lp_.process(rng_.bipolar());
-            out[i] += static_cast<float>((0.28 * tone + 0.5 * noise) * throb);
+            out[i] += static_cast<float>((0.28 * tone + 0.5 * noise) * throb + pop + clank);
         }
     }
 
    private:
+    static inline const double kPopDecay = std::exp(-kDt * 220.0);
+    static inline const double kClankDecay = std::exp(-kDt * 30.0);
     double f0_;
     std::array<double, 4> phases_{};
     OnePole noise_lp_;
+    OnePole pop_lp_;
+    double throb_phase_ = 0.0;
+    double cycle_gain_ = 1.0;
+    double pop_env_ = 0.0;
+    double clank_env_ = 0.0;
+    double clank_detune_ = 1.0;
+    std::array<double, 3> clank_phase_{};
     Rng rng_{0xD1E5E1u};
 };
 
@@ -921,69 +1156,126 @@ class RunaboutWhine {
         squawk_lp_ = Biquad::lowpass(2200.0, 0.9);
     }
     void render(double t0, double dopp0, double dopp1, std::span<float> out) {
+        constexpr std::array<double, 4> kRatio{1.0, 2.51, 3.98, 5.03};
+        constexpr std::array<double, 4> kAmp{0.5, 0.25, 0.12, 0.07};
         for (std::size_t i = 0; i < out.size(); ++i) {
             const double t = t0 + static_cast<double>(i) * kDt;
             const double mix = static_cast<double>(i) / static_cast<double>(out.size());
             const double dopp = dopp0 + (dopp1 - dopp0) * mix;
             const double f0 = f0_ * dopp;
-            ph1_ += f0 * kDt;
-            ph2_ += f0 * 2.51 * kDt;
-            ph3_ += 2350.0 * dopp * (1.0 + 0.004 * std::sin(kTau * 6.0 * t)) * kDt;
-            const double whine = 0.5 * std::sin(kTau * ph1_) + 0.25 * std::sin(kTau * ph2_);
-            const double whistle = 0.18 * std::sin(kTau * ph3_);
-            const double air = 0.06 * (rng_.bipolar() - air_.process(rng_.bipolar()));
+            // A turbine is a stack, not a dyad; the whistle wanders a
+            // little on top of its vibrato.
+            double whine = 0.0;
+            for (std::size_t k = 0; k < kRatio.size(); ++k) {
+                whine_phase_[k] += f0 * kRatio[k] * kDt;
+                whine += kAmp[k] * std::sin(kTau * whine_phase_[k]);
+            }
+            drift_ += 0.0005 * (rng_.bipolar() - drift_);
+            whistle_phase_ += 2350.0 * dopp *
+                              (1.0 + 0.004 * std::sin(kTau * 6.0 * t) + drift_ * 8.0) * kDt;
+            const double whistle = 0.18 * std::sin(kTau * whistle_phase_);
+            // Air wash breathes slowly rather than hissing at one level.
+            wash_ += 0.00003 * (rng_.bipolar() * 30.0 - wash_);
+            const double breeze = rng_.bipolar();  // sequenced draw
+            const double air = (0.06 + 0.035 * wash_) *
+                               (breeze - air_.process(rng_.bipolar()));
             const double flutter = 1.0 + 0.15 * std::sin(kTau * 10.7 * t);
             double squawk = 0.0;
-            if (t >= squawk_start_ && t < squawk_end_) {
-                // Syllable-rate gating over band-limited noise reads as chatter
-                // from a cockpit without saying anything at all.
+            const bool in_window = t >= squawk_start_ && t < squawk_end_;
+            if (in_window) {
+                // Syllable-rate gating over vowel-ish formant resonators:
+                // chatter from a cockpit that says nothing at all.
                 const double gate =
                     syllable_.process(rng_.next01() > 0.45 ? 1.0 : 0.1);
-                squawk = squawk_lp_.process(squawk_hp_.process(rng_.bipolar())) * gate * 1.4;
+                const double buzz =
+                    squawk_lp_.process(squawk_hp_.process(rng_.bipolar()));
+                squawk = (1.2 * formant1_.process(buzz) + 0.8 * formant2_.process(buzz) +
+                          0.5 * buzz) *
+                         gate * 1.4;
             }
-            out[i] += static_cast<float>((whine + whistle + air) * flutter + squawk);
+            // The squelch clicks open and shut around the transmission.
+            if (in_window != was_in_window_) {
+                click_env_ = 0.5;
+                was_in_window_ = in_window;
+            }
+            click_env_ *= kClickDecay;
+            click_phase_ += 1900.0 * kDt;
+            const double click = click_env_ * std::sin(kTau * click_phase_);
+            out[i] += static_cast<float>((whine + whistle + air) * flutter + squawk + click);
         }
     }
 
    private:
+    static inline const double kClickDecay = std::exp(-kDt * 320.0);
     double f0_;
     double squawk_start_;
     double squawk_end_;
-    double ph1_ = 0.0;
-    double ph2_ = 0.33;
-    double ph3_ = 0.66;
+    std::array<double, 4> whine_phase_{0.0, 0.33, 0.66, 0.11};
+    double whistle_phase_ = 0.5;
+    double drift_ = 0.0;
+    double wash_ = 0.0;
+    double click_env_ = 0.0;
+    double click_phase_ = 0.0;
+    bool was_in_window_ = false;
     OnePole air_;
     OnePole syllable_;
     Biquad squawk_hp_;
     Biquad squawk_lp_;
+    Biquad formant1_ = Biquad::bandpass(820.0, 2.2);
+    Biquad formant2_ = Biquad::bandpass(1750.0, 2.4);
     Rng rng_;
 };
 
-// Welding: bursts of dense crackle over a faint arc hum.
+// Welding: each burst begins with a strike pop, crackles densely, and
+// tails off as the bead cools, with molten sizzle underneath and a hum
+// that wobbles like a real arc supply.
 class WeldPod {
    public:
-    WeldPod() { spark_hp_ = Biquad::highpass(1800.0, 0.8); }
-    void render([[maybe_unused]] double t0, std::span<float> out) {
+    WeldPod() {
+        spark_hp_ = Biquad::highpass(1800.0, 0.8);
+        thud_lp_.set_cutoff(600.0);
+    }
+    void render(double t0, std::span<float> out) {
         for (std::size_t i = 0; i < out.size(); ++i) {
-            if (burst_ <= 0.0 && rng_.next01() < 1.7 * kDt) {
-                burst_ = 0.15 + 0.35 * rng_.next01();
+            const double t = t0 + static_cast<double>(i) * kDt;
+            if (burst_len_ <= 0.0 && rng_.next01() < 1.7 * kDt) {
+                burst_len_ = 0.2 + 0.4 * rng_.next01();
+                burst_age_ = 0.0;
+                strike_env_ = 1.0;
             }
             double spark = 0.0;
-            if (burst_ > 0.0) {
-                burst_ -= kDt;
-                if (rng_.next01() < 400.0 * kDt) {
-                    spark = 0.9 * rng_.bipolar();
+            double sizzle = 0.0;
+            if (burst_len_ > 0.0) {
+                burst_age_ += kDt;
+                const double life = burst_age_ / burst_len_;
+                if (life >= 1.0) {
+                    burst_len_ = 0.0;
+                } else {
+                    // Crackle density and sizzle both fade as the bead cools.
+                    const double heat = std::exp(-life * 2.5);
+                    if (rng_.next01() < 500.0 * heat * kDt) {
+                        spark = 0.9 * rng_.bipolar();
+                    }
+                    sizzle = 0.12 * heat * rng_.bipolar();
                 }
             }
+            strike_env_ *= kStrikeDecay;
+            const double thud = thud_lp_.process(strike_env_ * rng_.bipolar()) * 1.6;
             arc_ += 118.0 * kDt;
-            const double hum = 0.08 * (std::sin(kTau * arc_) > 0.0 ? 1.0 : -1.0);
-            out[i] += static_cast<float>(spark_hp_.process(spark) + hum);
+            const double wobble = 1.0 + 0.15 * std::sin(kTau * 7.0 * t);
+            const double hum =
+                0.08 * wobble * (std::sin(kTau * arc_) > 0.0 ? 1.0 : -1.0);
+            out[i] += static_cast<float>(spark_hp_.process(spark + sizzle) + thud + hum);
         }
     }
 
    private:
+    static inline const double kStrikeDecay = std::exp(-kDt * 80.0);
     Biquad spark_hp_;
-    double burst_ = 0.0;
+    OnePole thud_lp_;
+    double burst_len_ = 0.0;
+    double burst_age_ = 0.0;
+    double strike_env_ = 0.0;
     double arc_ = 0.0;
     Rng rng_{0x5EAB012u};
 };
@@ -1007,19 +1299,49 @@ class WormholeCore {
             if (t > 111.5) {
                 f *= std::exp(-(t - 111.5) * 0.35);
             }
+            // Two detuned subs beat against each other (~0.4 Hz): the mouth
+            // of the thing pulses instead of droning.
             phase_ += f * kDt;
-            const double core = std::tanh(3.0 * std::sin(kTau * phase_)) * 0.9;
+            phase_b_ += f * 1.014 * kDt;
+            const double core =
+                std::tanh(1.6 * (std::sin(kTau * phase_) + std::sin(kTau * phase_b_))) * 0.9;
+            // The flash at 104: a pitch-dropping boom, right on the score's
+            // final cadence.
+            if (!boomed_ && t >= 104.0) {
+                boom_env_ = 1.0;
+                boomed_ = true;
+            }
+            boom_env_ *= kBoomDecay;
+            boom_phase_ += (28.0 + 55.0 * boom_env_ * boom_env_) * kDt;
+            const double boom = 0.8 * boom_env_ * std::sin(kTau * boom_phase_);
+            // Granular breathing on the roar, and a reverse-whoosh drawn
+            // in through the last second before the collapse.
+            breath_ += 0.00002 * (rng_.bipolar() * 40.0 - breath_);
             const double sub = 0.4 * sub_.process(rng_.bipolar());
-            const double roar =
-                0.35 * roar_.process(rng_.bipolar()) * std::min(rel / 5.0, 1.0);
-            out[i] += static_cast<float>(core + sub + roar);
+            const double roar = 0.35 * roar_.process(rng_.bipolar()) *
+                                std::min(rel / 5.0, 1.0) * (1.0 + 0.5 * breath_);
+            double inrush = 0.0;
+            if (t > 110.3 && t <= 111.5) {
+                const double pull = (t - 110.3) / 1.2;
+                inrush_lp_.set_cutoff(3000.0 - 2700.0 * pull);
+                const double white = rng_.bipolar();
+                inrush = (white - inrush_lp_.process(white)) * 0.35 * pull;
+            }
+            out[i] += static_cast<float>(core + sub + roar + boom + inrush);
         }
     }
 
    private:
+    static inline const double kBoomDecay = std::exp(-kDt * 3.5);
     double phase_ = 0.0;
+    double phase_b_ = 0.25;
+    double boom_phase_ = 0.0;
+    double boom_env_ = 0.0;
+    bool boomed_ = false;
+    double breath_ = 0.0;
     OnePole sub_;
     OnePole roar_;
+    OnePole inrush_lp_;
     Rng rng_{0xB16D001u};
 };
 
@@ -1040,27 +1362,67 @@ class WormholeShimmer {
             if (t < 103.5) {
                 continue;
             }
+            // The whole crystalline chord glides upward as the bloom opens
+            // and sags back as it collapses.
+            double gliss = 1.0 + 0.7 * std::clamp((t - 105.0) / 4.0, 0.0, 1.0);
+            if (t > 111.5) {
+                gliss *= std::exp(-(t - 111.5) * 0.12);
+            }
             double sum = 0.0;
             for (std::size_t k = 0; k < kBase.size(); ++k) {
                 walk_[k] = std::clamp(walk_[k] + rng_.bipolar() * kDt * 0.5, -0.04, 0.04);
-                phase_[k] += kBase[k] * (1.0 + walk_[k]) * kDt;
+                phase_[k] += kBase[k] * gliss * (1.0 + walk_[k]) * kDt;
                 lfo_phase_[k] += kLfoHz * (1.0 + 0.3 * static_cast<double>(k)) * kDt;
                 const double am = 0.5 + 0.5 * std::sin(kTau * lfo_phase_[k]);
                 sum += am * std::sin(kTau * phase_[k]);
             }
-            const double sparkle = 0.12 * (rng_.bipolar() - air_.process(rng_.bipolar()));
-            out[i] += static_cast<float>(0.5 * sum / static_cast<double>(kBase.size()) * 2.0 +
-                                         sparkle);
+            // A metallic edge from the lowest partial pair, and energy
+            // pings that densify toward the bloom's peak.
+            const double edge =
+                0.1 * std::sin(kTau * phase_[0]) * std::sin(kTau * phase_[1]);
+            const double bloom = std::clamp((t - 104.0) / 4.0, 0.0, 1.0) *
+                                 (t > 111.5 ? std::exp(-(t - 111.5)) : 1.0);
+            if (rng_.next01() < 6.0 * bloom * kDt) {
+                pings_[next_ping_] = {0.0, 1500.0 + 3500.0 * rng_.next01(),
+                                      0.25 + 0.3 * rng_.next01()};
+                next_ping_ = (next_ping_ + 1) % pings_.size();
+            }
+            double ping_sum = 0.0;
+            for (auto& p : pings_) {
+                if (p.amp <= 0.0) {
+                    continue;
+                }
+                p.t += kDt;
+                const double env = std::exp(-p.t / 0.08);
+                if (env < 0.01) {
+                    p.amp = 0.0;
+                    continue;
+                }
+                ping_sum += p.amp * env * std::sin(kTau * p.hz * p.t);
+            }
+            const double glint = rng_.bipolar();  // sequenced draw
+            const double sparkle = 0.12 * (glint - air_.process(rng_.bipolar()));
+            out[i] += static_cast<float>(
+                0.5 * sum / static_cast<double>(kBase.size()) * 2.0 + edge + sparkle +
+                0.6 * ping_sum);
         }
     }
 
    private:
-    static constexpr std::array<double, 5> kBase{287.0, 419.0, 563.0, 743.0, 1063.0};
+    struct Ping {
+        double t = 0.0;
+        double hz = 0.0;
+        double amp = 0.0;
+    };
+    static constexpr std::array<double, 7> kBase{287.0, 419.0,  563.0, 743.0,
+                                                 1063.0, 1327.0, 1741.0};
     Rng rng_;
     OnePole air_;
-    std::array<double, 5> phase_{};
-    std::array<double, 5> walk_{};
-    std::array<double, 5> lfo_phase_{};
+    std::array<double, 7> phase_{};
+    std::array<double, 7> walk_{};
+    std::array<double, 7> lfo_phase_{};
+    std::array<Ping, 6> pings_{};
+    std::size_t next_ping_ = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -1114,8 +1476,8 @@ std::vector<ac3::oba::ObjectPath> build_paths() {
         {103.3, {0.5, 0.10, 0.08}, 0.58, 0.08},
         {104.0, {0.5, 0.10, 0.08}, 0.55, 0.10},
         {110.0, {0.5, 0.08, 0.06}, 0.50, 0.06},
-        {113.0, {0.5, 0.06, 0.05}, 0.32, 0.02},
-        {115.0, {0.5, 0.04, 0.05}, 0.00, 0.0},
+        {113.0, {0.5, 0.06, 0.05}, 0.24, 0.02},
+        {114.6, {0.5, 0.04, 0.05}, 0.00, 0.0},
     }));
 
     // kComet: left to right across the front, closest mid-screen.
@@ -1347,6 +1709,7 @@ int main(int argc, char** argv) {
                                              std::vector<float>(ac3::kSamplesPerFrame));
     std::vector<std::span<const float>> views(kObjectCount);
     std::array<double, ac3::kSamplesPerFrame> music_scratch{};
+    std::array<double, ac3::kSamplesPerFrame> send_scratch{};
 
     const auto total_frames = static_cast<std::uint64_t>(
         (render_until * kRate + (ac3::kSamplesPerFrame - 1)) / ac3::kSamplesPerFrame);
@@ -1413,7 +1776,7 @@ int main(int argc, char** argv) {
         // The broadcast: the anthem (or your recording) through the station
         // transmitter. Full radio until the close-up cut at 0:38, opening to
         // nearly clean over 1.5 s; a floor of 0.15 keeps a little PA colour.
-        anthem.render(t_start, music_scratch);
+        anthem.render(t_start, music_scratch, send_scratch);
         for (int n = 0; n < ac3::kSamplesPerFrame; ++n) {
             const auto i = static_cast<std::size_t>(n);
             const double t = t_start + static_cast<double>(n) * kDt;
@@ -1428,7 +1791,8 @@ int main(int argc, char** argv) {
                     src = user_music[static_cast<std::size_t>(pos)];
                 }
             } else {
-                src += 0.32 * hall.process(src);
+                // Per-voice sends set each section's depth in the room.
+                src += 0.85 * hall.process(send_scratch[i]);
             }
             const double amount =
                 t < 38.0 ? 1.0 : std::max(0.15, 1.0 - (t - 38.0) / 1.5 * 0.85);
