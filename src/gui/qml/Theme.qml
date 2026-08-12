@@ -117,6 +117,22 @@ QtObject {
     readonly property int fontNormal: 14
     readonly property int fontSmall: 12
 
+    // The handoff's faces, resolved against what this machine actually has:
+    // Archivo (weight 800 headings) with the platform UI face as the
+    // fallback, and a fixed-width face for every numeric readout so digits
+    // do not shift as they count. Resolved once - Qt.fontFamilies() is a
+    // full enumeration and has no business running per binding.
+    readonly property string headingFamily: {
+        const installed = Qt.fontFamilies();
+        return installed.indexOf("Archivo") >= 0 ? "Archivo" : Application.font.family;
+    }
+    readonly property string monoFamily: {
+        const installed = Qt.fontFamilies();
+        if (installed.indexOf("Cascadia Mono") >= 0) return "Cascadia Mono";
+        if (installed.indexOf("Consolas") >= 0) return "Consolas";
+        return "monospace";
+    }
+
     // ---- legacy names --------------------------------------------------
     // Kept so Card.qml, ChannelMeter.qml, SoundfieldView.qml and the not-yet-
     // rebuilt Main.qml cards keep compiling and reading sensibly against the

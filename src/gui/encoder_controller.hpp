@@ -1,9 +1,11 @@
 #pragma once
 
+#include <QElapsedTimer>
 #include <QHash>
 #include <QObject>
 #include <QString>
 #include <QStringList>
+#include <QTimer>
 #include <QUrl>
 #include <QVariantList>
 #include <QVariantMap>
@@ -233,12 +235,30 @@ class EncoderController : public QObject {
     // Answered before the encode rather than after: a layout the source cannot
     // fill leaves speakers silent, and that is worth knowing in advance.
     Q_PROPERTY(QString routingSummary READ routingSummary NOTIFY routingChanged)
+    // The coded plan as a per-channel list - one entry per coded channel of
+    // the CURRENT plan (not of whatever layout the meters happen to be
+    // showing): {name, token, azimuthDeg, directional, ceiling, replaced,
+    // fed}. This is what the Format tab's channel map, the soundfield's
+    // solid/hollow dots and the "N of M positions fed" lines read, so they
+    // all count the same fed set. Dual mono lists its two programmes;
+    // object mode lists the 5.1 bed with fed answered by panning the
+    // objects. Notifies on routingChanged because fed is a routing fact:
+    // every bed/extras/assignment/source edit ends in refreshRouting().
+    Q_PROPERTY(QVariantList plannedChannels READ plannedChannels NOTIFY routingChanged)
 
     // ---- metering ---------------------------------------------------------
     // channelNames changes only when the layout does, so it — not the level
     // list — is what a Repeater should bind to: rebuilding six delegates
     // thirty times a second would throw away every animation mid-flight.
     Q_PROPERTY(QStringList channelNames READ channelNames NOTIFY layoutChanged)
+    // Everything about a meter row that does NOT move per tick - {name,
+    // azimuthDeg, directional, ceiling, replaced, fed} - so the meter and
+    // soundfield Repeaters have a model that only changes when the layout
+    // does. The per-tick values (peak/rms/hold/clipped) stay in
+    // channelLevels; a delegate reads its own entry by index. Binding a
+    // Repeater's model to channelLevels instead tears every delegate down
+    // ~30 times a second, which is exactly the jank this exists to prevent.
+    Q_PROPERTY(QVariantList channelMeta READ channelMeta NOTIFY layoutChanged)
     Q_PROPERTY(QString layoutName READ layoutName NOTIFY layoutChanged)
     Q_PROPERTY(bool hasLevels READ hasLevels NOTIFY layoutChanged)
     Q_PROPERTY(bool surround READ surround NOTIFY layoutChanged)
@@ -390,8 +410,10 @@ public:
     [[nodiscard]] QStringList dmixNames() const;
 
     [[nodiscard]] QString routingSummary() const { return routing_summary_; }
+    [[nodiscard]] QVariantList plannedChannels() const;
 
     [[nodiscard]] QStringList channelNames() const { return channel_names_; }
+    [[nodiscard]] QVariantList channelMeta() const;
     [[nodiscard]] QString layoutName() const { return layout_name_; }
     [[nodiscard]] bool hasLevels() const { return !channel_names_.isEmpty(); }
     // Two or more full-bandwidth channels make a soundfield worth drawing;
@@ -464,8 +486,9 @@ public:
     // Refused (silently, same as a bed button or LFE toggle) when locked or
     // when the result would leave chanmap::allocate() unable to satisfy it.
     Q_INVOKABLE void toggleExtra(const QString& id);
-    // Sets bed + LFE + extras together - "5.1", "7.1", "5.1.4", "7.1.4" or
-    // "5.2" - the starting points the Format tab's preset buttons offer.
+    // Sets bed + LFE + extras together - "stereo", "5.1", "7.1", "5.1.4",
+    // "7.1.4", "5.2" or "7.2.4" - the starting points the Format tab's
+    // preset buttons offer.
     // Upgrades AC-3 to E-AC-3 first if the preset needs a dependent substream,
     // the same way a manual extras tick would otherwise be refused outright.
     Q_INVOKABLE void applyChannelPreset(const QString& name);
@@ -501,6 +524,11 @@ public:
     Q_INVOKABLE [[nodiscard]] QVariantMap evaluateObjectPath(int objectIndex, double timeS) const;
 
     Q_INVOKABLE void loadSourceFile(const QUrl& url);
+    // The first-run screen's third path in: synthesises an eight-second 5.1
+    // test signal (a distinct tone per channel, WAV speaker order) into the
+    // temp directory and loads it like any other file, so a user with no
+    // multichannel WAV to hand still gets a working session to explore.
+    Q_INVOKABLE void loadBundledTestSignal();
     // Adds another source alongside whatever is already loaded - or, if
     // nothing is loaded yet, is exactly loadSourceFile (so a caller offering
     // one "add a source" affordance never has to know which entry point to
@@ -656,9 +684,11 @@ private:
     // showed.
     void encodeChannels(const QString& path, std::vector<std::vector<float>> planes,
                         const ac3::plan::Routing& routing, std::uint32_t sample_rate);
-    // One object per source channel, over a 5.1 bed. `planes` is the source's
-    // own channels; unlike the channel path they are not routed anywhere,
-    // because an object is not a speaker feed.
+    // Objects over a 5.1 bed. `planes` is every loaded channel in flat order;
+    // which of them ride as dynamic objects, which pin to a bed position as
+    // static objects, and which are dropped follows the assignment table
+    // (dynamicObjectChannels / pinnedObjectChannels) - with nothing assigned,
+    // every channel is a dynamic object, which is what this always did.
     void encodeObjects(const QString& path, std::vector<std::vector<float>> planes,
                        std::uint32_t sample_rate);
     // Resizes object_configs_ to object_count_, preserving any object index
@@ -714,9 +744,43 @@ private:
     void setProgress(double value);
     void setRecording(bool recording);
     void setMetering(bool metering);
-    // Recomputes routingSummary and the meter labels from the current plan and
-    // source. Called whenever either moves.
+    // Recomputes routingSummary from the current plan and source, then hands
+    // the meters to previewPlanMeters(). Called whenever either moves.
     void refreshRouting();
+    // The routingSummary half of refreshRouting - the prose only, split out
+    // so refreshRouting can always follow it with the meter preview without
+    // every early return in here having to remember to.
+    void refreshRoutingSummary();
+    // Points the meters at the CODED plan while nothing is running: labels,
+    // locations and fed flags immediately (cheap - no audio is touched), then
+    // a background pass that renders the loaded sources through the actual
+    // routing and publishes the whole-programme levels when it lands. This is
+    // what makes the meters follow the picker and the assignment table - the
+    // handoff's "the meters on the left follow these choices". A run starting
+    // before the pass lands invalidates it (preview_generation_), and busy_
+    // suppresses the whole thing: a live worker owns the meters then.
+    void previewPlanMeters();
+    // Flat channel indices (the sourceShapes()/Assignment addressing) that
+    // ride as DYNAMIC objects in object mode: every loaded channel while
+    // nothing is explicitly assigned, else exactly the channels assigned
+    // "obj". Order is flat order, which is object-index order.
+    [[nodiscard]] std::vector<std::size_t> dynamicObjectChannels() const;
+    // Flat channels assigned to a bed position in object mode. Each becomes a
+    // static object pinned at its speaker's azimuth - in a JOC stream the bed
+    // IS the panned objects, so "carried as a channel" and "an object that
+    // never moves off the L speaker" are the same coded thing. The LFE
+    // position pins as a pure lfe_send object (no direction points at it).
+    [[nodiscard]] std::vector<std::pair<std::size_t, ac3::eac3::chanmap::Location>>
+    pinnedObjectChannels() const;
+    // object_count_ from dynamicObjectChannels(), then refreshObjectConfigs().
+    // Called wherever the source list or the assignment changes.
+    void recomputeObjectCount();
+    // Coalesces objectsChanged for the drag paths (setObjectPosition /
+    // setObjectLfeSend): the first move in a gesture notifies immediately,
+    // further ones inside ~16 ms ride a trailing single-shot. Four Repeaters
+    // re-read objectModel on every emission, so per-mouse-move emission made
+    // dragging the room a delegate-rebuild storm.
+    void notifyObjectsChangedSoon();
 
     // Re-labels the meters and clears them to the floor. GUI thread only, and
     // always before a worker that will publish into them starts. `names` and
@@ -851,11 +915,24 @@ private:
     QVariantList channel_levels_;
     QVariantMap soundfield_;
 
-    std::unique_ptr<Source> source_;
+    // shared_ptr rather than unique_ptr for exactly one reason: the meter
+    // preview worker (previewPlanMeters) reads the WAV data off the GUI
+    // thread, and loadSourceFile may replace the source before that read
+    // finishes. WavData is immutable once loaded, so shared ownership is the
+    // whole synchronisation story; the stale worker's publish is dropped by
+    // its generation check instead.
+    std::shared_ptr<Source> source_;
     // Everything beyond the primary, in load order - source index (n+1) in
     // sourceShapes()/Assignment addressing. Always empty with the single-
     // source behaviour every existing call site (still) assumes.
-    std::vector<std::unique_ptr<Source>> extra_sources_;
+    std::vector<std::shared_ptr<Source>> extra_sources_;
+    // Invalidates in-flight meter previews: bumped by every new preview and
+    // by setBusy(true), checked (against busy_ too) before a preview's
+    // result is published.
+    std::atomic<int> preview_generation_{0};
+    // notifyObjectsChangedSoon()'s state - see its declaration.
+    QTimer object_notify_timer_;
+    QElapsedTimer object_notify_elapsed_;
     // Empty (every row implicitly kUnassigned) until setAssignment is
     // called at least once; see routingForSources for what that means for
     // which routing actually gets used.

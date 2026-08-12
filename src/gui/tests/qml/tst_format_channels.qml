@@ -54,11 +54,14 @@ TestCase {
         const win = createTemporaryObject(mainWindowComponent, testCase);
         verify(win !== null);
         compare(win.tier, "guided");
+        // Until a source has ever been chosen, the body is the first-run
+        // screen and the whole workbench (wizard included) stays hidden.
+        win.everHadSource = true;
 
         let wizardStep = null;
         tryVerify(() => {
             wizardStep = findChild(win.contentItem, "wizardStepDot-source");
-            return wizardStep !== null;
+            return wizardStep !== null && wizardStep.visible;
         });
         verify(wizardStep.visible);
 

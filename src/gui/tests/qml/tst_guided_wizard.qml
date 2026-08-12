@@ -3,11 +3,12 @@ import QtTest
 
 import Ac3Forge
 
-// Guided's own step sequence (GuidedWizard.qml) - real simulated clicks
-// through Back/Next and the step dots, not property pokes, over the SAME
-// EncoderController state Advanced/Expert read and write. The core promise
-// under test throughout: there is no separate wizard draft, so anything set
-// from a wizard step is exactly what Expert would show for the same field.
+// Guided's step sequence (GuidedWizard.qml) — the handoff's five steps
+// (Audio · Speakers · Quality · Movement · Where it goes) — driven by real
+// simulated clicks over the SAME EncoderController state Advanced/Expert
+// read and write. The core promise under test throughout: there is no
+// separate wizard draft, so anything set from a wizard step is exactly what
+// Expert would show for the same field.
 TestCase {
     id: testCase
     name: "GuidedWizard"
@@ -21,42 +22,42 @@ TestCase {
     readonly property url stereoUrl:
         Qt.resolvedUrl("../../../../fuzz/seeds/fuzz_wav_read/roundtrip-stereo.wav")
 
-    // EncoderController is a singleton shared across every test function in
-    // the whole suite (see e.g. tst_run_history.qml's own note on this) -
-    // codecIndex in particular decides whether the "rate" step exists at
-    // all, so every test here sets it explicitly rather than trusting
-    // whatever an earlier, alphabetically-prior test left behind.
-
-    // Guided is the DEFAULT tier - the one page in the two-pane window's
-    // StackLayout that is current from the very first frame, never reached
-    // via an explicit currentIndex change. The window itself (and the
-    // Layout chain feeding this page's real geometry) still take a handful
-    // of polish passes after creation to settle, same as any freshly-shown
-    // window; interactively that is imperceptible, but this window is
-    // created and clicked into within the same scripted tick. Confirmed
-    // empirically (not guessed): a real mouseClick() issued immediately
-    // after createTemporaryObject() lands without effect, one issued after
-    // a short wait does not - so this waits, the same "poll/wait rather
-    // than assume the tree is fully realised the instant the window is
-    // created" rule tst_format_channels.qml's own comment already states
-    // for a freshly-realised Repeater.
+    // The window (and the Layout chain feeding this page's real geometry)
+    // takes a handful of polish passes after creation to settle; a real
+    // mouseClick() issued immediately after createTemporaryObject() lands
+    // without effect — same wait rule tst_format_channels.qml documents for
+    // a freshly-realised Repeater.
     function waitForWizardLayout(win) {
         wait(300);
         return findChild(win.contentItem, "guidedWizard");
     }
 
+    // The wizard's Back/Next footer sits at the foot of a scrolling panel,
+    // which makes a positional mouseClick on it brittle (it needs a scroll,
+    // a settled layout AND enough spacing not to read as a double-click).
+    // Navigation is driven through the button's own clicked() signal instead
+    // — the same handler a real click runs — with the enabled gate asserted
+    // separately where it matters. The step CARDS keep real hit-tested
+    // clicks; they are mid-panel and stable.
+    function clickNav(win, button) {
+        verify(button.enabled);
+        button.clicked();
+    }
+
     function test_nextIsGatedOnASourceAndBackRetreatsOneStepAtATime() {
         const win = createTemporaryObject(mainWindowComponent, testCase);
         verify(win !== null);
-        EncoderController.codecIndex = 0;  // AC-3 - no "rate" step to skip past
+        EncoderController.atmosEnabled = false;
         const wizard = waitForWizardLayout(win);
+        verify(wizard !== null);
 
         const nextButton = findChild(win.contentItem, "wizardNextButton");
         const backButton = findChild(win.contentItem, "wizardBackButton");
         verify(nextButton !== null);
         verify(backButton !== null);
 
-        compare(wizard.currentStepKey, "source");
+        wizard.currentStepKey = "source";
+        compare(wizard.currentStepIndex, 0);
         compare(backButton.enabled, false);
         compare(nextButton.enabled, EncoderController.sourceReady);
 
@@ -66,78 +67,105 @@ TestCase {
         }
         compare(nextButton.enabled, true);
 
-        mouseClick(nextButton);
-        compare(wizard.currentStepKey, "format");
-        mouseClick(nextButton);
-        // AC-3: "rate" was filtered out, so Format leads straight to Loudness.
-        compare(wizard.currentStepKey, "loudness");
-        mouseClick(nextButton);
-        compare(wizard.currentStepKey, "review");
-        compare(nextButton.visible, false);
+        clickNav(win, nextButton);
+        compare(wizard.currentStepKey, "setup");
+        clickNav(win, nextButton);
+        compare(wizard.currentStepKey, "quality");
+        clickNav(win, nextButton);
+        compare(wizard.currentStepKey, "motion");
+        clickNav(win, nextButton);
+        compare(wizard.currentStepKey, "output");
 
-        mouseClick(backButton);
-        compare(wizard.currentStepKey, "loudness");
-        mouseClick(backButton);
-        compare(wizard.currentStepKey, "format");
+        clickNav(win, backButton);
+        compare(wizard.currentStepKey, "motion");
+        clickNav(win, backButton);
+        compare(wizard.currentStepKey, "quality");
     }
 
-    function test_dolbyDigitalPlusAddsTheRateStepAndRemovingItRelocatesCleanly() {
+    function test_setupCardsWriteTheSameChannelStateExpertReads() {
         const win = createTemporaryObject(mainWindowComponent, testCase);
         verify(win !== null);
-        EncoderController.codecIndex = 0;  // AC-3 to start
-        const wizard = waitForWizardLayout(win);
-        wizard.currentStepKey = "format";
-        compare(wizard.activeSteps.some((s) => s.key === "rate"), false);
-
-        // seg-<value> is SegmentedControl.qml's own convention - "eac3"/
-        // "ac3" are this control's own model values (distinct from the
-        // header tier control's "seg-guided"/"seg-advanced"/"seg-expert",
-        // so the two never collide).
-        const eac3Seg = findChild(win.contentItem, "seg-eac3");
-        verify(eac3Seg !== null);
-        mouseClick(eac3Seg);
-        compare(EncoderController.codecIndex, 1);
-        compare(wizard.activeSteps.some((s) => s.key === "rate"), true);
-
-        wizard.currentStepKey = "rate";
-        compare(wizard.currentStepIndex, wizard.activeSteps.findIndex((s) => s.key === "rate"));
-
-        // Switching back to AC-3 drops "rate" while it is the current step -
-        // onActiveStepsChanged has to land somewhere real, not on a step
-        // that no longer exists. Only the current step's Component is ever
-        // instantiated (GuidedWizard's own Loader - see its file comment on
-        // why), so "format"'s own codec control - findable a moment ago -
-        // no longer exists to click while "rate" is current; setting
-        // codecIndex directly is exactly what that same click already
-        // proved it does, and is the only way left to reach this state from
-        // here.
-        EncoderController.codecIndex = 0;
-        compare(wizard.activeSteps.some((s) => s.key === "rate"), false);
-        verify(wizard.activeSteps.some((s) => s.key === wizard.currentStepKey));
-    }
-
-    function test_presetButtonsAndDualMonoWriteTheSameStateExpertReads() {
-        const win = createTemporaryObject(mainWindowComponent, testCase);
-        verify(win !== null);
+        EncoderController.atmosEnabled = false;
         EncoderController.codecIndex = 0;
         EncoderController.applyChannelPreset("5.1");
         const wizard = waitForWizardLayout(win);
-        wizard.currentStepKey = "format";
+        verify(wizard !== null);
+        wizard.currentStepKey = "setup";
+        wait(50);
 
-        const preset71 = findChild(win.contentItem, "wizardPreset-7.1");
-        verify(preset71 !== null);
-        mouseClick(preset71);
-        compare(EncoderController.channelShapeName, "7.1");
-        // 7.1 needs a dependent substream - the wizard's own preset button
-        // has to upgrade the codec exactly like the Format tab's own preset
-        // row does (applyChannelPreset's own job, not something the wizard
+        // 7.1.4 needs dependent substreams — the codec must FOLLOW the
+        // channels (applyChannelPreset's own job, not something the wizard
         // duplicates), since there is only one currentPlan() either reads.
+        const fullCard = findChild(win.contentItem, "wizardSetup-full");
+        verify(fullCard !== null);
+        mouseClick(fullCard);
+        compare(EncoderController.channelShapeName, "7.1.4");
         compare(EncoderController.codecIndex, 1);
 
-        const dualMonoButton = findChild(win.contentItem, "wizardDualMonoButton");
-        verify(dualMonoButton !== null);
-        mouseClick(dualMonoButton);
-        compare(EncoderController.dualMono, true);
-        compare(EncoderController.channelShapeName, "1+1");
+        // The card highlight is read back OUT of the channel state, so an
+        // Advanced edit round-trips into Guided instead of the card lying.
+        compare(fullCard.active, true);
+
+        const stereoCard = findChild(win.contentItem, "wizardSetup-stereo");
+        verify(stereoCard !== null);
+        mouseClick(stereoCard);
+        compare(EncoderController.channelShapeName, "2.0");
+        compare(stereoCard.active, true);
+        compare(fullCard.active, false);
+    }
+
+    function test_qualityCardsSetTheBitrate() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        EncoderController.atmosEnabled = false;
+        const wizard = waitForWizardLayout(win);
+        verify(wizard !== null);
+        wizard.currentStepKey = "quality";
+        wait(50);
+
+        const card448 = findChild(win.contentItem, "wizardRate-448");
+        verify(card448 !== null);
+        mouseClick(card448);
+        compare(EncoderController.bitrateKbps, 448);
+        compare(card448.active, true);
+
+        const card192 = findChild(win.contentItem, "wizardRate-192");
+        verify(card192 !== null);
+        mouseClick(card192);
+        compare(EncoderController.bitrateKbps, 192);
+    }
+
+    function test_movementCardsDriveObjectModeWithItsConstraints() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        EncoderController.atmosEnabled = false;
+        EncoderController.codecIndex = 0;
+        EncoderController.bitrateKbps = 192;
+        EncoderController.applyChannelPreset("7.1");
+        // Alphabetically this test runs first, so no earlier test has loaded
+        // a source yet — without one the first-run screen hides the wizard
+        // and every click lands on nothing.
+        if (!EncoderController.sourceReady) {
+            EncoderController.loadSourceFile(stereoUrl);
+            tryCompare(EncoderController, "sourceReady", true);
+            EncoderController.applyChannelPreset("7.1");
+        }
+        const wizard = waitForWizardLayout(win);
+        verify(wizard !== null);
+        wizard.currentStepKey = "motion";
+        wait(50);
+
+        // Turning movement on fixes a 5.1 bed, E-AC-3, and the 384 kbps
+        // floor — atomically, per the handoff's own object-mode rule.
+        const moveCard = findChild(win.contentItem, "wizardMotion-on");
+        verify(moveCard !== null);
+        mouseClick(moveCard);
+        compare(EncoderController.atmosEnabled, true);
+        verify(EncoderController.bitrateKbps >= 384);
+
+        const stayCard = findChild(win.contentItem, "wizardMotion-off");
+        verify(stayCard !== null);
+        mouseClick(stayCard);
+        compare(EncoderController.atmosEnabled, false);
     }
 }

@@ -1,3 +1,4 @@
+import QtCore
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
@@ -8,33 +9,28 @@ import QtQuick.Layouts
 // same-directory import covers the QML-defined types but not the C++ ones.
 import Ac3Forge
 
+// The two-pane workbench of the design handoff: the SIGNAL on a permanent
+// left rail (input, levels, soundfield — never scrolled away by
+// configuration), the STREAM in a tabbed panel on the right, a plan line
+// above and the command bar below. Until a source has ever been chosen the
+// body is the first-run screen instead.
 ApplicationWindow {
     id: window
 
     // The handoff's honest floor: below 1280x900 the rail (340px) and the
-    // Format grid (180px columns) no longer have room to reflow rather than
-    // clip. The brief's 720x560 predates this content and is not achievable
-    // with it.
+    // Format grid no longer have room to reflow rather than clip.
     width: 1280
     height: 900
     minimumWidth: 1280
     minimumHeight: 900
     visible: true
-    color: Theme.background
+    color: Theme.bg
 
     function baseName(path) {
         const normalized = path.replace(/\\/g, "/");
         const slash = normalized.lastIndexOf("/");
         return slash >= 0 ? normalized.substring(slash + 1) : normalized;
     }
-    // recording (startRecording, capture+encode+file only) and liveActive
-    // (startLiveSession, capture+encode+optional monitor/passthrough/disk)
-    // are the two capture-driven states distinct from a loaded file - see
-    // EncoderController's own header comment on why they stay separate
-    // properties rather than one. Both read the same "live capture" label
-    // here: which of the two is running is already visible from the tab bar
-    // (liveActive alone switches to the Live session tab) and the run strip,
-    // so the window title does not need to repeat that distinction too.
     readonly property string sourceLabel: (EncoderController.recording || EncoderController.liveActive)
                                            ? qsTr("live capture")
                                            : (EncoderController.sourcePath.length > 0
@@ -43,14 +39,10 @@ ApplicationWindow {
     title: qsTr("ac3forge — %1").arg(sourceLabel)
 
     // Fusion draws every standard control - Button, CheckBox, Switch,
-    // Slider, ProgressBar, ComboBox, SpinBox - from these palette roles (see
-    // e.g. QtQuick/Controls/Fusion/impl/SwitchIndicator.qml's
-    // Fusion.buttonColor(control.palette, ...) calls), never from a literal.
-    // Left unset, Fusion falls back to its own default palette regardless of
-    // Theme - the "pale pink on every switch and slider" the handoff calls
-    // out as the single most visible inconsistency today. Setting it here,
-    // on the root window, means every control inherits it unless a control
-    // overrides its own palette.
+    // Slider, ProgressBar, ComboBox, SpinBox - from these palette roles,
+    // never from a literal. Left unset, Fusion falls back to its own default
+    // palette regardless of Theme - the "pale pink on every switch and
+    // slider" the handoff calls out as the single most visible inconsistency.
     palette.window: Theme.bg
     palette.windowText: Theme.text
     palette.base: Theme.surface
@@ -70,36 +62,67 @@ ApplicationWindow {
     palette.toolTipText: Theme.text
     palette.placeholderText: Theme.textMuted
 
+    // ---- persisted preferences ---------------------------------------------
+    // main.cpp sets the application/organization name, so an interactive run
+    // persists; the QML test binary sets neither, so tests read defaults.
+    Settings {
+        id: appSettings
+        category: "workbench"
+        property string theme: "system"
+        property string controlsOnOpen: "guided"
+        property string lastTier: "guided"
+        property string meterMode: "coded"
+        property bool showCli: true
+        property int defaultContainerIndex: 0
+        property bool defaultVbr: false
+        property int defaultBitrateKbps: 192
+        property int defaultVbrQuality: 75
+        property int defaultDrcIndex: 0
+        property bool defaultMeasureDialnorm: false
+    }
+
+    Component.onCompleted: {
+        Theme.preference = appSettings.theme;
+        meterMode = appSettings.meterMode;
+        tier = appSettings.controlsOnOpen === "last"
+               ? appSettings.lastTier : appSettings.controlsOnOpen;
+        EncoderController.containerIndex = appSettings.defaultContainerIndex;
+        EncoderController.bitrateKbps = appSettings.defaultBitrateKbps;
+        EncoderController.vbrQuality = appSettings.defaultVbrQuality;
+        EncoderController.vbrEnabled = appSettings.defaultVbr;
+        EncoderController.drcIndex = appSettings.defaultDrcIndex;
+        EncoderController.measureDialnorm = appSettings.defaultMeasureDialnorm;
+    }
+
     // ---- Guided / Advanced / Expert and the tab bar ------------------------
-    // "guided" | "advanced" | "expert". Defaults to Guided - a step-by-step
-    // sequence for a new user, over GuidedWizard.qml (appended as the last
-    // StackLayout page below, shown instead of the tab bar + the other
-    // pages, not a fourth tab alongside them). Advanced is what "Basic" used
-    // to mean here - full channel control on one page, no coding-tools/
-    // metadata clutter; Expert is what "Advanced" used to mean - the same
-    // page plus Coding tools, Metadata and Passthrough. Kept as plain QML
-    // state rather than a controller enum: nothing outside this file reads
-    // it (Preferences, which would want to persist a default, is still an
-    // unbuilt placeholder - see preferencesDialog below), so there is
-    // nothing yet for a C++-side property to usefully gate.
+    // Guided is a step-by-step wrapper over the SAME rules — one more
+    // StackLayout page, not a separate mode with its own draft state.
     property string tier: "guided"
     property string currentTab: "format"
-    // "coded" | "rendered" - persisted preference, the fourteen-rows-for-
-    // twelve-speakers question turned into a mode rather than a puzzle.
-    // Defaults to "coded" so the meters keep showing every transmitted
-    // channel unless asked otherwise - what the app has always done.
+    // "coded" | "rendered" — the fourteen-rows-for-twelve-speakers question
+    // turned into a mode rather than a puzzle.
     property string meterMode: "coded"
+    // "file" | "live" — the unified input selector of rail block 01.
+    property string inputMode: "file"
+    // Set once anything has ever been loaded or captured; until then the
+    // body shows the first-run screen instead of the workbench.
+    property bool everHadSource: EncoderController.sourceModel.length > 0
+                                 || EncoderController.recording
+                                 || EncoderController.liveActive
+    // Guided's jump into the full assignment table keeps a way back — the
+    // round trip is lossless because both surfaces edit the same state.
+    property bool fromGuided: false
+
+    function goAssign() {
+        if (tier === "guided") {
+            fromGuided = true;
+            tier = "advanced";
+        }
+        currentTab = "format";
+    }
 
     // ---- the panel banner: one of the three feedback homes -----------------
-    // Field-level messages sit next to the control they concern (layoutDetail,
-    // routingSummary, the object bit-rate warning...) and the run strip covers
-    // anything about a specific run; this is the third - a banner at the top
-    // of the panel that caused the problem. -1 means "show whichever run most
-    // recently failed"; a run's own Details button points the banner at it
-    // explicitly, and Dismiss remembers that id so it does not reappear.
     property int bannerRunId: -1
-    // The run whose banner Dismiss was clicked on, so dismissing run 12's
-    // failure does not also suppress the banner the NEXT failure deserves.
     property int dismissedRunId: -1
     readonly property var bannerRun: {
         const runs = EncoderController.runs;
@@ -115,26 +138,31 @@ ApplicationWindow {
         }
         return candidate && candidate.id !== dismissedRunId ? candidate : null;
     }
+
     readonly property var tabOrder: ["format", "coding", "meta", "objects", "session"]
     readonly property var visibleTabs: {
-        const tabs = [{ key: "format", label: qsTr("Format") }];
+        const tabs = [{ key: "format", label: qsTr("Format"), badge: "" }];
         if (tier === "expert") {
-            tabs.push({ key: "coding", label: qsTr("Coding tools") });
-            tabs.push({ key: "meta", label: qsTr("Metadata") });
+            const toolsOn = (EncoderController.coupling ? 1 : 0)
+                          + (EncoderController.spx ? 1 : 0)
+                          + (EncoderController.aht ? 1 : 0);
+            const metaOn = (EncoderController.heavy ? 1 : 0)
+                         + (EncoderController.mixmeta ? 1 : 0)
+                         + (EncoderController.drcIndex > 0 ? 1 : 0);
+            tabs.push({ key: "coding", label: qsTr("Coding tools"),
+                        badge: toolsOn > 0 ? String(toolsOn) : "" });
+            tabs.push({ key: "meta", label: qsTr("Metadata"),
+                        badge: metaOn > 0 ? String(metaOn) : "" });
         }
-        tabs.push({ key: "objects", label: qsTr("Objects") });
-        // Only exists to be jumped into, the way the handoff's own prototype
-        // only shows it once something is actually running - a tab for a
-        // session that is not there yet has nothing to show.
+        tabs.push({ key: "objects", label: qsTr("Objects"),
+                    badge: EncoderController.atmosEnabled ? qsTr("on") : "" });
         if (EncoderController.liveActive) {
-            tabs.push({ key: "session", label: qsTr("Live session") });
+            tabs.push({ key: "session", label: qsTr("Live session"), badge: "" });
         }
         return tabs;
     }
     onTierChanged: {
-        // Leaving Expert while on a tab only it shows falls back to Format
-        // rather than showing an empty panel - covers both Guided (which
-        // shows no tab bar at all) and Advanced.
+        appSettings.lastTier = tier;
         if (tier !== "expert" && (currentTab === "coding" || currentTab === "meta")) {
             currentTab = "format";
         }
@@ -144,39 +172,44 @@ ApplicationWindow {
         target: EncoderController
         function onLiveActiveChanged() {
             if (EncoderController.liveActive) {
-                currentTab = "session";
-            } else if (currentTab === "session") {
-                currentTab = "format";
+                window.currentTab = "session";
+                window.inputMode = "live";
+            } else if (window.currentTab === "session") {
+                window.currentTab = "format";
+            }
+        }
+        function onRecordingChanged() {
+            if (EncoderController.recording) {
+                window.inputMode = "live";
             }
         }
     }
 
-    // ---- the plan headline and a best-effort CLI line ----------------------
-    // Both are read from properties carrying NOTIFY planChanged (codecIndex,
-    // channelShapeName, bitrateKbps), so they stay live even though
-    // outputSuffix() itself is a plain invokable with no notify signal of its
-    // own.
+    // ---- the plan headline and the CLI line --------------------------------
+    // Derived, never typed. Both read properties carrying NOTIFY planChanged,
+    // so they stay live even though outputSuffix() is a plain invokable.
     readonly property string planLine: {
         const codec = EncoderController.codecNames[EncoderController.codecIndex] || "";
-        const shape = EncoderController.atmosEnabled
-                      ? qsTr("5.1") : EncoderController.channelShapeName;
         const rate = EncoderController.vbrAvailable && EncoderController.vbrEnabled
                      ? qsTr("quality %1").arg(EncoderController.vbrQuality)
                      : qsTr("%1 kbps").arg(EncoderController.bitrateKbps);
+        if (EncoderController.atmosEnabled) {
+            const objects = EncoderController.objectCount;
+            const shape = objects > 0 ? qsTr("5.1 bed + %1 objects").arg(objects)
+                                      : qsTr("5.1 bed");
+            return qsTr("%1 · %2 · %3 · .%4")
+                .arg(codec).arg(shape).arg(rate).arg(EncoderController.outputSuffix());
+        }
         return qsTr("%1 · %2 · %3 · .%4")
-            .arg(codec).arg(shape).arg(rate)
+            .arg(codec).arg(EncoderController.channelShapeName).arg(rate)
             .arg(EncoderController.outputSuffix());
     }
-    // ac3cli's actual [layout] argument takes either a preset name or this
-    // exact comma-separated Table E2.5 list (plan::parse_channels), so this
-    // is real, pasteable syntax rather than an aspirational one - the
-    // handoff's own "--bed/--extras" sketch does not match ac3cli's actual
-    // (positional) subcommand grammar, which also differs in shape between
-    // 'encode' (AC-3, no tools argument), 'eac3-encode' (E-AC-3) and
-    // 'atmos-encode'. Placeholder vocabulary otherwise: gains --paths once
-    // objects gain authored paths, and does not yet account for the Matroska
-    // container, which ac3cli muxes as a second 'mkv' invocation rather than
-    // an encode-command argument.
+    readonly property string planSubLine: EncoderController.dualMono && !EncoderController.atmosEnabled
+                                          ? qsTr("acmod 0 · two independent programmes in one stream · no soundfield, no downmix")
+                                          : EncoderController.layoutDetail
+    // ac3cli's actual grammar — real, pasteable syntax, not the handoff's
+    // "--bed/--extras" sketch (which does not match ac3cli's positional
+    // subcommands). Assignments ride as map= once one exists.
     readonly property string cliLine: {
         const source = EncoderController.sourcePath.length > 0
                        ? window.baseName(EncoderController.sourcePath) : "<source>";
@@ -193,9 +226,6 @@ ApplicationWindow {
                        EncoderController.toolsToken.length > 0
                            ? EncoderController.toolsToken : "none",
                        EncoderController.channelLocationsText];
-        // [vbr] is the next positional after [layout] - only appended when
-        // actually on, so the common CBR case stays exactly what it always
-        // was rather than growing a trailing "off" nobody typed.
         if (EncoderController.vbrAvailable && EncoderController.vbrEnabled) {
             parts.push(EncoderController.vbrToken);
         }
@@ -251,8 +281,13 @@ ApplicationWindow {
         dialog.selectedFile = name;
         dialog.open();
     }
+    // What the Encode button and guided's "Encode now" both run — one flow,
+    // so the two can never drift apart.
+    function startEncodeFlow() {
+        openSaveDialog(saveDialog, EncoderController.suggestedOutputName());
+    }
 
-    // Hidden text surface for the command bar's Copy button - the standard
+    // Hidden text surface for the command bar's Copy button — the standard
     // QML idiom for clipboard access without an extra module.
     TextEdit {
         id: clipboardProxy
@@ -264,591 +299,720 @@ ApplicationWindow {
         }
     }
 
-    Dialog {
+    PreferencesDialog {
         id: preferencesDialog
-        title: qsTr("Preferences")
-        modal: true
-        anchors.centerIn: parent
-        standardButtons: Dialog.Close
-
-        Label {
-            text: qsTr("Appearance, capture and default-run settings land with a later checkpoint.")
-            wrapMode: Text.WordWrap
-            color: Theme.text
+        settings: appSettings
+        onApplied: {
+            Theme.preference = appSettings.theme;
+            window.meterMode = appSettings.meterMode;
         }
     }
 
+    // =========================================================================
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
 
-        // ==== header =========================================================
+        // ---- faux title strip ----------------------------------------------
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 34
+            color: Theme.neutral200
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: Theme.space3
+                spacing: 6
+
+                Repeater {
+                    model: 3
+                    Rectangle { width: 11; height: 11; color: Theme.neutral400 }
+                }
+                Text {
+                    Layout.leftMargin: Theme.space2
+                    text: window.title.toUpperCase()
+                    font.pixelSize: 11
+                    font.letterSpacing: 1.2
+                    color: Theme.neutral700
+                }
+                Item { Layout.fillWidth: true }
+            }
+        }
+        Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.divider }
+
+        // ---- header ----------------------------------------------------------
         RowLayout {
             Layout.fillWidth: true
             Layout.leftMargin: 20
             Layout.rightMargin: 20
             Layout.topMargin: 14
             Layout.bottomMargin: 14
-            spacing: 20
+            spacing: Theme.space4
 
-            RowLayout {
+            Text {
+                text: qsTr("ac3forge")
+                font.pixelSize: 22
+                font.family: Theme.headingFamily
+                font.weight: Font.Black
+                font.letterSpacing: -0.2
+                color: Theme.text
+            }
+            Text {
                 Layout.fillWidth: true
-                spacing: 12
-
-                Text {
-                    text: qsTr("ac3forge")
-                    color: Theme.text
-                    font.pixelSize: Theme.fontTitle
-                    font.bold: true
-                    font.letterSpacing: -0.2
-                }
-                Text {
-                    text: qsTr("Clean-room AC-3 / E-AC-3 encoder — ATSC A/52, ETSI TS 103 420")
-                    color: Theme.textMuted
-                    font.pixelSize: Theme.fontSmall
-                }
+                text: qsTr("Clean-room AC-3 / E-AC-3 encoder — ATSC A/52, ETSI TS 103 420")
+                font.pixelSize: 12
+                elide: Text.ElideRight
+                color: Theme.neutral700
             }
 
-            RowLayout {
-                spacing: 8
-
-                Text {
-                    text: qsTr("CONTROLS")
-                    font.pixelSize: 11
-                    font.letterSpacing: 1
-                    color: Theme.textMuted
-                }
-                SegmentedControl {
-                    model: [{ value: "guided", label: qsTr("Guided") },
-                            { value: "advanced", label: qsTr("Advanced") },
-                            { value: "expert", label: qsTr("Expert") }]
-                    currentValue: window.tier
-                    onSelected: (value) => window.tier = value
-                }
-                Button {
-                    text: qsTr("Preferences")
-                    onClicked: preferencesDialog.open()
-                }
+            Text {
+                text: qsTr("CONTROLS")
+                font.pixelSize: 10
+                font.letterSpacing: 1.2
+                color: Theme.textMuted
+            }
+            SegmentedControl {
+                model: [
+                    { value: "guided", label: qsTr("Guided") },
+                    { value: "advanced", label: qsTr("Advanced") },
+                    { value: "expert", label: qsTr("Expert") },
+                ]
+                currentValue: window.tier
+                onSelected: (value) => window.tier = value
+            }
+            Button {
+                text: qsTr("Preferences")
+                onClicked: preferencesDialog.open()
             }
         }
-        Rectangle { Layout.fillWidth: true; height: 2; color: Theme.divider }
+        Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 2; color: Theme.divider }
 
-        // ==== body: the two panes ===========================================
+        // ---- first run -------------------------------------------------------
+        FirstRunScreen {
+            visible: !window.everHadSource
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            Layout.margins: 48
+            onChooseFile: openDialog.open()
+            onCaptureLive: {
+                window.everHadSource = true;
+                window.inputMode = "live";
+            }
+            onOpenTestSignal: EncoderController.loadBundledTestSignal()
+        }
+
+        // ---- the workbench ---------------------------------------------------
         RowLayout {
+            visible: window.everHadSource
             Layout.fillWidth: true
             Layout.fillHeight: true
             spacing: 0
 
-            // ---- left rail: the signal, always visible ---------------------
+            // =============================================================
+            // Left rail — the signal. Always visible, never scrolled away
+            // by configuration.
+            // =============================================================
             ScrollView {
                 Layout.preferredWidth: 404
                 Layout.minimumWidth: 340
                 Layout.fillHeight: true
                 contentWidth: availableWidth
+                ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
 
                 ColumnLayout {
-                    width: parent.width
-                    spacing: Theme.gap
+                    width: Math.max(340, parent ? parent.width : 340)
+                    spacing: 0
 
-                    // ---- source ------------------------------------------------
-                    Card {
-                        title: qsTr("Source")
+                    // ---- 01 / Input -------------------------------------
+                    RailBlock {
+                        ordinal: "01"
+                        label: qsTr("INPUT")
+                        Layout.fillWidth: true
+                        Layout.margins: Theme.space4
 
-                        RowLayout {
+                        SegmentedControl {
                             Layout.fillWidth: true
-                            spacing: Theme.gap
-
-                            Button {
-                                objectName: "chooseWavButton"
-                                text: qsTr("Choose WAV…")
-                                enabled: !EncoderController.busy
-                                onClicked: openDialog.open()
-                            }
-
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                spacing: 2
-
-                                Text {
-                                    Layout.fillWidth: true
-                                    text: EncoderController.sourcePath.length > 0
-                                          ? EncoderController.sourcePath
-                                          : qsTr("No file selected")
-                                    color: EncoderController.sourcePath.length > 0
-                                           ? Theme.text : Theme.textMuted
-                                    font.pixelSize: Theme.fontNormal
-                                    elide: Text.ElideMiddle
-                                }
-                                Text {
-                                    text: EncoderController.sourceInfo
-                                    color: EncoderController.sourceReady ? Theme.good : Theme.textMuted
-                                    font.pixelSize: Theme.fontSmall
-                                    visible: text.length > 0
-                                }
-                            }
-
-                            Button {
-                                objectName: "addSourceButton"
-                                text: qsTr("Add source…")
-                                enabled: EncoderController.sourceReady && !EncoderController.busy
-                                onClicked: addSourceDialog.open()
-                            }
+                            segHeight: 32
+                            model: [
+                                { value: "file", label: qsTr("File") },
+                                { value: "live", label: qsTr("Live capture") },
+                            ]
+                            currentValue: window.inputMode
+                            onSelected: (value) => window.inputMode = value
                         }
 
-                        // ---- multi-source list + assignment -----------------------
-                        // Functional first cut, not the handoff's full Assign table
-                        // (that needs the Guided/Advanced/Expert tiers it is meant to
-                        // live behind - see docs/design/handoff-workbench). Only
-                        // appears once a second source exists; a single loaded file
-                        // keeps using the plain path/info line above, unchanged.
+                        // ---- file branch: the source list ---------------
                         ColumnLayout {
+                            visible: window.inputMode === "file"
                             Layout.fillWidth: true
-                            Layout.topMargin: 8
-                            spacing: 4
-                            visible: EncoderController.sourceModel.length > 1
+                            spacing: 0
 
                             Repeater {
+                                id: sourceList
                                 model: EncoderController.sourceModel
-                                delegate: RowLayout {
-                                    required property var modelData
-                                    Layout.fillWidth: true
-                                    spacing: Theme.gap
 
-                                    Text {
+                                delegate: ColumnLayout {
+                                    id: sourceRow
+                                    required property var modelData
+                                    required property int index
+                                    Layout.fillWidth: true
+                                    spacing: 0
+
+                                    RowLayout {
                                         Layout.fillWidth: true
-                                        text: qsTr("%1 · %2 ch").arg(modelData.label)
-                                                                .arg(modelData.channels)
-                                        color: Theme.text
-                                        font.pixelSize: Theme.fontSmall
-                                        elide: Text.ElideMiddle
+                                        Layout.topMargin: 8
+                                        Layout.bottomMargin: 8
+                                        spacing: Theme.space2
+
+                                        ColumnLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 1
+                                            Text {
+                                                Layout.fillWidth: true
+                                                text: sourceRow.modelData.label
+                                                elide: Text.ElideMiddle
+                                                font.pixelSize: 12
+                                                font.family: Theme.monoFamily
+                                                font.weight: Font.DemiBold
+                                                color: Theme.text
+                                            }
+                                            Text {
+                                                text: qsTr("%1 ch · %2%3")
+                                                      .arg(sourceRow.modelData.channels)
+                                                      .arg(sourceRow.modelData.duration)
+                                                      .arg(sourceRow.modelData.primary ? "" : qsTr(" · added"))
+                                                font.pixelSize: 11
+                                                color: Theme.textMuted
+                                            }
+                                        }
+                                        Button {
+                                            text: qsTr("Remove")
+                                            flat: true
+                                            font.pixelSize: 11
+                                            enabled: !EncoderController.busy
+                                            onClicked: EncoderController.removeSource(sourceRow.modelData.index)
+                                        }
                                     }
-                                    Button {
-                                        text: qsTr("Remove")
-                                        flat: true
-                                        onClicked: EncoderController.removeSource(modelData.index)
+                                    Rectangle {
+                                        Layout.fillWidth: true
+                                        Layout.preferredHeight: 1
+                                        color: Theme.neutral200
                                     }
                                 }
                             }
 
                             Text {
-                                text: qsTr("ASSIGN EACH CHANNEL")
-                                font.pixelSize: 10
-                                font.letterSpacing: 1
+                                visible: sourceList.count === 0
+                                Layout.topMargin: 8
+                                Layout.bottomMargin: 4
+                                text: qsTr("No source loaded yet.")
+                                font.pixelSize: 12
                                 color: Theme.textMuted
                             }
-                            Repeater {
-                                model: EncoderController.assignmentRows
-                                delegate: RowLayout {
-                                    required property var modelData
-                                    Layout.fillWidth: true
-                                    spacing: Theme.gap
 
-                                    Text {
-                                        Layout.preferredWidth: 160
-                                        text: qsTr("%1 ch %2").arg(modelData.sourceLabel)
-                                                              .arg(modelData.channel + 1)
-                                        color: Theme.text
-                                        font.pixelSize: Theme.fontSmall
-                                        elide: Text.ElideMiddle
-                                    }
-                                    // A location name (e.g. "L", "Ls"), "obj", "p1",
-                                    // "p2" or "none" - EncoderController.
-                                    // setAssignment's own vocabulary
-                                    // (plan::parse_destination), typed directly
-                                    // rather than picked from a dropdown until the
-                                    // Assign table proper exists.
-                                    TextField {
-                                        Layout.preferredWidth: 80
-                                        text: modelData.destToken
-                                        font.family: "monospace"
-                                        font.pixelSize: Theme.fontSmall
-                                        onEditingFinished: EncoderController.setAssignment(
-                                                               modelData.source, modelData.channel, text)
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Layout.topMargin: 8
+                                spacing: Theme.space2
+
+                                Button {
+                                    id: chooseWavButton
+                                    objectName: "chooseWavButton"
+                                    text: sourceList.count === 0 ? qsTr("Choose WAV…") : qsTr("+ Add files…")
+                                    enabled: !EncoderController.busy
+                                    onClicked: sourceList.count === 0 ? openDialog.open()
+                                                                      : addSourceDialog.open()
+                                }
+                                Button {
+                                    objectName: "railAssignButton"
+                                    text: qsTr("Assign")
+                                    flat: true
+                                    visible: sourceList.count > 0
+                                    onClicked: window.goAssign()
+                                    contentItem: Text {
+                                        text: qsTr("Assign")
+                                        color: Theme.accent700
+                                        font.pixelSize: 13
+                                        font.weight: Font.DemiBold
                                     }
                                 }
+                                Item { Layout.fillWidth: true }
                             }
-                            Repeater {
-                                model: EncoderController.unassignedWarnings
-                                delegate: Text {
-                                    required property string modelData
-                                    Layout.fillWidth: true
-                                    text: modelData
-                                    color: Theme.accent
-                                    font.pixelSize: Theme.fontSmall
-                                    wrapMode: Text.WordWrap
+
+                            // Totals strip on a 1px top rule.
+                            Rectangle {
+                                Layout.fillWidth: true
+                                Layout.topMargin: 8
+                                Layout.preferredHeight: 1
+                                color: Theme.neutral300
+                                visible: sourceList.count > 0
+                            }
+                            RowLayout {
+                                visible: sourceList.count > 0
+                                Layout.fillWidth: true
+                                Layout.topMargin: 6
+                                spacing: Theme.space4
+
+                                Repeater {
+                                    model: {
+                                        const sources = EncoderController.sourceModel;
+                                        let channels = 0;
+                                        let seconds = 0;
+                                        for (let i = 0; i < sources.length; i++) {
+                                            channels += sources[i].channels;
+                                            seconds = Math.max(seconds, sources[i].seconds);
+                                        }
+                                        const mm = Math.floor(seconds / 60);
+                                        const ss = String(Math.floor(seconds % 60)).padStart(2, "0");
+                                        return [
+                                            { label: qsTr("RATE"), value: sources.length > 0 ? String(sources[0].rate) : "—" },
+                                            { label: qsTr("SOURCES"), value: qsTr("%1 · %2 ch").arg(sources.length).arg(channels) },
+                                            { label: qsTr("LENGTH"), value: mm + ":" + ss },
+                                        ];
+                                    }
+                                    delegate: ColumnLayout {
+                                        required property var modelData
+                                        spacing: 1
+                                        Text {
+                                            text: modelData.label
+                                            font.pixelSize: 10
+                                            font.letterSpacing: 1
+                                            color: Theme.textMuted
+                                        }
+                                        Text {
+                                            text: modelData.value
+                                            font.pixelSize: 13
+                                            font.family: Theme.monoFamily
+                                            color: Theme.text
+                                        }
+                                    }
                                 }
+                                Item { Layout.fillWidth: true }
                             }
                         }
-                    }
 
-                    // ---- live capture -------------------------------------------
-                    Card {
-                        title: qsTr("Live capture")
-
-                        RowLayout {
+                        // ---- live branch ---------------------------------
+                        ColumnLayout {
+                            visible: window.inputMode === "live"
                             Layout.fillWidth: true
-                            spacing: Theme.gap
+                            spacing: Theme.space2
 
                             ComboBox {
                                 id: deviceBox
                                 Layout.fillWidth: true
-                                enabled: EncoderController.captureSupported && !EncoderController.busy
-                                model: EncoderController.captureSupported
-                                       ? EncoderController.captureDevices
-                                       : [qsTr("No capture devices found")]
-                            }
-
-                            Button {
-                                text: qsTr("Refresh")
                                 enabled: !EncoderController.busy
-                                onClicked: EncoderController.refreshCaptureDevices()
+                                model: EncoderController.captureDevices
                             }
 
-                            Button {
-                                text: EncoderController.recording ? qsTr("Stop") : qsTr("Record…")
-                                highlighted: EncoderController.recording
-                                enabled: EncoderController.captureSupported
-                                         && (EncoderController.recording || !EncoderController.busy)
-                                onClicked: {
-                                    if (EncoderController.recording) {
-                                        EncoderController.stopRecording();
-                                    } else {
-                                        window.openSaveDialog(recordDialog,
-                                                              "capture." + EncoderController.outputSuffix());
-                                    }
-                                }
-                            }
-                        }
-
-                        Text {
-                            visible: EncoderController.recording
-                            text: qsTr("Recording — %1 s").arg(EncoderController.recordedSeconds.toFixed(1))
-                            color: Theme.text
-                            font.pixelSize: Theme.fontNormal
-                            font.family: "monospace"
-                        }
-
-                        Rectangle { Layout.fillWidth: true; height: 1; color: Theme.divider
-                                   visible: EncoderController.captureSupported
-                                            && !EncoderController.liveActive }
-
-                        // A live session keeps capturing and encoding after
-                        // Record… would have finished writing a fixed take:
-                        // every frame optionally goes to a monitor speaker
-                        // and a bitstreamed receiver as it is produced, not
-                        // just to a file at the end.
-                        RowLayout {
-                            Layout.fillWidth: true
-                            visible: EncoderController.captureSupported
-                                     && !EncoderController.liveActive
-                            spacing: Theme.gap
-
-                            CheckBox {
-                                id: liveMonitorCheck
-                                text: qsTr("Monitor")
-                                checked: true
-                                enabled: !EncoderController.busy
-                            }
-
-                            ComboBox {
-                                id: liveReceiverBox
+                            RowLayout {
                                 Layout.fillWidth: true
-                                enabled: !EncoderController.busy
-                                model: [qsTr("No passthrough")].concat(EncoderController.outputDevices)
-                            }
+                                spacing: Theme.space2
 
-                            CheckBox {
-                                id: liveWriteCheck
-                                text: qsTr("Also write to disk")
-                                enabled: !EncoderController.busy
-                            }
-
-                            Button {
-                                text: qsTr("Start live session…")
-                                enabled: EncoderController.captureSupported && !EncoderController.busy
-                                onClicked: {
-                                    if (liveWriteCheck.checked) {
-                                        window.openSaveDialog(liveSessionDialog,
-                                                              "live." + EncoderController.outputSuffix());
-                                    } else {
-                                        EncoderController.startLiveSession(
-                                            deviceBox.currentIndex, liveMonitorCheck.checked,
-                                            liveReceiverBox.currentIndex - 1, false,
-                                            "");
+                                Button {
+                                    text: qsTr("Refresh")
+                                    enabled: !EncoderController.busy
+                                    onClicked: EncoderController.refreshCaptureDevices()
+                                }
+                                Button {
+                                    id: monitorButton
+                                    objectName: "monitorButton"
+                                    // Monitoring runs the meters with no filename and
+                                    // nothing written — checking the signal never
+                                    // commits to a take.
+                                    text: EncoderController.liveActive ? qsTr("Stop") : qsTr("Monitor")
+                                    highlighted: !EncoderController.liveActive
+                                    enabled: EncoderController.captureSupported
+                                             && (!EncoderController.busy || EncoderController.liveActive)
+                                    onClicked: {
+                                        if (EncoderController.liveActive) {
+                                            EncoderController.stopLiveSession();
+                                        } else {
+                                            EncoderController.startLiveSession(
+                                                deviceBox.currentIndex, true, -1, false, "");
+                                        }
                                     }
                                 }
+                                Button {
+                                    text: EncoderController.recording ? qsTr("Stop") : qsTr("Record…")
+                                    enabled: EncoderController.captureSupported
+                                             && (EncoderController.recording || !EncoderController.busy)
+                                    onClicked: {
+                                        if (EncoderController.recording) {
+                                            EncoderController.stopRecording();
+                                        } else {
+                                            window.openSaveDialog(recordDialog,
+                                                                  EncoderController.suggestedOutputName());
+                                        }
+                                    }
+                                }
+                                Text {
+                                    visible: EncoderController.liveActive || EncoderController.recording
+                                    text: EncoderController.recording
+                                          ? qsTr("%1 s").arg(EncoderController.recordedSeconds.toFixed(1))
+                                          : qsTr("%1 s").arg(EncoderController.liveRunningSeconds.toFixed(1))
+                                    font.pixelSize: 12
+                                    font.family: Theme.monoFamily
+                                    color: Theme.accent700
+                                }
+                                Item { Layout.fillWidth: true }
                             }
-                        }
 
-                        Text {
-                            Layout.fillWidth: true
-                            text: qsTr("A capture endpoint feeds the same format, layout and metadata a file does — its channels are routed onto whatever layout is selected below.")
-                            color: Theme.textMuted
-                            font.pixelSize: Theme.fontSmall
-                            wrapMode: Text.WordWrap
-                            visible: EncoderController.captureSupported
-                        }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: Theme.space2
 
-                        // Rate mode lives on the Format tab, shared with plain file
-                        // encoding - nothing there knows whether the NEXT thing
-                        // clicked is Encode or Start live session, so this is the one
-                        // place close enough to Start to say so before it is too late
-                        // to matter. runLiveSession always drops vbr and runs CBR
-                        // (IEC 61937 passthrough bursts are fixed-size per access
-                        // unit - see EncoderController::vbrAvailable()'s own comment).
-                        // Not gated on captureSupported like the rest of this card -
-                        // it stays true (and testable without a real capture device
-                        // present) whether or not one happens to be plugged in right
-                        // now, since VBR/live disagreeing is true either way.
-                        Text {
-                            objectName: "liveVbrWarning"
-                            Layout.fillWidth: true
-                            visible: !EncoderController.liveActive
-                                     && EncoderController.vbrAvailable
-                                     && EncoderController.vbrEnabled
-                            text: qsTr("VBR is on, but a live session always runs at the fixed bit rate above — variable bit rate needs a finished run to report, which a live session never has.")
-                            color: Theme.accent
-                            font.pixelSize: Theme.fontSmall
-                            wrapMode: Text.WordWrap
-                        }
+                                CheckBox {
+                                    id: liveMonitorCheck
+                                    text: qsTr("Monitor")
+                                    checked: true
+                                    enabled: !EncoderController.busy
+                                    font.pixelSize: 12
+                                }
+                                ComboBox {
+                                    id: liveReceiverBox
+                                    Layout.fillWidth: true
+                                    enabled: !EncoderController.busy
+                                    model: [qsTr("No passthrough")].concat(EncoderController.outputDevices)
+                                }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: Theme.space2
 
-                        Text {
-                            Layout.fillWidth: true
-                            visible: !EncoderController.captureSupported
-                            text: qsTr("No active capture endpoints were found. Plug in a microphone, or use a playback device's loopback entry to capture what the machine is playing.")
-                            color: Theme.textMuted
-                            font.pixelSize: Theme.fontSmall
-                            wrapMode: Text.WordWrap
+                                CheckBox {
+                                    id: liveWriteCheck
+                                    text: qsTr("Also write the take to disk")
+                                    enabled: !EncoderController.busy
+                                    font.pixelSize: 12
+                                }
+                                Button {
+                                    text: qsTr("Start live session…")
+                                    enabled: EncoderController.captureSupported && !EncoderController.busy
+                                    onClicked: {
+                                        if (liveWriteCheck.checked) {
+                                            window.openSaveDialog(liveSessionDialog,
+                                                                  EncoderController.suggestedOutputName());
+                                        } else {
+                                            EncoderController.startLiveSession(
+                                                deviceBox.currentIndex, liveMonitorCheck.checked,
+                                                liveReceiverBox.currentIndex - 1, false, "");
+                                        }
+                                    }
+                                }
+                                Item { Layout.fillWidth: true }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: qsTr("Monitoring is free — nothing is written and no filename is asked for. The levels below are real. Record or start a session to commit a take.")
+                                wrapMode: Text.WordWrap
+                                font.pixelSize: 11
+                                color: Theme.textMuted
+                            }
+                            Text {
+                                objectName: "liveVbrWarning"
+                                visible: EncoderController.vbrEnabled && EncoderController.vbrAvailable
+                                Layout.fillWidth: true
+                                text: qsTr("A live session always runs at the fixed bit rate — passthrough bursts are fixed-size, so frames cannot float. Variable rate applies to file encodes only.")
+                                wrapMode: Text.WordWrap
+                                font.pixelSize: 11
+                                color: Theme.accent700
+                            }
+                            Text {
+                                visible: !EncoderController.captureSupported
+                                Layout.fillWidth: true
+                                text: qsTr("No capture devices were found.")
+                                wrapMode: Text.WordWrap
+                                font.pixelSize: 11
+                                color: Theme.accent700
+                            }
                         }
                     }
 
-                    // ---- channel levels ------------------------------------------
-                    Card {
-                        id: levelsCard
-                        title: qsTr("Channel levels")
+                    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 2; color: Theme.divider }
 
-                        // Which coded-channel indices this mode shows: Coded
-                        // shows every transmitted channel; Rendered hides a bed
-                        // channel a dependent substream replaces (level.replaced),
-                        // since it carries the same audio as the one that stays.
-                        readonly property var visibleMeterIndices: {
-                            const indices = [];
-                            const levels = EncoderController.channelLevels;
-                            const names = EncoderController.channelNames;
-                            for (let i = 0; i < names.length; i++) {
-                                const level = i < levels.length ? levels[i] : ({});
-                                if (window.meterMode === "rendered" && level.replaced === true) {
-                                    continue;
-                                }
-                                indices.push(i);
+                    // ---- 02 / Levels -------------------------------------
+                    RailBlock {
+                        id: levelsBlock
+                        ordinal: "02"
+                        label: qsTr("LEVELS")
+                        Layout.fillWidth: true
+                        Layout.margins: Theme.space4
+
+                        // Which meter rows the current mode shows, from the
+                        // layout-keyed channelMeta — NEVER from channelLevels,
+                        // whose 30 Hz churn must not rebuild delegates.
+                        function rowVisible(meta) {
+                            if (window.meterMode === "coded") {
+                                return true;
                             }
-                            return indices;
-                        }
-                        readonly property int meterFedCount: {
-                            let count = 0;
-                            const levels = EncoderController.channelLevels;
-                            for (const i of visibleMeterIndices) {
-                                const level = i < levels.length ? levels[i] : ({});
-                                if (level.fed !== false) {
-                                    count++;
-                                }
+                            if (meta.replaced === true) {
+                                return false;
                             }
-                            return count;
+                            return EncoderController.atmosEnabled || meta.fed !== false;
                         }
+                        readonly property int fedCount: {
+                            const meta = EncoderController.channelMeta;
+                            let fed = 0;
+                            for (let i = 0; i < meta.length; i++) {
+                                if (meta[i].fed !== false) fed++;
+                            }
+                            return fed;
+                        }
+                        readonly property int rowCount: EncoderController.channelMeta.length
 
                         RowLayout {
                             Layout.fillWidth: true
-                            spacing: Theme.gap
+                            spacing: Theme.space2
 
                             Text {
-                                text: EncoderController.hasLevels
-                                      ? EncoderController.layoutName
-                                      : qsTr("no source")
+                                text: EncoderController.hasLevels ? EncoderController.layoutName
+                                                                  : EncoderController.channelShapeName
+                                font.pixelSize: 20
+                                font.family: Theme.headingFamily
+                                font.weight: Font.Black
                                 color: Theme.text
-                                font.pixelSize: Theme.fontNormal
-                                font.bold: true
                             }
-
-                            // A steady dot while a run is live, so a frozen
-                            // display is never mistaken for a silent one.
                             Rectangle {
                                 width: 8
                                 height: 8
+                                radius: 4
                                 visible: EncoderController.metering
-                                color: Theme.bad
+                                color: Theme.accent
                             }
-
                             Text {
-                                text: EncoderController.metering
-                                      ? qsTr("live")
-                                      : qsTr("peak and RMS over the whole signal")
-                                color: Theme.textMuted
-                                font.pixelSize: Theme.fontSmall
-                                visible: EncoderController.hasLevels
+                                visible: EncoderController.metering
+                                text: qsTr("live")
+                                font.pixelSize: 11
+                                color: Theme.accent700
                             }
-
                             Item { Layout.fillWidth: true }
-
                             SegmentedControl {
-                                visible: EncoderController.hasLevels
-                                model: [{ value: "coded", label: qsTr("Coded") },
-                                        { value: "rendered", label: qsTr("Rendered") }]
-                                currentValue: window.meterMode
-                                segHeight: 22
+                                segHeight: 24
                                 fontSize: 11
+                                model: [
+                                    { value: "coded", label: qsTr("Coded") },
+                                    { value: "rendered", label: qsTr("Rendered") },
+                                ]
+                                currentValue: window.meterMode
                                 onSelected: (value) => window.meterMode = value
+                            }
+                        }
+
+                        // The dB scale, above the tracks: −60…0 mapped by the
+                        // same meterFraction() the bars use.
+                        Item {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 12
+                            visible: EncoderController.hasLevels
+
+                            // ChannelMeter's own row grid — 56 name + 6 gap on
+                            // the left, 6 + 50 dB + 6 + 30 CLIP on the right —
+                            // plus the delegate wrapper's 2px group rule and
+                            // its 4px spacing before the meter starts.
+                            readonly property real trackLeft: 2 + 4 + 56 + 6
+                            readonly property real trackRight: 6 + 50 + 6 + 30
+                            readonly property real trackWidth: width - trackLeft - trackRight
+
+                            Repeater {
+                                model: [-60, -48, -36, -24, -12, 0]
+                                delegate: Text {
+                                    required property var modelData
+                                    x: parent.trackLeft
+                                       + EncoderController.meterFraction(modelData) * parent.trackWidth
+                                       - implicitWidth / 2
+                                    text: String(modelData)
+                                    font.pixelSize: 9
+                                    font.family: Theme.monoFamily
+                                    color: Theme.neutral500
+                                }
                             }
                         }
 
                         ColumnLayout {
                             Layout.fillWidth: true
-                            visible: EncoderController.hasLevels
-                            spacing: Theme.gap
+                            spacing: 3
 
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                spacing: 3
+                            Repeater {
+                                id: channelMeters
+                                objectName: "channelMeters"
+                                // channelMeta changes only when the LAYOUT
+                                // does — the stable model the 30 Hz level
+                                // stream never rebuilds.
+                                model: EncoderController.channelMeta
 
-                                Repeater {
-                                    objectName: "channelMeters"
-                                    model: levelsCard.visibleMeterIndices
+                                delegate: RowLayout {
+                                    id: meterRow
+                                    required property var modelData
+                                    required property int index
+                                    visible: levelsBlock.rowVisible(modelData)
+                                    Layout.fillWidth: true
+                                    spacing: 4
 
-                                    delegate: Item {
-                                        required property int modelData
-
-                                        readonly property var level:
-                                            modelData < EncoderController.channelLevels.length
-                                            ? EncoderController.channelLevels[modelData] : ({})
-                                        // Coded mode groups a bed channel a dependent
-                                        // replaces behind a left rule so the
-                                        // duplication reads as structure; Rendered
-                                        // mode never sees these rows at all.
-                                        readonly property bool grouped:
-                                            window.meterMode === "coded" && level.replaced === true
-
+                                    // Bed rows a dependent substream replaces
+                                    // group behind a 2px accent rule in Coded
+                                    // mode, so the duplication reads as
+                                    // structure.
+                                    Rectangle {
+                                        Layout.preferredWidth: 2
+                                        Layout.fillHeight: true
+                                        color: meterRow.modelData.replaced === true
+                                               ? Theme.accent300 : "transparent"
+                                    }
+                                    ChannelMeter {
                                         Layout.fillWidth: true
-                                        implicitHeight: meter.implicitHeight
-
-                                        Rectangle {
-                                            visible: grouped
-                                            anchors.left: parent.left
-                                            anchors.top: parent.top
-                                            anchors.bottom: parent.bottom
-                                            width: 2
-                                            color: Theme.accent300
-                                        }
-
-                                        ChannelMeter {
-                                            id: meter
-                                            anchors.left: parent.left
-                                            anchors.right: parent.right
-                                            anchors.leftMargin: grouped ? 8 : 0
-                                            channelName: modelData < EncoderController.channelNames.length
-                                                         ? EncoderController.channelNames[modelData] : ""
-                                            level: parent.level
+                                        channelName: meterRow.modelData.name
+                                        fed: meterRow.modelData.fed !== false
+                                        level: {
+                                            const levels = EncoderController.channelLevels;
+                                            return meterRow.index < levels.length
+                                                   ? levels[meterRow.index] : ({});
                                         }
                                     }
                                 }
+                            }
+                        }
 
-                                // The scale the bars are drawn against, with the
-                                // tick positions asked of the same mapping the
-                                // bars themselves use.
-                                Item {
-                                    // Inset to match ChannelMeter's track: the
-                                    // label to its left, and the readout and clip
-                                    // flag to its right, each plus a row spacing.
+                        // The meter footer — same fed set the dots count.
+                        Rectangle {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: levelsBlock.fedCount < levelsBlock.rowCount ? 2 : 1
+                            color: levelsBlock.fedCount < levelsBlock.rowCount ? Theme.accent : Theme.neutral300
+                            visible: EncoderController.hasLevels
+                        }
+                        Text {
+                            visible: EncoderController.hasLevels
+                            Layout.fillWidth: true
+                            text: {
+                                const total = levelsBlock.rowCount;
+                                const fed = levelsBlock.fedCount;
+                                if (EncoderController.dualMono && !EncoderController.atmosEnabled) {
+                                    return qsTr("Two independent programmes. The meters are not a pair — nothing here is correlated.");
+                                }
+                                if (window.meterMode === "rendered") {
+                                    if (EncoderController.atmosEnabled) {
+                                        return qsTr("All %1 speakers are driven — the bed carries the panned objects. Coded shows the channels as encoded.").arg(total);
+                                    }
+                                    if (fed < total) {
+                                        return qsTr("%1 of %2 positions are driven. The rest are carried silent — switch to Coded to see them.").arg(fed).arg(total);
+                                    }
+                                    return qsTr("Every coded channel is driven — Coded and Rendered are the same here.");
+                                }
+                                if (EncoderController.atmosEnabled) {
+                                    return qsTr("%1 of %2 bed positions fed — the rest of the audio rides as objects, not channels.").arg(fed).arg(total);
+                                }
+                                if (fed < total) {
+                                    return qsTr("%1 of %2 coded channels fed by the assignments.").arg(fed).arg(total);
+                                }
+                                return qsTr("All %1 coded channels fed by the assignments.").arg(total);
+                            }
+                            wrapMode: Text.WordWrap
+                            font.pixelSize: 11
+                            color: levelsBlock.fedCount < levelsBlock.rowCount ? Theme.accent700 : Theme.neutral800
+                        }
+
+                        Text {
+                            visible: !EncoderController.hasLevels
+                            Layout.fillWidth: true
+                            text: qsTr("Load a source, or start a live capture, and every coded channel gets a meter here.")
+                            wrapMode: Text.WordWrap
+                            font.pixelSize: 12
+                            color: Theme.textMuted
+                        }
+                    }
+
+                    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 2; color: Theme.divider }
+
+                    // ---- 03 / Soundfield ---------------------------------
+                    RailBlock {
+                        ordinal: "03"
+                        label: qsTr("SOUNDFIELD")
+                        Layout.fillWidth: true
+                        Layout.margins: Theme.space4
+
+                        SoundfieldView {
+                            visible: EncoderController.surround
+                            Layout.fillWidth: true
+                        }
+
+                        // Dual mono has no soundstage to draw — two named
+                        // programmes replace the plans.
+                        ColumnLayout {
+                            visible: EncoderController.dualMono && !EncoderController.atmosEnabled
+                                     && EncoderController.hasLevels
+                            Layout.fillWidth: true
+                            spacing: Theme.space2
+
+                            Repeater {
+                                model: [qsTr("Programme 1"), qsTr("Programme 2")]
+                                delegate: Rectangle {
+                                    id: programmeCard
+                                    required property string modelData
                                     Layout.fillWidth: true
-                                    Layout.leftMargin: 58 + 8
-                                    Layout.rightMargin: 8 + 46 + 8 + 30
-                                    Layout.preferredHeight: 14
+                                    implicitHeight: 44
+                                    color: Theme.neutral100
+                                    border.color: Theme.divider
+                                    border.width: 1
 
-                                    Repeater {
-                                        model: [-60, -50, -40, -30, -20, -10, 0]
-
-                                        delegate: Text {
-                                            required property int modelData
-                                            x: parent.width * EncoderController.meterFraction(modelData)
-                                               - width / 2
-                                            text: modelData
-                                            color: Theme.border
-                                            font.pixelSize: 9
+                                    ColumnLayout {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        anchors.left: parent.left
+                                        anchors.leftMargin: Theme.space3
+                                        spacing: 1
+                                        Text {
+                                            text: programmeCard.modelData
+                                            font.pixelSize: 13
+                                            font.weight: Font.DemiBold
+                                            color: Theme.text
+                                        }
+                                        Text {
+                                            text: qsTr("its own dialnorm and compression")
+                                            font.pixelSize: 10
+                                            color: Theme.textMuted
                                         }
                                     }
                                 }
-
-                                // Half the answer to "how do routing consequences
-                                // show before the fact" - the other half is the
-                                // channel map in Format. Reads as a plain fact
-                                // when everything is fed, and as a warning (accent
-                                // top rule) when the source is narrower than the
-                                // plan.
-                                Rectangle {
-                                    Layout.fillWidth: true
-                                    Layout.topMargin: 6
-                                    height: levelsCard.meterFedCount < levelsCard.visibleMeterIndices.length ? 2 : 1
-                                    color: levelsCard.meterFedCount < levelsCard.visibleMeterIndices.length
-                                           ? Theme.accent : Theme.divider
-                                }
-                                Text {
-                                    Layout.fillWidth: true
-                                    Layout.topMargin: 4
-                                    readonly property int total: levelsCard.visibleMeterIndices.length
-                                    readonly property int fed: levelsCard.meterFedCount
-                                    readonly property string noun: window.meterMode === "coded"
-                                                                    ? qsTr("coded channels") : qsTr("channels")
-                                    text: fed === total
-                                          ? qsTr("All %1 %2 fed").arg(total).arg(noun)
-                                          : qsTr("%1 of %2 %3 fed").arg(fed).arg(total).arg(noun)
-                                    color: fed === total ? Theme.textMuted : Theme.accent700
-                                    font.pixelSize: Theme.fontSmall
-                                }
                             }
-
-                            // Below the meters rather than beside them: at the
-                            // rail's 340-404px width there is no longer room for
-                            // both side by side without crushing the meter track
-                            // down to a few pixels.
-                            SoundfieldView {
-                                Layout.alignment: Qt.AlignHCenter
-                                visible: EncoderController.surround
-                            }
-
                             Text {
                                 Layout.fillWidth: true
-                                visible: EncoderController.hasLevels && EncoderController.dualMono
-                                text: qsTr("No room to draw: dual mono has no soundstage.")
+                                text: qsTr("No room to draw — dual mono has no soundstage. The listener's receiver plays one programme or the other.")
+                                wrapMode: Text.WordWrap
+                                font.pixelSize: 11
                                 color: Theme.textMuted
-                                font.pixelSize: Theme.fontSmall
-                                horizontalAlignment: Text.AlignHCenter
                             }
                         }
 
                         Text {
+                            visible: !EncoderController.surround
+                                     && !(EncoderController.dualMono && EncoderController.hasLevels)
                             Layout.fillWidth: true
-                            visible: !EncoderController.hasLevels
-                            text: qsTr("Load a WAV file or start recording, and every channel it carries appears here — named and ordered as A/52 Table 5.8 defines them. During an encode the meters follow the CODED channels, which for an immersive layout include the bed a 5.1 decoder would play.")
-                            color: Theme.textMuted
-                            font.pixelSize: Theme.fontSmall
+                            text: qsTr("Two or more full-bandwidth channels make a soundfield worth drawing.")
                             wrapMode: Text.WordWrap
+                            font.pixelSize: 12
+                            color: Theme.textMuted
                         }
                     }
+
+                    Item { Layout.fillHeight: true }
                 }
             }
 
             Rectangle { Layout.preferredWidth: 2; Layout.fillHeight: true; color: Theme.divider }
 
-            // ---- right panel: the stream ------------------------------------
+            // =============================================================
+            // Right panel — the stream.
+            // =============================================================
             ColumnLayout {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 spacing: 0
 
-                // ---- the panel banner: a failed run, named and explained -------
+                // ---- failure banner ---------------------------------------
                 Rectangle {
                     Layout.fillWidth: true
                     visible: window.bannerRun !== null
                     color: Theme.accent100
-                    implicitHeight: bannerContent.implicitHeight + 28
+                    implicitHeight: bannerColumn.implicitHeight + Theme.space3 * 2
 
                     Rectangle {
                         anchors.left: parent.left
@@ -859,43 +1023,42 @@ ApplicationWindow {
                     }
 
                     RowLayout {
-                        id: bannerContent
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        anchors.margins: 14
-                        spacing: 12
+                        anchors.fill: parent
+                        anchors.margins: Theme.space3
+                        spacing: Theme.space3
 
                         Text {
                             text: "⚠"
+                            font.pixelSize: 18
                             color: Theme.accent700
-                            font.pixelSize: 16
-                            Layout.alignment: Qt.AlignTop
                         }
                         ColumnLayout {
+                            id: bannerColumn
                             Layout.fillWidth: true
-                            spacing: 3
+                            spacing: 2
 
                             Text {
-                                text: window.bannerRun
+                                Layout.fillWidth: true
+                                text: window.bannerRun !== null
                                       ? qsTr("Run %1 stopped — %2")
                                         .arg(window.bannerRun.id).arg(window.bannerRun.filename)
                                       : ""
-                                color: Theme.accent800
-                                font.bold: true
                                 font.pixelSize: 14
+                                font.weight: Font.DemiBold
+                                color: Theme.text
+                                wrapMode: Text.WordWrap
                             }
                             Text {
                                 Layout.fillWidth: true
-                                text: window.bannerRun ? window.bannerRun.detail : ""
-                                color: Theme.accent900
-                                font.pixelSize: 13
+                                text: window.bannerRun !== null ? window.bannerRun.detail : ""
+                                font.pixelSize: 12
+                                color: Theme.neutral800
                                 wrapMode: Text.WordWrap
                             }
                         }
                         Button {
                             text: qsTr("Dismiss")
-                            Layout.alignment: Qt.AlignTop
+                            flat: true
                             onClicked: {
                                 window.dismissedRunId = window.bannerRun.id;
                                 window.bannerRunId = -1;
@@ -904,79 +1067,123 @@ ApplicationWindow {
                     }
                 }
 
-                // ---- plan strip -----------------------------------------------
+                // ---- back-to-guided strip ---------------------------------
+                Rectangle {
+                    Layout.fillWidth: true
+                    visible: window.fromGuided && window.tier !== "guided"
+                    color: Theme.neutral100
+                    implicitHeight: 40
+
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: Theme.space4
+                        anchors.rightMargin: Theme.space3
+                        spacing: Theme.space3
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: qsTr("You came here from the guided steps. Anything you change is kept when you go back.")
+                            font.pixelSize: 12
+                            elide: Text.ElideRight
+                            color: Theme.neutral800
+                        }
+                        Button {
+                            objectName: "backToGuidedButton"
+                            text: qsTr("Back to guided")
+                            onClicked: {
+                                window.fromGuided = false;
+                                window.tier = "guided";
+                            }
+                        }
+                    }
+                }
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 1
+                    color: Theme.divider
+                    visible: window.fromGuided && window.tier !== "guided"
+                }
+
+                // ---- plan strip -------------------------------------------
                 RowLayout {
                     Layout.fillWidth: true
                     Layout.leftMargin: 24
                     Layout.rightMargin: 24
-                    Layout.topMargin: 18
-                    Layout.bottomMargin: 16
-                    spacing: 24
+                    Layout.topMargin: 14
+                    Layout.bottomMargin: 12
+                    spacing: Theme.space4
 
                     ColumnLayout {
                         Layout.fillWidth: true
-                        spacing: 6
+                        spacing: 2
 
                         Text {
                             text: qsTr("THE STREAM")
                             font.pixelSize: 10
-                            font.letterSpacing: 1.2
+                            font.letterSpacing: 1.5
                             color: Theme.textMuted
                         }
                         Text {
+                            Layout.fillWidth: true
                             text: window.planLine
                             font.pixelSize: 26
-                            font.bold: true
-                            font.letterSpacing: -0.2
-                            color: Theme.text
+                            font.family: Theme.headingFamily
+                            font.weight: Font.Black
                             elide: Text.ElideRight
-                            Layout.fillWidth: true
+                            color: Theme.text
                         }
                         Text {
-                            text: EncoderController.layoutDetail
-                            font.family: "monospace"
+                            Layout.fillWidth: true
+                            text: window.planSubLine
                             font.pixelSize: 12
-                            color: Theme.textMuted
+                            font.family: Theme.monoFamily
+                            elide: Text.ElideRight
+                            color: Theme.neutral700
                         }
                     }
 
                     ColumnLayout {
-                        spacing: 6
+                        Layout.alignment: Qt.AlignTop
+                        spacing: 2
 
                         Text {
                             text: qsTr("TOOLS")
                             font.pixelSize: 10
-                            font.letterSpacing: 1.2
+                            font.letterSpacing: 1.5
+                            horizontalAlignment: Text.AlignRight
+                            Layout.alignment: Qt.AlignRight
                             color: Theme.textMuted
                         }
                         Rectangle {
+                            Layout.alignment: Qt.AlignRight
+                            implicitWidth: toolsChip.implicitWidth + 14
+                            implicitHeight: toolsChip.implicitHeight + 8
                             color: Theme.neutral200
-                            implicitWidth: toolsText.implicitWidth + 20
-                            implicitHeight: toolsText.implicitHeight + 10
 
                             Text {
-                                id: toolsText
+                                id: toolsChip
                                 anchors.centerIn: parent
-                                text: EncoderController.toolsToken.length > 0
-                                      ? EncoderController.toolsToken : qsTr("none")
-                                font.family: "monospace"
+                                text: {
+                                    if (EncoderController.atmosEnabled) {
+                                        return "joc+oamd";
+                                    }
+                                    const token = EncoderController.toolsToken;
+                                    return token.length > 0 && token !== "none" ? token : "—";
+                                }
                                 font.pixelSize: 13
+                                font.family: Theme.monoFamily
                                 color: Theme.text
                             }
                         }
                     }
                 }
-                Rectangle { Layout.fillWidth: true; height: 2; color: Theme.divider }
+                Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 2; color: Theme.divider }
 
-                // ---- tab bar ----------------------------------------------------
-                // Guided has no tabs at all - GuidedWizard.qml, appended as the last
-                // StackLayout page below, takes the whole content area instead. The
-                // divider right after this stays up regardless, as the wizard's own
-                // top border.
+                // ---- tab bar ----------------------------------------------
                 RowLayout {
                     Layout.fillWidth: true
                     Layout.leftMargin: 24
-                    Layout.rightMargin: 24
+                    Layout.preferredHeight: 40
                     visible: window.tier !== "guided"
                     spacing: 28
 
@@ -984,123 +1191,177 @@ ApplicationWindow {
                         model: window.visibleTabs
 
                         delegate: Item {
-                            id: tabDelegate
+                            id: tabItem
                             required property var modelData
-                            implicitWidth: tabLabel.implicitWidth
-                            implicitHeight: 13 + tabLabel.implicitHeight + 13 + 3
+                            readonly property bool active: window.currentTab === modelData.key
 
-                            Text {
-                                id: tabLabel
-                                anchors.top: parent.top
-                                anchors.topMargin: 13
-                                text: modelData.label
-                                font.pixelSize: 13
-                                font.bold: true
-                                font.capitalization: Font.AllUppercase
-                                font.letterSpacing: 1
-                                color: Theme.text
-                                opacity: window.currentTab === modelData.key ? 1.0 : 0.55
+                            objectName: "tab-" + modelData.key
+                            implicitWidth: tabRow.implicitWidth
+                            implicitHeight: 40
+
+                            RowLayout {
+                                id: tabRow
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 6
+
+                                Text {
+                                    text: tabItem.modelData.label.toUpperCase()
+                                    font.pixelSize: 13
+                                    font.weight: Font.DemiBold
+                                    font.letterSpacing: 0.5
+                                    color: Theme.text
+                                    opacity: tabItem.active ? 1.0 : 0.55
+                                }
+                                Rectangle {
+                                    visible: tabItem.modelData.badge.length > 0
+                                    implicitWidth: Math.max(16, badgeText.implicitWidth + 8)
+                                    implicitHeight: 14
+                                    color: Theme.accent
+                                    Text {
+                                        id: badgeText
+                                        anchors.centerIn: parent
+                                        text: tabItem.modelData.badge
+                                        font.pixelSize: 10
+                                        font.family: Theme.monoFamily
+                                        color: Theme.bg
+                                    }
+                                }
                             }
                             Rectangle {
-                                anchors.top: tabLabel.bottom
-                                anchors.topMargin: 13
-                                anchors.left: parent.left
-                                anchors.right: parent.right
+                                anchors.bottom: parent.bottom
+                                width: parent.width
                                 height: 3
-                                color: window.currentTab === modelData.key ? Theme.accent : "transparent"
+                                color: tabItem.active ? Theme.accent : "transparent"
                             }
                             MouseArea {
                                 anchors.fill: parent
-                                onClicked: window.currentTab = tabDelegate.modelData.key
+                                onClicked: window.currentTab = tabItem.modelData.key
                             }
                         }
                     }
                     Item { Layout.fillWidth: true }
                 }
-                Rectangle { Layout.fillWidth: true; height: 2; color: Theme.divider }
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 2
+                    color: Theme.divider
+                    visible: window.tier !== "guided"
+                }
 
-                // ---- tab content --------------------------------------------------
+                // ---- tab content ------------------------------------------
                 ScrollView {
+                    objectName: "tabScroll"
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     contentWidth: availableWidth
 
                     StackLayout {
-                        width: parent.width
-                        // GuidedWizard is appended as one more page after every entry
-                        // tabOrder names, so its index is always tabOrder.length -
-                        // nothing above needs to know it exists to compute this.
+                        width: parent ? parent.width : 0
+                        // Guided shows its wizard page (the last one) instead
+                        // of whichever tab is current.
                         currentIndex: window.tier === "guided"
                                       ? window.tabOrder.length
                                       : window.tabOrder.indexOf(window.currentTab)
 
-                        // ---- Format ---------------------------------------------
+                        // =====================================================
+                        // Format
+                        // =====================================================
                         ColumnLayout {
                             Layout.fillWidth: true
-                            spacing: Theme.gap
+                            spacing: Theme.space4
 
-                            Card {
-                                title: qsTr("Format")
+                            // ---- presets + codec + rate + container --------
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 24
+                                Layout.rightMargin: 24
+                                Layout.topMargin: Theme.space4
+                                spacing: Theme.space3
 
-                                // Presets are starting points, not the model: they set
-                                // bed + LFE + extras together, but the picker below is
-                                // what the plan actually reads.
                                 RowLayout {
                                     Layout.fillWidth: true
-                                    spacing: Theme.gap
+                                    spacing: Theme.space2
 
-                                    Repeater {
-                                        model: ["5.1", "7.1", "5.1.4", "7.1.4", "5.2"]
-                                        delegate: Button {
-                                            required property string modelData
-                                            text: modelData
-                                            enabled: !EncoderController.busy
-                                                     && !EncoderController.atmosEnabled
-                                            onClicked: EncoderController.applyChannelPreset(modelData)
-                                        }
+                                    Text {
+                                        text: qsTr("PRESETS")
+                                        font.pixelSize: 10
+                                        font.letterSpacing: 1
+                                        color: Theme.textMuted
+                                    }
+                                    Text {
+                                        text: qsTr("starting points, not the model")
+                                        font.pixelSize: 10
+                                        font.family: Theme.monoFamily
+                                        color: Theme.neutral500
                                     }
                                     Item { Layout.fillWidth: true }
                                 }
 
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: Theme.space2
+
+                                    Repeater {
+                                        model: ["5.1", "7.1", "5.1.4", "7.1.4", "5.2", "7.2.4"]
+                                        delegate: Button {
+                                            required property string modelData
+                                            objectName: "preset-" + modelData
+                                            Layout.fillWidth: true
+                                            text: modelData
+                                            enabled: !EncoderController.busy && !EncoderController.atmosEnabled
+                                            onClicked: EncoderController.applyChannelPreset(modelData)
+                                        }
+                                    }
+                                }
+
                                 GridLayout {
                                     Layout.fillWidth: true
-                                    columns: 6
-                                    columnSpacing: Theme.gap
-                                    rowSpacing: Theme.gap
+                                    columns: 3
+                                    columnSpacing: 20
+                                    rowSpacing: 4
 
                                     Text {
-                                        text: qsTr("Codec")
-                                        color: Theme.text
-                                        font.pixelSize: Theme.fontNormal
+                                        text: EncoderController.atmosEnabled
+                                              ? qsTr("Codec — fixed by object mode")
+                                              : qsTr("Codec — follows the channels")
+                                        font.pixelSize: 11
+                                        color: Theme.textMuted
                                     }
-                                    ComboBox {
-                                        Layout.fillWidth: true
-                                        enabled: !EncoderController.busy && !EncoderController.atmosEnabled
-                                        model: EncoderController.codecNames
-                                        currentIndex: EncoderController.codecIndex
-                                        onActivated: EncoderController.codecIndex = currentIndex
-                                    }
-
                                     Text {
                                         text: qsTr("Bit rate")
-                                        color: Theme.text
-                                        font.pixelSize: Theme.fontNormal
+                                        font.pixelSize: 11
+                                        color: Theme.textMuted
+                                    }
+                                    Text {
+                                        text: qsTr("Container")
+                                        font.pixelSize: 11
+                                        color: Theme.textMuted
+                                    }
+
+                                    // The codec is derived, never chosen: a bed
+                                    // with or without an LFE is Dolby Digital;
+                                    // any extra promotes the stream to DD+.
+                                    ComboBox {
+                                        Layout.fillWidth: true
+                                        enabled: false
+                                        model: EncoderController.codecNames
+                                        currentIndex: EncoderController.codecIndex
                                     }
                                     ComboBox {
+                                        id: bitrateBox
                                         Layout.fillWidth: true
                                         enabled: !EncoderController.busy
                                         model: EncoderController.bitrates
-                                        currentIndex: EncoderController.bitrates.indexOf(
-                                                          EncoderController.bitrateKbps)
-                                        displayText: currentText + " kbps"
-                                        onActivated: EncoderController.bitrateKbps =
-                                                         EncoderController.bitrates[currentIndex]
-                                    }
-
-                                    Text {
-                                        text: qsTr("Container")
-                                        color: Theme.text
-                                        font.pixelSize: Theme.fontNormal
+                                        displayText: qsTr("%1 kbps").arg(EncoderController.bitrateKbps)
+                                        delegate: ItemDelegate {
+                                            required property var modelData
+                                            width: bitrateBox.width
+                                            text: qsTr("%1 kbps").arg(modelData)
+                                            onClicked: {
+                                                EncoderController.bitrateKbps = modelData;
+                                                bitrateBox.popup.close();
+                                            }
+                                        }
                                     }
                                     ComboBox {
                                         Layout.fillWidth: true
@@ -1111,178 +1372,504 @@ ApplicationWindow {
                                     }
                                 }
 
-                                // Not object mode, not a live session (see vbrAvailable()'s own
-                                // comment on why) - the panel itself disappears rather than
-                                // showing a control that would silently do nothing. Shared with
-                                // the Guided wizard's own Rate mode step - see VbrPanel.qml.
-                                VbrPanel {
+                                VbrPanel { Layout.fillWidth: true }
+                            }
+
+                            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 2; color: Theme.divider }
+
+                            // ---- the two-tier channel picker ----------------
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 24
+                                Layout.rightMargin: 24
+                                spacing: Theme.space3
+
+                                RowLayout {
                                     Layout.fillWidth: true
-                                    Layout.topMargin: Theme.gap
+
+                                    Text {
+                                        text: qsTr("CHANNELS — THE TWO-TIER PICKER")
+                                        font.pixelSize: 10
+                                        font.letterSpacing: 1
+                                        color: Theme.textMuted
+                                    }
+                                    Item { Layout.fillWidth: true }
+                                    Text {
+                                        text: qsTr("%1 of %2 positions used · %3")
+                                              .arg(EncoderController.channelBudgetUsed)
+                                              .arg(EncoderController.channelBudgetMax)
+                                              .arg(EncoderController.channelShapeName)
+                                        font.pixelSize: 11
+                                        font.family: Theme.monoFamily
+                                        color: Theme.neutral700
+                                    }
                                 }
 
-                                Rectangle { Layout.fillWidth: true; height: 2; color: Theme.divider }
-
-                                // ---- the channel model: bed + LFE + extras ------------------
                                 Text {
-                                    text: qsTr("CHANNELS")
+                                    text: qsTr("Bed — pick one")
+                                    font.pixelSize: 12
+                                    font.weight: Font.DemiBold
+                                    color: Theme.text
+                                }
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: Theme.space2
+
+                                    Repeater {
+                                        model: EncoderController.bedChoices
+                                        delegate: Rectangle {
+                                            id: bedButton
+                                            required property var modelData
+                                            required property int index
+                                            readonly property bool active: EncoderController.bedIndex === index
+                                            readonly property bool dual: modelData.id === "1+1"
+                                            readonly property bool locked: EncoderController.atmosEnabled
+                                                                           || EncoderController.busy
+
+                                            objectName: "bed-" + modelData.id
+                                            Layout.fillWidth: true
+                                            Layout.preferredHeight: 40
+                                            color: active ? Theme.text : "transparent"
+                                            border.color: active ? Theme.text
+                                                                 : (dual ? Theme.neutral500 : Theme.divider)
+                                            border.width: 1
+                                            opacity: locked && !active ? 0.25 : 1.0
+
+                                            ColumnLayout {
+                                                anchors.centerIn: parent
+                                                spacing: 0
+                                                Text {
+                                                    Layout.alignment: Qt.AlignHCenter
+                                                    text: bedButton.dual
+                                                          ? qsTr("1+1 · dual") : bedButton.modelData.id
+                                                    font.pixelSize: 12
+                                                    font.family: Theme.monoFamily
+                                                    font.weight: Font.DemiBold
+                                                    color: bedButton.active ? Theme.bg : Theme.text
+                                                }
+                                                Text {
+                                                    Layout.alignment: Qt.AlignHCenter
+                                                    text: bedButton.dual
+                                                          ? qsTr("2 progs") : bedButton.modelData.channels
+                                                    font.pixelSize: 9
+                                                    font.family: Theme.monoFamily
+                                                    color: bedButton.active ? Theme.bg : Theme.neutral600
+                                                    elide: Text.ElideRight
+                                                }
+                                            }
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                enabled: !bedButton.locked
+                                                onClicked: EncoderController.bedIndex = bedButton.index
+                                            }
+                                        }
+                                    }
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: qsTr("One bed, always. Extras add to it — the format cannot carry a ceiling channel, or any other, without a bed underneath.")
+                                    wrapMode: Text.WordWrap
                                     font.pixelSize: 11
-                                    font.letterSpacing: 1
                                     color: Theme.textMuted
                                 }
 
-                                // Tier 1 - the bed, exactly one, always, plus its
-                                // independent LFE. All seven stay live under AC-3;
-                                // only the extras below are Dolby Digital Plus only.
+                                // ---- low frequency: a count, not a flag ----
                                 RowLayout {
                                     Layout.fillWidth: true
-                                    spacing: 6
+                                    spacing: Theme.space3
 
-                                    // 1+1 is always bedChoices[0] - drawn apart from
-                                    // the seven location-mask beds with a rule
-                                    // rather than sharing their row, so it reads as
-                                    // categorically different (a bed, not a
-                                    // soundstage) without fighting Fusion's own
-                                    // button chrome for a literal dashed border.
-                                    Button {
-                                        objectName: "bedDualMonoButton"
-                                        text: EncoderController.bedChoices[0].id
-                                        highlighted: EncoderController.bedIndex === 0
-                                        enabled: !EncoderController.busy
-                                                 && !EncoderController.atmosEnabled
-                                        onClicked: EncoderController.bedIndex = 0
-
-                                        ToolTip.visible: hovered
-                                        ToolTip.text: qsTr("Dual mono — two independent programmes, not a stereo pair")
+                                    Text {
+                                        text: qsTr("Low frequency")
+                                        font.pixelSize: 12
+                                        font.weight: Font.DemiBold
+                                        color: Theme.text
                                     }
+                                    Text {
+                                        visible: EncoderController.bedLfeLocked
+                                        text: EncoderController.dualMono
+                                              ? qsTr("not part of dual mono") : qsTr("fixed by object mode")
+                                        font.pixelSize: 11
+                                        color: Theme.textMuted
+                                    }
+                                    Item { Layout.fillWidth: true }
+                                }
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: Theme.space2
 
-                                    Rectangle {
-                                        Layout.preferredWidth: 1
-                                        Layout.fillHeight: true
-                                        color: Theme.divider
+                                    readonly property bool lfe2On: {
+                                        const extras = EncoderController.extrasModel;
+                                        for (let i = 0; i < extras.length; i++) {
+                                            if (extras[i].id === "lfe2") return extras[i].checked;
+                                        }
+                                        return false;
+                                    }
+                                    readonly property int lfeCount: !EncoderController.bedLfe
+                                                                    ? 0 : (lfe2On ? 2 : 1)
+                                    id: lfeRow
+
+                                    function setCount(n) {
+                                        if (EncoderController.bedLfeLocked || EncoderController.busy) {
+                                            return;
+                                        }
+                                        if (lfeRow.lfe2On !== (n > 1)) {
+                                            EncoderController.toggleExtra("lfe2");
+                                        }
+                                        EncoderController.bedLfe = n > 0;
                                     }
 
                                     Repeater {
-                                        // bedChoices[0] is the dual-mono button above;
-                                        // this repeater is every other bed, offset by
-                                        // one so its own bedIndex stays correct.
-                                        model: EncoderController.bedChoices.length - 1
+                                        model: [
+                                            { n: 0, label: qsTr("None") },
+                                            { n: 1, label: qsTr("One · LFE") },
+                                            { n: 2, label: qsTr("Two · LFE + LFE2") },
+                                        ]
+                                        delegate: Rectangle {
+                                            id: lfeButton
+                                            required property var modelData
+                                            readonly property bool active: lfeRow.lfeCount === modelData.n
+                                            readonly property bool locked: EncoderController.bedLfeLocked
+                                                                           || EncoderController.busy
+                                                                           || (modelData.n === 2 && EncoderController.extrasLocked)
 
-                                        delegate: Button {
-                                            required property int index
-                                            readonly property var choice: EncoderController.bedChoices[index + 1]
-                                            text: choice.id
-                                            highlighted: EncoderController.bedIndex === index + 1
-                                            enabled: !EncoderController.busy
-                                                     && !EncoderController.atmosEnabled
-                                            onClicked: EncoderController.bedIndex = index + 1
+                                            objectName: "lfeCount-" + modelData.n
+                                            Layout.preferredWidth: 130
+                                            Layout.preferredHeight: 32
+                                            color: active ? Theme.text : "transparent"
+                                            border.color: active ? Theme.text : Theme.divider
+                                            border.width: 1
+                                            opacity: locked && !active ? 0.3 : 1.0
 
-                                            ToolTip.visible: hovered
-                                            ToolTip.text: choice.channels
+                                            Text {
+                                                anchors.centerIn: parent
+                                                text: lfeButton.modelData.label
+                                                font.pixelSize: 11
+                                                font.family: Theme.monoFamily
+                                                color: lfeButton.active ? Theme.bg : Theme.text
+                                            }
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                enabled: !lfeButton.locked
+                                                onClicked: lfeRow.setCount(lfeButton.modelData.n)
+                                            }
                                         }
                                     }
-
-                                    CheckBox {
-                                        text: qsTr("LFE")
-                                        checked: EncoderController.bedLfe
-                                        enabled: !EncoderController.busy
-                                                 && !EncoderController.bedLfeLocked
-                                        onToggled: EncoderController.bedLfe = checked
-                                    }
-
                                     Item { Layout.fillWidth: true }
-
-                                    Text {
-                                        text: EncoderController.channelShapeName
-                                        font.pixelSize: Theme.fontNormal
-                                        font.bold: true
-                                        color: Theme.text
-                                    }
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: qsTr("Two means two independent low-frequency channels carrying different signal — not one signal sent to two subwoofers. This is what makes a 7.2.4 rather than a 7.1.4.")
+                                    wrapMode: Text.WordWrap
+                                    font.pixelSize: 11
+                                    color: Theme.textMuted
                                 }
 
-                                // Tier 2 - extras, added to the bed. Each is a single
-                                // toggle; a disabled row's tooltip says why (locked,
-                                // over budget, or - the one real cross-extra rule -
-                                // an LFE2 about to be left with no full-bandwidth
-                                // companion once its last partner is unticked).
-                                GridLayout {
+                                // ---- extras --------------------------------
+                                RowLayout {
                                     Layout.fillWidth: true
-                                    columns: 3
-                                    columnSpacing: Theme.gap
-                                    rowSpacing: 4
+                                    Text {
+                                        text: qsTr("Extras — added to the bed")
+                                        font.pixelSize: 12
+                                        font.weight: Font.DemiBold
+                                        color: Theme.text
+                                    }
+                                    Item { Layout.fillWidth: true }
+                                    Text {
+                                        text: qsTr("pairs toggle together")
+                                        font.pixelSize: 10
+                                        font.family: Theme.monoFamily
+                                        color: Theme.neutral500
+                                    }
+                                }
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 0
 
                                     Repeater {
                                         model: EncoderController.extrasModel
 
-                                        delegate: CheckBox {
+                                        delegate: ColumnLayout {
+                                            id: extraRow
                                             required property var modelData
-                                            text: qsTr("%1 (%2 ch)")
-                                                  .arg(modelData.label).arg(modelData.channels)
-                                            checked: modelData.checked
-                                            enabled: modelData.enabled
-                                            opacity: enabled ? 1.0 : 0.3
-                                            onToggled: EncoderController.toggleExtra(modelData.id)
+                                            visible: modelData.id !== "lfe2"
+                                            Layout.fillWidth: true
+                                            spacing: 0
 
-                                            ToolTip.visible: modelData.reason.length > 0 && hovered
-                                            ToolTip.text: modelData.reason
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                Layout.topMargin: 6
+                                                Layout.bottomMargin: 6
+                                                spacing: Theme.space3
+                                                opacity: extraRow.modelData.enabled ? 1.0 : 0.4
+
+                                                CheckBox {
+                                                    objectName: "extra-" + extraRow.modelData.id
+                                                    checked: extraRow.modelData.checked
+                                                    enabled: extraRow.modelData.enabled && !EncoderController.busy
+                                                    onToggled: EncoderController.toggleExtra(extraRow.modelData.id)
+                                                }
+                                                ColumnLayout {
+                                                    Layout.fillWidth: true
+                                                    spacing: 0
+                                                    Text {
+                                                        text: extraRow.modelData.label
+                                                        font.pixelSize: 13
+                                                        font.weight: Font.DemiBold
+                                                        color: Theme.text
+                                                    }
+                                                    Text {
+                                                        text: qsTr("%1 channels").arg(extraRow.modelData.channels)
+                                                        font.pixelSize: 11
+                                                        color: Theme.textMuted
+                                                    }
+                                                }
+                                                Text {
+                                                    text: {
+                                                        if (extraRow.modelData.reason.length > 0) {
+                                                            return extraRow.modelData.reason;
+                                                        }
+                                                        if (!extraRow.modelData.checked
+                                                            && EncoderController.codecIndex === 0
+                                                            && !EncoderController.atmosEnabled
+                                                            && !EncoderController.dualMono) {
+                                                            return qsTr("moves to Dolby Digital Plus");
+                                                        }
+                                                        return "";
+                                                    }
+                                                    font.pixelSize: 11
+                                                    color: Theme.textMuted
+                                                }
+                                            }
+                                            Rectangle {
+                                                Layout.fillWidth: true
+                                                Layout.preferredHeight: 1
+                                                color: Theme.neutral200
+                                            }
                                         }
                                     }
                                 }
 
                                 Text {
                                     Layout.fillWidth: true
-                                    text: qsTr("%1 of %2 channel positions used")
-                                          .arg(EncoderController.channelBudgetUsed)
-                                          .arg(EncoderController.channelBudgetMax)
+                                    text: {
+                                        if (EncoderController.dualMono && !EncoderController.atmosEnabled) {
+                                            return qsTr("Dual mono is not a layout — it is two programmes. Extras, the LFE and objects do not apply, and the assignments below choose which sound is which programme.");
+                                        }
+                                        if (EncoderController.atmosEnabled) {
+                                            return qsTr("Object mode fixes the bed at 5.1. The positions above describe the bed, not the objects.");
+                                        }
+                                        if (EncoderController.codecIndex === 1) {
+                                            return qsTr("Anything past a bed and its LFE needs Dolby Digital Plus, so the codec has followed the channels — up to sixteen rendered locations, including a second, independent LFE.");
+                                        }
+                                        return qsTr("A bed with or without an LFE is Dolby Digital, capped at 5.1. Adding any extra — rear, ceiling or a second LFE — moves the stream to Dolby Digital Plus.");
+                                    }
+                                    wrapMode: Text.WordWrap
+                                    font.pixelSize: 11
                                     color: Theme.textMuted
-                                    font.pixelSize: Theme.fontSmall
-                                    font.family: "monospace"
                                 }
+                            }
+
+                            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 2; color: Theme.divider }
+
+                            // ---- routing -------------------------------------
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 24
+                                Layout.rightMargin: 24
+                                spacing: Theme.space3
 
                                 Text {
-                                    Layout.fillWidth: true
-                                    text: EncoderController.layoutDetail
+                                    text: qsTr("ROUTING")
+                                    font.pixelSize: 10
+                                    font.letterSpacing: 1
                                     color: Theme.textMuted
-                                    font.pixelSize: Theme.fontSmall
-                                    wrapMode: Text.WordWrap
+                                }
+
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 0
+
+                                    Rectangle {
+                                        Layout.fillWidth: true
+                                        Layout.preferredHeight: 56
+                                        color: Theme.neutral100
+
+                                        ColumnLayout {
+                                            anchors.centerIn: parent
+                                            spacing: 1
+                                            Text {
+                                                Layout.alignment: Qt.AlignHCenter
+                                                text: qsTr("SOURCE")
+                                                font.pixelSize: 10
+                                                font.letterSpacing: 1
+                                                color: Theme.textMuted
+                                            }
+                                            Text {
+                                                Layout.alignment: Qt.AlignHCenter
+                                                text: {
+                                                    const sources = EncoderController.sourceModel;
+                                                    if (sources.length === 0) return qsTr("nothing");
+                                                    let channels = 0;
+                                                    for (let i = 0; i < sources.length; i++) channels += sources[i].channels;
+                                                    if (EncoderController.dualMono && !EncoderController.atmosEnabled) {
+                                                        return qsTr("2 mono programmes");
+                                                    }
+                                                    return sources.length === 1
+                                                           ? qsTr("1 source · %1 ch").arg(channels)
+                                                           : qsTr("%1 sources · %2 ch").arg(sources.length).arg(channels);
+                                                }
+                                                font.pixelSize: 19
+                                                font.family: Theme.headingFamily
+                                                font.weight: Font.Black
+                                                color: Theme.text
+                                            }
+                                        }
+                                    }
+                                    Text {
+                                        Layout.leftMargin: Theme.space3
+                                        Layout.rightMargin: Theme.space3
+                                        text: "→"
+                                        font.pixelSize: 20
+                                        color: Theme.neutral500
+                                    }
+                                    Rectangle {
+                                        Layout.fillWidth: true
+                                        Layout.preferredHeight: 56
+                                        color: Theme.neutral100
+
+                                        ColumnLayout {
+                                            anchors.centerIn: parent
+                                            spacing: 1
+                                            Text {
+                                                Layout.alignment: Qt.AlignHCenter
+                                                text: qsTr("CODED")
+                                                font.pixelSize: 10
+                                                font.letterSpacing: 1
+                                                color: Theme.textMuted
+                                            }
+                                            Text {
+                                                Layout.alignment: Qt.AlignHCenter
+                                                text: {
+                                                    if (EncoderController.dualMono && !EncoderController.atmosEnabled) {
+                                                        return qsTr("2 programmes");
+                                                    }
+                                                    if (EncoderController.atmosEnabled) {
+                                                        return qsTr("%1 objects + 5.1 bed").arg(EncoderController.objectCount);
+                                                    }
+                                                    return EncoderController.channelShapeName;
+                                                }
+                                                font.pixelSize: 19
+                                                font.family: Theme.headingFamily
+                                                font.weight: Font.Black
+                                                color: Theme.text
+                                            }
+                                        }
+                                    }
                                 }
 
                                 Text {
                                     Layout.fillWidth: true
                                     text: EncoderController.routingSummary
-                                    color: Theme.textMuted
-                                    font.pixelSize: Theme.fontSmall
                                     wrapMode: Text.WordWrap
-                                    visible: text.length > 0
+                                    font.pixelSize: 12
+                                    color: Theme.neutral800
+                                }
+
+                                // The channel map: one tag per coded position,
+                                // filled when a source feeds it, outlined when
+                                // it is carried silent.
+                                Flow {
+                                    Layout.fillWidth: true
+                                    spacing: 6
+                                    visible: !EncoderController.dualMono || EncoderController.atmosEnabled
+
+                                    Repeater {
+                                        model: EncoderController.plannedChannels
+
+                                        delegate: Rectangle {
+                                            required property var modelData
+                                            visible: modelData.replaced !== true
+                                            width: chipText.implicitWidth + 12
+                                            height: 20
+                                            color: modelData.fed !== false ? Theme.neutral800 : "transparent"
+                                            border.color: modelData.fed !== false ? Theme.neutral800 : Theme.neutral400
+                                            border.width: 1
+
+                                            Text {
+                                                id: chipText
+                                                anchors.centerIn: parent
+                                                text: parent.modelData.token
+                                                font.pixelSize: 10
+                                                font.family: Theme.monoFamily
+                                                color: parent.modelData.fed !== false ? Theme.bg : Theme.neutral600
+                                            }
+                                        }
+                                    }
+                                }
+                                Text {
+                                    visible: !EncoderController.dualMono || EncoderController.atmosEnabled
+                                    text: qsTr("Filled = fed by a source. Outlined = carried silent.")
+                                    font.pixelSize: 10
+                                    font.family: Theme.monoFamily
+                                    color: Theme.neutral500
+                                }
+                            }
+
+                            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 2; color: Theme.divider }
+
+                            // ---- assignments ---------------------------------
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 24
+                                Layout.rightMargin: 24
+                                spacing: Theme.space3
+
+                                Text {
+                                    text: qsTr("ASSIGNMENTS — EVERY SOURCE CHANNEL GOES SOMEWHERE, OR NOWHERE ON PURPOSE")
+                                    font.pixelSize: 10
+                                    font.letterSpacing: 1
+                                    color: Theme.textMuted
+                                }
+
+                                AssignmentPanel {
+                                    Layout.fillWidth: true
                                 }
 
                                 Text {
                                     Layout.fillWidth: true
-                                    visible: EncoderController.atmosEnabled
-                                    text: qsTr("Object mode is on, so the codec and layout are fixed: objects ride in an E-AC-3 stream over a 5.1 bed.")
-                                    color: Theme.warn
-                                    font.pixelSize: Theme.fontSmall
+                                    text: qsTr("A stereo file cannot be one object — an object is a single point in the room. Send each channel to its own object, or put the pair on bed channels.")
                                     wrapMode: Text.WordWrap
+                                    font.pixelSize: 11
+                                    color: Theme.textMuted
                                 }
                             }
 
-                            // ---- loudness: Advanced only ---------------------------------
-                            // Expert moves this onto Metadata instead, alongside Downmix, so
-                            // it is never shown twice - same LoudnessGroup component either
-                            // way. Guided has its own copy on the wizard's Loudness step
-                            // (GuidedWizard.qml) rather than sharing this Format-tab card,
-                            // since Guided shows no tab bar for this card to live under.
-                            Card {
-                                title: qsTr("Loudness")
+                            // ---- loudness (Advanced only — Expert has it on
+                            // the Metadata tab instead, so it appears once) ----
+                            Rectangle {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 2
+                                color: Theme.divider
                                 visible: window.tier === "advanced"
-
-                                LoudnessGroup {}
+                            }
+                            ColumnLayout {
+                                visible: window.tier === "advanced"
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 24
+                                Layout.rightMargin: 24
+                                spacing: Theme.space3
 
                                 Text {
-                                    Layout.topMargin: 2
+                                    text: qsTr("LOUDNESS")
+                                    font.pixelSize: 10
+                                    font.letterSpacing: 1
+                                    color: Theme.textMuted
+                                }
+                                LoudnessGroup { Layout.fillWidth: true }
+                                Text {
                                     text: qsTr("Coding tools and broadcast metadata →")
-                                    color: Theme.accent
-                                    font.pixelSize: Theme.fontSmall
-
+                                    font.pixelSize: 12
+                                    color: Theme.accent700
                                     MouseArea {
                                         anchors.fill: parent
                                         cursorShape: Qt.PointingHandCursor
@@ -1291,61 +1878,70 @@ ApplicationWindow {
                                 }
                             }
 
-                            // ---- passthrough: Expert only --------------------------------
-                            // Not in Advanced's own list of what it shows (source, codec,
-                            // channel picker, bit rate, output path and container, Loudness,
-                            // Objects) - a receiver endpoint is a codec-developer concern,
-                            // not a mix-encoding one.
-                            Card {
-                                title: qsTr("Passthrough to a receiver")
-                                visible: window.tier === "expert"
+                            // ---- passthrough ---------------------------------
+                            Rectangle {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 2
+                                color: Theme.divider
+                                visible: window.tier !== "guided"
+                            }
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 24
+                                Layout.rightMargin: 24
+                                Layout.bottomMargin: Theme.space4
+                                spacing: Theme.space3
+
+                                Text {
+                                    text: qsTr("PASSTHROUGH TO A RECEIVER")
+                                    font.pixelSize: 10
+                                    font.letterSpacing: 1
+                                    color: Theme.textMuted
+                                }
 
                                 RowLayout {
                                     Layout.fillWidth: true
-                                    spacing: Theme.gap
+                                    spacing: Theme.space2
 
                                     ComboBox {
                                         id: outputBox
                                         Layout.fillWidth: true
-                                        enabled: EncoderController.outputDevices.length > 0
-                                                 && !EncoderController.playing
-                                        model: EncoderController.outputDevices.length > 0
-                                               ? EncoderController.outputDevices
-                                               : [qsTr("No render endpoints found")]
+                                        enabled: !EncoderController.busy
+                                        model: EncoderController.outputDevices
                                     }
-
                                     Button {
                                         text: qsTr("Refresh")
-                                        enabled: !EncoderController.playing
+                                        enabled: !EncoderController.busy
                                         onClicked: EncoderController.refreshOutputDevices()
                                     }
-
                                     Button {
-                                        text: EncoderController.playing ? qsTr("Streaming…") : qsTr("Play")
-                                        enabled: EncoderController.canPlay && !EncoderController.playing
-                                                 && !EncoderController.busy
+                                        text: EncoderController.playing ? qsTr("Playing…") : qsTr("Play")
+                                        enabled: EncoderController.canPlay && !EncoderController.busy
+                                                 && !EncoderController.playing
                                         onClicked: EncoderController.playToReceiver(outputBox.currentIndex)
                                     }
                                 }
-
                                 Text {
+                                    visible: window.tier === "expert"
                                     Layout.fillWidth: true
                                     text: qsTr("Sends the encoded stream as IEC 61937 bursts in exclusive mode, so the receiver decodes it. The packer emits AC-3 bursts only (data type 1), so an E-AC-3 stream is refused here rather than sent as something it is not. Only S/PDIF and HDMI endpoints can bitstream at all.")
-                                    color: Theme.textMuted
-                                    font.pixelSize: Theme.fontSmall
                                     wrapMode: Text.WordWrap
+                                    font.pixelSize: 11
+                                    color: Theme.textMuted
                                 }
                             }
-
-                            Item { Layout.fillHeight: true }
                         }
 
-                        // ---- Coding tools (Advanced only) ------------------------
+                        // =====================================================
+                        // Coding tools (Expert only)
+                        // =====================================================
                         ColumnLayout {
                             Layout.fillWidth: true
                             spacing: Theme.gap
 
                             Card {
+                                Layout.fillWidth: true
+                                Layout.margins: 24
                                 title: qsTr("Annex E coding tools")
                                 visible: EncoderController.toolsAvailable
 
@@ -1450,26 +2046,21 @@ ApplicationWindow {
                                     visible: EncoderController.aht
                                 }
 
-                                // The same selection in the vocabulary ac3cli takes, so a
-                                // setting found here can be reproduced on the command line.
                                 Text {
                                     Layout.fillWidth: true
                                     text: qsTr("ac3cli tools token:  %1").arg(EncoderController.toolsToken)
                                     color: Theme.textMuted
                                     font.pixelSize: Theme.fontSmall
-                                    font.family: "monospace"
+                                    font.family: Theme.monoFamily
                                 }
                             }
 
                             Item { Layout.fillHeight: true }
                         }
 
-                        // ---- Metadata (Advanced only) -----------------------------
-                        // Two columns: Loudness + Downmix on the left, Heavy
-                        // compression + Mixing metadata on the right. Loudness
-                        // lives here rather than on Format because Advanced is
-                        // active - LoudnessGroup itself is the same component
-                        // Format uses in Basic, never both at once.
+                        // =====================================================
+                        // Metadata (Expert only)
+                        // =====================================================
                         RowLayout {
                             Layout.fillWidth: true
                             Layout.alignment: Qt.AlignTop
@@ -1478,6 +2069,8 @@ ApplicationWindow {
                             ColumnLayout {
                                 Layout.fillWidth: true
                                 Layout.alignment: Qt.AlignTop
+                                Layout.leftMargin: 24
+                                Layout.topMargin: Theme.space4
                                 spacing: Theme.gap
 
                                 Card {
@@ -1528,6 +2121,8 @@ ApplicationWindow {
                             ColumnLayout {
                                 Layout.fillWidth: true
                                 Layout.alignment: Qt.AlignTop
+                                Layout.rightMargin: 24
+                                Layout.topMargin: Theme.space4
                                 spacing: Theme.gap
 
                                 Card {
@@ -1540,9 +2135,6 @@ ApplicationWindow {
                                         onToggled: EncoderController.heavy = checked
                                     }
 
-                                    // The indent rule replaces injecting controls
-                                    // into the middle of the column: a sub-group
-                                    // reads as one whether it is showing or not.
                                     RowLayout {
                                         Layout.fillWidth: true
                                         visible: EncoderController.heavy
@@ -1564,11 +2156,6 @@ ApplicationWindow {
                                                     color: Theme.textMuted
                                                     font.pixelSize: Theme.fontSmall
                                                 }
-                                                // Counted in tenths of a decibel: the default
-                                                // ceiling is -0.5 dBFS, and a whole-number box
-                                                // would show it as 0 and write that back —
-                                                // throwing away exactly the headroom §7.7.2
-                                                // exists to reserve.
                                                 SpinBox {
                                                     from: -200
                                                     to: 0
@@ -1609,7 +2196,6 @@ ApplicationWindow {
                                     }
                                 }
 
-                                // ---- mixing metadata: E-AC-3 only ------------------------
                                 Card {
                                     title: qsTr("Mixing metadata")
                                     visible: EncoderController.mixmetaAvailable
@@ -1659,8 +2245,6 @@ ApplicationWindow {
                                                     to: 31
                                                     enabled: !EncoderController.busy
                                                     value: EncoderController.lfeMix
-                                                    // §E2.3.1.11: the level in dB is 10 - the
-                                                    // code, so 0 is the +10 dB §7.8 calls ideal.
                                                     textFromValue: (value) => value < 0
                                                                    ? qsTr("off") : (10 - value) + " dB"
                                                     valueFromText: (text) => text === qsTr("off") ? -1 : parseInt(text)
@@ -1685,24 +2269,21 @@ ApplicationWindow {
                             }
                         }
 
-                        // ---- Objects ---------------------------------------------
+                        // =====================================================
+                        // Objects
+                        // =====================================================
                         ColumnLayout {
                             id: objectsTab
                             Layout.fillWidth: true
                             spacing: Theme.gap
 
-                            // "author" edits object_configs_/keyframes directly via the
-                            // sliders and room plan. "live" has nothing to drive yet -
-                            // real live-driven motion is follow-up work for the capture
-                            // branch - so it just points at Live session instead of
-                            // offering controls that would silently do nothing.
                             property string driveMode: "author"
                             property real playheadTime: 0
                             property bool previewing: false
-                            // objectKeyframes()/evaluateObjectPath() are Q_INVOKABLEs, not
-                            // properties, so nothing marks a binding that calls them as
-                            // depending on objectsChanged. Reading this counter inside
-                            // those bindings gives them something to depend on.
+                            // objectKeyframes()/evaluateObjectPath() are
+                            // Q_INVOKABLEs, not properties; reading this
+                            // counter inside those bindings gives them a
+                            // dependency to re-evaluate on.
                             property int objectsRevision: 0
 
                             readonly property var selectedObj: {
@@ -1724,47 +2305,57 @@ ApplicationWindow {
                                 function onObjectsChanged() { objectsTab.objectsRevision++; }
                             }
 
-                            Card {
-                                title: qsTr("Dolby Atmos objects")
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                Layout.margins: 24
+                                spacing: Theme.space3
 
+                                // ---- header: switch + summary + rate warning
                                 RowLayout {
                                     Layout.fillWidth: true
                                     spacing: Theme.gap
 
                                     Switch {
                                         id: atmosSwitch
-                                        text: qsTr("Encode as objects")
+                                        objectName: "atmosSwitch"
+                                        text: qsTr("Encode as Dolby Atmos objects")
                                         enabled: !EncoderController.busy
                                         checked: EncoderController.atmosEnabled
                                         onToggled: EncoderController.atmosEnabled = checked
                                     }
 
                                     Text {
-                                        visible: EncoderController.atmosEnabled
-                                                 && EncoderController.objectCount > 0
-                                        text: qsTr("%1 objects + the bed's LFE")
-                                              .arg(EncoderController.objectCount)
+                                        Layout.fillWidth: true
+                                        // preferredWidth 1 lets the row SHRINK this
+                                        // text below its implicit width and elide,
+                                        // instead of pushing the row past the panel.
+                                        Layout.preferredWidth: 1
+                                        text: EncoderController.atmosEnabled
+                                              ? qsTr("%1 objects from the assignments · E-AC-3 over a 5.1 bed · positions ride as OAMD")
+                                                .arg(EncoderController.objectCount)
+                                              : qsTr("Off — the stream is a plain channel bed. Turning this on fixes the codec to E-AC-3 over 5.1.")
+                                        elide: Text.ElideRight
                                         color: Theme.textMuted
                                         font.pixelSize: Theme.fontSmall
                                     }
 
-                                    Item { Layout.fillWidth: true }
-
-                                    // The metadata costs a few hundred bits a frame, which
-                                    // is not the problem. The problem is that the bed is
-                                    // always 5.1, so a rate that was generous for the
-                                    // source's own layout may not be for six channels.
                                     RowLayout {
                                         visible: EncoderController.atmosEnabled
                                                  && EncoderController.bitrateKbps < 384
-                                        spacing: Theme.gap
+                                        spacing: Theme.space2
 
-                                        Text {
-                                            text: qsTr("⚠ the bed is 5.1 — 384 kbps or more")
-                                            color: Theme.bad
-                                            font.pixelSize: Theme.fontSmall
+                                        Rectangle {
+                                            implicitWidth: rateWarn.implicitWidth + 14
+                                            implicitHeight: rateWarn.implicitHeight + 8
+                                            color: Theme.accent100
+                                            Text {
+                                                id: rateWarn
+                                                anchors.centerIn: parent
+                                                text: qsTr("Objects over a 5.1 bed want 384 kbps or better")
+                                                color: Theme.accent700
+                                                font.pixelSize: Theme.fontSmall
+                                            }
                                         }
-
                                         Button {
                                             text: qsTr("Set it")
                                             enabled: !EncoderController.busy
@@ -1773,22 +2364,33 @@ ApplicationWindow {
                                     }
                                 }
 
-                                Text {
-                                    Layout.fillWidth: true
+                                // ---- empty state ---------------------------
+                                ColumnLayout {
                                     visible: EncoderController.atmosEnabled
-                                    text: qsTr("Every source channel becomes an object, panned into a 5.1 bed that any decoder can play. The object positions ride alongside as metadata — so a height is carried even though no bed channel can reproduce it, and the LFE send is the only route to that channel, since no direction points at it.")
-                                    color: Theme.textMuted
-                                    font.pixelSize: Theme.fontSmall
-                                    wrapMode: Text.WordWrap
+                                             && EncoderController.objectCount === 0
+                                    Layout.fillWidth: true
+                                    spacing: Theme.space2
+
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: qsTr("Nothing is an object yet. Objects come from the assignments — send a sound to \"an object\" and it appears here with a place in the room.")
+                                        wrapMode: Text.WordWrap
+                                        font.pixelSize: 13
+                                        color: Theme.text
+                                    }
+                                    Button {
+                                        text: qsTr("Open assignments")
+                                        onClicked: window.goAssign()
+                                    }
                                 }
 
                                 RowLayout {
                                     Layout.fillWidth: true
                                     visible: EncoderController.atmosEnabled
+                                             && EncoderController.objectCount > 0
                                     spacing: Theme.space6
 
-                                    // Plan view of the room: §4.2.1's x to the right, y
-                                    // towards the back, listener in the middle.
+                                    // ---- room: plan + elevation -------------
                                     ColumnLayout {
                                         Layout.preferredWidth: 340
                                         Layout.alignment: Qt.AlignTop
@@ -1806,7 +2408,7 @@ ApplicationWindow {
                                                 text: qsTr("drag to place")
                                                 color: Theme.neutral600
                                                 font.pixelSize: 10
-                                                font.family: "monospace"
+                                                font.family: Theme.monoFamily
                                             }
                                         }
 
@@ -1849,10 +2451,6 @@ ApplicationWindow {
                                                 font.pixelSize: 9
                                             }
 
-                                            // Drag moves the SELECTED object; declared before
-                                            // the markers so it sits underneath them and a
-                                            // click precisely on a marker still reaches that
-                                            // marker's own MouseArea instead.
                                             MouseArea {
                                                 anchors.fill: parent
                                                 enabled: !EncoderController.busy
@@ -1870,26 +2468,34 @@ ApplicationWindow {
                                             }
 
                                             Repeater {
-                                                model: EncoderController.objectModel
+                                                // A stable int model: the drag
+                                                // stream must not rebuild these
+                                                // delegates, only move them.
+                                                model: EncoderController.objectCount
 
                                                 Rectangle {
                                                     id: marker
-                                                    required property var modelData
+                                                    required property int index
+                                                    readonly property var obj: {
+                                                        const list = EncoderController.objectModel;
+                                                        return index < list.length ? list[index] : null;
+                                                    }
                                                     readonly property bool isSelected:
-                                                        modelData.index === EncoderController.selectedObjectIndex
+                                                        index === EncoderController.selectedObjectIndex
                                                     readonly property var livePos:
-                                                        objectsTab.previewing
+                                                        objectsTab.previewing && obj !== null
                                                         ? EncoderController.evaluateObjectPath(
-                                                              modelData.index, objectsTab.playheadTime)
+                                                              index, objectsTab.playheadTime)
                                                         : null
 
+                                                    visible: obj !== null
                                                     width: isSelected ? 18 : 14
                                                     height: isSelected ? 18 : 14
                                                     color: isSelected ? Theme.accent : Theme.neutral800
                                                     border.color: Theme.text
                                                     border.width: isSelected ? 2 : 0
-                                                    x: (livePos ? livePos.x : modelData.x) * room.width - width / 2
-                                                    y: (livePos ? livePos.y : modelData.y) * room.height - height / 2
+                                                    x: (livePos ? livePos.x : (obj ? obj.x : 0.5)) * room.width - width / 2
+                                                    y: (livePos ? livePos.y : (obj ? obj.y : 0.5)) * room.height - height / 2
                                                     z: isSelected ? 1 : 0
 
                                                     Rectangle {
@@ -1904,19 +2510,124 @@ ApplicationWindow {
                                                         Text {
                                                             id: chip
                                                             anchors.centerIn: parent
-                                                            text: qsTr("obj %1").arg(marker.modelData.index + 1)
+                                                            text: qsTr("obj %1").arg(marker.index + 1)
                                                             color: Theme.text
                                                             font.pixelSize: 10
-                                                            font.family: "monospace"
+                                                            font.family: Theme.monoFamily
                                                         }
                                                     }
 
                                                     MouseArea {
                                                         anchors.fill: parent
-                                                        onClicked: EncoderController.selectedObjectIndex
-                                                                   = marker.modelData.index
+                                                        onClicked: EncoderController.selectedObjectIndex = marker.index
                                                     }
                                                 }
+                                            }
+                                        }
+
+                                        // ---- elevation: drag for height ------
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            Layout.topMargin: Theme.space2
+                                            Text {
+                                                text: qsTr("ROOM — ELEVATION")
+                                                color: Theme.neutral600
+                                                font.pixelSize: 10
+                                            }
+                                            Item { Layout.fillWidth: true }
+                                            Text {
+                                                text: qsTr("drag for height")
+                                                color: Theme.neutral600
+                                                font.pixelSize: 10
+                                                font.family: Theme.monoFamily
+                                            }
+                                        }
+                                        Rectangle {
+                                            id: elevation
+                                            Layout.preferredWidth: 340
+                                            Layout.preferredHeight: 150
+                                            color: Theme.neutral100
+                                            border.color: Theme.divider
+                                            border.width: 1
+
+                                            // z +1 (ceiling) at the top line,
+                                            // 0 (ear level) at 62%, −1 (floor)
+                                            // at the bottom.
+                                            function zToY(z) {
+                                                return 14 + (1 - (z + 1) / 2) * (height - 24);
+                                            }
+                                            function yToZ(y) {
+                                                return Math.max(-1, Math.min(1, 1 - 2 * ((y - 14) / (height - 24))));
+                                            }
+
+                                            Rectangle {
+                                                x: 0; width: parent.width
+                                                y: 14; height: 1
+                                                color: Theme.neutral300
+                                            }
+                                            Text {
+                                                x: 4; y: 2
+                                                text: qsTr("ceiling")
+                                                color: Theme.neutral500
+                                                font.pixelSize: 9
+                                            }
+                                            Rectangle {
+                                                x: 0; width: parent.width
+                                                y: elevation.zToY(0); height: 1
+                                                color: Theme.neutral300
+                                            }
+                                            Text {
+                                                x: 4; y: elevation.zToY(0) - 12
+                                                text: qsTr("ear level")
+                                                color: Theme.neutral500
+                                                font.pixelSize: 9
+                                            }
+                                            Text {
+                                                x: 4; y: parent.height - 13
+                                                text: qsTr("floor")
+                                                color: Theme.neutral500
+                                                font.pixelSize: 9
+                                            }
+
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                enabled: !EncoderController.busy
+                                                         && objectsTab.driveMode === "author"
+                                                         && objectsTab.selectedObj !== null
+                                                onPositionChanged: (mouse) => place(mouse)
+                                                onPressed: (mouse) => place(mouse)
+                                                function place(mouse) {
+                                                    const x = Math.max(0, Math.min(1, mouse.x / elevation.width));
+                                                    EncoderController.setObjectPosition(
+                                                        objectsTab.selectedObj.index, x,
+                                                        objectsTab.selectedObj.y,
+                                                        elevation.yToZ(mouse.y));
+                                                }
+                                            }
+
+                                            // The selected object's marker with
+                                            // a drop line to ear level.
+                                            Rectangle {
+                                                visible: objectsTab.selectedObj !== null
+                                                readonly property real markerX:
+                                                    (objectsTab.selectedObj ? objectsTab.selectedObj.x : 0.5) * elevation.width
+                                                readonly property real markerY:
+                                                    elevation.zToY(objectsTab.selectedObj ? objectsTab.selectedObj.z : 0)
+                                                x: markerX - 1
+                                                y: Math.min(markerY, elevation.zToY(0))
+                                                width: 2
+                                                height: Math.abs(elevation.zToY(0) - markerY)
+                                                color: Theme.accent300
+                                            }
+                                            Rectangle {
+                                                visible: objectsTab.selectedObj !== null
+                                                width: 14
+                                                height: 14
+                                                color: Theme.accent
+                                                border.color: Theme.text
+                                                border.width: 2
+                                                x: (objectsTab.selectedObj ? objectsTab.selectedObj.x : 0.5) * elevation.width - width / 2
+                                                y: elevation.zToY(objectsTab.selectedObj ? objectsTab.selectedObj.z : 0) - height / 2
                                             }
                                         }
 
@@ -1946,13 +2657,14 @@ ApplicationWindow {
                                                         text: modelData.value.toFixed(2)
                                                         color: Theme.text
                                                         font.pixelSize: 13
-                                                        font.family: "monospace"
+                                                        font.family: Theme.monoFamily
                                                     }
                                                 }
                                             }
                                         }
                                     }
 
+                                    // ---- object list + LFE send --------------
                                     ColumnLayout {
                                         Layout.fillWidth: true
                                         Layout.alignment: Qt.AlignTop
@@ -1993,8 +2705,6 @@ ApplicationWindow {
                                             }
                                         }
 
-                                        // Header row + one row per object, matching the
-                                        // room plan's markers and the sliders below.
                                         GridLayout {
                                             Layout.fillWidth: true
                                             columns: 8
@@ -2003,7 +2713,7 @@ ApplicationWindow {
 
                                             Repeater {
                                                 model: [
-                                                    qsTr("Object"), qsTr("Source"), qsTr("x"), qsTr("y"),
+                                                    qsTr("Object"), qsTr("Sound"), qsTr("x"), qsTr("y"),
                                                     qsTr("z"), qsTr("Path"), qsTr("LFE"), qsTr("Keys")
                                                 ]
                                                 Text {
@@ -2017,15 +2727,20 @@ ApplicationWindow {
                                             }
 
                                             Repeater {
-                                                model: EncoderController.objectModel
+                                                model: EncoderController.objectCount
 
                                                 Rectangle {
-                                                    id: row
-                                                    required property var modelData
+                                                    id: objRow
+                                                    required property int index
+                                                    readonly property var obj: {
+                                                        const list = EncoderController.objectModel;
+                                                        return index < list.length ? list[index] : null;
+                                                    }
                                                     Layout.columnSpan: 8
                                                     Layout.fillWidth: true
                                                     implicitHeight: rowLayout.implicitHeight + 6
-                                                    color: modelData.index === EncoderController.selectedObjectIndex
+                                                    visible: obj !== null
+                                                    color: index === EncoderController.selectedObjectIndex
                                                            ? Theme.accent100 : "transparent"
 
                                                     RowLayout {
@@ -2036,57 +2751,64 @@ ApplicationWindow {
 
                                                         Text {
                                                             Layout.fillWidth: true
-                                                            text: row.modelData.index + 1
-                                                            font.family: "monospace"
+                                                            text: objRow.index + 1
+                                                            font.family: Theme.monoFamily
                                                             font.pixelSize: Theme.fontSmall
+                                                            color: Theme.text
                                                         }
                                                         Text {
                                                             Layout.fillWidth: true
-                                                            text: row.modelData.sourceLabel
+                                                            text: objRow.obj ? objRow.obj.sourceLabel : ""
                                                             font.pixelSize: Theme.fontSmall
+                                                            elide: Text.ElideMiddle
+                                                            color: Theme.text
                                                         }
                                                         Text {
                                                             Layout.fillWidth: true
-                                                            text: row.modelData.x.toFixed(2)
-                                                            font.family: "monospace"
+                                                            text: objRow.obj ? objRow.obj.x.toFixed(2) : ""
+                                                            font.family: Theme.monoFamily
                                                             font.pixelSize: Theme.fontSmall
+                                                            color: Theme.text
                                                         }
                                                         Text {
                                                             Layout.fillWidth: true
-                                                            text: row.modelData.y.toFixed(2)
-                                                            font.family: "monospace"
+                                                            text: objRow.obj ? objRow.obj.y.toFixed(2) : ""
+                                                            font.family: Theme.monoFamily
                                                             font.pixelSize: Theme.fontSmall
+                                                            color: Theme.text
                                                         }
                                                         Text {
                                                             Layout.fillWidth: true
-                                                            text: row.modelData.z.toFixed(2)
-                                                            font.family: "monospace"
+                                                            text: objRow.obj ? objRow.obj.z.toFixed(2) : ""
+                                                            font.family: Theme.monoFamily
                                                             font.pixelSize: Theme.fontSmall
+                                                            color: Theme.text
                                                         }
                                                         Text {
                                                             Layout.fillWidth: true
-                                                            text: row.modelData.hasPath ? qsTr("path") : qsTr("static")
+                                                            text: objRow.obj && objRow.obj.hasPath ? qsTr("path") : qsTr("static")
                                                             font.pixelSize: Theme.fontSmall
-                                                            color: row.modelData.hasPath ? Theme.text : Theme.textMuted
+                                                            color: objRow.obj && objRow.obj.hasPath ? Theme.text : Theme.textMuted
                                                         }
                                                         Text {
                                                             Layout.fillWidth: true
-                                                            text: row.modelData.lfeSend.toFixed(2)
-                                                            font.family: "monospace"
+                                                            text: objRow.obj ? objRow.obj.lfeSend.toFixed(2) : ""
+                                                            font.family: Theme.monoFamily
                                                             font.pixelSize: Theme.fontSmall
+                                                            color: Theme.text
                                                         }
                                                         Text {
                                                             Layout.fillWidth: true
-                                                            text: row.modelData.keyCount
-                                                            font.family: "monospace"
+                                                            text: objRow.obj ? objRow.obj.keyCount : ""
+                                                            font.family: Theme.monoFamily
                                                             font.pixelSize: Theme.fontSmall
+                                                            color: Theme.text
                                                         }
                                                     }
 
                                                     MouseArea {
                                                         anchors.fill: parent
-                                                        onClicked: EncoderController.selectedObjectIndex
-                                                                   = row.modelData.index
+                                                        onClicked: EncoderController.selectedObjectIndex = objRow.index
                                                     }
                                                 }
                                             }
@@ -2094,77 +2816,68 @@ ApplicationWindow {
 
                                         RowLayout {
                                             Layout.fillWidth: true
+                                            spacing: Theme.space2
+
+                                            Button {
+                                                text: qsTr("Add an object")
+                                                flat: true
+                                                onClicked: window.goAssign()
+                                            }
+                                            Button {
+                                                text: qsTr("Change what feeds them →")
+                                                flat: true
+                                                onClicked: window.goAssign()
+                                            }
+                                            Item { Layout.fillWidth: true }
+                                            Text {
+                                                text: qsTr("%1 of 16 objects · each one is a sound with a place")
+                                                      .arg(EncoderController.objectCount)
+                                                font.pixelSize: 10
+                                                font.family: Theme.monoFamily
+                                                color: Theme.neutral600
+                                            }
+                                        }
+
+                                        // ---- LFE send ---------------------------
+                                        ColumnLayout {
+                                            Layout.fillWidth: true
                                             Layout.topMargin: Theme.space3
-                                            spacing: Theme.space6
+                                            spacing: Theme.space2
 
-                                            ColumnLayout {
+                                            RowLayout {
                                                 Layout.fillWidth: true
-                                                spacing: Theme.space2
-
-                                                RowLayout {
-                                                    Layout.fillWidth: true
-                                                    Text {
-                                                        text: qsTr("Height — object %1")
-                                                              .arg((objectsTab.selectedObj
-                                                                    ? objectsTab.selectedObj.index : 0) + 1)
-                                                        color: Theme.neutral600
-                                                        font.pixelSize: 10
-                                                    }
-                                                    Item { Layout.fillWidth: true }
-                                                    Text {
-                                                        text: (objectsTab.selectedObj
-                                                               ? objectsTab.selectedObj.z : 0).toFixed(2)
-                                                        color: Theme.text
-                                                        font.pixelSize: 11
-                                                        font.family: "monospace"
-                                                    }
+                                                Text {
+                                                    text: qsTr("LFE send — object %1")
+                                                          .arg((objectsTab.selectedObj
+                                                                ? objectsTab.selectedObj.index : 0) + 1)
+                                                    color: Theme.neutral600
+                                                    font.pixelSize: 10
                                                 }
-                                                Slider {
-                                                    Layout.fillWidth: true
-                                                    from: -1.0
-                                                    to: 1.0
-                                                    enabled: !EncoderController.busy
-                                                             && objectsTab.driveMode === "author"
-                                                             && objectsTab.selectedObj !== null
-                                                    value: objectsTab.selectedObj ? objectsTab.selectedObj.z : 0
-                                                    onMoved: EncoderController.setObjectPosition(
-                                                                 objectsTab.selectedObj.index,
-                                                                 objectsTab.selectedObj.x,
-                                                                 objectsTab.selectedObj.y, value)
+                                                Item { Layout.fillWidth: true }
+                                                Text {
+                                                    text: (objectsTab.selectedObj
+                                                           ? objectsTab.selectedObj.lfeSend : 0).toFixed(2)
+                                                    color: Theme.text
+                                                    font.pixelSize: 11
+                                                    font.family: Theme.monoFamily
                                                 }
                                             }
-
-                                            ColumnLayout {
+                                            Slider {
                                                 Layout.fillWidth: true
-                                                spacing: Theme.space2
-
-                                                RowLayout {
-                                                    Layout.fillWidth: true
-                                                    Text {
-                                                        text: qsTr("LFE send")
-                                                        color: Theme.neutral600
-                                                        font.pixelSize: 10
-                                                    }
-                                                    Item { Layout.fillWidth: true }
-                                                    Text {
-                                                        text: (objectsTab.selectedObj
-                                                               ? objectsTab.selectedObj.lfeSend : 0).toFixed(2)
-                                                        color: Theme.text
-                                                        font.pixelSize: 11
-                                                        font.family: "monospace"
-                                                    }
-                                                }
-                                                Slider {
-                                                    Layout.fillWidth: true
-                                                    from: 0.0
-                                                    to: 1.0
-                                                    enabled: !EncoderController.busy
-                                                             && objectsTab.driveMode === "author"
-                                                             && objectsTab.selectedObj !== null
-                                                    value: objectsTab.selectedObj ? objectsTab.selectedObj.lfeSend : 0
-                                                    onMoved: EncoderController.setObjectLfeSend(
-                                                                 objectsTab.selectedObj.index, value)
-                                                }
+                                                from: 0.0
+                                                to: 1.0
+                                                enabled: !EncoderController.busy
+                                                         && objectsTab.driveMode === "author"
+                                                         && objectsTab.selectedObj !== null
+                                                value: objectsTab.selectedObj ? objectsTab.selectedObj.lfeSend : 0
+                                                onMoved: EncoderController.setObjectLfeSend(
+                                                             objectsTab.selectedObj.index, value)
+                                            }
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                Text { text: "0.00"; font.pixelSize: 9; font.family: Theme.monoFamily; color: Theme.neutral500 }
+                                                Item { Layout.fillWidth: true }
+                                                Text { text: "1.00"; font.pixelSize: 9; font.family: Theme.monoFamily; color: Theme.neutral500 }
                                             }
                                         }
 
@@ -2181,13 +2894,16 @@ ApplicationWindow {
                                 Rectangle {
                                     Layout.fillWidth: true
                                     visible: EncoderController.atmosEnabled
+                                             && EncoderController.objectCount > 0
                                     height: 2
                                     color: Theme.divider
                                 }
 
+                                // ---- motion timeline ------------------------
                                 ColumnLayout {
                                     Layout.fillWidth: true
                                     visible: EncoderController.atmosEnabled
+                                             && EncoderController.objectCount > 0
                                     spacing: Theme.space2
 
                                     RowLayout {
@@ -2202,7 +2918,7 @@ ApplicationWindow {
                                                   + " / " + objectsTab.formatTime(8)
                                             color: Theme.textMuted
                                             font.pixelSize: 11
-                                            font.family: "monospace"
+                                            font.family: Theme.monoFamily
                                         }
                                         Item { Layout.fillWidth: true }
                                         Button {
@@ -2272,7 +2988,7 @@ ApplicationWindow {
                                                         text: index === 8 ? qsTr("8 s") : String(index)
                                                         color: Theme.neutral600
                                                         font.pixelSize: 9
-                                                        font.family: "monospace"
+                                                        font.family: Theme.monoFamily
                                                     }
                                                 }
                                             }
@@ -2280,22 +2996,22 @@ ApplicationWindow {
                                             Rectangle { Layout.fillWidth: true; height: 1; color: Theme.divider }
 
                                             Repeater {
-                                                model: EncoderController.objectModel
+                                                model: EncoderController.objectCount
 
                                                 RowLayout {
                                                     id: laneRow
-                                                    required property var modelData
+                                                    required property int index
                                                     Layout.fillWidth: true
                                                     spacing: 0
 
                                                     Text {
                                                         Layout.preferredWidth: 70
                                                         Layout.leftMargin: 8
-                                                        text: qsTr("obj %1").arg(laneRow.modelData.index + 1)
-                                                        color: laneRow.modelData.index === EncoderController.selectedObjectIndex
+                                                        text: qsTr("obj %1").arg(laneRow.index + 1)
+                                                        color: laneRow.index === EncoderController.selectedObjectIndex
                                                                ? Theme.text : Theme.neutral700
                                                         font.pixelSize: 10
-                                                        font.family: "monospace"
+                                                        font.family: Theme.monoFamily
                                                     }
 
                                                     Rectangle {
@@ -2303,10 +3019,10 @@ ApplicationWindow {
                                                         Layout.fillWidth: true
                                                         Layout.preferredHeight: 24
                                                         readonly property bool isSelected:
-                                                            laneRow.modelData.index === EncoderController.selectedObjectIndex
+                                                            laneRow.index === EncoderController.selectedObjectIndex
                                                         readonly property var keys:
                                                             (objectsTab.objectsRevision,
-                                                             EncoderController.objectKeyframes(laneRow.modelData.index))
+                                                             EncoderController.objectKeyframes(laneRow.index))
                                                         color: isSelected ? Theme.accent100 : "transparent"
 
                                                         Rectangle {
@@ -2360,25 +3076,34 @@ ApplicationWindow {
                             Item { Layout.fillHeight: true }
                         }
 
-                        // ---- Live session ------------------------------------------
-                        // Only ever shown while EncoderController.liveActive - a session
-                        // that has not started has nothing here to show, which is why
-                        // this tab does not exist in visibleTabs until then.
+                        // =====================================================
+                        // Live session
+                        // =====================================================
                         ColumnLayout {
                             Layout.fillWidth: true
                             spacing: Theme.gap
 
                             Rectangle {
                                 Layout.fillWidth: true
+                                Layout.leftMargin: 24
+                                Layout.rightMargin: 24
+                                Layout.topMargin: Theme.space4
                                 visible: EncoderController.liveReconnecting
                                 color: Theme.accent100
                                 implicitHeight: reconnectMsg.implicitHeight + Theme.space3 * 2
 
+                                Rectangle {
+                                    anchors.left: parent.left
+                                    anchors.top: parent.top
+                                    anchors.bottom: parent.bottom
+                                    width: 2
+                                    color: Theme.accent
+                                }
                                 Text {
                                     id: reconnectMsg
                                     anchors.fill: parent
                                     anchors.margins: Theme.space3
-                                    text: qsTr("Renegotiating with the receiver. It is re-locking to the new bitstream format — expect a second of silence.")
+                                    text: qsTr("Renegotiating with the receiver. It is re-locking to the new bitstream format — expect a second of silence. This is normal AVR behaviour on a format change.")
                                     color: Theme.accent800
                                     font.pixelSize: Theme.fontSmall
                                     wrapMode: Text.WordWrap
@@ -2386,6 +3111,9 @@ ApplicationWindow {
                             }
 
                             Card {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 24
+                                Layout.rightMargin: 24
                                 title: qsTr("Live session")
 
                                 RowLayout {
@@ -2410,7 +3138,7 @@ ApplicationWindow {
                                             }
                                             color: Theme.text
                                             font.pixelSize: 15
-                                            font.family: "monospace"
+                                            font.family: Theme.monoFamily
                                         }
                                     }
                                     ColumnLayout {
@@ -2420,7 +3148,7 @@ ApplicationWindow {
                                             text: EncoderController.liveFramesEncoded
                                             color: Theme.text
                                             font.pixelSize: 15
-                                            font.family: "monospace"
+                                            font.family: Theme.monoFamily
                                         }
                                     }
                                     ColumnLayout {
@@ -2428,9 +3156,9 @@ ApplicationWindow {
                                         Text { text: qsTr("DROPPED"); color: Theme.neutral600; font.pixelSize: 10 }
                                         Text {
                                             text: EncoderController.liveFramesDropped
-                                            color: EncoderController.liveFramesDropped > 0 ? Theme.bad : Theme.text
+                                            color: EncoderController.liveFramesDropped > 0 ? Theme.accent700 : Theme.text
                                             font.pixelSize: 15
-                                            font.family: "monospace"
+                                            font.family: Theme.monoFamily
                                         }
                                     }
 
@@ -2445,6 +3173,9 @@ ApplicationWindow {
                             }
 
                             Card {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 24
+                                Layout.rightMargin: 24
                                 title: qsTr("Chain")
 
                                 RowLayout {
@@ -2456,7 +3187,8 @@ ApplicationWindow {
                                         Text { text: qsTr("CAPTURE"); color: Theme.neutral600; font.pixelSize: 10 }
                                         Text {
                                             Layout.fillWidth: true
-                                            text: qsTr("Capture device")
+                                            text: deviceBox.currentText.length > 0
+                                                  ? deviceBox.currentText : qsTr("Capture device")
                                             color: Theme.text
                                             font.pixelSize: Theme.fontNormal
                                             wrapMode: Text.WordWrap
@@ -2479,6 +3211,11 @@ ApplicationWindow {
                                             font.pixelSize: Theme.fontNormal
                                             wrapMode: Text.WordWrap
                                         }
+                                        Text {
+                                            text: qsTr("meters and soundfield follow this")
+                                            color: Theme.textMuted
+                                            font.pixelSize: 10
+                                        }
                                     }
                                     Text {
                                         text: "→"
@@ -2489,7 +3226,7 @@ ApplicationWindow {
                                     }
                                     ColumnLayout {
                                         Layout.fillWidth: true
-                                        Text { text: qsTr("RECEIVER LEG"); color: Theme.neutral600; font.pixelSize: 10 }
+                                        Text { text: qsTr("RECEIVER LEG — IEC 61937"); color: Theme.neutral600; font.pixelSize: 10 }
                                         Text {
                                             Layout.fillWidth: true
                                             text: EncoderController.liveReceiverPlanText
@@ -2503,15 +3240,24 @@ ApplicationWindow {
 
                             Rectangle {
                                 Layout.fillWidth: true
+                                Layout.leftMargin: 24
+                                Layout.rightMargin: 24
                                 visible: EncoderController.liveGap
                                 color: Theme.accent100
                                 implicitHeight: gapMsg.implicitHeight + Theme.space3 * 2
 
+                                Rectangle {
+                                    anchors.left: parent.left
+                                    anchors.top: parent.top
+                                    anchors.bottom: parent.bottom
+                                    width: 2
+                                    color: Theme.accent
+                                }
                                 Text {
                                     id: gapMsg
                                     anchors.fill: parent
                                     anchors.margins: Theme.space3
-                                    text: qsTr("Everything past what the receiver leg carries — the extra channels, every object move — is visible on the meters and the soundfield but not audible on the amplifier.")
+                                    text: qsTr("Everything past what the receiver leg carries — the extra channels, every object move — is visible on the meters and the soundfield but not audible on the amplifier, until Dolby Digital Plus passthrough lands.")
                                     color: Theme.accent800
                                     font.pixelSize: Theme.fontSmall
                                     wrapMode: Text.WordWrap
@@ -2520,6 +3266,8 @@ ApplicationWindow {
 
                             RowLayout {
                                 Layout.fillWidth: true
+                                Layout.leftMargin: 24
+                                Layout.rightMargin: 24
                                 spacing: Theme.space6
 
                                 Card {
@@ -2530,17 +3278,17 @@ ApplicationWindow {
                                     RowLayout {
                                         Layout.fillWidth: true
                                         Text {
-                                            text: qsTr("drag to move")
+                                            text: qsTr("drag to move — you hear it immediately")
                                             color: Theme.neutral600
                                             font.pixelSize: 10
-                                            font.family: "monospace"
+                                            font.family: Theme.monoFamily
                                         }
                                         Item { Layout.fillWidth: true }
                                         Text {
                                             text: qsTr("latency %1 ms").arg(EncoderController.liveLatencyMs.toFixed(0))
                                             color: Theme.neutral600
                                             font.pixelSize: 10
-                                            font.family: "monospace"
+                                            font.family: Theme.monoFamily
                                         }
                                     }
 
@@ -2574,20 +3322,25 @@ ApplicationWindow {
                                         }
 
                                         Repeater {
-                                            model: EncoderController.objectModel
+                                            model: EncoderController.objectCount
                                             Rectangle {
-                                                required property var modelData
+                                                required property int index
+                                                readonly property var obj: {
+                                                    const list = EncoderController.objectModel;
+                                                    return index < list.length ? list[index] : null;
+                                                }
                                                 readonly property bool isSelected:
-                                                    modelData.index === EncoderController.selectedObjectIndex
+                                                    index === EncoderController.selectedObjectIndex
+                                                visible: obj !== null
                                                 width: isSelected ? 18 : 14
                                                 height: isSelected ? 18 : 14
                                                 color: isSelected ? Theme.accent : Theme.neutral800
-                                                x: modelData.x * liveRoom.width - width / 2
-                                                y: modelData.y * liveRoom.height - height / 2
+                                                x: (obj ? obj.x : 0.5) * liveRoom.width - width / 2
+                                                y: (obj ? obj.y : 0.5) * liveRoom.height - height / 2
 
                                                 MouseArea {
                                                     anchors.fill: parent
-                                                    onClicked: EncoderController.selectedObjectIndex = modelData.index
+                                                    onClicked: EncoderController.selectedObjectIndex = index
                                                 }
                                             }
                                         }
@@ -2612,7 +3365,7 @@ ApplicationWindow {
                                         }
                                         Text {
                                             Layout.fillWidth: true
-                                            text: qsTr("Fixed for this run — change it from the Format tab and start a new session for it to take effect.")
+                                            text: qsTr("Fixed for this run — change it from the Format tab and start a new session for it to take effect. A layout change is a deliberate act: the stream stops, the receiver renegotiates, and about a second of audio is lost.")
                                             color: Theme.textMuted
                                             font.pixelSize: Theme.fontSmall
                                             wrapMode: Text.WordWrap
@@ -2650,7 +3403,7 @@ ApplicationWindow {
                                                 text: !EncoderController.livePassthrough ? qsTr("no passthrough")
                                                       : EncoderController.liveReconnecting ? qsTr("re-locking")
                                                       : qsTr("locked")
-                                                color: EncoderController.liveReconnecting ? Theme.bad : Theme.text
+                                                color: EncoderController.liveReconnecting ? Theme.accent700 : Theme.text
                                                 font.pixelSize: Theme.fontNormal
                                             }
                                         }
@@ -2664,9 +3417,9 @@ ApplicationWindow {
                                             }
                                             Text {
                                                 text: EncoderController.liveUnderruns
-                                                color: EncoderController.liveUnderruns > 0 ? Theme.bad : Theme.text
+                                                color: EncoderController.liveUnderruns > 0 ? Theme.accent700 : Theme.text
                                                 font.pixelSize: Theme.fontNormal
-                                                font.family: "monospace"
+                                                font.family: Theme.monoFamily
                                             }
                                         }
                                         RowLayout {
@@ -2690,22 +3443,18 @@ ApplicationWindow {
                             Item { Layout.fillHeight: true }
                         }
 
-                        // ---- Guided wizard ---------------------------------------
-                        // Appended last, past every tabOrder entry - see the
-                        // StackLayout's own currentIndex comment above for why
-                        // nothing needs tabOrder to name this page for it to work.
+                        // =====================================================
+                        // Guided wizard — one more page, not a fourth tab.
+                        // =====================================================
                         GuidedWizard {
                             Layout.fillWidth: true
                         }
                     }
                 }
 
-                Rectangle { Layout.fillWidth: true; height: 2; color: Theme.divider }
+                Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 2; color: Theme.divider }
 
-                // ---- runs --------------------------------------------------------
-                // Encoding is a job with a history, not a modal moment: one chip per
-                // past run plus whichever is in flight, newest first, scrolling
-                // horizontally rather than replacing itself every time.
+                // ---- runs --------------------------------------------------
                 RowLayout {
                     Layout.fillWidth: true
                     Layout.preferredHeight: 34
@@ -2749,7 +3498,7 @@ ApplicationWindow {
                                         color: encoding || failed ? Theme.accent : Theme.neutral400
                                     }
                                     Text {
-                                        font.family: "monospace"
+                                        font.family: Theme.monoFamily
                                         font.pixelSize: 12
                                         color: Theme.text
                                         text: encoding
@@ -2803,16 +3552,16 @@ ApplicationWindow {
                                 visible: EncoderController.runs.length === 0
                                 Layout.leftMargin: 16
                                 text: EncoderController.status
-                                font.family: "monospace"
+                                font.family: Theme.monoFamily
                                 font.pixelSize: 12
                                 color: Theme.textMuted
                             }
                         }
                     }
                 }
-                Rectangle { Layout.fillWidth: true; height: 1; color: Theme.divider }
+                Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.divider }
 
-                // ---- command bar ---------------------------------------------------
+                // ---- command bar -------------------------------------------
                 RowLayout {
                     Layout.fillWidth: true
                     Layout.leftMargin: 20
@@ -2823,6 +3572,7 @@ ApplicationWindow {
 
                     Rectangle {
                         Layout.fillWidth: true
+                        visible: appSettings.showCli
                         implicitHeight: 38
                         color: Theme.neutral100
 
@@ -2843,7 +3593,7 @@ ApplicationWindow {
                             Text {
                                 Layout.fillWidth: true
                                 text: window.cliLine
-                                font.family: "monospace"
+                                font.family: Theme.monoFamily
                                 font.pixelSize: 12
                                 color: Theme.text
                                 elide: Text.ElideRight
@@ -2855,8 +3605,13 @@ ApplicationWindow {
                             }
                         }
                     }
+                    Item {
+                        Layout.fillWidth: true
+                        visible: !appSettings.showCli
+                    }
 
                     Button {
+                        objectName: "encodeButton"
                         text: EncoderController.busy
                               ? qsTr("Encoding…")
                               : qsTr("Encode to .%1").arg(EncoderController.outputSuffix())

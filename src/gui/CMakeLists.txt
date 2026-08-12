@@ -37,7 +37,11 @@ set(AC3_QML_FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/qml/SegmentedControl.qml"
     "${CMAKE_CURRENT_SOURCE_DIR}/qml/LoudnessGroup.qml"
     "${CMAKE_CURRENT_SOURCE_DIR}/qml/VbrPanel.qml"
-    "${CMAKE_CURRENT_SOURCE_DIR}/qml/GuidedWizard.qml")
+    "${CMAKE_CURRENT_SOURCE_DIR}/qml/GuidedWizard.qml"
+    "${CMAKE_CURRENT_SOURCE_DIR}/qml/RailBlock.qml"
+    "${CMAKE_CURRENT_SOURCE_DIR}/qml/AssignmentPanel.qml"
+    "${CMAKE_CURRENT_SOURCE_DIR}/qml/FirstRunScreen.qml"
+    "${CMAKE_CURRENT_SOURCE_DIR}/qml/PreferencesDialog.qml")
 
 foreach(qml_file IN LISTS AC3_QML_FILES)
     get_filename_component(qml_name "${qml_file}" NAME)
