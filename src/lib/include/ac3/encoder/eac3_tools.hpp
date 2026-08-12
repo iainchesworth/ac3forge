@@ -42,18 +42,18 @@ struct BandLayout {
                                                      std::span<const bool> structure);
 
 // Table E2.12, the structure a decoder falls back on when cplbndstrce is 0 in
-// the first coupled block. It is used here as the SHAPE worth asking for - it
-// merges the top sub-bands into wider bands, so the top of the spectrum costs
-// a handful of coordinates rather than one per sub-band - but it is then
-// TRANSMITTED rather than left to the default.
+// a coupled block. It is used here as the SHAPE worth asking for - it merges
+// the top sub-bands into wider bands, so the top of the spectrum costs a
+// handful of coordinates rather than one per sub-band - but it is then
+// TRANSMITTED rather than left to the default, so this encoder's own streams
+// never rely on the fallback.
 //
-// Defaulting does not survive contact with a real decoder. §5.4.3.13 pins the
-// array's first element to sub-band cplbegf, which makes the table's index
-// relative to where coupling starts; read that way, a stream with cplbegf 0
-// decodes and every other value yields out-of-range exponents. Sending the
-// structure costs ncplsubnd - 1 bits a frame and removes the question, which
-// is the better trade for something a decoder cannot tell you it disagrees
-// about except by producing noise.
+// The array is indexed ABSOLUTELY from cplbegf == 0 (confirmed against
+// FFmpeg's decode_band_structure(), which memcpy's this table in full and
+// only then offsets its read pointer by cplbegf), not relative to wherever
+// this block's coupling region actually starts. A decoder applying it against
+// a stream with cplbegf != 0 must slice from kDefaultCplBandStructure[cplbegf]
+// onward, not from index 0.
 inline constexpr std::array<bool, 18> kDefaultCplBandStructure = {
     false, false, false, false, false, false, false, false, true,
     false, true,  true,  false, true,  true,  true,  true,  true,
