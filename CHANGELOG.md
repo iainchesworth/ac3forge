@@ -14,9 +14,27 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 
 ## [0.3.0-beta.1] - 2026-08-11
 
-Second tagged release. Adds a native Android app on NVIDIA Shield TV, packaged
+Second tagged release. Adds the two remaining Annex E coding tools (enhanced coupling,
+transient pre-noise processing), a native Android app on NVIDIA Shield TV, packaged
 `find_package(ac3forge)` libraries for third-party consumers, explicit multi-source channel
 assignment, and a GUI tier split for first-time users through experts.
+
+### E-AC-3 encoding and decoding
+
+- **Enhanced coupling (§E3.5)** and **transient pre-noise processing (§3.7)**, the two Annex E
+  tools the decoder previously recognised but refused (`DecodeError::kUnsupported`) — now
+  implemented end to end, encoder and decoder, each behind its own tool token (`cpl+ecpl`,
+  `tpn`). Enhanced coupling round-trips at the same ~20dB near-transparent bar as standard
+  coupling for realistic content; transient pre-noise processing follows the spec's own
+  time-scaling synthesis pseudocode, reusing the existing block-switch transient detector rather
+  than a second one.
+- Fixed two real conformance bugs found implementing the above: a missing §3.3.2 `nrematbd`
+  formula for `ecplinu` (both encoder and decoder), and a systematic 2:1 gain error in enhanced
+  coupling's FFT-based reconstruction pathway.
+- `Eac3Decoder::decode_substream` now returns an optional decoded substream plus a new
+  `flush()`, since transient pre-noise processing can hold a frame back until the next one
+  confirms whether a correction reaches into it. Streams that never use the tool see no
+  behavioural change.
 
 ### Dolby Atmos objects and multi-source encoding
 
@@ -70,12 +88,20 @@ assignment, and a GUI tier split for first-time users through experts.
 - Several MSVC `/analyze` and clang-tidy findings fixed for real: heap-allocating large
   encoder/decoder objects out of worker-thread stacks, reusing MDCT scratch buffers instead of
   stack-declaring them per call, and a couple of static-analysis false-positive suppressions.
+- macOS packaging now stays a single `.dmg` bundling both the runtime and library components,
+  matching the archive packages' intent — CPack's DragNDrop generator defaulted to splitting
+  per component the first time this leg actually ran on real macOS CI, caught by this release's
+  own packaging dry run.
 
 ### Known gaps
 
 - The Shield `.apk` ships debug-signed via Android's default debug keystore — no release
   keystore is provisioned in this repo yet, so it's a sideload-only build, not one suited for
   store distribution.
+- Enhanced coupling's encoder always sends angle/chaos as zero (an amplitude-only fit) — quality
+  degrades if two channels' content shares one narrow coupling band. Enhanced coupling and
+  spectral extension are never combined by this encoder, and `decode_access_unit` refuses rather
+  than supports transient pre-noise processing across multiple substreams of one access unit.
 - Objects will not decode as *objects* in Dolby's own decoder: DD+ JOC gates that on an
   authenticity tag keyed to a secret embedded in Dolby's decoder binaries, which this project
   does not produce. The bed still decodes as plain 5.1 anywhere.
