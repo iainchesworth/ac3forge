@@ -139,7 +139,7 @@ The Shield `.apk` is signed with a real release keystore when one is provisioned
 keystore cleanly if it isn't - either way it's fine for sideloading onto a Shield in developer
 mode. A release keystore is a prerequisite before this could ever go through the Play Store,
 which sideloading itself doesn't require. (Not to be confused with **object signing** - the EMDF
-Atmos authenticity tag, provisioned separately via the `ANDROID_SIGNING_KEY_BASE64` secret and
+Atmos authenticity tag, provisioned separately via the `ATMOS_SIGNING_KEY` secret and
 unrelated to APK code-signing; see "Provisioning the Android object-signing key" below.)
 
 No leg is `experimental: true` any more (see `ci.yml`'s status table), so all four package
@@ -230,7 +230,7 @@ one before an incident forces the question, not during it.
 
 Separate from the APK keystore above: this is the EMDF Atmos authenticity key that lets a
 validating decoder reconstruct the objects (see [Object signing](concepts/object-signing.md)). Off
-by default - `build-android` checks whether `ANDROID_SIGNING_KEY_BASE64` is set and, if not, writes
+by default - `build-android` checks whether `ATMOS_SIGNING_KEY` is set and, if not, writes
 no key asset, so the app ships the safe unsigned bed51 stream. **The key is yours to provision; do
 not paste key material into a chat with an agent - do this yourself, locally.**
 
@@ -242,13 +242,14 @@ base64 -w0 atmos.key > atmos.key.b64
 ```
 
 Then, in the GitHub repo, go to Settings > Secrets and variables > Actions and add
-`ANDROID_SIGNING_KEY_BASE64` - the full contents of `atmos.key.b64` - and delete the local
+`ATMOS_SIGNING_KEY` - the full contents of `atmos.key.b64` - and delete the local
 `atmos.key.b64` afterward.
 
 !!! danger "A signed APK carries the key"
-    Because the app signs on-device, any release built with this secret set produces an APK that
-    **contains the key** as an asset. Treat such an APK as key material: it must never be
-    distributed. A release without the secret is the safe unsigned app.
+    Because the app signs on-device, **any** Shield build with this secret set — the debug APK CI
+    produces on every push included, not just releases — bundles the key as an asset. Treat every
+    such APK as key material: it must never be distributed. A build without the secret is the safe
+    unsigned app.
 
 ## Verifying a download
 

@@ -296,7 +296,7 @@ IEC 61937 wrapping, since it streams live rather than writing a file.
 **The key is a bundled asset, written from a CI secret.** The desktop CLI takes a key by path or
 env var, but this app signs on-device, so the key has to travel in the APK as an asset,
 `app/src/main/assets/signing.key` (raw key bytes). That file is **gitignored** and is materialized
-at build time — from the `ANDROID_SIGNING_KEY_BASE64` repository secret in CI
+at build time — from the `ATMOS_SIGNING_KEY` repository secret in CI
 (`.github/workflows/_build.yml`), or dropped in by hand for a local signed build. `init_signing()`
 loads it once through the same `AAssetManager` the lead-voice asset already uses.
 
@@ -346,19 +346,20 @@ The app builds alongside the desktop packages rather than only ever being hand-b
 version, `26.1.10909125`, the same "don't trust whatever the image happens to cache" reasoning
 every other toolchain step in that workflow already follows) — a continuous smoke test proving the
 Gradle/CMake/NDK toolchain and every native source file still build, the same role `windows-msvc`'s
-always-on packaging step plays for the desktop legs. It never signs objects: ordinary CI is passed
-no `ANDROID_SIGNING_KEY_BASE64` secret, so no key asset is written and every build is the unsigned
+always-on packaging step plays for the desktop legs. **Object signing is gated purely on the
+`ATMOS_SIGNING_KEY` secret, not on whether this is a release.** Both `ci.yml` and `release.yml`
+forward that secret, so if it is set, *every* Shield build — the always-on debug APK included —
+bundles the key asset and signs; with no secret the step is skipped and the build is the unsigned
 bed51 app.
 
 For an actual release (`release.yml`, `do_package: true`), the same job also builds and stages the
-**release** variant (`CMAKE_BUILD_TYPE=Release`) as `ac3forge-shield-<version>.apk`. Two
-independent, both-optional signatures apply to it. *APK signing:* the APK is signed with a real
+**release** variant (`CMAKE_BUILD_TYPE=Release`) as `ac3forge-shield-<version>.apk`. A separate,
+independent signature — *APK code-signing* — also applies to it: the APK is signed with a real
 release keystore when `ANDROID_KEYSTORE_BASE64` and its companion secrets are provisioned (see
 `build.gradle.kts`'s `releaseSigningAvailable`), and falls back to the debug keystore otherwise —
 this app is sideload-only, so the release key matters only for update-signature continuity, not a
-store requirement. *Object signing:* independently, if `ANDROID_SIGNING_KEY_BASE64` is provisioned,
-`build-android` decodes it into the `signing.key` asset so the app signs its Atmos objects (a signed
-APK then carries the key and must not be distributed — see [Object signing](#object-signing)). The
+store requirement. (Object signing above is unrelated to this APK keystore; a signed-objects APK
+carries the key and must not be distributed — see [Object signing](#object-signing).) The
 APK is uploaded as a `packages-android` artifact and folded into the
 GitHub Release alongside the Windows/Linux/macOS packages (checksummed, GPG-signed, and
 build-provenance-attested exactly like every other package — `release.yml`'s artifact globs all

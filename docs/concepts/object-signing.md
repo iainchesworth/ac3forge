@@ -64,9 +64,11 @@ The Shield demo signs each frame on the device, so the key has to be present in 
 bundled asset, `app/src/main/assets/signing.key` (raw key bytes). That file is **gitignored** and
 is written from a CI secret at build time — it is never committed:
 
-- CI: set the repository secret `ANDROID_SIGNING_KEY_BASE64` (the key, base64-encoded).
-  `release.yml` passes it to the `build-android` job, which decodes it into the asset before the
-  Gradle build. Ordinary CI (no secret) builds the safe, unsigned app.
+- CI: set the repository secret `ATMOS_SIGNING_KEY` (the key, base64-encoded). Both `ci.yml` and
+  `release.yml` forward it to the `build-android` job, which decodes it into the asset before the
+  Gradle build — so **any** Shield build signs when the secret is set, debug or release. With no
+  secret (or on a fork PR, where secrets don't flow) the step is skipped and the build is the safe,
+  unsigned app.
 - Locally: drop your own `signing.key` (raw bytes) into `app/src/main/assets/` before building.
 
 At startup the app loads the asset; if it's present the object container is emitted and signed, and

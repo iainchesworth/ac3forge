@@ -39,7 +39,7 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   never embedded and never written to disk. `ac3cli atmos` gains `sign-objects` with
   `signing-key=<path>` (or the `AC3FORGE_SIGNING_KEY_FILE` / `AC3FORGE_SIGNING_KEY` env vars);
   signing engages only when both a request and a key are present. The Shield app reads its key from
-  a bundled `signing.key` asset written from the `ANDROID_SIGNING_KEY_BASE64` CI secret at build
+  a bundled `signing.key` asset written from the `ATMOS_SIGNING_KEY` CI secret at build
   time. See [docs/concepts/object-signing.md](docs/concepts/object-signing.md).
 
 ## [0.3.0-beta.1] - 2026-08-11

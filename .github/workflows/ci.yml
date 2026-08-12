@@ -439,6 +439,14 @@ jobs:
       # description in _build.yml.
       persist_quality_trend: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') }}
       quality_trend_branch: ${{ github.ref_name }}
+    secrets:
+      # Forward the Atmos object-signing key so build-android bundles it and the
+      # Shield app signs whenever the secret is set - on ordinary CI builds too,
+      # not only releases. Absent (or on a fork PR, where secrets don't flow) it
+      # resolves empty and the build stays the safe unsigned bed51 app. Only
+      # this one secret is forwarded here; the APK-keystore secrets stay on
+      # release.yml's call, which is the only path that packages a release APK.
+      ATMOS_SIGNING_KEY: ${{ secrets.ATMOS_SIGNING_KEY }}
 
   # Persists this run's encoder throughput numbers (docs/performance-trend.md)
   # so they outlive the CI log that produced them - the trend-tracking half of
