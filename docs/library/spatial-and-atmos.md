@@ -93,4 +93,5 @@ not treat these as objects at all. Both are covered in
 
 See also: [Encoding E-AC-3](encoding-eac3.md) — Atmos objects ride inside an ordinary E-AC-3
 stream; [Header map](header-map.md) — `ac3/oba/motion.hpp` covers authored/orbit object paths,
-which this page doesn't.
+which this page doesn't; [A worked scene: the station broadcast](station-broadcast.md) — a
+complete 115-second authored scene built on this API, from synthesis to `.ec3`.

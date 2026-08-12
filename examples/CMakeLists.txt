@@ -15,6 +15,7 @@ set(AC3FORGE_EXAMPLES
     metadata
     spatial_objects
     atmos_objects
+    station_broadcast
     mux_mkv)
 
 foreach(example IN LISTS AC3FORGE_EXAMPLES)
