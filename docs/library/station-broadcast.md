@@ -27,10 +27,10 @@ sequence starts at 0:01, the diegetic fan edit at about 0:14.)
 | 0:26 | Cargo jalopy flypast | Two co-moving objects (engine + its own radio) cross from rear-right; at closest approach the radio's 0.75 drowns the station's 0.30 |
 | 0:38 | Cut to a station close-up | The broadcast's bandpass opens to nearly clean and its gain doubles — same object, the *mix* performs the edit |
 | 0:52 | A runabout undocks and sweeps overhead | `z` reaches 0.65: real height metadata for a renderer with tops; the 5.1 bed folds it onto the ring |
+| 1:01 | The anthem surges back for the reprise | The cue's own measured form: full restatement at 1:01, climax plateau from 1:19 |
 | 1:12 | A second runabout crosses the port side | Rear-left to a front-left docking |
 | 1:24 | A maintenance pod welds on an upper pylon | Static object, front-right, raised |
-| 1:26 | The anthem swells for the reprise | Score and gain arc rise together |
-| 1:43 | The wormhole opens behind the station | A subsonic core almost entirely on `lfe_send` — the only route to the LFE — plus two shimmer objects that split and wrap up and over the room |
+| 1:43 | The wormhole opens behind the station | A subsonic core almost entirely on `lfe_send` — the only route to the LFE — plus two shimmer objects that split and wrap up and over the room; the score's final cadence lands on the flash at 1:44, as in the original |
 | 1:51 | ...and swallows itself | Pitch and gains collapse back to front-centre |
 
 Ten objects, one authored `KeyframePath` each, evaluated at the *end* of each
@@ -67,16 +67,18 @@ To listen immediately: `out_stereo.wav` in any player, or the E-AC-3 through
 FFmpeg (`ffplay out_bed51.ec3`). Consumer Dolby hardware should be fed the
 `bed51` variant for the reason above.
 
-The built-in anthem is an **original composition** — a heroic fanfare in
-B flat, rendered by the example's own little subtractive synthesizer, that
-tips its hat to the genre's famous rising-fourth openings without
-transcribing anyone's melody. The distinction is deliberate: a private cover
-is ordinary licensable territory, but note data in a public repository is a
-published transcription of the composition, which is not. The third argument
-replaces the anthem with a WAV you have the rights to (a soundtrack rip of
-your favourite station's theme, say, or a cover you recorded); it is mixed to
-mono, resampled, and played from scene time 0:02 through the same transmitter
-chain, so the 0:38 bandwidth-opening cut still happens to *your* recording.
+The built-in anthem is a **synthesizer cover** of the *Deep Space Nine* main
+title (Dennis McCarthy) — the seasons 1–3 arrangement, made by ear in C major
+for the example's own voices: the solo horn call over a pad, the solo-trumpet
+fanfare, and a final open-fifth cadence timed, as in the original, to the
+wormhole. The middle section has never been transcribed anywhere, so it is
+recomposed from the theme's own material. Note well: distributing a cover
+requires the appropriate licence wherever *you* distribute it — this
+repository's author has secured their own position, and forks must consider
+theirs. The third argument replaces the built-in cover with a WAV you have
+the rights to; it is mixed to mono, resampled, and played from scene time
+0:02 through the same transmitter chain, so the 0:38 bandwidth-opening cut
+still happens to *your* recording.
 
 ---
 

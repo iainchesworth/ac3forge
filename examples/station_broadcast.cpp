@@ -21,21 +21,24 @@
 //     0:38  cut to a station close-up: the broadcast opens to full
 //           bandwidth and takes the room
 //     0:52  a runabout undocks and sweeps overhead, squawking the tower
+//     1:01  the anthem surges back for the reprise
 //     1:12  a second runabout crosses the port side
 //     1:24  a maintenance pod welds sparks off an upper pylon
-//     1:26  the anthem swells for the reprise
 //     1:43  the wormhole opens behind the station - subsonic bloom,
-//           shimmer wrapping up and over the room
+//           shimmer wrapping up and over the room - and, as in the
+//           original cue, the music's final chord lands right on it
 //     1:51  ...and swallows itself
 //
-// The built-in anthem is an ORIGINAL composition - a heroic fanfare in
-// B flat that tips its hat to the genre's famous rising-fourth openings
-// without transcribing anyone's melody. (A private cover is licensable
-// territory; note data in a public repository is a published transcription
-// of the composition, which is not.) To hear the scene with a recording you
-// own - a soundtrack rip of your favourite station's anthem, say - pass its
-// WAV as the third argument and the broadcast plays that instead, starting
-// at scene time 0:02.
+// The built-in anthem is a synthesizer COVER of the Deep Space Nine main
+// title (Dennis McCarthy) - the seasons 1-3 arrangement, by ear: C major,
+// the solo horn call over a pad, the solo-trumpet fanfare, and a final
+// open-fifth cadence timed (as in the original) to the wormhole. The middle
+// section was never transcribed anywhere, so it is recomposed here from the
+// theme's own material. Distributing a cover needs a licence wherever you
+// distribute it; this repository's author has secured their own position,
+// and yours is your own affair. To hear the scene with a recording you own
+// instead, pass its WAV as the third argument and the broadcast plays that,
+// starting at scene time 0:02.
 //
 // Usage:
 //     station_broadcast                          smoke test: renders 0:24-0:34
@@ -168,7 +171,16 @@ double blep_saw(double& phase, double inc) {
 // "asset" of this example is a score, not a sample.
 // ---------------------------------------------------------------------------
 
-enum class Voice : std::uint8_t { kHorn, kTrumpet, kPad, kTimpani, kBoogieLead, kBoogieBass };
+enum class Voice : std::uint8_t {
+    kHorn,
+    kTrumpet,
+    kPad,
+    kTimpani,
+    kHarp,
+    kCymbal,
+    kBoogieLead,
+    kBoogieBass,
+};
 
 struct Note {
     double t = 0.0;
@@ -199,165 +211,191 @@ struct ScoreBuilder {
     }
 };
 
-// The eight-bar fanfare that anchors the piece, placed twice (statement and
-// reprise). Original melody: rising sixth, held ninth, stepwise descent.
-void compose_fanfare(ScoreBuilder& s, double t0, double vel, bool doubled) {
-    struct Step {
-        double t, dur;
-        int midi;
-    };
-    // The statement opens the way every great space fanfare seems to: a
-    // rising fourth, held. The continuation is this piece's own.
-    constexpr std::array<Step, 22> kTrumpet{{{0.0, 1.0, 70},   {1.0, 2.0, 75},
-                                             {3.0, 1.0, 77},
-                                             {4.0, 1.0, 75},   {5.0, 0.5, 74},
-                                             {5.5, 0.5, 72},   {6.0, 2.0, 74},
-                                             {8.0, 1.0, 67},   {9.0, 0.5, 70},
-                                             {9.5, 1.0, 74},   {10.5, 1.5, 79},
-                                             {12.0, 1.0, 77},  {13.0, 0.5, 75},
-                                             {13.5, 0.5, 72},  {14.0, 2.0, 70},
-                                             {16.0, 1.0, 72},  {17.0, 0.5, 74},
-                                             {17.5, 1.5, 75},  {19.0, 1.0, 77},
-                                             {20.0, 1.0, 79},  {21.0, 0.75, 77},
-                                             {21.75, 0.75, 74}}};
-    for (const auto& n : kTrumpet) {
-        s.note(t0 + n.t, n.dur, n.midi, vel, Voice::kTrumpet);
+// A harp figure: sequential plucks, each ringing past the next.
+void arp(ScoreBuilder& s, double t, std::initializer_list<int> midis, double step, double vel) {
+    double at = t;
+    for (const int m : midis) {
+        s.note(at, step * 1.9, m, vel, Voice::kHarp);
+        at += step;
     }
-    s.note(t0 + 22.5, 2.5, 70, vel, Voice::kTrumpet);
-
-    constexpr std::array<Step, 7> kHorn{{{0.0, 4.0, 62},
-                                         {4.0, 4.0, 63},
-                                         {8.0, 4.0, 62},
-                                         {12.0, 4.0, 63},
-                                         {16.0, 2.0, 63},
-                                         {18.0, 2.0, 65},
-                                         {20.0, 3.0, 62}}};
-    for (const auto& n : kHorn) {
-        s.note(t0 + n.t, n.dur, n.midi, vel * 0.7, Voice::kHorn);
-    }
-    if (doubled) {
-        constexpr std::array<Step, 7> kOctave{{{0.0, 1.0, 58},
-                                               {1.5, 1.5, 62},
-                                               {6.0, 2.0, 62},
-                                               {10.5, 1.5, 67},
-                                               {14.0, 2.0, 58},
-                                               {19.0, 1.0, 65},
-                                               {22.5, 2.5, 58}}};
-        for (const auto& n : kOctave) {
-            s.note(t0 + n.t, n.dur, n.midi, vel * 0.6, Voice::kHorn);
-        }
-    }
-
-    s.chord(t0 + 0.0, 4.0, {46, 53, 58, 62, 65}, vel * 0.85);
-    s.chord(t0 + 4.0, 4.0, {39, 46, 55, 63}, vel * 0.85);
-    s.chord(t0 + 8.0, 4.0, {43, 50, 58, 62}, vel * 0.85);
-    s.chord(t0 + 12.0, 4.0, {39, 46, 55, 63}, vel * 0.85);
-    s.chord(t0 + 16.0, 2.0, {36, 48, 55, 63}, vel * 0.85);
-    s.chord(t0 + 18.0, 2.0, {41, 48, 53, 57}, vel * 0.85);
-    s.chord(t0 + 20.0, 4.5, {46, 53, 58, 62}, vel * 0.85);
-
-    constexpr std::array<Step, 7> kTimp{{{0.0, 0.8, 46},
-                                         {4.0, 0.8, 39},
-                                         {8.0, 0.8, 43},
-                                         {12.0, 0.8, 39},
-                                         {16.0, 0.8, 36},
-                                         {18.0, 0.8, 41},
-                                         {20.0, 0.8, 46}}};
-    for (const auto& n : kTimp) {
-        s.note(t0 + n.t, n.dur, n.midi, vel, Voice::kTimpani);
-    }
-    s.roll(t0 + 19.0, 1.0, 41, vel * 0.4, vel);
 }
 
-// The full 115-second anthem, at 60 bpm so beats are seconds.
-std::vector<Note> compose_anthem() {
-    ScoreBuilder s;
+// The opening solo horn call, over the pad: a two-note rising fourth held
+// long, a quarter-note ascent spanning the octave to a held high note under
+// the string swell, and a stepwise descent to a dark landing.
+void horn_call(ScoreBuilder& s) {
+    s.note(5.5, 0.45, 62, 0.42, Voice::kHorn);   // D4 pickup
+    s.note(5.95, 3.35, 67, 0.48, Voice::kHorn);  // G4, held across the bar
+    s.note(9.6, 1.0, 62, 0.45, Voice::kHorn);    // the ascent: D G A D'
+    s.note(10.6, 1.0, 67, 0.47, Voice::kHorn);
+    s.note(11.6, 1.0, 69, 0.50, Voice::kHorn);
+    s.note(12.6, 3.6, 74, 0.55, Voice::kHorn);   // D5 under the string swell
+    s.note(16.2, 1.0, 72, 0.50, Voice::kHorn);   // the descent: C B G, to C
+    s.note(17.2, 1.0, 71, 0.48, Voice::kHorn);
+    s.note(18.2, 1.0, 67, 0.45, Voice::kHorn);
+    s.note(19.2, 1.4, 60, 0.42, Voice::kHorn);
+    // The string swell that carries the call's high note.
+    s.chord(15.6, 3.4, {72, 79}, 0.26);
+    s.chord(16.6, 2.4, {72, 79}, 0.36);
+}
 
-    // Intro: a pad under a solo horn call - a rising fourth, held long, then
-    // a stepwise climb to the octave. The gesture every station anthem
-    // shares; the notes after it are this one's own.
-    s.chord(2.0, 12.0, {46, 53, 58}, 0.4);
-    s.note(3.0, 2.0, 58, 0.5, Voice::kHorn);
-    s.note(5.0, 2.5, 63, 0.55, Voice::kHorn);
-    s.note(8.0, 1.0, 65, 0.5, Voice::kHorn);
-    s.note(9.0, 1.0, 67, 0.5, Voice::kHorn);
-    s.note(10.0, 3.5, 70, 0.55, Voice::kHorn);
-
-    // The reveal: first full chords as the station pans into view.
-    s.chord(14.0, 4.0, {46, 53, 58, 62}, 0.5);
-    s.chord(18.0, 4.0, {43, 50, 58, 62}, 0.5);
-    s.chord(22.0, 2.0, {39, 46, 55, 63}, 0.5);
-    s.chord(24.0, 2.0, {41, 48, 53, 57}, 0.55);
-    s.note(14.0, 2.0, 74, 0.55, Voice::kHorn);
-    s.note(16.0, 1.0, 72, 0.5, Voice::kHorn);
-    s.note(17.0, 1.0, 70, 0.5, Voice::kHorn);
-    s.note(18.0, 2.0, 67, 0.5, Voice::kHorn);
-    s.note(20.0, 1.0, 70, 0.5, Voice::kHorn);
-    s.note(21.0, 1.0, 74, 0.55, Voice::kHorn);
-    s.note(22.0, 1.5, 75, 0.55, Voice::kHorn);
-    s.note(23.5, 0.5, 74, 0.5, Voice::kHorn);
-    s.note(24.0, 2.0, 72, 0.5, Voice::kHorn);
-    s.roll(25.0, 1.0, 46, 0.2, 0.6);
-
-    // Under the jalopy flypast the band keeps playing, mid-strength - the
-    // swamping is the MIX's job (object gains), not the score's.
-    s.chord(26.0, 4.0, {46, 53, 58, 62}, 0.55);
-    s.chord(30.0, 4.0, {43, 50, 58, 62}, 0.55);
-    s.chord(34.0, 2.0, {39, 46, 55, 63}, 0.55);
-    s.chord(36.0, 2.0, {41, 48, 53, 57}, 0.6);
-    s.note(26.0, 0.8, 46, 0.55, Voice::kTimpani);
-    s.note(30.0, 0.8, 43, 0.55, Voice::kTimpani);
-    s.note(34.0, 0.8, 39, 0.55, Voice::kTimpani);
-    s.note(36.0, 0.8, 41, 0.6, Voice::kTimpani);
-    s.note(32.0, 1.0, 70, 0.4, Voice::kTrumpet);
-    s.note(33.0, 1.0, 72, 0.4, Voice::kTrumpet);
-    s.note(34.0, 1.5, 75, 0.45, Voice::kTrumpet);
-    s.note(35.5, 0.5, 74, 0.4, Voice::kTrumpet);
-    s.note(36.0, 2.0, 72, 0.45, Voice::kTrumpet);
-
-    // Statement of the fanfare at the close-up cut.
-    compose_fanfare(s, 38.0, 0.7, false);
-
-    // The lyrical middle, under the runabout traffic.
-    s.chord(60.0, 4.0, {43, 50, 58}, 0.45);
-    s.chord(64.0, 4.0, {39, 46, 55}, 0.45);
-    s.chord(68.0, 4.0, {46, 53, 62}, 0.45);
-    s.chord(72.0, 4.0, {48, 55, 63}, 0.45);
-    s.chord(76.0, 4.0, {39, 46, 55, 63}, 0.45);
-    s.chord(80.0, 4.0, {41, 48, 57}, 0.45);
-    s.chord(84.0, 4.0, {41, 48, 58}, 0.5);
-    s.note(60.0, 2.0, 62, 0.5, Voice::kHorn);
-    s.note(62.0, 1.0, 63, 0.5, Voice::kHorn);
-    s.note(63.0, 1.0, 65, 0.5, Voice::kHorn);
-    s.note(64.0, 2.0, 67, 0.55, Voice::kHorn);
-    s.note(66.0, 2.0, 63, 0.5, Voice::kHorn);
-    s.note(68.0, 2.0, 65, 0.5, Voice::kHorn);
-    s.note(70.0, 1.0, 62, 0.5, Voice::kHorn);
-    s.note(71.0, 1.0, 58, 0.45, Voice::kHorn);
-    s.note(72.0, 3.0, 60, 0.5, Voice::kHorn);
-    s.note(76.0, 2.0, 63, 0.5, Voice::kHorn);
-    s.note(78.0, 2.0, 67, 0.55, Voice::kHorn);
-    s.note(80.0, 2.0, 65, 0.5, Voice::kHorn);
-    s.note(82.0, 2.0, 72, 0.55, Voice::kHorn);
-    // A quarter-note timpani build into the reprise.
-    for (int i = 0; i < 4; ++i) {
-        s.note(84.0 + i, 0.5, 41, 0.3 + 0.1 * i, Voice::kTimpani);
+// One statement of the main fanfare (solo trumpet, per the S1-3 cue): the
+// quick 5-1-3 pickup into the held second degree, answered by the 4-4-3-4
+// figure cresting on a held fifth, over C | F | G harmony.
+void statement(ScoreBuilder& s, double t0, double vel, bool doubled, bool continuation) {
+    // The tune (concert C): quick pickup G4 C5 E5, D5 held; answer F5 F5
+    // E5 F5 cresting on a held G5. Body pulse ~75 bpm (0.8 s beats).
+    s.note(t0, 0.27, 67, vel, Voice::kTrumpet);
+    s.note(t0 + 0.27, 0.27, 72, vel, Voice::kTrumpet);
+    s.note(t0 + 0.54, 0.28, 76, vel, Voice::kTrumpet);
+    s.note(t0 + 0.82, 2.40, 74, vel, Voice::kTrumpet);
+    s.note(t0 + 3.60, 0.55, 77, vel, Voice::kTrumpet);
+    s.note(t0 + 4.15, 0.55, 77, vel, Voice::kTrumpet);
+    s.note(t0 + 4.70, 0.27, 76, vel, Voice::kTrumpet);
+    s.note(t0 + 4.97, 0.28, 77, vel, Voice::kTrumpet);
+    s.note(t0 + 5.25, 2.55, 79, vel, Voice::kTrumpet);
+    if (doubled) {
+        // Horns shadow the held notes an octave down for the big statements.
+        s.note(t0 + 0.82, 2.4, 62, vel * 0.6, Voice::kHorn);
+        s.note(t0 + 5.25, 2.5, 67, vel * 0.6, Voice::kHorn);
     }
 
-    // Reprise, bigger, cadencing straight into the finale.
-    compose_fanfare(s, 86.0, 0.8, true);
-    s.note(106.0, 4.0, 82, 0.55, Voice::kTrumpet);
-    s.note(106.0, 4.0, 74, 0.5, Voice::kHorn);
+    s.chord(t0, 3.2, {36, 48, 55, 64}, vel * 0.8);
+    s.chord(t0 + 3.2, 3.2, {41, 53, 60, 65}, vel * 0.8);
+    s.chord(t0 + 6.4, 1.6, {43, 55, 59, 62}, vel * 0.75);
+    s.note(t0, 0.8, 36, vel * 0.9, Voice::kTimpani);
+    s.note(t0 + 3.2, 0.8, 41, vel * 0.85, Voice::kTimpani);
+    s.note(t0 + 6.4, 0.8, 43, vel * 0.85, Voice::kTimpani);
 
-    // Finale: one broad chord while the wormhole does the talking, then a
-    // last quiet horn as it closes.
-    s.chord(108.0, 5.5, {46, 53, 58, 62, 72}, 0.75);
-    s.note(108.0, 4.0, 58, 0.65, Voice::kHorn);
-    s.note(108.0, 4.0, 65, 0.6, Voice::kHorn);
-    s.note(108.0, 3.0, 77, 0.6, Voice::kTrumpet);
-    s.roll(108.0, 3.0, 46, 0.4, 0.75);
-    s.note(112.5, 2.0, 58, 0.35, Voice::kHorn);
-    s.chord(112.5, 2.2, {46, 53}, 0.3);
+    if (continuation) {
+        // Settling tail: down from the crest and home to C.
+        s.note(t0 + 8.0, 0.5, 77, vel * 0.9, Voice::kTrumpet);
+        s.note(t0 + 8.5, 0.5, 76, vel * 0.85, Voice::kTrumpet);
+        s.note(t0 + 9.0, 0.9, 72, vel * 0.85, Voice::kTrumpet);
+        s.note(t0 + 9.9, 1.7, 67, vel * 0.75, Voice::kTrumpet);
+        s.chord(t0 + 8.0, 1.6, {41, 53, 57, 65}, vel * 0.7);
+        s.chord(t0 + 9.6, 2.0, {36, 48, 55, 60}, vel * 0.75);
+        s.note(t0 + 9.6, 0.8, 36, vel * 0.8, Voice::kTimpani);
+    } else {
+        s.chord(t0 + 8.0, 1.6, {36, 48, 55, 60, 67}, vel * 0.8);
+    }
+}
+
+// The full 115-second cover, mapped to the measured form of the S1-3 cue
+// (scene time = cue time + 1 s; the picture's cut points and the score's
+// section boundaries land where the original's do, cadence included).
+std::vector<Note> compose_cover() {
+    ScoreBuilder s;
+
+    // 0:02-0:28 - the tonic drone with slow arpeggios on C, Csus4, and G:
+    // the "major chords over a major root drone" opening.
+    s.chord(2.0, 26.5, {36, 43, 48}, 0.4);
+    for (const double base : {2.6, 12.6}) {
+        arp(s, base, {48, 52, 55, 60}, 0.55, 0.35);
+        arp(s, base + 2.5, {48, 53, 55, 60}, 0.55, 0.35);
+        arp(s, base + 5.0, {48, 52, 55, 60}, 0.55, 0.35);
+        arp(s, base + 7.5, {43, 47, 50, 55}, 0.55, 0.35);
+    }
+    arp(s, 22.6, {48, 52, 55, 60}, 0.55, 0.30);
+    arp(s, 25.1, {48, 53, 55, 60}, 0.55, 0.28);
+
+    // 0:05.5-0:20.5 - the solo call.
+    horn_call(s);
+
+    // 0:21-0:28 - hushed, sparse strings alone.
+    s.chord(21.0, 7.5, {60, 67}, 0.22);
+
+    // 0:28.5 - the full orchestra arrives at a step (the ~10 dB entry in
+    // the original): introductory fanfare chords ahead of the theme.
+    s.note(27.4, 1.1, 60, 0.50, Voice::kCymbal);
+    s.roll(27.9, 0.6, 36, 0.25, 0.6);
+    s.chord(28.5, 1.6, {36, 48, 55, 60, 64, 67}, 0.85);
+    s.note(28.5, 1.6, 60, 0.60, Voice::kHorn);
+    s.note(28.5, 1.6, 64, 0.55, Voice::kHorn);
+    s.note(28.5, 0.9, 36, 0.80, Voice::kTimpani);
+    s.chord(30.1, 1.6, {36, 53, 57, 60, 65}, 0.80);
+    s.note(30.1, 0.8, 41, 0.70, Voice::kTimpani);
+    s.chord(31.7, 1.3, {43, 50, 55, 60, 62}, 0.85);
+    s.note(31.7, 1.3, 67, 0.60, Voice::kHorn);
+    s.note(31.7, 0.8, 43, 0.75, Voice::kTimpani);
+
+    // 0:33 - the main theme statement, solo trumpet, on the title card.
+    // Its crest rings straight across the picture's close-up cut at 0:38.
+    statement(s, 33.0, 0.7, false, true);
+
+    // 0:44.6-0:60.5 - the quieter middle. No source transcribes this
+    // stretch, so it is recomposed from the theme's own descent shapes;
+    // strings lead, quietest under the runabout pass.
+    s.chord(44.6, 3.2, {50, 57, 60, 65}, 0.40);
+    s.chord(47.8, 3.2, {52, 55, 60}, 0.38);
+    s.chord(51.0, 3.2, {41, 53, 57, 65}, 0.40);
+    s.chord(54.2, 3.2, {48, 55, 62}, 0.35);
+    s.chord(57.4, 3.0, {43, 55, 60}, 0.35);
+    s.note(44.6, 1.6, 69, 0.35, Voice::kHorn);
+    s.note(46.2, 1.6, 67, 0.34, Voice::kHorn);
+    s.note(47.8, 2.4, 64, 0.33, Voice::kHorn);
+    s.note(50.2, 0.8, 62, 0.32, Voice::kHorn);
+    s.note(51.0, 1.6, 65, 0.34, Voice::kHorn);
+    s.note(52.6, 1.6, 64, 0.32, Voice::kHorn);
+    s.note(54.2, 2.4, 62, 0.30, Voice::kHorn);
+    s.note(56.6, 3.4, 60, 0.28, Voice::kHorn);
+    arp(s, 53.5, {48, 55, 60}, 0.7, 0.22);
+    arp(s, 56.2, {48, 55, 60, 67}, 0.7, 0.20);
+
+    // 1:01 - the reprise re-enters sharply.
+    s.note(59.9, 1.1, 60, 0.55, Voice::kCymbal);
+    s.roll(60.4, 0.6, 36, 0.3, 0.7);
+    s.chord(61.0, 1.5, {36, 48, 55, 60, 64, 67}, 0.90);
+    s.note(61.0, 0.9, 36, 0.85, Voice::kTimpani);
+    statement(s, 61.8, 0.8, true, true);
+    // Bridge into the plateau: horns climbing stepwise.
+    s.note(73.4, 1.6, 64, 0.55, Voice::kHorn);
+    s.note(75.0, 1.6, 65, 0.58, Voice::kHorn);
+    s.note(76.6, 1.6, 67, 0.60, Voice::kHorn);
+    s.note(78.2, 0.8, 69, 0.62, Voice::kHorn);
+    s.note(79.0, 0.9, 71, 0.65, Voice::kHorn);
+    s.chord(73.4, 3.2, {41, 53, 57, 65}, 0.55);
+    s.chord(76.6, 1.6, {43, 50, 55, 62}, 0.60);
+    s.chord(78.2, 1.7, {43, 55, 60}, 0.60);
+    s.note(76.6, 0.5, 43, 0.50, Voice::kTimpani);
+    s.note(78.2, 0.5, 43, 0.55, Voice::kTimpani);
+    s.note(79.2, 0.4, 43, 0.60, Voice::kTimpani);
+
+    // 1:19-1:42 - the climax plateau: two more full statements with horn
+    // doubling and harp runs, then sustained open fifths.
+    s.note(78.9, 1.1, 60, 0.60, Voice::kCymbal);
+    arp(s, 79.2, {48, 52, 55, 60, 64, 67, 72, 76}, 0.14, 0.30);
+    statement(s, 80.0, 0.85, true, false);
+    s.chord(88.0, 1.6, {36, 43, 48, 55, 60, 67}, 0.80);
+    s.note(88.0, 3.2, 60, 0.50, Voice::kHorn);
+    s.note(88.0, 3.2, 67, 0.50, Voice::kHorn);
+    s.note(88.5, 1.1, 60, 0.65, Voice::kCymbal);
+    arp(s, 88.8, {48, 52, 55, 60, 64, 67, 72, 76}, 0.14, 0.32);
+    statement(s, 89.6, 0.9, true, true);
+    s.chord(101.2, 2.1, {36, 43, 48, 55}, 0.60);
+    s.note(101.2, 2.0, 60, 0.55, Voice::kHorn);
+    s.note(101.2, 2.0, 67, 0.55, Voice::kHorn);
+    s.note(101.2, 2.0, 72, 0.50, Voice::kTrumpet);
+    for (int i = 0; i < 4; ++i) {
+        s.note(100.0 + 0.8 * i, 0.4, 36, 0.5 + 0.05 * i, Voice::kTimpani);
+    }
+
+    // 1:43.5 - the two-beat breath...
+    s.roll(103.5, 0.45, 36, 0.15, 0.4);
+
+    // 1:44 - ...and the final cadence, an open fifth (the lead sheet closes
+    // on a C5 chord symbol), landing with the wormhole and sustaining while
+    // it blooms.
+    s.note(103.6, 0.4, 60, 0.70, Voice::kCymbal);
+    s.chord(104.0, 5.8, {36, 43, 48, 55, 60, 67, 72, 79}, 0.85);
+    s.note(104.0, 5.0, 60, 0.70, Voice::kHorn);
+    s.note(104.0, 5.0, 67, 0.70, Voice::kHorn);
+    s.note(104.0, 4.5, 72, 0.65, Voice::kTrumpet);
+    s.note(104.0, 4.0, 79, 0.45, Voice::kTrumpet);
+    s.roll(104.0, 2.8, 36, 0.5, 0.8);
+    // Afterglow as the wormhole swallows itself.
+    arp(s, 110.3, {48, 55, 60, 67, 72}, 0.4, 0.18);
+    s.chord(110.5, 3.2, {36, 43, 48}, 0.28);
 
     return std::move(s.notes);
 }
@@ -438,6 +476,10 @@ class MusicSynth {
                 return 1500.0;
             case Voice::kTimpani:
                 return 700.0;
+            case Voice::kHarp:
+                return std::min(6000.0, 8.0 * n.hz);
+            case Voice::kCymbal:
+                return 9000.0;
             case Voice::kBoogieLead:
                 return 3000.0;
             case Voice::kBoogieBass:
@@ -508,6 +550,32 @@ class MusicSynth {
                 const double thump =
                     a.thump.process(rng_.bipolar()) * std::exp(-tt * 18.0) * 2.0;
                 return (0.8 * tone + 0.5 * thump) * std::exp(-tt * 3.5) * n.vel * 0.55;
+            }
+            case Voice::kHarp: {
+                // A pluck: fundamental plus a fading second partial, fast
+                // exponential decay, brightness rolled off by the note's LP.
+                if (tt > n.dur + 2.0) {
+                    a.done = true;
+                    return 0.0;
+                }
+                a.phase += n.hz * kDt;
+                a.phase2 += n.hz * 2.0 * kDt;
+                const double body = std::sin(kTau * a.phase) +
+                                    0.4 * std::exp(-tt * 6.0) * std::sin(kTau * a.phase2);
+                return a.timbre.process(body) * std::exp(-tt * 2.6) * n.vel * 0.20;
+            }
+            case Voice::kCymbal: {
+                // A swell: filtered noise rising over the note and crashing at
+                // its end, then ringing out.
+                const double rise = std::min(tt / std::max(n.dur, 0.05), 1.0);
+                const double ring = tt > n.dur ? std::exp(-(tt - n.dur) / 1.4) : rise * rise;
+                if (tt > n.dur + 4.0) {
+                    a.done = true;
+                    return 0.0;
+                }
+                const double sizzle = a.timbre.process(rng_.bipolar()) -
+                                      a.thump.process(rng_.bipolar());
+                return sizzle * ring * n.vel * 0.30;
             }
             case Voice::kBoogieLead: {
                 const double inc = n.hz * kDt;
@@ -863,10 +931,13 @@ std::vector<ac3::oba::ObjectPath> build_paths() {
         {15.5, {0.5, 0.04, 0.05}, 0.30, 0.0},
         {37.5, {0.5, 0.05, 0.05}, 0.30, 0.0},
         {39.0, {0.5, 0.10, 0.08}, 0.62, 0.06},
-        {60.0, {0.5, 0.10, 0.08}, 0.52, 0.05},
-        {86.0, {0.5, 0.10, 0.08}, 0.52, 0.08},
-        {108.0, {0.5, 0.10, 0.08}, 0.52, 0.10},
-        {113.0, {0.5, 0.06, 0.05}, 0.35, 0.02},
+        {50.0, {0.5, 0.10, 0.08}, 0.55, 0.05},
+        {60.5, {0.5, 0.10, 0.08}, 0.58, 0.06},
+        {80.0, {0.5, 0.10, 0.08}, 0.62, 0.08},
+        {103.3, {0.5, 0.10, 0.08}, 0.58, 0.08},
+        {104.0, {0.5, 0.10, 0.08}, 0.55, 0.10},
+        {110.0, {0.5, 0.08, 0.06}, 0.50, 0.06},
+        {113.0, {0.5, 0.06, 0.05}, 0.32, 0.02},
         {115.0, {0.5, 0.04, 0.05}, 0.00, 0.0},
     }));
 
@@ -988,9 +1059,9 @@ constexpr std::array<Cue, 11> kCues{{
     {26.0, "cargo jalopy flypast: engine rumble and someone's boogie radio"},
     {38.0, "cut to close-up: the broadcast opens to full bandwidth"},
     {52.0, "runabout undocks, sweeps overhead, squawks the tower"},
+    {61.0, "the anthem surges back for the reprise"},
     {72.0, "second runabout crosses the port side"},
     {84.0, "maintenance pod welding on the upper pylon"},
-    {86.0, "the anthem swells for the reprise"},
     {103.0, "the wormhole opens behind the station"},
     {111.5, "...and swallows itself"},
 }};
@@ -1081,7 +1152,7 @@ int main(int argc, char** argv) {
         static_cast<int>(kObjectCount)};
 
     const auto paths = build_paths();
-    MusicSynth anthem{compose_anthem()};
+    MusicSynth anthem{compose_cover()};
     MusicSynth boogie{compose_boogie()};
     RadioFx station_radio{300.0, 3100.0, 0.7, 0.12, 0.010, 1.2, 0xA11CE5u};
     RadioFx jalopy_radio{500.0, 2400.0, 1.1, 0.22, 0.018, 3.0, 0xBEEFCAFEu};
