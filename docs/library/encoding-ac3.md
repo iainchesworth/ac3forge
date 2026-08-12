@@ -3,11 +3,13 @@
 `ac3/encoder/encoder.hpp`. One call, one syncframe.
 
 ```cpp
-ac3::FrameEncoder encoder{{
+// Heap-allocated: FrameEncoder carries several KB of MDCT scratch/history
+// state (PREfast's C6262).
+auto encoder = std::make_unique<ac3::FrameEncoder>(ac3::EncoderConfig{
     .bitrate_kbps = 448,
     .acmod = ac3::Acmod::k3_2,  // L, C, R, SL, SR
     .lfe = true,
-}};
+});
 
 // Table 5.8 order, LFE last, exactly kSamplesPerFrame (1536) samples each.
 std::vector<std::vector<float>> pcm(6, std::vector<float>(ac3::kSamplesPerFrame));
@@ -19,7 +21,7 @@ std::vector<std::byte> stream;
 for (int frame = 0; frame < 31; ++frame) {  // 48000 / 1536, near enough
     fill_with_audio(pcm, frame, 48000.0);
 
-    const auto encoded = encoder.encode_frame(views);
+    const auto encoded = encoder->encode_frame(views);
     if (!encoded) {
         std::printf("encode failed: %d\n", std::to_underlying(encoded.error()));
         return 1;
@@ -53,7 +55,8 @@ plus per-band coordinates.
 
 ### Block switching
 
-Automatic, like delta bit allocation below — no config field toggles it. A §8.2.2 transient
+Automatic, like delta bit allocation (§7.2.2.6, see [Decoding](decoding.md)) — no config field
+toggles either one. A §8.2.2 transient
 detector runs per full-bandwidth channel per block; a channel that switches anywhere in the frame
 is excluded from coupling for that whole frame, since `chincpl` here is frame-wide all-or-nothing
 rather than a per-channel flag. The LFE never switches.

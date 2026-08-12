@@ -128,11 +128,12 @@ load-bearing enough to flag up front:
     logic in general, but says nothing about ALSA's own implementation specifically.
 
 Enhanced coupling and transient pre-noise processing are both implemented (see
-[Decoding](library/decoding.md) and the `ecpl`/`tpn` tool tokens), each with a known MVP
-limitation - see [What it does not do](https://github.com/iainchesworth/ac3forge/blob/main/README.md#what-it-does-not-do).
-Neither has an
-external decode oracle at all - not even the FFmpeg-can't-but-the-in-repo-decoder-can situation
-7.1.4 is in, since FFmpeg's own Annex E parser has never read either tool's syntax - so
+[Decoding](library/decoding.md), [Encoding E-AC-3](library/encoding-eac3.md) and the `ecpl`/`tpn`
+tool tokens) - transient pre-noise processing's decoder buffers one frame at a time once a stream
+turns it on, an API characteristic rather than a gap, covered in [What it does not
+do](https://github.com/iainchesworth/ac3forge/blob/main/README.md#what-it-does-not-do). Neither
+tool has an external decode oracle at all - not even the FFmpeg-can't-but-the-in-repo-decoder-can
+situation 7.1.4 is in, since FFmpeg's own Annex E parser has never read either tool's syntax - so
 `tools/quality_race.py`'s CI gate scores both through this project's own decoder instead (see
 [Validation](verification.md#where-the-oracles-dont-reach)). Variable bit rate is
 E-AC-3 only — AC-3's frame size indexes Table 5.18 rather than stating a word count directly, so

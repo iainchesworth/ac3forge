@@ -2,11 +2,13 @@
 
 ## Build and test
 
-Setup is in [docs/BUILDING.md](https://github.com/iainchesworth/ac3forge/blob/main/docs/building.md). The short form, from a Developer PowerShell:
+Setup is in [docs/building.md](https://github.com/iainchesworth/ac3forge/blob/main/docs/building.md). The short form, from any shell (a Developer PowerShell is not required — see that page):
 
 ```bash
-cmake --preset debug && cmake --build --preset debug && ctest --preset debug
+cmake --preset config-windows-msvc-debug && cmake --build --preset build-windows-msvc-debug && ctest --preset test-windows-msvc-debug
 ```
+
+There is no bare `debug` preset — swap `windows-msvc` for whichever platform/compiler fragment matches your machine (`windows-llvm`, `linux-gcc`, `linux-llvm`, `macos-llvm`).
 
 Everything must pass before you push. There are no known-failing tests and no skips; if
 something fails, that is your change or a genuine regression, not noise.

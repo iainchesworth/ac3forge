@@ -7,7 +7,7 @@ Every command here has been run on the configuration described under
 
 | | Version | Notes |
 |---|---|---|
-| A compiler | MSVC (VS 2026), clang-cl 21, GCC 15, or Clang 21 | C++23. `std::expected`, `std::print` and deducing-`this` are all used. One [preset](#presets) per compiler; all four are required, green CI legs — see [Verified configuration](#verified-configuration). |
+| A compiler | MSVC (VS 2026), clang-cl 21, GCC 15, or Clang 21 | C++23. `std::expected`, `std::print` and deducing-`this` are all used. One [preset](#presets) per compiler; all five platform/compiler legs are required, green CI (Clang 21 covers two of them — `linux-llvm` and `macos-llvm` — as separate legs) — see [Verified configuration](#verified-configuration). |
 | CMake | ≥ 3.28 | `cmake_minimum_required(VERSION 3.28...4.3)`. |
 | Ninja | any recent | The presets hard-code the Ninja generator. |
 | vcpkg | any recent | Supplies Catch2, and nothing else. Needed only when tests are on. |
@@ -96,7 +96,7 @@ because it isn't a platform/compiler pair but an instrumented variant of `linux-
 which inherits `linux-llvm` plus a `sanitize-asan-ubsan` fragment setting
 `AC3FORGE_SANITIZERS=address,undefined` (see `cmake/Sanitizers.cmake`; MSVC is rejected outright,
 so this only exists for GCC/Clang). See [Verified configuration](#verified-configuration) for what CI says
-about all eleven. There are also six `ci-<platform>` `workflowPresets` (Release except for the
+about all thirteen. There are also six `ci-<platform>` `workflowPresets` (Release except for the
 asan-ubsan one, which is Debug-only) that chain configure→build→test in one
 `cmake --workflow --preset ci-windows-msvc` call; that is exactly what CI itself runs.
 
@@ -111,6 +111,14 @@ them too just to resolve its gcov runtime symbols at link time for targets nobod
 coverage of anyway. `.github/workflows/ci.yml`'s `coverage` job runs `gcovr` over `src/lib/*`
 after `ctest` and gates on line/branch percentage — see that job's own comment for the current
 thresholds and why they sit below the measured baseline.
+
+There is a thirteenth trio, `config-linux-llvm-shared` / `build-linux-llvm-shared` /
+`test-linux-llvm-shared`, same shape again: an instrumented variant of `linux-llvm`, Debug-only.
+It inherits a `shared-libs` fragment setting `BUILD_SHARED_LIBS=ON`, proving `ac3::forge_shared`/
+`matroska::matroska_shared` actually work — not just that the CMake topology configures, but that
+every in-tree consumer (`ac3cli`, `ac3gui`, `ac3tests`, `examples/`) links and runs against the
+real `.so`. `.github/workflows/_build.yml` runs it as an extra step inside the existing
+`linux-llvm` leg rather than a new matrix entry, the same shape as the ASan/UBSan pass.
 
 Anything machine-specific belongs in `CMakeUserPresets.json`, which is gitignored. The pattern
 is a hidden `local` preset carrying the paths, inherited alongside the checked-in fragments:
@@ -409,7 +417,7 @@ The Windows instructions in this document were run on:
 | FFmpeg | 8.0.1 |
 | Python | 3.14.6 |
 
-Result: configure, build and `ctest` all clean, 286/286 tests passing (windows-msvc and
+Result: configure, build and `ctest` all clean, 345/345 tests passing (windows-msvc and
 windows-llvm both — see `.github/workflows/ci.yml`'s status comment).
 
 The Linux instructions were run on:
@@ -424,9 +432,12 @@ The Linux instructions were run on:
 | vcpkg | checkout at `/opt/vcpkg` |
 
 Result: configure, build and `ctest` all clean on both compilers, GUI and ALSA both included —
-300/300 tests, `AC3FORGE_WITH_ALSA`'s `tests/platform/alsa/` accounting for the 14-test gap over
-the 286/286 a Linux build without `libasound2-dev` gets (same count as Windows, since GUI does
-not gate any `ctest` entry — it only adds the separate `ac3gui` build target). `ac3gui --smoke`
+359/359 tests: the base suite is 344 (`ac3tests` and `ac3perf`'s Catch2 cases plus the seven
+examples), `AC3FORGE_WITH_ALSA`'s `tests/platform/alsa/` adds 14, and the GUI's Qt Quick Test
+harness (`ac3gui_qml_tests`, `src/gui/tests/CMakeLists.txt`) adds a 345th — unlike every other
+GUI-related target, that one harness *does* register its own `ctest` entry, gated on both
+`AC3FORGE_BUILD_GUI` and `AC3FORGE_BUILD_TESTS`. A Linux build with neither ALSA nor the GUI gets
+the base 344/344; with the GUI on and ALSA off it matches Windows exactly at 345/345. `ac3gui --smoke`
 also runs clean headless (`QT_QPA_PLATFORM=offscreen`), encoding real audio and instantiating
 real QML channel meters. See [Linux audio](#linux-audio) for what the ALSA verification did,
 and did not (real hardware), prove.
@@ -449,7 +460,8 @@ The coverage job's own gate — 81.3% line / 72.0% branch measured on a real Git
 
 No macOS host exists for this project, so `config-macos-llvm`/`config-macos-llvm-debug` are only
 ever exercised by CI (`macos-latest`, Apple Silicon) — never locally. That CI leg is green:
-configure, build and `ctest` all clean, 286/286 tests passing, using a Homebrew-installed LLVM
+configure, build and `ctest` all clean, 344/344 tests passing (no GUI leg on macOS yet, so no
+`ac3gui_qml_tests` entry there — see the Linux count above), using a Homebrew-installed LLVM
 (`cmake/toolchains/macos.llvm.toolchain.cmake` prefers it over Apple's bundled clang) rather than
 a version-pinned one — Homebrew's core `llvm` formula has no versioned sibling the way
 apt.llvm.org or the official Windows installer do, so unlike the other LLVM legs this one tracks

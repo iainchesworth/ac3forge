@@ -24,7 +24,9 @@ const int dialnorm = lkfs ? ac3::meta::dialnorm_from_lkfs(*lkfs) : 31;
 ```
 
 ```cpp
-ac3::FrameEncoder encoder{{
+// Heap-allocated: FrameEncoder carries several KB of MDCT scratch/history
+// state (PREfast's C6262).
+auto encoder = std::make_unique<ac3::FrameEncoder>(ac3::EncoderConfig{
     .bitrate_kbps = 448,
     .dialnorm = dialnorm,
     .acmod = kAcmod,
@@ -40,7 +42,7 @@ ac3::FrameEncoder encoder{{
     // acmod is, so the heavy-compression peak detector consults them too.
     .cmixlev = ac3::meta::CentreMixLevel::kMinus4_5dB,
     .surmixlev = ac3::meta::SurroundMixLevel::kMinus6dB,
-}};
+});
 ```
 
 Full program: [`examples/metadata.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/metadata.cpp).
