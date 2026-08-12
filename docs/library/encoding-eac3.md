@@ -35,15 +35,19 @@ for (int frame = 0; frame < 31; ++frame) {
 | `spx_atten`, `spxattencod` | `true`, -1 | The §E3.6.4.2.3 notch across the seam. Six bits per channel per frame. |
 | `aht`, `gaqmod` | `false`, -1 | Adaptive hybrid transform (§E3.4): a second 6-point DCT down each bin across the frame's six blocks. Decided per channel per frame — setting the flag permits it, not forces it. |
 | `coupling`, `cplbegf` | `false`, -1 | §E3.3. With `spx` also on, §E3.3.1 derives the coupling end frequency from `spxbegf`. |
+| `enhanced` | `false` | §E3.5: enhanced coupling instead of standard — 22 sub-bands, amplitude/angle/chaos-quantized coordinates and a phase-restoring reconstruction built on a full DFT, rather than a single per-band scale factor. Only meaningful with `coupling` also set (`cpl+ecpl`); combines with `spx` the same way standard coupling does. This encoder's own coordinate fit always sends `angle`/`chaos` as zero (an amplitude-only fit), which costs quality when two channels' content genuinely shares one narrow coupling band. |
+| `transient_prenoise` | `false` | §3.7 (`tpn`): a post-IMDCT correction that overwrites the pre-echo ahead of a detected transient with a synthesized copy of the clean audio just before it. Reuses the same transient detector block switching relies on, so it only has an effect on channels/frames that also block-switch. See [Decoding](decoding.md) for the one-frame decoder-side latency this introduces and the `flush()` call it requires. |
 | `mixing` | none | The `mixmdate` group (Table E1.2). E-AC-3 dropped `cmixlev`/`surmixlev` from `bsi` entirely, so without this the stream carries no downmix levels at all. |
 | `strmtyp`, `substreamid`, `chanmap`, `last_dependent` | independent, 0, none, false | Substream identity. Set by `AccessUnitEncoder`; you rarely touch these directly. |
 | `oba_complexity_index` | none | TS 103 420 §8.3 object count in `addbsi`. This is the marker FFmpeg keys its "Dolby Digital Plus + Dolby Atmos" report off. |
 
-> The in-repo decoder reads `spx`, `aht` and Annex E coupling too, individually or stacked
-> together, at every layout including 7.1.4 — cross-checked against FFmpeg wherever FFmpeg
-> itself can decode them. See the verification-gap table in
-> [Validation](../verification.md#where-the-oracles-dont-reach) for where FFmpeg's coverage
-> stops (a second dependent substream) and only the in-repo decoder is left.
+> The in-repo decoder reads every one of these — `spx`, `aht`, standard and enhanced coupling,
+> and transient pre-noise processing — individually or stacked together, at every layout
+> including 7.1.4. `cpl`, `spx` and `aht` are cross-checked against FFmpeg wherever FFmpeg itself
+> can decode them; enhanced coupling and transient pre-noise processing have no external oracle
+> at all, so they're checked through this project's own decoder instead
+> (`tools/quality_race.py`'s CI gate). See the verification-gap table in
+> [Validation](../verification.md#where-the-oracles-dont-reach) for the full picture.
 
 Block switching (§8.2.2/§7.9) is automatic here too — no config field. A channel that switches
 anywhere in the frame is excluded from both coupling (same reasoning as AC-3's) and, for this

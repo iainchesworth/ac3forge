@@ -162,6 +162,166 @@ struct AC3FORGE_EXPORT SpxNoise {
     [[nodiscard]] double next();
 };
 
+// --- enhanced coupling (§E3.5) ----------------------------------------------
+// An alternative to standard coupling (§E3.3): 22 sub-bands instead of 18,
+// amplitude/angle/chaos-quantized coordinates instead of exponent/mantissa
+// ones, and a phase-restoring reconstruction built on a full complex DFT
+// rather than a plain per-band scale factor. Selected by ecplinu; standard
+// and enhanced coupling are mutually exclusive per block, never combined.
+
+inline constexpr int kEcplSubBands = kMaxSubBands;  // 22, §E3.5.2
+inline constexpr int kEcplFirstBin = 13;
+
+// Table E3.9: absolute bin boundaries of the 22 enhanced coupling sub-bands
+// (0..3 are 6 bins wide, 4..21 are 12 - unlike standard coupling's uniform
+// 12, so the table is boundaries rather than a first-bin/width pair).
+// Element 22 is one past the last real sub-band, letting a caller compute
+// sub-band widths as kEcplSubBandTab[sbnd + 1] - kEcplSubBandTab[sbnd] for
+// every sbnd including the last.
+inline constexpr std::array<int, kEcplSubBands + 1> kEcplSubBandTab = {
+    13,  19,  25,  31,  37,  49,  61,  73,  85,  97,  109, 121,
+    133, 145, 157, 169, 181, 193, 205, 217, 229, 241, 253,
+};
+
+// §E2.3.3.16: ecplbegf's piecewise decode. Asymmetric with ecplendf's own
+// conversion below - this is the easiest of the two to get backwards.
+[[nodiscard]] constexpr int ecpl_begin_subbnd(int ecplbegf) {
+    if (ecplbegf < 3) {
+        return ecplbegf * 2;
+    }
+    if (ecplbegf < 13) {
+        return ecplbegf + 2;
+    }
+    return ecplbegf * 2 - 10;
+}
+
+// §E2.3.3.17, the branch taken when spectral extension is NOT active this
+// block (ecplendf is transmitted).
+[[nodiscard]] constexpr int ecpl_end_subbnd(int ecplendf) { return ecplendf + 7; }
+
+// §E2.3.3.17's other branch: with spectral extension active, ecplendf is not
+// transmitted and the enhanced coupling region instead ends exactly where
+// synthesis begins, mirroring derived_cplendf's role for standard coupling.
+[[nodiscard]] constexpr int ecpl_end_subbnd_from_spx(int spxbegf) {
+    return spxbegf < 6 ? spxbegf + 5 : spxbegf * 2;
+}
+
+// Table E2.13, the default enhanced coupling band structure used when
+// ecplbndstrce is 0 in the first block that turns enhanced coupling on.
+// Indexed by the ABSOLUTE sub-band number, same convention as
+// kDefaultSpxBandStructure above (§E2.3.3.18's note that entries at and
+// below sub-band 8 are always false and never transmitted).
+inline constexpr std::array<bool, kEcplSubBands> kDefaultEcplBandStructure = {
+    false, false, false, false, false, false, false, false, false, true,  false, true,
+    false, true,  false, true,  true,  true,  false, true,  true,  true,
+};
+
+// §E2.3.3.19: groups enhanced coupling sub-bands [begin_subbnd, end_subbnd)
+// into bands using kEcplSubBandTab's actual (non-uniform) widths - the
+// uniform-width group_bands() above cannot be reused here for that reason.
+// `structure` is indexed absolutely, same convention as the default table.
+[[nodiscard]] AC3FORGE_EXPORT BandLayout ecpl_group_bands(int begin_subbnd, int end_subbnd,
+                                                          std::span<const bool> structure);
+
+// Table E3.10: ecplamp (5 bits, 0..31) to a linear amplitude scaling value.
+// Index 31 is the "-infinity dB" special case; 0..30 span 0 dB to -45.01 dB
+// in ~1.5 dB steps and decode via (manttab / 32) >> exptab.
+[[nodiscard]] AC3FORGE_EXPORT double decode_ecplamp(int ecplamp);
+[[nodiscard]] AC3FORGE_EXPORT int quantize_ecplamp(double value);
+
+// Table E3.11: ecplangle (6 bits, 0..63) to a linear angle in units of pi
+// radians, range [-1, 1). The table is exactly i/32 for i < 32 and
+// (i - 64)/32 above it, so this is a formula rather than a literal lookup.
+[[nodiscard]] constexpr double decode_ecplangle(int ecplangle) {
+    return static_cast<double>(ecplangle < 32 ? ecplangle : ecplangle - 64) / 32.0;
+}
+[[nodiscard]] AC3FORGE_EXPORT int quantize_ecplangle(double angle);
+
+// Table E3.12: ecplchaos (3 bits, 0..7) to a linear scaling value in
+// [-1, 0]. Exactly -i/7, so again a formula rather than a literal lookup.
+[[nodiscard]] constexpr double decode_ecplchaos(int ecplchaos) {
+    return -static_cast<double>(ecplchaos) / 7.0;
+}
+[[nodiscard]] AC3FORGE_EXPORT int quantize_ecplchaos(double chaos);
+
+// §E3.5.5.1's non-aliased channel reconstruction: rebuilds the enhanced
+// coupling channel's complex spectrum for one block from that block's own
+// mantissas plus its neighbors'. Each of `prev_mant`/`curr_mant`/`next_mant`
+// is a 256-bin MDCT coefficient array, zero outside the coupled range - the
+// same shape the coupling-channel mantissa stream already decodes into.
+// `prev_mant`/`next_mant` are all-zero when the adjacent block did not use
+// enhanced coupling (§3.5.5.1's own rule), which this decoder also applies
+// at a syncframe's first/last block, where the true neighbor lives in an
+// adjacent frame this call was not given (see the decoder's own comment on
+// that limitation). Only bins 0..255 of the resulting spectrum are ever read
+// downstream (§3.5.5.4 only uses bin < N/2), so only those are written.
+AC3FORGE_EXPORT void ecpl_channel_spectrum(std::span<const double, 256> prev_mant,
+                                           std::span<const double, 256> curr_mant,
+                                           std::span<const double, 256> next_mant,
+                                           std::span<double, 256> real_out,
+                                           std::span<double, 256> imag_out);
+
+// §3.5.5.3's fixed de-correlation sequence for a channel/bin not carrying a
+// transient: deterministic and stable for the whole stream (the spec's own
+// requirement - "generated once ... stay the same for every block"),
+// implemented as a hash of (channel, bin) rather than a stored table, so no
+// per-decoder state is needed to satisfy it.
+[[nodiscard]] AC3FORGE_EXPORT double ecpl_rand_notrans(int channel, int bin);
+
+// §3.5.5.3's other sequence, for a channel/bin WITH a transient present
+// (ecpltrans[ch]): regenerated every block, so - unlike the one above - this
+// one is genuine sequential state, one instance per substream/frame.
+struct AC3FORGE_EXPORT EcplNoise {
+    std::uint32_t state = 0x2545F491U;  // never zero, or xorshift sticks at 0
+    [[nodiscard]] double next();  // uniform on [-1, 1] (§3.5.5.3, not unit-variance)
+};
+
+// §3.5.5.2's amplitude decode + chaos modification, expanded from BANDS (as
+// transmitted) all the way to individual BINS via `structure` and
+// kEcplSubBandTab - mirroring §3.5.5.2's own necplbnds expansion loop in one
+// pass rather than two. `ecplamp`/`ecplchaos` are indexed per BAND (0..band
+// count - 1, as read off the wire); `structure` is indexed absolutely by
+// sub-band, same convention as ecpl_group_bands. `ecpltrans`/
+// `is_first_channel` gate the chaos modification per §3.5.5.2's own
+// conditions. Writes one amplitude per BIN into `amp_out`, indexed from 0
+// (not offset by the region's first bin) - callers slice storage
+// themselves. `amp_out` must be sized to the bin count of
+// [begin_subbnd, end_subbnd).
+AC3FORGE_EXPORT void ecpl_amplitudes(std::span<const int> ecplamp, std::span<const int> ecplchaos,
+                                     bool ecpltrans, bool is_first_channel, int begin_subbnd,
+                                     int end_subbnd, std::span<const bool> structure,
+                                     std::span<double> amp_out);
+
+// §3.5.5.3's angle decode + de-correlation add, WITHOUT the optional linear
+// interpolation (ecplangleintrp == 1): band angles apply directly to every
+// bin of that band, the same duplication ecpl_amplitudes uses. The
+// interpolated form is legal syntax this decoder does not implement (no
+// stream this project's own encoder produces sets the flag - the decoder
+// refuses streams that do, the same stance taken elsewhere in this file for
+// syntax nothing here exercises). `noise` supplies rand_trans[] when
+// `ecpltrans` is set; ecpl_rand_notrans is used internally otherwise.
+// `angle_out` has the same shape/indexing as ecpl_amplitudes' `amp_out`.
+AC3FORGE_EXPORT void ecpl_angles(int channel, std::span<const int> ecplangle,
+                                 std::span<const int> ecplchaos, bool ecpltrans,
+                                 bool is_first_channel, int begin_subbnd, int end_subbnd,
+                                 std::span<const bool> structure, EcplNoise& noise,
+                                 std::span<double> angle_out);
+
+// §3.5.5.4: the final complex-product reconstruction, given this block's
+// enhanced coupling channel spectrum (`real_in`/`imag_in`, bins 0..255 from
+// ecpl_channel_spectrum) and one channel's already-resolved per-bin
+// amplitude/angle (`amp_bin`/`angle_bin`, indexed from `begin_mant` - i.e.
+// element 0 corresponds to bin `begin_mant`, matching ecpl_amplitudes/
+// ecpl_angles' own output indexing). Writes into `mant_out` over
+// [begin_mant, end_mant), absolutely indexed like the rest of this file's
+// coefficient arrays.
+AC3FORGE_EXPORT void ecpl_channel_coefficients(std::span<const double, 256> real_in,
+                                               std::span<const double, 256> imag_in,
+                                               std::span<const double> amp_bin,
+                                               std::span<const double> angle_bin,
+                                               int begin_mant, int end_mant,
+                                               std::span<double, 256> mant_out);
+
 // --- adaptive hybrid transform (§E3.4) -------------------------------------
 // A second transform stage, cascaded after the MDCT: a 6-point DCT-II taken
 // down each spectral bin across the frame's six blocks. For material that is

@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <expected>
 #include <map>
 #include <optional>
@@ -34,10 +35,15 @@
 // E-AC-3 scope (Annex E, bsid 11-16): the whole of Tables E1.2/E1.3/E1.4 as
 // syntax — every metadata payload is walked correctly whether or not its
 // contents are used — plus dependent substreams, chanmap and the §E3.8.2
-// render. The coding tools Annex E adds on top of AC-3 (AHT, spectral
-// extension, enhanced coupling, transient pre-noise processing) are parsed far
-// enough to be recognised and then refused, again rather than mis-decoded.
-// This is the only oracle 7.1.4 has: FFmpeg rejects any frame with
+// render. Every coding tool Annex E adds on top of AC-3 is implemented: AHT,
+// spectral extension, enhanced coupling (§E3.5) and transient pre-noise
+// processing (§3.7) - individually or all stacked together. Two syntax
+// corners inside those tools are still recognised and refused rather than
+// mis-decoded (enhanced coupling's angle-interpolation flag, Annex E's
+// default coupling band structure), because no stream this project's own
+// encoder produces exercises them. Transient pre-noise processing has one
+// consequence for this class's own API: see decode_substream and flush()
+// below. This is the only oracle 7.1.4 has: FFmpeg rejects any frame with
 // substreamid != 0, so a stream with two dependent substreams cannot be
 // checked against it in any container.
 //
@@ -176,19 +182,69 @@ class AC3FORGE_EXPORT Eac3Decoder {
     // so the substreams of successive access units stay independent of each
     // other; a caller stepping through syncframes by hand gets the same audio
     // as one calling decode_access_unit.
-    [[nodiscard]] std::expected<DecodedSubstream, DecodeError> decode_substream(
+    //
+    // Returns std::nullopt exactly when a frame's PCM is being held back
+    // pending transient pre-noise processing (§3.7): a stream's very first
+    // frame that turns transproce on has nothing ready to return yet, because
+    // whether a correction reaches back into it is only known once the NEXT
+    // frame has been parsed. A stream that never uses the tool always gets a
+    // populated result immediately - this holding-back is the exception, not
+    // the common case. Call flush() once at end-of-stream to collect
+    // whichever frame is still held back, if any.
+    [[nodiscard]] std::expected<std::optional<DecodedSubstream>, DecodeError> decode_substream(
         std::span<const std::byte> frame);
 
     // Decodes one access unit — an independent substream followed by its
     // dependents, exactly as split_access_units delimits them — and renders it.
-    [[nodiscard]] std::expected<DecodedAccessUnit, DecodeError> decode_access_unit(
+    //
+    // Same std::nullopt convention as decode_substream, for the same reason:
+    // assembling one access unit needs every one of its substreams ready in
+    // the SAME call, and decode_substream can hold one back independently of
+    // the others (§3.7's transient pre-noise processing is a per-substream
+    // flag). When that happens, whichever OTHER substreams of this access
+    // unit already released this call are held in an internal per-identity
+    // cache until the rest catch up - so nothing already-ready is discarded,
+    // and a later call finishes the assembly once every identity this
+    // program uses has a result waiting. A stream that never uses the tool
+    // is unaffected: every substream releases every call, so the cache never
+    // holds more than one call's worth at a time and every call returns a
+    // populated result immediately.
+    [[nodiscard]] std::expected<std::optional<DecodedAccessUnit>, DecodeError> decode_access_unit(
         std::span<const std::byte> unit);
+
+    // Releases whichever frames transient pre-noise processing is still
+    // holding back, one per substream identity that has one pending - empty
+    // if none does, which covers every stream that never used the tool.
+    // Call once, after the last decode_substream/decode_access_unit call for
+    // a stream, to avoid silently dropping its final frame(s). Drains BOTH
+    // decode_substream's own pending frame and decode_access_unit's
+    // assembly cache (see its own doc comment) - a caller that only ever
+    // used decode_access_unit and wants the very last program's worth of
+    // audio out of a stream that ends mid-hold-back gets raw per-substream
+    // results here rather than one final assembled DecodedAccessUnit,
+    // since by definition the assembly never completed.
+    [[nodiscard]] std::vector<DecodedSubstream> flush();
 
    private:
     // Keyed by strmtyp and substreamid together: a dependent's id lives in its
     // own numbering space (§E2.3.1.2), so id alone does not identify a
     // substream. At most six coded channels each (3/2 plus LFE).
     std::map<int, std::array<std::array<double, 256>, 6>> delay_;
+    // A substream identity enters this map the first time one of its frames
+    // sets transproce, and stays in it (buffering one frame at a time) for
+    // the rest of the stream - see decode_substream's own doc comment.
+    std::map<int, DecodedSubstream> pending_;
+    // decode_access_unit's own assembly cache: a substream identity's
+    // RELEASED (by decode_substream) results, oldest first, waiting for
+    // every other identity the same call's frames named to also have one -
+    // see decode_access_unit's own doc comment. A queue rather than a single
+    // slot: one identity can release several times while another is still
+    // catching up (a dependent that never uses the tool releases every call,
+    // while the independent using it lags by one), and an already-queued,
+    // not-yet-assembled result must never be overwritten by a later one for
+    // the same identity - that would silently splice two different points
+    // in time into one access unit.
+    std::map<int, std::deque<DecodedSubstream>> pending_au_parts_;
 };
 
 // Split a raw elementary stream into syncframes by sync word and declared

@@ -207,18 +207,32 @@ struct CodedChannel {
 struct Tools {
     bool coupling = false;
     int cplbegf = -1;
+    // §E3.5: the alternate coupling mode - 22 sub-bands, amplitude/angle/
+    // chaos-quantized coordinates and phase-restoring reconstruction,
+    // selected instead of (never alongside) standard coupling. Only
+    // meaningful together with `coupling`.
+    bool enhanced = false;
     bool spx = false;
     int spxbegf = -1;
     bool spx_atten = true;
     int spxattencod = -1;
     bool aht = false;
     int gaqmod = -1;
+    // §3.7: post-IMDCT pre-echo correction ahead of a detected transient.
+    // Independent of every tool above - it touches no transform/bitalloc
+    // state, only the decoder's PCM output - but this encoder reuses the
+    // same transient detection blksw already drives (TransientDetector)
+    // rather than a second detector, so enabling it only has an effect on
+    // channels/frames that also switch blocks.
+    bool transient_prenoise = false;
 
-    [[nodiscard]] bool any() const { return coupling || spx || aht; }
+    [[nodiscard]] bool any() const { return coupling || spx || aht || transient_prenoise; }
 };
 
 inline constexpr std::string_view kToolsSyntax =
-    "none | cpl | spx | aht | all (cpl:N / spx:N pin a band edge, aht:N the gain mode)";
+    "none | cpl | spx | aht | tpn | all (cpl:N / spx:N pin a band edge, aht:N the gain mode, "
+    "ecpl selects enhanced coupling instead of standard, tpn selects transient pre-noise "
+    "processing)";
 
 // The '+'-joined token: "none", "cpl", "cpl+spx", "all", "cpl:4+spx:5",
 // "aht:0", "spx+noatten", "atten:12". Returns false on anything unrecognised

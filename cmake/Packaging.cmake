@@ -47,11 +47,16 @@ if(WIN32)
         set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
     endif()
 elseif(APPLE)
-    # Structurally present for parity with the rest of the preset matrix, but
-    # unverified: this project has no macOS host, so this branch has never
-    # actually been configured, let alone run (see macos-llvm's description
-    # in CMakePresets.json).
     list(APPEND CPACK_GENERATOR "DragNDrop")
+    # Explicit, not relying on the (undocumented, version-dependent) CPack
+    # default: v0.3.0-beta.1's dry run - the first time this generator ever
+    # actually ran, on real macOS CI - showed CPack splits DragNDrop into one
+    # .dmg per CPACK_COMPONENTS_ALL entry unless told not to, contradicting
+    # this file's own component-split rationale below (DragNDrop was meant to
+    # stay one monolithic package, the same reasoning as NSIS/DEB/RPM below -
+    # a split here was never designed or verified, unlike the deliberate
+    # ZIP/TGZ archive split).
+    set(CPACK_DMG_COMPONENT_INSTALL OFF)
 elseif(UNIX)
     list(APPEND CPACK_GENERATOR "TGZ")
 

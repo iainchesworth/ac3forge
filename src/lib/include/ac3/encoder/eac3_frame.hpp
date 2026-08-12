@@ -154,6 +154,11 @@ struct FrameConfig {
     // bits at rates that cannot afford two full-bandwidth channels, so the
     // right frequency falls as the rate does.
     int cplbegf = -1;
+    // §E3.5: enhanced coupling instead of standard - 22 sub-bands, amplitude/
+    // angle/chaos-quantized coordinates and a phase-restoring reconstruction
+    // built on a full DFT, rather than a single per-band scale factor. Only
+    // meaningful together with `coupling`.
+    bool enhanced = false;
 
     // Spectral extension (§E3.6). Above the extension frequency nothing is
     // coded at all: the decoder copies a lower band up, blends it with noise
@@ -196,6 +201,15 @@ struct FrameConfig {
     // behaviour; pinning it to 0 turns GAQ off while leaving the rest of AHT
     // alone, which is how the tool's contribution gets measured on its own.
     int gaqmod = -1;
+
+    // Transient pre-noise processing (§3.7): a post-IMDCT correction that
+    // overwrites the pre-echo ahead of a detected transient with a
+    // synthesized copy of the clean audio just before it. This encoder
+    // reuses TransientDetector - the same detector blksw already relies on -
+    // rather than a second, independent one, so this only has an effect on
+    // channels/frames that also block-switch (§8.2.2/§7.9).
+    bool transient_prenoise = false;
+
     // TS 103 420 §8.3. An object-audio stream sets flag_ec3_extension_type_a in
     // the addbsi field of whichever substream carries the EMDF container, and
     // follows it with the number of bed, ISF and dynamic objects (§8.3.2.2 caps

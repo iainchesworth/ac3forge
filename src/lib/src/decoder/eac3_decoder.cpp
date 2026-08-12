@@ -13,6 +13,7 @@
 #include "ac3/core/exponents.hpp"
 #include "ac3/core/mantissas.hpp"
 #include "ac3/core/mdct.hpp"
+#include "ac3/decoder/transient_prenoise.hpp"
 #include "ac3/encoder/coupling.hpp"
 #include "ac3/encoder/eac3_tools.hpp"
 
@@ -267,6 +268,13 @@ struct AudFrm {
     // Frame-constant, like everything else AHT touches (it needs exactly one
     // exponent set for the whole frame, which rules out anything per-block).
     std::array<bool, kMaxSubstreamStreams> ahtinu{};
+    // §3.7: per full-bandwidth channel, only meaningful where chintransproc
+    // is set (which itself is only meaningful when transproce is). Location
+    // is already in samples (multiplied by 4 at parse time), not the raw
+    // 10-bit field.
+    std::array<bool, kMaxSubstreamChannels> chintransproc{};
+    std::array<int, kMaxSubstreamChannels> transprocloc{};
+    std::array<int, kMaxSubstreamChannels> transproclen{};
 };
 
 std::expected<AudFrm, DecodeError> parse_audfrm(BitReader& r, const Bsi& bsi, int nblks) {
@@ -390,11 +398,17 @@ std::expected<AudFrm, DecodeError> parse_audfrm(BitReader& r, const Bsi& bsi, in
     }
     if (frm.transproce) {
         for (int ch = 0; ch < nfchans; ++ch) {
-            if (r.read(1) != 0) {  // chintransproc[ch]
-                r.skip(10 + 8);    // transprocloc, transproclen
+            const auto uch = static_cast<std::size_t>(ch);
+            frm.chintransproc[uch] = r.read(1) != 0;
+            if (frm.chintransproc[uch]) {
+                // §2.3.2.22/.23: transprocloc has 4-sample resolution -
+                // multiplied out here so every other place this is used
+                // works in plain sample counts, matching §3.7.2's own
+                // pseudocode (which is written in samples throughout).
+                frm.transprocloc[uch] = static_cast<int>(r.read(10)) * 4;
+                frm.transproclen[uch] = static_cast<int>(r.read(8));
             }
         }
-        return std::unexpected(DecodeError::kUnsupported);
     }
     if (spxattene) {
         for (int ch = 0; ch < nfchans; ++ch) {
@@ -411,7 +425,7 @@ std::expected<AudFrm, DecodeError> parse_audfrm(BitReader& r, const Bsi& bsi, in
 
 }  // namespace
 
-std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
+std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_substream(
     std::span<const std::byte> frame) {
     if (frame.size() < 8) {
         return std::unexpected(DecodeError::kTruncated);
@@ -486,6 +500,7 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
     // but a general stream could resend it on any block whose cplstre is set.
     bool phsflginu = false;
     int cplbegf = 0;
+    int ecplbegf = 0;  // persists like cplbegf; needed again by nrematbd below
     int cplstrtmant = 0;
     int cplendmant = 0;
     int ncplbnd = 0;
@@ -523,6 +538,88 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
     // buffer distinct from the per-block-local `coeffs` below.
     std::vector<std::array<std::array<double, 256>, kBlocksPerFrame>> aht_coeffs(
         static_cast<std::size_t>(kMaxSubstreamStreams));
+
+    // Enhanced coupling state (§E3.5), parallel to the standard-coupling
+    // state above and mutually exclusive with it per block (ecplinu picks
+    // one or the other). Persistence follows the same convention: geometry
+    // and coordinates persist until re-transmitted.
+    bool ecplinu_now = false;
+    int ecpl_begin_subbnd = 0;
+    int ecpl_end_subbnd = 0;
+    // Indexed absolutely by sub-band, same convention as kDefaultEcplBandStructure.
+    // std::array rather than vector<bool>: it needs to convert to
+    // std::span<const bool> at the call sites below, which vector<bool>'s
+    // bitset specialization cannot do.
+    std::array<bool, eac3::kEcplSubBands> ecpl_structure{};
+    bool ecplangleintrp = false;
+    // [channel][band] - the raw transmitted indices, persisted until
+    // re-sent. Kept as indices (not decoded values) because decoding
+    // depends on a channel's role this block (is-first-channel, ecpltrans),
+    // which can only be resolved once chincpl for THIS block is known.
+    std::vector<std::vector<int>> ecplamp_raw(static_cast<std::size_t>(nfchans));
+    std::vector<std::vector<int>> ecplangle_raw(static_cast<std::size_t>(nfchans));
+    std::vector<std::vector<int>> ecplchaos_raw(static_cast<std::size_t>(nfchans));
+    std::vector<bool> ecpltrans_persist(static_cast<std::size_t>(nfchans), false);
+    eac3::EcplNoise ecpl_noise;
+    // Every block's enhanced coupling channel raw mantissas (§3.5.5.1's
+    // XCURR), stashed as each block is parsed so the second pass below can
+    // look at any block's neighbors freely - a block whose neighbor did not
+    // use enhanced coupling substitutes zero there (`ecpl_active`), exactly
+    // the rule §3.5.5.1 itself specifies. This also covers this syncframe's
+    // own first/last block, whose true neighbor lives in an adjacent
+    // syncframe this call was not given: a real, documented approximation,
+    // not a bug - every interior block reconstructs with its true
+    // neighbors.
+    std::array<std::array<double, 256>, kBlocksPerFrame> ecpl_all_coeffs{};
+    std::array<bool, kBlocksPerFrame> ecpl_active{};
+
+    // Everything the second pass below (spx synthesis, rematrixing, IMDCT
+    // and PCM write) needs from this block, captured once bitstream parsing
+    // for it is done. A second pass is unavoidable rather than finishing
+    // each block inline as AC-3's decoder and this decoder's OTHER tools
+    // all do: enhanced coupling's channel reconstruction (§3.5.5.1) needs
+    // the block AFTER the one it reconstructs, which is not available until
+    // that later block has itself been parsed - and IMDCT's overlap-add
+    // delay line is strictly sequential across blocks, so finishing block N
+    // before block N-1 is not an option either. Capturing every block's
+    // state (not only the enhanced-coupling ones) keeps that sequencing
+    // simple: one pass parses everything in the bitstream's own order, the
+    // next finishes every block, still in order 0..nblks-1.
+    struct BlockTail {
+        std::vector<std::array<double, 256>> coeffs;  // per stream; decoupled where standard
+        std::vector<bool> chincpl;
+        bool cplinu = false;
+        bool ecplinu_now = false;
+        // Standard coupling (valid when cplinu && !ecplinu_now): decoupling
+        // already ran inline in pass one, so `coeffs` is final for these
+        // channels and nothing further is needed here.
+        //
+        // Enhanced coupling (valid when cplinu && ecplinu_now):
+        int firstchincpl = -1;
+        int ecpl_begin_subbnd = 0;
+        int ecpl_end_subbnd = 0;
+        std::array<bool, eac3::kEcplSubBands> ecpl_structure{};
+        std::vector<std::vector<int>> ecplamp_raw;    // [ch][band]
+        std::vector<std::vector<int>> ecplangle_raw;  // [ch][band]
+        std::vector<std::vector<int>> ecplchaos_raw;  // [ch][band]
+        std::vector<bool> ecpltrans;                  // [ch]
+        int cplstrtmant = 0;
+        int cplendmant = 0;
+        // spx (§3.6)
+        bool spxinu = false;
+        std::vector<bool> chinspx;
+        eac3::BandLayout spx_bands{};
+        std::vector<std::vector<double>> spxco;
+        std::vector<int> spxblnd;
+        int spx_startmant = 0;
+        int spx_endmant = 0;
+        int spx_copystart = 0;
+        // rematrixing (§7.5.4, 2/0 only) and block switching
+        std::array<bool, 4> rematflg{};
+        std::array<bool, eac3::chanmap::kMaxSubstreamFullbw> blksw{};
+        std::array<int, kMaxSubstreamStreams> endmant{};
+    };
+    std::vector<BlockTail> tails(static_cast<std::size_t>(nblks));
 
     for (int blk = 0; blk < nblks; ++blk) {
         const auto strategy = [&](int ch) {
@@ -646,71 +743,119 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
         // everything below persists unchanged from block 0 onward).
         if (frm->cplstre[static_cast<std::size_t>(blk)] &&
             frm->cplinu[static_cast<std::size_t>(blk)]) {
-            if (r.read(1) != 0) {  // ecplinu: enhanced coupling
-                return std::unexpected(DecodeError::kUnsupported);
-            }
+            ecplinu_now = r.read(1) != 0;  // ecplinu: enhanced coupling
             // 2/0 is the one mode where chincpl is not transmitted: both
-            // channels are coupled by definition, and phsflginu takes its
-            // place instead. Every other mode sends chincpl per channel and
-            // has no phase-restoration flag at all.
+            // channels are coupled by definition. Every other mode sends
+            // chincpl per channel. This part is common to both standard and
+            // enhanced coupling; only what follows it differs.
             if (bsi->acmod == Acmod::k2_0) {
                 chincpl[0] = chincpl[1] = true;
-                phsflginu = r.read(1) != 0;
             } else {
-                phsflginu = false;
                 for (int ch = 0; ch < nfchans; ++ch) {
                     chincpl[static_cast<std::size_t>(ch)] = r.read(1) != 0;
                 }
             }
-            cplbegf = static_cast<int>(r.read(4));
-            // §E3.3.1: with spectral extension active this block, cplendf is
-            // derived from spxbegf instead of transmitted, so the coupling
-            // region ends exactly where synthesis begins.
-            const int cplendf =
-                spxinu ? eac3::derived_cplendf(spxbegf) : static_cast<int>(r.read(4));
-            const int subband_count = coupling::sub_band_count(cplbegf, cplendf);
-            if (subband_count < 1) {
-                return std::unexpected(DecodeError::kInvalidStream);
-            }
-            cplstrtmant = coupling::start_mant(cplbegf);
-            cplendmant = coupling::end_mant(cplendf);
-            if (cplendmant > 253 || cplstrtmant >= cplendmant) {
-                return std::unexpected(DecodeError::kInvalidStream);
-            }
-            if (r.read(1) == 0) {  // cplbndstrce
-                // Table E2.12's default band structure: no stream this
-                // project produces sets cplbndstrce to 0 - the encoder
-                // always transmits an explicit structure, precisely because
-                // the default's indexing is ambiguous (see eac3_tools.hpp's
-                // kDefaultCplBandStructure comment) - so it is recognised
-                // and refused here rather than guessed at.
-                return std::unexpected(DecodeError::kUnsupported);
-            }
-            // cplbndstrc: a 1 folds this sub-band into the previous coupling
-            // band, so coordinates are per band and duplicated back out
-            // across the sub-bands they cover.
-            subband_band.assign(static_cast<std::size_t>(subband_count), 0);
-            ncplbnd = 1;
-            for (int bnd = 1; bnd < subband_count; ++bnd) {
-                const bool merged = r.read(1) != 0;
-                if (!merged) {
-                    ++ncplbnd;
+            if (!ecplinu_now) {
+                // --- standard coupling geometry (§7.4.2/§5.4.3.12-13) ---
+                // phsflginu exists only for standard coupling - enhanced
+                // coupling carries its own per-channel angle instead and has
+                // no separate phase-restoration flag.
+                phsflginu = bsi->acmod == Acmod::k2_0 && r.read(1) != 0;
+                cplbegf = static_cast<int>(r.read(4));
+                // §E3.3.1: with spectral extension active this block, cplendf is
+                // derived from spxbegf instead of transmitted, so the coupling
+                // region ends exactly where synthesis begins.
+                const int cplendf =
+                    spxinu ? eac3::derived_cplendf(spxbegf) : static_cast<int>(r.read(4));
+                const int subband_count = coupling::sub_band_count(cplbegf, cplendf);
+                if (subband_count < 1) {
+                    return std::unexpected(DecodeError::kInvalidStream);
                 }
-                subband_band[static_cast<std::size_t>(bnd)] = ncplbnd - 1;
+                cplstrtmant = coupling::start_mant(cplbegf);
+                cplendmant = coupling::end_mant(cplendf);
+                if (cplendmant > 253 || cplstrtmant >= cplendmant) {
+                    return std::unexpected(DecodeError::kInvalidStream);
+                }
+                if (r.read(1) == 0) {  // cplbndstrce
+                    // Table E2.12's default band structure: no stream this
+                    // project produces sets cplbndstrce to 0 - the encoder
+                    // always transmits an explicit structure, precisely because
+                    // the default's indexing is ambiguous (see eac3_tools.hpp's
+                    // kDefaultCplBandStructure comment) - so it is recognised
+                    // and refused here rather than guessed at.
+                    return std::unexpected(DecodeError::kUnsupported);
+                }
+                // cplbndstrc: a 1 folds this sub-band into the previous coupling
+                // band, so coordinates are per band and duplicated back out
+                // across the sub-bands they cover.
+                subband_band.assign(static_cast<std::size_t>(subband_count), 0);
+                ncplbnd = 1;
+                for (int bnd = 1; bnd < subband_count; ++bnd) {
+                    const bool merged = r.read(1) != 0;
+                    if (!merged) {
+                        ++ncplbnd;
+                    }
+                    subband_band[static_cast<std::size_t>(bnd)] = ncplbnd - 1;
+                }
+                // Coordinates survive a re-sent strategy: cplcoe == 0 in this
+                // very block legally means "reuse the previous coordinates", so
+                // clearing them here would silence the coupled high band. Only a
+                // change in geometry forces a resize, and only the new entries
+                // start at zero.
+                for (auto& channel : cplco) {
+                    channel.assign(static_cast<std::size_t>(subband_count), 0.0);
+                }
+                phsflg.assign(static_cast<std::size_t>(ncplbnd), false);
+            } else {
+                // --- enhanced coupling geometry (§E2.3.3.16-19, §E3.5.2) ---
+                phsflginu = false;
+                ecplbegf = static_cast<int>(r.read(4));
+                ecpl_begin_subbnd = eac3::ecpl_begin_subbnd(ecplbegf);
+                if (spxinu) {
+                    ecpl_end_subbnd = eac3::ecpl_end_subbnd_from_spx(spxbegf);
+                } else {
+                    const auto ecplendf = static_cast<int>(r.read(4));
+                    ecpl_end_subbnd = eac3::ecpl_end_subbnd(ecplendf);
+                }
+                if (ecpl_end_subbnd <= ecpl_begin_subbnd ||
+                    ecpl_end_subbnd > eac3::kEcplSubBands) {
+                    return std::unexpected(DecodeError::kInvalidStream);
+                }
+                cplstrtmant = eac3::kEcplSubBandTab[static_cast<std::size_t>(ecpl_begin_subbnd)];
+                cplendmant = eac3::kEcplSubBandTab[static_cast<std::size_t>(ecpl_end_subbnd)];
+                if (r.read(1) == 0) {  // ecplbndstrce
+                    // Table E2.13's default table has an unambiguous absolute
+                    // sub-band index (verified against the spec text
+                    // directly, unlike standard coupling's Table E2.12) - so
+                    // it is used for real here rather than refused.
+                    ecpl_structure = eac3::kDefaultEcplBandStructure;
+                } else {
+                    ecpl_structure.fill(false);
+                    const int first = std::max(9, ecpl_begin_subbnd + 1);
+                    for (int sbnd = first; sbnd < ecpl_end_subbnd; ++sbnd) {
+                        ecpl_structure[static_cast<std::size_t>(sbnd)] = r.read(1) != 0;
+                    }
+                }
+                // Coordinates survive a re-sent strategy, same reasoning as
+                // standard coupling above - only a geometry change forces a
+                // resize.
+                const auto band_count = static_cast<std::size_t>(
+                    eac3::ecpl_group_bands(ecpl_begin_subbnd, ecpl_end_subbnd, ecpl_structure)
+                        .count);
+                for (auto& channel : ecplamp_raw) {
+                    channel.assign(band_count, 0);
+                }
+                for (auto& channel : ecplangle_raw) {
+                    channel.assign(band_count, 0);
+                }
+                for (auto& channel : ecplchaos_raw) {
+                    channel.assign(band_count, 0);
+                }
             }
-            // Coordinates survive a re-sent strategy: cplcoe == 0 in this
-            // very block legally means "reuse the previous coordinates", so
-            // clearing them here would silence the coupled high band. Only a
-            // change in geometry forces a resize, and only the new entries
-            // start at zero.
-            for (auto& channel : cplco) {
-                channel.assign(static_cast<std::size_t>(subband_count), 0.0);
-            }
-            phsflg.assign(static_cast<std::size_t>(ncplbnd), false);
         }
 
         // --- coupling coordinates (§7.4.3 shape, block-0 cplcoe implied) ---
-        if (frm->cplinu[static_cast<std::size_t>(blk)]) {
+        if (frm->cplinu[static_cast<std::size_t>(blk)] && !ecplinu_now) {
             bool any_new = false;
             for (int ch = 0; ch < nfchans; ++ch) {
                 if (!chincpl[static_cast<std::size_t>(ch)]) {
@@ -742,6 +887,53 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
                     phsflg[static_cast<std::size_t>(bnd)] = r.read(1) != 0;
                 }
             }
+        } else if (frm->cplinu[static_cast<std::size_t>(blk)]) {
+            // --- enhanced coupling coordinates (§E2.3.3.20-26, §3.5.4) ---
+            ecplangleintrp = r.read(1) != 0;
+            if (ecplangleintrp) {
+                // Legal syntax this decoder does not implement - see
+                // ecpl_angles' own doc comment. No stream this project's own
+                // encoder produces sets this flag.
+                return std::unexpected(DecodeError::kUnsupported);
+            }
+            int firstchincpl = -1;
+            for (int ch = 0; ch < nfchans; ++ch) {
+                if (!chincpl[static_cast<std::size_t>(ch)]) {
+                    continue;
+                }
+                if (firstchincpl == -1) {
+                    firstchincpl = ch;
+                }
+                // firstcplcos[ch] is simplified to "blk == 0", the same
+                // approximation the standard-coupling coordinates above make
+                // and for the same reason: this encoder never lets a channel
+                // drop out of coupling and rejoin mid-frame.
+                bool ecplparam1e;
+                bool ecplparam2e;
+                if (blk == 0) {
+                    ecplparam1e = true;
+                    ecplparam2e = ch > firstchincpl;
+                } else {
+                    ecplparam1e = r.read(1) != 0;
+                    ecplparam2e = ch > firstchincpl && r.read(1) != 0;
+                }
+                const auto uch = static_cast<std::size_t>(ch);
+                if (ecplparam1e) {
+                    for (auto& v : ecplamp_raw[uch]) {
+                        v = static_cast<int>(r.read(5));
+                    }
+                }
+                if (ecplparam2e) {
+                    for (std::size_t bnd = 0; bnd < ecplangle_raw[uch].size(); ++bnd) {
+                        ecplangle_raw[uch][bnd] = static_cast<int>(r.read(6));
+                        ecplchaos_raw[uch][bnd] = static_cast<int>(r.read(3));
+                    }
+                }
+                // ecpltrans[ch] is read every block, unconditionally, for
+                // every channel past the first - never gated by the exist
+                // flags above and never persisted from a previous block.
+                ecpltrans_persist[uch] = ch > firstchincpl && r.read(1) != 0;
+            }
         }
 
         // A coupled or extended channel stops carrying its own coefficients
@@ -764,14 +956,23 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
             // Unlike AC-3, block 0's rematstr is IMPLIED 1 rather than
             // transmitted; only later blocks carry the bit.
             if (blk == 0 || r.read(1) != 0) {
-                // §E3.3.2 / §7.5.2: the rematrixing bands cannot reach above
+                // §3.3.2 / §7.5.2: the rematrixing bands cannot reach above
                 // whichever tool takes over the spectrum first, so their
                 // count depends on where that tool starts. Coupling always
                 // wins the comparison when both are active, since it is
-                // always the lower of the two (§E3.3.1).
+                // always the lower of the two (§E3.3.1). Enhanced coupling
+                // gets its own table (§3.3.2), keyed off ecplbegf rather than
+                // cplbegf - a distinct formula, not a parameter substitution,
+                // since its sub-band table starts at a different frequency.
                 const int nrematbd =
                     frm->cplinu[static_cast<std::size_t>(blk)]
-                        ? (cplbegf > 2 ? 4 : (cplbegf > 0 ? 3 : 2))
+                        ? (ecplinu_now
+                               ? (ecplbegf == 0   ? 0
+                                  : ecplbegf == 1 ? 1
+                                  : ecplbegf == 2 ? 2
+                                  : ecplbegf < 5  ? 3
+                                                  : 4)
+                               : (cplbegf > 2 ? 4 : (cplbegf > 0 ? 3 : 2)))
                     : spxinu ? (spxbegf < 2 ? 3 : 4)
                              : 4;
                 rematflg.fill(false);
@@ -1175,9 +1376,17 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
 
         // §7.4.3 decoupling: each coupled channel's high band is the shared
         // channel scaled by that channel's coordinate, times 8 - undoing the
-        // encoder's /8 headroom scaling. Runs before rematrixing, since
-        // rematrixing has to see the coupled channels' restored content.
-        if (frm->cplinu[static_cast<std::size_t>(blk)]) {
+        // encoder's /8 headroom scaling. Standard coupling only: it has no
+        // neighbor-block dependency, so it finishes right here, same as
+        // every other tool. Enhanced coupling's own reconstruction (§3.5.5)
+        // needs the block AFTER this one, which the bitstream has not
+        // reached yet - so it, and everything that runs after decoupling
+        // for EVERY block (spx synthesis, rematrixing, IMDCT), is deferred
+        // to a second pass below that runs once every block has been parsed
+        // and can therefore look at any block's neighbors freely, still in
+        // strict block order (IMDCT's overlap-add delay line requires that
+        // regardless of coupling mode).
+        if (frm->cplinu[static_cast<std::size_t>(blk)] && !ecplinu_now) {
             const auto& shared = coeffs[static_cast<std::size_t>(kCplStream)];
             for (int ch = 0; ch < nfchans; ++ch) {
                 if (!chincpl[static_cast<std::size_t>(ch)]) {
@@ -1206,6 +1415,107 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
             }
         }
 
+        // Stash this block's raw enhanced coupling channel mantissas
+        // regardless of mode - a NEIGHBORING block that used enhanced
+        // coupling needs them even when this block did not (§3.5.5.1's own
+        // zero-substitution rule reads them via ecpl_active below).
+        if (frm->cplinu[static_cast<std::size_t>(blk)] && ecplinu_now) {
+            ecpl_all_coeffs[static_cast<std::size_t>(blk)] =
+                coeffs[static_cast<std::size_t>(kCplStream)];
+            ecpl_active[static_cast<std::size_t>(blk)] = true;
+        }
+
+        // Snapshot everything the second pass needs to finish this block.
+        auto& tail = tails[static_cast<std::size_t>(blk)];
+        tail.coeffs = std::move(coeffs);
+        tail.chincpl = chincpl;
+        tail.cplinu = frm->cplinu[static_cast<std::size_t>(blk)];
+        tail.ecplinu_now = ecplinu_now;
+        if (tail.cplinu && tail.ecplinu_now) {
+            tail.firstchincpl = -1;
+            for (int ch = 0; ch < nfchans; ++ch) {
+                if (chincpl[static_cast<std::size_t>(ch)]) {
+                    tail.firstchincpl = ch;
+                    break;
+                }
+            }
+            tail.ecpl_begin_subbnd = ecpl_begin_subbnd;
+            tail.ecpl_end_subbnd = ecpl_end_subbnd;
+            tail.ecpl_structure = ecpl_structure;
+            tail.ecplamp_raw = ecplamp_raw;
+            tail.ecplangle_raw = ecplangle_raw;
+            tail.ecplchaos_raw = ecplchaos_raw;
+            tail.ecpltrans = ecpltrans_persist;
+        }
+        tail.cplstrtmant = cplstrtmant;
+        tail.cplendmant = cplendmant;
+        tail.spxinu = spxinu;
+        tail.chinspx = chinspx;
+        tail.spx_bands = spx_bands;
+        tail.spxco = spxco;
+        tail.spxblnd = spxblnd;
+        tail.spx_startmant = spx_startmant;
+        tail.spx_endmant = spx_endmant;
+        tail.spx_copystart = spx_copystart;
+        tail.rematflg = rematflg;
+        tail.blksw = blksw;
+        tail.endmant = endmant;
+
+        if (r.overflowed()) {
+            return std::unexpected(DecodeError::kTruncated);
+        }
+    }
+
+    // Second pass: finish every block in order. Standard-coupled, plain and
+    // AHT channels already carry their final coefficients from pass one
+    // above; only enhanced coupling's own reconstruction happens here, right
+    // before the spx/rematrix/IMDCT tail every block goes through.
+    for (int blk = 0; blk < nblks; ++blk) {
+        auto& tail = tails[static_cast<std::size_t>(blk)];
+        auto& coeffs = tail.coeffs;
+
+        if (tail.cplinu && tail.ecplinu_now) {
+            // §3.5.5: reconstruct each coupled channel from the enhanced
+            // coupling channel, using this block's neighbors. A neighbor is
+            // zero when the adjacent block did not use enhanced coupling
+            // (§3.5.5.1's own rule) - which includes this syncframe's first
+            // and last block, whose true neighbor lives in an adjacent
+            // syncframe this call was not given (see this function's
+            // comment on `prev_ecpl_coeffs` above).
+            static constexpr std::array<double, 256> kZero{};
+            const auto& prev = (blk > 0 && ecpl_active[static_cast<std::size_t>(blk - 1)])
+                                   ? ecpl_all_coeffs[static_cast<std::size_t>(blk - 1)]
+                                   : kZero;
+            const auto& next =
+                (blk + 1 < nblks && ecpl_active[static_cast<std::size_t>(blk + 1)])
+                    ? ecpl_all_coeffs[static_cast<std::size_t>(blk + 1)]
+                    : kZero;
+            std::array<double, 256> zr{};
+            std::array<double, 256> zi{};
+            eac3::ecpl_channel_spectrum(
+                prev, ecpl_all_coeffs[static_cast<std::size_t>(blk)], next, zr, zi);
+
+            const int bins = tail.cplendmant - tail.cplstrtmant;
+            for (int ch = 0; ch < nfchans; ++ch) {
+                if (!tail.chincpl[static_cast<std::size_t>(ch)]) {
+                    continue;
+                }
+                const auto uch = static_cast<std::size_t>(ch);
+                const bool is_first = ch == tail.firstchincpl;
+                std::vector<double> amp_bin(static_cast<std::size_t>(bins));
+                std::vector<double> angle_bin(static_cast<std::size_t>(bins));
+                eac3::ecpl_amplitudes(tail.ecplamp_raw[uch], tail.ecplchaos_raw[uch],
+                                      tail.ecpltrans[uch], is_first, tail.ecpl_begin_subbnd,
+                                      tail.ecpl_end_subbnd, tail.ecpl_structure, amp_bin);
+                eac3::ecpl_angles(ch, tail.ecplangle_raw[uch], tail.ecplchaos_raw[uch],
+                                  tail.ecpltrans[uch], is_first, tail.ecpl_begin_subbnd,
+                                  tail.ecpl_end_subbnd, tail.ecpl_structure, ecpl_noise,
+                                  angle_bin);
+                eac3::ecpl_channel_coefficients(zr, zi, amp_bin, angle_bin, tail.cplstrtmant,
+                                                tail.cplendmant, coeffs[uch]);
+            }
+        }
+
         // §3.6.4 spectral extension synthesis: translate the low band up,
         // notch the seams, blend with noise to approximate the original
         // band's coarse energy, then scale by the transmitted coordinate.
@@ -1213,9 +1523,9 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
         // extended already has its coupling-restored content in place below
         // spx_startmant to copy from - coupling always ends exactly where
         // spx begins (§E3.3.1), so there is no gap and nothing to reconcile.
-        if (spxinu) {
+        if (tail.spxinu) {
             for (int ch = 0; ch < nfchans; ++ch) {
-                if (!chinspx[static_cast<std::size_t>(ch)]) {
+                if (!tail.chinspx[static_cast<std::size_t>(ch)]) {
                     continue;
                 }
                 auto& tc = coeffs[static_cast<std::size_t>(ch)];
@@ -1228,19 +1538,19 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
                 // this loop writes into - so mutating tc in place is safe.
                 std::array<bool, eac3::kMaxSubBands> wrapflag{};
                 std::array<double, eac3::kMaxSubBands> band_rms{};
-                int copyindex = spx_copystart;
-                for (int bnd = 0; bnd < spx_bands.count; ++bnd) {
+                int copyindex = tail.spx_copystart;
+                for (int bnd = 0; bnd < tail.spx_bands.count; ++bnd) {
                     const auto ubnd = static_cast<std::size_t>(bnd);
-                    const int size = spx_bands.size[ubnd];
-                    const int low = spx_bands.start[ubnd];
-                    if (copyindex + size > spx_startmant) {
-                        copyindex = spx_copystart;
+                    const int size = tail.spx_bands.size[ubnd];
+                    const int low = tail.spx_bands.start[ubnd];
+                    if (copyindex + size > tail.spx_startmant) {
+                        copyindex = tail.spx_copystart;
                         wrapflag[ubnd] = true;
                     }
                     double accum = 0.0;
                     for (int i = 0; i < size; ++i) {
-                        if (copyindex == spx_startmant) {
-                            copyindex = spx_copystart;
+                        if (copyindex == tail.spx_startmant) {
+                            copyindex = tail.spx_copystart;
                         }
                         const double value = tc[static_cast<std::size_t>(copyindex++)];
                         tc[static_cast<std::size_t>(low + i)] = value;
@@ -1253,22 +1563,24 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
                 // already-translated, not-yet-blended region, using RMS
                 // measured before it (matching the encoder's own order).
                 eac3::spx_apply_notch(
-                    std::span{tc}.subspan(static_cast<std::size_t>(spx_startmant),
-                                          static_cast<std::size_t>(spx_endmant - spx_startmant)),
-                    spx_startmant, spx_bands, wrapflag,
+                    std::span{tc}.subspan(
+                        static_cast<std::size_t>(tail.spx_startmant),
+                        static_cast<std::size_t>(tail.spx_endmant - tail.spx_startmant)),
+                    tail.spx_startmant, tail.spx_bands, wrapflag,
                     frm->spxattencod[static_cast<std::size_t>(ch)]);
 
                 // §3.6.4.2.4 Noise Scaling and Blending, then §3.6.4.3
                 // Blended Transform Coefficient Scaling.
-                const int blend = spxblnd[static_cast<std::size_t>(ch)];
-                for (int bnd = 0; bnd < spx_bands.count; ++bnd) {
+                const int blend = tail.spxblnd[static_cast<std::size_t>(ch)];
+                for (int bnd = 0; bnd < tail.spx_bands.count; ++bnd) {
                     const auto ubnd = static_cast<std::size_t>(bnd);
-                    const int size = spx_bands.size[ubnd];
-                    const int low = spx_bands.start[ubnd];
-                    const double nratio = eac3::spx_noise_ratio(low, size, spx_endmant, blend);
+                    const int size = tail.spx_bands.size[ubnd];
+                    const int low = tail.spx_bands.start[ubnd];
+                    const double nratio =
+                        eac3::spx_noise_ratio(low, size, tail.spx_endmant, blend);
                     const double nscale = band_rms[ubnd] * std::sqrt(nratio);
                     const double sscale = std::sqrt(1.0 - nratio);
-                    const double coordinate = spxco[static_cast<std::size_t>(ch)][ubnd] * 32.0;
+                    const double coordinate = tail.spxco[static_cast<std::size_t>(ch)][ubnd] * 32.0;
                     for (int i = 0; i < size; ++i) {
                         const auto at = static_cast<std::size_t>(low + i);
                         tc[at] = (tc[at] * sscale + spx_noise.next() * nscale) * coordinate;
@@ -1283,9 +1595,9 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
             static constexpr std::array<std::array<int, 2>, 4> kBands = {{
                 {13, 24}, {25, 36}, {37, 60}, {61, 252},
             }};
-            const int cap = std::min(endmant[0], endmant[1]) - 1;
+            const int cap = std::min(tail.endmant[0], tail.endmant[1]) - 1;
             for (std::size_t band = 0; band < kBands.size(); ++band) {
-                if (!rematflg[band]) {
+                if (!tail.rematflg[band]) {
                     continue;
                 }
                 const int high = std::min(kBands[band][1], cap);
@@ -1301,7 +1613,7 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
         for (int ch = 0; ch < nchans; ++ch) {
             const auto index = static_cast<std::size_t>(ch);
             std::array<double, 512> x{};
-            if (ch < nfchans && blksw[static_cast<std::size_t>(ch)]) {
+            if (ch < nfchans && tail.blksw[static_cast<std::size_t>(ch)]) {
                 imdct256_pair_windowed(coeffs[index], x);
             } else {
                 imdct512_windowed(coeffs[index], x);
@@ -1315,14 +1627,86 @@ std::expected<DecodedSubstream, DecodeError> Eac3Decoder::decode_substream(
                 history[static_cast<std::size_t>(n)] = x[static_cast<std::size_t>(256 + n)];
             }
         }
-        if (r.overflowed()) {
-            return std::unexpected(DecodeError::kTruncated);
+    }
+
+    // §3.7: apply any transient pre-noise correction THIS frame's fields
+    // specify, against this frame's own head plus whatever the previous
+    // frame (still held back in `pending_`, if any) contributed as its
+    // tail - the only combination a correction can ever need, because
+    // transprocloc is relative to this frame's own first sample and this
+    // decoder keeps exactly one frame of lookback (see decode_substream's
+    // own doc comment; a stream needing more is refused rather than read
+    // out of bounds).
+    const int key = static_cast<int>(bsi->strmtyp) * 8 + bsi->substreamid;
+    auto pending_it = pending_.find(key);
+    if (frm->transproce) {
+        for (int ch = 0; ch < nfchans; ++ch) {
+            const auto uch = static_cast<std::size_t>(ch);
+            if (!frm->chintransproc[uch]) {
+                continue;
+            }
+            const int transloc = frm->transprocloc[uch];
+            const int translen = frm->transproclen[uch];
+            const auto range = transient_prenoise_range(transloc, translen);
+            if (range.first < -kSamplesPerFrame || range.last > kSamplesPerFrame) {
+                // Reaches further back or forward than the one frame of
+                // history/lookahead this decoder buffers - recognised,
+                // refused, not misdecoded (same stance as every other
+                // syntax this project's own encoder does not exercise).
+                return std::unexpected(DecodeError::kUnsupported);
+            }
+            std::vector<float> combined(static_cast<std::size_t>(kSamplesPerFrame) * 2);
+            if (pending_it != pending_.end()) {
+                std::ranges::copy(pending_it->second.channels[uch], combined.begin());
+            }
+            std::ranges::copy(out.channels[uch], combined.begin() + kSamplesPerFrame);
+            apply_transient_prenoise(combined, kSamplesPerFrame + transloc, translen);
+            if (pending_it != pending_.end()) {
+                std::ranges::copy(combined.begin(), combined.begin() + kSamplesPerFrame,
+                                  pending_it->second.channels[uch].begin());
+            }
+            std::ranges::copy(combined.begin() + kSamplesPerFrame, combined.end(),
+                              out.channels[uch].begin());
         }
     }
-    return out;
+
+    if (pending_it != pending_.end()) {
+        DecodedSubstream ready = std::move(pending_it->second);
+        pending_it->second = std::move(out);
+        return std::optional<DecodedSubstream>(std::move(ready));
+    }
+    if (frm->transproce) {
+        // First frame to use the tool for this substream identity: hold it
+        // back, nothing is ready to return yet - see decode_substream's own
+        // doc comment.
+        pending_.emplace(key, std::move(out));
+        return std::optional<DecodedSubstream>(std::nullopt);
+    }
+    return std::optional<DecodedSubstream>(std::move(out));
 }
 
-std::expected<DecodedAccessUnit, DecodeError> Eac3Decoder::decode_access_unit(
+std::vector<DecodedSubstream> Eac3Decoder::flush() {
+    std::vector<DecodedSubstream> ready;
+    ready.reserve(pending_.size() + pending_au_parts_.size());
+    for (auto& [key, substream] : pending_) {
+        ready.push_back(std::move(substream));
+    }
+    pending_.clear();
+    // decode_access_unit's own assembly cache: whatever is left here is one
+    // or more substreams whose sibling(s) never caught up before the stream
+    // ended, so there is no complete DecodedAccessUnit to hand back for
+    // them - the raw substreams, oldest first, are the best this can do (see
+    // flush()'s own doc comment).
+    for (auto& [key, queue] : pending_au_parts_) {
+        for (auto& substream : queue) {
+            ready.push_back(std::move(substream));
+        }
+    }
+    pending_au_parts_.clear();
+    return ready;
+}
+
+std::expected<std::optional<DecodedAccessUnit>, DecodeError> Eac3Decoder::decode_access_unit(
     std::span<const std::byte> unit) {
     const auto frames = split_frames(unit);
     if (!frames) {
@@ -1332,14 +1716,52 @@ std::expected<DecodedAccessUnit, DecodeError> Eac3Decoder::decode_access_unit(
         return std::unexpected(DecodeError::kInvalidStream);
     }
 
-    std::vector<DecodedSubstream> substreams;
-    substreams.reserve(frames->size());
+    // §3.7: each frame's substream identity is needed below regardless of
+    // whether decode_substream releases it or holds it back this call - a
+    // held-back frame has no DecodedSubstream to read strmtyp/substreamid
+    // from, so bsi is parsed here too. This is the same parse
+    // decode_substream itself does a moment later; cheap enough that
+    // duplicating it beats threading the key back out through decode_substream's
+    // own return type.
+    std::vector<int> keys;
+    keys.reserve(frames->size());
     for (const auto& frame : *frames) {
+        BitReader peek{frame};
+        const auto bsi = parse_bsi(peek, frame.size());
+        if (!bsi) {
+            return std::unexpected(bsi.error());
+        }
+        keys.push_back(static_cast<int>(bsi->strmtyp) * 8 + bsi->substreamid);
+
         auto decoded = decode_substream(frame);
         if (!decoded) {
             return std::unexpected(decoded.error());
         }
-        substreams.push_back(std::move(*decoded));
+        if (decoded->has_value()) {
+            pending_au_parts_[keys.back()].push_back(std::move(**decoded));
+        }
+        // A held-back frame adds nothing to this identity's queue - whatever
+        // it already holds (if anything, from an earlier call) is still
+        // waiting in order, and remains what completes the assembly below
+        // once every other identity also has one queued.
+    }
+
+    // Every identity this call's frames named must have at least one queued,
+    // released result before there is a complete access unit to assemble. A
+    // stream that never uses transient pre-noise processing always does:
+    // every substream releases every call, so this is never false for it.
+    for (const int key : keys) {
+        const auto it = pending_au_parts_.find(key);
+        if (it == pending_au_parts_.end() || it->second.empty()) {
+            return std::optional<DecodedAccessUnit>(std::nullopt);
+        }
+    }
+    std::vector<DecodedSubstream> substreams;
+    substreams.reserve(keys.size());
+    for (const int key : keys) {
+        auto& queue = pending_au_parts_.at(key);
+        substreams.push_back(std::move(queue.front()));
+        queue.pop_front();
     }
     const auto& lead = substreams.front();
     if (lead.strmtyp == StreamType::kDependent) {
@@ -1374,7 +1796,7 @@ std::expected<DecodedAccessUnit, DecodeError> Eac3Decoder::decode_access_unit(
     // `layout` empty to say plainly that there is no spatial layout to report.
     if (lead.acmod == Acmod::kDualMono) {
         out.channels = lead.channels;
-        return out;
+        return std::optional<DecodedAccessUnit>(std::move(out));
     }
 
     // §E3.8.2: the bed's locations, then every dependent's unioned in. A
@@ -1409,7 +1831,7 @@ std::expected<DecodedAccessUnit, DecodeError> Eac3Decoder::decode_access_unit(
                 sub.channels[static_cast<std::size_t>(i)];
         }
     }
-    return out;
+    return std::optional<DecodedAccessUnit>(std::move(out));
 }
 
 }  // namespace ac3

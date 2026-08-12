@@ -19,6 +19,10 @@ Modes:
   ci         - the CI gate: AC-3 and every E-AC-3 tool variant (stereo and
                5.1) against a numeric SNR/LSD floor per variant, real
                non-zero exit on regression. No table to read; see race_ci().
+               Enhanced coupling and transient pre-noise processing are
+               included too, scored through this project's own decoder
+               rather than FFmpeg's (see decode_scores_ours) - neither tool
+               has an external oracle at all.
 
 Usage (repo root, after building):  python tools/quality_race.py [mode]
 Set AC3CLI to override the ac3cli binary (see CLI below); CI always does.
@@ -236,6 +240,29 @@ def decode_scores(original, coded, wav_path, strict=True):
     return snr, lsd, hf
 
 
+def decode_scores_ours(original, coded, wav_path):
+    """Decode with THIS project's own decoder and score against the source.
+
+    Enhanced coupling (ecpl) and transient pre-noise processing (tpn) change
+    the bitstream in ways FFmpeg's own Annex E parser has never read - it is
+    not that it declines them cleanly, it does not know the syntax exists, so
+    -xerror against it would reject a correctly-formed stream rather than
+    catch a real regression (see decoder.hpp's own module comment and the
+    ci-ffmpeg-validation-and-coverage-initiative / eac3-annex-e-tools-decode
+    project history: neither tool has ever had an external oracle). Self-
+    consistency is what is available instead: this project's own encoder and
+    decoder share the same tables and the same reading of the spec, so a
+    genuine regression in either still collapses SNR/LSD by many dB here,
+    same as everywhere else on this gate - it just cannot catch a defect
+    both sides agree on.
+    """
+    run([CLI, "decode", coded, wav_path])
+    o, d, _ = align(original, read_wav_f32(wav_path))
+    snr = 10 * np.log10(np.sum(o**2) / max(np.sum((d - o) ** 2), 1e-30))
+    lsd, hf = spectral_scores(o, d)
+    return snr, lsd, hf
+
+
 def measured_kbps(path, seconds):
     return Path(path).stat().st_size * 8 / seconds / 1000.0
 
@@ -264,6 +291,12 @@ def race_ac3(original, source, seconds):
 # have to beat to earn their place.
 EAC3_VARIANTS = [("none", None), ("cpl", "cpl"), ("spx", "spx"), ("aht", "aht"),
                  ("cpl+spx", "cpl+spx"), ("all", "all")]
+
+# Enhanced coupling and transient pre-noise processing: FFmpeg has no reading
+# of either's syntax at all (see decode_scores_ours' docstring), so these are
+# scored separately from EAC3_VARIANTS above, through this project's own
+# decoder rather than race_eac3's FFmpeg path.
+EAC3_SELF_VARIANTS = [("ecpl", "cpl+ecpl"), ("tpn", "tpn"), ("ecpl+tpn", "cpl+ecpl+tpn")]
 
 
 def race_eac3(original, source, seconds, rates=(96, 128, 192)):
@@ -339,6 +372,28 @@ CI_EAC3_THRESHOLDS = {
 }
 CI_AC3_MIN_SNR_DB = 30.0
 
+# Same shape as CI_EAC3_THRESHOLDS, for EAC3_SELF_VARIANTS - measured against
+# a real build (2026-08-12) via decode_scores_ours: stereo/192kbps scored
+# 37.6 dB SNR / 4.6 dB LSD (ecpl) and 24.1-24.2 dB SNR / 4.6-5.5 dB LSD (tpn,
+# ecpl+tpn); 5.1/256kbps scored 8.7-8.8 dB SNR / 7.5 dB LSD (ecpl, ecpl+tpn)
+# and 13.8 dB SNR / 9.1 dB LSD (tpn). tpn's material here is the same tone-
+# burst-heavy mix every other row uses, not audio shaped around a single
+# clean onset the way tests/test_eac3_decoder.cpp's dedicated unit test is -
+# that is why its own floor sits well below ecpl's despite the tool working
+# correctly; see that test for a tighter, onset-specific assertion.
+CI_EAC3_SELF_THRESHOLDS = {
+    "stereo": {
+        "ecpl": (28.0, 7.0),
+        "tpn": (18.0, 7.5),
+        "ecpl+tpn": (18.0, 7.0),
+    },
+    "51": {
+        "ecpl": (6.0, 9.0),
+        "tpn": (10.0, 11.0),
+        "ecpl+tpn": (6.0, 9.0),
+    },
+}
+
 
 def gate(name, ok, detail):
     print(f"  {'PASS' if ok else 'FAIL'}  {name}: {detail}")
@@ -375,6 +430,19 @@ def race_ci(original, source, original_51, source_51):
                         f"SNR {snr:.2f} dB (floor {min_snr}), "
                         f"LSD {lsd:.2f} dB (ceiling {max_lsd})"):
                 failures.append(f"eac3-{label}-{variant}")
+
+        print(f"=== E-AC-3 {label} @ {kbps} kbps (ecpl/tpn, own-decoder oracle) ===")
+        for variant, tools in EAC3_SELF_VARIANTS:
+            coded = BUILD / f"ci_eac3_{label}_{variant}_{kbps}.ec3"
+            run([CLI, "eac3-encode", source_wav, coded, str(kbps), tools])
+            snr, lsd, _ = decode_scores_ours(original_pcm, coded,
+                                             BUILD / f"ci_eac3_{label}_{variant}.wav")
+            min_snr, max_lsd = CI_EAC3_SELF_THRESHOLDS[label][variant]
+            ok = snr >= min_snr and lsd <= max_lsd
+            if not gate(f"eac3-{label} {variant} @ {kbps}kbps (self)", ok,
+                        f"SNR {snr:.2f} dB (floor {min_snr}), "
+                        f"LSD {lsd:.2f} dB (ceiling {max_lsd})"):
+                failures.append(f"eac3-{label}-{variant}-self")
 
     print()
     if failures:
