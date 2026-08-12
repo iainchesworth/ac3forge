@@ -436,7 +436,46 @@ class MusicSynth {
             Active a;
             a.note = notes_[next_];
             a.timbre.set_cutoff(voice_cutoff(a.note));
-            a.thump.set_cutoff(300.0);
+            switch (a.note.voice) {
+                case Voice::kHorn:
+                    a.thump.set_cutoff(900.0);  // breath noise band
+                    break;
+                case Voice::kTimpani:
+                    a.thump.set_cutoff(200.0);  // mallet thump
+                    break;
+                case Voice::kPad:
+                    a.thump.set_cutoff(800.0);  // bow-noise highpass helper
+                    break;
+                case Voice::kHarp: {
+                    // Pluck a string: a Karplus-Strong loop the length of
+                    // one period, excited with a noise burst whose
+                    // brightness follows the pluck strength.
+                    const auto len = static_cast<std::size_t>(
+                        std::clamp(48000.0 / a.note.hz, 24.0, 2000.0));
+                    a.ks.assign(len, 0.0f);
+                    OnePole pick;
+                    pick.set_cutoff(1200.0 + 6000.0 * a.note.vel);
+                    double mean = 0.0;
+                    for (auto& sample_out : a.ks) {
+                        sample_out = static_cast<float>(pick.process(rng_.bipolar()));
+                        mean += static_cast<double>(sample_out);
+                    }
+                    mean /= static_cast<double>(len);
+                    for (auto& sample_out : a.ks) {
+                        sample_out -= static_cast<float>(mean);
+                    }
+                    // Each cell sees ks_rho once per loop PASS (once per
+                    // period), not once per sample - so the exponent scales
+                    // by the loop length, same as the Hall's comb gains.
+                    const double t60 = std::clamp(6.0 - a.note.hz / 300.0, 1.2, 5.0);
+                    a.ks_rho = std::pow(
+                        10.0, -3.0 * static_cast<double>(len) / (t60 * 48000.0));
+                    break;
+                }
+                default:
+                    a.thump.set_cutoff(300.0);
+                    break;
+            }
             ++next_;
             active_.push_back(a);
         }
@@ -461,8 +500,20 @@ class MusicSynth {
         Note note;
         double phase = 0.0;
         double phase2 = 0.25;
+        double phase3 = 0.5;
+        double phase4 = 0.75;
+        double phase5 = 0.1;
         OnePole timbre;
         OnePole thump;
+        // Chamberlin state-variable filter: the resonant lowpass whose
+        // cutoff rides the envelope - brass brightness follows loudness.
+        double svf_lp = 0.0;
+        double svf_bp = 0.0;
+        std::array<double, 6> mphase{};  // timpani modes / cymbal partials
+        std::array<double, 5> walk{};    // string-section detune drift
+        std::vector<float> ks;           // harp string (Karplus-Strong)
+        std::size_t ks_i = 0;
+        double ks_rho = 1.0;
         bool done = false;
     };
 
@@ -509,73 +560,143 @@ class MusicSynth {
         return level;
     }
 
+    // Chamberlin state-variable lowpass with a hint of its bandpass mixed
+    // in: resonance where the cutoff sits, which is what an opening brass
+    // bore does and a one-pole cannot.
+    static double svf(Active& a, double x, double fc_hz, double damp) {
+        const double f = 2.0 * std::sin(kPi * std::min(fc_hz, 6500.0) * kDt);
+        a.svf_lp += f * a.svf_bp;
+        const double hp = x - a.svf_lp - damp * a.svf_bp;
+        a.svf_bp += f * hp;
+        return a.svf_lp + 0.22 * a.svf_bp;
+    }
+
     double sample(Active& a, double tt) {
         const Note& n = a.note;
         switch (n.voice) {
             case Voice::kHorn: {
-                const double vib = 1.0 + 0.004 * std::min(tt / 0.3, 1.0) *
-                                             std::sin(kTau * 4.6 * tt);
-                const double inc = n.hz * vib * kDt;
-                const double raw =
-                    0.5 * (blep_saw(a.phase, inc) + blep_saw(a.phase2, inc * 1.0016));
-                return a.timbre.process(raw) *
-                       envelope(tt, n.dur, 0.09, 0.25, 0.72, 0.4, a.done) * n.vel * 0.30;
+                const double env = envelope(tt, n.dur, 0.07, 0.22, 0.75, 0.4, a.done);
+                // Scoop into the note from below, the way a hand-stopped
+                // bell speaks; vibrato arrives late and shallow.
+                const double scoop = 1.0 - 0.023 * std::exp(-tt / 0.06);
+                const double vib =
+                    1.0 + 0.0035 * std::clamp((tt - 0.4) / 0.5, 0.0, 1.0) *
+                              std::sin(kTau * 4.3 * tt);
+                const double inc = n.hz * scoop * vib * kDt;
+                double raw =
+                    0.5 * (blep_saw(a.phase, inc) + blep_saw(a.phase2, inc * 1.0013));
+                raw += 0.06 * std::exp(-tt / 0.05) * a.thump.process(rng_.bipolar());
+                // The brass cue that matters most: brightness follows
+                // loudness. The bore opens as the envelope does.
+                const double fc = std::min(n.hz * (1.3 + 4.2 * env * n.vel), 3200.0);
+                const double out = svf(a, raw, fc, 0.85);
+                return std::tanh(out * (1.4 + 2.2 * env * n.vel)) * env * n.vel * 0.32;
             }
             case Voice::kTrumpet: {
-                const double vib = 1.0 + 0.003 * std::min(tt / 0.25, 1.0) *
-                                             std::sin(kTau * 5.4 * tt + 1.0);
-                const double inc = n.hz * vib * kDt;
-                // Square from two offset saws; brassier than either alone.
+                const double env = envelope(tt, n.dur, 0.03, 0.12, 0.8, 0.28, a.done);
+                const double over = 1.0 + 0.3 * std::exp(-tt / 0.045);  // attack blip
+                const double scoop = 1.0 - 0.016 * std::exp(-tt / 0.03);
+                const double vib =
+                    1.0 + 0.0035 * std::clamp((tt - 0.35) / 0.4, 0.0, 1.0) *
+                              std::sin(kTau * 5.6 * tt + 1.0);
+                const double inc = n.hz * scoop * vib * kDt;
                 const double saw = blep_saw(a.phase, inc);
                 const double sq = saw - blep_saw(a.phase2, inc);
                 const double raw = 0.6 * saw + 0.4 * sq;
-                return a.timbre.process(raw) *
-                       envelope(tt, n.dur, 0.035, 0.15, 0.8, 0.28, a.done) * n.vel * 0.26;
+                const double fc = std::min(n.hz * (1.8 + 11.0 * env * n.vel), 6200.0);
+                const double out = svf(a, raw, fc, 0.8);
+                return std::tanh(out * (1.2 + 2.8 * env * n.vel)) * env * over * n.vel *
+                       0.26;
             }
             case Voice::kPad: {
-                const double inc = n.hz * kDt;
-                const double raw =
-                    0.5 * (blep_saw(a.phase, inc * 0.9955) + blep_saw(a.phase2, inc * 1.0045));
-                return a.timbre.process(raw) *
-                       envelope(tt, n.dur, 0.9, 0.5, 0.85, 1.2, a.done) * n.vel * 0.11;
+                // A section, not an oscillator: five saws whose detunes
+                // drift independently (nobody's bow is anybody else's),
+                // with a little high bow-noise riding the envelope.
+                const double attack = std::max(0.25, 0.9 - 0.6 * n.vel);
+                const double env = envelope(tt, n.dur, attack, 0.5, 0.85, 1.2, a.done);
+                constexpr std::array<double, 5> kDetune{-0.0070, -0.0032, 0.0, 0.0035,
+                                                        0.0074};
+                std::array<double*, 5> phases{&a.phase, &a.phase2, &a.phase3, &a.phase4,
+                                              &a.phase5};
+                double sum = 0.0;
+                for (std::size_t k = 0; k < 5; ++k) {
+                    a.walk[k] = std::clamp(a.walk[k] + rng_.bipolar() * kDt * 0.06,
+                                           -0.002, 0.002);
+                    const double inc = n.hz * (1.0 + kDetune[k] + a.walk[k]) * kDt;
+                    sum += blep_saw(*phases[k], inc);
+                }
+                // Drawn into a local first: two rng_ calls in one expression
+                // would leave the draw order compiler-defined, and the
+                // rendered output must be bit-identical across toolchains.
+                const double white = rng_.bipolar();
+                const double bow = 0.018 * (white - a.thump.process(rng_.bipolar()));
+                return (a.timbre.process(sum * 0.2) + bow * env) * env * n.vel * 0.30;
             }
             case Voice::kTimpani: {
-                if (tt > 2.2) {
+                if (tt > 2.6) {
                     a.done = true;
                     return 0.0;
                 }
-                const double droop = n.hz * (1.0 + 0.6 * std::exp(-tt / 0.045));
-                a.phase += droop * kDt;
-                const double tone = std::sin(kTau * a.phase);
+                // A kettledrum is a set of inharmonic membrane modes, not a
+                // sine: principal plus the 1.5 / 1.74 / 2.0 / 2.25 series
+                // (air-loaded drumhead), higher modes dying faster, all of
+                // it bending down slightly as the head settles.
+                constexpr std::array<double, 5> kRatio{1.0, 1.504, 1.742, 2.0, 2.245};
+                constexpr std::array<double, 5> kAmp{1.0, 0.62, 0.40, 0.28, 0.20};
+                // Genuine T60s per mode (exp(-6.91 t / T60) is -60 dB at
+                // T60), so by the 2.6 s cut the principal sits near -78 dB
+                // and the stop is inaudible.
+                constexpr std::array<double, 5> kModeT60{2.0, 1.3, 0.9, 0.65, 0.5};
+                const double bend = 1.0 + 0.025 * std::exp(-tt / 0.08);
+                double sum = 0.0;
+                for (std::size_t k = 0; k < 5; ++k) {
+                    a.mphase[k] += n.hz * kRatio[k] * bend * kDt;
+                    sum += kAmp[k] * std::exp(-6.91 * tt / kModeT60[k]) *
+                           std::sin(kTau * a.mphase[k]);
+                }
                 const double thump =
-                    a.thump.process(rng_.bipolar()) * std::exp(-tt * 18.0) * 2.0;
-                return (0.8 * tone + 0.5 * thump) * std::exp(-tt * 3.5) * n.vel * 0.55;
+                    a.thump.process(rng_.bipolar()) * std::exp(-tt * 26.0) * 2.2;
+                return (0.55 * sum + 0.5 * thump) * n.vel * 0.5;
             }
             case Voice::kHarp: {
-                // A pluck: fundamental plus a fading second partial, fast
-                // exponential decay, brightness rolled off by the note's LP.
-                if (tt > n.dur + 2.0) {
+                // The Karplus-Strong loop plucked at activation: read, damp
+                // by averaging (the string's own high-frequency loss), feed
+                // back with the tuned decay.
+                if (a.ks.empty() || tt > 6.0) {
                     a.done = true;
                     return 0.0;
                 }
-                a.phase += n.hz * kDt;
-                a.phase2 += n.hz * 2.0 * kDt;
-                const double body = std::sin(kTau * a.phase) +
-                                    0.4 * std::exp(-tt * 6.0) * std::sin(kTau * a.phase2);
-                return a.timbre.process(body) * std::exp(-tt * 2.6) * n.vel * 0.20;
+                const std::size_t next_i = (a.ks_i + 1) % a.ks.size();
+                const double out = static_cast<double>(a.ks[a.ks_i]);
+                a.ks[a.ks_i] = static_cast<float>(
+                    0.5 * (static_cast<double>(a.ks[a.ks_i]) +
+                           static_cast<double>(a.ks[next_i])) *
+                    a.ks_rho);
+                a.ks_i = next_i;
+                return out * n.vel * 0.55;
             }
             case Voice::kCymbal: {
-                // A swell: filtered noise rising over the note and crashing at
-                // its end, then ringing out.
+                // A swell into a crash: band-limited noise for the wash,
+                // plus ring-modulated inharmonic partial pairs for the
+                // metal underneath it.
                 const double rise = std::min(tt / std::max(n.dur, 0.05), 1.0);
                 const double ring = tt > n.dur ? std::exp(-(tt - n.dur) / 1.4) : rise * rise;
                 if (tt > n.dur + 4.0) {
                     a.done = true;
                     return 0.0;
                 }
-                const double sizzle = a.timbre.process(rng_.bipolar()) -
-                                      a.thump.process(rng_.bipolar());
-                return sizzle * ring * n.vel * 0.30;
+                constexpr std::array<double, 6> kPartial{923.7, 1369.9, 1780.2,
+                                                         2230.1, 2782.5, 3484.3};
+                for (std::size_t k = 0; k < 6; ++k) {
+                    a.mphase[k] += kPartial[k] * kDt;
+                }
+                const double metal = std::sin(kTau * a.mphase[0]) * std::sin(kTau * a.mphase[1]) +
+                                     std::sin(kTau * a.mphase[2]) * std::sin(kTau * a.mphase[3]) +
+                                     std::sin(kTau * a.mphase[4]) * std::sin(kTau * a.mphase[5]);
+                const double white = rng_.bipolar();  // sequenced, as in kPad
+                const double sizzle =
+                    a.timbre.process(white) - a.thump.process(rng_.bipolar());
+                return (0.65 * sizzle + 0.28 * metal) * ring * n.vel * 0.32;
             }
             case Voice::kBoogieLead: {
                 const double inc = n.hz * kDt;
@@ -596,6 +717,62 @@ class MusicSynth {
     std::size_t next_ = 0;
     std::vector<Active> active_;
     Rng rng_{0x71ADE5EEDull};
+};
+
+// ---------------------------------------------------------------------------
+// The scoring stage. A small Schroeder reverb (four damped combs into two
+// allpasses, ~1.9 s RT60) applied to the anthem before it ever reaches the
+// transmitter: the hall is part of the recording the station is playing,
+// which is half of what makes a synthesized orchestra read as an orchestra.
+// ---------------------------------------------------------------------------
+
+class Hall {
+   public:
+    Hall() {
+        constexpr std::array<std::size_t, 4> kCombLen{1687, 1601, 2053, 2251};
+        for (std::size_t k = 0; k < combs_.size(); ++k) {
+            combs_[k].buf.assign(kCombLen[k], 0.0);
+            combs_[k].gain =
+                std::pow(10.0, -3.0 * static_cast<double>(kCombLen[k]) / (1.9 * 48000.0));
+            combs_[k].damp.set_cutoff(4200.0);
+        }
+        allpasses_[0].buf.assign(389, 0.0);
+        allpasses_[1].buf.assign(127, 0.0);
+    }
+
+    // Returns the wet signal only; the caller chooses the blend.
+    double process(double x) {
+        double s = 0.0;
+        for (auto& c : combs_) {
+            const double y = c.buf[c.i];
+            c.buf[c.i] = x + c.damp.process(y) * c.gain;
+            c.i = (c.i + 1) % c.buf.size();
+            s += y;
+        }
+        s *= 0.25;
+        for (auto& ap : allpasses_) {
+            const double y = ap.buf[ap.i];
+            const double out = y - 0.7 * s;
+            ap.buf[ap.i] = s + 0.7 * out;
+            ap.i = (ap.i + 1) % ap.buf.size();
+            s = out;
+        }
+        return s;
+    }
+
+   private:
+    struct Comb {
+        std::vector<double> buf;
+        std::size_t i = 0;
+        double gain = 0.8;
+        OnePole damp;
+    };
+    struct Allpass {
+        std::vector<double> buf;
+        std::size_t i = 0;
+    };
+    std::array<Comb, 4> combs_{};
+    std::array<Allpass, 2> allpasses_{};
 };
 
 // ---------------------------------------------------------------------------
@@ -1154,6 +1331,7 @@ int main(int argc, char** argv) {
     const auto paths = build_paths();
     MusicSynth anthem{compose_cover()};
     MusicSynth boogie{compose_boogie()};
+    Hall hall;
     RadioFx station_radio{300.0, 3100.0, 0.7, 0.12, 0.010, 1.2, 0xA11CE5u};
     RadioFx jalopy_radio{500.0, 2400.0, 1.1, 0.22, 0.018, 3.0, 0xBEEFCAFEu};
     Comet comet;
@@ -1241,12 +1419,16 @@ int main(int argc, char** argv) {
             const double t = t_start + static_cast<double>(n) * kDt;
             double src = music_scratch[i];
             if (!user_music.empty()) {
+                // A supplied recording brings its own ambience; the hall is
+                // only for the built-in synth orchestra.
                 const double pos = (t - 2.0) * kRate;
                 src = 0.0;
                 if (pos >= 0.0 &&
                     static_cast<std::size_t>(pos) < user_music.size()) {
                     src = user_music[static_cast<std::size_t>(pos)];
                 }
+            } else {
+                src += 0.32 * hall.process(src);
             }
             const double amount =
                 t < 38.0 ? 1.0 : std::max(0.15, 1.0 - (t - 38.0) / 1.5 * 0.85);
