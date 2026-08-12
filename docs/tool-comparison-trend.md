@@ -85,6 +85,22 @@ that produced it — after the numbers are still recorded here. See
   // leg, so the checkboxes below are the same list regardless of which leg
   // is selected, and rows for a variant the leg doesn't have just don't show.
   const ALL_VARIANTS = ["landscape", "none", "cpl", "spx", "aht", "cpl+spx", "all", "ecpl", "tpn", "ecpl+tpn"];
+  // Fixed color per variant, same reasoning as quality-trend.md's LEGS - a
+  // variant's line keeps the same color across renders instead of shuffling
+  // with whichever variants happen to have data for the selected leg (AC-3's
+  // only variant is "landscape"; the rest just have no points there).
+  const VARIANT_COLORS = {
+    landscape: "#7c4dff",
+    none: "#00acc1",
+    cpl: "#43a047",
+    spx: "#fb8c00",
+    aht: "#e53935",
+    "cpl+spx": "#3949ab",
+    all: "#d81b60",
+    ecpl: "#6d4c41",
+    tpn: "#00897b",
+    "ecpl+tpn": "#757575",
+  };
   // The chart plots one metric line per branch for a single focus variant -
   // same reasoning as quality-trend.md's own chart (a line per leg AND per
   // variant would be unreadable) - while the table below can show every
@@ -95,7 +111,17 @@ that produced it — after the numbers are still recorded here. See
 
   const state = {
     leg: "eac3-stereo-192",
+    // "branch": one line per branch for a single focus variant (the
+    // original view). "variant": one line per tool-set variant for a single
+    // branch, un-folded - same branch-vs-leg tradeoff as quality-trend.md's
+    // "By platform leg" view: never both branch and variant as line
+    // dimensions at once, since up to 10 variants x 2 branches would be as
+    // unreadable as the per-leg-and-variant chart this page already avoids.
+    chartMode: "branch",
     chartVariant: "landscape",
+    // Which branch's per-variant lines are drawn in "variant" mode. develop
+    // by default, same reasoning as quality-trend.md's legBranch.
+    chartBranch: "develop",
     tableVariants: Object.fromEntries(ALL_VARIANTS.map((v) => [v, DEFAULT_TABLE_VARIANTS.includes(v)])),
     branches: { main: true, develop: true },
     developFullHistory: false,
@@ -167,8 +193,15 @@ that produced it — after the numbers are still recorded here. See
     return records.reduce((a, b) => (a.commit_date > b.commit_date ? a : b)).commit;
   }
 
+  // "variant" mode always looks at one branch's full leg history - same
+  // reasoning as quality-trend.md's leg view: the point is seeing a
+  // per-variant trend over many commits, so the develop-collapse and
+  // other-branch filters "branch" mode uses don't apply here.
   function visibleRecords(allRecords) {
     const legRecords = allRecords.filter((r) => r.leg === state.leg);
+    if (state.chartMode === "variant") {
+      return legRecords.filter((r) => r.branch === state.chartBranch);
+    }
     const latestDevelop = mostRecentCommit(legRecords.filter((r) => r.branch === "develop"));
     return legRecords.filter((r) => {
       if (!state.branches[r.branch]) return false;
@@ -198,11 +231,18 @@ that produced it — after the numbers are still recorded here. See
     return trail.reduce((sum, r) => sum + r.snr_db, 0) / trail.length;
   }
 
-  function buildChart(seriesByBranch, releasesBySha) {
+  // Generic over what a "track" is: branch mode passes one track per branch
+  // for the focus variant, variant mode passes one track per tool-set
+  // variant for a single branch - same x/y math and SVG either way, only the
+  // line count and labels differ. Each track is { key, label, color, points
+  // } - see quality-trend.md's identical buildChart for the same pattern.
+  function buildChart(tracks, releasesBySha) {
     const width = 760, height = 220, pad = { top: 12, right: 12, bottom: 32, left: 42 };
-    const allPoints = TRACKS.flatMap((t) => seriesByBranch[t.branch] || []);
+    const allPoints = tracks.flatMap((t) => t.points);
     if (allPoints.length === 0) {
-      return `<p class="tool-trend-status">No "${state.chartVariant}" history for ${state.leg} in the current view.</p>`;
+      return state.chartMode === "variant"
+        ? `<p class="tool-trend-status">No history for ${state.leg} on ${state.chartBranch} in the current view.</p>`
+        : `<p class="tool-trend-status">No "${state.chartVariant}" history for ${state.leg} in the current view.</p>`;
     }
     const dbValues = allPoints.map((p) => p.snr_db);
     const minDb = Math.min(...dbValues) - 2;
@@ -214,7 +254,10 @@ that produced it — after the numbers are still recorded here. See
     const x = (t) => pad.left + (maxT === minT ? (width - pad.left - pad.right) / 2 : ((t - minT) / (maxT - minT)) * (width - pad.left - pad.right));
     const y = (db) => height - pad.bottom - ((db - minDb) / (maxDb - minDb)) * (height - pad.top - pad.bottom);
 
-    let svg = `<svg class="tool-trend-chart" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="SNR by commit date, ${state.leg} ${state.chartVariant}">`;
+    const chartLabel = state.chartMode === "variant"
+      ? `SNR by commit date, ${state.leg} on ${state.chartBranch}, by variant`
+      : `SNR by commit date, ${state.leg} ${state.chartVariant}`;
+    let svg = `<svg class="tool-trend-chart" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="${chartLabel}">`;
     for (let i = 0; i <= 4; i++) {
       const db = minDb + ((maxDb - minDb) * i) / 4;
       const gy = y(db);
@@ -224,8 +267,8 @@ that produced it — after the numbers are still recorded here. See
     svg += `<text x="${pad.left}" y="${height - 8}" text-anchor="start" font-size="10" fill="var(--md-default-fg-color--light)">${new Date(minT).toISOString().slice(0, 10)}</text>`;
     svg += `<text x="${width - pad.right}" y="${height - 8}" text-anchor="end" font-size="10" fill="var(--md-default-fg-color--light)">${new Date(maxT).toISOString().slice(0, 10)}</text>`;
 
-    for (const track of TRACKS) {
-      const pts = seriesByBranch[track.branch] || [];
+    for (const track of tracks) {
+      const pts = track.points;
       if (pts.length === 0) continue;
       if (pts.length > 1) {
         const path = pts.map((p, i) => `${i === 0 ? "M" : "L"}${x(Date.parse(p.commit_date)).toFixed(1)},${y(p.snr_db).toFixed(1)}`).join(" ");
@@ -235,7 +278,7 @@ that produced it — after the numbers are still recorded here. See
         const cx = x(Date.parse(p.commit_date)).toFixed(1);
         const cy = y(p.snr_db).toFixed(1);
         const release = releasesBySha[p.commit];
-        const title = `${track.branch} ${shortSha(p.commit)} - ${p.snr_db.toFixed(2)} dB on ${p.commit_date.slice(0, 10)}${release ? ` - release ${release.name}` : ""}`;
+        const title = `${track.label} ${shortSha(p.commit)} - ${p.snr_db.toFixed(2)} dB on ${p.commit_date.slice(0, 10)}${release ? ` - release ${release.name}` : ""}`;
         svg += `<circle cx="${cx}" cy="${cy}" r="3" fill="${track.color}"><title>${title}</title></circle>`;
         if (release) {
           svg += `<circle cx="${cx}" cy="${cy}" r="6.5" fill="none" stroke="${track.color}" stroke-width="1.5" stroke-dasharray="2,1.5"><title>${title}</title></circle>`;
@@ -246,12 +289,14 @@ that produced it — after the numbers are still recorded here. See
     return svg;
   }
 
-  function buildLegend(seriesByBranch, releasesBySha) {
-    const items = TRACKS.filter((t) => state.branches[t.branch]).map((t) => {
-      const note = t.branch === "develop" && !state.developFullHistory ? " (latest commit only)" : "";
-      return `<span><i style="background:${t.color}"></i>${t.branch}${note}</span>`;
-    });
-    const anyRelease = Object.values(seriesByBranch).flat().some((p) => releasesBySha[p.commit]);
+  // Filters out tracks with no points rather than trusting the caller's
+  // list - branch mode already sets an unchecked branch's points to [], and
+  // variant mode's ALL_VARIANTS list includes variants the selected leg
+  // never emits (AC-3 only has "landscape"), so this is the one place both
+  // cases collapse to "don't show a swatch for a line nothing was drawn for".
+  function buildLegend(tracks, releasesBySha) {
+    const items = tracks.filter((t) => t.points.length > 0).map((t) => `<span><i style="background:${t.color}"></i>${t.label}</span>`);
+    const anyRelease = tracks.some((t) => t.points.some((p) => releasesBySha[p.commit]));
     if (anyRelease) {
       items.push('<span><i style="background:none;border:1.5px dashed var(--md-default-fg-color--light);"></i>tagged release</span>');
     }
@@ -304,6 +349,7 @@ that produced it — after the numbers are still recorded here. See
   }
 
   function buildControls() {
+    const variantMode = state.chartMode === "variant";
     return `
       <div class="tool-trend-controls">
         <label for="tool-trend-leg">Leg
@@ -311,14 +357,29 @@ that produced it — after the numbers are still recorded here. See
             ${LEGS.map((l) => `<option value="${l}" ${state.leg === l ? "selected" : ""}>${l}</option>`).join("")}
           </select>
         </label>
-        <label for="tool-trend-chart-variant">Chart line
-          <select id="tool-trend-chart-variant">
-            ${ALL_VARIANTS.map((v) => `<option value="${v}" ${state.chartVariant === v ? "selected" : ""}>${v}</option>`).join("")}
+        <label for="tool-trend-chart-mode">Chart
+          <select id="tool-trend-chart-mode">
+            <option value="branch" ${!variantMode ? "selected" : ""}>By branch</option>
+            <option value="variant" ${variantMode ? "selected" : ""}>By variant</option>
           </select>
         </label>
-        <label><input type="checkbox" id="tool-trend-branch-main" ${state.branches.main ? "checked" : ""}/> main</label>
-        <label><input type="checkbox" id="tool-trend-branch-develop" ${state.branches.develop ? "checked" : ""}/> develop</label>
-        ${state.branches.develop ? `<label><input type="checkbox" id="tool-trend-develop-history" ${state.developFullHistory ? "checked" : ""}/> develop: show full history</label>` : ""}
+        ${variantMode ? `
+          <label for="tool-trend-chart-branch">Branch
+            <select id="tool-trend-chart-branch">
+              <option value="develop" ${state.chartBranch === "develop" ? "selected" : ""}>develop</option>
+              <option value="main" ${state.chartBranch === "main" ? "selected" : ""}>main</option>
+            </select>
+          </label>
+        ` : `
+          <label for="tool-trend-chart-variant">Chart line
+            <select id="tool-trend-chart-variant">
+              ${ALL_VARIANTS.map((v) => `<option value="${v}" ${state.chartVariant === v ? "selected" : ""}>${v}</option>`).join("")}
+            </select>
+          </label>
+          <label><input type="checkbox" id="tool-trend-branch-main" ${state.branches.main ? "checked" : ""}/> main</label>
+          <label><input type="checkbox" id="tool-trend-branch-develop" ${state.branches.develop ? "checked" : ""}/> develop</label>
+          ${state.branches.develop ? `<label><input type="checkbox" id="tool-trend-develop-history" ${state.developFullHistory ? "checked" : ""}/> develop: show full history</label>` : ""}
+        `}
       </div>
       <div class="tool-trend-variant-filter">
         <span>Table rows:</span>
@@ -332,18 +393,38 @@ that produced it — after the numbers are still recorded here. See
       state.leg = e.target.value;
       render(allRecords, releasesBySha);
     });
-    document.getElementById("tool-trend-chart-variant").addEventListener("change", (e) => {
-      state.chartVariant = e.target.value;
+    document.getElementById("tool-trend-chart-mode").addEventListener("change", (e) => {
+      state.chartMode = e.target.value;
       render(allRecords, releasesBySha);
     });
-    document.getElementById("tool-trend-branch-main").addEventListener("change", (e) => {
-      state.branches.main = e.target.checked;
-      render(allRecords, releasesBySha);
-    });
-    document.getElementById("tool-trend-branch-develop").addEventListener("change", (e) => {
-      state.branches.develop = e.target.checked;
-      render(allRecords, releasesBySha);
-    });
+    const chartBranchSelect = document.getElementById("tool-trend-chart-branch");
+    if (chartBranchSelect) {
+      chartBranchSelect.addEventListener("change", (e) => {
+        state.chartBranch = e.target.value;
+        render(allRecords, releasesBySha);
+      });
+    }
+    const chartVariantSelect = document.getElementById("tool-trend-chart-variant");
+    if (chartVariantSelect) {
+      chartVariantSelect.addEventListener("change", (e) => {
+        state.chartVariant = e.target.value;
+        render(allRecords, releasesBySha);
+      });
+    }
+    const mainToggle = document.getElementById("tool-trend-branch-main");
+    if (mainToggle) {
+      mainToggle.addEventListener("change", (e) => {
+        state.branches.main = e.target.checked;
+        render(allRecords, releasesBySha);
+      });
+    }
+    const developToggle = document.getElementById("tool-trend-branch-develop");
+    if (developToggle) {
+      developToggle.addEventListener("change", (e) => {
+        state.branches.develop = e.target.checked;
+        render(allRecords, releasesBySha);
+      });
+    }
     const historyToggle = document.getElementById("tool-trend-develop-history");
     if (historyToggle) {
       historyToggle.addEventListener("change", (e) => {
@@ -359,19 +440,35 @@ that produced it — after the numbers are still recorded here. See
     });
   }
 
+  // Builds this render's tracks per state.chartMode - branch mode keeps one
+  // track per branch for the focus variant (chartSeries); variant mode
+  // un-folds the single chartBranch into one track per tool-set variant.
+  // Mirrors quality-trend.md's identical buildTracks.
+  function buildTracks(visible) {
+    if (state.chartMode === "variant") {
+      return ALL_VARIANTS.map((v) => ({
+        key: v,
+        label: v,
+        color: VARIANT_COLORS[v],
+        points: chartSeries(visible, v),
+      }));
+    }
+    return TRACKS.map((t) => ({
+      key: t.branch,
+      label: t.branch === "develop" && !state.developFullHistory ? `${t.branch} (latest commit only)` : t.branch,
+      color: t.color,
+      points: state.branches[t.branch] ? chartSeries(visible.filter((r) => r.branch === t.branch), state.chartVariant) : [],
+    }));
+  }
+
   function render(allRecords, releasesBySha) {
     const allLegRecords = allRecords.filter((r) => r.leg === state.leg);
     const visible = visibleRecords(allRecords);
-    const seriesByBranch = {};
-    for (const track of TRACKS) {
-      seriesByBranch[track.branch] = state.branches[track.branch]
-        ? chartSeries(visible.filter((r) => r.branch === track.branch), state.chartVariant)
-        : [];
-    }
+    const tracks = buildTracks(visible);
     root.innerHTML = `
       ${buildControls()}
-      <div class="tool-trend-chart-wrap">${buildChart(seriesByBranch, releasesBySha)}</div>
-      ${buildLegend(seriesByBranch, releasesBySha)}
+      <div class="tool-trend-chart-wrap">${buildChart(tracks, releasesBySha)}</div>
+      ${buildLegend(tracks, releasesBySha)}
       ${buildTable(visible, allLegRecords, releasesBySha)}
     `;
     attachControlListeners(allRecords, releasesBySha);
@@ -392,12 +489,22 @@ that produced it — after the numbers are still recorded here. See
 
 ## Reading it
 
-Each row is one (commit, leg, tool-set) result. The chart plots a single
-focus variant (`landscape` by default — "Chart line" selector) as one point
-per commit per branch, against a shared calendar x-axis; the table below can
-show several variants' rows at once via the checkboxes, so you can compare
-e.g. `none` against `all` for the same leg without switching the chart back
-and forth.
+Each row is one (commit, leg, tool-set) result. The **Chart** control picks
+what the lines represent, always within the single leg selected above. "By
+branch" (the default) plots a single focus variant (`landscape` by default —
+"Chart line" selector) as one point per commit per branch, against a shared
+calendar x-axis — this view answers "did *this* variant regress." "By
+variant" answers a different question instead: it un-folds a single branch
+(picked with the **Branch** control that replaces the branch checkboxes in
+this view) into one line per tool-set variant, so a variant drifting
+relative to its siblings — e.g. `cpl` alone trending down while `all` holds
+steady — is visible as its own line rather than something you'd only catch
+by toggling the focus variant one at a time. AC-3's only variant is
+`landscape`, so switching to "By variant" on an AC-3 leg draws a single line
+— the other nine simply have no points there. The table below can still show
+several variants' rows at once via the checkboxes regardless of which chart
+mode is active, so you can compare e.g. `none` against `all` without
+switching the chart back and forth.
 
 `develop` and `main` behave exactly as on [Quality trend](quality-trend.md):
 separate tracks (main only advances on a release promotion), `develop`
