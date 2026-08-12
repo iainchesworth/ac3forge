@@ -135,12 +135,43 @@ check_one "ac3" "$WORKDIR/gold.ac3" "ac3" 448
 
 count=$((count + 1))
 echo "[$count] encode: E-AC-3 5.1 @ 256 kbps (tools=none)"
-# tools=none, not cpl/spx/aht/all: this decoder refuses any Annex E
-# tool-enabled stream on decode (see scripts/run-codec-matrix.sh's own note
-# on the same limitation) - this gate needs ac3cli's own decode to succeed,
-# not just tolerate a known refusal, so it stays on the plain-decodable path.
+# The plain-path baseline: no Annex E tool engages, so this is the closest
+# thing to an apples-to-apples comparison between the two decoders and sets
+# the tightest floor (see MIN_SNR_DB's own comment for the 61.8-67.9 dB range
+# this has landed in historically).
 "$CLI" eac3-encode "$GOLD_WAV" "$WORKDIR/gold.ec3" 256 none 51 >/dev/null
 check_one "eac3" "$WORKDIR/gold.ec3" "eac3" 256
+
+count=$((count + 1))
+echo "[$count] encode: E-AC-3 5.1 @ 256 kbps (tools=cpl)"
+# The in-repo decoder reads every Annex E tool now (see run-codec-matrix.sh's
+# header comment - the "this decoder refuses any Annex E tool-enabled
+# stream" limitation that used to live in this comment is gone, confirmed by
+# hand 2026-08-12: `eac3-encode ... 256 cpl 51` followed by `decode` round-
+# trips cleanly). That means this gate can finally exercise a tool-enabled
+# encode/decode path for real, and coupling is the one worth adding here:
+# measured worst-channel SNR against FFmpeg's own decode is 67.73 dB, close
+# enough to the tools=none baseline above (67.90 dB on the same run) to
+# reuse the same MIN_SNR_DB floor rather than needing a separately-justified
+# one - unlike the cplbndstrce0 fixture below, whose lower floor is about
+# comparing against a real third-party bitstream, not about coupling itself.
+#
+# spx and aht are deliberately NOT added here even though the decoder reads
+# them too: measured worst-channel SNR against FFmpeg's own decode is only
+# ~31 dB for spx, ~20 dB for aht, and ~28 dB for all (cpl+spx+aht together) -
+# both tools are approximate/generative reconstruction (spx regenerates high
+# frequencies from a copied-down band plus a noise blend; AHT's Huffman/
+# transform path has its own reconstruction choices), so two independent,
+# spec-correct decoders legitimately diverge far more than the plain or
+# cpl-only paths do. A 55 dB floor would fail on that legitimate divergence,
+# not a bug, and a floor low enough to accommodate it (~15-20 dB, like
+# cplbndstrce0's) would be too loose to catch a real regression in this
+# tool-enabled path specifically. run-codec-matrix.sh already covers spx/aht/
+# all at the round-trips-without-crashing and FFmpeg-parses-it level; this
+# gate's tight dB-based regression detection just isn't the right tool for
+# them yet.
+"$CLI" eac3-encode "$GOLD_WAV" "$WORKDIR/gold_cpl.ec3" 256 cpl 51 >/dev/null
+check_one "eac3_cpl" "$WORKDIR/gold_cpl.ec3" "eac3" 256
 
 # Third-party interop: cplbndstrce == 0 (Annex E's default coupling band
 # structure, Table E2.12). This project's own encoder always transmits an
