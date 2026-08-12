@@ -353,7 +353,7 @@ ApplicationWindow {
                 text: qsTr("ac3forge")
                 font.pixelSize: 22
                 font.family: Theme.headingFamily
-                font.weight: Font.Black
+                font.weight: Font.ExtraBold
                 font.letterSpacing: -0.2
                 color: Theme.text
             }
@@ -770,7 +770,7 @@ ApplicationWindow {
                                                                   : EncoderController.channelShapeName
                                 font.pixelSize: 20
                                 font.family: Theme.headingFamily
-                                font.weight: Font.Black
+                                font.weight: Font.ExtraBold
                                 color: Theme.text
                             }
                             Rectangle {
@@ -1128,7 +1128,7 @@ ApplicationWindow {
                             text: window.planLine
                             font.pixelSize: 26
                             font.family: Theme.headingFamily
-                            font.weight: Font.Black
+                            font.weight: Font.ExtraBold
                             elide: Text.ElideRight
                             color: Theme.text
                         }
@@ -1720,7 +1720,7 @@ ApplicationWindow {
                                                 }
                                                 font.pixelSize: 19
                                                 font.family: Theme.headingFamily
-                                                font.weight: Font.Black
+                                                font.weight: Font.ExtraBold
                                                 color: Theme.text
                                             }
                                         }
@@ -1760,7 +1760,7 @@ ApplicationWindow {
                                                 }
                                                 font.pixelSize: 19
                                                 font.family: Theme.headingFamily
-                                                font.weight: Font.Black
+                                                font.weight: Font.ExtraBold
                                                 color: Theme.text
                                             }
                                         }
@@ -3353,19 +3353,84 @@ ApplicationWindow {
                                     spacing: Theme.gap
 
                                     Card {
-                                        title: qsTr("Current layout")
+                                        title: qsTr("Layout — switching re-locks the receiver")
 
                                         Text {
                                             Layout.fillWidth: true
                                             text: EncoderController.atmosEnabled
-                                                  ? qsTr("Atmos objects over a 5.1 bed")
-                                                  : EncoderController.channelShapeName
+                                                  ? qsTr("Atmos objects over a 5.1 bed — fixed while object mode is on")
+                                                  : qsTr("Now encoding %1").arg(EncoderController.channelShapeName)
                                             color: Theme.text
                                             font.pixelSize: Theme.fontNormal
                                         }
+
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            visible: !EncoderController.atmosEnabled
+                                            spacing: Theme.space2
+
+                                            Repeater {
+                                                model: ["5.1", "7.1", "5.1.4", "7.1.4"]
+                                                delegate: Rectangle {
+                                                    id: liveLayoutButton
+                                                    required property string modelData
+                                                    readonly property bool active:
+                                                        EncoderController.channelShapeName === modelData
+                                                    readonly property bool beyondReceiver: modelData !== "5.1"
+                                                    readonly property bool locked:
+                                                        EncoderController.liveReconnecting
+                                                        || EncoderController.liveWritingToDisk
+                                                        || !EncoderController.liveActive
+
+                                                    objectName: "liveLayout-" + modelData
+                                                    Layout.fillWidth: true
+                                                    Layout.preferredHeight: 36
+                                                    color: active ? Theme.text : "transparent"
+                                                    border.color: active ? Theme.text : Theme.divider
+                                                    border.width: 1
+                                                    opacity: locked && !active ? 0.4
+                                                             : beyondReceiver && !active ? 0.7 : 1.0
+
+                                                    RowLayout {
+                                                        anchors.centerIn: parent
+                                                        spacing: 5
+
+                                                        Rectangle {
+                                                            visible: liveLayoutButton.beyondReceiver
+                                                            width: 6
+                                                            height: 6
+                                                            color: Theme.accent
+                                                        }
+                                                        Text {
+                                                            text: liveLayoutButton.modelData
+                                                            font.pixelSize: 12
+                                                            font.family: Theme.monoFamily
+                                                            color: liveLayoutButton.active ? Theme.bg : Theme.text
+                                                        }
+                                                    }
+                                                    MouseArea {
+                                                        anchors.fill: parent
+                                                        enabled: !liveLayoutButton.locked && !liveLayoutButton.active
+                                                        onClicked: EncoderController.switchLiveLayout(liveLayoutButton.modelData)
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        Text {
+                                            visible: !EncoderController.atmosEnabled
+                                            Layout.fillWidth: true
+                                            text: qsTr("Dotted layouts encode and meter, but the receiver leg stays Dolby Digital 5.1 until DD+ passthrough lands.")
+                                            color: Theme.textMuted
+                                            font.pixelSize: 10
+                                            font.family: Theme.monoFamily
+                                            wrapMode: Text.WordWrap
+                                        }
                                         Text {
                                             Layout.fillWidth: true
-                                            text: qsTr("Fixed for this run — change it from the Format tab and start a new session for it to take effect. A layout change is a deliberate act: the stream stops, the receiver renegotiates, and about a second of audio is lost.")
+                                            text: EncoderController.liveWritingToDisk
+                                                  ? qsTr("The take is being written to disk, so the layout is fixed for this run — a restart would clobber the first half of the file.")
+                                                  : qsTr("A layout change is a deliberate act, not a silent one: the stream stops, the receiver renegotiates, and about a second of audio is lost. The receiver's own display changes with it.")
                                             color: Theme.textMuted
                                             font.pixelSize: Theme.fontSmall
                                             wrapMode: Text.WordWrap

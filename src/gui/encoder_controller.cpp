@@ -2063,6 +2063,27 @@ void EncoderController::stopLiveSession() {
     stop_live_.store(true, std::memory_order_relaxed);
 }
 
+void EncoderController::switchLiveLayout(const QString& presetName) {
+    if (!live_active_ || !live_request_) {
+        return;
+    }
+    if (atmos_enabled_) {
+        // Object mode fixes the bed; the switcher never offers this, but a
+        // property poke should not reach around the same rule.
+        return;
+    }
+    if (live_writing_to_disk_) {
+        setStatus(QStringLiteral("The take is being written to disk — stop the session and "
+                                 "start a new take to change the layout."));
+        return;
+    }
+    pending_live_relayout_ = presetName;
+    setStatus(QStringLiteral("Switching to %1 — the stream stops, the receiver re-locks, and "
+                             "about a second of audio is lost.")
+                  .arg(presetName));
+    stopLiveSession();
+}
+
 void EncoderController::startLiveSession(int captureDeviceIndex, bool monitor,
                                          int receiverDeviceIndex, bool writeToDisk,
                                          const QUrl& fileUrl) {
@@ -2207,6 +2228,13 @@ void EncoderController::startLiveSession(int captureDeviceIndex, bool monitor,
     }
 
     stop_live_.store(false, std::memory_order_relaxed);
+    // What this session was asked for, so switchLiveLayout can restart it
+    // under a new preset. A fresh start also clears any relayout a previous
+    // session's failure path left pending.
+    live_request_ = LiveSessionRequest{.capture_index = captureDeviceIndex,
+                                       .monitor = monitor,
+                                       .receiver_index = receiverDeviceIndex};
+    pending_live_relayout_.reset();
     live_active_ = true;
     live_monitoring_ = monitor_ok;
     live_passthrough_ = passthrough_ok;
@@ -2564,6 +2592,22 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device, bool mon
             emit liveActiveChanged();
             emit liveReconnectingChanged();
             emit encodeFinished(problem.isEmpty(), status());
+            // The layout switcher's second half: the session above was
+            // stopped ON PURPOSE to renegotiate, so apply the preset and
+            // start again with the same capture/monitor/receiver choices.
+            // Runs after setBusy(false) - applyChannelPreset and
+            // startLiveSession both refuse while busy - and only when the
+            // stopped session ended cleanly; a failure is a real answer and
+            // restarting on top of it would bury it.
+            if (pending_live_relayout_) {
+                const auto preset = *pending_live_relayout_;
+                pending_live_relayout_.reset();
+                if (problem.isEmpty() && live_request_) {
+                    applyChannelPreset(preset);
+                    startLiveSession(live_request_->capture_index, live_request_->monitor,
+                                     live_request_->receiver_index, false, QUrl());
+                }
+            }
         });
     });
 }

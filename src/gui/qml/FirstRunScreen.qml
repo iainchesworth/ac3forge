@@ -34,7 +34,7 @@ RowLayout {
             text: qsTr("Bring in some audio.")
             font.pixelSize: 52
             font.family: Theme.headingFamily
-            font.weight: Font.Black
+            font.weight: Font.ExtraBold
             wrapMode: Text.WordWrap
             color: Theme.text
         }

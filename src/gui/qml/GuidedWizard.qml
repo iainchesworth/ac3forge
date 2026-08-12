@@ -48,6 +48,103 @@ ColumnLayout {
     // Where the encode ends up — a file, or straight to the amplifier.
     property string dest: "file"
 
+    // The speakers step's sub-screen: buttons that edit what is IN THE ROOM,
+    // with the bed falling out of the parts rather than being named. Open is
+    // wizard-local UI state; everything it edits is controller state, so the
+    // round trip through Advanced stays lossless.
+    property bool roomPicker: false
+
+    // ---- what is in the room, read back from the bed -----------------------
+    readonly property string bedId: {
+        const beds = EncoderController.bedChoices;
+        return EncoderController.bedIndex >= 0 && EncoderController.bedIndex < beds.length
+               ? beds[EncoderController.bedIndex].id : "";
+    }
+    readonly property bool roomFronts: bedId !== "1/0" && bedId !== "1+1"
+    readonly property bool roomCentre: ["1/0", "3/0", "3/1", "3/2"].indexOf(bedId) >= 0
+    readonly property string roomSurround: bedId === "2/2" || bedId === "3/2" ? "sides"
+                                           : bedId === "2/1" || bedId === "3/1" ? "back"
+                                           : "none"
+    readonly property int roomSubs: {
+        if (!EncoderController.bedLfe) return 0;
+        const extras = EncoderController.extrasModel;
+        for (let i = 0; i < extras.length; i++) {
+            if (extras[i].id === "lfe2") return extras[i].checked ? 2 : 1;
+        }
+        return 1;
+    }
+
+    // The bed the room's parts add up to. No fronts collapses to the lone
+    // centre; sides and back are mutually exclusive kinds of surround.
+    function bedFrom(centre, surround, fronts) {
+        if (!fronts) return "1/0";
+        if (surround === "sides") return centre ? "3/2" : "2/2";
+        if (surround === "back") return centre ? "3/1" : "2/1";
+        return centre ? "3/0" : "2/0";
+    }
+    function setBedId(id) {
+        const beds = EncoderController.bedChoices;
+        for (let i = 0; i < beds.length; i++) {
+            if (beds[i].id === id) {
+                EncoderController.bedIndex = i;
+                return;
+            }
+        }
+    }
+    function setSubCount(n) {
+        const wantLfe2 = n > 1;
+        const extras = EncoderController.extrasModel;
+        for (let i = 0; i < extras.length; i++) {
+            if (extras[i].id === "lfe2" && extras[i].checked !== wantLfe2) {
+                EncoderController.toggleExtra("lfe2");
+            }
+        }
+        EncoderController.bedLfe = n > 0;
+    }
+
+    // ---- trajectory presets (step 4) ---------------------------------------
+    // Authors REAL keyframes through the same setObjectPathKeyframes the
+    // Objects tab's timeline uses — a preset is a starting point for the
+    // room view, not a separate motion system. Gains carry the same
+    // inverse-root law the static fallback uses, so a preset never makes
+    // the summed bed hotter than static placement would.
+    property string traj: "hold"
+    function authorTrajectories(kind) {
+        traj = kind;
+        const n = EncoderController.objectCount;
+        if (n <= 0) return;
+        const scale = 1 / Math.sqrt(Math.max(1, n));
+        const objects = EncoderController.objectModel;
+        for (let i = 0; i < n; i++) {
+            if (kind === "hold") {
+                EncoderController.clearObjectPath(i);
+                continue;
+            }
+            const obj = objects[i];
+            const keys = [];
+            for (let t = 0; t <= 8; t++) {
+                let x = obj.x;
+                let y = obj.y;
+                let z = obj.z;
+                if (kind === "orbit") {
+                    // One full lap in 8 s, each object offset around the
+                    // circle so they never bunch up.
+                    const angle = 2 * Math.PI * (t / 8) + 2 * Math.PI * i / n;
+                    x = 0.5 + 0.35 * Math.cos(angle);
+                    y = 0.5 + 0.35 * Math.sin(angle);
+                    z = 0;
+                } else if (kind === "lift") {
+                    // Floor-ish to the ceiling and back — height is the
+                    // point, so x/y hold the object's own place.
+                    z = Math.min(1, -0.2 + 1.2 * Math.sin(Math.PI * t / 8));
+                }
+                keys.push({ time: t, x: x, y: y, z: z,
+                            gain: 0.7 * scale, lfeSend: obj.lfeSend * scale });
+            }
+            EncoderController.setObjectPathKeyframes(i, keys);
+        }
+    }
+
     // The setup cards read the CURRENT channel state back, so an edit made
     // in Advanced round-trips into Guided instead of the card lying.
     readonly property string setupSignature: {
@@ -153,7 +250,7 @@ ColumnLayout {
                 text: qsTr("Where is the audio coming from?")
                 font.pixelSize: 30
                 font.family: Theme.headingFamily
-                font.weight: Font.Black
+                font.weight: Font.ExtraBold
                 color: Theme.text
             }
             Text {
@@ -330,7 +427,7 @@ ColumnLayout {
 
         // ================= 2 · Speakers =================
         ColumnLayout {
-            visible: wizard.currentStepKey === "setup"
+            visible: wizard.currentStepKey === "setup" && !wizard.roomPicker
             Layout.fillWidth: true
             spacing: Theme.space4
 
@@ -338,7 +435,7 @@ ColumnLayout {
                 text: qsTr("What are you playing this back on?")
                 font.pixelSize: 30
                 font.family: Theme.headingFamily
-                font.weight: Font.Black
+                font.weight: Font.ExtraBold
                 color: Theme.text
             }
 
@@ -412,20 +509,254 @@ ColumnLayout {
                 color: Theme.accent700
             }
 
-            Text {
-                objectName: "wizardEverythingLink"
-                text: qsTr("Everything, in channel names →")
-                font.pixelSize: 12
-                font.weight: Font.DemiBold
-                color: Theme.accent700
-                MouseArea {
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                        const win = wizard.requestWindow();
-                        if (win) win.goAssign();
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Theme.space6
+
+                Text {
+                    objectName: "wizardRoomPickerLink"
+                    text: qsTr("Pick the room, part by part →")
+                    font.pixelSize: 12
+                    font.weight: Font.DemiBold
+                    color: Theme.accent700
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: wizard.roomPicker = true
                     }
                 }
+                Text {
+                    objectName: "wizardEverythingLink"
+                    text: qsTr("Everything, in channel names →")
+                    font.pixelSize: 12
+                    font.weight: Font.DemiBold
+                    color: Theme.accent700
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            const win = wizard.requestWindow();
+                            if (win) win.goAssign();
+                        }
+                    }
+                }
+                Item { Layout.fillWidth: true }
+            }
+        }
+
+        // ---- the room picker: the speakers step, part by part --------------
+        ColumnLayout {
+            visible: wizard.currentStepKey === "setup" && wizard.roomPicker
+            Layout.fillWidth: true
+            spacing: Theme.space4
+
+            readonly property bool roomLocked: EncoderController.atmosEnabled
+                                               || EncoderController.busy
+                                               || EncoderController.dualMono
+
+            id: roomPickerScreen
+
+            Text {
+                text: qsTr("Pick the room, part by part.")
+                font.pixelSize: 30
+                font.family: Theme.headingFamily
+                font.weight: Font.ExtraBold
+                color: Theme.text
+            }
+            Text {
+                Layout.fillWidth: true
+                text: qsTr("Say what is in the room and the channel layout falls out of it — the bed is never something you have to name.")
+                wrapMode: Text.WordWrap
+                font.pixelSize: 14
+                color: Theme.neutral700
+            }
+
+            GridLayout {
+                Layout.fillWidth: true
+                columns: 2
+                columnSpacing: Theme.space4
+                rowSpacing: Theme.space3
+                enabled: !roomPickerScreen.roomLocked
+
+                Text { text: qsTr("A pair of front speakers"); font.pixelSize: 13; font.weight: Font.DemiBold; color: Theme.text }
+                SegmentedControl {
+                    objectName: "roomFronts"
+                    model: [ { value: "on", label: qsTr("Yes") }, { value: "off", label: qsTr("Centre only") } ]
+                    currentValue: wizard.roomFronts ? "on" : "off"
+                    onSelected: (value) => {
+                        if (value === "off") {
+                            // No fronts collapses the room to the lone
+                            // centre; extras made sense relative to a wider
+                            // bed, so they go with it.
+                            const extras = EncoderController.extrasModel;
+                            for (let i = 0; i < extras.length; i++) {
+                                if (extras[i].checked) EncoderController.toggleExtra(extras[i].id);
+                            }
+                            wizard.setBedId("1/0");
+                        } else {
+                            wizard.setBedId(wizard.bedFrom(wizard.roomCentre, "none", true));
+                        }
+                    }
+                }
+
+                Text {
+                    text: qsTr("A centre speaker")
+                    font.pixelSize: 13
+                    font.weight: Font.DemiBold
+                    color: Theme.text
+                    opacity: wizard.roomFronts ? 1.0 : 0.4
+                }
+                SegmentedControl {
+                    objectName: "roomCentre"
+                    // A centre-only room IS the centre; only fronts make this
+                    // a real choice.
+                    enabled: wizard.roomFronts
+                    opacity: wizard.roomFronts ? 1.0 : 0.4
+                    model: [ { value: "on", label: qsTr("Yes") }, { value: "off", label: qsTr("No") } ]
+                    currentValue: wizard.roomCentre ? "on" : "off"
+                    onSelected: (value) => wizard.setBedId(
+                                    wizard.bedFrom(value === "on", wizard.roomSurround, true))
+                }
+
+                Text {
+                    text: qsTr("Surround speakers")
+                    font.pixelSize: 13
+                    font.weight: Font.DemiBold
+                    color: Theme.text
+                    opacity: wizard.roomFronts ? 1.0 : 0.4
+                }
+                SegmentedControl {
+                    objectName: "roomSurround"
+                    enabled: wizard.roomFronts
+                    opacity: wizard.roomFronts ? 1.0 : 0.4
+                    model: [
+                        { value: "none", label: qsTr("None") },
+                        { value: "sides", label: qsTr("At your sides") },
+                        { value: "back", label: qsTr("One behind you") },
+                    ]
+                    currentValue: wizard.roomSurround
+                    onSelected: (value) => wizard.setBedId(
+                                    wizard.bedFrom(wizard.roomCentre, value, true))
+                }
+
+                Text { text: qsTr("A subwoofer"); font.pixelSize: 13; font.weight: Font.DemiBold; color: Theme.text }
+                SegmentedControl {
+                    objectName: "roomSubs"
+                    model: [
+                        { value: "0", label: qsTr("No sub") },
+                        { value: "1", label: qsTr("One sub") },
+                        { value: "2", label: qsTr("Two subs") },
+                    ]
+                    currentValue: String(wizard.roomSubs)
+                    onSelected: (value) => wizard.setSubCount(parseInt(value))
+                }
+            }
+
+            Text {
+                Layout.fillWidth: true
+                text: qsTr("Two subs means two independent low-frequency channels carrying different signal — and, like everything below, it needs Dolby Digital Plus, which the codec follows on its own.")
+                wrapMode: Text.WordWrap
+                font.pixelSize: 11
+                color: Theme.textMuted
+            }
+
+            // The extras, in room language. Same rows, same rules, same
+            // reasons as the Format tab — only the words are the room's.
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 0
+                enabled: !roomPickerScreen.roomLocked
+
+                Repeater {
+                    model: EncoderController.extrasModel
+
+                    delegate: ColumnLayout {
+                        id: roomExtraRow
+                        required property var modelData
+                        readonly property var roomLabels: ({
+                            wide: qsTr("A wide pair outside the fronts"),
+                            rear: qsTr("A pair behind you"),
+                            topf: qsTr("Two above the front"),
+                            topr: qsTr("Two above the back"),
+                        })
+                        visible: modelData.id !== "lfe2"
+                        Layout.fillWidth: true
+                        spacing: 0
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Layout.topMargin: 6
+                            Layout.bottomMargin: 6
+                            spacing: Theme.space3
+                            opacity: roomExtraRow.modelData.enabled ? 1.0 : 0.4
+
+                            CheckBox {
+                                objectName: "roomExtra-" + roomExtraRow.modelData.id
+                                checked: roomExtraRow.modelData.checked
+                                enabled: roomExtraRow.modelData.enabled && !EncoderController.busy
+                                onToggled: EncoderController.toggleExtra(roomExtraRow.modelData.id)
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: roomExtraRow.roomLabels[roomExtraRow.modelData.id]
+                                      || roomExtraRow.modelData.label
+                                font.pixelSize: 13
+                                font.weight: Font.DemiBold
+                                color: Theme.text
+                            }
+                            Text {
+                                text: roomExtraRow.modelData.reason
+                                font.pixelSize: 11
+                                color: Theme.textMuted
+                            }
+                        }
+                        Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.neutral200 }
+                    }
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Theme.space3
+
+                Text {
+                    text: qsTr("This room is a %1.").arg(EncoderController.channelShapeName)
+                    font.pixelSize: 15
+                    font.family: Theme.headingFamily
+                    font.weight: Font.ExtraBold
+                    color: Theme.text
+                }
+                Item { Layout.fillWidth: true }
+                Button {
+                    objectName: "roomBackToPresets"
+                    text: qsTr("Back to the presets")
+                    onClicked: wizard.roomPicker = false
+                }
+                Text {
+                    text: qsTr("Everything, in channel names →")
+                    font.pixelSize: 12
+                    font.weight: Font.DemiBold
+                    color: Theme.accent700
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            const win = wizard.requestWindow();
+                            if (win) win.goAssign();
+                        }
+                    }
+                }
+            }
+
+            Text {
+                visible: roomPickerScreen.roomLocked
+                Layout.fillWidth: true
+                text: EncoderController.atmosEnabled
+                      ? qsTr("Movement is on, so the room is fixed at 5.1 — objects carry the height instead of ceiling speakers.")
+                      : qsTr("Dual mono has no room to pick — it is two programmes, not a soundstage.")
+                wrapMode: Text.WordWrap
+                font.pixelSize: 12
+                color: Theme.accent700
             }
         }
 
@@ -439,7 +770,7 @@ ColumnLayout {
                 text: qsTr("How good should it sound?")
                 font.pixelSize: 30
                 font.family: Theme.headingFamily
-                font.weight: Font.Black
+                font.weight: Font.ExtraBold
                 color: Theme.text
             }
 
@@ -474,7 +805,7 @@ ColumnLayout {
                                 text: qsTr("%1 kbps").arg(rateCard.modelData.rate)
                                 font.pixelSize: 18
                                 font.family: Theme.headingFamily
-                                font.weight: Font.Black
+                                font.weight: Font.ExtraBold
                                 color: Theme.text
                             }
                             Text {
@@ -519,7 +850,7 @@ ColumnLayout {
                 text: qsTr("Should sounds move around the room?")
                 font.pixelSize: 30
                 font.family: Theme.headingFamily
-                font.weight: Font.Black
+                font.weight: Font.ExtraBold
                 color: Theme.text
             }
 
@@ -558,7 +889,10 @@ ColumnLayout {
                     }
                     TapHandler {
                         enabled: !EncoderController.busy
-                        onTapped: EncoderController.atmosEnabled = false
+                        onTapped: {
+                            EncoderController.atmosEnabled = false;
+                            wizard.traj = "hold";
+                        }
                     }
                 }
 
@@ -609,11 +943,86 @@ ColumnLayout {
             Text {
                 visible: EncoderController.atmosEnabled
                 Layout.fillWidth: true
-                text: qsTr("Adding objects auto-selected the 5.1 bed and E-AC-3 — that is the format objects ride in, not a preference. Place each object, give it a path and set its LFE send on the Objects tab.")
+                text: qsTr("Adding objects auto-selected the 5.1 bed and E-AC-3 — that is the format objects ride in, not a preference.")
                 wrapMode: Text.WordWrap
                 font.pixelSize: 12
                 color: Theme.textMuted
             }
+
+            // Trajectory presets — real keyframes through the same API the
+            // Objects tab's timeline edits, so the room view shows exactly
+            // what these authored and every key can be refined there.
+            ColumnLayout {
+                visible: EncoderController.atmosEnabled && EncoderController.objectCount > 0
+                Layout.fillWidth: true
+                spacing: Theme.space2
+
+                Text {
+                    text: qsTr("GIVE THEM A PATH")
+                    font.pixelSize: 10
+                    font.letterSpacing: 1.5
+                    color: Theme.textMuted
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.space2
+
+                    Repeater {
+                        model: [
+                            { key: "hold", title: qsTr("Hold still"),
+                              body: qsTr("Every object keeps its place in the room.") },
+                            { key: "orbit", title: qsTr("Slow orbit"),
+                              body: qsTr("One lap around the listener over eight seconds, objects spaced apart.") },
+                            { key: "lift", title: qsTr("Rise and fall"),
+                              body: qsTr("Up to the ceiling and back, each object from its own spot.") },
+                        ]
+                        delegate: Rectangle {
+                            id: trajCard
+                            required property var modelData
+                            readonly property bool active: wizard.traj === modelData.key
+
+                            objectName: "wizardTraj-" + modelData.key
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 84
+                            color: active ? Theme.accent100 : "transparent"
+                            border.color: active ? Theme.accent : Theme.divider
+                            border.width: active ? 2 : 1
+
+                            ColumnLayout {
+                                anchors.fill: parent
+                                anchors.margins: Theme.space3
+                                spacing: 2
+
+                                Text {
+                                    text: trajCard.modelData.title
+                                    font.pixelSize: 14
+                                    font.weight: Font.DemiBold
+                                    color: Theme.text
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: trajCard.modelData.body
+                                    wrapMode: Text.WordWrap
+                                    font.pixelSize: 11
+                                    color: Theme.neutral700
+                                }
+                            }
+                            TapHandler {
+                                enabled: !EncoderController.busy
+                                onTapped: wizard.authorTrajectories(trajCard.modelData.key)
+                            }
+                        }
+                    }
+                }
+                Text {
+                    Layout.fillWidth: true
+                    text: qsTr("A preset is a starting point: every key it writes is on the Objects tab's timeline, where paths are refined one object at a time.")
+                    wrapMode: Text.WordWrap
+                    font.pixelSize: 11
+                    color: Theme.textMuted
+                }
+            }
+
             Text {
                 visible: EncoderController.atmosEnabled
                 objectName: "wizardPlaceObjectsLink"
@@ -646,7 +1055,7 @@ ColumnLayout {
                 text: qsTr("Where does it go?")
                 font.pixelSize: 30
                 font.family: Theme.headingFamily
-                font.weight: Font.Black
+                font.weight: Font.ExtraBold
                 color: Theme.text
             }
 
@@ -763,8 +1172,16 @@ ColumnLayout {
             id: backButton
             objectName: "wizardBackButton"
             text: qsTr("Back")
-            enabled: wizard.currentStepIndex > 0
-            onClicked: wizard.currentStepKey = wizard.steps[wizard.currentStepIndex - 1].key
+            enabled: wizard.currentStepIndex > 0 || wizard.roomPicker
+            // The room picker is a sub-screen of the speakers step, so Back
+            // closes it before it retreats a step.
+            onClicked: {
+                if (wizard.roomPicker) {
+                    wizard.roomPicker = false;
+                    return;
+                }
+                wizard.currentStepKey = wizard.steps[wizard.currentStepIndex - 1].key;
+            }
         }
 
         Text {

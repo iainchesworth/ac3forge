@@ -61,7 +61,7 @@ Dialog {
             text: qsTr("Preferences")
             font.pixelSize: 20
             font.family: Theme.headingFamily
-            font.weight: Font.Black
+            font.weight: Font.ExtraBold
             color: Theme.text
         }
 

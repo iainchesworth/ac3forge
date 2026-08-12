@@ -68,6 +68,23 @@ qt_add_qml_module(ac3gui
     VERSION 1.0
     QML_FILES ${AC3_QML_FILES})
 
+# The handoff's typeface, bundled so the design renders as designed on a
+# machine that never installed it. Archivo is SIL OFL 1.1 (fonts/OFL.txt
+# ships beside the faces - keep them together; the license requires it).
+# Static weights rather than the variable font: Qt's font database resolves
+# named static weights on every platform this builds for, while variable-
+# font axis selection is only dependable from Qt 6.7 up. main.cpp registers
+# these with QFontDatabase before the engine loads.
+qt_add_resources(ac3gui "ac3gui_fonts"
+    PREFIX "/fonts"
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}/fonts"
+    FILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/fonts/Archivo-Regular.ttf"
+        "${CMAKE_CURRENT_SOURCE_DIR}/fonts/Archivo-Medium.ttf"
+        "${CMAKE_CURRENT_SOURCE_DIR}/fonts/Archivo-SemiBold.ttf"
+        "${CMAKE_CURRENT_SOURCE_DIR}/fonts/Archivo-ExtraBold.ttf"
+        "${CMAKE_CURRENT_SOURCE_DIR}/fonts/OFL.txt")
+
 # Qt generates a lot of C++ into this target - moc output, the QML type
 # registrations, the rcc resources and qmlcachegen's AOT-compiled QML - and it
 # all compiles as if it were ours. It is not, and it does not survive the

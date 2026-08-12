@@ -486,6 +486,15 @@ public:
     // Refused (silently, same as a bed button or LFE toggle) when locked or
     // when the result would leave chanmap::allocate() unable to satisfy it.
     Q_INVOKABLE void toggleExtra(const QString& id);
+    // The Live session tab's layout switcher: stops the running session,
+    // applies the named preset (applyChannelPreset's vocabulary) and starts
+    // a new session with the same capture/monitor/receiver choices. A
+    // deliberate, visible act - the stream stops, the receiver re-locks and
+    // about a second of audio is lost, exactly as the handoff frames it.
+    // Refused while nothing is live, while object mode fixes the layout, and
+    // while the take is being written to disk (a restart would clobber the
+    // first half of the file; stopping and starting a new take is honest).
+    Q_INVOKABLE void switchLiveLayout(const QString& presetName);
     // Sets bed + LFE + extras together - "stereo", "5.1", "7.1", "5.1.4",
     // "7.1.4", "5.2" or "7.2.4" - the starting points the Format tab's
     // preset buttons offer.
@@ -952,6 +961,19 @@ private:
     std::atomic_bool stop_recording_{false};
 
     // ---- live session --------------------------------------------------
+    // What startLiveSession was asked for, kept so switchLiveLayout can
+    // restart the session under a new preset without the QML having to
+    // re-supply choices it made minutes ago. Write-to-disk is deliberately
+    // NOT restartable - see switchLiveLayout's declaration.
+    struct LiveSessionRequest {
+        int capture_index = -1;
+        bool monitor = false;
+        int receiver_index = -1;
+    };
+    std::optional<LiveSessionRequest> live_request_;
+    // Set by switchLiveLayout, consumed once by the session-completion
+    // callback: apply this preset, then restart from live_request_.
+    std::optional<QString> pending_live_relayout_;
     // stop_live_ is the only piece of this state the worker thread reads;
     // everything else it only ever touches through a QMetaObject::invokeMethod
     // back onto the GUI thread (the same discipline startRecording's worker

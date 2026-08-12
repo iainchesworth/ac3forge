@@ -135,6 +135,78 @@ TestCase {
         compare(EncoderController.bitrateKbps, 192);
     }
 
+    function test_roomPickerDerivesTheBedFromTheRoomsParts() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        EncoderController.atmosEnabled = false;
+        EncoderController.codecIndex = 0;
+        EncoderController.applyChannelPreset("5.1");
+        const wizard = waitForWizardLayout(win);
+        verify(wizard !== null);
+        wizard.currentStepKey = "setup";
+        wizard.roomPicker = true;
+        wait(100);
+
+        // 5.1 reads back as fronts + centre + sides + one sub.
+        compare(wizard.roomFronts, true);
+        compare(wizard.roomCentre, true);
+        compare(wizard.roomSurround, "sides");
+        compare(wizard.roomSubs, 1);
+
+        // A single speaker behind instead of sides: 3/2 -> 3/1.
+        const backSeg = findChild(win.contentItem, "seg-back");
+        verify(backSeg !== null);
+        mouseClick(backSeg);
+        compare(EncoderController.channelShapeName, "4.1");
+
+        // No centre: 3/1 -> 2/1.
+        const centreOff = findChild(findChild(win.contentItem, "roomCentre"), "seg-off");
+        verify(centreOff !== null);
+        mouseClick(centreOff);
+        compare(EncoderController.channelShapeName, "3.1");
+
+        // No fronts collapses to the lone centre, extras and all.
+        const frontsOff = findChild(findChild(win.contentItem, "roomFronts"), "seg-off");
+        verify(frontsOff !== null);
+        mouseClick(frontsOff);
+        compare(EncoderController.channelShapeName, "1.1");
+
+        // Back closes the sub-screen before it retreats a step.
+        const backButton = findChild(win.contentItem, "wizardBackButton");
+        verify(backButton !== null);
+        backButton.clicked();
+        compare(wizard.roomPicker, false);
+        compare(wizard.currentStepKey, "setup");
+    }
+
+    function test_trajectoryPresetsAuthorRealKeyframes() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        EncoderController.atmosEnabled = false;
+        if (!EncoderController.sourceReady) {
+            EncoderController.loadSourceFile(stereoUrl);
+            tryCompare(EncoderController, "sourceReady", true);
+        }
+        const wizard = waitForWizardLayout(win);
+        verify(wizard !== null);
+
+        EncoderController.applyChannelPreset("5.1");
+        EncoderController.atmosEnabled = true;
+        tryVerify(() => EncoderController.objectCount > 0);
+
+        // The preset writes through setObjectPathKeyframes — the same keys
+        // the Objects tab's timeline shows and encodeObjects plays back.
+        wizard.authorTrajectories("orbit");
+        compare(EncoderController.objectModel[0].hasPath, true);
+        compare(EncoderController.objectKeyframes(0).length, 9);
+
+        wizard.authorTrajectories("hold");
+        compare(EncoderController.objectModel[0].hasPath, false);
+        compare(EncoderController.objectKeyframes(0).length, 0);
+
+        EncoderController.atmosEnabled = false;
+    }
+
     function test_movementCardsDriveObjectModeWithItsConstraints() {
         const win = createTemporaryObject(mainWindowComponent, testCase);
         verify(win !== null);
