@@ -141,21 +141,52 @@ def read_wav_f32(path):
     return np.frombuffer(b, dtype=np.float32, count=n // 4, offset=j + 8).reshape(-1, ch)
 
 
+def read_wav_any(path):
+    """Like read_wav_f32, but format-aware: the checked-in fixed fixtures
+    (reference_51.wav, reference_stereo.wav) are PCM16, written by the
+    stdlib `wave` module (see tools/gen_gold_reference_wav.py), not the
+    float32 this project's own decode output and make_material()'s WAVs
+    always are. read_wav_f32 stays a fast, format-blind path for the
+    latter; this is for reading those committed fixtures as `original`.
+    """
+    b = Path(path).read_bytes()
+    i = b.find(b"fmt ")
+    fmt_tag, ch = struct.unpack_from("<HH", b, i + 8)
+    bits = struct.unpack_from("<H", b, i + 22)[0]
+    j = b.find(b"data")
+    n = struct.unpack_from("<I", b, j + 4)[0]
+    if fmt_tag == 3 and bits == 32:
+        return np.frombuffer(b, dtype=np.float32, count=n // 4, offset=j + 8).reshape(-1, ch)
+    if fmt_tag == 1 and bits == 16:
+        pcm = np.frombuffer(b, dtype=np.int16, count=n // 2, offset=j + 8).reshape(-1, ch)
+        return (pcm.astype(np.float32) / 32768.0)
+    raise SystemExit(f"{path}: unsupported format tag {fmt_tag}/{bits}-bit")
+
+
 def run(cmd):
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise SystemExit(f"command failed: {' '.join(map(str, cmd))}\n{result.stderr}")
 
 
-def align(original, decoded):
-    """Align by cross-correlation on a probe window; return the overlap."""
-    probe = original[RATE:RATE + 32768, 0]
-    window = decoded[: RATE + 65536, 0]
+def align(original, decoded, skip=RATE, probe_len=32768, window_extra=65536):
+    """Align by cross-correlation on a probe window; return the overlap.
+
+    Defaults (skip 1s, 32768-sample probe, +65536 search window) match
+    make_material()'s ~10s synthesized material, the only length this was
+    originally written against. Committed fixtures used elsewhere (e.g.
+    tests/golden/audio/reference_51.wav at 2.5s) are far shorter than
+    2*skip + probe_len - the trimmed overlap below would come out empty or
+    inverted - so callers scoring those pass smaller values explicitly
+    rather than this function guessing a length-appropriate scale itself.
+    """
+    probe = original[skip:skip + probe_len, 0]
+    window = decoded[: skip + window_extra, 0]
     corr = np.correlate(window, probe, mode="valid")
-    lag = int(np.argmax(np.abs(corr))) - RATE
-    n = min(len(original), len(decoded) - lag) - 2 * RATE
-    o = original[RATE:RATE + n - RATE]
-    d = decoded[RATE + lag:RATE + lag + len(o)]
+    lag = int(np.argmax(np.abs(corr))) - skip
+    n = min(len(original), len(decoded) - lag) - 2 * skip
+    o = original[skip:skip + n - skip]
+    d = decoded[skip + lag:skip + lag + len(o)]
     return o, d, lag
 
 
@@ -261,6 +292,30 @@ def decode_scores_ours(original, coded, wav_path):
     snr = 10 * np.log10(np.sum(o**2) / max(np.sum((d - o) ** 2), 1e-30))
     lsd, hf = spectral_scores(o, d)
     return snr, lsd, hf
+
+
+# The committed fixed fixtures (reference_51.wav, reference_stereo.wav) are
+# a few seconds long, not make_material()'s ~10s - align()'s own defaults
+# would trim them to an empty or inverted overlap (see its docstring), so
+# external-baseline scoring (tools/gen_external_baseline.py, and the `trend`
+# mode built on the same fixtures) uses this scaled-down window instead.
+FIXED_ALIGN = dict(skip=int(0.2 * RATE), probe_len=8192, window_extra=16384)
+
+
+def score_fixed(original, decoded):
+    """SNR + spectral scores between two already-decoded PCM arrays, using
+    FIXED_ALIGN rather than align()'s make_material()-scaled defaults."""
+    o, d, _ = align(original, decoded, **FIXED_ALIGN)
+    snr = 10 * np.log10(np.sum(o**2) / max(np.sum((d - o) ** 2), 1e-30))
+    lsd, hf = spectral_scores(o, d)
+    return snr, lsd, hf
+
+
+def decode_scores_ours_fixed(original, coded, wav_path):
+    """decode_scores_ours, scaled for the short checked-in fixtures (see
+    score_fixed) instead of make_material()'s synthesized ~10s material."""
+    run([CLI, "decode", coded, wav_path])
+    return score_fixed(original, read_wav_f32(wav_path))
 
 
 def measured_kbps(path, seconds):
