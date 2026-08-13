@@ -261,6 +261,22 @@ ApplicationWindow {
         currentTab = "format";
     }
 
+    // --smoke-shot's scroll control: a plain property, deliberately, so
+    // main.cpp's existing prop=value mechanism (apply_properties) can set it
+    // with no new C++ code at all - see that file's own top comment for the
+    // vocabulary this joins ("scrollY=650"). Pixels into the tab area's own
+    // scroll range, applied to tabScroll's underlying Flickable the moment
+    // it changes - ScrollView wraps a non-Flickable child (the tab
+    // StackLayout here) in one automatically, and that wrapper IS what
+    // contentItem resolves to in that case, so this needs no id on the
+    // Flickable itself, only on the ScrollView.
+    property real smokeScrollY: 0
+    onSmokeScrollYChanged: {
+        if (tabScrollView.contentItem) {
+            tabScrollView.contentItem.contentY = smokeScrollY;
+        }
+    }
+
     // ---- the panel banner: one of the three feedback homes -----------------
     property int bannerRunId: -1
     property int dismissedRunId: -1
@@ -2026,6 +2042,7 @@ ApplicationWindow {
 
                 // ---- tab content ------------------------------------------
                 ScrollView {
+                    id: tabScrollView
                     objectName: "tabScroll"
                     Layout.fillWidth: true
                     Layout.fillHeight: true
