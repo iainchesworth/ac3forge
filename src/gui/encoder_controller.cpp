@@ -300,19 +300,34 @@ QString live_stream_spool_path(const QString& mkv_path, bool eac3) {
     return sibling_path(mkv_path, eac3 ? QStringLiteral(".live.ec3") : QStringLiteral(".live.ac3"));
 }
 
+// Whether the receiver leg should run the parallel 5.1 downmix instead of
+// the main plan: the main plan needs E-AC-3 (any object session, or a wide
+// channel layout) but the chosen receiver cannot take E-AC-3 - and CAN take
+// plain AC-3, which is the one case a capped leg turns a refusal into sound.
+// A receiver that can take neither format is a genuine refusal either way,
+// so this only ever matters when it is true.
+bool wants_downmix_leg(bool main_needs_eac3, const ac3::sinks::RenderDeviceInfo& receiver) {
+    return main_needs_eac3 && !receiver.supports_eac3_passthrough &&
+          receiver.supports_ac3_passthrough;
+}
+
 // Opens a PassthroughSink for `receiver`, or explains why it did not - the
 // same open-and-explain logic startLiveSession's own initial open always
 // used, factored out so switchLiveReceiver's mid-session hot-swap (running
 // on runLiveSession's worker thread) reproduces it byte-for-byte rather than
-// drifting from what a fresh session start does.
+// drifting from what a fresh session start does. `eac3` is the format being
+// REQUESTED of the sink (already downgraded to false by the caller when
+// wants_downmix_leg() is true - see its own call sites); `downmix_leg` is
+// only for the plan_text wording, so a capped AC-3 leg reads as exactly
+// that rather than as an ordinary AC-3 session.
 struct LivePassthroughOpen {
     bool ok = false;
     std::unique_ptr<ac3::sinks::PassthroughSink> sink;
     QString plan_text;
 };
 LivePassthroughOpen open_live_passthrough(const ac3::sinks::RenderDeviceInfo& receiver, bool eac3,
-                                          bool atmos_enabled, std::uint32_t sample_rate,
-                                          const QString& shape_name) {
+                                          bool atmos_enabled, bool downmix_leg,
+                                          std::uint32_t sample_rate, const QString& shape_name) {
     LivePassthroughOpen result;
     const bool supports =
         eac3 ? receiver.supports_eac3_passthrough : receiver.supports_ac3_passthrough;
@@ -337,7 +352,9 @@ LivePassthroughOpen open_live_passthrough(const ac3::sinks::RenderDeviceInfo& re
     result.ok = true;
     result.sink = std::move(psink);
     result.plan_text =
-        atmos_enabled
+        downmix_leg
+            ? QStringLiteral("Dolby Digital · 5.1 · %1").arg(QString::fromStdString(receiver.name))
+        : atmos_enabled
             ? QStringLiteral("Dolby Digital Plus · 5.1 bed only · %1")
                   .arg(QString::fromStdString(receiver.name))
             : QStringLiteral("%1 · %2 · %3")
@@ -2215,6 +2232,120 @@ void EncoderController::refreshCaptureDevices() {
         capture_devices_ = names;
         emit captureDevicesChanged();
     }
+    // Drop any selection a device refresh made stale (unplugged, or the
+    // list simply shrank) - the same "an index past the list is nothing"
+    // convention startLiveSession's own device-index validation already
+    // applies. A first refresh with nothing selected yet picks the default
+    // (or first) device as master, matching what a plain ComboBox always
+    // auto-selected before the rail had a device LIST to pick from.
+    const auto before = live_selected_devices_;
+    std::erase_if(live_selected_devices_, [this](int index) {
+        return index < 0 || static_cast<std::size_t>(index) >= devices_.size();
+    });
+    if (live_selected_devices_.empty() && !devices_.empty()) {
+        std::size_t default_index = 0;
+        for (std::size_t i = 0; i < devices_.size(); ++i) {
+            if (devices_[i].is_default) {
+                default_index = i;
+                break;
+            }
+        }
+        live_selected_devices_.push_back(static_cast<int>(default_index));
+    }
+    if (live_selected_devices_ != before) {
+        emit captureDeviceRowsChanged();
+    }
+}
+
+QVariantList EncoderController::captureDeviceRows() const {
+    QVariantList out;
+    for (std::size_t slot = 0; slot < live_selected_devices_.size(); ++slot) {
+        const auto device_index = live_selected_devices_[slot];
+        if (device_index < 0 || static_cast<std::size_t>(device_index) >= devices_.size()) {
+            continue;  // refreshCaptureDevices() keeps this in sync; defensive only
+        }
+        const auto& device = devices_[static_cast<std::size_t>(device_index)];
+        QVariantMap row;
+        row[QStringLiteral("slotIndex")] = static_cast<int>(slot);
+        row[QStringLiteral("deviceIndex")] = device_index;
+        row[QStringLiteral("name")] = QString::fromStdString(device.name);
+        row[QStringLiteral("channels")] = device.channels;
+        row[QStringLiteral("rateText")] =
+            QStringLiteral("%1 ch · %2 Hz").arg(device.channels).arg(group_digits(device.sample_rate));
+        row[QStringLiteral("isMaster")] = slot == 0;
+        out.append(row);
+    }
+    return out;
+}
+
+QString EncoderController::captureDeviceTotals() const {
+    if (live_selected_devices_.empty()) {
+        return QString();
+    }
+    int total_channels = 0;
+    for (const auto device_index : live_selected_devices_) {
+        if (device_index >= 0 && static_cast<std::size_t>(device_index) < devices_.size()) {
+            total_channels += devices_[static_cast<std::size_t>(device_index)].channels;
+        }
+    }
+    return live_selected_devices_.size() == 1
+              ? QStringLiteral("1 device · %1 channels captured").arg(total_channels)
+              : QStringLiteral("%1 devices · %2 channels captured")
+                    .arg(live_selected_devices_.size())
+                    .arg(total_channels);
+}
+
+QStringList EncoderController::liveCaptureChannelLabels() const {
+    QStringList out;
+    if (live_selected_devices_.empty() ||
+        static_cast<std::size_t>(live_selected_devices_.front()) >= devices_.size()) {
+        return out;
+    }
+    const auto& master = devices_[static_cast<std::size_t>(live_selected_devices_.front())];
+    for (std::uint16_t ch = 0; ch < master.channels; ++ch) {
+        out.append(QStringLiteral("Ch %1").arg(ch + 1));
+    }
+    if (live_selected_devices_.size() > 1 &&
+        static_cast<std::size_t>(live_selected_devices_[1]) < devices_.size()) {
+        const auto& slave = devices_[static_cast<std::size_t>(live_selected_devices_[1])];
+        for (std::uint16_t ch = 0; ch < slave.channels; ++ch) {
+            out.append(QStringLiteral("Dev2 Ch %1").arg(ch + 1));
+        }
+    }
+    return out;
+}
+
+void EncoderController::addCaptureDevice(int deviceIndex) {
+    if (deviceIndex < 0 || static_cast<std::size_t>(deviceIndex) >= devices_.size()) {
+        return;
+    }
+    if (live_selected_devices_.size() >= 2 ||
+        std::ranges::find(live_selected_devices_, deviceIndex) != live_selected_devices_.end()) {
+        return;
+    }
+    live_selected_devices_.push_back(deviceIndex);
+    emit captureDeviceRowsChanged();
+}
+
+void EncoderController::removeCaptureDevice(int slotIndex) {
+    if (slotIndex < 0 || static_cast<std::size_t>(slotIndex) >= live_selected_devices_.size()) {
+        return;
+    }
+    live_selected_devices_.erase(live_selected_devices_.begin() + slotIndex);
+    emit captureDeviceRowsChanged();
+}
+
+QString EncoderController::liveDriftText() const {
+    if (!live_second_device_active_) {
+        return QString();
+    }
+    // Signed so a fast-running slave reads "+" and a slow one "-" - the
+    // resampler's own sign convention (see ClockDriftEstimator's doc
+    // comment): positive means the slave is arriving faster than it is
+    // being drained and the resampler is dropping extra input to compensate.
+    return QStringLiteral("slave %1%2 ppm")
+        .arg(live_drift_ppm_ >= 0.0 ? QStringLiteral("+") : QStringLiteral("−"))
+        .arg(QString::number(std::abs(live_drift_ppm_), 'f', 1));
 }
 
 void EncoderController::setStatus(const QString& text) {
@@ -3116,6 +3247,32 @@ void EncoderController::startLiveSession(int captureDeviceIndex, bool monitor,
         return;
     }
 
+    // The slave, when the rail selected a second device (captureDeviceRows'
+    // row 1) alongside this one - opened here so a bad slave is refused the
+    // same low-ceremony way a bad monitor open already is: non-fatally. A
+    // two-device session that can't get its second device still starts as
+    // an ordinary single-device one rather than failing outright, since the
+    // master alone is a perfectly good session.
+    std::optional<ac3::capture::DeviceInfo> device2;
+    if (live_selected_devices_.size() > 1) {
+        const int slave_index = live_selected_devices_[1];
+        if (slave_index >= 0 && static_cast<std::size_t>(slave_index) < devices_.size() &&
+            slave_index != captureDeviceIndex) {
+            const auto candidate = devices_[static_cast<std::size_t>(slave_index)];
+            if (to_sample_rate(candidate.sample_rate)) {
+                live_capture2_ = std::make_unique<ac3::capture::Capture>();
+                if (live_capture2_->start(candidate.id, candidate.kind)) {
+                    device2 = candidate;
+                } else {
+                    live_capture2_.reset();
+                }
+            }
+        }
+    }
+    live_second_device_active_ = device2.has_value();
+    live_second_device_name_ =
+        device2 ? QString::fromStdString(device2->name) : QString();
+
     // Opened next, before anything else is marked live - a bad destination
     // is refused exactly like a bad device choice above rather than
     // surfacing as a failure minutes into a take. After capture (not
@@ -3123,6 +3280,10 @@ void EncoderController::startLiveSession(int captureDeviceIndex, bool monitor,
     // writer-side has been created yet for it to leave behind.
     auto writers = openLiveOutputWriters(path, writeToDisk, device);
     if (writeToDisk && !writers) {
+        if (live_capture2_) {
+            live_capture2_->stop();
+            live_capture2_.reset();
+        }
         live_capture_->stop();
         live_capture_.reset();
         return;  // openLiveOutputWriters already set the status and refused
@@ -3135,23 +3296,30 @@ void EncoderController::startLiveSession(int captureDeviceIndex, bool monitor,
     // independent of what the device itself can bitstream.
     const bool eac3 = atmos_enabled_ || p.codec == plan::Codec::kEac3;
     bool passthrough_ok = false;
+    live_downmix_leg_ = false;
     if (want_passthrough) {
-        auto opened = open_live_passthrough(receiver, eac3, atmos_enabled_, device.sample_rate,
+        live_downmix_leg_ = wants_downmix_leg(eac3, receiver);
+        auto opened = open_live_passthrough(receiver, eac3 && !live_downmix_leg_, atmos_enabled_,
+                                            live_downmix_leg_, device.sample_rate,
                                             channelShapeName());
         passthrough_ok = opened.ok;
         live_receiver_plan_text_ = opened.plan_text;
         if (passthrough_ok) {
             live_passthrough_sink_ = std::move(opened.sink);
+        } else {
+            live_downmix_leg_ = false;
         }
     } else {
         live_receiver_plan_text_ = QStringLiteral("No passthrough this session.");
     }
     // The GAP banner is for a receiver leg that carries LESS than the encode
-    // - today that is exactly the object case, where the leg is the 5.1 bed.
-    // A passthrough that failed to open outright is a different story with
-    // its own banner (liveWantedPassthrough && !livePassthrough): "everything
-    // past what the leg carries" would be a lie when the leg carries nothing.
-    live_gap_ = want_passthrough && passthrough_ok && atmos_enabled_;
+    // - the object case (the leg is always just the 5.1 bed) and the new
+    // downmix-leg case (a wide channel layout's leg is capped to 5.1) both
+    // qualify. A passthrough that failed to open outright is a different
+    // story with its own banner (liveWantedPassthrough && !livePassthrough):
+    // "everything past what the leg carries" would be a lie when the leg
+    // carries nothing.
+    live_gap_ = want_passthrough && passthrough_ok && (atmos_enabled_ || live_downmix_leg_);
     live_wanted_passthrough_ = want_passthrough;
     live_receiver_name_ =
         want_passthrough ? QString::fromStdString(receiver.name) : QString();
@@ -3173,22 +3341,29 @@ void EncoderController::startLiveSession(int captureDeviceIndex, bool monitor,
         }
     }
 
-    live_device_channels_ = static_cast<int>(device.channels);
+    // The flat capture-channel space object slots/assignment address: the
+    // master's own channels, then the slave's appended after - devices are
+    // sources, the same (source, channel) identity bundle A gave loaded
+    // files (see keyForObjectIndex's own comment on the live sentinel).
+    const std::uint16_t combined_channels =
+        static_cast<std::uint16_t>(device.channels + (device2 ? device2->channels : 0));
+    live_device_channels_ = static_cast<int>(combined_channels);
     if (atmos_enabled_) {
         // A live session has no loaded file to size object_configs_ from -
         // loadSourceFile is what normally does that. Unlike a file (whose
         // object count IS its channel count), a live session pre-allocates
-        // a fixed BUDGET of slots - max(8, device channels), capped at the
-        // TS 103 420 fifteen-object ceiling - rather than exactly the
-        // device's own channel count: the JOC object count is baked into
-        // the AtmosEncoder at construction (see runLiveSession) and cannot
-        // change mid-stream, so "add an object" needs slots already sitting
-        // there, allocated but unbound, for addLiveObject to bind into. A
-        // two-channel device still gets eight slots to grow into; a device
-        // with more than eight simply starts with all of them bound (see
-        // the identity binding built below).
+        // a fixed BUDGET of slots - max(8, combined device channels),
+        // capped at the TS 103 420 fifteen-object ceiling - rather than
+        // exactly the device's own channel count: the JOC object count is
+        // baked into the AtmosEncoder at construction (see runLiveSession)
+        // and cannot change mid-stream, so "add an object" needs slots
+        // already sitting there, allocated but unbound, for addLiveObject
+        // to bind into. A two-channel device still gets eight slots to
+        // grow into; a device (or a master+slave pair) with more than eight
+        // combined channels simply starts with all of them bound (see the
+        // identity binding built below).
         const int nobjects =
-            std::clamp(std::max<int>(8, static_cast<int>(device.channels)), 8, 15);
+            std::clamp(std::max<int>(8, static_cast<int>(combined_channels)), 8, 15);
         if (object_count_ != nobjects) {
             // Whatever is here right now is a loaded file's own object
             // state (or a previous live session's, already the device's own
@@ -3212,7 +3387,7 @@ void EncoderController::startLiveSession(int captureDeviceIndex, bool monitor,
         // silent, exactly what "Add an object" is for.
         {
             std::vector<int> initial(static_cast<std::size_t>(object_count_), -1);
-            for (std::size_t i = 0; i < initial.size() && i < device.channels; ++i) {
+            for (std::size_t i = 0; i < initial.size() && i < combined_channels; ++i) {
                 initial[i] = static_cast<int>(i);
             }
             std::lock_guard lock(live_object_mutex_);
@@ -3284,11 +3459,14 @@ void EncoderController::startLiveSession(int captureDeviceIndex, bool monitor,
         });
     }
 
-    runLiveSession(device, monitor_ok, passthrough_ok, writeToDisk, path, std::move(writers));
+    runLiveSession(device, device2, monitor_ok, passthrough_ok, writeToDisk, path,
+                   std::move(writers));
 }
 
-void EncoderController::runLiveSession(ac3::capture::DeviceInfo device, bool monitor,
-                                       bool passthrough, bool write_to_disk, QString file_path,
+void EncoderController::runLiveSession(ac3::capture::DeviceInfo device,
+                                       std::optional<ac3::capture::DeviceInfo> device2,
+                                       bool monitor, bool passthrough, bool write_to_disk,
+                                       QString file_path,
                                        std::unique_ptr<LiveOutputWriters> writers) {
     auto p = currentPlan();
     p.sample_rate = *to_sample_rate(device.sample_rate);
@@ -3300,7 +3478,20 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device, bool mon
     p.vbr = std::nullopt;
     const bool atmos = atmos_enabled_;
     const bool eac3 = atmos || p.codec == plan::Codec::kEac3;
+    const bool downmix_leg = live_downmix_leg_;
+    const std::uint32_t downmix_bitrate_kbps = ac3::clamp_to_legal_ac3_bitrate(p.bitrate_kbps);
 
+    // The master alone routes into the coded bed - see runLiveSession's own
+    // design note (docs/gui/live-session.md): route()'s panning model treats
+    // a source's channel COUNT as a specific named WAV layout, which has no
+    // sound meaning for two independent devices concatenated together, so a
+    // plain channel-mode session's bed continues to come from the master
+    // device exactly as a single-device session always has. The slave's
+    // captured, drift-corrected audio still rides the combined flat channel
+    // space object-mode slots address (see combined_channels above), is
+    // watched by its own SilenceWatchdog and is reflected in the drift
+    // readout - captured and honestly accounted for either way, just not
+    // auto-panned into a bed position with no principled default.
     std::optional<plan::ChannelPlan> cp;
     std::optional<plan::Routing> routing;
     if (!atmos) {
@@ -3343,7 +3534,10 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device, bool mon
     // truth for the whole session's lifetime.
     const std::size_t nobjects = atmos ? static_cast<std::size_t>(object_count_) : 0;
     const std::size_t channels = device.channels;
+    const std::size_t channels2 = device2 ? device2->channels : 0;
+    const std::size_t combined_channels = channels + channels2;
     const std::uint32_t sample_rate = device.sample_rate;
+    const std::uint32_t sample_rate2 = device2 ? device2->sample_rate : 0;
     // Snapshotted once, for switchLiveReceiver's hot-swap path to reuse
     // verbatim later on the worker thread - the layout stays fixed for a
     // live session except via switchLiveLayout, which stops and restarts
@@ -3351,11 +3545,15 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device, bool mon
     // mid-session.
     const QString shape_name = channelShapeName();
 
-    std::ignore = QtConcurrent::run([this, p, atmos, eac3, cp = std::move(cp),
-                                     routing = std::move(routing), nobjects, channels,
-                                     sample_rate, monitor, passthrough, write_to_disk,
-                                     file_path, shape_name,
-                                     device_name = QString::fromStdString(device.name),
+    std::ignore = QtConcurrent::run([this, p, atmos, eac3, downmix_leg, downmix_bitrate_kbps,
+                                     cp = std::move(cp), routing = std::move(routing), nobjects,
+                                     channels, channels2, combined_channels, sample_rate,
+                                     sample_rate2, monitor, passthrough, write_to_disk, file_path,
+                                     shape_name, device_name = QString::fromStdString(device.name),
+                                     device2_name =
+                                         device2 ? QString::fromStdString(device2->name)
+                                                : QString(),
+                                     has_device2 = device2.has_value(),
                                      writers = std::move(writers)]() mutable {
         // Heap-allocated: each of these carries a multi-KB internal history/
         // delay buffer, and stacking all four on this lambda's frame (which
@@ -3377,6 +3575,24 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device, bool mon
         auto ac3_monitor_decoder = std::make_unique<ac3::FrameDecoder>();
         ac3::Eac3Decoder eac3_monitor_decoder;
         ac3::iec61937::Eac3BurstPacker eac3_packer;
+        // The parallel receiver leg: an independent AC-3 5.1 encoder fed the
+        // main plan's already-computed bed channels (chan_views[0..5] for a
+        // channel session, atmos_encoder->bed() for an object one - both are
+        // ALREADY a self-sufficient §7.8 fold-down of the whole programme,
+        // see plan::route's own "the bed stays a self-sufficient rendering"
+        // guarantee, so there is no separate fold to compute here). Built
+        // unconditionally, same as ac3_encoder/eac3_encoder above, since
+        // downmix_leg can turn on mid-session via switchLiveReceiver's
+        // hot-swap and this has to already exist when it does.
+        auto downmix_encoder = std::make_unique<ac3::FrameEncoder>(ac3::EncoderConfig{
+            .sample_rate = p.sample_rate,
+            .bitrate_kbps = downmix_bitrate_kbps,
+            .dialnorm = p.meta.dialnorm,
+            .acmod = ac3::Acmod::k3_2,
+            .lfe = true,
+            .cmixlev = p.meta.cmixlev,
+            .surmixlev = p.meta.surmixlev});
+        bool leg_active = downmix_leg;
 
         ac3::analysis::LevelMeter meter =
             atmos ? ac3::analysis::LevelMeter{ac3::Acmod::k3_2, true, sample_rate}
@@ -3385,6 +3601,35 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device, bool mon
 
         std::vector<float> interleaved(static_cast<std::size_t>(ac3::kSamplesPerFrame) *
                                        channels);
+        // ---- slave device: drain -> resample -> lockstep with the master --
+        // A separate per-iteration buffer rather than one physically widened
+        // `interleaved` - the resampler already produces exactly one frame's
+        // worth each iteration, so there is nothing to gain from copying it
+        // into a combined buffer, and every de-interleave site below reads
+        // the master's own channels from `interleaved` and the slave's from
+        // this one, addressed as one logical combined_channels space (see
+        // the atmos per-slot de-interleave further down).
+        std::vector<float> slave_resampled(static_cast<std::size_t>(ac3::kSamplesPerFrame) *
+                                           channels2);
+        std::optional<ac3::capture::DriftResampler> slave_resampler;
+        std::optional<ac3::capture::ClockDriftEstimator> slave_drift;
+        // Generous headroom (8 frame periods) so a burst of slave jitter
+        // never starves the resampler mid-frame; the servo steers actual
+        // occupancy back towards one frame period's worth (kSamplesPerFrame)
+        // on its own.
+        std::vector<float> slave_scratch;
+        std::size_t slave_scratch_valid_frames = 0;
+        ac3::capture::SilenceWatchdog slave_watchdog(kDeviceSilenceTimeout);
+        if (has_device2) {
+            const double nominal_ratio =
+                static_cast<double>(sample_rate) / static_cast<double>(sample_rate2);
+            slave_resampler.emplace(channels2);
+            slave_resampler->reset();
+            slave_drift.emplace(nominal_ratio, static_cast<std::size_t>(ac3::kSamplesPerFrame));
+            slave_scratch.assign(
+                8 * static_cast<std::size_t>(ac3::kSamplesPerFrame) * channels2, 0.0f);
+        }
+
         std::vector<std::vector<float>> object_block(
             std::max<std::size_t>(nobjects, 1), std::vector<float>(ac3::kSamplesPerFrame, 0.0f));
         std::vector<std::span<const float>> object_views(std::max<std::size_t>(nobjects, 1));
@@ -3415,7 +3660,16 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device, bool mon
         auto last_disk_flush_at = std::chrono::steady_clock::now();
         ac3::capture::SilenceWatchdog watchdog(kDeviceSilenceTimeout);
         watchdog.reset(std::chrono::steady_clock::now());
+        if (has_device2) {
+            slave_watchdog.reset(std::chrono::steady_clock::now());
+        }
         bool device_lost = false;
+        // Which device the loop's one `device_lost` flag refers to - master
+        // (false, the default - matches every session before a slave could
+        // exist) or slave (true) - so the failure text below names the
+        // actual device that went quiet rather than always blaming the
+        // master.
+        bool lost_is_slave = false;
         // The one-shot capture->monitor latency measurement: only attempted
         // once monitoring is on and the pipeline has run for about a second
         // (past whatever startup transient the first few frames carry), and
@@ -3448,29 +3702,38 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device, bool mon
                 QString plan_text;
                 QString receiver_name;
                 bool receiver_eac3 = false;
+                bool new_leg_active = false;
                 if (switch_request->want_passthrough) {
-                    auto opened = open_live_passthrough(switch_request->receiver, eac3, atmos,
-                                                        sample_rate, shape_name);
+                    new_leg_active = wants_downmix_leg(eac3, switch_request->receiver);
+                    auto opened = open_live_passthrough(switch_request->receiver,
+                                                        eac3 && !new_leg_active, atmos,
+                                                        new_leg_active, sample_rate, shape_name);
                     plan_text = opened.plan_text;
                     if (opened.ok) {
                         new_ok = true;
                         live_passthrough_sink_ = std::move(opened.sink);
                         receiver_name = QString::fromStdString(switch_request->receiver.name);
                         receiver_eac3 = switch_request->receiver.supports_eac3_passthrough;
+                    } else {
+                        new_leg_active = false;
                     }
                 } else {
                     plan_text = QStringLiteral("No passthrough this session.");
                 }
                 passthrough = new_ok;
+                leg_active = new_leg_active;
                 const bool wanted = switch_request->want_passthrough;
                 QMetaObject::invokeMethod(
-                    this, [this, new_ok, plan_text, receiver_name, receiver_eac3, wanted, atmos] {
+                    this,
+                    [this, new_ok, plan_text, receiver_name, receiver_eac3, wanted, atmos,
+                    new_leg_active] {
                         live_passthrough_ = new_ok;
                         live_wanted_passthrough_ = wanted;
                         live_receiver_name_ = receiver_name;
                         live_receiver_eac3_ = receiver_eac3;
                         live_receiver_plan_text_ = plan_text;
-                        live_gap_ = wanted && new_ok && atmos;
+                        live_downmix_leg_ = new_leg_active;
+                        live_gap_ = wanted && new_ok && (atmos || new_leg_active);
                         emit liveActiveChanged();
                         if (new_ok) {
                             // Same "expect a second of silence" pulse a
@@ -3508,6 +3771,46 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device, bool mon
             if (filled < interleaved.size()) {
                 break;  // stopped mid-frame; drop the partial frame
             }
+
+            // The slave: an opportunistic, NON-blocking drain of whatever
+            // its ring buffer holds right now (the master's own blocking
+            // fill loop just above already gave it roughly one frame
+            // period's worth of wall-clock time to deliver into), resampled
+            // to the master's clock. See docs/gui/live-session.md for the
+            // servo/resampler design; ClockDriftEstimator/DriftResampler are
+            // the shared library pieces ac3cli's own `live capture2=` uses.
+            if (has_device2) {
+                const std::size_t capacity_frames = slave_scratch.size() / channels2;
+                if (slave_scratch_valid_frames < capacity_frames) {
+                    const auto got = live_capture2_->buffer()->read(std::span{slave_scratch}.subspan(
+                        slave_scratch_valid_frames * channels2,
+                        (capacity_frames - slave_scratch_valid_frames) * channels2));
+                    const auto read_at = std::chrono::steady_clock::now();
+                    slave_watchdog.on_read(got, read_at);
+                    slave_scratch_valid_frames += got / channels2;
+                    if (got == 0 && slave_watchdog.timed_out(read_at)) {
+                        device_lost = true;
+                        lost_is_slave = true;
+                        break;
+                    }
+                }
+                slave_drift->update(slave_scratch_valid_frames);
+                slave_resampler->set_ratio(slave_drift->ratio());
+                const auto consumed = slave_resampler->render(
+                    std::span<const float>{slave_scratch}.first(slave_scratch_valid_frames *
+                                                                 channels2),
+                    slave_scratch_valid_frames, slave_resampled,
+                    static_cast<std::size_t>(ac3::kSamplesPerFrame));
+                const std::size_t remaining_frames = slave_scratch_valid_frames - consumed;
+                if (remaining_frames > 0 && consumed > 0) {
+                    std::copy(slave_scratch.begin() + static_cast<std::ptrdiff_t>(consumed * channels2),
+                             slave_scratch.begin() + static_cast<std::ptrdiff_t>(
+                                                          slave_scratch_valid_frames * channels2),
+                             slave_scratch.begin());
+                }
+                slave_scratch_valid_frames = remaining_frames;
+            }
+
             const bool measuring_latency =
                 monitor && !latency_measured && n0 >= static_cast<std::uint64_t>(sample_rate);
             if (measuring_latency) {
@@ -3523,14 +3826,30 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device, bool mon
                 // reads as silence, exactly like a bed position past the
                 // device's own channel count already did before per-slot
                 // binding existed.
+                // A slot's bound channel addresses the COMBINED space: 0..
+                // channels-1 is the master (interleaved), channels..
+                // combined_channels-1 is the slave (slave_resampled, index
+                // shifted back down by `channels`) - devices are sources,
+                // concatenated after one another the same way bundle A
+                // concatenates a second loaded file's channels after the
+                // first's.
                 const auto slot_channels = liveSlotChannels();
                 for (std::size_t ch = 0; ch < nobjects; ++ch) {
                     const int bound = ch < slot_channels.size() ? slot_channels[ch] : -1;
-                    const bool silent = bound < 0 || static_cast<std::size_t>(bound) >= channels;
+                    const bool silent =
+                        bound < 0 || static_cast<std::size_t>(bound) >= combined_channels;
+                    const bool from_slave = !silent && static_cast<std::size_t>(bound) >= channels;
+                    const std::size_t local =
+                        silent ? 0
+                              : (from_slave ? static_cast<std::size_t>(bound) - channels
+                                            : static_cast<std::size_t>(bound));
+                    const std::size_t src_channels = from_slave ? channels2 : channels;
                     for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
-                        const std::size_t base = static_cast<std::size_t>(i) * channels;
+                        const std::size_t base = static_cast<std::size_t>(i) * src_channels;
                         object_block[ch][static_cast<std::size_t>(i)] =
-                            silent ? 0.0f : interleaved[base + static_cast<std::size_t>(bound)];
+                            silent ? 0.0f
+                                  : (from_slave ? slave_resampled[base + local]
+                                                : interleaved[base + local]);
                     }
                     object_views[ch] = object_block[ch];
                 }
@@ -3633,7 +3952,22 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device, bool mon
 
             if (passthrough) {
                 std::optional<std::vector<std::byte>> burst;
-                if (eac3) {
+                if (leg_active) {
+                    // The capped receiver leg: an independent AC-3 5.1
+                    // encode of the main plan's ALREADY-COMPUTED bed - see
+                    // downmix_encoder's own construction comment for why
+                    // this needs no separate §7.8 fold. The main encode
+                    // above (unit_bytes) is untouched and still reaches
+                    // meters/monitor/disk exactly as it always has.
+                    const auto& bed_source = atmos ? bed_views : std::span{chan_views}.first(6);
+                    const auto leg_frame = downmix_encoder->encode_frame(bed_source);
+                    if (leg_frame) {
+                        const auto wrapped = ac3::iec61937::wrap_frame(*leg_frame);
+                        if (wrapped) {
+                            burst = *wrapped;
+                        }
+                    }
+                } else if (eac3) {
                     auto packed = eac3_packer.push(unit_bytes);
                     if (packed && *packed) {
                         burst = std::move(**packed);
@@ -3693,13 +4027,15 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device, bool mon
                 std::vector<ac3::analysis::ChannelLevel> snapshot(meter.levels().begin(),
                                                                   meter.levels().end());
                 const auto encoded = static_cast<qint64>(n0 / ac3::kSamplesPerFrame);
+                const double drift_ppm = has_device2 ? slave_drift->drift_ppm() : 0.0;
                 QMetaObject::invokeMethod(
-                    this, [this, seconds, dropped, underruns, encoded,
+                    this, [this, seconds, dropped, underruns, encoded, drift_ppm,
                           snapshot = std::move(snapshot)] {
                         live_running_seconds_ = seconds;
                         live_frames_encoded_ = encoded;
                         live_frames_dropped_ = static_cast<qint64>(dropped);
                         live_underruns_ = underruns;
+                        live_drift_ppm_ = drift_ppm;
                         emit liveStatsChanged();
                         publishLevels(snapshot);
                     });
@@ -3717,7 +4053,7 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device, bool mon
             problem = QStringLiteral(
                           "\"%1\" stopped delivering audio - the capture device may have been "
                           "disconnected. Wrote %2 frames before it went quiet.")
-                          .arg(device_name)
+                          .arg(lost_is_slave ? device2_name : device_name)
                           .arg(frames_written);
         }
         if (write_to_disk && writers) {
@@ -3784,6 +4120,10 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device, bool mon
             const auto capture_stats = live_capture_->stats();
             live_capture_->stop();
             live_capture_.reset();
+            if (live_capture2_) {
+                live_capture2_->stop();
+                live_capture2_.reset();
+            }
             if (live_monitor_sink_) {
                 live_monitor_sink_->stop();
                 live_monitor_sink_.reset();
@@ -3794,6 +4134,10 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device, bool mon
             }
             live_active_ = false;
             live_reconnecting_ = false;
+            live_second_device_active_ = false;
+            live_second_device_name_.clear();
+            live_drift_ppm_ = 0.0;
+            live_downmix_leg_ = false;
             // Whatever a loaded file (or nothing at all) had before this
             // session resized object_configs_ to the capture device's
             // channel count - see startLiveSession's own comment and

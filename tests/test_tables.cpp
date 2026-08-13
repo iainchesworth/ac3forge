@@ -19,6 +19,29 @@ TEST_CASE("the 19 legal bit rates, ascending", "[tables]") {
     CHECK_FALSE(ac3::is_valid_bitrate(100));
 }
 
+TEST_CASE("clamp_to_legal_ac3_bitrate reduces to the nearest legal rung at or below",
+         "[tables]") {
+    // Exactly on a rung: unchanged.
+    CHECK(ac3::clamp_to_legal_ac3_bitrate(192) == 192);
+    CHECK(ac3::clamp_to_legal_ac3_bitrate(640) == 640);
+    CHECK(ac3::clamp_to_legal_ac3_bitrate(32) == 32);
+    // Between two rungs: rounds DOWN, never up (never exceed what was asked
+    // for).
+    CHECK(ac3::clamp_to_legal_ac3_bitrate(200) == 192);
+    CHECK(ac3::clamp_to_legal_ac3_bitrate(639) == 576);
+    // Above the AC-3 ceiling (an E-AC-3-only rung like 768, or a VBR
+    // average, or anything else off the table): capped at 640.
+    CHECK(ac3::clamp_to_legal_ac3_bitrate(768) == 640);
+    CHECK(ac3::clamp_to_legal_ac3_bitrate(4000) == 640);
+    // Below the floor: the lowest legal rung, not zero.
+    CHECK(ac3::clamp_to_legal_ac3_bitrate(0) == 32);
+    CHECK(ac3::clamp_to_legal_ac3_bitrate(10) == 32);
+    // The result is always itself a legal rung.
+    for (const auto requested : {0u, 10u, 33u, 100u, 300u, 500u, 600u, 700u, 10000u}) {
+        CHECK(ac3::is_valid_bitrate(ac3::clamp_to_legal_ac3_bitrate(requested)));
+    }
+}
+
 TEST_CASE("sample rate codes (A/52 5.4.1.3)", "[tables]") {
     STATIC_CHECK(ac3::sample_rate_hz(ac3::SampleRate::k48000) == 48000);
     STATIC_CHECK(ac3::sample_rate_hz(ac3::SampleRate::k44100) == 44100);

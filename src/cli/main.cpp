@@ -22,6 +22,7 @@
 
 #include "ac3/analysis/levels.hpp"
 #include "ac3/capture/capture.hpp"
+#include "ac3/capture/resampler.hpp"
 #include "ac3/decoder/decoder.hpp"
 #include "ac3/encoder/assignment.hpp"
 #include "ac3/encoder/eac3_frame.hpp"
@@ -97,6 +98,10 @@ void print_meta_usage() {
                  "channels (seconds >= 0), same 0-based numbering as src=");
     std::println("                    the programme is still as long as the longest one once "
                  "every offset is applied");
+    std::println();
+    std::println("live options (live; any order, after the positional arguments):");
+    std::println("  capture2=<index>  a second capture device, clock-conformed to the first "
+                 "(see 'devices')");
 }
 
 // Everything a command accepts after its positional arguments, in any order.
@@ -134,6 +139,11 @@ struct Options {
     // see docs/concepts/object-signing.md.
     bool sign_objects = false;
     std::optional<std::string> signing_key;
+    // 'live' only: a second ("slave") capture device index, same numbering
+    // ac3::capture::enumerate_devices()/'devices' uses and the capture_device
+    // positional already reads. Unset means the classic single-device
+    // session, unchanged from before this option existed.
+    std::optional<int> capture2 = std::nullopt;
 };
 
 bool parse_double(std::string_view text, double& out) {
@@ -316,6 +326,19 @@ bool parse_options(std::span<char*> tokens, Options& out) {
             // A given sourceIndex may appear more than once; offset_samples_for
             // reads this in order and keeps the last match, so no dedupe here.
             out.offsets.emplace_back(index, seconds);
+            continue;
+        }
+        if (key == "capture2") {
+            int index = 0;
+            const auto [ptr, ec] =
+                std::from_chars(value.data(), value.data() + value.size(), index);
+            const bool ok =
+                ec == std::errc{} && ptr == value.data() + value.size() && index >= 0;
+            if (!ok) {
+                std::println(stderr, "error: capture2= needs a non-negative device index");
+                return false;
+            }
+            out.capture2 = index;
             continue;
         }
         if (key == "signing-key") {
@@ -3080,7 +3103,7 @@ int run_monitor(std::string_view in_path, int device_index) {
 // its current position, still evaluated fresh every frame inside this same loop.
 int run_live(std::string_view out_path, int capture_device, std::uint32_t seconds,
             std::uint32_t bitrate, int monitor_device, int passthrough_device,
-            std::string_view mode) {
+            std::string_view mode, const Options& meta) {
     if (mode != "channels" && mode != "atmos") {
         std::println(stderr, "error: mode is 'channels' (default) or 'atmos'");
         return 1;
@@ -3099,6 +3122,19 @@ int run_live(std::string_view out_path, int capture_device, std::uint32_t second
     }
     const auto& device = (*devices)[static_cast<std::size_t>(capture_device)];
 
+    // capture2=: a second, independently-clocked device. Range-checked the
+    // same way as the master above - a bad index refuses the whole command
+    // rather than silently falling back to a single-device session.
+    if (meta.capture2 && (*meta.capture2 < 0 ||
+                          static_cast<std::size_t>(*meta.capture2) >= devices->size())) {
+        std::println(stderr,
+                     "error: capture2 device index {} out of range (see 'ac3cli devices')",
+                     *meta.capture2);
+        return 1;
+    }
+    const ac3::capture::DeviceInfo* device2 =
+        meta.capture2 ? &(*devices)[static_cast<std::size_t>(*meta.capture2)] : nullptr;
+
     ac3::SampleRate sr{};
     switch (device.sample_rate) {
         case 48000: sr = ac3::SampleRate::k48000; break;
@@ -3111,6 +3147,27 @@ int run_live(std::string_view out_path, int capture_device, std::uint32_t second
             return 1;
     }
 
+    // capture2's own rate only has to be a legal AC-3 rate itself - it does
+    // NOT need to match the master's, since the resampler's nominal-
+    // conversion side is exactly what absorbs a 44.1/48 kHz mismatch between
+    // the two devices.
+    double nominal_ratio = 1.0;
+    if (device2) {
+        switch (device2->sample_rate) {
+            case 48000:
+            case 44100:
+            case 32000: break;
+            default:
+                std::println(stderr,
+                             "error: capture2 \"{}\" runs at {} Hz; AC-3/E-AC-3 need 32, 44.1 "
+                             "or 48 kHz",
+                             device2->name, device2->sample_rate);
+                return 1;
+        }
+        nominal_ratio =
+            static_cast<double>(device.sample_rate) / static_cast<double>(device2->sample_rate);
+    }
+
     ac3::capture::Capture capture;
     const auto started = capture.start(device.id, device.kind);
     if (!started) {
@@ -3120,12 +3177,45 @@ int run_live(std::string_view out_path, int capture_device, std::uint32_t second
     const auto channels = capture.channels();
     const auto rate_hz = capture.sample_rate();
 
+    // Clock-master model: capture paces the session exactly as before -
+    // nothing about its own timing changes below. capture2, when present, is
+    // a second, independently-clocked device whose stream gets resampled
+    // into lockstep with capture's pacing every frame, then appended after
+    // capture's own channels.
+    ac3::capture::Capture capture2;
+    std::size_t capture2_channels = 0;
+    std::optional<ac3::capture::DriftResampler> slave_resampler;
+    std::optional<ac3::capture::ClockDriftEstimator> slave_drift;
+    std::vector<float> slave_scratch;
+    std::size_t slave_scratch_valid_frames = 0;
+    std::vector<float> slave_out;
+    if (device2) {
+        const auto started2 = capture2.start(device2->id, device2->kind);
+        if (!started2) {
+            std::println(stderr, "error: {}", ac3::capture::describe(started2.error()));
+            return 1;
+        }
+        capture2_channels = capture2.channels();
+        slave_resampler.emplace(capture2_channels);
+        slave_drift.emplace(nominal_ratio, static_cast<std::size_t>(ac3::kSamplesPerFrame));
+        slave_scratch.resize(4 * static_cast<std::size_t>(ac3::kSamplesPerFrame) *
+                             capture2_channels);
+        slave_out.resize(static_cast<std::size_t>(ac3::kSamplesPerFrame) * capture2_channels);
+        slave_resampler->reset();
+        std::println("capture2: \"{}\", {} ch @ {} Hz (nominal ratio {:.6f})", device2->name,
+                     device2->channels, device2->sample_rate, nominal_ratio);
+    }
+
     // Object mode pans every captured channel into the 5.1 bed as its own
     // object (mirrors encodeObjects/run_atmos_encode); channel mode carries
     // the first two channels straight through as AC-3 stereo (mirrors
     // run_record, which this supersedes for anything wanting monitor or
-    // passthrough alongside the file).
-    const std::size_t nobjects = atmos ? std::min<std::size_t>(channels, 15) : 2;
+    // passthrough alongside the file). capture2's channels, once resampled
+    // into lockstep, widen this the same way an extra source channel would -
+    // capture's own channels keep their existing indices, the slave's land
+    // at the new, higher ones.
+    const std::size_t total_channels = static_cast<std::size_t>(channels) + capture2_channels;
+    const std::size_t nobjects = atmos ? std::min<std::size_t>(total_channels, 15) : 2;
 
     auto resolve_render_device = [&](int index) -> std::optional<ac3::sinks::RenderDeviceInfo> {
         if (index < 0) {
@@ -3241,11 +3331,46 @@ int run_live(std::string_view out_path, int capture_device, std::uint32_t second
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
             }
         }
+        if (device2) {
+            // Opportunistic, non-blocking drain: whatever capture2 has ready
+            // right now joins the scratch FIFO's tail. Unlike the master's
+            // read above, this never waits - a slave that is momentarily
+            // behind just leaves the resampler's next render() with less to
+            // work from, which is exactly the drift the estimator is
+            // steering against, not a stall to block the session on.
+            const std::size_t capacity_frames = slave_scratch.size() / capture2_channels;
+            const std::size_t free_frames = capacity_frames - slave_scratch_valid_frames;
+            if (free_frames > 0) {
+                const auto got = capture2.buffer()->read(std::span{slave_scratch}.subspan(
+                    slave_scratch_valid_frames * capture2_channels,
+                    free_frames * capture2_channels));
+                slave_scratch_valid_frames += got / capture2_channels;
+            }
+            slave_drift->update(slave_scratch_valid_frames);
+            slave_resampler->set_ratio(slave_drift->ratio());
+            const auto consumed = slave_resampler->render(
+                std::span{slave_scratch}.first(slave_scratch_valid_frames * capture2_channels),
+                slave_scratch_valid_frames, std::span{slave_out},
+                static_cast<std::size_t>(ac3::kSamplesPerFrame));
+            const std::size_t remaining_frames = slave_scratch_valid_frames - consumed;
+            std::copy(slave_scratch.begin() + static_cast<std::ptrdiff_t>(
+                                                   consumed * capture2_channels),
+                     slave_scratch.begin() + static_cast<std::ptrdiff_t>(
+                                                  slave_scratch_valid_frames * capture2_channels),
+                     slave_scratch.begin());
+            slave_scratch_valid_frames = remaining_frames;
+        }
         for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
             const std::size_t base = static_cast<std::size_t>(i) * channels;
+            const std::size_t base2 = static_cast<std::size_t>(i) * capture2_channels;
             for (std::size_t ch = 0; ch < nobjects; ++ch) {
-                block[ch][static_cast<std::size_t>(i)] =
-                    ch < channels ? interleaved[base + ch] : 0.0f;
+                if (ch < channels) {
+                    block[ch][static_cast<std::size_t>(i)] = interleaved[base + ch];
+                } else if (ch < total_channels) {
+                    block[ch][static_cast<std::size_t>(i)] = slave_out[base2 + (ch - channels)];
+                } else {
+                    block[ch][static_cast<std::size_t>(i)] = 0.0f;
+                }
             }
         }
         for (std::size_t ch = 0; ch < nobjects; ++ch) {
@@ -3350,6 +3475,9 @@ int run_live(std::string_view out_path, int capture_device, std::uint32_t second
     std::println("");
 
     capture.stop();
+    if (device2) {
+        capture2.stop();
+    }
     if (monitoring) {
         while (monitor_sink.stats().frames_rendered < monitor_sink.stats().frames_submitted) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -3374,6 +3502,9 @@ int run_live(std::string_view out_path, int capture_device, std::uint32_t second
                  atmos ? "E-AC-3 access units" : "AC-3 frames", bitrate, out_path);
     std::println("captured {} frames, {} silence-filled, {} dropped", stats.frames_captured,
                  stats.frames_silence_filled, stats.frames_dropped);
+    if (device2) {
+        std::println("capture2 drift: {:+.1f} ppm", slave_drift->drift_ppm());
+    }
     print_channel_summary(meter);
     return 0;
 }
@@ -3518,7 +3649,7 @@ constexpr std::array<Command, 21> kCommands{{
      "capture -> encode -> live monitor and/or passthrough", Needs::kCapture,
      [](const Args& x) {
          return run_live(x.str(1), x.i32(2, 0), x.u32(3, 10), x.u32(4, 192), x.i32(5, -2),
-                         x.i32(6, -2), x.str(7, "channels"));
+                         x.i32(6, -2), x.str(7, "channels"), x.meta);
      }},
     {"encode", 3, "<in.wav> <out.ac3> [bitrate_kbps] [layout] [in2.wav]",
      "in2.wav: layout 1+1's Ch2, when Ch1 is a separate mono file; or use src=/map= "
@@ -3621,6 +3752,10 @@ void print_usage() {
     std::println("       pans every captured channel into a 5.1 bed as its own object, moving");
     std::println("       it every frame the same way 'atmos' orbits its synthetic ones — the");
     std::println("       hook a real live position source drops into once one exists.");
+    std::println("live capture2=<index>: the capture_device positional stays the session's");
+    std::println("       clock master, paced exactly as it always has been; capture2= adds a");
+    std::println("       second, independently-clocked device whose stream is resampled to");
+    std::println("       track the master, with the measured drift printed at session end.");
     std::println("monitor/live --monitor play the 5.1 BED of an Atmos-mode stream: the in-repo");
     std::println("       decoder's E-AC-3 scope is A/52 Annex E syntax, not TS 103 420's object");
     std::println("       layer, so this is what a legacy decoder hears, not unmixed objects.");
