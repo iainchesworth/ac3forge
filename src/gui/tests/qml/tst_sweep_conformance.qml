@@ -23,6 +23,23 @@ TestCase {
     readonly property url surroundUrl:
         Qt.resolvedUrl("../../../../fuzz/seeds/fuzz_wav_read/roundtrip-51.wav")
 
+    // The runner shares ONE controller singleton across every tst_ file, and
+    // the files' order is not the same on every platform - leaving sources
+    // or an explicit assignment behind here broke tst_source_loading and
+    // tst_guided_wizard on Linux while Windows happened to order this file
+    // last. Every test leaves the controller as it found it.
+    function cleanup() {
+        EncoderController.atmosEnabled = false;
+        if (EncoderController.sourceModel.length > 0) {
+            EncoderController.removeSource(0);
+        }
+        EncoderController.containerIndex = 0;
+        EncoderController.drcIndex = 0;
+        EncoderController.codecIndex = 0;
+        EncoderController.bitrateKbps = 192;
+        EncoderController.applyChannelPreset("stereo");
+    }
+
     function test_extrasRowsCarryChannelTokens() {
         const win = createTemporaryObject(mainWindowComponent, testCase);
         verify(win !== null);
