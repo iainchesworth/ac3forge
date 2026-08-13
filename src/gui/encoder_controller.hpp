@@ -72,6 +72,12 @@ class EncoderController : public QObject {
     // time.
     Q_PROPERTY(QStringList unassignedWarnings READ unassignedWarnings NOTIFY sourceChanged)
     Q_PROPERTY(QString outputPath READ outputPath NOTIFY outputChanged)
+    // Keep whatever frames a failed or cancelled run already produced,
+    // written beside the intended output as <name>.partial.<ext> - partial
+    // output is named and kept, not silently discarded (the handoff's error
+    // state). Persisted as a preference by the GUI; on by default.
+    Q_PROPERTY(bool keepPartialOutput READ keepPartialOutput WRITE setKeepPartialOutput
+                   NOTIFY keepPartialOutputChanged)
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
     Q_PROPERTY(double progress READ progress NOTIFY progressChanged)
@@ -334,6 +340,8 @@ public:
     [[nodiscard]] QVariantList assignmentRows() const;
     [[nodiscard]] QStringList unassignedWarnings() const;
     [[nodiscard]] QString outputPath() const { return output_path_; }
+    [[nodiscard]] bool keepPartialOutput() const { return keep_partial_output_; }
+    void setKeepPartialOutput(bool keep);
     [[nodiscard]] QString status() const { return status_; }
     [[nodiscard]] bool busy() const { return busy_; }
     [[nodiscard]] double progress() const { return progress_; }
@@ -370,8 +378,13 @@ public:
     [[nodiscard]] bool dualMono() const { return isDualMono(); }
     [[nodiscard]] bool bedLfeLocked() const { return atmos_enabled_ || isDualMono(); }
     [[nodiscard]] QVariantList extrasModel() const;
+    // Object mode and dual mono lock the extras; plain AC-3 deliberately
+    // does NOT - ticking an extra under AC-3 PROMOTES the codec to E-AC-3
+    // (see toggleExtra), because extras must never be gated by a codec the
+    // extras themselves change. That circularity was a real bug during
+    // design and the handoff calls it out by name.
     [[nodiscard]] bool extrasLocked() const {
-        return atmos_enabled_ || isDualMono() || codec_ == ac3::plan::Codec::kAc3;
+        return atmos_enabled_ || isDualMono();
     }
     [[nodiscard]] QString channelShapeName() const;
     [[nodiscard]] int channelBudgetUsed() const;
@@ -561,6 +574,14 @@ public:
     // can never disagree about what a token means. Silently ignored if it
     // does not parse, same convention as toggleExtra/applyChannelPreset.
     Q_INVOKABLE void setAssignment(int sourceIndex, int channel, const QString& destToken);
+    // Fills every still-unassigned channel whose SOURCE has a natural AC-3
+    // layout (mono, stereo, 5.1, ...) with the bed position that channel
+    // holds in that layout - "assign by name": a 5.1 file's third WAV
+    // channel is its centre, so it goes to C. Positions the current plan
+    // does not carry are left unassigned (and keep their warning) rather
+    // than silently invented; rows already assigned - or deliberately set
+    // to nothing - are never overwritten.
+    Q_INVOKABLE void autoAssignByName();
     // Back to automatic routing - only meaningful with exactly one source
     // loaded (see routingForSources); with more than one, clearing merely
     // empties the table, since automatic panning has no defined meaning
@@ -590,6 +611,11 @@ public:
                                       int receiverDeviceIndex, bool writeToDisk,
                                       const QUrl& fileUrl);
     Q_INVOKABLE void stopLiveSession();
+    // The reconnection banner's Skip: stop announcing the receiver's
+    // re-lock window early. Purely presentational - the pulse is advisory,
+    // and a user who can hear the receiver has settled knows better than
+    // the timer does.
+    Q_INVOKABLE void settleReconnect();
     // Where a level sits on the meter scale, for the QML that draws the
     // gridline labels. The bars themselves get their positions in
     // channelLevels; this exists so the ticks cannot disagree with them.
@@ -600,6 +626,7 @@ public:
 signals:
     void sourceChanged();
     void outputChanged();
+    void keepPartialOutputChanged();
     void statusChanged();
     void busyChanged();
     void progressChanged();
@@ -821,6 +848,10 @@ private:
     QString source_path_;
     QString source_info_;
     QString output_path_;
+    // The handoff's "partial output is named and kept" behaviour - see the
+    // keepPartialOutput property. Snapshotted into each encode worker at
+    // start, so mid-run preference edits apply to the NEXT run.
+    bool keep_partial_output_ = true;
     QString status_ = QStringLiteral("Choose a WAV file, or record from a capture device.");
     QString routing_summary_;
     bool source_ready_ = false;

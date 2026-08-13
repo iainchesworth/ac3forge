@@ -72,6 +72,13 @@ ApplicationWindow {
         property string controlsOnOpen: "guided"
         property string lastTier: "guided"
         property string meterMode: "coded"
+        property bool showExplanations: true
+        property bool warnCodecChange: false
+        property bool restoreSession: true
+        property bool restoreScreen: false
+        property string outputFolder: ""
+        property string namePattern: "{source}.{ext}"
+        property bool keepPartial: true
         property bool showCli: true
         property int defaultContainerIndex: 0
         property bool defaultVbr: false
@@ -79,19 +86,145 @@ ApplicationWindow {
         property int defaultVbrQuality: 75
         property int defaultDrcIndex: 0
         property bool defaultMeasureDialnorm: false
+        property bool autoMonitor: true
+        property bool askRecordName: false
+        // The last session, saved on close: source paths, assignment tokens
+        // and the channel plan they were made against - restored on open
+        // when restoreSession is on. JSON strings because Settings stores
+        // flat values.
+        property string sessionSources: "[]"
+        property string sessionAssignments: "[]"
+        property string sessionBed: ""
+        property bool sessionLfe: false
+        property string sessionExtras: "[]"
+        property bool sessionAtmos: false
+        property string sessionTab: "format"
+        property string sessionInput: "file"
     }
+
+    // The Preferences "show the plain-language notes" knob, read once per
+    // binding site rather than each note reaching into appSettings itself.
+    readonly property bool showExplanations: appSettings.showExplanations
+
+    // For the Qt Quick Test harness: the settings store and the dialog are
+    // otherwise unreachable ids (Settings is not an Item, and a Dialog lives
+    // on the Overlay), and the tests exercise preference-driven flows.
+    readonly property alias settings: appSettings
+    readonly property alias prefsDialog: preferencesDialog
 
     Component.onCompleted: {
         Theme.preference = appSettings.theme;
         meterMode = appSettings.meterMode;
         tier = appSettings.controlsOnOpen === "last"
                ? appSettings.lastTier : appSettings.controlsOnOpen;
+        EncoderController.keepPartialOutput = appSettings.keepPartial;
         EncoderController.containerIndex = appSettings.defaultContainerIndex;
         EncoderController.bitrateKbps = appSettings.defaultBitrateKbps;
         EncoderController.vbrQuality = appSettings.defaultVbrQuality;
         EncoderController.vbrEnabled = appSettings.defaultVbr;
         EncoderController.drcIndex = appSettings.defaultDrcIndex;
         EncoderController.measureDialnorm = appSettings.defaultMeasureDialnorm;
+        restoreSession();
+    }
+
+    onClosing: saveSession()
+
+    // ---- session restore ----------------------------------------------------
+    // "Reopen the last session's sources and assignments": the source list,
+    // the assignment table and the channel plan those assignments were made
+    // against, saved as one unit on close. A file that has gone missing
+    // since fails its load with the usual status message rather than
+    // aborting the rest.
+    function saveSession() {
+        const sources = EncoderController.sourceModel;
+        const paths = [];
+        for (let i = 0; i < sources.length; i++) {
+            paths.push(sources[i].path);
+        }
+        appSettings.sessionSources = JSON.stringify(paths);
+
+        const rows = EncoderController.assignmentRows;
+        const assignments = [];
+        for (let i = 0; i < rows.length; i++) {
+            if (rows[i].touched === true || rows[i].destToken !== "none") {
+                assignments.push({ s: rows[i].source, c: rows[i].channel,
+                                   token: rows[i].destToken });
+            }
+        }
+        appSettings.sessionAssignments = JSON.stringify(assignments);
+
+        const beds = EncoderController.bedChoices;
+        appSettings.sessionBed = EncoderController.bedIndex >= 0
+                                 && EncoderController.bedIndex < beds.length
+                                 ? beds[EncoderController.bedIndex].id : "";
+        appSettings.sessionLfe = EncoderController.bedLfe;
+        const extras = EncoderController.extrasModel;
+        const on = [];
+        for (let i = 0; i < extras.length; i++) {
+            if (extras[i].checked) on.push(extras[i].id);
+        }
+        appSettings.sessionExtras = JSON.stringify(on);
+        appSettings.sessionAtmos = EncoderController.atmosEnabled;
+        appSettings.sessionTab = currentTab;
+        appSettings.sessionInput = inputMode;
+    }
+
+    function restoreSession() {
+        if (!appSettings.restoreSession) {
+            return;
+        }
+        let paths = [];
+        let assignments = [];
+        let extras = [];
+        try {
+            paths = JSON.parse(appSettings.sessionSources);
+            assignments = JSON.parse(appSettings.sessionAssignments);
+            extras = JSON.parse(appSettings.sessionExtras);
+        } catch (error) {
+            return; // a mangled store restores nothing rather than half of it
+        }
+        if (paths.length === 0) {
+            return;
+        }
+        for (let i = 0; i < paths.length; i++) {
+            EncoderController.addSourceFile("file:///" + paths[i].replace(/\\/g, "/").replace(/^\//, ""));
+        }
+        if (EncoderController.sourceModel.length === 0) {
+            return; // nothing loaded (files moved); leave the first-run screen up
+        }
+        // The plan the assignments were made against, before the assignments
+        // themselves - loadSourceFile settled the bed on the file's natural
+        // layout, which is not necessarily what was saved.
+        if (!appSettings.sessionAtmos && appSettings.sessionBed.length > 0) {
+            const beds = EncoderController.bedChoices;
+            for (let i = 0; i < beds.length; i++) {
+                if (beds[i].id === appSettings.sessionBed) {
+                    EncoderController.bedIndex = i;
+                    break;
+                }
+            }
+            EncoderController.bedLfe = appSettings.sessionLfe;
+            const model = EncoderController.extrasModel;
+            for (let i = 0; i < model.length; i++) {
+                const wantOn = extras.indexOf(model[i].id) >= 0;
+                if (model[i].checked !== wantOn) {
+                    EncoderController.toggleExtra(model[i].id);
+                }
+            }
+        }
+        for (let i = 0; i < assignments.length; i++) {
+            EncoderController.setAssignment(assignments[i].s, assignments[i].c,
+                                            assignments[i].token);
+        }
+        if (appSettings.sessionAtmos) {
+            EncoderController.atmosEnabled = true;
+        }
+        if (appSettings.restoreScreen) {
+            inputMode = appSettings.sessionInput;
+            if (tabOrder.indexOf(appSettings.sessionTab) >= 0) {
+                currentTab = appSettings.sessionTab;
+            }
+        }
     }
 
     // ---- Guided / Advanced / Expert and the tab bar ------------------------
@@ -273,18 +406,76 @@ ApplicationWindow {
                         liveReceiverBox.currentIndex - 1, true, selectedFile)
     }
 
+    // The Preferences "Name new files" pattern, applied: {source} is the
+    // first source's basename, {ext} the suffix the plan derives.
+    function plannedFileName(sourceStem) {
+        const stem = sourceStem !== undefined ? sourceStem
+                     : (EncoderController.sourcePath.length > 0
+                        ? baseName(EncoderController.sourcePath).replace(/\.[^.]*$/, "")
+                        : "output");
+        return appSettings.namePattern
+            .replace("{source}", stem)
+            .replace("{ext}", EncoderController.outputSuffix());
+    }
+    // The Preferences output folder as a file:// url, falling back to
+    // "beside the first source", the pattern's own default.
+    function outputFolderUrl() {
+        if (appSettings.outputFolder.length > 0) {
+            return appSettings.outputFolder;
+        }
+        if (EncoderController.sourcePath.length > 0) {
+            const normalized = EncoderController.sourcePath.replace(/\\/g, "/");
+            const slash = normalized.lastIndexOf("/");
+            if (slash > 0) {
+                return "file:///" + normalized.substring(0, slash).replace(/^\//, "");
+            }
+        }
+        return StandardPaths.writableLocation(StandardPaths.MusicLocation);
+    }
+
     function openSaveDialog(dialog, name) {
         const suffix = EncoderController.outputSuffix();
         dialog.defaultSuffix = suffix;
         dialog.nameFilters = [qsTr("%1 file (*.%2)").arg(suffix.toUpperCase()).arg(suffix),
                               qsTr("All files (*)")];
+        dialog.currentFolder = outputFolderUrl();
         dialog.selectedFile = name;
         dialog.open();
     }
     // What the Encode button and guided's "Encode now" both run — one flow,
     // so the two can never drift apart.
     function startEncodeFlow() {
-        openSaveDialog(saveDialog, EncoderController.suggestedOutputName());
+        openSaveDialog(saveDialog, plannedFileName());
+    }
+    // Record honours the capture preference: ask for a filename, or write
+    // straight to the output folder under a timestamped take name — the
+    // status line and run strip always say where it went.
+    function startRecordFlow() {
+        if (appSettings.askRecordName) {
+            openSaveDialog(recordDialog, plannedFileName());
+            return;
+        }
+        const now = new Date();
+        const pad = (n) => String(n).padStart(2, "0");
+        const stem = "take-" + now.getFullYear() + pad(now.getMonth() + 1) + pad(now.getDate())
+                     + "-" + pad(now.getHours()) + pad(now.getMinutes()) + pad(now.getSeconds());
+        EncoderController.startRecording(deviceBox.currentIndex,
+                                         outputFolderUrl() + "/" + plannedFileName(stem));
+    }
+    // "Warn before a choice changes the codec": when the preference is on
+    // and an action would promote AC-3 to Dolby Digital Plus, the action
+    // waits behind a confirm — the codec still follows the channels either
+    // way; the warning only makes the moment deliberate.
+    property var pendingPromotion: null
+    function withCodecWarning(promotes, action) {
+        if (promotes && appSettings.warnCodecChange
+            && EncoderController.codecIndex === 0
+            && !EncoderController.atmosEnabled && !EncoderController.dualMono) {
+            pendingPromotion = action;
+            codecWarnDialog.open();
+            return;
+        }
+        action();
     }
 
     // Hidden text surface for the command bar's Copy button — the standard
@@ -305,6 +496,60 @@ ApplicationWindow {
         onApplied: {
             Theme.preference = appSettings.theme;
             window.meterMode = appSettings.meterMode;
+            EncoderController.keepPartialOutput = appSettings.keepPartial;
+        }
+    }
+
+    Dialog {
+        id: codecWarnDialog
+        modal: true
+        anchors.centerIn: parent
+        padding: Theme.space4
+
+        background: Rectangle {
+            color: Theme.bg
+            border.color: Theme.text
+            border.width: 2
+        }
+
+        contentItem: ColumnLayout {
+            spacing: Theme.space3
+
+            Text {
+                text: qsTr("This moves the stream to Dolby Digital Plus")
+                font.pixelSize: 15
+                font.weight: Font.DemiBold
+                color: Theme.text
+            }
+            Text {
+                Layout.preferredWidth: 380
+                text: qsTr("Anything past a bed and its LFE needs Dolby Digital Plus, so the codec follows the channels — the file becomes .ec3 rather than .ac3. Every modern receiver reads it; a DVD player will not.")
+                wrapMode: Text.WordWrap
+                font.pixelSize: 12
+                color: Theme.neutral700
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Item { Layout.fillWidth: true }
+                Button {
+                    text: qsTr("Cancel")
+                    onClicked: {
+                        window.pendingPromotion = null;
+                        codecWarnDialog.reject();
+                    }
+                }
+                Button {
+                    objectName: "codecWarnContinue"
+                    text: qsTr("Continue")
+                    highlighted: true
+                    onClicked: {
+                        const action = window.pendingPromotion;
+                        window.pendingPromotion = null;
+                        codecWarnDialog.accept();
+                        if (action) action();
+                    }
+                }
+            }
         }
     }
 
@@ -602,6 +847,17 @@ ApplicationWindow {
                                 Layout.fillWidth: true
                                 enabled: !EncoderController.busy
                                 model: EncoderController.captureDevices
+                                // "Start monitoring as soon as a device is
+                                // chosen" — on the explicit pick gesture only
+                                // (onActivated is user interaction, never a
+                                // binding), and never over a running session.
+                                onActivated: {
+                                    if (appSettings.autoMonitor && !EncoderController.busy
+                                        && EncoderController.captureSupported) {
+                                        EncoderController.startLiveSession(
+                                            deviceBox.currentIndex, true, -1, false, "");
+                                    }
+                                }
                             }
 
                             RowLayout {
@@ -640,8 +896,7 @@ ApplicationWindow {
                                         if (EncoderController.recording) {
                                             EncoderController.stopRecording();
                                         } else {
-                                            window.openSaveDialog(recordDialog,
-                                                                  EncoderController.suggestedOutputName());
+                                            window.startRecordFlow();
                                         }
                                     }
                                 }
@@ -703,6 +958,7 @@ ApplicationWindow {
                             }
 
                             Text {
+                                visible: window.showExplanations
                                 Layout.fillWidth: true
                                 text: qsTr("Monitoring is free — nothing is written and no filename is asked for. The levels below are real. Record or start a session to commit a take.")
                                 wrapMode: Text.WordWrap
@@ -1320,10 +1576,28 @@ ApplicationWindow {
                                     columnSpacing: 20
                                     rowSpacing: 4
 
+                                    // Whether anything is currently FORCING the
+                                    // codec: extras and object mode both need
+                                    // Dolby Digital Plus, and while they do the
+                                    // field is a readout, not a control. A plain
+                                    // bed genuinely encodes as either, so there
+                                    // the choice is real and stays offered.
+                                    readonly property bool codecForced: {
+                                        if (EncoderController.atmosEnabled) return true;
+                                        const extras = EncoderController.extrasModel;
+                                        for (let i = 0; i < extras.length; i++) {
+                                            if (extras[i].checked) return true;
+                                        }
+                                        return false;
+                                    }
+                                    id: formatGrid
+
                                     Text {
                                         text: EncoderController.atmosEnabled
                                               ? qsTr("Codec — fixed by object mode")
-                                              : qsTr("Codec — follows the channels")
+                                              : formatGrid.codecForced
+                                                ? qsTr("Codec — follows the channels")
+                                                : qsTr("Codec")
                                         font.pixelSize: 11
                                         color: Theme.textMuted
                                     }
@@ -1338,14 +1612,16 @@ ApplicationWindow {
                                         color: Theme.textMuted
                                     }
 
-                                    // The codec is derived, never chosen: a bed
-                                    // with or without an LFE is Dolby Digital;
-                                    // any extra promotes the stream to DD+.
+                                    // The codec follows the channels: any extra
+                                    // promotes the stream to DD+ and locks this
+                                    // to the derived value. With nothing forcing
+                                    // it, a plain bed is a real either/or.
                                     ComboBox {
                                         Layout.fillWidth: true
-                                        enabled: false
+                                        enabled: !formatGrid.codecForced && !EncoderController.busy
                                         model: EncoderController.codecNames
                                         currentIndex: EncoderController.codecIndex
+                                        onActivated: EncoderController.codecIndex = currentIndex
                                     }
                                     ComboBox {
                                         id: bitrateBox
@@ -1372,7 +1648,10 @@ ApplicationWindow {
                                     }
                                 }
 
-                                VbrPanel { Layout.fillWidth: true }
+                                VbrPanel {
+                                    Layout.fillWidth: true
+                                    showExplanations: window.showExplanations
+                                }
                             }
 
                             Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 2; color: Theme.divider }
@@ -1466,6 +1745,8 @@ ApplicationWindow {
                                     }
                                 }
                                 Text {
+                                    objectName: "noteBedAlways"
+                                    visible: window.showExplanations
                                     Layout.fillWidth: true
                                     text: qsTr("One bed, always. Extras add to it — the format cannot carry a ceiling channel, or any other, without a bed underneath.")
                                     wrapMode: Text.WordWrap
@@ -1550,13 +1831,20 @@ ApplicationWindow {
                                             MouseArea {
                                                 anchors.fill: parent
                                                 enabled: !lfeButton.locked
-                                                onClicked: lfeRow.setCount(lfeButton.modelData.n)
+                                                onClicked: {
+                                                    const n = lfeButton.modelData.n;
+                                                    // A second LFE is an extra, so it
+                                                    // promotes the codec like one.
+                                                    window.withCodecWarning(n === 2 && !lfeRow.lfe2On,
+                                                        () => lfeRow.setCount(n));
+                                                }
                                             }
                                         }
                                     }
                                     Item { Layout.fillWidth: true }
                                 }
                                 Text {
+                                    visible: window.showExplanations
                                     Layout.fillWidth: true
                                     text: qsTr("Two means two independent low-frequency channels carrying different signal — not one signal sent to two subwoofers. This is what makes a 7.2.4 rather than a 7.1.4.")
                                     wrapMode: Text.WordWrap
@@ -1606,7 +1894,12 @@ ApplicationWindow {
                                                     objectName: "extra-" + extraRow.modelData.id
                                                     checked: extraRow.modelData.checked
                                                     enabled: extraRow.modelData.enabled && !EncoderController.busy
-                                                    onToggled: EncoderController.toggleExtra(extraRow.modelData.id)
+                                                    onToggled: {
+                                                        const id = extraRow.modelData.id;
+                                                        const promotes = !extraRow.modelData.checked;
+                                                        window.withCodecWarning(promotes,
+                                                            () => EncoderController.toggleExtra(id));
+                                                    }
                                                 }
                                                 ColumnLayout {
                                                     Layout.fillWidth: true
@@ -1650,6 +1943,7 @@ ApplicationWindow {
                                 }
 
                                 Text {
+                                    visible: window.showExplanations
                                     Layout.fillWidth: true
                                     text: {
                                         if (EncoderController.dualMono && !EncoderController.atmosEnabled) {
@@ -1833,9 +2127,11 @@ ApplicationWindow {
 
                                 AssignmentPanel {
                                     Layout.fillWidth: true
+                                    showExplanations: window.showExplanations
                                 }
 
                                 Text {
+                                    visible: window.showExplanations
                                     Layout.fillWidth: true
                                     text: qsTr("A stereo file cannot be one object — an object is a single point in the room. Send each channel to its own object, or put the pair on bed channels.")
                                     wrapMode: Text.WordWrap
@@ -1922,7 +2218,7 @@ ApplicationWindow {
                                     }
                                 }
                                 Text {
-                                    visible: window.tier === "expert"
+                                    visible: window.tier === "expert" && window.showExplanations
                                     Layout.fillWidth: true
                                     text: qsTr("Sends the encoded stream as IEC 61937 bursts in exclusive mode, so the receiver decodes it. The packer emits AC-3 bursts only (data type 1), so an E-AC-3 stream is refused here rather than sent as something it is not. Only S/PDIF and HDMI endpoints can bitstream at all.")
                                     wrapMode: Text.WordWrap
@@ -2882,6 +3178,7 @@ ApplicationWindow {
                                         }
 
                                         Text {
+                                            visible: window.showExplanations
                                             Layout.fillWidth: true
                                             text: qsTr("Height changes the metadata, not the bed — a 5.1 ring has no speakers above it. The LFE send is the only route to that channel: no direction points at it, so panning never reaches it.")
                                             color: Theme.textMuted
@@ -3099,14 +3396,26 @@ ApplicationWindow {
                                     width: 2
                                     color: Theme.accent
                                 }
-                                Text {
-                                    id: reconnectMsg
+                                RowLayout {
                                     anchors.fill: parent
                                     anchors.margins: Theme.space3
-                                    text: qsTr("Renegotiating with the receiver. It is re-locking to the new bitstream format — expect a second of silence. This is normal AVR behaviour on a format change.")
-                                    color: Theme.accent800
-                                    font.pixelSize: Theme.fontSmall
-                                    wrapMode: Text.WordWrap
+                                    spacing: Theme.space3
+
+                                    Text {
+                                        id: reconnectMsg
+                                        Layout.fillWidth: true
+                                        Layout.preferredWidth: 1
+                                        text: qsTr("Renegotiating with the receiver. It is re-locking to the new bitstream format — expect a second of silence. This is normal AVR behaviour on a format change.")
+                                        color: Theme.accent800
+                                        font.pixelSize: Theme.fontSmall
+                                        wrapMode: Text.WordWrap
+                                    }
+                                    Button {
+                                        objectName: "reconnectSkip"
+                                        text: qsTr("Skip")
+                                        flat: true
+                                        onClicked: EncoderController.settleReconnect()
+                                    }
                                 }
                             }
 
@@ -3636,6 +3945,7 @@ ApplicationWindow {
                     spacing: 16
 
                     Rectangle {
+                        objectName: "commandBar"
                         Layout.fillWidth: true
                         visible: appSettings.showCli
                         implicitHeight: 38
@@ -3684,9 +3994,7 @@ ApplicationWindow {
                         highlighted: true
                         implicitHeight: 44
                         implicitWidth: Math.max(190, contentItem.implicitWidth + 40)
-                        onClicked: window.openSaveDialog(
-                                       saveDialog,
-                                       EncoderController.suggestedOutputName())
+                        onClicked: window.startEncodeFlow()
                     }
                 }
             }

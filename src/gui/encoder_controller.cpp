@@ -210,6 +210,21 @@ ac3::oba::Position speaker_pin_position(double azimuth_deg) {
     return {.x = 0.5 - 0.45 * std::sin(radians), .y = 0.5 - 0.45 * std::cos(radians), .z = 0.0};
 }
 
+// Where a failed or cancelled run's frames land when the keep-partial
+// preference is on: ".partial" spliced in before the suffix, so "out.ec3"
+// keeps its half-finished take as "out.partial.ec3" - named and kept, never
+// silently discarded, and never squatting on the name the finished file was
+// going to have.
+QString partial_output_path(const QString& path) {
+    const qsizetype dot = path.lastIndexOf(QLatin1Char('.'));
+    const qsizetype slash = std::max(path.lastIndexOf(QLatin1Char('/')),
+                                     path.lastIndexOf(QLatin1Char('\\')));
+    if (dot > slash) {
+        return path.left(dot) + QStringLiteral(".partial") + path.mid(dot);
+    }
+    return path + QStringLiteral(".partial");
+}
+
 // The two soundfield rings: everything overhead goes on the ceiling plan,
 // everything else - however far back or wide - stays on the ear-level one.
 bool is_ceiling_location(ac3::eac3::chanmap::Location location) {
@@ -647,6 +662,13 @@ void EncoderController::toggleExtra(const QString& id) {
         // are both "this does not fit", not "fit what you can".
         if (!ac3::eac3::chanmap::allocate(static_cast<std::uint16_t>(bed_mask | tentative))) {
             return;
+        }
+        // Adding any extra under plain AC-3 promotes the codec - the extras
+        // decide the codec, never the reverse, exactly as a preset needing
+        // a dependent substream already does.
+        if (!checked && codec_ == plan::Codec::kAc3) {
+            codec_ = plan::Codec::kEac3;
+            emit outputChanged();
         }
         extras_mask_ = tentative;
         emit planChanged();
@@ -2063,6 +2085,22 @@ void EncoderController::stopLiveSession() {
     stop_live_.store(true, std::memory_order_relaxed);
 }
 
+void EncoderController::setKeepPartialOutput(bool keep) {
+    if (keep == keep_partial_output_) {
+        return;
+    }
+    keep_partial_output_ = keep;
+    emit keepPartialOutputChanged();
+}
+
+void EncoderController::settleReconnect() {
+    if (!live_reconnecting_) {
+        return;
+    }
+    live_reconnecting_ = false;
+    emit liveReconnectingChanged();
+}
+
 void EncoderController::switchLiveLayout(const QString& presetName) {
     if (!live_active_ || !live_request_) {
         return;
@@ -3184,6 +3222,63 @@ void EncoderController::clearAssignment() {
     refreshRouting();
 }
 
+void EncoderController::autoAssignByName() {
+    if (!source_) {
+        return;
+    }
+    // The positions the current plan actually carries - a name the plan has
+    // no place for stays unassigned (and keeps its warning) rather than
+    // being invented.
+    const auto cp = atmos_enabled_ ? plan::channel_plan_for(plan::LayoutId::k51)
+                                   : effectiveChannelPlan();
+    std::set<ac3::eac3::chanmap::Location> in_plan;
+    for (const auto& channel : plan::coded_channels(cp)) {
+        in_plan.insert(channel.location);
+    }
+
+    const auto shapes = sourceShapes();
+    bool changed = false;
+    for (std::size_t s = 0; s < shapes.size(); ++s) {
+        // A source whose channel count has a natural AC-3 layout carries its
+        // own names: a 5.1 WAV's channels ARE L R C LFE Ls Rs in WAV order.
+        // A count with no natural layout (3, 7...) has no names to assign by.
+        const auto layout = ac3::io::ac3_layout_for(shapes[s].channels);
+        if (!layout) {
+            continue;
+        }
+        std::vector<ac3::eac3::chanmap::Location> locations;
+        for (const auto location : ac3::eac3::chanmap::expand(
+                 ac3::eac3::chanmap::acmod_map(layout->acmod, layout->lfe))) {
+            locations.push_back(location);
+        }
+        for (std::size_t k = 0; k < locations.size() && k < layout->wav_index.size(); ++k) {
+            const auto wav_channel = layout->wav_index[k];
+            if (!in_plan.contains(locations[k])) {
+                continue;
+            }
+            // Never overwrite a decision already made - explicit positions
+            // and deliberate "none"s alike.
+            if (assignment_.at(s, wav_channel).kind != plan::DestinationKind::kUnassigned ||
+                touched_channels_.contains({s, wav_channel})) {
+                continue;
+            }
+            assignment_.set(s, wav_channel,
+                            {.kind = plan::DestinationKind::kLocation,
+                             .location = locations[k]});
+            touched_channels_.insert({s, wav_channel});
+            changed = true;
+        }
+    }
+    if (!changed) {
+        return;
+    }
+    has_explicit_assignment_ = true;
+    recomputeObjectCount();
+    emit objectsChanged();
+    emit sourceChanged();
+    refreshRouting();
+}
+
 // ---------------------------------------------------------------------------
 // Output
 // ---------------------------------------------------------------------------
@@ -3383,8 +3478,10 @@ void EncoderController::encodeChannels(const QString& path,
     setMetering(true);
 
     const bool eac3 = p.codec == plan::Codec::kEac3;
+    const bool keep_partial = keep_partial_output_;
     std::ignore = QtConcurrent::run([this, path, p, routing, cp, sample_rate,
-                                     eac3, label, planes = std::move(planes)]() mutable {
+                                     eac3, label, keep_partial,
+                                     planes = std::move(planes)]() mutable {
         const auto coded_count = static_cast<std::size_t>(routing.coded_channels);
         // Heap-allocated, not stack: each carries a multi-KB internal history
         // buffer, and both together pushed this lambda's stack frame well
@@ -3500,8 +3597,20 @@ void EncoderController::encodeChannels(const QString& path,
             }
         }
 
+        QString partial_note;
         if (problem.isEmpty() && !cancelled) {
             problem = writeOutput(path, frames, sample_rate, plan::rendered_channel_count(cp));
+        } else if (keep_partial && !frames.empty()) {
+            // Partial output is named and kept, not silently discarded - the
+            // half-finished take is real work, and throwing it away decides
+            // for the user that it was worthless.
+            const QString partial = partial_output_path(path);
+            if (writeOutput(partial, frames, sample_rate, plan::rendered_channel_count(cp))
+                    .isEmpty()) {
+                partial_note = QStringLiteral(" The %1 frames already written are kept at %2.")
+                                   .arg(frames.size())
+                                   .arg(QFileInfo(partial).fileName());
+            }
         }
 
         std::vector<ac3::analysis::ChannelLevel> totals(
@@ -3516,16 +3625,17 @@ void EncoderController::encodeChannels(const QString& path,
 
         const auto count = frames.size();
         QMetaObject::invokeMethod(this, [this, count, bytes, min_frame_bytes, max_frame_bytes,
-                                         cancelled, problem, label, eac3, vbr = p.vbr,
-                                         sample_rate, totals = std::move(totals)] {
+                                         cancelled, problem, partial_note, label, eac3,
+                                         vbr = p.vbr, sample_rate,
+                                         totals = std::move(totals)] {
             setBusy(false);
             setMetering(false);
             setProgress(cancelled ? 0.0 : 1.0);
             publishLevels(totals);
             if (cancelled) {
-                setStatus(QStringLiteral("Encode cancelled."));
+                setStatus(QStringLiteral("Encode cancelled.") + partial_note);
             } else if (!problem.isEmpty()) {
-                setStatus(problem);
+                setStatus(problem + partial_note);
             } else {
                 setStatus(QStringLiteral("Wrote %1 %2 %3 (%4 KB) to %5")
                               .arg(count)
@@ -3666,7 +3776,8 @@ void EncoderController::encodeObjects(const QString& path,
     setLayout(ac3::Acmod::k3_2, true, labels, QStringLiteral("5.1 bed"), coded, fedChannels());
     setMetering(true);
 
-    std::ignore = QtConcurrent::run([this, path, p, sample_rate, nobjects,
+    const bool keep_partial = keep_partial_output_;
+    std::ignore = QtConcurrent::run([this, path, p, sample_rate, nobjects, keep_partial,
                                      paths = std::move(paths),
                                      planes = std::move(planes)]() mutable {
         ac3::oba::AtmosEncoder encoder{{.sample_rate = p.sample_rate,
@@ -3752,8 +3863,17 @@ void EncoderController::encodeObjects(const QString& path,
             }
         }
 
+        QString partial_note;
         if (problem.isEmpty() && !cancelled) {
             problem = writeOutput(path, frames, sample_rate, 6);
+        } else if (keep_partial && !frames.empty()) {
+            // Same "named and kept" rule as the channel path.
+            const QString partial = partial_output_path(path);
+            if (writeOutput(partial, frames, sample_rate, 6).isEmpty()) {
+                partial_note = QStringLiteral(" The %1 frames already written are kept at %2.")
+                                   .arg(frames.size())
+                                   .arg(QFileInfo(partial).fileName());
+            }
         }
 
         std::vector<ac3::analysis::ChannelLevel> totals(
@@ -3769,15 +3889,15 @@ void EncoderController::encodeObjects(const QString& path,
         const auto count = frames.size();
         const auto objects = ac3::oba::object_count(encoder.program());
         QMetaObject::invokeMethod(this, [this, count, bytes, nobjects, objects, cancelled,
-                                         problem, totals = std::move(totals)] {
+                                         problem, partial_note, totals = std::move(totals)] {
             setBusy(false);
             setMetering(false);
             setProgress(cancelled ? 0.0 : 1.0);
             publishLevels(totals);
             if (cancelled) {
-                setStatus(QStringLiteral("Encode cancelled."));
+                setStatus(QStringLiteral("Encode cancelled.") + partial_note);
             } else if (!problem.isEmpty()) {
-                setStatus(problem);
+                setStatus(problem + partial_note);
             } else {
                 setStatus(QStringLiteral("Wrote %1 Atmos access units (%2 KB) to %3 — "
                                          "%4 dynamic objects + the bed's LFE = %5 objects")

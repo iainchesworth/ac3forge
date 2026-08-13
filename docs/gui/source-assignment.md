@@ -54,6 +54,13 @@ so — the source's channels are panned onto the selected bed by direction, the 
 has always been routed — and the table is still there to override any channel individually, or to
 send one to an object.
 
+**Auto-assign by name** (in the table header) fills every still-unassigned channel whose source
+has a natural AC-3 layout with the position that channel holds in it — a 5.1 file's third WAV
+channel *is* its centre, so it goes to `C`; a stereo pair lands on `L` and `R`. Positions the
+current plan doesn't carry are left unassigned (and keep their warning) rather than invented, and
+a decision already made — explicit positions and deliberate "Nothing"s alike — is never
+overwritten.
+
 ## Guided round trip
 
 Guided step 1 carries the same rows as **What each sound does**, with a footer link — **Open the

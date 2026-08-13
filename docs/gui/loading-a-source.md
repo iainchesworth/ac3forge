@@ -36,9 +36,13 @@ marked `[default]` — plus **Refresh** and three ways to run:
 
 - **Monitor** starts a live session that writes *nothing* — no filename is asked for, the meters
   and soundfield run against the real encoded-and-decoded-back signal, and the button becomes
-  **Stop**. Checking the signal never commits to a take.
-- **Record…** asks for a filename and captures to it (the button becomes **Stop** with a live
-  elapsed readout).
+  **Stop**. Checking the signal never commits to a take. With the
+  [capture preference](index.md#preferences) on (it is by default), simply choosing a device in
+  the dropdown starts monitoring on its own.
+- **Record…** captures to a file (the button becomes **Stop** with a live elapsed readout). By
+  default it writes straight to the output folder under a timestamped take name following the
+  naming pattern — the status line and run strip say where; a
+  [capture preference](index.md#preferences) makes it ask for a filename first instead.
 - **Start live session…** runs the full capture → encode → monitor/passthrough/disk pipeline —
   covered on [Live capture & session](live-session.md), along with the VBR note that appears on
   this block whenever VBR is on.

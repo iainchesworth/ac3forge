@@ -20,6 +20,8 @@ ColumnLayout {
     // Guided's list drops the table header and the banner — the wizard has
     // its own framing copy around it.
     property bool compact: false
+    // The Preferences "show the plain-language notes beside controls" knob.
+    property bool showExplanations: true
 
     spacing: Theme.space3
 
@@ -130,7 +132,9 @@ ColumnLayout {
         }
     }
 
-    // Header row (full table only).
+    // Header row (full table only), with the by-name fill: every channel of
+    // a source that HAS a natural layout goes to the position it holds in
+    // that layout — a real action, not the prototype's dead button.
     RowLayout {
         visible: !root.compact
         Layout.fillWidth: true
@@ -140,6 +144,15 @@ ColumnLayout {
         Text { Layout.preferredWidth: 50; text: qsTr("CH"); font.pixelSize: 10; font.letterSpacing: 1; color: Theme.textMuted }
         Text { Layout.preferredWidth: 200; text: qsTr("GOES TO"); font.pixelSize: 10; font.letterSpacing: 1; color: Theme.textMuted }
         Text { Layout.fillWidth: true; text: qsTr("THEN"); font.pixelSize: 10; font.letterSpacing: 1; color: Theme.textMuted }
+        Button {
+            objectName: "autoAssignButton"
+            text: qsTr("Auto-assign by name")
+            flat: true
+            font.pixelSize: 11
+            visible: EncoderController.sourceModel.length > 0
+            enabled: !EncoderController.busy
+            onClicked: EncoderController.autoAssignByName()
+        }
     }
     Rectangle {
         visible: !root.compact
@@ -236,7 +249,7 @@ ColumnLayout {
     }
 
     Text {
-        visible: !root.compact && rows.count > 0
+        visible: !root.compact && rows.count > 0 && root.showExplanations
         Layout.fillWidth: true
         text: EncoderController.atmosEnabled
               ? qsTr("Object mode is on: sources sent to an object are placed in the room and ride as metadata. A bed position pins the channel there instead.")

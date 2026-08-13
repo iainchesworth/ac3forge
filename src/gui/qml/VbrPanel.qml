@@ -14,6 +14,10 @@ ColumnLayout {
     visible: EncoderController.vbrAvailable
     spacing: Theme.gap
 
+    // The Preferences "show the plain-language notes beside controls" knob -
+    // bound by whichever page instantiates this panel.
+    property bool showExplanations: true
+
     RowLayout {
         Layout.fillWidth: true
         spacing: Theme.gap
@@ -135,6 +139,7 @@ ColumnLayout {
         }
 
         Text {
+            visible: showExplanations
             Layout.fillWidth: true
             text: qsTr("Quality is encoder-relative, not a fixed target — bit cost rises steeply above roughly half the range, so a high quality with no maximum will often refuse real programme material outright. Bit rate above still feeds the coupling/spectral-extension frequency defaults, not a target rate.")
             color: Theme.textMuted

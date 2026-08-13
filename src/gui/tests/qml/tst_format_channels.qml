@@ -68,6 +68,30 @@ TestCase {
         compare(win.visibleTabs.some((t) => t.key === "meta"), true);
     }
 
+    function test_tickingAnExtraUnderAc3PromotesTheCodec() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        EncoderController.atmosEnabled = false;
+        EncoderController.applyChannelPreset("5.1");
+        EncoderController.codecIndex = 0;  // plain AC-3, 3/2 + LFE
+        compare(EncoderController.extrasLocked, false);
+
+        // The extras decide the codec, never the reverse - the circular
+        // gate ("extras need DD+, DD+ needs choosing first") was a real
+        // design bug the handoff calls out by name.
+        EncoderController.toggleExtra("rear");
+        compare(EncoderController.codecIndex, 1);
+        compare(EncoderController.channelShapeName, "7.1");
+
+        // Unticking does NOT demote: E-AC-3 with a plain bed is a real
+        // encoder capability (VBR needs it), so the codec stays until the
+        // now-unlocked Codec control says otherwise.
+        EncoderController.toggleExtra("rear");
+        compare(EncoderController.codecIndex, 1);
+        EncoderController.codecIndex = 0;
+        compare(EncoderController.codecIndex, 0);
+    }
+
     function test_guidedHidesTheTabBarAndShowsTheWizard() {
         const win = createTemporaryObject(mainWindowComponent, testCase);
         verify(win !== null);

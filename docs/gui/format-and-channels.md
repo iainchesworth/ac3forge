@@ -15,11 +15,14 @@ or Matroska):
 
 ![E-AC-3, 7.1.4 preset, rear + ceiling extras on](screenshots/format-eac3-714.png)
 
-**The codec is derived, never chosen.** A bed with or without an LFE is Dolby Digital; *any*
-extra — rear, ceiling, a second LFE — promotes the stream to Dolby Digital Plus. The Codec field
-is therefore labelled *Codec — follows the channels*, shows the derived value, and is disabled
-(in object mode it reads *Codec — fixed by object mode*). This replaces the old
-choose-a-codec-first flow, which gated the extras on a codec the extras themselves change.
+**The codec follows the channels.** *Any* extra — rear, ceiling, a second LFE — needs Dolby
+Digital Plus, so ticking one under plain AC-3 *promotes the codec on the spot* (with a
+confirmation first, if the [Explanations preference](index.md#preferences) asks for one); while
+anything is forcing it, the field reads *Codec — follows the channels* (or *fixed by object
+mode*) and is disabled. With nothing forcing it — a plain bed, with or without its LFE — the
+choice is real (both codecs genuinely carry it, and VBR needs E-AC-3), so the field is live
+there. What never happens is the old circular gate, where extras were locked behind a codec the
+extras themselves change.
 
 The plan strip above the tabs updates live: `E-AC-3 · 7.1.4 · 192 kbps · .ec3` (or `quality <n>`
 in VBR mode), with a sub-line counting what differs when it does (`12 speakers from 12 coded

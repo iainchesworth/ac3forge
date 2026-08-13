@@ -40,7 +40,8 @@ otherwise) with:
 
 - A reconnection banner while the receiver re-locks to a new bitstream format — a layout change
   is a deliberate, visible act, and about a second of audio is lost; the banner says so rather
-  than hiding the dropout.
+  than hiding the dropout, and a **Skip** dismisses it early for whoever can hear the receiver
+  has already settled.
 - A transport row: Stop session, a running indicator, frame count, dropped-frame count, and
   whether the take is being written to disk.
 - A "chain" strip showing the three legs as separate plans: **Capture** (the actual device) →

@@ -73,6 +73,40 @@ TestCase {
     readonly property url outputUrl:
         Qt.resolvedUrl("_test_output/tst_multi_source.ec3")
 
+    function test_autoAssignByNameFillsChannelsTheirOwnLayoutNames() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        EncoderController.atmosEnabled = false;
+
+        EncoderController.loadSourceFile(surroundUrl);   // 5.1 - natural names
+        tryCompare(EncoderController, "sourceReady", true);
+        EncoderController.addSourceFile(stereoUrl);      // stereo - L and R
+        tryVerify(() => EncoderController.sourceModel.length === 2);
+        EncoderController.applyChannelPreset("5.1");
+        verify(EncoderController.unassignedWarnings.length > 0);
+
+        // Every channel of both sources has a name in its own natural
+        // layout, and every one of those positions exists in the 5.1 plan -
+        // so nothing is left to warn about.
+        EncoderController.autoAssignByName();
+        compare(EncoderController.unassignedWarnings.length, 0);
+
+        // A 5.1 WAV's channel order is FL FR FC LFE BL BR - its first
+        // channel is the bed's L, its third the centre.
+        const rows = EncoderController.assignmentRows;
+        compare(rows[0].destToken, "L");
+        compare(rows[2].destToken, "C");
+        // The stereo source's pair lands on L and R too - two sources may
+        // legitimately feed one speaker; they sum there.
+        compare(rows[6].destToken, "L");
+        compare(rows[7].destToken, "R");
+
+        // By-name filling never overwrites a decision already made.
+        EncoderController.setAssignment(0, 0, "none");
+        EncoderController.autoAssignByName();
+        compare(EncoderController.assignmentRows[0].destToken, "none");
+    }
+
     function test_encodingWithAnExplicitAssignmentProducesADoneRun() {
         const win = createTemporaryObject(mainWindowComponent, testCase);
         verify(win !== null);

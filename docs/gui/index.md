@@ -76,13 +76,26 @@ while a tab only it shows is current falls back to Format rather than showing an
 
 ## Preferences
 
-A real dialog, persisted across sessions (QSettings): the theme (Light / Dark / System), which
-meter rows to show by default ([Coded / Rendered](loading-a-source.md#channel-levels)), which
-Controls tier the app opens on (including "whatever I used last"), whether the `ac3cli` command
-line stays visible, and the defaults a new encode starts from (container, rate mode, bit rate,
-VBR quality, DRC profile, measure loudness). The codec is deliberately **not** a default — it
-follows the channels (see [Format & channels](format-and-channels.md)), and a stale default would
-contradict that.
+A real dialog, persisted across sessions (QSettings), three columns — every row wired to real
+behaviour:
+
+- **Appearance** — theme (Light / Dark / System); which meter rows to show by default
+  ([Coded / Rendered](loading-a-source.md#channel-levels)); **Explanations** — show the
+  plain-language notes beside controls, and optionally warn before a choice changes the codec
+  (the codec follows the channels either way; the warning only makes the moment deliberate).
+- **When ac3forge opens** — the Controls tier (including "whatever I used last"); reopen the
+  last session's sources and assignments (saved as one unit on close, restored on open — a file
+  gone missing fails its load with the usual message rather than aborting the rest); optionally
+  start on the last screen. **Files and runs** — the output folder ("beside the first source" by
+  default), the `{source}.{ext}` naming pattern every save dialog and auto-named take follows,
+  and keep-partial-output: a failed or cancelled run's frames land beside the intended output as
+  `<name>.partial.<ext>`, named and kept, never silently discarded.
+- **Defaults for a new encode** — container, rate mode, bit rate, VBR quality, DRC profile,
+  measure loudness. The codec is deliberately **not** a default — it follows the channels (see
+  [Format & channels](format-and-channels.md)), and a stale default would contradict that.
+  **Capture** — start monitoring as soon as a device is chosen, and whether Record asks for a
+  filename or writes straight to the output folder under a timestamped take name. **Command
+  line** — keep the `ac3cli` line visible.
 
 ## Next
 
