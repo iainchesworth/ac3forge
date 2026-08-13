@@ -12,6 +12,7 @@
 #include <QtQmlIntegration>
 
 #include <atomic>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -49,11 +50,14 @@ class EncoderController : public QObject {
     Q_PROPERTY(bool sourceReady READ sourceReady NOTIFY sourceChanged)
     // Multi-source input: the primary source (loadSourceFile) plus whatever
     // addSourceFile has added since, one row per loaded source -
-    // {index, label, path, channels, primary}. Index 0 is always the primary
-    // (removeSource(0) drops everything rather than promoting an extra,
-    // since there is no honest way to guess which one should take its
-    // place). With exactly one source loaded this is a single row and
-    // nothing else here changes anything - see routingForSources().
+    // {index, label, path, channels, primary, rate, seconds, duration,
+    // offsetSeconds}. Index 0 is always the primary (removeSource(0) drops
+    // everything rather than promoting an extra, since there is no honest
+    // way to guess which one should take its place). With exactly one
+    // source loaded this is a single row and nothing else here changes
+    // anything - see routingForSources(). offsetSeconds is that source's
+    // start offset (see setSourceOffset) - the Objects tab's derived
+    // timeline length is max(offsetSeconds + seconds) over every row.
     Q_PROPERTY(QVariantList sourceModel READ sourceModel NOTIFY sourceChanged)
     // One row per (source, channel) sourceModel declares -
     // {source, channel, sourceLabel, destToken} - destToken in
@@ -313,17 +317,31 @@ class EncoderController : public QObject {
     Q_PROPERTY(int objectCount READ objectCount NOTIFY sourceChanged)
     // Which object the room plan, the sliders and the timeline all edit.
     Q_PROPERTY(int selectedObjectIndex READ selectedObjectIndex WRITE setSelectedObjectIndex NOTIFY objectsChanged)
-    // One row per object: {index, sourceLabel, x, y, z, lfeSend, hasPath,
-    // keyCount} - room-anchored per §4.2.1 (x 0 at the left wall to 1 at the
-    // right, y 0 at the front wall to 1 at the back, z -1 at the floor to +1
-    // at the ceiling). Backs both the room plan's markers and the object
-    // list table, so the two can never disagree about a position.
+    // One row per object: {index, sourceLabel, sourceIndex, x, y, z,
+    // lfeSend, hasPath, keyCount, pathLabel} - room-anchored per §4.2.1
+    // (x 0 at the left wall to 1 at the right, y 0 at the front wall to 1
+    // at the back, z -1 at the floor to +1 at the ceiling). Backs both the
+    // room plan's markers and the object list table, so the two can never
+    // disagree about a position. sourceIndex is that object's channel's row
+    // in sourceModel - what the timeline's clip-band drag uses to find
+    // every object a given source owns (see shiftObjectKeyframes).
     Q_PROPERTY(QVariantList objectModel READ objectModel NOTIFY objectsChanged)
     // How many channels the assignment pins to bed positions in object mode
     // (each one a static object - see pinnedObjectChannels). The Objects
     // tab's "N of M" budget line subtracts these from the fifteen dynamic
     // slots rather than overstating what is left.
     Q_PROPERTY(int pinnedObjectCount READ pinnedObjectCount NOTIFY sourceChanged)
+    // The Objects tab's audible motion preview: every object rendered
+    // through ac3::oba::AtmosEncoder exactly as encodeObjects() would, its
+    // 5.1 bed played back live through the same MonitorSink path a live
+    // session uses, paced in real time rather than run flat-out - see
+    // startMotionPreview(). motionPreviewActive is true only while that
+    // worker is actually playing; motionPreviewTime is its audio clock, in
+    // seconds since the preview started - what the timeline's playhead
+    // follows while a preview plays, instead of a free-running visual-only
+    // Timer, so the two can never drift apart.
+    Q_PROPERTY(bool motionPreviewActive READ motionPreviewActive NOTIFY motionPreviewActiveChanged)
+    Q_PROPERTY(double motionPreviewTime READ motionPreviewTime NOTIFY motionPreviewTimeChanged)
 
     // ---- live session -------------------------------------------------------
     // Capture, encode and (optionally) monitor+passthrough all running at
@@ -495,6 +513,8 @@ public:
     [[nodiscard]] int selectedObjectIndex() const { return selected_object_index_; }
     [[nodiscard]] QVariantList objectModel() const;
     [[nodiscard]] int pinnedObjectCount() const;
+    [[nodiscard]] bool motionPreviewActive() const { return motion_preview_active_; }
+    [[nodiscard]] double motionPreviewTime() const { return motion_preview_time_; }
 
     [[nodiscard]] bool liveActive() const { return live_active_; }
     [[nodiscard]] bool liveMonitoring() const { return live_monitoring_; }
@@ -599,12 +619,43 @@ public:
     // addObjectKeyframe applies, so a drag can never stack two cues on one
     // instant.
     Q_INVOKABLE void moveObjectKeyframe(int objectIndex, double fromS, double toS);
+    // Shifts EVERY one of an object's keyframes by deltaSeconds at once,
+    // clamped so none lands before 0 - the timeline clip-band's "move keys
+    // with source" drag modifier (see Main.qml). Doing this as one atomic
+    // rewrite rather than N calls to moveObjectKeyframe avoids the ordering
+    // hazard a naive per-key shift has: moving keys one at a time in the
+    // wrong order can have an early move land on (and replace) a key that
+    // was about to move too. A no-op (not even a notify) if the object has
+    // no authored path or the shift is zero.
+    Q_INVOKABLE void shiftObjectKeyframes(int objectIndex, double deltaSeconds);
     // Where an object sits at timeS: along its authored path if it has one,
     // else its static position, unmoving. What the motion timeline's preview
     // playhead reads so the room plan animates exactly what encodeObjects()
     // will actually place - the same ac3::oba::KeyframePath, not a second
     // interpolation that could disagree with it.
     Q_INVOKABLE [[nodiscard]] QVariantMap evaluateObjectPath(int objectIndex, double timeS) const;
+    // Writes every dynamic object's authored path - or, for a path-less
+    // object, its static position as a single time-0 keyframe, under the
+    // same inverse-root gain/lfe_send law encodeObjects' own fallback uses
+    // - to `url` in parse_path_file's exact grammar (see ac3cli's main.cpp:
+    // "object_index time_s x y z gain lfe_send" per line), keyed by each
+    // object's FLAT channel index - the numbering a plain `atmos-encode`
+    // run (every source channel its own object, no assignment concept)
+    // addresses, so the file reproduces the GUI's dynamic objects exactly
+    // when paired with the same source file on the command line. Bed-pinned
+    // channels have no equivalent in atmos-encode's model and are not
+    // written. Returns false if the file could not be opened for writing.
+    Q_INVOKABLE bool exportObjectPaths(const QUrl& url) const;
+    // Starts the audible motion preview: every current object rendered
+    // through ac3::oba::AtmosEncoder the same way encodeObjects() would,
+    // its 5.1 bed played back live and paced in real time (not run flat-
+    // out) through the same MonitorSink path a live session already uses.
+    // Refused (silently, the usual convention for a start-a-thing entry
+    // point) while busy, outside object mode, or with no objects to play.
+    // Reaching the end of the derived programme length stops it the same
+    // as an explicit stopMotionPreview() would.
+    Q_INVOKABLE void startMotionPreview();
+    Q_INVOKABLE void stopMotionPreview();
 
     Q_INVOKABLE void loadSourceFile(const QUrl& url);
     // The first-run screen's third path in: synthesises an eight-second 5.1
@@ -620,6 +671,16 @@ public:
     // the sources already loaded - plan::render has no notion of
     // resampling, and a silent mismatch would drift rather than error.
     Q_INVOKABLE void addSourceFile(const QUrl& url);
+    // A per-source start offset in seconds, clamped to zero or more - all
+    // of that source's channels shift together. Encoded as leading silence
+    // (a read-shift before the source's own first sample, mirroring the
+    // zero-pad-past-its-end every encode loop already applies at the other
+    // end - see encodeChannels/encodeObjects/previewPlanMeters), never as a
+    // change to the audio itself. The derived programme length (see
+    // sourceModel's own doc comment) is max(offset + duration) over every
+    // loaded source. Silently ignored for an out-of-range index, the same
+    // convention setAssignment uses.
+    Q_INVOKABLE void setSourceOffset(int index, double seconds);
     // index 0 (the primary) drops every loaded source and the assignment
     // with it - see sourceModel's own doc comment on why. Removing any
     // other index clears the assignment table rather than trying to shift
@@ -627,7 +688,12 @@ public:
     // source's index just changed, and guessing which old row survives is
     // exactly the kind of silently-maybe-wrong behaviour this surface
     // exists to avoid (plan::Assignment's own doc comment makes the same
-    // call for an unassigned channel).
+    // call for an unassigned channel). Object state is keyed by (source,
+    // channel) rather than position, though (see ObjectKey), so it does not
+    // share that problem: a non-primary removal drops only the departed
+    // source's own objects/keyframes and renumbers every later source's
+    // entries down by one, the same shift sourceShapes() itself applies -
+    // a surviving source's authored motion is never touched.
     Q_INVOKABLE void removeSource(int index);
     // destToken is whatever assignmentRows already printed for a row, or
     // any token plan::parse_destination accepts - the same vocabulary
@@ -726,9 +792,21 @@ signals:
     void liveActiveChanged();
     void liveStatsChanged();
     void liveReconnectingChanged();
+    void motionPreviewActiveChanged();
+    void motionPreviewTimeChanged();
 
 private:
     struct Source;
+    // Object identity: (source index, channel index) into sourceShapes()'s
+    // own flat addressing - the same pair Assignment/touched_channels_
+    // already key by. object_configs_/object_keyframes_/object_path_labels_
+    // hang authored motion off this rather than off an object's position in
+    // the current dynamic-object list, so a channel keeps its motion when
+    // reassignment or a source's removal changes which position it shows up
+    // at (see keyForObjectIndex, and removeSource's own comment). A live
+    // session has no file channel to key by; it uses a reserved sentinel
+    // source index instead (see keyForObjectIndex).
+    using ObjectKey = std::pair<std::size_t, std::size_t>;
 
     // The meters read -60 dBFS at the bottom: far enough down to show room
     // tone, close enough up that programme material uses most of the bar.
@@ -760,6 +838,13 @@ private:
     // ac3::plan::Assignment's (source, channel) addressing means here.
     // Empty when nothing is loaded.
     [[nodiscard]] std::vector<ac3::plan::SourceShape> sourceShapes() const;
+    // sourceShapes()'s own flat addressing, but each entry is that
+    // channel's SOURCE's start offset, in samples at `sample_rate` -
+    // encodeChannels/encodeObjects/previewPlanMeters all read this
+    // alongside `planes` (in the same flat/repacked order they use) to
+    // read-shift a source's audio rather than mutate it.
+    [[nodiscard]] std::vector<std::size_t> flatChannelOffsetSamples(
+        std::uint32_t sample_rate) const;
     // objectModel()'s own sourceLabel for object `flatIndex` (a concatenated
     // index into sourceShapes(), the same addressing planes/Assignment use):
     // "Ch <n>" with exactly one source loaded - unchanged from what this has
@@ -803,23 +888,36 @@ private:
     // every channel is a dynamic object, which is what this always did.
     void encodeObjects(const QString& path, std::vector<std::vector<float>> planes,
                        std::uint32_t sample_rate);
-    // Resizes object_configs_ to object_count_, preserving any object index
-    // that survives the change and spreading newly-added ones out along x
-    // instead of defaulting them all onto the same overlapping point (the
-    // design brief's own complaint about the single-point-plus-spread model).
-    // Called wherever object_count_ is set. Preserving by INDEX is only
-    // honest when indices themselves have not shifted underneath - true for
-    // a grown/shrunk primary (loadSourceFile always starts fresh anyway) and
-    // for addSourceFile (a new source's channels only ever append past the
-    // old count) - so removeSource() clears object_configs_/
-    // object_keyframes_ itself first for a non-primary removal, the same
-    // "clear rather than risk silently reattaching to the wrong channel"
-    // call assignment_ already makes there, before this ever runs.
+    // Ensures every currently-dynamic object index (0..object_count_-1) has
+    // a config entry, spreading newly-seen (source, channel) identities out
+    // along x instead of defaulting them all onto the same overlapping point
+    // (the design brief's own complaint about the single-point-plus-spread
+    // model). Called wherever object_count_ is set. An identity that already
+    // has an entry - the common case, an object that survived whatever just
+    // changed - keeps it untouched; nothing is ever pruned here, so a
+    // channel's motion sits dormant rather than lost while it is not
+    // currently an object (unassigned, pinned to a bed position, or its
+    // source briefly absent), and reappears if it becomes one again. See
+    // keyForObjectIndex for how an index resolves to that identity.
     void refreshObjectConfigs();
     // The shared lookup addObjectKeyframe/removeObjectKeyframe/
     // objectKeyframes/evaluateObjectPath all build on: object_keyframes_'s
-    // entry for this index, sorted by time, or empty if it has none.
+    // entry for this index's (source, channel) identity, sorted by time, or
+    // empty if it has none.
     [[nodiscard]] std::vector<ac3::oba::Keyframe> sortedKeyframes(int objectIndex) const;
+    // flatIndex's (source, channel) pair in sourceShapes()'s own flat
+    // addressing - the same loop objectSourceLabel uses to name it.
+    [[nodiscard]] ObjectKey sourceChannelForFlatIndex(std::size_t flatIndex) const;
+    // Where object_configs_/object_keyframes_/object_path_labels_ keep
+    // objectIndex's (position in the current dynamic-object list) data:
+    // its underlying (source, channel) identity via dynamicObjectChannels(),
+    // or - while a live session has resized these over the capture device's
+    // own channel count instead of a loaded file's (see startLiveSession and
+    // live_object_backup_) - a reserved sentinel source index paired with
+    // objectIndex itself, since a live device channel has no (source,
+    // channel) of its own to key by. nullopt for an index outside the
+    // current object count.
+    [[nodiscard]] std::optional<ObjectKey> keyForObjectIndex(int objectIndex) const;
 
     struct ObjectConfig;
     // The live session worker. One function for both channel and object mode
@@ -971,7 +1069,7 @@ private:
     int object_count_ = 0;
     int selected_object_index_ = 0;
     // One static position per object - independent now, not a shared point
-    // plus a spread fan-out. Resized (and freshly spread out, so a loaded
+    // plus a spread fan-out. Populated (and freshly spread out, so a loaded
     // file's objects do not all default onto the same overlapping point) in
     // refreshObjectConfigs() whenever object_count_ changes.
     struct ObjectConfig {
@@ -983,17 +1081,22 @@ private:
         // it the bed's LFE is silent however the objects are placed.
         double lfe_send = 0.15;
     };
-    std::vector<ObjectConfig> object_configs_;
-    // Authored motion, keyed by object index. An index absent here (the
+    // Keyed by ObjectKey (source, channel), not by an object's position in
+    // the current dynamic-object list - see ObjectKey's own comment. An
+    // entry for a channel that is not currently an object (unassigned,
+    // pinned to the bed, or briefly absent mid-edit) simply sits unread
+    // until keyForObjectIndex resolves something to it again.
+    std::map<ObjectKey, ObjectConfig> object_configs_;
+    // Authored motion, keyed the same way. An identity absent here (the
     // common case) falls back to the object's static ObjectConfig placement
     // in encodeObjects, held constant for the whole file.
-    QHash<int, std::vector<ac3::oba::Keyframe>> object_keyframes_;
+    std::map<ObjectKey, std::vector<ac3::oba::Keyframe>> object_keyframes_;
     // The preset name that authored an object's path ("orbit", "lift"),
     // absent for hand-authored or hand-edited paths - what the object
     // table's Path column prints instead of a bare "path". Kept strictly in
     // step with object_keyframes_: every place that clears or hand-edits a
     // path clears its label too.
-    QHash<int, QString> object_path_labels_;
+    std::map<ObjectKey, QString> object_path_labels_;
     // A snapshot of object_configs_/object_keyframes_/selected_object_index_
     // as they stood before a live Atmos session resized them to the CAPTURE
     // DEVICE's channel count instead of a loaded file's (see
@@ -1002,12 +1105,15 @@ private:
     // so an unrelated live excursion can never permanently clobber authored
     // object placements/motion a loaded file already had. nullopt means
     // nothing needs restoring - no session has resized anything yet, or the
-    // device's channel count already matched and nothing was touched.
+    // device's channel count already matched and nothing was touched. Its
+    // presence is also what keyForObjectIndex reads to know a live session
+    // has objects keyed by the device-channel sentinel right now rather
+    // than by a loaded file's (source, channel) identity.
     struct LiveObjectBackup {
         int count = 0;
-        std::vector<ObjectConfig> configs;
-        QHash<int, std::vector<ac3::oba::Keyframe>> keyframes;
-        QHash<int, QString> path_labels;
+        std::map<ObjectKey, ObjectConfig> configs;
+        std::map<ObjectKey, std::vector<ac3::oba::Keyframe>> keyframes;
+        std::map<ObjectKey, QString> path_labels;
         int selected_index = 0;
     };
     std::optional<LiveObjectBackup> live_object_backup_;
@@ -1057,6 +1163,15 @@ private:
     // sourceShapes()/Assignment addressing. Always empty with the single-
     // source behaviour every existing call site (still) assumes.
     std::vector<std::shared_ptr<Source>> extra_sources_;
+    // Per-source start offsets in seconds, parallel to source_/
+    // extra_sources_ (not stored ON Source itself: Source is shared with
+    // previewPlanMeters' background worker on the strength of never being
+    // mutated after construction - see source_'s own comment - and an
+    // offset is exactly the kind of thing a drag mutates in place). Kept in
+    // step with extra_sources_ by every add/remove site; see
+    // flatChannelOffsetSamples for how these turn into a read-shift.
+    double source_offset_seconds_ = 0.0;
+    std::vector<double> extra_source_offsets_seconds_;
     // Invalidates in-flight meter previews: bumped by every new preview and
     // by setBusy(true), checked (against busy_ too) before a preview's
     // result is published.
@@ -1129,4 +1244,21 @@ private:
     std::unique_ptr<ac3::capture::Capture> live_capture_;
     std::unique_ptr<ac3::sinks::MonitorSink> live_monitor_sink_;
     std::unique_ptr<ac3::sinks::PassthroughSink> live_passthrough_sink_;
+
+    // ---- Objects tab's audible motion preview ---------------------------
+    // stop_motion_preview_ is the only piece of this the worker thread
+    // reads; everything else it only ever touches through a
+    // QMetaObject::invokeMethod back onto the GUI thread - the same
+    // discipline runLiveSession's worker already follows.
+    std::atomic_bool stop_motion_preview_{false};
+    bool motion_preview_active_ = false;
+    double motion_preview_time_ = 0.0;
+    // Opened at startMotionPreview, closed by the worker's own completion
+    // callback - matches live_monitor_sink_'s open-on-GUI-thread/submit-
+    // from-worker convention. A dedicated sink rather than reusing
+    // live_monitor_sink_: a motion preview and a live session are mutually
+    // exclusive (busy_ already guards that), but sharing one member would
+    // tie this feature's lifecycle to liveActive's own signals for no
+    // reason.
+    std::unique_ptr<ac3::sinks::MonitorSink> motion_preview_monitor_sink_;
 };

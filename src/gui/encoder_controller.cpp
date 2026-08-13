@@ -1,8 +1,10 @@
 #include "encoder_controller.hpp"
 
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QRegularExpression>
+#include <QTextStream>
 #include <QTimer>
 #include <QtConcurrent/QtConcurrentRun>
 
@@ -13,6 +15,7 @@
 #include <chrono>
 #include <cmath>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <numbers>
 #include <optional>
@@ -85,6 +88,30 @@ QString group_digits(qint64 value) {
 // plays, so without a wall-clock throttle a two-minute track would fire tens
 // of thousands of property updates the display could never show.
 constexpr auto kPublishInterval = std::chrono::milliseconds(33);
+
+// A reserved source index (past any real sourceShapes() count, which never
+// gets remotely this large) for a live session's objects, which have no
+// (source, channel) of their own to key by - see
+// EncoderController::keyForObjectIndex.
+constexpr std::size_t kLiveObjectSource = std::numeric_limits<std::size_t>::max();
+
+// Bakes each channel's own source offset in as leading silence, so every
+// downstream consumer - the dialnorm=auto measurement pass, the frame
+// loop's existing zero-pad-past-the-end - sees one continuous, already
+// time-aligned programme rather than needing its own offset-aware
+// indexing. Only valid for OWNED plane storage (encodeChannels/
+// encodeObjects, via encodeTo) - previewPlanMeters reads its sources as
+// non-owning spans into shared WavData and cannot prepend to them, so it
+// applies the same offsets as a per-frame read-shift instead.
+std::vector<std::vector<float>> apply_channel_offsets(std::vector<std::vector<float>> planes,
+                                                       const std::vector<std::size_t>& offsets) {
+    for (std::size_t ch = 0; ch < planes.size() && ch < offsets.size(); ++ch) {
+        if (offsets[ch] > 0) {
+            planes[ch].insert(planes[ch].begin(), offsets[ch], 0.0f);
+        }
+    }
+    return planes;
+}
 
 // Where the container choice sits in the combo box; index 0 is the bare
 // elementary stream, which is everything this is not.
@@ -272,6 +299,31 @@ std::vector<float> interleave_reordered(std::span<const std::vector<float>> chan
     return out;
 }
 
+// std::map has no QHash::value(key, default) - this is that, generically,
+// for object_configs_/object_keyframes_/object_path_labels_'s lookups.
+template <typename Map>
+typename Map::mapped_type map_value(const Map& map, const typename Map::key_type& key) {
+    const auto found = map.find(key);
+    return found != map.end() ? found->second : typename Map::mapped_type{};
+}
+
+// removeSource's non-primary path: drops removed_source's own entries and
+// renumbers every later source's down by one - the same shift sourceShapes()
+// itself applies once that source's gone, so a surviving source's authored
+// motion stays addressed to exactly the same channels it always was.
+template <typename Map>
+void rekey_after_source_removed(Map& map, std::size_t removed_source) {
+    Map rekeyed;
+    for (auto& [key, value] : map) {
+        if (key.first == removed_source) {
+            continue;
+        }
+        const auto new_source = key.first > removed_source ? key.first - 1 : key.first;
+        rekeyed.emplace(typename Map::key_type{new_source, key.second}, std::move(value));
+    }
+    map = std::move(rekeyed);
+}
+
 }  // namespace
 
 struct EncoderController::Source {
@@ -400,17 +452,25 @@ QVariantList EncoderController::objectModel() const {
     // channel, when nothing is assigned) - the same mapping encodeObjects
     // uses, so the list names exactly what will ride as objects.
     const auto dynamic = dynamicObjectChannels();
-    for (std::size_t i = 0; i < object_configs_.size(); ++i) {
-        const auto& config = object_configs_[i];
-        const auto keyframes = sortedKeyframes(static_cast<int>(i));
+    for (int i = 0; i < object_count_; ++i) {
+        const auto key = keyForObjectIndex(i);
+        const auto config = key ? map_value(object_configs_, *key) : ObjectConfig{};
+        const auto keyframes = sortedKeyframes(i);
         QVariantMap row;
-        row[QStringLiteral("index")] = static_cast<int>(i);
+        row[QStringLiteral("index")] = i;
         // Objects are a channel, one each, so the honest name for where one
         // comes from is which channel it is - and, once more than one
         // source is loaded, which FILE that channel is in (see
         // objectSourceLabel's own comment).
-        row[QStringLiteral("sourceLabel")] =
-            objectSourceLabel(i < dynamic.size() ? dynamic[i] : i);
+        row[QStringLiteral("sourceLabel")] = objectSourceLabel(
+            static_cast<std::size_t>(i) < dynamic.size() ? dynamic[static_cast<std::size_t>(i)]
+                                                          : static_cast<std::size_t>(i));
+        // Which row of sourceModel this object's channel belongs to - the
+        // same identity `key` already carries, exposed so QML can find
+        // "every object this source owns" (the timeline clip-band's "move
+        // keys with source" drag - see shiftObjectKeyframes) without having
+        // to parse it back out of sourceLabel's display text.
+        row[QStringLiteral("sourceIndex")] = key ? static_cast<int>(key->first) : -1;
         row[QStringLiteral("x")] = config.x;
         row[QStringLiteral("y")] = config.y;
         row[QStringLiteral("z")] = config.z;
@@ -420,7 +480,7 @@ QVariantList EncoderController::objectModel() const {
         // "orbit"/"lift" when a preset authored the path, empty for hand-
         // authored ones - the table prints the label, or falls back to the
         // key count.
-        row[QStringLiteral("pathLabel")] = object_path_labels_.value(static_cast<int>(i));
+        row[QStringLiteral("pathLabel")] = key ? map_value(object_path_labels_, *key) : QString();
         out.append(row);
     }
     return out;
@@ -1099,10 +1159,11 @@ void EncoderController::setSelectedObjectIndex(int index) {
 }
 
 void EncoderController::setObjectPosition(int objectIndex, double x, double y, double z) {
-    if (objectIndex < 0 || objectIndex >= static_cast<int>(object_configs_.size())) {
+    const auto key = keyForObjectIndex(objectIndex);
+    if (!key) {
         return;
     }
-    auto& config = object_configs_[static_cast<std::size_t>(objectIndex)];
+    auto& config = object_configs_[*key];
     config.x = std::clamp(x, 0.0, 1.0);
     config.y = std::clamp(y, 0.0, 1.0);
     config.z = std::clamp(z, -1.0, 1.0);
@@ -1119,10 +1180,11 @@ void EncoderController::setObjectPosition(int objectIndex, double x, double y, d
 }
 
 void EncoderController::setObjectLfeSend(int objectIndex, double value) {
-    if (objectIndex < 0 || objectIndex >= static_cast<int>(object_configs_.size())) {
+    const auto key = keyForObjectIndex(objectIndex);
+    if (!key) {
         return;
     }
-    auto& config = object_configs_[static_cast<std::size_t>(objectIndex)];
+    auto& config = object_configs_[*key];
     config.lfe_send = std::clamp(value, 0.0, 1.0);
     {
         std::lock_guard lock(live_object_mutex_);
@@ -1154,9 +1216,13 @@ std::vector<EncoderController::ObjectConfig> EncoderController::liveObjectSnapsh
 
 void EncoderController::setObjectPathKeyframes(int objectIndex, const QVariantList& keyframes,
                                                const QString& label) {
+    const auto object_key = keyForObjectIndex(objectIndex);
+    if (!object_key) {
+        return;
+    }
     if (keyframes.isEmpty()) {
-        object_keyframes_.remove(objectIndex);
-        object_path_labels_.remove(objectIndex);
+        object_keyframes_.erase(*object_key);
+        object_path_labels_.erase(*object_key);
         emit objectsChanged();
         return;
     }
@@ -1171,28 +1237,32 @@ void EncoderController::setObjectPathKeyframes(int objectIndex, const QVariantLi
                           .gain = map.value(QStringLiteral("gain"), 1.0).toDouble(),
                           .lfe_send = map.value(QStringLiteral("lfeSend"), 0.0).toDouble()});
     }
-    object_keyframes_[objectIndex] = std::move(parsed);
+    object_keyframes_[*object_key] = std::move(parsed);
     if (label.isEmpty()) {
-        object_path_labels_.remove(objectIndex);
+        object_path_labels_.erase(*object_key);
     } else {
-        object_path_labels_[objectIndex] = label;
+        object_path_labels_[*object_key] = label;
     }
     emit objectsChanged();
 }
 
 void EncoderController::clearObjectPath(int objectIndex) {
-    object_path_labels_.remove(objectIndex);
-    if (object_keyframes_.remove(objectIndex)) {
+    const auto object_key = keyForObjectIndex(objectIndex);
+    if (!object_key) {
+        return;
+    }
+    object_path_labels_.erase(*object_key);
+    if (object_keyframes_.erase(*object_key) > 0) {
         emit objectsChanged();
     }
 }
 
 std::vector<ac3::oba::Keyframe> EncoderController::sortedKeyframes(int objectIndex) const {
-    const auto found = object_keyframes_.constFind(objectIndex);
-    if (found == object_keyframes_.constEnd()) {
+    const auto object_key = keyForObjectIndex(objectIndex);
+    if (!object_key) {
         return {};
     }
-    auto keyframes = *found;
+    auto keyframes = map_value(object_keyframes_, *object_key);
     std::ranges::sort(keyframes, {}, &ac3::oba::Keyframe::time_s);
     return keyframes;
 }
@@ -1213,10 +1283,11 @@ QVariantList EncoderController::objectKeyframes(int objectIndex) const {
 }
 
 void EncoderController::addObjectKeyframe(int objectIndex, double timeS) {
-    if (objectIndex < 0 || objectIndex >= static_cast<int>(object_configs_.size())) {
+    const auto object_key = keyForObjectIndex(objectIndex);
+    if (!object_key) {
         return;
     }
-    const auto& config = object_configs_[static_cast<std::size_t>(objectIndex)];
+    const auto config = map_value(object_configs_, *object_key);
     auto keyframes = sortedKeyframes(objectIndex);
     // Same moment, not the same float: two cues a hundredth of a second apart
     // are not a user trying to nudge one, they are a mis-click.
@@ -1242,14 +1313,18 @@ void EncoderController::addObjectKeyframe(int objectIndex, double timeS) {
     } else {
         keyframes.push_back(key);
     }
-    object_keyframes_[objectIndex] = std::move(keyframes);
+    object_keyframes_[*object_key] = std::move(keyframes);
     // A hand-placed cue on a preset-authored path means the path is no
     // longer purely that preset.
-    object_path_labels_.remove(objectIndex);
+    object_path_labels_.erase(*object_key);
     emit objectsChanged();
 }
 
 void EncoderController::moveObjectKeyframe(int objectIndex, double fromS, double toS) {
+    const auto object_key = keyForObjectIndex(objectIndex);
+    if (!object_key) {
+        return;
+    }
     auto keyframes = sortedKeyframes(objectIndex);
     constexpr double kSameInstant = 0.01;
     const auto found = std::ranges::find_if(keyframes, [&](const ac3::oba::Keyframe& key) {
@@ -1267,12 +1342,51 @@ void EncoderController::moveObjectKeyframe(int objectIndex, double fromS, double
         return std::abs(key.time_s - moved.time_s) < kSameInstant;
     });
     keyframes.push_back(moved);
-    object_keyframes_[objectIndex] = std::move(keyframes);
-    object_path_labels_.remove(objectIndex);
+    object_keyframes_[*object_key] = std::move(keyframes);
+    object_path_labels_.erase(*object_key);
+    emit objectsChanged();
+}
+
+void EncoderController::shiftObjectKeyframes(int objectIndex, double deltaSeconds) {
+    if (deltaSeconds == 0.0) {
+        return;
+    }
+    const auto object_key = keyForObjectIndex(objectIndex);
+    if (!object_key) {
+        return;
+    }
+    auto keyframes = sortedKeyframes(objectIndex);
+    if (keyframes.empty()) {
+        return;
+    }
+    // One bulk rewrite, not N calls to moveObjectKeyframe - see this
+    // method's own doc comment on why a per-key shift has an ordering
+    // hazard this does not. The clamp keeps the whole path in bounds
+    // together, rather than the negative-time keys alone catching up at 0
+    // while the rest have already moved by the full delta.
+    double earliest = keyframes.front().time_s;
+    for (const auto& key : keyframes) {
+        earliest = std::min(earliest, key.time_s);
+    }
+    const double clamped_delta = std::max(deltaSeconds, -earliest);
+    if (clamped_delta == 0.0) {
+        return;
+    }
+    for (auto& key : keyframes) {
+        key.time_s += clamped_delta;
+    }
+    object_keyframes_[*object_key] = std::move(keyframes);
+    // The path's shape (every key's relative spacing) is unchanged - only
+    // its position on the timeline moved - so a preset's own label survives
+    // this the way a hand-authored edit's does not.
     emit objectsChanged();
 }
 
 void EncoderController::removeObjectKeyframe(int objectIndex, double timeS) {
+    const auto object_key = keyForObjectIndex(objectIndex);
+    if (!object_key) {
+        return;
+    }
     auto keyframes = sortedKeyframes(objectIndex);
     constexpr double kSameInstant = 0.01;
     const auto before = keyframes.size();
@@ -1283,20 +1397,21 @@ void EncoderController::removeObjectKeyframe(int objectIndex, double timeS) {
         return;
     }
     if (keyframes.empty()) {
-        object_keyframes_.remove(objectIndex);
+        object_keyframes_.erase(*object_key);
     } else {
-        object_keyframes_[objectIndex] = std::move(keyframes);
+        object_keyframes_[*object_key] = std::move(keyframes);
     }
-    object_path_labels_.remove(objectIndex);
+    object_path_labels_.erase(*object_key);
     emit objectsChanged();
 }
 
 QVariantMap EncoderController::evaluateObjectPath(int objectIndex, double timeS) const {
     QVariantMap out;
-    if (objectIndex < 0 || objectIndex >= static_cast<int>(object_configs_.size())) {
+    const auto object_key = keyForObjectIndex(objectIndex);
+    if (!object_key) {
         return out;
     }
-    const auto& config = object_configs_[static_cast<std::size_t>(objectIndex)];
+    const auto config = map_value(object_configs_, *object_key);
     ac3::oba::Position position{.x = config.x, .y = config.y, .z = config.z};
     double gain = 1.0;
     double lfe_send = config.lfe_send;
@@ -1316,6 +1431,273 @@ QVariantMap EncoderController::evaluateObjectPath(int objectIndex, double timeS)
     out[QStringLiteral("gain")] = gain;
     out[QStringLiteral("lfeSend")] = lfe_send;
     return out;
+}
+
+bool EncoderController::exportObjectPaths(const QUrl& url) const {
+    const QString path = url.isLocalFile() ? url.toLocalFile() : url.toString();
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        return false;
+    }
+    QTextStream out(&file);
+    out.setRealNumberPrecision(9);
+    const auto dynamic = dynamicObjectChannels();
+    const auto ndynamic =
+        std::max<std::size_t>(std::min<std::size_t>(dynamic.size(), 15), 1);
+    for (int i = 0; i < object_count_; ++i) {
+        const auto flat = static_cast<std::size_t>(i) < dynamic.size()
+                              ? dynamic[static_cast<std::size_t>(i)]
+                              : static_cast<std::size_t>(i);
+        const auto keyframes = sortedKeyframes(i);
+        if (keyframes.empty()) {
+            // No authored path - the object's static position is still
+            // worth writing, as a single time-0 keyframe under exactly the
+            // gain/lfe_send law encodeObjects' own fallback applies, so the
+            // exported file reproduces this object's actual placement
+            // rather than atmos-encode's own built-in default for it.
+            const auto object_key = keyForObjectIndex(i);
+            const auto config = object_key ? map_value(object_configs_, *object_key)
+                                           : ObjectConfig{};
+            const auto scale = 1.0 / std::sqrt(static_cast<double>(ndynamic));
+            out << flat << ' ' << 0.0 << ' ' << config.x << ' ' << config.y << ' ' << config.z
+                << ' ' << 0.7 * scale << ' ' << config.lfe_send * scale << '\n';
+            continue;
+        }
+        for (const auto& key : keyframes) {
+            out << flat << ' ' << key.time_s << ' ' << key.position.x << ' ' << key.position.y
+                << ' ' << key.position.z << ' ' << key.gain << ' ' << key.lfe_send << '\n';
+        }
+    }
+    return out.status() == QTextStream::Ok;
+}
+
+void EncoderController::startMotionPreview() {
+    if (busy_ || !atmos_enabled_ || !source_ || object_count_ <= 0 || motion_preview_active_) {
+        return;
+    }
+
+    const auto p = currentPlan();
+
+    // Exactly encodeObjects()'s own `paths` construction: authored keyframes
+    // where the GUI has some, else each object's static position, plus one
+    // pinned path per bed-assigned channel. Built here, on the GUI thread,
+    // and moved into the worker below, so the worker never reads
+    // object_keyframes_/object_configs_ directly.
+    const auto dynamic = dynamicObjectChannels();
+    const auto pinned = pinnedObjectChannels();
+    const std::size_t ndynamic = std::min<std::size_t>(dynamic.size(), 15);
+    const std::size_t nobjects = ndynamic + pinned.size();
+
+    std::vector<ac3::oba::ObjectPath> paths;
+    paths.reserve(nobjects);
+    for (std::size_t i = 0; i < ndynamic; ++i) {
+        const auto object_key = sourceChannelForFlatIndex(dynamic[i]);
+        const auto authored = object_keyframes_.find(object_key);
+        if (authored != object_keyframes_.end() && !authored->second.empty()) {
+            auto created = ac3::oba::KeyframePath::create(authored->second);
+            if (created) {
+                paths.emplace_back(std::move(*created));
+                continue;
+            }
+        }
+        const auto config = map_value(object_configs_, object_key);
+        auto fallback = ac3::oba::KeyframePath::create(
+            {{.time_s = 0.0,
+              .position = {.x = config.x, .y = config.y, .z = config.z},
+              .gain = 0.7 / std::sqrt(static_cast<double>(std::max<std::size_t>(ndynamic, 1))),
+              .lfe_send = config.lfe_send /
+                          std::sqrt(static_cast<double>(std::max<std::size_t>(ndynamic, 1)))}});
+        paths.emplace_back(std::move(*fallback));
+    }
+    for (const auto& [flat, location] : pinned) {
+        using ac3::eac3::chanmap::Location;
+        const bool lfe_pin = location == Location::kLfe || location == Location::kLfe2;
+        const auto azimuth =
+            lfe_pin ? std::optional<double>{} : location_azimuth_deg(location);
+        const auto position = azimuth ? speaker_pin_position(*azimuth)
+                                      : ac3::oba::Position{.x = 0.5, .y = 0.5, .z = 0.0};
+        auto pin_path = ac3::oba::KeyframePath::create(
+            {{.time_s = 0.0,
+              .position = position,
+              .gain = lfe_pin ? 0.0 : 1.0,
+              .lfe_send = lfe_pin ? 1.0 : 0.0}});
+        paths.emplace_back(std::move(*pin_path));
+    }
+
+    // The audio each object actually carries: the loaded source's own real
+    // per-channel audio - the same `planes` encodeTo() builds, offsets baked
+    // in the same way (apply_channel_offsets + flatChannelOffsetSamples), so
+    // a preview honours each source's start offset exactly like a real
+    // encode does. Then repacked to object order (dynamic first, then
+    // pinned), the same as encodeObjects()'s own `object_planes`.
+    const auto sample_rate = source_->wav.sample_rate;
+    std::vector<std::vector<float>> planes = source_->wav.channels;
+    for (const auto& extra : extra_sources_) {
+        planes.insert(planes.end(), extra->wav.channels.begin(), extra->wav.channels.end());
+    }
+    planes = apply_channel_offsets(std::move(planes), flatChannelOffsetSamples(sample_rate));
+
+    std::vector<std::vector<float>> object_planes;
+    object_planes.reserve(nobjects);
+    for (std::size_t i = 0; i < ndynamic; ++i) {
+        object_planes.push_back(std::move(planes[dynamic[i]]));
+    }
+    for (const auto& [flat, location] : pinned) {
+        object_planes.push_back(std::move(planes[flat]));
+    }
+    planes = std::move(object_planes);
+
+    // Opened here, on the GUI thread - mirrors startLiveSession's own
+    // MonitorSink::start() call, using the loaded source's own rate since
+    // there is no capture device involved in a file preview.
+    motion_preview_monitor_sink_ = std::make_unique<ac3::sinks::MonitorSink>();
+    const auto started =
+        motion_preview_monitor_sink_->start(std::string{}, sample_rate, /*channels=*/6);
+    if (!started) {
+        const auto why = ac3::sinks::describe(started.error());
+        motion_preview_monitor_sink_.reset();
+        setStatus(QStringLiteral("Could not open the preview output: %1")
+                      .arg(QString::fromUtf8(why.data(), static_cast<qsizetype>(why.size()))));
+        return;
+    }
+
+    // The meters follow the bed, same as encodeObjects()'s own setLayout()
+    // call.
+    const auto coded = plan::coded_channels(plan::LayoutId::k51);
+    const auto names = plan::coded_channel_names(plan::LayoutId::k51);
+    QStringList labels;
+    for (const auto& name : names) {
+        labels.append(QString::fromStdString(name));
+    }
+    setLayout(ac3::Acmod::k3_2, true, labels, QStringLiteral("5.1 bed"), coded, fedChannels());
+    setMetering(true);
+
+    stop_motion_preview_.store(false, std::memory_order_relaxed);
+    motion_preview_active_ = true;
+    motion_preview_time_ = 0.0;
+    emit motionPreviewActiveChanged();
+    emit motionPreviewTimeChanged();
+    setBusy(true);
+
+    std::ignore = QtConcurrent::run([this, p, sample_rate, nobjects, paths = std::move(paths),
+                                     planes = std::move(planes)]() mutable {
+        // Heap-allocated - see encodeObjects'/runLiveSession's own PREfast
+        // C6262 comment on why: a multi-KB internal history buffer pushes a
+        // worker thread's stack frame too far.
+        auto encoder = std::make_unique<ac3::oba::AtmosEncoder>(
+            ac3::oba::AtmosConfig{.sample_rate = p.sample_rate,
+                                  .bitrate_kbps = p.bitrate_kbps,
+                                  .dialnorm = p.meta.dialnorm,
+                                  .num_bands_idx = 4},
+            static_cast<int>(nobjects));
+
+        ac3::analysis::LevelMeter meter{ac3::Acmod::k3_2, true, sample_rate};
+
+        // The longest of the channels actually used as an object, same as
+        // encodeObjects()'s own `total`.
+        std::size_t total = 0;
+        for (std::size_t ch = 0; ch < nobjects; ++ch) {
+            total = std::max(total, planes[ch].size());
+        }
+        std::vector<std::vector<float>> block(nobjects,
+                                              std::vector<float>(ac3::kSamplesPerFrame));
+        std::vector<std::span<const float>> views(nobjects);
+        std::vector<std::span<const float>> metered(6);
+        // The bed comes back in AC-3 coded order (L C R Ls Rs LFE); this is
+        // the same coded-to-WAV permutation runLiveSession's own monitor
+        // path reorders a decoded frame with.
+        const std::vector<std::size_t> order =
+            ac3::io::wav_channel_order(ac3::Acmod::k3_2, /*lfe=*/true);
+        QString problem;
+        auto published_at = std::chrono::steady_clock::now() - kPublishInterval;
+
+        for (std::size_t start = 0; start < total; start += ac3::kSamplesPerFrame) {
+            if (stop_motion_preview_.load(std::memory_order_relaxed)) {
+                break;
+            }
+            const auto valid = std::min<std::size_t>(ac3::kSamplesPerFrame, total - start);
+            for (std::size_t ch = 0; ch < nobjects; ++ch) {
+                const auto len = planes[ch].size();
+                for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+                    const std::size_t at = start + static_cast<std::size_t>(i);
+                    block[ch][static_cast<std::size_t>(i)] = at < len ? planes[ch][at] : 0.0f;
+                }
+                views[ch] = block[ch];
+            }
+            // The placement is the object's position at the END of the
+            // frame - same convention encodeObjects() uses.
+            const double t = static_cast<double>(start + ac3::kSamplesPerFrame) /
+                             static_cast<double>(sample_rate);
+            const auto placement = ac3::oba::evaluate_placements(paths, t);
+            const auto unit = encoder->encode_frame(views, placement);
+            if (!unit) {
+                problem = QStringLiteral(
+                    "The frame cannot hold a 5.1 bed and the object metadata at this bit "
+                    "rate — try 384 kbps or more.");
+                break;
+            }
+            for (std::size_t ch = 0; ch < metered.size(); ++ch) {
+                metered[ch] = std::span{encoder->bed()[ch]}.first(valid);
+            }
+            meter.process(metered);
+
+            // Real playback, not just metering: interleaved into WAV/
+            // playback order and submitted to the sink directly from this
+            // worker thread - matches motion_preview_monitor_sink_'s own
+            // doc comment ("submit-from-worker", the same convention
+            // live_monitor_sink_ uses in runLiveSession). submit() is
+            // non-blocking and fails while the device's own queue (about a
+            // second deep) is full, so retrying on a short sleep is what
+            // paces this at real wall-clock speed instead of flat-out -
+            // the queue itself is the real-time clock, exactly as it is for
+            // runLiveSession's monitor leg.
+            const auto interleaved = interleave_reordered(encoder->bed(), order);
+            while (!motion_preview_monitor_sink_->submit(interleaved) &&
+                  !stop_motion_preview_.load(std::memory_order_relaxed)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(4));
+            }
+
+            const auto now = std::chrono::steady_clock::now();
+            if (now - published_at >= kPublishInterval) {
+                published_at = now;
+                std::vector<ac3::analysis::ChannelLevel> snapshot(meter.levels().begin(),
+                                                                   meter.levels().end());
+                QMetaObject::invokeMethod(this, [this, t, snapshot = std::move(snapshot)] {
+                    motion_preview_time_ = t;
+                    emit motionPreviewTimeChanged();
+                    publishLevels(snapshot);
+                });
+            }
+        }
+
+        QMetaObject::invokeMethod(this, [this, problem] {
+            if (motion_preview_monitor_sink_) {
+                motion_preview_monitor_sink_->stop();
+                motion_preview_monitor_sink_.reset();
+            }
+            setBusy(false);
+            setMetering(false);
+            motion_preview_active_ = false;
+            emit motionPreviewActiveChanged();
+            motion_preview_time_ = 0.0;
+            emit motionPreviewTimeChanged();
+            if (!problem.isEmpty()) {
+                setStatus(problem);
+            }
+        });
+    });
+}
+
+void EncoderController::stopMotionPreview() {
+    if (!motion_preview_active_) {
+        return;
+    }
+    // The worker's own completion callback (above) does the actual teardown
+    // - closing motion_preview_monitor_sink_, clearing busy_/active_,
+    // publishing a final meter snapshot - once it notices this flag and
+    // unwinds; the same asymmetry stopLiveSession()/runLiveSession's
+    // completion callback already has.
+    stop_motion_preview_.store(true, std::memory_order_relaxed);
 }
 
 // ---------------------------------------------------------------------------
@@ -1402,6 +1784,42 @@ std::vector<plan::SourceShape> EncoderController::sourceShapes() const {
     return shapes;
 }
 
+std::vector<std::size_t> EncoderController::flatChannelOffsetSamples(
+    std::uint32_t sample_rate) const {
+    std::vector<std::size_t> out;
+    if (!source_) {
+        return out;
+    }
+    const auto to_samples = [sample_rate](double seconds) {
+        return static_cast<std::size_t>(
+            std::llround(std::max(0.0, seconds) * static_cast<double>(sample_rate)));
+    };
+    out.insert(out.end(), source_->wav.channels.size(), to_samples(source_offset_seconds_));
+    for (std::size_t i = 0; i < extra_sources_.size(); ++i) {
+        const auto offset =
+            to_samples(i < extra_source_offsets_seconds_.size() ? extra_source_offsets_seconds_[i]
+                                                                 : 0.0);
+        out.insert(out.end(), extra_sources_[i]->wav.channels.size(), offset);
+    }
+    return out;
+}
+
+EncoderController::ObjectKey EncoderController::sourceChannelForFlatIndex(
+    std::size_t flatIndex) const {
+    const auto shapes = sourceShapes();
+    std::size_t base = 0;
+    for (std::size_t s = 0; s < shapes.size(); ++s) {
+        if (flatIndex < base + shapes[s].channels) {
+            return {s, flatIndex - base};
+        }
+        base += shapes[s].channels;
+    }
+    // Past every loaded source's channels - object_count_ is capped to the
+    // sum of them (see refreshAfterSourceListChange), so this is defensive
+    // only, not a path real state reaches.
+    return {shapes.empty() ? 0 : shapes.size() - 1, flatIndex};
+}
+
 QString EncoderController::objectSourceLabel(std::size_t flatIndex) const {
     const auto shapes = sourceShapes();
     // Exactly one source: unchanged from what objectModel() has always
@@ -1410,19 +1828,33 @@ QString EncoderController::objectSourceLabel(std::size_t flatIndex) const {
     if (shapes.size() <= 1) {
         return QStringLiteral("Ch %1").arg(flatIndex + 1);
     }
-    std::size_t base = 0;
-    for (const auto& shape : shapes) {
-        if (flatIndex < base + shape.channels) {
-            return QStringLiteral("%1 ch %2")
-                .arg(QString::fromStdString(shape.label))
-                .arg(flatIndex - base + 1);
-        }
-        base += shape.channels;
+    const auto [s, c] = sourceChannelForFlatIndex(flatIndex);
+    if (s >= shapes.size()) {
+        return QStringLiteral("Ch %1").arg(flatIndex + 1);
     }
-    // Past every loaded source's channels - object_count_ is capped to the
-    // sum of them (see refreshAfterSourceListChange), so this is defensive
-    // only, not a path real state reaches.
-    return QStringLiteral("Ch %1").arg(flatIndex + 1);
+    return QStringLiteral("%1 ch %2").arg(QString::fromStdString(shapes[s].label)).arg(c + 1);
+}
+
+std::optional<EncoderController::ObjectKey> EncoderController::keyForObjectIndex(
+    int objectIndex) const {
+    if (objectIndex < 0 || objectIndex >= object_count_) {
+        return std::nullopt;
+    }
+    if (live_object_backup_) {
+        // A live session has resized object_configs_/object_keyframes_/
+        // object_path_labels_ over the capture device's own channel count
+        // instead of a loaded file's (see startLiveSession) - there is no
+        // (source, channel) to hang a live-only object off, so it addresses
+        // the device channel directly under a reserved sentinel source. The
+        // file's real identities sit safely in live_object_backup_ until
+        // the session ends and they are restored.
+        return ObjectKey{kLiveObjectSource, static_cast<std::size_t>(objectIndex)};
+    }
+    const auto dynamic = dynamicObjectChannels();
+    if (static_cast<std::size_t>(objectIndex) >= dynamic.size()) {
+        return std::nullopt;
+    }
+    return sourceChannelForFlatIndex(dynamic[static_cast<std::size_t>(objectIndex)]);
 }
 
 std::vector<std::size_t> EncoderController::dynamicObjectChannels() const {
@@ -1781,7 +2213,17 @@ std::vector<bool> EncoderController::fedChannels() const {
         // and claiming otherwise would have the display report a fault.
         std::vector<bool> fed(6, false);
         bool any_lfe_send = false;
-        for (const auto& config : object_configs_) {
+        // Only the currently-dynamic objects (0..object_count_-1), not
+        // every entry object_configs_ happens to still hold - a channel
+        // that is not an object right now (unassigned, pinned, or its
+        // source briefly absent) does not feed anything, even though its
+        // dormant config sits in the map waiting for a reassignment.
+        for (int i = 0; i < object_count_; ++i) {
+            const auto key = keyForObjectIndex(i);
+            if (!key) {
+                continue;
+            }
+            const auto config = map_value(object_configs_, *key);
             const auto gains = ac3::spatial::pan_room(config.x, config.y);
             for (std::size_t ch = 0; ch < gains.size(); ++ch) {
                 fed[ch] = fed[ch] || gains[ch] != 0.0;
@@ -1953,8 +2395,14 @@ void EncoderController::previewPlanMeters() {
     const auto sample_rate = source_->wav.sample_rate;
     const auto acmod = cp.bed_acmod;
     const auto lfe = cp.bed_lfe;
+    // Captured by value alongside sources/sample_rate - planes below are
+    // non-owning spans into shared WavData, so the offset has to apply as a
+    // per-frame read-shift here rather than as leading silence baked into
+    // owned storage (contrast encodeTo's apply_channel_offsets).
+    const auto offsets = flatChannelOffsetSamples(sample_rate);
     std::ignore = QtConcurrent::run([this, generation, routing = *routing,
-                                     sources = std::move(sources), sample_rate, acmod, lfe] {
+                                     sources = std::move(sources), sample_rate, acmod, lfe,
+                                     offsets] {
         const auto coded_count = static_cast<std::size_t>(routing.coded_channels);
         ac3::analysis::LevelMeter meter{acmod, lfe, sample_rate,
                                         static_cast<int>(coded_count)};
@@ -1966,8 +2414,9 @@ void EncoderController::previewPlanMeters() {
             }
         }
         std::size_t total = 0;
-        for (const auto& plane : planes) {
-            total = std::max(total, plane.size());
+        for (std::size_t ch = 0; ch < planes.size(); ++ch) {
+            const auto offset = ch < offsets.size() ? offsets[ch] : 0;
+            total = std::max(total, offset + planes[ch].size());
         }
 
         std::vector<std::vector<float>> source_block(planes.size(),
@@ -1993,10 +2442,12 @@ void EncoderController::previewPlanMeters() {
             const auto valid = std::min<std::size_t>(ac3::kSamplesPerFrame, total - start);
             for (std::size_t ch = 0; ch < planes.size(); ++ch) {
                 const auto len = planes[ch].size();
+                const auto offset = ch < offsets.size() ? offsets[ch] : 0;
                 for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
                     const std::size_t at = start + static_cast<std::size_t>(i);
+                    const std::size_t shifted = at >= offset ? at - offset : 0;
                     source_block[ch][static_cast<std::size_t>(i)] =
-                        at < len ? planes[ch][at] : 0.0f;
+                        at >= offset && shifted < len ? planes[ch][shifted] : 0.0f;
                 }
             }
             plan::render(routing, in, out, ac3::kSamplesPerFrame);
@@ -2064,40 +2515,30 @@ void EncoderController::setLayout(ac3::Acmod acmod, bool lfe, const QStringList&
 
 void EncoderController::refreshObjectConfigs() {
     const auto count = static_cast<std::size_t>(std::max(object_count_, 0));
-    const auto previous = object_configs_.size();
-    if (count == previous) {
-        return;
-    }
-    // Existing objects keep whatever position they were given; only the
-    // newly-appeared ones need a default, spread out along x rather than
-    // stacked on one point (the design brief's own complaint about the old
-    // single-point-plus-spread model, where six objects "overlap into a
-    // smear").
-    object_configs_.resize(count);
-    for (std::size_t i = previous; i < count; ++i) {
+    // Every current object index needs a config to show. An identity that
+    // already has one - the common case, an object that survived whatever
+    // just changed - keeps it untouched; only a genuinely new (source,
+    // channel) (or, live, device-channel) identity gets a fresh default,
+    // spread out along x rather than stacked on one point (the design
+    // brief's own complaint about the old single-point-plus-spread model,
+    // where six objects "overlap into a smear"). Nothing is ever pruned
+    // here - see object_configs_'s own comment on why a dormant identity is
+    // kept rather than dropped.
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto key = keyForObjectIndex(static_cast<int>(i));
+        if (!key || object_configs_.contains(*key)) {
+            continue;
+        }
         const double offset = count < 2 ? 0.0
                                         : 0.3 * (2.0 * static_cast<double>(i) /
                                                      static_cast<double>(count - 1) - 1.0);
-        object_configs_[i] = {.x = std::clamp(0.5 + offset, 0.0, 1.0),
-                              .y = 0.15,
-                              .z = 0.0,
-                              .lfe_send = 0.15};
+        object_configs_[*key] = {.x = std::clamp(0.5 + offset, 0.0, 1.0),
+                                 .y = 0.15,
+                                 .z = 0.0,
+                                 .lfe_send = 0.15};
     }
     if (selected_object_index_ >= static_cast<int>(count)) {
         selected_object_index_ = count > 0 ? static_cast<int>(count) - 1 : 0;
-    }
-    // A path for an index the new count no longer has is meaningless - drop
-    // it rather than let it silently reappear if the count later grows back
-    // to cover that index again with motion authored for a different file.
-    QList<int> stale;
-    for (auto it = object_keyframes_.constBegin(); it != object_keyframes_.constEnd(); ++it) {
-        if (it.key() >= static_cast<int>(count)) {
-            stale.append(it.key());
-        }
-    }
-    for (const auto key : stale) {
-        object_keyframes_.remove(key);
-        object_path_labels_.remove(key);
     }
     // objectModel's own NOTIFY - every call site above sets object_count_
     // and calls this, but only ever emits sourceChanged() itself
@@ -2518,8 +2959,18 @@ void EncoderController::startLiveSession(int captureDeviceIndex, bool monitor,
     }
 
     {
+        // The live worker reads this positionally, by device-channel index -
+        // flattened out of the (possibly sparse, identity-keyed)
+        // object_configs_ via keyForObjectIndex, the same translation every
+        // other object accessor uses.
+        std::vector<ObjectConfig> snapshot;
+        snapshot.reserve(static_cast<std::size_t>(object_count_));
+        for (int i = 0; i < object_count_; ++i) {
+            const auto key = keyForObjectIndex(i);
+            snapshot.push_back(key ? map_value(object_configs_, *key) : ObjectConfig{});
+        }
         std::lock_guard lock(live_object_mutex_);
-        live_object_snapshot_ = object_configs_;
+        live_object_snapshot_ = std::move(snapshot);
     }
 
     stop_live_.store(false, std::memory_order_relaxed);
@@ -3192,6 +3643,15 @@ void EncoderController::loadSourceFile(const QUrl& url) {
         touched_channels_.clear();
         has_explicit_assignment_ = false;
         object_count_ = 0;
+        // ObjectKey's (source, channel) identities are only meaningful
+        // relative to the source list they were authored against - a fresh
+        // (and here, entirely empty) one starts with nothing to inherit.
+        object_configs_.clear();
+        object_keyframes_.clear();
+        object_path_labels_.clear();
+        selected_object_index_ = 0;
+        source_offset_seconds_ = 0.0;
+        extra_source_offsets_seconds_.clear();
         refreshObjectConfigs();
         clearLayout();
         emit sourceChanged();
@@ -3253,11 +3713,23 @@ void EncoderController::loadSourceFile(const QUrl& url) {
                        .arg(static_cast<int>(seconds) % 60, 2, 10, QLatin1Char('0'))
                        .arg(channels == 1 ? QString() : QStringLiteral("s"));
     // Same reasoning as the failure branch above - a fresh primary starts a
-    // fresh source list, even when the read itself succeeds.
+    // fresh source list, even when the read itself succeeds. Object state is
+    // explicitly cleared too (rather than left to refreshObjectConfigs'
+    // resize below): it is now keyed by (source, channel) identity, which a
+    // same- or larger-sized new file would otherwise silently inherit from
+    // whatever the old one authored at the same channel numbers - a
+    // different bug than the one this identity keying fixes, but the same
+    // class of it.
     extra_sources_.clear();
     assignment_ = plan::Assignment{};
     touched_channels_.clear();
     has_explicit_assignment_ = false;
+    object_configs_.clear();
+    object_keyframes_.clear();
+    object_path_labels_.clear();
+    selected_object_index_ = 0;
+    source_offset_seconds_ = 0.0;
+    extra_source_offsets_seconds_.clear();
     source_ = std::make_shared<Source>(Source{std::move(*wav), path});
     source_path_ = path;
     source_ready_ = problem.isEmpty();
@@ -3290,7 +3762,8 @@ QVariantList EncoderController::sourceModel() const {
     if (!source_) {
         return out;
     }
-    auto addRow = [&](const QString& path, const ac3::io::WavData& wav, bool primary) {
+    auto addRow = [&](const QString& path, const ac3::io::WavData& wav, bool primary,
+                      double offset_seconds) {
         const double seconds =
             wav.sample_rate > 0
                 ? static_cast<double>(wav.frame_count()) / static_cast<double>(wav.sample_rate)
@@ -3309,11 +3782,13 @@ QVariantList EncoderController::sourceModel() const {
                                               .arg(static_cast<int>(seconds) / 60)
                                               .arg(static_cast<int>(seconds) % 60, 2, 10,
                                                    QLatin1Char('0'));
+        row[QStringLiteral("offsetSeconds")] = offset_seconds;
         out.append(row);
     };
-    addRow(source_->path, source_->wav, true);
-    for (const auto& extra : extra_sources_) {
-        addRow(extra->path, extra->wav, false);
+    addRow(source_->path, source_->wav, true, source_offset_seconds_);
+    for (std::size_t i = 0; i < extra_sources_.size(); ++i) {
+        addRow(extra_sources_[i]->path, extra_sources_[i]->wav, false,
+              i < extra_source_offsets_seconds_.size() ? extra_source_offsets_seconds_[i] : 0.0);
     }
     return out;
 }
@@ -3417,7 +3892,35 @@ void EncoderController::addSourceFile(const QUrl& url) {
         return;
     }
     extra_sources_.push_back(std::make_shared<Source>(Source{std::move(*wav), path}));
+    extra_source_offsets_seconds_.push_back(0.0);
     refreshAfterSourceListChange();
+}
+
+void EncoderController::setSourceOffset(int index, double seconds) {
+    if (index < 0) {
+        return;
+    }
+    const double clamped = std::max(0.0, seconds);
+    if (index == 0) {
+        if (!source_) {
+            return;
+        }
+        source_offset_seconds_ = clamped;
+    } else {
+        const auto extra_index = static_cast<std::size_t>(index - 1);
+        if (extra_index >= extra_sources_.size()) {
+            return;
+        }
+        if (extra_index >= extra_source_offsets_seconds_.size()) {
+            extra_source_offsets_seconds_.resize(extra_index + 1, 0.0);
+        }
+        extra_source_offsets_seconds_[extra_index] = clamped;
+    }
+    emit sourceChanged();
+    // The derived programme length and the meter preview both read this -
+    // refreshRouting ends in previewPlanMeters, the same "an edit re-renders
+    // the preview" path every other source/assignment change already takes.
+    refreshRouting();
 }
 
 void EncoderController::removeSource(int index) {
@@ -3434,6 +3937,12 @@ void EncoderController::removeSource(int index) {
         touched_channels_.clear();
         has_explicit_assignment_ = false;
         object_count_ = 0;
+        object_configs_.clear();
+        object_keyframes_.clear();
+        object_path_labels_.clear();
+        selected_object_index_ = 0;
+        source_offset_seconds_ = 0.0;
+        extra_source_offsets_seconds_.clear();
         refreshObjectConfigs();
         clearLayout();
         emit sourceChanged();
@@ -3445,6 +3954,10 @@ void EncoderController::removeSource(int index) {
         return;
     }
     extra_sources_.erase(extra_sources_.begin() + static_cast<std::ptrdiff_t>(extra_index));
+    if (extra_index < extra_source_offsets_seconds_.size()) {
+        extra_source_offsets_seconds_.erase(extra_source_offsets_seconds_.begin() +
+                                            static_cast<std::ptrdiff_t>(extra_index));
+    }
     // The removed source's rows addressed positions by index, and every
     // later source's index just shifted down by one - there is no honest
     // way to guess which of its old rows survive at the new numbering, so
@@ -3454,19 +3967,19 @@ void EncoderController::removeSource(int index) {
     assignment_ = plan::Assignment{};
     touched_channels_.clear();
     has_explicit_assignment_ = !extra_sources_.empty();
-    // Object mode addresses objects by the exact same shifted-index scheme
-    // (object i is flat channel i across sourceShapes(), the same
-    // addressing Assignment uses) - a position or authored path set for
-    // object 6 meant a specific channel of a specific file, and the removal
-    // above may have moved a DIFFERENT channel into index 6. Clearing
-    // rather than silently reattaching motion to the wrong source is the
-    // same call assignment_'s own reset just made; refreshAfterSourceListChange()
-    // below rebuilds fresh defaults for whatever the new count is, via
-    // refreshObjectConfigs() - see its own comment on why preserving by
-    // index is only honest when nothing shifted underneath it.
-    object_configs_.clear();
-    object_keyframes_.clear();
-    object_path_labels_.clear();
+    // Object state is keyed by (source, channel) identity (ObjectKey), not
+    // by position - unlike the assignment table above, it does NOT need a
+    // blanket clear. `index` here is exactly the removed source's own index
+    // in that same addressing (sourceShapes()/Assignment's), so this drops
+    // only its own channels' objects/keyframes and renumbers every later
+    // source's entries down by one, the identical shift sourceShapes()
+    // itself now applies - a surviving source's authored motion is
+    // untouched, and reappears in the object list the moment its channels
+    // are (re)assigned to "an object" again.
+    const auto removed_source = static_cast<std::size_t>(index);
+    rekey_after_source_removed(object_configs_, removed_source);
+    rekey_after_source_removed(object_keyframes_, removed_source);
+    rekey_after_source_removed(object_path_labels_, removed_source);
     selected_object_index_ = 0;
     refreshAfterSourceListChange();
 }
@@ -3486,7 +3999,8 @@ void EncoderController::setAssignment(int sourceIndex, int channel, const QStrin
     has_explicit_assignment_ = true;
     // Which channels ride as objects follows the table now, so an edit can
     // grow or shrink the object list - and relabel it even when the count
-    // holds (refreshObjectConfigs only notifies on a count change).
+    // holds. A channel's own authored motion follows it either way (see
+    // ObjectKey): reassigning it away from "obj" and back does not lose it.
     recomputeObjectCount();
     emit objectsChanged();
     emit sourceChanged();
@@ -3688,6 +4202,10 @@ void EncoderController::encodeTo(const QUrl& url) {
     for (const auto& extra : extra_sources_) {
         planes.insert(planes.end(), extra->wav.channels.begin(), extra->wav.channels.end());
     }
+    // Each source's own start offset, baked in as leading silence - see
+    // apply_channel_offsets' own comment on why this is the one place it
+    // needs to happen for the file-encode paths.
+    planes = apply_channel_offsets(std::move(planes), flatChannelOffsetSamples(sample_rate));
 
     if (object_mode) {
         encodeObjects(path, std::move(planes), sample_rate);
@@ -3988,17 +4506,21 @@ void EncoderController::encodeObjects(const QString& path,
     std::vector<ac3::oba::ObjectPath> paths;
     paths.reserve(nobjects);
     for (std::size_t i = 0; i < ndynamic; ++i) {
-        const auto authored = object_keyframes_.constFind(static_cast<int>(i));
-        if (authored != object_keyframes_.constEnd() && !authored->empty()) {
-            auto created = ac3::oba::KeyframePath::create(*authored);
+        // dynamic[i]'s (source, channel) identity - the same key every
+        // other object accessor resolves through keyForObjectIndex; encode
+        // is always file-mode (never live, see encodeTo's busy_ gate), so
+        // this can go straight to the identity without that helper's
+        // live-session branch.
+        const auto object_key = sourceChannelForFlatIndex(dynamic[i]);
+        const auto authored = object_keyframes_.find(object_key);
+        if (authored != object_keyframes_.end() && !authored->second.empty()) {
+            auto created = ac3::oba::KeyframePath::create(authored->second);
             if (created) {
                 paths.emplace_back(std::move(*created));
                 continue;
             }
         }
-        const auto& config = i < object_configs_.size()
-                                 ? object_configs_[i]
-                                 : ObjectConfig{};
+        const auto config = map_value(object_configs_, object_key);
         auto fallback = ac3::oba::KeyframePath::create(
             {{.time_s = 0.0,
               .position = {.x = config.x, .y = config.y, .z = config.z},

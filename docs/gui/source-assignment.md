@@ -17,16 +17,21 @@ drifting them apart.
 
 ## The source list
 
-One row per loaded file on the rail — label, channel count, duration, and a **Remove** button.
+One row per loaded file on the rail — label, channel count, duration, a per-source **start
+offset** (see [Objects & motion](objects-and-motion.md#motion)), and a **Remove** button.
 Removing the primary (the first row) drops every other source and the assignment table with it:
 there's no honest way to guess which remaining source should be promoted to primary in its place.
 Removing any other source clears the assignment table instead of trying to shift its rows down —
 a row addressed a *position* (source index, channel index), every later source's index just
 changed, and guessing which old row survives at its new position is exactly the kind of
-silently-maybe-wrong behaviour this table exists to avoid. The same reasoning applies to
-[Objects](objects-and-motion.md): since objects come *from* the assignments, a non-primary
-removal empties the object list too, rather than risk authored motion silently reattaching to a
-different channel that now sits at the same index.
+silently-maybe-wrong behaviour this table exists to avoid.
+
+[Objects](objects-and-motion.md) does **not** share that problem: an object's authored motion is
+keyed to the (source, channel) it actually belongs to, not to its position in the object list, so
+removing a non-primary source only drops *that* source's own objects and keyframes — every
+surviving source's authored motion stays exactly where it was, and reappears in the object list
+the moment its channels are (re)assigned to "an object" again. Reassigning a channel away from
+"an object" and back has the same property: its motion is not lost in between.
 
 ## Assigning channels
 

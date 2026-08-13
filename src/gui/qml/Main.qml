@@ -491,14 +491,28 @@ ApplicationWindow {
         if (EncoderController.mapToken.length > 0) {
             trailing.push(EncoderController.mapToken);
         }
+        // Per-source start offsets - only the ones actually set, source
+        // order, so an all-zero session's line is unchanged from before
+        // this token existed. atmos-encode has no src=/map=-style trailing
+        // grammar at all (see below), so this only ever applies here.
+        for (const row of EncoderController.sourceModel) {
+            if (row.offsetSeconds > 0) {
+                trailing.push("offset=" + row.index + ":" + row.offsetSeconds);
+            }
+        }
 
         let line;
         if (EncoderController.atmosEnabled) {
-            // atmos-encode has no src=/map= grammar and no paths file (yet) —
-            // it takes the object count and honours the loudness tokens.
+            // atmos-encode has no src=/map= grammar (every source channel is
+            // its own object; there is no multi-file concept to route) - it
+            // takes the object count, an optional exported keyframes file,
+            // and honours the loudness tokens.
             const parts = ["ac3cli", "atmos-encode", source, streamOut, rate];
             if (EncoderController.objectCount > 0) {
                 parts.push(String(EncoderController.objectCount));
+                if (window.exportedPathsPath.length > 0) {
+                    parts.push(window.cliQuote(window.baseName(window.exportedPathsPath)));
+                }
             }
             for (const token of meta.split(" ")) {
                 if (token.indexOf("dialnorm") === 0) {
@@ -576,6 +590,24 @@ ApplicationWindow {
                         liveReceiverBox.currentIndex - 1, true, selectedFile)
     }
 
+    // The Objects tab's "Export paths…" - writes every dynamic object's
+    // authored motion (or static position) to a keyframes file in
+    // ac3cli's atmos-path/atmos-encode grammar, so the exact line the
+    // command bar shows (see window.cliLine) is honestly reproducible.
+    FileDialog {
+        id: exportPathsDialog
+        title: qsTr("Export object paths")
+        fileMode: FileDialog.SaveFile
+        nameFilters: [qsTr("Text file (*.txt)"), qsTr("All files (*)")]
+        defaultSuffix: "txt"
+        currentFolder: window.outputFolderUrl()
+        selectedFile: window.outputFolderUrl() + "/" + window.exportedPathsName()
+        onAccepted: {
+            window.exportedPathsPath = selectedFile;
+            EncoderController.exportObjectPaths(selectedFile);
+        }
+    }
+
     // The Preferences "Name new files" pattern, applied: {source} is the
     // first source's basename, {ext} the suffix the plan derives.
     function plannedFileName(sourceStem) {
@@ -586,6 +618,25 @@ ApplicationWindow {
         return appSettings.namePattern
             .replace("{source}", stem)
             .replace("{ext}", EncoderController.outputSuffix());
+    }
+    // Suggested name for "Export paths…" - <primary source>-paths.txt, the
+    // exact filename cliLine then quotes back once one has actually been
+    // exported (see exportedPathsPath).
+    function exportedPathsName() {
+        const stem = EncoderController.sourcePath.length > 0
+                     ? baseName(EncoderController.sourcePath).replace(/\.[^.]*$/, "")
+                     : "objects";
+        return stem + "-paths.txt";
+    }
+    // Set once "Export paths…" actually writes a file this session - empty
+    // until then, so cliLine has nothing honest to reference before a file
+    // exists on disk. Cleared whenever the primary source changes, since a
+    // path exported against a different file is no longer the one an
+    // atmos-encode command line naming it would mean.
+    property string exportedPathsPath: ""
+    Connections {
+        target: EncoderController
+        function onSourceChanged() { window.exportedPathsPath = ""; }
     }
     // The Preferences output folder as a file:// url, falling back to
     // "beside the first source", the pattern's own default.
@@ -914,6 +965,34 @@ ApplicationWindow {
                                             onClicked: EncoderController.removeSource(sourceRow.modelData.index)
                                         }
                                     }
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        Layout.bottomMargin: 8
+                                        spacing: Theme.space2
+                                        Text {
+                                            text: qsTr("Start offset")
+                                            font.pixelSize: 10
+                                            color: Theme.textMuted
+                                        }
+                                        Item { Layout.fillWidth: true }
+                                        // Tenths of a second internally (SpinBox is
+                                        // integer-only) - the same textFromValue/
+                                        // valueFromText idiom the LFE mix control
+                                        // uses to show a fractional-feeling control.
+                                        SpinBox {
+                                            objectName: "sourceOffsetSpin" + sourceRow.modelData.index
+                                            from: 0
+                                            to: 36000
+                                            stepSize: 1
+                                            editable: true
+                                            enabled: !EncoderController.busy
+                                            value: Math.round(sourceRow.modelData.offsetSeconds * 10)
+                                            textFromValue: (value) => (value / 10).toFixed(1) + " s"
+                                            valueFromText: (text) => Math.round(parseFloat(text) * 10) || 0
+                                            onValueModified: EncoderController.setSourceOffset(
+                                                                 sourceRow.modelData.index, value / 10)
+                                        }
+                                    }
                                     Rectangle {
                                         Layout.fillWidth: true
                                         Layout.preferredHeight: 1
@@ -981,7 +1060,13 @@ ApplicationWindow {
                                         let seconds = 0;
                                         for (let i = 0; i < sources.length; i++) {
                                             channels += sources[i].channels;
-                                            seconds = Math.max(seconds, sources[i].seconds);
+                                            // The programme's own length, not just the
+                                            // longest source's own duration - a later-
+                                            // starting source can still end last (the
+                                            // same max(offset + duration) the Objects
+                                            // tab's timeline derives its length from).
+                                            seconds = Math.max(seconds,
+                                                sources[i].offsetSeconds + sources[i].seconds);
                                         }
                                         const mm = Math.floor(seconds / 60);
                                         const ss = String(Math.floor(seconds % 60)).padStart(2, "0");
@@ -2930,17 +3015,90 @@ ApplicationWindow {
                         // =====================================================
                         ColumnLayout {
                             id: objectsTab
+                            objectName: "objectsTab"
                             Layout.fillWidth: true
                             spacing: Theme.gap
 
                             property string driveMode: "author"
                             property real playheadTime: 0
-                            property bool previewing: false
+                            // Mirrors the controller's own audio clock -
+                            // Preview plays every path back through the
+                            // Atmos encoder and the monitor sink for real
+                            // (see EncoderController::startMotionPreview),
+                            // so there is no separate visual-only pacing
+                            // here anymore; this just follows it.
+                            readonly property bool previewing: EncoderController.motionPreviewActive
+                            Connections {
+                                target: EncoderController
+                                function onMotionPreviewTimeChanged() {
+                                    if (EncoderController.motionPreviewActive) {
+                                        objectsTab.playheadTime = EncoderController.motionPreviewTime;
+                                    }
+                                }
+                            }
                             // One source of truth for the ruler, the lanes,
-                            // the keys and the playhead. Fixed at the
-                            // prototype's 8 s for now - deriving it from the
-                            // programme is an open product decision.
-                            readonly property real timelineLength: 8
+                            // the keys and the playhead - max(offset +
+                            // duration) over every loaded source, never
+                            // stored. Falls back to the prototype's old
+                            // fixed 8 s when nothing derivable is loaded
+                            // yet (a live session, or nothing at all).
+                            readonly property real timelineLength: {
+                                let end = 0;
+                                const sources = EncoderController.sourceModel;
+                                for (let i = 0; i < sources.length; i++) {
+                                    const at = sources[i].offsetSeconds + sources[i].seconds;
+                                    if (at > end) end = at;
+                                }
+                                return end > 0 ? end : 8;
+                            }
+                            // Horizontal zoom: 1 = the whole derived length
+                            // fits the lane width; higher zooms into a
+                            // narrower window (visibleSeconds below).
+                            property real zoomFactor: 1
+                            readonly property real maxZoom: 40
+                            readonly property real visibleSeconds: timelineLength / zoomFactor
+                            // Seconds at the LEFT edge of the visible
+                            // window - the pan position.
+                            property real panOffset: 0
+                            function clampPan(p) {
+                                return Math.max(0, Math.min(Math.max(0, timelineLength - visibleSeconds), p));
+                            }
+                            // Changes zoom while keeping centerTime under
+                            // the same relative position in the window it
+                            // held before - the wheel-to-zoom and +/-
+                            // buttons both go through this.
+                            function setZoom(newZoom, centerTime) {
+                                const clamped = Math.max(1, Math.min(maxZoom, newZoom));
+                                if (clamped === zoomFactor) return;
+                                const newVisible = timelineLength / clamped;
+                                const fraction = visibleSeconds > 0 ? (centerTime - panOffset) / visibleSeconds : 0.5;
+                                zoomFactor = clamped;
+                                panOffset = clampPan(centerTime - fraction * newVisible);
+                            }
+                            // Ruler tick promotion and drag-snap granularity
+                            // move together, keyed off how many pixels one
+                            // second currently spans - "0.1 s / 1 s / 10 s"
+                            // for the ruler, "1 s coarse / 0.1 s fine / a
+                            // 32 ms floor" for snapping (one 1536-sample
+                            // OAMD frame at 48 kHz - finer is fake
+                            // precision).
+                            function zoomTier(pixelsPerSecond) {
+                                if (pixelsPerSecond >= 400) return "fine";
+                                if (pixelsPerSecond >= 60) return "medium";
+                                return "coarse";
+                            }
+                            function tickInterval(pixelsPerSecond) {
+                                const tier = zoomTier(pixelsPerSecond);
+                                return tier === "fine" ? 0.1 : (tier === "medium" ? 1.0 : 10.0);
+                            }
+                            function snapIncrement(pixelsPerSecond) {
+                                const tier = zoomTier(pixelsPerSecond);
+                                return tier === "fine" ? 0.032 : (tier === "medium" ? 0.1 : 1.0);
+                            }
+                            function snapTime(t) {
+                                const inc = snapIncrement(timelineWrap.pixelsPerSecond);
+                                return Math.max(0, Math.min(timelineLength, Math.round(t / inc) * inc));
+                            }
                             // The key the timeline has selected for editing,
                             // as its time on the SELECTED object's path; -1
                             // when none. Cleared whenever the selection moves.
@@ -3858,12 +4016,57 @@ ApplicationWindow {
                                             font.family: Theme.monoFamily
                                         }
                                         Text {
-                                            text: qsTr("click to scrub · double-click a lane for a key · drag a key to retime · right-click removes")
+                                            text: qsTr("scrub · double-click for a key · drag to retime (snaps) · right-click removes · shift-drag a clip moves its keys too")
                                             color: Theme.neutral500
                                             font.pixelSize: 9
                                             font.family: Theme.monoFamily
+                                            elide: Text.ElideRight
                                         }
                                         Item { Layout.fillWidth: true }
+                                        Button {
+                                            objectName: "zoomOutButton"
+                                            text: "−"
+                                            flat: true
+                                            implicitWidth: 26
+                                            enabled: objectsTab.zoomFactor > 1
+                                            onClicked: objectsTab.setZoom(
+                                                           objectsTab.zoomFactor / 1.5,
+                                                           objectsTab.panOffset + objectsTab.visibleSeconds / 2)
+                                        }
+                                        Text {
+                                            objectName: "zoomReadout"
+                                            text: Math.round(objectsTab.zoomFactor * 100) + "%"
+                                            color: Theme.neutral600
+                                            font.pixelSize: 9
+                                            font.family: Theme.monoFamily
+                                        }
+                                        Button {
+                                            objectName: "zoomInButton"
+                                            text: "+"
+                                            flat: true
+                                            implicitWidth: 26
+                                            enabled: objectsTab.zoomFactor < objectsTab.maxZoom
+                                            onClicked: objectsTab.setZoom(
+                                                           objectsTab.zoomFactor * 1.5,
+                                                           objectsTab.panOffset + objectsTab.visibleSeconds / 2)
+                                        }
+                                        Button {
+                                            objectName: "zoomFitButton"
+                                            text: qsTr("Fit")
+                                            flat: true
+                                            visible: objectsTab.zoomFactor > 1
+                                            onClicked: {
+                                                objectsTab.zoomFactor = 1;
+                                                objectsTab.panOffset = 0;
+                                            }
+                                        }
+                                        Button {
+                                            objectName: "exportPathsButton"
+                                            text: qsTr("Export paths…")
+                                            flat: true
+                                            enabled: !EncoderController.busy
+                                            onClicked: exportPathsDialog.open()
+                                        }
                                         Button {
                                             objectName: "addKeyButton"
                                             text: qsTr("Add key")
@@ -3884,27 +4087,15 @@ ApplicationWindow {
                                             }
                                         }
                                         Button {
+                                            objectName: "previewButton"
                                             text: objectsTab.previewing ? qsTr("Stop") : qsTr("Preview")
+                                            enabled: objectsTab.previewing || !EncoderController.busy
                                             onClicked: {
                                                 if (objectsTab.previewing) {
-                                                    objectsTab.previewing = false;
+                                                    EncoderController.stopMotionPreview();
                                                 } else {
-                                                    objectsTab.playheadTime = 0;
-                                                    objectsTab.previewing = true;
+                                                    EncoderController.startMotionPreview();
                                                 }
-                                            }
-                                        }
-                                    }
-
-                                    Timer {
-                                        interval: 33
-                                        repeat: true
-                                        running: objectsTab.previewing
-                                        onTriggered: {
-                                            objectsTab.playheadTime += interval / 1000;
-                                            if (objectsTab.playheadTime >= objectsTab.timelineLength) {
-                                                objectsTab.playheadTime = objectsTab.timelineLength;
-                                                objectsTab.previewing = false;
                                             }
                                         }
                                     }
@@ -3914,15 +4105,21 @@ ApplicationWindow {
                                         Layout.fillWidth: true
                                         implicitHeight: timelineColumn.implicitHeight
 
-                                        // ONE geometry for the ruler, the keys and the
-                                        // playhead - the 8 px disagreement between them
-                                        // was exactly the drift a shared mapping ends.
+                                        // ONE geometry for the ruler, the clip bands, the
+                                        // keys and the playhead - the 8 px disagreement
+                                        // between them was exactly the drift a shared
+                                        // mapping ends. laneSpan/pixelsPerSecond feed
+                                        // objectsTab's own zoom-tier/snap functions, so
+                                        // "how many pixels is a second" is answered once.
                                         readonly property real laneLeft: 78
                                         readonly property real laneRight: 8
                                         readonly property real laneSpan: width - laneLeft - laneRight
+                                        readonly property real pixelsPerSecond:
+                                            objectsTab.visibleSeconds > 0 ? laneSpan / objectsTab.visibleSeconds : 0
                                         function xToTime(x) {
                                             return Math.max(0, Math.min(objectsTab.timelineLength,
-                                                (x - laneLeft) / laneSpan * objectsTab.timelineLength));
+                                                objectsTab.panOffset
+                                                + (x - laneLeft) / laneSpan * objectsTab.visibleSeconds));
                                         }
 
                                         Rectangle {
@@ -3934,7 +4131,8 @@ ApplicationWindow {
 
                                         // Scrubbing: anywhere on the timeline positions
                                         // the playhead; the lanes' own handlers sit on
-                                        // top for their gestures.
+                                        // top for their gestures. Wheel zooms, centred on
+                                        // whatever time is under the cursor.
                                         MouseArea {
                                             anchors.fill: parent
                                             enabled: !EncoderController.busy
@@ -3942,8 +4140,16 @@ ApplicationWindow {
                                             onPositionChanged: (mouse) => {
                                                 if (mouse.buttons & Qt.LeftButton) scrub(mouse);
                                             }
+                                            onWheel: (wheel) => {
+                                                const centerTime = timelineWrap.xToTime(wheel.x);
+                                                const factor = wheel.angleDelta.y > 0 ? 1.2 : (1 / 1.2);
+                                                objectsTab.setZoom(objectsTab.zoomFactor * factor, centerTime);
+                                                wheel.accepted = true;
+                                            }
                                             function scrub(mouse) {
-                                                objectsTab.previewing = false;
+                                                if (objectsTab.previewing) {
+                                                    EncoderController.stopMotionPreview();
+                                                }
                                                 objectsTab.playheadTime = timelineWrap.xToTime(mouse.x);
                                             }
                                         }
@@ -3955,24 +4161,34 @@ ApplicationWindow {
 
                                             Rectangle {
                                                 Layout.fillWidth: true
-                                                implicitHeight: rulerRow.implicitHeight + 10
+                                                implicitHeight: 20
                                                 color: Theme.neutral100
+                                                clip: true
 
-                                                RowLayout {
+                                                Item {
                                                     id: rulerRow
                                                     anchors.fill: parent
                                                     anchors.leftMargin: timelineWrap.laneLeft
                                                     anchors.rightMargin: timelineWrap.laneRight
 
+                                                    readonly property real tickInterval:
+                                                        objectsTab.tickInterval(timelineWrap.pixelsPerSecond)
+                                                    readonly property int firstTick:
+                                                        Math.ceil(objectsTab.panOffset / tickInterval)
+                                                    readonly property int lastTick:
+                                                        Math.floor((objectsTab.panOffset + objectsTab.visibleSeconds)
+                                                                    / tickInterval)
+
                                                     Repeater {
-                                                        model: 9
+                                                        model: Math.max(0, rulerRow.lastTick - rulerRow.firstTick + 1)
                                                         Text {
                                                             required property int index
-                                                            Layout.fillWidth: true
-                                                            horizontalAlignment: index === 0 ? Text.AlignLeft
-                                                                                 : index === 8 ? Text.AlignRight
-                                                                                 : Text.AlignHCenter
-                                                            text: index === 8 ? qsTr("8 s") : String(index)
+                                                            readonly property real t:
+                                                                (rulerRow.firstTick + index) * rulerRow.tickInterval
+                                                            y: (parent ? parent.height : 0) / 2 - implicitHeight / 2
+                                                            x: (t - objectsTab.panOffset) / objectsTab.visibleSeconds
+                                                               * rulerRow.width - implicitWidth / 2
+                                                            text: (rulerRow.tickInterval < 1 ? t.toFixed(1) : t.toFixed(0)) + "s"
                                                             color: Theme.neutral600
                                                             font.pixelSize: 9
                                                             font.family: Theme.monoFamily
@@ -3981,7 +4197,164 @@ ApplicationWindow {
                                                 }
                                             }
 
+                                            // A thin draggable viewport indicator, pan's
+                                            // affordance - a separate strip rather than
+                                            // dragging the ruler itself, so it can never
+                                            // fight the ruler's own tick layout or the
+                                            // scrub area underneath the whole timeline.
+                                            Rectangle {
+                                                id: panStrip
+                                                objectName: "panStrip"
+                                                Layout.fillWidth: true
+                                                visible: objectsTab.zoomFactor > 1
+                                                implicitHeight: 8
+                                                color: Theme.neutral100
+
+                                                Rectangle {
+                                                    id: panThumb
+                                                    objectName: "panThumb"
+                                                    readonly property real trackWidth:
+                                                        panStrip.width - timelineWrap.laneLeft - timelineWrap.laneRight
+                                                    height: parent.height
+                                                    x: timelineWrap.laneLeft + (objectsTab.timelineLength > 0
+                                                           ? objectsTab.panOffset / objectsTab.timelineLength * trackWidth
+                                                           : 0)
+                                                    width: Math.max(12, objectsTab.timelineLength > 0
+                                                           ? objectsTab.visibleSeconds / objectsTab.timelineLength * trackWidth
+                                                           : trackWidth)
+                                                    color: Theme.accent400
+                                                    radius: 2
+                                                }
+
+                                                MouseArea {
+                                                    anchors.fill: parent
+                                                    property real pressX: 0
+                                                    property real pressPan: 0
+                                                    onPressed: (mouse) => {
+                                                        pressX = mouse.x;
+                                                        pressPan = objectsTab.panOffset;
+                                                    }
+                                                    onPositionChanged: (mouse) => {
+                                                        if (!(mouse.buttons & Qt.LeftButton)) return;
+                                                        if (panThumb.trackWidth <= 0) return;
+                                                        const deltaSeconds = (mouse.x - pressX) / panThumb.trackWidth
+                                                                              * objectsTab.timelineLength;
+                                                        objectsTab.panOffset = objectsTab.clampPan(pressPan + deltaSeconds);
+                                                    }
+                                                }
+                                            }
+
                                             Rectangle { Layout.fillWidth: true; height: 1; color: Theme.divider }
+
+                                            // ---- clip bands: each source's active span,
+                                            // draggable to change its start offset. Shift-
+                                            // drag also brings that source's objects' own
+                                            // keyframes along by the same delta.
+                                            Repeater {
+                                                model: EncoderController.sourceModel
+
+                                                RowLayout {
+                                                    id: clipRow
+                                                    required property var modelData
+                                                    Layout.fillWidth: true
+                                                    spacing: 0
+
+                                                    Text {
+                                                        Layout.preferredWidth: 70
+                                                        Layout.leftMargin: 8
+                                                        text: clipRow.modelData.label
+                                                        elide: Text.ElideRight
+                                                        color: Theme.neutral700
+                                                        font.pixelSize: 9
+                                                        font.family: Theme.monoFamily
+                                                    }
+
+                                                    Item {
+                                                        id: clipLane
+                                                        Layout.fillWidth: true
+                                                        Layout.rightMargin: timelineWrap.laneRight
+                                                        Layout.preferredHeight: 14
+                                                        clip: true
+
+                                                        function timeToX(t) {
+                                                            return (t - objectsTab.panOffset) / objectsTab.visibleSeconds
+                                                                   * clipLane.width;
+                                                        }
+                                                        function xToTime(x) {
+                                                            return objectsTab.panOffset
+                                                                   + x / clipLane.width * objectsTab.visibleSeconds;
+                                                        }
+
+                                                        Rectangle {
+                                                            id: clipBand
+                                                            objectName: "clipBand" + clipRow.modelData.index
+                                                            property bool dragging: false
+                                                            property real dragOffset: clipRow.modelData.offsetSeconds
+                                                            property bool shiftHeld: false
+                                                            height: parent.height
+                                                            x: clipLane.timeToX(
+                                                                   dragging ? dragOffset : clipRow.modelData.offsetSeconds)
+                                                            width: Math.max(4, objectsTab.visibleSeconds > 0
+                                                                   ? clipRow.modelData.seconds / objectsTab.visibleSeconds
+                                                                     * clipLane.width
+                                                                   : 0)
+                                                            color: Theme.accent200
+                                                            border.color: Theme.accent400
+                                                            border.width: 1
+                                                            radius: 2
+
+                                                            MouseArea {
+                                                                anchors.fill: parent
+                                                                enabled: !EncoderController.busy
+                                                                onPressed: (mouse) => {
+                                                                    clipBand.dragging = true;
+                                                                    clipBand.dragOffset = clipRow.modelData.offsetSeconds;
+                                                                    clipBand.shiftHeld =
+                                                                        (mouse.modifiers & Qt.ShiftModifier) !== 0;
+                                                                }
+                                                                onPositionChanged: (mouse) => {
+                                                                    if (!clipBand.dragging) return;
+                                                                    if (mouse.modifiers & Qt.ShiftModifier) {
+                                                                        clipBand.shiftHeld = true;
+                                                                    }
+                                                                    const laneX = clipBand.x + mouse.x;
+                                                                    clipBand.dragOffset = objectsTab.snapTime(
+                                                                        Math.max(0, clipLane.xToTime(laneX)));
+                                                                }
+                                                                onReleased: (mouse) => {
+                                                                    if (!clipBand.dragging) return;
+                                                                    clipBand.dragging = false;
+                                                                    const delta = clipBand.dragOffset
+                                                                                  - clipRow.modelData.offsetSeconds;
+                                                                    if (Math.abs(delta) < 0.001) return;
+                                                                    EncoderController.setSourceOffset(
+                                                                        clipRow.modelData.index, clipBand.dragOffset);
+                                                                    if (clipBand.shiftHeld) {
+                                                                        // Move keys with source: every
+                                                                        // object this source owns shifts
+                                                                        // by the same delta, clamped at 0
+                                                                        // (shiftObjectKeyframes' own job).
+                                                                        const objects = EncoderController.objectModel;
+                                                                        for (let i = 0; i < objects.length; i++) {
+                                                                            if (objects[i].sourceIndex === clipRow.modelData.index) {
+                                                                                EncoderController.shiftObjectKeyframes(
+                                                                                    objects[i].index, delta);
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            Rectangle {
+                                                visible: EncoderController.sourceModel.length > 0
+                                                Layout.fillWidth: true
+                                                height: 1
+                                                color: Theme.divider
+                                            }
 
                                             Repeater {
                                                 model: EncoderController.objectCount
@@ -4009,6 +4382,7 @@ ApplicationWindow {
                                                         Layout.fillWidth: true
                                                         Layout.rightMargin: timelineWrap.laneRight
                                                         Layout.preferredHeight: 24
+                                                        clip: true
                                                         readonly property bool isSelected:
                                                             laneRow.index === EncoderController.selectedObjectIndex
                                                         readonly property var keys:
@@ -4017,34 +4391,40 @@ ApplicationWindow {
                                                         color: isSelected ? Theme.accent100 : "transparent"
 
                                                         function timeToX(t) {
-                                                            return (t / objectsTab.timelineLength) * lane.width;
+                                                            return (t - objectsTab.panOffset) / objectsTab.visibleSeconds
+                                                                   * lane.width;
+                                                        }
+                                                        function xToTime(x) {
+                                                            return objectsTab.panOffset
+                                                                   + x / lane.width * objectsTab.visibleSeconds;
                                                         }
 
                                                         // Select on press, scrub on drag; a
                                                         // double-click authors a key at that
                                                         // instant from the object's current
-                                                        // spot.
+                                                        // spot, snapped to the current tier.
                                                         MouseArea {
                                                             anchors.fill: parent
                                                             enabled: !EncoderController.busy
                                                             onPressed: (mouse) => {
                                                                 EncoderController.selectedObjectIndex = laneRow.index;
-                                                                objectsTab.previewing = false;
-                                                                objectsTab.playheadTime =
-                                                                    mouse.x / lane.width * objectsTab.timelineLength;
+                                                                if (objectsTab.previewing) {
+                                                                    EncoderController.stopMotionPreview();
+                                                                }
+                                                                objectsTab.playheadTime = Math.max(0,
+                                                                    Math.min(objectsTab.timelineLength, lane.xToTime(mouse.x)));
                                                             }
                                                             onPositionChanged: (mouse) => {
                                                                 if (mouse.buttons & Qt.LeftButton) {
                                                                     objectsTab.playheadTime = Math.max(0,
-                                                                        Math.min(objectsTab.timelineLength,
-                                                                                 mouse.x / lane.width * objectsTab.timelineLength));
+                                                                        Math.min(objectsTab.timelineLength, lane.xToTime(mouse.x)));
                                                                 }
                                                             }
                                                             onDoubleClicked: (mouse) => {
                                                                 EncoderController.selectedObjectIndex = laneRow.index;
                                                                 EncoderController.addObjectKeyframe(
                                                                     laneRow.index,
-                                                                    mouse.x / lane.width * objectsTab.timelineLength);
+                                                                    objectsTab.snapTime(lane.xToTime(mouse.x)));
                                                             }
                                                         }
 
@@ -4114,9 +4494,8 @@ ApplicationWindow {
                                                                     onPositionChanged: (mouse) => {
                                                                         if (!keyMark.dragging) return;
                                                                         const laneX = keyMark.x + mouse.x;
-                                                                        keyMark.dragTime = Math.max(0,
-                                                                            Math.min(objectsTab.timelineLength,
-                                                                                     laneX / lane.width * objectsTab.timelineLength));
+                                                                        keyMark.dragTime = objectsTab.snapTime(
+                                                                            lane.xToTime(laneX));
                                                                     }
                                                                     onReleased: (mouse) => {
                                                                         if (!keyMark.dragging) return;
@@ -4144,13 +4523,17 @@ ApplicationWindow {
                                         }
 
                                         Rectangle {
-                                            x: timelineWrap.laneLeft
-                                               + (objectsTab.playheadTime / objectsTab.timelineLength)
-                                                 * timelineWrap.laneSpan
+                                            id: playhead
+                                            readonly property real rawX: timelineWrap.laneLeft
+                                                + (objectsTab.playheadTime - objectsTab.panOffset)
+                                                  / objectsTab.visibleSeconds * timelineWrap.laneSpan
+                                            x: rawX
                                             y: 0
                                             width: 2
                                             height: timelineWrap.height
                                             color: Theme.accent
+                                            visible: rawX >= timelineWrap.laneLeft
+                                                     && rawX <= timelineWrap.laneLeft + timelineWrap.laneSpan
                                         }
                                     }
                                 }

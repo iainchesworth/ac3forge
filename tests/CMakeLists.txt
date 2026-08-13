@@ -126,6 +126,22 @@ elseif(AC3FORGE_AUDIO_BACKEND STREQUAL "android")
     target_include_directories(ac3tests PRIVATE "${AC3FORGE_AUDIO_BACKEND_DIR}")
 endif()
 
+# ---------------------------------------------------------------------------
+# ac3cli integration tests (test_cli.cpp). main.cpp compiles straight into
+# the ac3cli executable with everything in an anonymous namespace, so there
+# is no library surface for parse_options/gather_frame/run_atmos_encode's own
+# logic to link against directly - these tests instead run the real, built
+# ac3cli binary as a subprocess and inspect what it actually wrote.
+#
+# Only added when ac3cli itself is being built (AC3FORGE_BUILD_CLI): the
+# top-level CMakeLists.txt processes src/cli before tests/, so the target
+# already exists here whenever it is going to.
+# ---------------------------------------------------------------------------
+if(TARGET ac3cli)
+    target_sources(ac3tests PRIVATE test_cli.cpp)
+    target_compile_definitions(ac3tests PRIVATE "AC3CLI_EXE=\"$<TARGET_FILE:ac3cli>\"")
+endif()
+
 target_include_directories(ac3tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 
 target_link_libraries(ac3tests

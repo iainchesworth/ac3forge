@@ -106,7 +106,7 @@ both forms. `dialnorm2=` above sets Ch2's own dialnorm; `heavy`/`drc` apply to b
 independently, each getting its own compressor. `decode` writes Ch1/Ch2 back out in that same
 order, and `levels` names them `Ch1`/`Ch2` rather than a speaker position that would not apply.
 
-## Source options (`encode`/`eac3-encode`): `src=` and `map=`
+## Source options (`encode`/`eac3-encode`): `src=`, `map=` and `offset=`
 
 ```text
 source options (encode/eac3-encode; any order, after the positional arguments):
@@ -115,6 +115,10 @@ source options (encode/eac3-encode; any order, after the positional arguments):
                      p1, p2 or none; a channel range is only legal with obj or none
                      once given, every loaded channel must appear - explicit 'none' silences
                      the goes-nowhere warning without giving it anywhere to go
+  offset=<sourceIndex>:<seconds>   leading silence ahead of that source's own channels
+                     (seconds >= 0), same 0-based numbering as src=
+                     the programme is still as long as the longest one once every offset is
+                     applied
 ```
 
 `src=` loads another WAV alongside `in.wav` (source index 0), in the order given — `src=a.wav
@@ -137,7 +141,8 @@ programme, is refused.
 ```bash
 ac3cli eac3-encode roundtrip-stereo.wav out.ec3 384 none 51 \
     src=roundtrip-51.wav \
-    map=0.0:C,0.1:none,1.0:L,1.1:R,1.2:none,1.3:LFE,1.4:Ls,1.5:Rs
+    map=0.0:C,0.1:none,1.0:L,1.1:R,1.2:none,1.3:LFE,1.4:Ls,1.5:Rs \
+    offset=1:2.5
 ```
 
 `roundtrip-stereo.wav`'s left channel (source 0, channel 0) carries the centre; its right channel
@@ -146,6 +151,16 @@ is explicitly silenced. `roundtrip-51.wav` (source 1) fills the rest, with its o
 are both skippable here even though they come earlier in `eac3-encode`'s own positional order —
 the parser treats the first token containing `=` as the start of the trailing options, whichever
 positional slot would otherwise have been next.
+
+`offset=1:2.5` delays `roundtrip-51.wav` (source 1) by 2.5 seconds of leading silence ahead of its
+own channels — every channel that source contributes shifts together, as when it starts, not what
+it contains. `offset=` applies as silence, not truncation: the programme's overall length grows to
+cover whichever source ends latest once every offset is applied, not just the longest source's own
+raw length, so a delayed source is never cut short to fit. `<sourceIndex>` uses the same numbering
+`src=` establishes (`0` is the primary positional file, `1..N` are `src=` in the order given), and
+works with a single source too — `ac3cli encode in.wav out.ac3 384 5.1 offset=0:2.5` needs no
+`src=`/`map=` at all. Omitting `offset=` for a source (or giving it `0` seconds) behaves exactly as
+it always has.
 
 `dialnorm=auto`/`dialnorm2=auto` are not yet supported alongside `src=`/`map=` — pass an explicit
 `dialnorm=<1..31>` (and `dialnorm2=` for `1+1`) instead; measuring loudness per source is a later
@@ -163,7 +178,9 @@ is a direct front end over this same grammar — see
 - **`atmos`** encodes objects orbiting the room at different heights and rates as a 5.1 E-AC-3 bed
   plus JOC + OAMD side data (TS 103 420); FFmpeg reports the result as "Dolby Digital Plus + Dolby
   Atmos". **`atmos-encode`** does the same but makes each channel of a real source file an object
-  instead of synthesizing motion.
+  instead of synthesizing motion. Its optional `[paths.txt]` (same format `atmos-path` reads)
+  authors that motion instead of the default static, fanned-out placement — keyed by WAV channel
+  index, so an object index the file doesn't mention keeps its default placement unchanged.
 - **`atmos` mode**: `objects` (default) writes the JOC+OAMD container; `bed51` omits it so the
   5.1 bed still plays on a decoder that would otherwise refuse an object container it can't
   validate, instead of falling back to the bed on its own. See
