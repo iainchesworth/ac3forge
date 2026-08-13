@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -68,5 +69,59 @@ struct Ac3Layout {
 [[nodiscard]] AC3FORGE_EXPORT std::expected<void, WavError> write_wav_pcm16_raw(
     const std::string& path, std::span<const std::byte> payload, std::uint32_t sample_rate,
     std::uint16_t channels);
+
+// Incremental float32 WAV writer for takes too long to hold in memory (a
+// live capture session can run for an hour or more). Opens the file once,
+// takes interleaved samples as they arrive, and finalizes the RIFF/data
+// chunk sizes on close() - see flush_header()'s own comment for what
+// happens if the process never reaches close() at all.
+class AC3FORGE_EXPORT WavStreamWriter {
+   public:
+    WavStreamWriter();
+    ~WavStreamWriter();  // closes if still open, same as an fstream would
+    WavStreamWriter(const WavStreamWriter&) = delete;
+    WavStreamWriter& operator=(const WavStreamWriter&) = delete;
+    WavStreamWriter(WavStreamWriter&&) noexcept;
+    WavStreamWriter& operator=(WavStreamWriter&&) noexcept;
+
+    // Opens `path` and writes a float32 (format tag 3) WAV header for
+    // `channels` channels at `sample_rate`, sized for zero frames pending
+    // write()/close(). Refuses (kCannotOpen) if the file cannot be created,
+    // (kUnsupportedFormat) if channels is 0.
+    [[nodiscard]] std::expected<void, WavError> open(const std::string& path,
+                                                       std::uint32_t sample_rate,
+                                                       std::uint16_t channels);
+
+    // Appends interleaved float samples - a multiple of channels() long, in
+    // the caller's own channel order (this writer does not permute; a live
+    // capture's raw device order is exactly what a safety copy should keep).
+    // Returns false (and leaves the writer open but stalled) if the
+    // underlying write fails, e.g. the disk fills - the caller decides
+    // whether that is fatal to the whole session.
+    [[nodiscard]] bool write(std::span<const float> interleaved);
+
+    // Rewrites just the RIFF and data chunk size fields to match what has
+    // actually been written so far, then seeks back to the write position -
+    // does NOT close the file. Call this periodically during a long write
+    // (every second or so is plenty). Without it, a process kill mid-session
+    // leaves a WAV whose header still claims zero data bytes even though the
+    // file holds real audio - most readers trust the header's data size over
+    // the file's actual length, so an unpatched header would make a real
+    // partial take LOOK empty. Calling this regularly means the worst a hard
+    // crash can do is undersell the last fraction of a second.
+    void flush_header();
+
+    // Finalizes the header (same as flush_header()) and closes the file.
+    // Safe to call when not open, and safe to call more than once.
+    void close();
+
+    [[nodiscard]] bool is_open() const;
+    [[nodiscard]] std::uint16_t channels() const;
+    [[nodiscard]] std::uint64_t frames_written() const;
+
+   private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
 
 }  // namespace ac3::io
