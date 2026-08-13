@@ -12,7 +12,7 @@ Usage:
   ac3cli orbit        <out.ac3> [seconds] [bitrate_kbps] [orbit_seconds]
   ac3cli atmos        <out.ec3> [seconds] [bitrate_kbps] [objects] [orbit_seconds] [mode]
   ac3cli atmos-path   <out.ec3> <paths.txt> [seconds] [bitrate_kbps] [objects] (objects driven by an authored keyframe file instead of the built-in orbit)
-  ac3cli atmos-encode <in.wav> <out.ec3> [bitrate_kbps] [objects] (every source channel as an object)
+  ac3cli atmos-encode <in.wav> <out.ec3> [bitrate_kbps] [objects] [paths.txt] (every source channel as an object; optional: authored per-object motion from a keyframe file (same format as atmos-path), objects it doesn't mention keep their default placement)
   ac3cli record       <out.ac3> [seconds] [bitrate_kbps] [device_index]
   ac3cli live         <out.ac3|out.ec3> <capture_device> [seconds] [bitrate_kbps] [monitor_device] [passthrough_device] [mode] (capture -> encode -> live monitor and/or passthrough)
   ac3cli encode       <in.wav> <out.ac3> [bitrate_kbps] [layout] [in2.wav] (in2.wav: layout 1+1's Ch2, when Ch1 is a separate mono file; or use src=/map= for more than one source)
@@ -58,7 +58,7 @@ coded channels of a 7.1.4 layout.
 |---|---|
 | `encode` | WAV → AC-3. Without `[layout]`, follows the source channel count (1→mono, 2→stereo, 3–6→5.1, 8→7.1, 10→5.1.4, 12→7.1.4). |
 | `eac3-encode` | WAV → E-AC-3, with the Annex E `tools:` token and an optional `vbr:` token available (see [Metadata options](metadata-options.md)) |
-| `atmos-encode` | WAV → E-AC-3 Atmos, every source channel becomes its own object |
+| `atmos-encode` | WAV → E-AC-3 Atmos, every source channel becomes its own object; optional `[paths.txt]` drives per-object motion from an authored keyframe file the same way `atmos-path` does, keyed by WAV channel index — an object it doesn't mention keeps its default (fanned-out) placement |
 
 ```bash
 ac3cli encode in.wav out.ac3 448 couple

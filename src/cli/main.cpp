@@ -93,6 +93,10 @@ void print_meta_usage() {
     std::println("  map=<spec>        {}", plan::kAssignmentSyntax);
     std::println("                    once given, every loaded channel must appear - explicit "
                  "'none' silences the goes-nowhere warning without giving it anywhere to go");
+    std::println("  offset=<sourceIndex>:<seconds>   leading silence ahead of that source's own "
+                 "channels (seconds >= 0), same 0-based numbering as src=");
+    std::println("                    the programme is still as long as the longest one once "
+                 "every offset is applied");
 }
 
 // Everything a command accepts after its positional arguments, in any order.
@@ -115,6 +119,14 @@ struct Options {
     // parse_options itself cannot do (it only sees command-line text, not
     // opened files).
     std::optional<std::string> map_spec;
+    // Each offset= occurrence: (sourceIndex, seconds) - leading silence ahead
+    // of that source's own audio, in the same 0-based numbering src=
+    // establishes (0 = the primary positional argument, 1..N = each src= in
+    // order). encode/eac3-encode only, including the classic single-file
+    // path, where source 0 is the only source there is. A given sourceIndex
+    // may appear more than once; the last occurrence wins (see
+    // offset_samples_for).
+    std::vector<std::pair<std::size_t, double>> offsets;
     // Atmos object signing (atmos/atmos-path/atmos-encode). Off unless the
     // operator both asks (sign-objects) and provides a key - either
     // signing-key=<path> here, or the AC3FORGE_SIGNING_KEY[_FILE] env vars
@@ -281,6 +293,29 @@ bool parse_options(std::span<char*> tokens, Options& out) {
                 return false;
             }
             out.map_spec = std::string{value};
+            continue;
+        }
+        if (key == "offset") {
+            const auto colon = value.find(':');
+            std::size_t index = 0;
+            double seconds = 0.0;
+            bool ok = colon != std::string_view::npos;
+            if (ok) {
+                const auto index_text = value.substr(0, colon);
+                const auto seconds_text = value.substr(colon + 1);
+                const auto [ptr, ec] = std::from_chars(
+                    index_text.data(), index_text.data() + index_text.size(), index);
+                ok = ec == std::errc{} && ptr == index_text.data() + index_text.size();
+                ok = ok && parse_double(seconds_text, seconds) && seconds >= 0.0;
+            }
+            if (!ok) {
+                std::println(stderr,
+                             "error: offset= needs <sourceIndex>:<seconds> (seconds >= 0)");
+                return false;
+            }
+            // A given sourceIndex may appear more than once; offset_samples_for
+            // reads this in order and keeps the last match, so no dedupe here.
+            out.offsets.emplace_back(index, seconds);
             continue;
         }
         if (key == "signing-key") {
@@ -850,18 +885,43 @@ struct LoadedSources {
     std::vector<ac3::io::WavData> wavs;
     std::vector<plan::SourceShape> shapes;
     std::uint32_t sample_rate = 0;
-    // The longest source's frame count, not the primary file's - a run
-    // covers everything any loaded source carries. Each source still holds
-    // its own last real sample past its own end (see gather_frame), so a
-    // short source does not go silent early relative to a long one.
+    // Per-source leading silence, in samples at sample_rate - parallel to
+    // wavs/shapes (index 0 = in_path, 1..N = each src= in load order, the
+    // same numbering offset= addresses), computed from Options::offsets once
+    // sample_rate is known. Applied in gather_frame, ahead of a source's own
+    // samples.
+    std::vector<std::size_t> offset_samples;
+    // The longest source's frame count once ITS OWN offset is applied, not
+    // the longest raw source alone - a run covers everything any loaded
+    // source carries, including whatever offset= shifted it by. Each source
+    // still holds its own last real sample past its own end (see
+    // gather_frame), so a short source does not go silent early relative to
+    // a long one.
     std::size_t total_frames = 0;
 };
+
+// The leading-silence sample count offset= asked for on source `index`
+// (the same 0-based numbering src= establishes), from every offset= the
+// operator gave - the last occurrence for that index wins, since
+// parse_options does not dedupe. Shared by load_sources (every loaded
+// source) and the classic single-file path (source index always 0).
+std::size_t offset_samples_for(std::span<const std::pair<std::size_t, double>> offsets,
+                               std::size_t index, std::uint32_t sample_rate) {
+    std::size_t result = 0;
+    for (const auto& [i, seconds] : offsets) {
+        if (i == index) {
+            result = static_cast<std::size_t>(seconds * static_cast<double>(sample_rate) + 0.5);
+        }
+    }
+    return result;
+}
 
 // Opens `in_path` plus every path in `extra`, in that order, and checks they
 // all share one sample rate - plan::render has no notion of resampling, and
 // a silently mismatched pair would drift apart rather than error.
-std::optional<LoadedSources> load_sources(std::string_view in_path,
-                                          std::span<const std::string> extra) {
+std::optional<LoadedSources> load_sources(
+    std::string_view in_path, std::span<const std::string> extra,
+    std::span<const std::pair<std::size_t, double>> offsets) {
     auto primary = ac3::io::read_wav(std::string{in_path});
     if (!primary) {
         std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(primary.error()));
@@ -869,7 +929,6 @@ std::optional<LoadedSources> load_sources(std::string_view in_path,
     }
     LoadedSources out;
     out.sample_rate = primary->sample_rate;
-    out.total_frames = primary->frame_count();
     out.shapes.push_back({.channels = primary->channels.size(), .label = std::string{in_path}});
     out.wavs.push_back(std::move(*primary));
 
@@ -886,9 +945,21 @@ std::optional<LoadedSources> load_sources(std::string_view in_path,
                          path, wav->sample_rate, in_path, out.sample_rate);
             return std::nullopt;
         }
-        out.total_frames = std::max(out.total_frames, wav->frame_count());
         out.shapes.push_back({.channels = wav->channels.size(), .label = path});
         out.wavs.push_back(std::move(*wav));
+    }
+
+    // A sourceIndex offset= names beyond how many sources actually loaded has
+    // nothing to shift - ignored rather than an error, the same way an unused
+    // trailing option elsewhere in this file is simply inert.
+    out.offset_samples.resize(out.wavs.size());
+    for (std::size_t i = 0; i < out.wavs.size(); ++i) {
+        out.offset_samples[i] = offset_samples_for(offsets, i, out.sample_rate);
+    }
+    out.total_frames = 0;
+    for (std::size_t i = 0; i < out.wavs.size(); ++i) {
+        out.total_frames =
+            std::max(out.total_frames, out.offset_samples[i] + out.wavs[i].frame_count());
     }
     return out;
 }
@@ -929,8 +1000,9 @@ std::optional<plan::Routing> routing_for_sources(const plan::Plan& p, const Load
 }
 
 // Fills `dest` (one entry per flattened source channel, source 0 first) with
-// samples [start, start + kSamplesPerFrame) from `sources`, holding each
-// source's own last real sample past its own end - independently per
+// samples [start, start + kSamplesPerFrame) from `sources`, applying each
+// source's own offset= leading silence ahead of its real samples, then
+// holding its own last real sample past its own end - independently per
 // source, the same tail padding the classic path already applies to its one
 // file, so a short source loaded alongside a long one goes silent-by-
 // holding at its own end rather than at whichever source happens to be
@@ -938,14 +1010,21 @@ std::optional<plan::Routing> routing_for_sources(const plan::Plan& p, const Load
 void gather_frame(const LoadedSources& sources, std::size_t start,
                   std::vector<std::vector<float>>& dest) {
     std::size_t flat = 0;
-    for (const auto& wav : sources.wavs) {
+    for (std::size_t s = 0; s < sources.wavs.size(); ++s) {
+        const auto& wav = sources.wavs[s];
         const std::size_t total = wav.frame_count();
+        const std::size_t offset = sources.offset_samples[s];
         for (const auto& channel : wav.channels) {
             const float hold = total > 0 ? channel[total - 1] : 0.0f;
             auto& out = dest[flat];
             for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
                 const std::size_t at = start + static_cast<std::size_t>(i);
-                out[static_cast<std::size_t>(i)] = at < total ? channel[at] : hold;
+                if (at < offset) {
+                    out[static_cast<std::size_t>(i)] = 0.0f;
+                    continue;
+                }
+                const std::size_t shifted = at - offset;
+                out[static_cast<std::size_t>(i)] = shifted < total ? channel[shifted] : hold;
             }
             ++flat;
         }
@@ -991,7 +1070,7 @@ void print_routing(const plan::Plan& p, const plan::Routing& routing, std::strin
 int run_eac3_encode_multi(std::string_view in_path, std::string_view out_path,
                           std::uint32_t bitrate, std::string_view tools,
                           std::string_view layout, std::string_view vbr, const Options& meta) {
-    auto sources = load_sources(in_path, meta.sources);
+    auto sources = load_sources(in_path, meta.sources, meta.offsets);
     if (!sources) {
         return 1;
     }
@@ -1183,7 +1262,12 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
     ac3::eac3::AccessUnitEncoder encoder{plan::eac3_config(p)};
     const auto nchans = static_cast<std::size_t>(routing->coded_channels);
     assert(static_cast<int>(nchans) == encoder.channel_count());
-    const std::size_t total = wav->frame_count();
+    // The classic path has exactly one source, always index 0 in offset='s
+    // numbering - see LoadedSources::offset_samples for the multi-source
+    // equivalent of this same leading silence.
+    const std::size_t offset = offset_samples_for(meta.offsets, 0, wav->sample_rate);
+    const std::size_t frame_count = wav->frame_count();
+    const std::size_t total = offset + frame_count;
 
     std::vector<std::vector<float>> source(wav->channels.size(),
                                            std::vector<float>(ac3::kSamplesPerFrame));
@@ -1201,12 +1285,19 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
         // hard zero - see run_encode's identical padding for why: a sudden
         // drop to silence is itself a transient the encoder would (correctly)
         // spend a block-switch on, for a discontinuity that only exists
-        // because this frame ends mid-buffer.
+        // because this frame ends mid-buffer. Ahead of the source's own
+        // samples, offset= silence is real silence, not padding.
         for (std::size_t c = 0; c < source.size(); ++c) {
-            const float hold = total > 0 ? wav->channels[c][total - 1] : 0.0f;
+            const float hold = frame_count > 0 ? wav->channels[c][frame_count - 1] : 0.0f;
             for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
                 const std::size_t at = start + static_cast<std::size_t>(i);
-                source[c][static_cast<std::size_t>(i)] = at < total ? wav->channels[c][at] : hold;
+                if (at < offset) {
+                    source[c][static_cast<std::size_t>(i)] = 0.0f;
+                    continue;
+                }
+                const std::size_t shifted = at - offset;
+                source[c][static_cast<std::size_t>(i)] =
+                    shifted < frame_count ? wav->channels[c][shifted] : hold;
             }
             in[c] = source[c];
         }
@@ -1538,7 +1629,7 @@ int run_atmos_path(std::string_view out_path, std::string_view paths_path, std::
 // front ends can be compared on the same file.
 int run_atmos_encode(std::string_view in_path, std::string_view out_path,
                      std::uint32_t bitrate, std::uint32_t objects,
-                     const Options& meta) {
+                     const Options& meta, std::string_view paths_path = {}) {
     const auto wav = ac3::io::read_wav(std::string{in_path});
     if (!wav) {
         std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(wav.error()));
@@ -1611,6 +1702,40 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
                         .lfe_send = 0.0};
     }
 
+    // An authored keyframe file (same format/addressing as atmos-path, object
+    // index == this WAV channel index) drives motion instead of the static
+    // placement above; empty (the default) leaves that placement reused
+    // unchanged every frame, exactly as before this argument existed - see
+    // the per-frame loop below.
+    std::optional<std::vector<ac3::oba::ObjectPath>> paths;
+    if (!paths_path.empty()) {
+        const auto parsed = parse_path_file(paths_path);
+        if (!parsed) {
+            return 1;
+        }
+        paths.emplace();
+        paths->reserve(count);
+        for (std::size_t i = 0; i < count; ++i) {
+            if (i < parsed->size() && !(*parsed)[i].empty()) {
+                auto created = ac3::oba::KeyframePath::create((*parsed)[i]);
+                if (!created) {
+                    std::println(stderr, "error: object {} has two keyframes at the same time_s",
+                                 i);
+                    return 1;
+                }
+                paths->emplace_back(std::move(*created));
+                continue;
+            }
+            // Not mentioned in the file: keep exactly the placement this
+            // object has today, just re-expressed as a (never-moving) path.
+            auto fallback = ac3::oba::KeyframePath::create({{.time_s = 0.0,
+                                                              .position = placement[i].position,
+                                                              .gain = placement[i].gain,
+                                                              .lfe_send = placement[i].lfe_send}});
+            paths->emplace_back(std::move(*fallback));
+        }
+    }
+
     ac3::analysis::LevelMeter meter{ac3::Acmod::k3_2, true, wav->sample_rate};
     const std::size_t total = wav->frame_count();
     std::vector<std::vector<float>> block(count, std::vector<float>(ac3::kSamplesPerFrame));
@@ -1628,7 +1753,16 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
             }
             views[ch] = block[ch];
         }
-        auto unit = encoder.encode_frame(views, placement);
+        // With paths_path, the object placement moves - evaluated at the
+        // frame's END time, the same convention run_atmos_path and the GUI's
+        // encodeObjects use. Without it, every frame reuses the one static
+        // placement computed above, byte-identical to before this argument
+        // existed.
+        auto unit = paths ? encoder.encode_frame(
+                                views, ac3::oba::evaluate_placements(
+                                           *paths, static_cast<double>(start + ac3::kSamplesPerFrame) /
+                                                       static_cast<double>(wav->sample_rate)))
+                          : encoder.encode_frame(views, placement);
         if (!unit) {
             std::println(stderr,
                          "error: cannot encode {} objects at {} kbps — the metadata and the "
@@ -1861,7 +1995,7 @@ int run_record(std::string_view out_path, std::uint32_t seconds, std::uint32_t b
 // why loudness auto-measurement is not supported here yet.
 int run_encode_multi(std::string_view in_path, std::string_view out_path, std::uint32_t bitrate,
                      bool couple, std::string_view layout, const Options& meta) {
-    auto sources = load_sources(in_path, meta.sources);
+    auto sources = load_sources(in_path, meta.sources, meta.offsets);
     if (!sources) {
         return 1;
     }
@@ -2048,7 +2182,12 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
     auto encoder = std::make_unique<ac3::FrameEncoder>(config);
     ac3::analysis::LevelMeter meter{config.acmod, config.lfe, wav->sample_rate};
     const auto nchans = static_cast<std::size_t>(routing->coded_channels);
-    const std::size_t total = wav->frame_count();
+    // The classic path has exactly one source, always index 0 in offset='s
+    // numbering - see LoadedSources::offset_samples for the multi-source
+    // equivalent of this same leading silence.
+    const std::size_t offset = offset_samples_for(meta.offsets, 0, wav->sample_rate);
+    const std::size_t frame_count = wav->frame_count();
+    const std::size_t total = offset + frame_count;
 
     std::vector<std::vector<float>> source(wav->channels.size(),
                                            std::vector<float>(ac3::kSamplesPerFrame));
@@ -2070,12 +2209,20 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
         // §8.2.2 detector would (correctly) spend a block-switch on it,
         // paying real side-info bits to preserve a discontinuity that exists
         // only because this frame ends mid-buffer, not in the source audio.
+        // Ahead of the source's own samples, offset= silence is real
+        // silence, not padding.
         const auto valid = std::min<std::size_t>(ac3::kSamplesPerFrame, total - start);
         for (std::size_t c = 0; c < source.size(); ++c) {
-            const float hold = total > 0 ? wav->channels[c][total - 1] : 0.0f;
+            const float hold = frame_count > 0 ? wav->channels[c][frame_count - 1] : 0.0f;
             for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
                 const std::size_t at = start + static_cast<std::size_t>(i);
-                source[c][static_cast<std::size_t>(i)] = at < total ? wav->channels[c][at] : hold;
+                if (at < offset) {
+                    source[c][static_cast<std::size_t>(i)] = 0.0f;
+                    continue;
+                }
+                const std::size_t shifted = at - offset;
+                source[c][static_cast<std::size_t>(i)] =
+                    shifted < frame_count ? wav->channels[c][shifted] : hold;
             }
             in[c] = source[c];
         }
@@ -3353,10 +3500,13 @@ constexpr std::array<Command, 21> kCommands{{
          return run_atmos_path(x.str(1), x.str(2), x.u32(3, 8), x.u32(4, 448), x.u32(5, 0),
                                x.meta);
      }},
-    {"atmos-encode", 3, "<in.wav> <out.ec3> [bitrate_kbps] [objects]",
-     "every source channel as an object", Needs::kNothing,
+    {"atmos-encode", 3, "<in.wav> <out.ec3> [bitrate_kbps] [objects] [paths.txt]",
+     "every source channel as an object; optional: authored per-object motion from a keyframe "
+     "file (same format as atmos-path), objects it doesn't mention keep their default placement",
+     Needs::kNothing,
      [](const Args& x) {
-         return run_atmos_encode(x.str(1), x.str(2), x.u32(3, 448), x.u32(4, 0), x.meta);
+         return run_atmos_encode(x.str(1), x.str(2), x.u32(3, 448), x.u32(4, 0), x.meta,
+                                 x.str(5));
      }},
     {"record", 2, "<out.ac3> [seconds] [bitrate_kbps] [device_index]", "", Needs::kCapture,
      [](const Args& x) {
@@ -3525,6 +3675,9 @@ void print_usage() {
     std::println("       atmos-encode makes each channel of a real file an object instead.");
     std::println("       Both emit a 5.1 E-AC-3 bed with JOC + OAMD side data (TS 103 420).");
     std::println("       FFmpeg reports \"Dolby Digital Plus + Dolby Atmos\".");
+    std::println("       atmos-encode's [paths.txt] takes authored per-object motion the same");
+    std::println("       way atmos-path does, keyed by WAV channel index; an object it doesn't");
+    std::println("       mention keeps atmos-encode's own default (fanned-out) placement.");
     std::println("");
     std::println("mkv wraps an AC-3 or E-AC-3 elementary stream in Matroska, taking the");
     std::println("format, packet boundaries, sample rate and channel count from the bitstream");
