@@ -2929,6 +2929,15 @@ ApplicationWindow {
                             property string driveMode: "author"
                             property real playheadTime: 0
                             property bool previewing: false
+                            // One source of truth for the ruler, the lanes,
+                            // the keys and the playhead. Fixed at the
+                            // prototype's 8 s for now - deriving it from the
+                            // programme is an open product decision.
+                            readonly property real timelineLength: 8
+                            // The key the timeline has selected for editing,
+                            // as its time on the SELECTED object's path; -1
+                            // when none. Cleared whenever the selection moves.
+                            property real selectedKeyTime: -1
                             // objectKeyframes()/evaluateObjectPath() are
                             // Q_INVOKABLEs, not properties; reading this
                             // counter inside those bindings gives them a
@@ -2944,14 +2953,47 @@ ApplicationWindow {
                                 }
                                 return null;
                             }
+                            // Where the selected object IS right now: along
+                            // its path while the preview plays, else its
+                            // static config - so the elevation view and the
+                            // x/y/z readouts animate exactly what the plan
+                            // markers already do.
+                            readonly property var selectedLive: {
+                                if (!previewing || selectedObj === null) {
+                                    return null;
+                                }
+                                void objectsRevision;
+                                return EncoderController.evaluateObjectPath(
+                                    selectedObj.index, playheadTime);
+                            }
+                            readonly property real selX: selectedLive ? selectedLive.x
+                                                        : (selectedObj ? selectedObj.x : 0.5)
+                            readonly property real selY: selectedLive ? selectedLive.y
+                                                        : (selectedObj ? selectedObj.y : 0.5)
+                            readonly property real selZ: selectedLive ? selectedLive.z
+                                                        : (selectedObj ? selectedObj.z : 0)
 
                             function formatTime(t) {
-                                return "0:" + t.toFixed(2).padStart(5, "0");
+                                const minutes = Math.floor(t / 60);
+                                const seconds = t - minutes * 60;
+                                return minutes + ":" + seconds.toFixed(2).padStart(5, "0");
                             }
 
+                            // selectedObjectIndex has no signal of its own
+                            // (it notifies through objectsChanged), so the
+                            // key selection clears here when it moves.
+                            property int lastSelectedIndex: -1
                             Connections {
                                 target: EncoderController
-                                function onObjectsChanged() { objectsTab.objectsRevision++; }
+                                function onObjectsChanged() {
+                                    objectsTab.objectsRevision++;
+                                    if (EncoderController.selectedObjectIndex
+                                            !== objectsTab.lastSelectedIndex) {
+                                        objectsTab.lastSelectedIndex =
+                                            EncoderController.selectedObjectIndex;
+                                        objectsTab.selectedKeyTime = -1;
+                                    }
+                                }
                             }
 
                             ColumnLayout {
@@ -2959,7 +3001,8 @@ ApplicationWindow {
                                 Layout.margins: 24
                                 spacing: Theme.space3
 
-                                // ---- header: switch + summary + rate warning
+                                // ---- header: switch beside the title, the
+                                // summary beneath it - the mockup's layout.
                                 RowLayout {
                                     Layout.fillWidth: true
                                     spacing: Theme.gap
@@ -2967,48 +3010,177 @@ ApplicationWindow {
                                     Switch {
                                         id: atmosSwitch
                                         objectName: "atmosSwitch"
-                                        text: qsTr("Encode as Dolby Atmos objects")
+                                        Layout.alignment: Qt.AlignTop
                                         enabled: !EncoderController.busy
                                         checked: EncoderController.atmosEnabled
                                         onToggled: EncoderController.atmosEnabled = checked
                                     }
 
-                                    Text {
+                                    ColumnLayout {
                                         Layout.fillWidth: true
-                                        // preferredWidth 1 lets the row SHRINK this
-                                        // text below its implicit width and elide,
+                                        // preferredWidth 1 lets the row SHRINK the
+                                        // texts below their implicit width and elide,
                                         // instead of pushing the row past the panel.
                                         Layout.preferredWidth: 1
-                                        text: EncoderController.atmosEnabled
-                                              ? qsTr("%1 objects from the assignments · E-AC-3 over a 5.1 bed · positions ride as OAMD")
-                                                .arg(EncoderController.objectCount)
-                                              : qsTr("Off — the stream is a plain channel bed. Turning this on fixes the codec to E-AC-3 over 5.1.")
-                                        elide: Text.ElideRight
-                                        color: Theme.textMuted
-                                        font.pixelSize: Theme.fontSmall
+                                        spacing: 2
+
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: qsTr("Encode as Dolby Atmos objects")
+                                            font.pixelSize: 15
+                                            font.weight: Font.DemiBold
+                                            elide: Text.ElideRight
+                                            color: Theme.text
+                                        }
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: EncoderController.atmosEnabled
+                                                  ? qsTr("%1 objects from the assignments · E-AC-3 over a 5.1 bed · positions ride as OAMD")
+                                                    .arg(EncoderController.objectCount)
+                                                  : qsTr("Off — the stream is a plain channel bed. Turning this on fixes the codec to E-AC-3 over 5.1.")
+                                            elide: Text.ElideRight
+                                            color: Theme.textMuted
+                                            font.pixelSize: Theme.fontSmall
+                                        }
                                     }
 
+                                    // The rate-floor warning earns its dress -
+                                    // triangle, accent rule - and shows only once
+                                    // objects actually exist to starve.
                                     RowLayout {
                                         visible: EncoderController.atmosEnabled
+                                                 && EncoderController.objectCount > 0
                                                  && EncoderController.bitrateKbps < 384
                                         spacing: Theme.space2
 
                                         Rectangle {
-                                            implicitWidth: rateWarn.implicitWidth + 14
-                                            implicitHeight: rateWarn.implicitHeight + 8
+                                            implicitWidth: rateWarnRow.implicitWidth + 18
+                                            implicitHeight: rateWarnRow.implicitHeight + 8
                                             color: Theme.accent100
-                                            Text {
-                                                id: rateWarn
+
+                                            Rectangle {
+                                                anchors.left: parent.left
+                                                anchors.top: parent.top
+                                                anchors.bottom: parent.bottom
+                                                width: 2
+                                                color: Theme.accent
+                                            }
+                                            RowLayout {
+                                                id: rateWarnRow
                                                 anchors.centerIn: parent
-                                                text: qsTr("Objects over a 5.1 bed want 384 kbps or better")
-                                                color: Theme.accent700
-                                                font.pixelSize: Theme.fontSmall
+                                                spacing: 6
+                                                Text {
+                                                    text: "⚠"
+                                                    color: Theme.accent700
+                                                    font.pixelSize: Theme.fontSmall
+                                                }
+                                                Text {
+                                                    text: qsTr("Objects over a 5.1 bed want 384 kbps or better")
+                                                    color: Theme.accent700
+                                                    font.pixelSize: Theme.fontSmall
+                                                }
                                             }
                                         }
                                         Button {
                                             text: qsTr("Set it")
                                             enabled: !EncoderController.busy
                                             onClicked: EncoderController.bitrateKbps = 384
+                                        }
+                                    }
+                                }
+
+                                // ---- sounds available -----------------------
+                                // The mockup's strip: what could become an
+                                // object, and the way to bring more in. The
+                                // chips read the same source list the rail
+                                // shows; Change jumps to the one table that
+                                // decides what each sound does.
+                                ColumnLayout {
+                                    visible: EncoderController.atmosEnabled
+                                    Layout.fillWidth: true
+                                    spacing: Theme.space2
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: Theme.space2
+
+                                        Text {
+                                            text: qsTr("SOUNDS AVAILABLE")
+                                            color: Theme.neutral600
+                                            font.pixelSize: 10
+                                            font.letterSpacing: 1
+                                        }
+                                        Item { Layout.fillWidth: true }
+                                        Button {
+                                            text: qsTr("Import audio…")
+                                            flat: true
+                                            enabled: !EncoderController.busy
+                                            onClicked: EncoderController.sourceModel.length > 0
+                                                       ? addSourceDialog.open() : openDialog.open()
+                                        }
+                                        Button {
+                                            text: qsTr("Add live input")
+                                            flat: true
+                                            enabled: !EncoderController.busy
+                                            onClicked: {
+                                                // One input at a time today - the rail's
+                                                // live branch becomes THE input; mixing
+                                                // files with capture is future work.
+                                                window.inputMode = "live";
+                                            }
+                                        }
+                                    }
+
+                                    Flow {
+                                        Layout.fillWidth: true
+                                        spacing: 6
+                                        visible: EncoderController.sourceModel.length > 0
+
+                                        Repeater {
+                                            model: EncoderController.sourceModel
+
+                                            delegate: Rectangle {
+                                                id: soundChip
+                                                required property var modelData
+                                                width: chipRow.implicitWidth + 16
+                                                height: 24
+                                                color: Theme.neutral100
+                                                border.color: Theme.divider
+                                                border.width: 1
+
+                                                RowLayout {
+                                                    id: chipRow
+                                                    anchors.centerIn: parent
+                                                    spacing: 6
+
+                                                    Text {
+                                                        text: soundChip.modelData.label
+                                                        font.pixelSize: 11
+                                                        font.family: Theme.monoFamily
+                                                        color: Theme.text
+                                                    }
+                                                    Text {
+                                                        text: qsTr("%1 ch · in use").arg(soundChip.modelData.channels)
+                                                        font.pixelSize: 10
+                                                        color: Theme.textMuted
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        Text {
+                                            height: 24
+                                            verticalAlignment: Text.AlignVCenter
+                                            text: qsTr("Change →")
+                                            font.pixelSize: 11
+                                            font.weight: Font.DemiBold
+                                            color: Theme.accent700
+
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: window.goAssign()
+                                            }
                                         }
                                     }
                                 }
@@ -3168,10 +3340,37 @@ ApplicationWindow {
 
                                                     MouseArea {
                                                         anchors.fill: parent
-                                                        onClicked: EncoderController.selectedObjectIndex = marker.index
+                                                        // Select on press, then DRAG the
+                                                        // marker itself - "drag to place"
+                                                        // must not require starting the
+                                                        // gesture beside the dot.
+                                                        onPressed: EncoderController.selectedObjectIndex = marker.index
+                                                        onPositionChanged: (mouse) => {
+                                                            if (!(mouse.buttons & Qt.LeftButton)
+                                                                    || EncoderController.busy
+                                                                    || objectsTab.driveMode !== "author") {
+                                                                return;
+                                                            }
+                                                            const p = mapToItem(room, mouse.x, mouse.y);
+                                                            EncoderController.setObjectPosition(
+                                                                marker.index,
+                                                                Math.max(0, Math.min(1, p.x / room.width)),
+                                                                Math.max(0, Math.min(1, p.y / room.height)),
+                                                                marker.obj ? marker.obj.z : 0);
+                                                        }
                                                     }
                                                 }
                                             }
+                                        }
+
+                                        Text {
+                                            visible: objectsTab.selectedObj !== null
+                                                     && objectsTab.selectedObj.hasPath
+                                            Layout.fillWidth: true
+                                            text: qsTr("This object follows its authored path — dragging edits its idle position, not the path. Scrub the timeline and Add key to author motion.")
+                                            wrapMode: Text.WordWrap
+                                            font.pixelSize: 10
+                                            color: Theme.neutral600
                                         }
 
                                         // ---- elevation: drag for height ------
@@ -3199,14 +3398,22 @@ ApplicationWindow {
                                             border.color: Theme.divider
                                             border.width: 1
 
-                                            // z +1 (ceiling) at the top line,
-                                            // 0 (ear level) at 62%, −1 (floor)
-                                            // at the bottom.
+                                            // A SIDE view: the horizontal axis is the
+                                            // room's depth (y - front wall at the left,
+                                            // rear at the right), never x. z +1
+                                            // (ceiling) at the top line, 0 (ear level)
+                                            // at 66%, -1 (floor) at the bottom - the
+                                            // mockup's own proportions.
+                                            readonly property real earY: height * 0.66
                                             function zToY(z) {
-                                                return 14 + (1 - (z + 1) / 2) * (height - 24);
+                                                return z >= 0 ? earY - z * (earY - 14)
+                                                              : earY + (-z) * ((height - 10) - earY);
                                             }
                                             function yToZ(y) {
-                                                return Math.max(-1, Math.min(1, 1 - 2 * ((y - 14) / (height - 24))));
+                                                if (y <= earY) {
+                                                    return Math.min(1, (earY - y) / (earY - 14));
+                                                }
+                                                return Math.max(-1, -(y - earY) / ((height - 10) - earY));
                                             }
 
                                             Rectangle {
@@ -3222,20 +3429,48 @@ ApplicationWindow {
                                             }
                                             Rectangle {
                                                 x: 0; width: parent.width
-                                                y: elevation.zToY(0); height: 1
+                                                y: elevation.earY; height: 1
                                                 color: Theme.neutral300
                                             }
                                             Text {
-                                                x: 4; y: elevation.zToY(0) - 12
+                                                x: 4; y: elevation.earY - 12
                                                 text: qsTr("ear level")
                                                 color: Theme.neutral500
                                                 font.pixelSize: 9
                                             }
                                             Text {
                                                 x: 4; y: parent.height - 13
-                                                text: qsTr("floor")
+                                                text: qsTr("front")
                                                 color: Theme.neutral500
                                                 font.pixelSize: 9
+                                                horizontalAlignment: Text.AlignLeft
+                                            }
+                                            Text {
+                                                x: parent.width - implicitWidth - 4
+                                                y: parent.height - 13
+                                                text: qsTr("rear")
+                                                color: Theme.neutral500
+                                                font.pixelSize: 9
+                                            }
+
+                                            // Context: the bed's speakers, so the
+                                            // object's height reads against something -
+                                            // ear-level fronts and surrounds on the ear
+                                            // line, the ceiling pair above.
+                                            Repeater {
+                                                model: [
+                                                    { fy: 0.08, ceiling: false }, { fy: 0.5, ceiling: false },
+                                                    { fy: 0.88, ceiling: false },
+                                                    { fy: 0.3, ceiling: true }, { fy: 0.7, ceiling: true }
+                                                ]
+                                                delegate: Rectangle {
+                                                    required property var modelData
+                                                    width: 6
+                                                    height: 6
+                                                    color: Theme.neutral400
+                                                    x: modelData.fy * elevation.width - 3
+                                                    y: (modelData.ceiling ? 14 : elevation.earY) - 3
+                                                }
                                             }
 
                                             MouseArea {
@@ -3246,37 +3481,58 @@ ApplicationWindow {
                                                 onPositionChanged: (mouse) => place(mouse)
                                                 onPressed: (mouse) => place(mouse)
                                                 function place(mouse) {
-                                                    const x = Math.max(0, Math.min(1, mouse.x / elevation.width));
+                                                    const y = Math.max(0, Math.min(1, mouse.x / elevation.width));
                                                     EncoderController.setObjectPosition(
-                                                        objectsTab.selectedObj.index, x,
-                                                        objectsTab.selectedObj.y,
+                                                        objectsTab.selectedObj.index,
+                                                        objectsTab.selectedObj.x, y,
                                                         elevation.yToZ(mouse.y));
                                                 }
                                             }
 
-                                            // The selected object's marker with
-                                            // a drop line to ear level.
+                                            // The selected object's marker with a drop
+                                            // line to the FLOOR - height reads as height
+                                            // above the ground, not distance from the
+                                            // ear line.
                                             Rectangle {
                                                 visible: objectsTab.selectedObj !== null
-                                                readonly property real markerX:
-                                                    (objectsTab.selectedObj ? objectsTab.selectedObj.x : 0.5) * elevation.width
-                                                readonly property real markerY:
-                                                    elevation.zToY(objectsTab.selectedObj ? objectsTab.selectedObj.z : 0)
+                                                readonly property real markerX: objectsTab.selY * elevation.width
+                                                readonly property real markerY: elevation.zToY(objectsTab.selZ)
                                                 x: markerX - 1
-                                                y: Math.min(markerY, elevation.zToY(0))
+                                                y: markerY
                                                 width: 2
-                                                height: Math.abs(elevation.zToY(0) - markerY)
+                                                height: Math.max(0, (elevation.height - 10) - markerY)
                                                 color: Theme.accent300
                                             }
                                             Rectangle {
+                                                id: elevationMarker
                                                 visible: objectsTab.selectedObj !== null
                                                 width: 14
                                                 height: 14
                                                 color: Theme.accent
                                                 border.color: Theme.text
                                                 border.width: 2
-                                                x: (objectsTab.selectedObj ? objectsTab.selectedObj.x : 0.5) * elevation.width - width / 2
-                                                y: elevation.zToY(objectsTab.selectedObj ? objectsTab.selectedObj.z : 0) - height / 2
+                                                x: objectsTab.selY * elevation.width - width / 2
+                                                y: elevation.zToY(objectsTab.selZ) - height / 2
+
+                                                Rectangle {
+                                                    anchors.left: parent.right
+                                                    anchors.leftMargin: 4
+                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    width: elevationChip.implicitWidth + 6
+                                                    height: elevationChip.implicitHeight + 2
+                                                    color: Theme.bg
+
+                                                    Text {
+                                                        id: elevationChip
+                                                        anchors.centerIn: parent
+                                                        text: qsTr("obj %1 · z %2")
+                                                              .arg(EncoderController.selectedObjectIndex + 1)
+                                                              .arg(objectsTab.selZ.toFixed(2))
+                                                        color: Theme.text
+                                                        font.pixelSize: 10
+                                                        font.family: Theme.monoFamily
+                                                    }
+                                                }
                                             }
                                         }
 
@@ -3285,25 +3541,27 @@ ApplicationWindow {
                                             spacing: Theme.space3
 
                                             Repeater {
-                                                model: [
-                                                    { label: "x", value: objectsTab.selectedObj ? objectsTab.selectedObj.x : 0 },
-                                                    { label: "y", value: objectsTab.selectedObj ? objectsTab.selectedObj.y : 0 },
-                                                    { label: "z", value: objectsTab.selectedObj ? objectsTab.selectedObj.z : 0 }
-                                                ]
+                                                // A static model - the values live in the
+                                                // delegate bindings, so a 30 Hz preview
+                                                // tick re-evaluates three Texts instead
+                                                // of rebuilding three delegates.
+                                                model: ["x", "y", "z"]
 
                                                 ColumnLayout {
-                                                    required property var modelData
+                                                    required property string modelData
                                                     Layout.fillWidth: true
                                                     spacing: 2
 
                                                     Text {
-                                                        text: modelData.label
+                                                        text: parent.modelData
                                                         color: Theme.neutral600
                                                         font.pixelSize: 9
                                                         font.capitalization: Font.AllUppercase
                                                     }
                                                     Text {
-                                                        text: modelData.value.toFixed(2)
+                                                        text: (parent.modelData === "x" ? objectsTab.selX
+                                                               : parent.modelData === "y" ? objectsTab.selY
+                                                                                          : objectsTab.selZ).toFixed(2)
                                                         color: Theme.text
                                                         font.pixelSize: 13
                                                         font.family: Theme.monoFamily
@@ -3435,7 +3693,17 @@ ApplicationWindow {
                                                         }
                                                         Text {
                                                             Layout.fillWidth: true
-                                                            text: objRow.obj && objRow.obj.hasPath ? qsTr("path") : qsTr("static")
+                                                            // The shape's name when a preset
+                                                            // authored it ("orbit"), the key
+                                                            // count for hand-made paths.
+                                                            text: {
+                                                                if (!objRow.obj || !objRow.obj.hasPath) {
+                                                                    return qsTr("static");
+                                                                }
+                                                                return objRow.obj.pathLabel.length > 0
+                                                                       ? objRow.obj.pathLabel
+                                                                       : qsTr("%1 keys").arg(objRow.obj.keyCount);
+                                                            }
                                                             font.pixelSize: Theme.fontSmall
                                                             color: objRow.obj && objRow.obj.hasPath ? Theme.text : Theme.textMuted
                                                         }
@@ -3479,8 +3747,20 @@ ApplicationWindow {
                                             }
                                             Item { Layout.fillWidth: true }
                                             Text {
-                                                text: qsTr("%1 of 16 objects · each one is a sound with a place")
-                                                      .arg(EncoderController.objectCount)
+                                                // The bed's LFE is the sixteenth object,
+                                                // and every bed-pinned channel spends a
+                                                // dynamic slot - the denominator says
+                                                // what is genuinely left, not "16".
+                                                text: {
+                                                    const pinned = EncoderController.pinnedObjectCount;
+                                                    const cap = 15 - pinned;
+                                                    if (pinned > 0) {
+                                                        return qsTr("%1 of %2 objects · %3 pinned to the bed")
+                                                            .arg(EncoderController.objectCount).arg(cap).arg(pinned);
+                                                    }
+                                                    return qsTr("%1 of %2 objects · each one is a sound with a place")
+                                                        .arg(EncoderController.objectCount).arg(cap);
+                                                }
                                                 font.pixelSize: 10
                                                 font.family: Theme.monoFamily
                                                 color: Theme.neutral600
@@ -3565,17 +3845,36 @@ ApplicationWindow {
                                         }
                                         Text {
                                             text: objectsTab.formatTime(objectsTab.playheadTime)
-                                                  + " / " + objectsTab.formatTime(8)
+                                                  + " / " + objectsTab.formatTime(objectsTab.timelineLength)
                                             color: Theme.textMuted
                                             font.pixelSize: 11
                                             font.family: Theme.monoFamily
                                         }
+                                        Text {
+                                            text: qsTr("click to scrub · double-click a lane for a key · drag a key to retime · right-click removes")
+                                            color: Theme.neutral500
+                                            font.pixelSize: 9
+                                            font.family: Theme.monoFamily
+                                        }
                                         Item { Layout.fillWidth: true }
                                         Button {
+                                            objectName: "addKeyButton"
                                             text: qsTr("Add key")
                                             enabled: !EncoderController.busy && objectsTab.selectedObj !== null
                                             onClicked: EncoderController.addObjectKeyframe(
                                                            objectsTab.selectedObj.index, objectsTab.playheadTime)
+                                        }
+                                        Button {
+                                            objectName: "deleteKeyButton"
+                                            text: qsTr("Delete key")
+                                            enabled: !EncoderController.busy
+                                                     && objectsTab.selectedObj !== null
+                                                     && objectsTab.selectedKeyTime >= 0
+                                            onClicked: {
+                                                EncoderController.removeObjectKeyframe(
+                                                    objectsTab.selectedObj.index, objectsTab.selectedKeyTime);
+                                                objectsTab.selectedKeyTime = -1;
+                                            }
                                         }
                                         Button {
                                             text: objectsTab.previewing ? qsTr("Stop") : qsTr("Preview")
@@ -3596,8 +3895,8 @@ ApplicationWindow {
                                         running: objectsTab.previewing
                                         onTriggered: {
                                             objectsTab.playheadTime += interval / 1000;
-                                            if (objectsTab.playheadTime >= 8) {
-                                                objectsTab.playheadTime = 8;
+                                            if (objectsTab.playheadTime >= objectsTab.timelineLength) {
+                                                objectsTab.playheadTime = objectsTab.timelineLength;
                                                 objectsTab.previewing = false;
                                             }
                                         }
@@ -3608,6 +3907,17 @@ ApplicationWindow {
                                         Layout.fillWidth: true
                                         implicitHeight: timelineColumn.implicitHeight
 
+                                        // ONE geometry for the ruler, the keys and the
+                                        // playhead - the 8 px disagreement between them
+                                        // was exactly the drift a shared mapping ends.
+                                        readonly property real laneLeft: 78
+                                        readonly property real laneRight: 8
+                                        readonly property real laneSpan: width - laneLeft - laneRight
+                                        function xToTime(x) {
+                                            return Math.max(0, Math.min(objectsTab.timelineLength,
+                                                (x - laneLeft) / laneSpan * objectsTab.timelineLength));
+                                        }
+
                                         Rectangle {
                                             anchors.fill: parent
                                             color: "transparent"
@@ -3615,30 +3925,51 @@ ApplicationWindow {
                                             border.width: 1
                                         }
 
+                                        // Scrubbing: anywhere on the timeline positions
+                                        // the playhead; the lanes' own handlers sit on
+                                        // top for their gestures.
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            enabled: !EncoderController.busy
+                                            onPressed: (mouse) => scrub(mouse)
+                                            onPositionChanged: (mouse) => {
+                                                if (mouse.buttons & Qt.LeftButton) scrub(mouse);
+                                            }
+                                            function scrub(mouse) {
+                                                objectsTab.previewing = false;
+                                                objectsTab.playheadTime = timelineWrap.xToTime(mouse.x);
+                                            }
+                                        }
+
                                         ColumnLayout {
                                             id: timelineColumn
                                             width: parent.width
                                             spacing: 0
 
-                                            RowLayout {
+                                            Rectangle {
                                                 Layout.fillWidth: true
-                                                Layout.leftMargin: 70
-                                                Layout.rightMargin: 8
-                                                Layout.topMargin: 5
-                                                Layout.bottomMargin: 5
+                                                implicitHeight: rulerRow.implicitHeight + 10
+                                                color: Theme.neutral100
 
-                                                Repeater {
-                                                    model: 9
-                                                    Text {
-                                                        required property int index
-                                                        Layout.fillWidth: true
-                                                        horizontalAlignment: index === 0 ? Text.AlignLeft
-                                                                             : index === 8 ? Text.AlignRight
-                                                                             : Text.AlignHCenter
-                                                        text: index === 8 ? qsTr("8 s") : String(index)
-                                                        color: Theme.neutral600
-                                                        font.pixelSize: 9
-                                                        font.family: Theme.monoFamily
+                                                RowLayout {
+                                                    id: rulerRow
+                                                    anchors.fill: parent
+                                                    anchors.leftMargin: timelineWrap.laneLeft
+                                                    anchors.rightMargin: timelineWrap.laneRight
+
+                                                    Repeater {
+                                                        model: 9
+                                                        Text {
+                                                            required property int index
+                                                            Layout.fillWidth: true
+                                                            horizontalAlignment: index === 0 ? Text.AlignLeft
+                                                                                 : index === 8 ? Text.AlignRight
+                                                                                 : Text.AlignHCenter
+                                                            text: index === 8 ? qsTr("8 s") : String(index)
+                                                            color: Theme.neutral600
+                                                            font.pixelSize: 9
+                                                            font.family: Theme.monoFamily
+                                                        }
                                                     }
                                                 }
                                             }
@@ -3662,11 +3993,14 @@ ApplicationWindow {
                                                                ? Theme.text : Theme.neutral700
                                                         font.pixelSize: 10
                                                         font.family: Theme.monoFamily
+                                                        font.weight: laneRow.index === EncoderController.selectedObjectIndex
+                                                                     ? Font.DemiBold : Font.Normal
                                                     }
 
                                                     Rectangle {
                                                         id: lane
                                                         Layout.fillWidth: true
+                                                        Layout.rightMargin: timelineWrap.laneRight
                                                         Layout.preferredHeight: 24
                                                         readonly property bool isSelected:
                                                             laneRow.index === EncoderController.selectedObjectIndex
@@ -3674,6 +4008,38 @@ ApplicationWindow {
                                                             (objectsTab.objectsRevision,
                                                              EncoderController.objectKeyframes(laneRow.index))
                                                         color: isSelected ? Theme.accent100 : "transparent"
+
+                                                        function timeToX(t) {
+                                                            return (t / objectsTab.timelineLength) * lane.width;
+                                                        }
+
+                                                        // Select on press, scrub on drag; a
+                                                        // double-click authors a key at that
+                                                        // instant from the object's current
+                                                        // spot.
+                                                        MouseArea {
+                                                            anchors.fill: parent
+                                                            enabled: !EncoderController.busy
+                                                            onPressed: (mouse) => {
+                                                                EncoderController.selectedObjectIndex = laneRow.index;
+                                                                objectsTab.previewing = false;
+                                                                objectsTab.playheadTime =
+                                                                    mouse.x / lane.width * objectsTab.timelineLength;
+                                                            }
+                                                            onPositionChanged: (mouse) => {
+                                                                if (mouse.buttons & Qt.LeftButton) {
+                                                                    objectsTab.playheadTime = Math.max(0,
+                                                                        Math.min(objectsTab.timelineLength,
+                                                                                 mouse.x / lane.width * objectsTab.timelineLength));
+                                                                }
+                                                            }
+                                                            onDoubleClicked: (mouse) => {
+                                                                EncoderController.selectedObjectIndex = laneRow.index;
+                                                                EncoderController.addObjectKeyframe(
+                                                                    laneRow.index,
+                                                                    mouse.x / lane.width * objectsTab.timelineLength);
+                                                            }
+                                                        }
 
                                                         Rectangle {
                                                             anchors.left: parent.left
@@ -3685,10 +4051,10 @@ ApplicationWindow {
 
                                                         Rectangle {
                                                             visible: lane.keys.length > 1
-                                                            x: lane.keys.length > 1 ? (lane.keys[0].time / 8) * lane.width : 0
+                                                            x: lane.keys.length > 1 ? lane.timeToX(lane.keys[0].time) : 0
                                                             width: lane.keys.length > 1
-                                                                   ? Math.max(0, ((lane.keys[lane.keys.length - 1].time
-                                                                                   - lane.keys[0].time) / 8) * lane.width)
+                                                                   ? Math.max(0, lane.timeToX(lane.keys[lane.keys.length - 1].time)
+                                                                                 - lane.timeToX(lane.keys[0].time))
                                                                    : 0
                                                             y: lane.height / 2
                                                             height: 1
@@ -3697,14 +4063,72 @@ ApplicationWindow {
 
                                                         Repeater {
                                                             model: lane.keys
-                                                            Rectangle {
+                                                            Item {
+                                                                id: keyMark
                                                                 required property var modelData
-                                                                width: 8
-                                                                height: 8
-                                                                rotation: 45
-                                                                color: lane.isSelected ? Theme.accent : Theme.text
-                                                                x: (modelData.time / 8) * lane.width - width / 2
-                                                                y: lane.height / 2 - height / 2
+                                                                readonly property bool keySelected:
+                                                                    lane.isSelected
+                                                                    && Math.abs(objectsTab.selectedKeyTime - modelData.time) < 0.005
+                                                                // While a drag is in flight the
+                                                                // VISUAL position is local state -
+                                                                // committing per-move would rebuild
+                                                                // this delegate mid-gesture.
+                                                                property bool dragging: false
+                                                                property real dragTime: 0
+
+                                                                width: 16
+                                                                height: lane.height
+                                                                x: lane.timeToX(dragging ? dragTime : modelData.time) - width / 2
+                                                                y: 0
+                                                                z: 1
+
+                                                                Rectangle {
+                                                                    anchors.centerIn: parent
+                                                                    width: keyMark.keySelected ? 10 : 8
+                                                                    height: keyMark.keySelected ? 10 : 8
+                                                                    rotation: 45
+                                                                    color: lane.isSelected ? Theme.accent : Theme.text
+                                                                    border.color: keyMark.keySelected ? Theme.text : "transparent"
+                                                                    border.width: keyMark.keySelected ? 2 : 0
+                                                                }
+
+                                                                MouseArea {
+                                                                    anchors.fill: parent
+                                                                    acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                                                    enabled: !EncoderController.busy
+                                                                    onPressed: (mouse) => {
+                                                                        EncoderController.selectedObjectIndex = laneRow.index;
+                                                                        objectsTab.selectedKeyTime = keyMark.modelData.time;
+                                                                        if (mouse.button === Qt.LeftButton) {
+                                                                            keyMark.dragging = true;
+                                                                            keyMark.dragTime = keyMark.modelData.time;
+                                                                        }
+                                                                    }
+                                                                    onPositionChanged: (mouse) => {
+                                                                        if (!keyMark.dragging) return;
+                                                                        const laneX = keyMark.x + mouse.x;
+                                                                        keyMark.dragTime = Math.max(0,
+                                                                            Math.min(objectsTab.timelineLength,
+                                                                                     laneX / lane.width * objectsTab.timelineLength));
+                                                                    }
+                                                                    onReleased: (mouse) => {
+                                                                        if (!keyMark.dragging) return;
+                                                                        keyMark.dragging = false;
+                                                                        if (Math.abs(keyMark.dragTime - keyMark.modelData.time) >= 0.005) {
+                                                                            EncoderController.moveObjectKeyframe(
+                                                                                laneRow.index, keyMark.modelData.time,
+                                                                                keyMark.dragTime);
+                                                                            objectsTab.selectedKeyTime = keyMark.dragTime;
+                                                                        }
+                                                                    }
+                                                                    onClicked: (mouse) => {
+                                                                        if (mouse.button === Qt.RightButton) {
+                                                                            objectsTab.selectedKeyTime = -1;
+                                                                            EncoderController.removeObjectKeyframe(
+                                                                                laneRow.index, keyMark.modelData.time);
+                                                                        }
+                                                                    }
+                                                                }
                                                             }
                                                         }
                                                     }
@@ -3713,7 +4137,9 @@ ApplicationWindow {
                                         }
 
                                         Rectangle {
-                                            x: 70 + (objectsTab.playheadTime / 8) * (timelineWrap.width - 70 - 8)
+                                            x: timelineWrap.laneLeft
+                                               + (objectsTab.playheadTime / objectsTab.timelineLength)
+                                                 * timelineWrap.laneSpan
                                             y: 0
                                             width: 2
                                             height: timelineWrap.height
