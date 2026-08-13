@@ -104,8 +104,8 @@ correction — `EncoderController.liveDriftText`, e.g. `slave −18 ppm` — upd
 Honest, not estimated ahead of time: it is the correction the resampler is actually applying.
 
 **Channel space.** The flat capture-channel space object slots address gains the slave's channels
-after the master's — devices are sources, the same identity concept
-[bundle A](timeline-and-object-motion.md) gave loaded files. `EncoderController.liveDeviceChannels`
+after the master's — devices are sources, the same identity concept the earlier timeline/object
+work gave loaded files. `EncoderController.liveDeviceChannels`
 is the combined count; `EncoderController.liveCaptureChannelLabels` names each flat index (`Ch 1`…
 for the master, `Dev2 Ch 1`… for the slave) for the Live room's channel picker. The existing
 per-slot bind/reassign (`addLiveObject`/`reassignLiveObjectSlot`, see
