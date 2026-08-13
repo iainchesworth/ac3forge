@@ -173,6 +173,13 @@ ApplicationWindow {
         if (!appSettings.restoreSession) {
             return;
         }
+        // Restore is a fresh-start feature. A controller that already holds
+        // sources (a second window over the same singleton - the test
+        // harness's shape, but also any future multi-window arrangement)
+        // must not have a saved session STACKED on top of what is loaded.
+        if (EncoderController.sourceModel.length > 0) {
+            return;
+        }
         let paths = [];
         let assignments = [];
         let extras = [];
