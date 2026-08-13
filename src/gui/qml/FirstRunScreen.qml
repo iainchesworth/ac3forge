@@ -108,11 +108,11 @@ RowLayout {
             Repeater {
                 model: [
                     { n: "01", title: qsTr("The signal stays on the left"),
-                      body: qsTr("Sources, live meters and the soundfield never scroll away, whatever you are configuring on the right.") },
+                      body: qsTr("Source, meters and the room: always on screen, never scrolled away while you configure.") },
                     { n: "02", title: qsTr("The stream is built on the right"),
-                      body: qsTr("Format, coding tools, metadata and objects live in tabbed panels rather than one endless column.") },
+                      body: qsTr("Format, coding tools, metadata and objects, in four panels rather than one 1,950 px column.") },
                     { n: "03", title: qsTr("Encoding is a run, not a moment"),
-                      body: qsTr("Each encode lands in a history strip with its exact reproducing ac3cli command line beside it.") },
+                      body: qsTr("Every encode lands in a run list with its settings, its result and the exact ac3cli line that reproduces it.") },
                 ]
                 delegate: ColumnLayout {
                     required property var modelData

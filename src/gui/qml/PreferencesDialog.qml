@@ -141,13 +141,13 @@ Dialog {
                 SegmentedControl {
                     model: [
                         { value: "coded", label: qsTr("Every coded channel") },
-                        { value: "rendered", label: qsTr("Only driven speakers") },
+                        { value: "rendered", label: qsTr("Only speakers a receiver drives") },
                     ]
                     currentValue: root.meterChoice
                     onSelected: (value) => root.meterChoice = value
                 }
                 PrefsNote {
-                    text: qsTr("A stream can carry channels a receiver never drives — silent bed rows behind a dependent substream. Coded shows them; Rendered hides them.")
+                    text: qsTr("A stream can carry channels no speaker plays — silent beds under objects, or positions a dependent substream replaces. Showing every coded channel tells you what is in the file; showing rendered speakers tells you what a listener hears.")
                 }
 
                 Item { Layout.preferredHeight: Theme.space2 }
@@ -196,6 +196,9 @@ Dialog {
                     }
                     onActivated: root.controlsChoice = currentValue
                 }
+                PrefsNote {
+                    text: qsTr("Guided asks a question per step and applies the constraints for you. Advanced shows the format, channels and objects at once. Expert adds the Annex E tools and the metadata panel.")
+                }
 
                 CheckBox {
                     text: qsTr("Reopen the last session's sources and assignments")
@@ -204,7 +207,7 @@ Dialog {
                     font.pixelSize: 12
                 }
                 CheckBox {
-                    text: qsTr("Start on the screen I was on")
+                    text: qsTr("Start on the last screen I was on")
                     checked: root.restoreScreenChoice
                     onToggled: root.restoreScreenChoice = checked
                     font.pixelSize: 12
@@ -346,7 +349,7 @@ Dialog {
                     font.pixelSize: 12
                 }
                 PrefsNote {
-                    text: qsTr("The codec is not a default — it follows the channels you pick. No default channel layout either, for the same reason.")
+                    text: qsTr("The codec is not a default — it follows the channels you pick, and there is no default channel layout for the same reason. Variable rate applies to Dolby Digital Plus files only.")
                 }
 
                 Item { Layout.preferredHeight: Theme.space2 }

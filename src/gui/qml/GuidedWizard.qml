@@ -20,12 +20,18 @@ ColumnLayout {
     // own step keys.
     property string currentStepKey: "source"
 
+    // The enclosing ApplicationWindow, resolved once the tree exists — for
+    // tier/tab jumps and for reading window state (input mode, plan line)
+    // in bindings.
+    property var appWindow: null
+    Component.onCompleted: appWindow = requestWindow()
+
     readonly property var steps: [
         { key: "source", label: qsTr("Audio"),
           assistant: qsTr("Start with the audio. Everything after this follows from what you bring in."),
           next: qsTr("Next — your speakers") },
         { key: "setup", label: qsTr("Speakers"),
-          assistant: qsTr("Tell me what you are playing this back on. I will set the channels to match."),
+          assistant: qsTr("Tell me what you are playing it back on. I will set the channels to match."),
           next: qsTr("Next — quality") },
         { key: "quality", label: qsTr("Quality"),
           assistant: qsTr("A higher rate sounds better and makes a bigger file. Anything here is a valid Dolby stream."),
@@ -109,6 +115,17 @@ ColumnLayout {
     // inverse-root law the static fallback uses, so a preset never makes
     // the summed bed hotter than static placement would.
     property string traj: "hold"
+    // The step-4 preview's clock: loops the authored paths so the movement
+    // card is watched, not imagined. Runs only while the step is on screen.
+    property real previewT: 0
+    Timer {
+        interval: 50
+        repeat: true
+        running: wizard.currentStepKey === "motion" && wizard.visible
+                 && EncoderController.atmosEnabled && EncoderController.objectCount > 0
+                 && wizard.traj !== "hold"
+        onTriggered: wizard.previewT = (wizard.previewT + 0.05) % 8
+    }
     function authorTrajectories(kind) {
         traj = kind;
         const n = EncoderController.objectCount;
@@ -264,18 +281,23 @@ ColumnLayout {
             // The two source cards.
             Rectangle {
                 objectName: "wizardSourceFile"
+                // The SELECTED branch highlights - the live card lights up
+                // when live is the input, not never.
+                readonly property bool active: EncoderController.sourceModel.length > 0
+                                               && (!wizard.appWindow
+                                                   || wizard.appWindow.inputMode === "file")
                 Layout.fillWidth: true
                 Layout.preferredHeight: 72
                 color: "transparent"
-                border.color: Theme.text
-                border.width: EncoderController.sourceModel.length > 0 ? 2 : 1
+                border.color: active ? Theme.text : Theme.divider
+                border.width: active ? 2 : 1
 
                 Rectangle {
                     anchors.left: parent.left
                     anchors.top: parent.top
                     anchors.bottom: parent.bottom
                     width: 3
-                    color: EncoderController.sourceModel.length > 0 ? Theme.accent : "transparent"
+                    color: parent.active ? Theme.accent : "transparent"
                 }
                 RowLayout {
                     anchors.fill: parent
@@ -327,11 +349,21 @@ ColumnLayout {
 
             Rectangle {
                 objectName: "wizardSourceLive"
+                readonly property bool active: wizard.appWindow !== null
+                                               && wizard.appWindow.inputMode === "live"
                 Layout.fillWidth: true
                 Layout.preferredHeight: 72
                 color: "transparent"
-                border.color: Theme.divider
-                border.width: 1
+                border.color: active ? Theme.text : Theme.divider
+                border.width: active ? 2 : 1
+
+                Rectangle {
+                    anchors.left: parent.left
+                    anchors.top: parent.top
+                    anchors.bottom: parent.bottom
+                    width: 3
+                    color: parent.active ? Theme.accent : "transparent"
+                }
 
                 RowLayout {
                     anchors.fill: parent
@@ -432,11 +464,18 @@ ColumnLayout {
             spacing: Theme.space4
 
             Text {
-                text: qsTr("What are you playing this back on?")
+                text: qsTr("What are you playing it back on?")
                 font.pixelSize: 30
                 font.family: Theme.headingFamily
                 font.weight: Font.ExtraBold
                 color: Theme.text
+            }
+            Text {
+                Layout.fillWidth: true
+                text: qsTr("Pick the room you actually have. This sets the channels — you never have to name them yourself.")
+                wrapMode: Text.WordWrap
+                font.pixelSize: 15
+                color: Theme.neutral700
             }
 
             GridLayout {
@@ -448,17 +487,21 @@ ColumnLayout {
                 Repeater {
                     model: [
                         { key: "stereo", preset: "stereo", signature: "2/0|0|",
-                          title: qsTr("A laptop, or a stereo pair"),
-                          body: qsTr("Two channels, no subwoofer. Plays absolutely everywhere.") },
+                          title: qsTr("A TV or soundbar"),
+                          body: qsTr("Two speakers, no subwoofer of its own."),
+                          detail: qsTr("2.0 · L R") },
                         { key: "home", preset: "5.1", signature: "3/2|1|",
-                          title: qsTr("A home theatre — 5.1"),
-                          body: qsTr("Five speakers and a subwoofer. The shape most receivers were built around.") },
+                          title: qsTr("Home cinema, five speakers and a sub"),
+                          body: qsTr("The common one. Nothing on the ceiling."),
+                          detail: qsTr("5.1 · L C R Ls Rs LFE") },
                         { key: "atmos", preset: "5.1.4", signature: "3/2|1|topf,topr",
-                          title: qsTr("Atmos — 5.1 plus ceiling"),
-                          body: qsTr("The same bed with four height speakers above it.") },
+                          title: qsTr("…plus speakers overhead"),
+                          body: qsTr("Four in the ceiling, or upward-firing modules."),
+                          detail: qsTr("5.1.4 · + 4 ceiling") },
                         { key: "full", preset: "7.1.4", signature: "3/2|1|rear,topf,topr",
-                          title: qsTr("The full room — 7.1.4"),
-                          body: qsTr("Rears behind you and four heights. Everything a living room can hold.") },
+                          title: qsTr("The full room"),
+                          body: qsTr("Sides and rears at ear level, four overhead."),
+                          detail: qsTr("7.1.4 · 12 speakers") },
                     ]
                     delegate: Rectangle {
                         id: setupCard
@@ -467,7 +510,7 @@ ColumnLayout {
 
                         objectName: "wizardSetup-" + modelData.key
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 84
+                        Layout.preferredHeight: 100
                         color: active ? Theme.accent100 : "transparent"
                         border.color: active ? Theme.accent : Theme.divider
                         border.width: active ? 2 : 1
@@ -491,6 +534,13 @@ ColumnLayout {
                                 font.pixelSize: 12
                                 color: Theme.neutral700
                             }
+                            Item { Layout.fillHeight: true }
+                            Text {
+                                text: setupCard.modelData.detail
+                                font.pixelSize: 11
+                                font.family: Theme.monoFamily
+                                color: Theme.neutral600
+                            }
                         }
                         TapHandler {
                             enabled: !EncoderController.atmosEnabled && !EncoderController.busy
@@ -501,12 +551,12 @@ ColumnLayout {
             }
 
             Text {
-                visible: EncoderController.atmosEnabled
                 Layout.fillWidth: true
-                text: qsTr("Movement is on, so the speaker layout is fixed at 5.1 and the format at Dolby Digital Plus — objects carry the height instead of ceiling speakers. Turn movement off in step 4 to choose your own layout again.")
-                wrapMode: Text.WordWrap
+                text: qsTr("Currently building %1 · %2 speakers. The plan above the tabs always shows what you will get.")
+                      .arg(EncoderController.channelShapeName)
+                      .arg(EncoderController.renderedChannelCount)
                 font.pixelSize: 12
-                color: Theme.accent700
+                color: Theme.neutral700
             }
 
             RowLayout {
@@ -515,7 +565,7 @@ ColumnLayout {
 
                 Text {
                     objectName: "wizardRoomPickerLink"
-                    text: qsTr("Pick the room, part by part →")
+                    text: qsTr("Pick speakers myself →")
                     font.pixelSize: 12
                     font.weight: Font.DemiBold
                     color: Theme.accent700
@@ -557,7 +607,7 @@ ColumnLayout {
             id: roomPickerScreen
 
             Text {
-                text: qsTr("Pick the room, part by part.")
+                text: qsTr("Tap what is in your room.")
                 font.pixelSize: 30
                 font.family: Theme.headingFamily
                 font.weight: Font.ExtraBold
@@ -565,7 +615,7 @@ ColumnLayout {
             }
             Text {
                 Layout.fillWidth: true
-                text: qsTr("Say what is in the room and the channel layout falls out of it — the bed is never something you have to name.")
+                text: qsTr("Front left and right are always there. Everything else is yours to add — pairs go in together, because half a pair does not exist.")
                 wrapMode: Text.WordWrap
                 font.pixelSize: 14
                 color: Theme.neutral700
@@ -632,7 +682,7 @@ ColumnLayout {
                     model: [
                         { value: "none", label: qsTr("None") },
                         { value: "sides", label: qsTr("At your sides") },
-                        { value: "back", label: qsTr("One behind you") },
+                        { value: "back", label: qsTr("One at the back") },
                     ]
                     currentValue: wizard.roomSurround
                     onSelected: (value) => wizard.setBedId(
@@ -662,6 +712,27 @@ ColumnLayout {
 
             // The extras, in room language. Same rows, same rules, same
             // reasons as the Format tab — only the words are the room's.
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.topMargin: Theme.space2
+
+                Text {
+                    text: qsTr("Anything overhead or extra")
+                    font.pixelSize: 13
+                    font.weight: Font.DemiBold
+                    color: Theme.text
+                }
+                Item { Layout.fillWidth: true }
+                Text {
+                    text: qsTr("%1 of %2 · %3")
+                          .arg(EncoderController.channelBudgetUsed)
+                          .arg(EncoderController.channelBudgetMax)
+                          .arg(EncoderController.channelShapeName)
+                    font.pixelSize: 11
+                    font.family: Theme.monoFamily
+                    color: Theme.neutral700
+                }
+            }
             ColumnLayout {
                 Layout.fillWidth: true
                 spacing: 0
@@ -705,7 +776,21 @@ ColumnLayout {
                                 color: Theme.text
                             }
                             Text {
-                                text: roomExtraRow.modelData.reason
+                                // The Format tab's promotion hint applies here
+                                // too: an unticked extra under plain AC-3 will
+                                // move the stream to Dolby Digital Plus.
+                                text: {
+                                    if (roomExtraRow.modelData.reason.length > 0) {
+                                        return roomExtraRow.modelData.reason;
+                                    }
+                                    if (!roomExtraRow.modelData.checked
+                                        && EncoderController.codecIndex === 0
+                                        && !EncoderController.atmosEnabled
+                                        && !EncoderController.dualMono) {
+                                        return qsTr("moves to Dolby Digital Plus");
+                                    }
+                                    return "";
+                                }
                                 font.pixelSize: 11
                                 color: Theme.textMuted
                             }
@@ -773,6 +858,13 @@ ColumnLayout {
                 font.weight: Font.ExtraBold
                 color: Theme.text
             }
+            Text {
+                Layout.fillWidth: true
+                text: qsTr("All three make a real Dolby stream any receiver will play. The difference is file size and how much detail survives.")
+                wrapMode: Text.WordWrap
+                font.pixelSize: 15
+                color: Theme.neutral700
+            }
 
             RowLayout {
                 Layout.fillWidth: true
@@ -780,9 +872,15 @@ ColumnLayout {
 
                 Repeater {
                     model: [
-                        { rate: 192, title: qsTr("Broadcast"), body: qsTr("What digital TV uses for 5.1. 24 KB/s.") },
-                        { rate: 448, title: qsTr("DVD"), body: qsTr("The DVD standard's comfortable ceiling. 56 KB/s.") },
-                        { rate: 768, title: qsTr("Generous"), body: qsTr("More than any layout here needs. 96 KB/s.") },
+                        { rate: 192, title: qsTr("Good"),
+                          body: qsTr("Fine for speech, streaming and anything stereo."),
+                          detail: qsTr("192 kbps · 24 KB/s") },
+                        { rate: 448, title: qsTr("Better"),
+                          body: qsTr("What a DVD carries. A sensible default for 5.1."),
+                          detail: qsTr("448 kbps · 56 KB/s") },
+                        { rate: 768, title: qsTr("Best"),
+                          body: qsTr("Worth it for wide rooms, ceiling channels and objects."),
+                          detail: qsTr("768 kbps · 96 KB/s") },
                     ]
                     delegate: Rectangle {
                         id: rateCard
@@ -802,16 +900,10 @@ ColumnLayout {
                             spacing: 2
 
                             Text {
-                                text: qsTr("%1 kbps").arg(rateCard.modelData.rate)
+                                text: rateCard.modelData.title
                                 font.pixelSize: 18
                                 font.family: Theme.headingFamily
                                 font.weight: Font.ExtraBold
-                                color: Theme.text
-                            }
-                            Text {
-                                text: rateCard.modelData.title
-                                font.pixelSize: 13
-                                font.weight: Font.DemiBold
                                 color: Theme.text
                             }
                             Text {
@@ -820,6 +912,13 @@ ColumnLayout {
                                 wrapMode: Text.WordWrap
                                 font.pixelSize: 11
                                 color: Theme.neutral700
+                            }
+                            Item { Layout.fillHeight: true }
+                            Text {
+                                text: rateCard.modelData.detail
+                                font.pixelSize: 11
+                                font.family: Theme.monoFamily
+                                color: Theme.neutral600
                             }
                         }
                         TapHandler {
@@ -847,11 +946,18 @@ ColumnLayout {
             spacing: Theme.space4
 
             Text {
-                text: qsTr("Should sounds move around the room?")
+                text: qsTr("Should anything move?")
                 font.pixelSize: 30
                 font.family: Theme.headingFamily
                 font.weight: Font.ExtraBold
                 color: Theme.text
+            }
+            Text {
+                Layout.fillWidth: true
+                text: qsTr("Sounds can sit in fixed speakers, or travel through the room as objects. Pick a movement and watch it in the room below.")
+                wrapMode: Text.WordWrap
+                font.pixelSize: 15
+                color: Theme.neutral700
             }
 
             RowLayout {
@@ -969,12 +1075,14 @@ ColumnLayout {
 
                     Repeater {
                         model: [
-                            { key: "hold", title: qsTr("Hold still"),
-                              body: qsTr("Every object keeps its place in the room.") },
-                            { key: "orbit", title: qsTr("Slow orbit"),
-                              body: qsTr("One lap around the listener over eight seconds, objects spaced apart.") },
-                            { key: "lift", title: qsTr("Rise and fall"),
-                              body: qsTr("Up to the ceiling and back, each object from its own spot.") },
+                            { key: "hold", title: qsTr("Stay put"),
+                              body: qsTr("Every sound holds its speaker position.") },
+                            { key: "orbit", title: qsTr("Circle the room"),
+                              body: qsTr("Sounds travel round the listener at ear level.") },
+                            { key: "lift", title: qsTr("Lift overhead"),
+                              body: qsTr("Rises from the floor to the ceiling as it plays.") },
+                            { key: "custom", title: qsTr("Place them myself"),
+                              body: qsTr("Opens the room and the timeline, one object at a time. (Advanced →)") },
                         ]
                         delegate: Rectangle {
                             id: trajCard
@@ -1009,7 +1117,20 @@ ColumnLayout {
                             }
                             TapHandler {
                                 enabled: !EncoderController.busy
-                                onTapped: wizard.authorTrajectories(trajCard.modelData.key)
+                                onTapped: {
+                                    if (trajCard.modelData.key === "custom") {
+                                        // The fourth card IS the Advanced jump -
+                                        // the room and the timeline, per object.
+                                        const win = wizard.requestWindow();
+                                        if (win) {
+                                            win.fromGuided = true;
+                                            win.tier = "advanced";
+                                            win.currentTab = "objects";
+                                        }
+                                        return;
+                                    }
+                                    wizard.authorTrajectories(trajCard.modelData.key);
+                                }
                             }
                         }
                     }
@@ -1021,25 +1142,70 @@ ColumnLayout {
                     font.pixelSize: 11
                     color: Theme.textMuted
                 }
-            }
 
-            Text {
-                visible: EncoderController.atmosEnabled
-                objectName: "wizardPlaceObjectsLink"
-                text: qsTr("Place the objects →")
-                font.pixelSize: 12
-                font.weight: Font.DemiBold
-                color: Theme.accent700
-                MouseArea {
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                        const win = wizard.requestWindow();
-                        if (win) {
-                            win.fromGuided = true;
-                            win.tier = "advanced";
-                            win.currentTab = "objects";
+                // ---- preview: the paths, playing on loop ----------------
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.topMargin: Theme.space2
+                    spacing: Theme.space4
+                    visible: wizard.traj !== "hold"
+
+                    ColumnLayout {
+                        spacing: 4
+
+                        Text {
+                            text: qsTr("PREVIEW — PLAN")
+                            font.pixelSize: 10
+                            font.letterSpacing: 1
+                            color: Theme.textMuted
                         }
+                        Rectangle {
+                            id: wizardPreviewRoom
+                            Layout.preferredWidth: 150
+                            Layout.preferredHeight: 150
+                            color: Theme.neutral100
+                            border.color: Theme.divider
+                            border.width: 1
+
+                            Rectangle {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                anchors.top: parent.top
+                                anchors.bottom: parent.bottom
+                                width: 1
+                                color: Theme.neutral300
+                            }
+                            Rectangle {
+                                anchors.verticalCenter: parent.verticalCenter
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                height: 1
+                                color: Theme.neutral300
+                            }
+
+                            Repeater {
+                                model: EncoderController.objectCount
+
+                                Rectangle {
+                                    required property int index
+                                    readonly property var pos:
+                                        EncoderController.evaluateObjectPath(index, wizard.previewT)
+                                    width: 8
+                                    height: 8
+                                    color: Theme.neutral800
+                                    x: (pos ? pos.x : 0.5) * wizardPreviewRoom.width - 4
+                                    y: (pos ? pos.y : 0.5) * wizardPreviewRoom.height - 4
+                                }
+                            }
+                        }
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        Layout.alignment: Qt.AlignVCenter
+                        text: qsTr("%1 objects on their paths, looping over eight seconds — the room on the left meters the same encode.")
+                              .arg(EncoderController.objectCount)
+                        wrapMode: Text.WordWrap
+                        font.pixelSize: 12
+                        color: Theme.neutral700
                     }
                 }
             }
@@ -1052,11 +1218,18 @@ ColumnLayout {
             spacing: Theme.space4
 
             Text {
-                text: qsTr("Where does it go?")
+                text: qsTr("Where should it go?")
                 font.pixelSize: 30
                 font.family: Theme.headingFamily
                 font.weight: Font.ExtraBold
                 color: Theme.text
+            }
+            Text {
+                Layout.fillWidth: true
+                text: qsTr("Save it as a file, or send it straight to a receiver and listen on the real thing.")
+                wrapMode: Text.WordWrap
+                font.pixelSize: 15
+                color: Theme.neutral700
             }
 
             RowLayout {
@@ -1067,7 +1240,7 @@ ColumnLayout {
                     objectName: "wizardDest-file"
                     readonly property bool active: wizard.dest === "file"
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 96
+                    Layout.preferredHeight: 104
                     color: active ? Theme.accent100 : "transparent"
                     border.color: active ? Theme.accent : Theme.divider
                     border.width: active ? 2 : 1
@@ -1085,11 +1258,23 @@ ColumnLayout {
                         }
                         Text {
                             Layout.fillWidth: true
-                            text: qsTr("A .%1 elementary stream, kept exactly as encoded — every channel and every object.")
-                                  .arg(EncoderController.outputSuffix())
+                            text: qsTr("Keeps everything — every channel and every object move.")
                             wrapMode: Text.WordWrap
                             font.pixelSize: 12
                             color: Theme.neutral700
+                        }
+                        Item { Layout.fillHeight: true }
+                        Text {
+                            text: {
+                                void EncoderController.sourcePath;
+                                void EncoderController.codecIndex;
+                                void EncoderController.atmosEnabled;
+                                void EncoderController.containerIndex;
+                                return EncoderController.suggestedOutputName();
+                            }
+                            font.pixelSize: 11
+                            font.family: Theme.monoFamily
+                            color: Theme.neutral600
                         }
                     }
                     TapHandler { onTapped: wizard.dest = "file" }
@@ -1099,7 +1284,7 @@ ColumnLayout {
                     objectName: "wizardDest-amp"
                     readonly property bool active: wizard.dest === "amp"
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 96
+                    Layout.preferredHeight: 104
                     color: active ? Theme.accent100 : "transparent"
                     border.color: active ? Theme.accent : Theme.divider
                     border.width: active ? 2 : 1
@@ -1110,34 +1295,114 @@ ColumnLayout {
                         spacing: 2
 
                         Text {
-                            text: qsTr("Play it to the amplifier")
+                            text: qsTr("Play it on my receiver")
                             font.pixelSize: 15
                             font.weight: Font.DemiBold
                             color: Theme.text
                         }
                         Text {
                             Layout.fillWidth: true
-                            text: qsTr("Encode a file first, then bitstream it to a receiver as IEC 61937 bursts — Dolby Digital only today.")
+                            text: qsTr("Encodes the same file, then bitstreams it over HDMI as IEC 61937 bursts — the run strip's Play does the sending.")
                             wrapMode: Text.WordWrap
                             font.pixelSize: 12
                             color: Theme.neutral700
+                        }
+                        Item { Layout.fillHeight: true }
+                        Text {
+                            // The first enumerated endpoint - the same list the
+                            // passthrough panel's combo defaults to.
+                            text: EncoderController.outputDevices.length > 0
+                                  ? EncoderController.outputDevices[0]
+                                  : qsTr("no output device found")
+                            elide: Text.ElideRight
+                            Layout.fillWidth: true
+                            font.pixelSize: 11
+                            font.family: Theme.monoFamily
+                            color: Theme.neutral600
                         }
                     }
                     TapHandler { onTapped: wizard.dest = "amp" }
                 }
             }
 
+            // The endpoint-specific caveat the shared notice below cannot
+            // know: an E-AC-3 stream against an endpoint that only takes
+            // AC-3 fails at Play, not at a fold-down.
             Text {
                 Layout.fillWidth: true
-                visible: {
-                    if (wizard.dest !== "amp") return false;
-                    const meta = EncoderController.channelMeta;
-                    return meta.length > 6 || EncoderController.codecIndex === 1;
-                }
-                text: qsTr("Your receiver leg takes Dolby Digital, which tops out at 5.1 — anything past that is folded in on the way out. Save a file instead to keep it separate.")
+                visible: wizard.dest === "amp" && EncoderController.codecIndex === 1
+                         && EncoderController.renderedChannelCount <= 6
+                         && (EncoderController.outputDevices.length === 0
+                             || EncoderController.outputDevices[0].indexOf("E-AC-3") < 0)
+                text: qsTr("This stream is Dolby Digital Plus, and the output above cannot bitstream it — Play will stay greyed. Pick an E-AC-3-ready endpoint on the Format tab, or save a file.")
                 wrapMode: Text.WordWrap
                 font.pixelSize: 12
                 color: Theme.accent700
+            }
+
+            // ---- what you are about to make -------------------------------
+            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.divider }
+            Text {
+                text: qsTr("WHAT YOU ARE ABOUT TO MAKE")
+                font.pixelSize: 10
+                font.letterSpacing: 1
+                color: Theme.textMuted
+            }
+            GridLayout {
+                Layout.fillWidth: true
+                columns: 4
+                columnSpacing: Theme.space4
+
+                Repeater {
+                    model: [
+                        { label: qsTr("FORMAT"),
+                          value: wizard.appWindow ? wizard.appWindow.planLine : "" },
+                        { label: qsTr("SPEAKERS"),
+                          value: EncoderController.atmosEnabled
+                                 ? qsTr("5.1 bed · objects carry the height")
+                                 : qsTr("%1 · %2 speakers")
+                                   .arg(EncoderController.channelShapeName)
+                                   .arg(EncoderController.renderedChannelCount) },
+                        { label: qsTr("LOUDNESS"),
+                          value: (EncoderController.measureDialnorm
+                                  ? qsTr("Measured") : qsTr("dialnorm %1").arg(EncoderController.dialnorm))
+                                 + " · "
+                                 + (EncoderController.drcIndex > 0
+                                    ? EncoderController.drcNames[EncoderController.drcIndex]
+                                    : qsTr("no compression")) },
+                        { label: qsTr("LENGTH"),
+                          value: (function() {
+                              const sources = EncoderController.sourceModel;
+                              let seconds = 0;
+                              for (let i = 0; i < sources.length; i++) {
+                                  seconds = Math.max(seconds, sources[i].seconds);
+                              }
+                              const mm = Math.floor(seconds / 60);
+                              const ss = String(Math.floor(seconds % 60)).padStart(2, "0");
+                              return mm + ":" + ss;
+                          })() },
+                    ]
+                    delegate: ColumnLayout {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        spacing: 2
+
+                        Text {
+                            text: parent.modelData.label
+                            font.pixelSize: 9
+                            font.letterSpacing: 1
+                            color: Theme.textMuted
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: parent.modelData.value
+                            wrapMode: Text.WordWrap
+                            font.pixelSize: 12
+                            font.family: Theme.monoFamily
+                            color: Theme.text
+                        }
+                    }
+                }
             }
 
             // The unassigned warnings, restated at the door — the same
@@ -1153,6 +1418,52 @@ ColumnLayout {
                     color: Theme.accent700
                 }
             }
+        }
+    }
+
+    // ---- the shared notice: one slot, every step ---------------------------
+    // The mockup's priority chain - object mode wins, then the amp fold-down,
+    // then the plain "extras made this an .ec3" note. One element rather than
+    // a copy per step, so the story never depends on which step is open.
+    Rectangle {
+        readonly property string noticeText: {
+            if (EncoderController.atmosEnabled) {
+                return qsTr("Movement is on, so the speaker layout is fixed at 5.1 and the format at Dolby Digital Plus — objects carry the height instead of ceiling speakers. Turn movement off in step 4 to choose your own layout again.");
+            }
+            if (wizard.dest === "amp" && EncoderController.renderedChannelCount > 6) {
+                return qsTr("Your receiver leg tops out at what it can bitstream — the extra speakers you picked may be folded into the five on the way out. Save a file instead to keep them separate.");
+            }
+            const extras = EncoderController.extrasModel;
+            for (let i = 0; i < extras.length; i++) {
+                if (extras[i].checked) {
+                    return qsTr("Speakers beyond the basic five need Dolby Digital Plus, so this saves as .ec3 rather than .ac3. Every modern receiver reads it; a DVD player will not.");
+                }
+            }
+            return "";
+        }
+        visible: noticeText.length > 0
+        Layout.fillWidth: true
+        Layout.leftMargin: 24
+        Layout.rightMargin: 24
+        Layout.topMargin: Theme.space3
+        color: Theme.accent100
+        implicitHeight: guidedNoticeText.implicitHeight + Theme.space3 * 2
+
+        Rectangle {
+            anchors.left: parent.left
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            width: 2
+            color: Theme.accent
+        }
+        Text {
+            id: guidedNoticeText
+            anchors.fill: parent
+            anchors.margins: Theme.space3
+            text: parent.noticeText
+            wrapMode: Text.WordWrap
+            font.pixelSize: 12
+            color: Theme.accent800
         }
     }
 
@@ -1202,6 +1513,10 @@ ColumnLayout {
                      : (wizard.currentStepIndex < wizard.steps.length - 1
                         || (EncoderController.sourceReady && !EncoderController.busy))
             onClicked: {
+                // Next leaves the room picker behind - returning to step 2
+                // should land on the presets, not a sub-screen someone
+                // finished with.
+                wizard.roomPicker = false;
                 if (wizard.currentStepIndex < wizard.steps.length - 1) {
                     wizard.currentStepKey = wizard.steps[wizard.currentStepIndex + 1].key;
                     return;
