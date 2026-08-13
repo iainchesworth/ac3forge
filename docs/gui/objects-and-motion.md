@@ -63,28 +63,85 @@ itself jump to the same table.
   is the sixteenth. The selected object gets an **LFE send** slider (0.00–1.00) — the only route
   to that channel, since panning never reaches it.
 
+  A row's position in this list follows the assignment table — object 3 today might be object 2
+  tomorrow, if an earlier channel stops feeding an object. Its *motion* does not follow along:
+  authored keyframes, position and LFE send belong to the actual (source, channel) they were
+  placed on, so reassigning channels around never migrates one sound's path onto a different one,
+  and removing a non-primary source (see [Multi-source & assignment](source-assignment.md#the-source-list))
+  never disturbs a surviving source's motion.
+
 ## Motion
 
-A timeline beneath the object list — a ruler over eight seconds, one lane per object with its
-keyframes as rotated squares, and a playhead. It is an *editor*, not a display:
+A timeline beneath the object list — a ruler, a clip band per loaded source, one lane per object
+with its keyframes as rotated squares, and a playhead. It is an *editor*, not a display.
+
+**The timeline's length is derived, never set by hand**: it is `max(offset + duration)` over
+every loaded source (see the next section for what "offset" means), falling back to the old
+prototype's fixed 8 s only when nothing loaded has a duration to derive it from — a live session
+with no source, say. Loading a longer file, or dragging a source's clip band further out, grows
+the ruler and every lane along with it; nothing needs re-authoring just because the programme got
+longer.
 
 - **Click or drag** anywhere on the timeline to scrub the playhead (pausing a running preview).
 - **Double-click a lane** to author a key at that instant from the object's current position.
-- **Drag a key** to retime it — the move commits on release, and landing on another key replaces
-  it (one instant, one cue).
+- **Drag a key** to retime it — the move commits on release, snapped to the current zoom tier (see
+  below), and landing on another key replaces it (one instant, one cue).
 - **Right-click a key** (or select it and press **Delete key**) to remove it.
 - **Add key** captures the selected object's current position at the playhead. A hand-added key
   seeds the same `0.7/√n` gain the path-less fallback encodes at, so an object never jumps
   louder the moment its first cue lands.
-- **Preview** plays every path back in the plan view *and* the elevation view, moving the
-  markers along exactly what `encodeObjects` will place (the same `KeyframePath` evaluation, not
-  a second interpolation that could disagree with it).
+- **Preview** plays every object through the Atmos encoder for real — its 5.1 bed through the same
+  monitor path a live session uses, paced in real time — while the plan view, the elevation view
+  and the playhead all follow the same audio clock, not a separate visual clock that could drift
+  from it.
 
-Guided step 4 offers **trajectory presets** — *Stay put*, *Circle the room* (one lap around the
-listener over eight seconds, objects spaced apart), *Lift overhead* (floor to ceiling and back),
-and *Place them myself*, which is this tab — that author real keyframes through the same API, so
-a preset is a starting point on this timeline, not a separate motion system. A path a preset
+### Zoom, pan and snap
+
+The ruler starts fit to the whole derived length. **Scroll wheel** over the timeline zooms,
+centred on whatever time is under the cursor; **+ / − / Fit** by the Motion header do the same
+from a click, up to 40×. Past 100% zoom, a thin strip above the lanes becomes a draggable viewport
+indicator for panning. Ruler ticks promote as the view zooms in — 10 s, then 1 s, then 0.1 s apart
+— and every snap (key drags, double-click-added keys, clip-band drags) follows the same tiers: 1 s
+while zoomed out, 0.1 s once zoomed in, down to a 32 ms floor (one 1536-sample OAMD frame at
+48 kHz) that no amount of further zooming crosses — finer than that is precision the format
+cannot actually carry.
+
+### Per-source offsets and keyframe timing
+
+Each loaded source gets its own **clip band** at the top of the timeline, spanning its active
+range (`offset … offset + duration`), and its own numeric **start offset** field on the rail's
+source row (see [Loading a source](loading-a-source.md#01--input)). Drag a clip band (or edit the
+rail field directly) to shift when that source's channels start — encoded as leading silence
+ahead of its own audio, never as a change to the audio itself, the same way `ac3cli`'s `offset=`
+token works (see [CLI → Metadata options](../cli/metadata-options.md)).
+
+**Keyframe times are programme-absolute, on purpose.** Sliding a clip band does *not* move that
+source's objects' keys by default — a key at 4.2 s means 4.2 s into the programme, regardless of
+which source is playing there. To bring an object's motion along with its source, **hold Shift**
+while dragging the clip band; every key belonging to that source's objects shifts by the same
+delta, clamped so none lands before 0. Without Shift, a source slides freely under motion that was
+already authored to land where it lands.
+
+### Trajectory presets
+
+Guided step 4 offers **trajectory presets** — *Stay put*, *Circle the room* (one lap every eight
+seconds), *Lift overhead* (floor to ceiling and back every eight seconds), and *Place them
+myself*, which is this tab — that author real keyframes through the same API, so a preset is a
+starting point on this timeline, not a separate motion system. For a file source, a preset repeats
+its eight-second cycle in whole laps across the *entire derived programme length*, ending exactly
+at the programme's own end rather than cutting off mid-turn; a live session has no such length, so
+its presets simply loop the one fixed cycle for as long as the session runs. A path a preset
 authored keeps the preset's name in the object table until a hand edit makes it something else.
+
+### Export paths
+
+**Export paths…** writes every dynamic object's current motion — or, for a path-less object, its
+static position as a single time-0 keyframe — to a text file in `ac3cli atmos-path`'s own
+keyframe-file grammar (`object_index time_s x y z gain lfe_send`, one line per keyframe, addressed
+by each object's flat WAV channel index). Once exported, the command bar's `atmos-encode` line
+names that file as its trailing argument, so the line it shows is finally something that
+reproduces this tab's authored motion from the command line, not just a static per-channel
+placement. See [CLI → `atmos-encode`](../cli/commands.md) for the argument itself.
 
 **Author a path / Drive it live** (top right) are the two ways to get motion in. Live driving
 needs a monitored capture — the option points at [Live session](live-session.md) rather than

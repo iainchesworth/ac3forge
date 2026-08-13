@@ -14,8 +14,8 @@ channels get routed onto the plan.
 **Choose WAV…** opens a file picker. Each loaded source gets a row — filename, channel count,
 duration, what its channels *do* (`feeds the bed`, `2 objects · 4 to the bed`, `unassigned` —
 derived from the same assignment rows the table edits, so the rail and the table can never
-disagree), and a **Remove** button — and a totals strip beneath the list sums the session
-(`RATE 48 000 · SOURCES 2 · 8 ch · LENGTH 0:02`):
+disagree), a numeric **Start offset** field, and a **Remove** button — and a totals strip beneath
+the list sums the session (`RATE 48 000 · SOURCES 2 · 8 ch · LENGTH 0:02`):
 
 ![A 6-channel WAV loaded, guided tier](screenshots/loading-a-source-loaded.png)
 
@@ -24,6 +24,15 @@ independently on the [Format tab](format-and-channels.md) and need not match the
 narrower than the chosen output layout leaves the missing channels silent; a wider one folds down
 per §7.8 using the centre/surround downmix levels on the [Metadata tab](metadata.md), *unless*
 more than one source is loaded — see below.
+
+**Start offset** delays a source's own channels by that many seconds of leading silence — all of
+them shift together, encoded exactly as `ac3cli`'s `offset=` token would (see
+[CLI → Metadata options](../cli/metadata-options.md)), never as a change to the audio itself. It
+is the same field the Objects tab's timeline shows as a draggable clip band (see
+[Objects & motion](objects-and-motion.md#per-source-offsets-and-keyframe-timing)) — editing either
+one moves the other. The totals strip's `LENGTH` grows to cover it: once any offset is set, it
+reads `max(offset + duration)` over every source, not just the longest source's own raw length,
+so a source pushed out further is never implied to have been cut short.
 
 **+ Add files…** appends another WAV rather than replacing the primary — every source must share
 a sample rate, or the add is refused with a status message naming the mismatch. With two or more
