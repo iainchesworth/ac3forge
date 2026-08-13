@@ -1,0 +1,221 @@
+import QtQuick
+import QtTest
+
+import Ac3Forge
+
+// The mockup-conformance sweep's behavioural contracts: honest run history,
+// CLI-line parity tokens, the E-AC-3 rate rung, the object-mode rate floor,
+// keyframe retiming and gain seeding, and the live tab existing for a live
+// source. Each of these was a real gap an audit found; the test pins the
+// fix so it cannot silently regress.
+TestCase {
+    id: testCase
+    name: "SweepConformance"
+    when: windowShown
+
+    Component {
+        id: mainWindowComponent
+        Main {}
+    }
+
+    readonly property url stereoUrl:
+        Qt.resolvedUrl("../../../../fuzz/seeds/fuzz_wav_read/roundtrip-stereo.wav")
+    readonly property url surroundUrl:
+        Qt.resolvedUrl("../../../../fuzz/seeds/fuzz_wav_read/roundtrip-51.wav")
+
+    function test_extrasRowsCarryChannelTokens() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        EncoderController.atmosEnabled = false;
+
+        const extras = EncoderController.extrasModel;
+        let wide = null;
+        for (let i = 0; i < extras.length; i++) {
+            if (extras[i].id === "wide") { wide = extras[i]; break; }
+        }
+        verify(wide !== null);
+        // The row prints the Table E2.5 tokens themselves, not a count.
+        compare(wide.tokens, "Lw Rw");
+    }
+
+    function test_dualMonoLockReasonIsNotPartOfDualMono() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        EncoderController.atmosEnabled = false;
+
+        // Bed 0 is 1+1 (dual mono) in bedChoices' display order.
+        compare(EncoderController.bedChoices[0].id, "1+1");
+        EncoderController.bedIndex = 0;
+        tryCompare(EncoderController, "dualMono", true);
+
+        const extras = EncoderController.extrasModel;
+        for (let i = 0; i < extras.length; i++) {
+            compare(extras[i].enabled, false);
+            compare(extras[i].reason, "not part of dual mono");
+        }
+
+        // Back to a plain bed for whatever runs next.
+        EncoderController.applyChannelPreset("stereo");
+    }
+
+    function test_eac3Gains768AndAc3ClampsBack() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        EncoderController.atmosEnabled = false;
+        EncoderController.applyChannelPreset("stereo");
+
+        EncoderController.codecIndex = 1;
+        verify(EncoderController.bitrates.indexOf(768) >= 0);
+        EncoderController.bitrateKbps = 768;
+        compare(EncoderController.bitrateKbps, 768);
+
+        // AC-3's Table 5.18 tops out at 640 - switching back clamps rather
+        // than leaving a rate the encoder would refuse at encode time.
+        EncoderController.codecIndex = 0;
+        compare(EncoderController.bitrateKbps, 640);
+        verify(EncoderController.bitrates.indexOf(768) < 0);
+    }
+
+    function test_atmosEnableFloorsTheRate() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        EncoderController.atmosEnabled = false;
+        EncoderController.codecIndex = 1;
+        EncoderController.bitrateKbps = 192;
+
+        // The switch is never "a flag the table ignores": enabling object
+        // mode raises the rate to what a bed + JOC + OAMD frame needs.
+        EncoderController.atmosEnabled = true;
+        compare(EncoderController.bitrateKbps, 384);
+        compare(EncoderController.codecIndex, 1);
+
+        EncoderController.atmosEnabled = false;
+    }
+
+    function test_cliLineCarriesSrcMapAndMetaTokens() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        EncoderController.atmosEnabled = false;
+
+        EncoderController.loadSourceFile(surroundUrl);
+        tryCompare(EncoderController, "sourceReady", true);
+        EncoderController.addSourceFile(stereoUrl);
+        tryVerify(() => EncoderController.sourceModel.length === 2);
+        EncoderController.applyChannelPreset("5.1");
+        EncoderController.autoAssignByName();
+
+        win.inputMode = "file";
+        // Extra sources ride as src=, the assignment as map= - the line is
+        // reproducible, not a sketch of the primary alone.
+        verify(win.cliLine.indexOf("src=") >= 0);
+        verify(win.cliLine.indexOf("map=") >= 0);
+
+        // A non-default metadata choice appears in ac3cli's own grammar.
+        EncoderController.drcIndex = 1;
+        verify(win.cliLine.indexOf("drc=") >= 0);
+        EncoderController.drcIndex = 0;
+        verify(win.cliLine.indexOf("drc=") < 0);
+    }
+
+    function test_matroskaIsHonestlyTwoCommands() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        EncoderController.atmosEnabled = false;
+
+        EncoderController.loadSourceFile(stereoUrl);
+        tryCompare(EncoderController, "sourceReady", true);
+        win.inputMode = "file";
+
+        EncoderController.containerIndex = 1;
+        verify(win.cliLine.indexOf("&& ac3cli mkv") >= 0);
+        EncoderController.containerIndex = 0;
+        verify(win.cliLine.indexOf("&& ac3cli mkv") < 0);
+    }
+
+    readonly property url refusalUrl:
+        Qt.resolvedUrl("_test_output/tst_sweep_refused.ec3")
+
+    function test_preRunRefusalRaisesTheBanner() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        EncoderController.atmosEnabled = false;
+
+        EncoderController.loadSourceFile(stereoUrl);
+        tryCompare(EncoderController, "sourceReady", true);
+        EncoderController.addSourceFile(surroundUrl);
+        tryVerify(() => EncoderController.sourceModel.length === 2);
+
+        // Two sources, nothing assigned: encodeTo refuses before a run entry
+        // ever opens - and that refusal must land in the banner, not only in
+        // a status line the run strip may have scrolled away.
+        compare(win.refusalText, "");
+        EncoderController.encodeTo(refusalUrl);
+        tryVerify(() => win.refusalText.length > 0);
+        compare(EncoderController.busy, false);
+    }
+
+    function test_moveObjectKeyframeRetimesTheCue() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+
+        EncoderController.loadSourceFile(surroundUrl);
+        tryCompare(EncoderController, "sourceReady", true);
+        EncoderController.atmosEnabled = true;
+        tryVerify(() => EncoderController.objectCount > 0);
+
+        EncoderController.clearObjectPath(0);
+        EncoderController.addObjectKeyframe(0, 1.0);
+        compare(EncoderController.objectKeyframes(0).length, 1);
+        compare(EncoderController.objectKeyframes(0)[0].time, 1.0);
+
+        EncoderController.moveObjectKeyframe(0, 1.0, 3.0);
+        compare(EncoderController.objectKeyframes(0).length, 1);
+        compare(EncoderController.objectKeyframes(0)[0].time, 3.0);
+
+        // Landing a drag on another cue replaces it - one instant, one cue.
+        EncoderController.addObjectKeyframe(0, 5.0);
+        EncoderController.moveObjectKeyframe(0, 3.0, 5.0);
+        compare(EncoderController.objectKeyframes(0).length, 1);
+        compare(EncoderController.objectKeyframes(0)[0].time, 5.0);
+
+        EncoderController.clearObjectPath(0);
+        EncoderController.atmosEnabled = false;
+    }
+
+    function test_handAddedKeySeedsTheInverseRootGain() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+
+        EncoderController.loadSourceFile(surroundUrl);   // 6 channels
+        tryCompare(EncoderController, "sourceReady", true);
+        EncoderController.atmosEnabled = true;
+        tryVerify(() => EncoderController.objectCount === 6);
+
+        EncoderController.clearObjectPath(0);
+        EncoderController.addObjectKeyframe(0, 0.5);
+        const keys = EncoderController.objectKeyframes(0);
+        compare(keys.length, 1);
+        // The same 0.7/sqrt(n) law the path-less fallback encodes at - unity
+        // here made an object jump ~3-9 dB the moment its first cue landed.
+        fuzzyCompare(keys[0].gain, 0.7 / Math.sqrt(6), 0.0001);
+
+        EncoderController.clearObjectPath(0);
+        EncoderController.atmosEnabled = false;
+    }
+
+    function test_liveSessionTabExistsForALiveSource() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        EncoderController.atmosEnabled = false;
+
+        win.everHadSource = true;
+        win.tier = "advanced";
+        win.inputMode = "live";
+        // The tab is where a session is UNDERSTOOD - it exists whenever the
+        // live source is selected, running session or not.
+        tryVerify(() => win.visibleTabs.some(tab => tab.key === "session"));
+
+        win.inputMode = "file";
+        tryVerify(() => !win.visibleTabs.some(tab => tab.key === "session"));
+    }
+}
