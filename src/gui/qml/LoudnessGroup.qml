@@ -41,40 +41,39 @@ ColumnLayout {
             color: Theme.text
             font.pixelSize: Theme.fontNormal
         }
-        // A ColumnLayout, not a RowLayout: the checkbox's own label is too
-        // long to share a row with the spinbox inside the card's narrow
-        // column without overflowing it (§dialnorm overflow fix).
-        ColumnLayout {
+        SpinBox {
+            from: 1
+            to: 31
+            enabled: !EncoderController.busy && !EncoderController.measureDialnorm
+            value: EncoderController.dialnorm
+            onValueModified: {
+                EncoderController.dialnorm = value;
+                EncoderController.loudnessTouched = true;
+            }
+        }
+
+        // Spans both columns rather than sharing the spinbox's own cell:
+        // the label is wider than that cell's share of the card, and a
+        // GridLayout column never shrinks below its widest cell to fit -
+        // it just overflows the card instead (§dialnorm overflow fix).
+        CheckBox {
+            Layout.columnSpan: 2
             Layout.fillWidth: true
-            spacing: 4
-
-            SpinBox {
-                from: 1
-                to: 31
-                enabled: !EncoderController.busy && !EncoderController.measureDialnorm
-                value: EncoderController.dialnorm
-                onValueModified: {
-                    EncoderController.dialnorm = value;
-                    EncoderController.loudnessTouched = true;
-                }
+            text: qsTr("Measure it from the programme")
+            // Auto-measurement needs each programme measured on its own
+            // (see the Programme 2 block below) - encodeChannels refuses
+            // it for dual mono rather than measuring the wrong thing, so
+            // the control is disabled here instead of offering something
+            // that would fail at encode time.
+            enabled: !EncoderController.busy && !EncoderController.dualMono
+            checked: EncoderController.measureDialnorm
+            onToggled: {
+                EncoderController.measureDialnorm = checked;
+                EncoderController.loudnessTouched = true;
             }
-            CheckBox {
-                text: qsTr("Measure it from the programme")
-                // Auto-measurement needs each programme measured on its own
-                // (see the Programme 2 block below) - encodeChannels refuses
-                // it for dual mono rather than measuring the wrong thing, so
-                // the control is disabled here instead of offering something
-                // that would fail at encode time.
-                enabled: !EncoderController.busy && !EncoderController.dualMono
-                checked: EncoderController.measureDialnorm
-                onToggled: {
-                    EncoderController.measureDialnorm = checked;
-                    EncoderController.loudnessTouched = true;
-                }
 
-                ToolTip.visible: !enabled && hovered
-                ToolTip.text: qsTr("Not yet supported for dual mono — set both programmes' dialnorm by hand.")
-            }
+            ToolTip.visible: !enabled && hovered
+            ToolTip.text: qsTr("Not yet supported for dual mono — set both programmes' dialnorm by hand.")
         }
     }
 
@@ -118,32 +117,30 @@ ColumnLayout {
             color: Theme.text
             font.pixelSize: Theme.fontNormal
         }
-        ColumnLayout {
+        SpinBox {
+            from: 1
+            to: 31
+            enabled: !EncoderController.busy && !EncoderController.measureDialnorm2
+            value: EncoderController.dialnorm2
+            onValueModified: {
+                EncoderController.dialnorm2 = value;
+                EncoderController.loudnessTouched = true;
+            }
+        }
+
+        CheckBox {
+            Layout.columnSpan: 2
             Layout.fillWidth: true
-            spacing: 4
-
-            SpinBox {
-                from: 1
-                to: 31
-                enabled: !EncoderController.busy && !EncoderController.measureDialnorm2
-                value: EncoderController.dialnorm2
-                onValueModified: {
-                    EncoderController.dialnorm2 = value;
-                    EncoderController.loudnessTouched = true;
-                }
+            text: qsTr("Measure it from the programme")
+            enabled: false
+            checked: EncoderController.measureDialnorm2
+            onToggled: {
+                EncoderController.measureDialnorm2 = checked;
+                EncoderController.loudnessTouched = true;
             }
-            CheckBox {
-                text: qsTr("Measure it from the programme")
-                enabled: false
-                checked: EncoderController.measureDialnorm2
-                onToggled: {
-                    EncoderController.measureDialnorm2 = checked;
-                    EncoderController.loudnessTouched = true;
-                }
 
-                ToolTip.visible: hovered
-                ToolTip.text: qsTr("Not yet supported for dual mono — set both programmes' dialnorm by hand.")
-            }
+            ToolTip.visible: hovered
+            ToolTip.text: qsTr("Not yet supported for dual mono — set both programmes' dialnorm by hand.")
         }
     }
 }
