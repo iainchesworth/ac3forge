@@ -257,6 +257,14 @@ ApplicationWindow {
     // ---- the panel banner: one of the three feedback homes -----------------
     property int bannerRunId: -1
     property int dismissedRunId: -1
+    // A pre-run refusal (encodeRefused) - shown in the same banner even
+    // though no run entry exists for it. Cleared when a run actually starts
+    // or the banner is dismissed.
+    property string refusalText: ""
+    // Bumped on every (coalesced) objectsChanged - a dependency hook for
+    // bindings that read object-derived invokables/properties whose own
+    // NOTIFY does not cover object drags (the plan strip's fed count).
+    property int objectsRevision: 0
     readonly property var bannerRun: {
         const runs = EncoderController.runs;
         let candidate = null;
@@ -289,14 +297,24 @@ ApplicationWindow {
         }
         tabs.push({ key: "objects", label: qsTr("Objects"),
                     badge: EncoderController.atmosEnabled ? qsTr("on") : "" });
-        if (EncoderController.liveActive) {
-            tabs.push({ key: "session", label: qsTr("Live session"), badge: "" });
+        // The tab exists whenever the live source is in play (the mockup's
+        // sessionAvailable: pro && live), sessions running or not - it is
+        // where a session is understood, not a modal that only appears once
+        // one is already underway.
+        if (tier !== "guided" && (inputMode === "live" || EncoderController.liveActive)) {
+            tabs.push({ key: "session", label: qsTr("Live session"),
+                        badge: EncoderController.liveActive ? qsTr("live") : "" });
         }
         return tabs;
     }
     onTierChanged: {
         appSettings.lastTier = tier;
-        if (tier !== "expert" && (currentTab === "coding" || currentTab === "meta")) {
+    }
+    // Whatever removed the current tab from the bar (a tier change, the live
+    // source going away) sends focus back to Format - one rule instead of a
+    // hand-written revert per cause.
+    onVisibleTabsChanged: {
+        if (!visibleTabs.some(tab => tab.key === currentTab)) {
             currentTab = "format";
         }
     }
@@ -305,10 +323,15 @@ ApplicationWindow {
         target: EncoderController
         function onLiveActiveChanged() {
             if (EncoderController.liveActive) {
-                window.currentTab = "session";
                 window.inputMode = "live";
-            } else if (window.currentTab === "session") {
-                window.currentTab = "format";
+                // Only a REAL session - a take on disk or a receiver leg -
+                // steals focus. The rail's Monitor (auto-started by merely
+                // picking a device) used to yank the user out of Format
+                // mid-configuration, which no monitoring checkbox earns.
+                if (EncoderController.liveWritingToDisk
+                        || EncoderController.liveWantedPassthrough) {
+                    window.currentTab = "session";
+                }
             }
         }
         function onRecordingChanged() {
@@ -316,53 +339,147 @@ ApplicationWindow {
                 window.inputMode = "live";
             }
         }
+        function onObjectsChanged() {
+            window.objectsRevision++;
+        }
+        function onEncodeRefused(reason) {
+            // The third feedback home: a refusal that never opened a run
+            // entry still lands in the banner, not just a status line the
+            // run strip may have scrolled away.
+            window.refusalText = reason;
+        }
+        function onBusyChanged() {
+            if (EncoderController.busy) {
+                window.refusalText = "";
+            }
+        }
     }
 
     // ---- the plan headline and the CLI line --------------------------------
     // Derived, never typed. Both read properties carrying NOTIFY planChanged,
     // so they stay live even though outputSuffix() is a plain invokable.
-    readonly property string planLine: {
+    readonly property string planRateText: {
+        if (EncoderController.vbrAvailable && EncoderController.vbrEnabled) {
+            let rate = qsTr("quality %1").arg(EncoderController.vbrQuality);
+            if (EncoderController.vbrMinEnabled) {
+                rate += qsTr(" · ≥%1").arg(EncoderController.vbrMinKbps);
+            }
+            if (EncoderController.vbrMaxEnabled) {
+                rate += qsTr(" · ≤%1").arg(EncoderController.vbrMaxKbps);
+            }
+            return rate;
+        }
+        return qsTr("%1 kbps").arg(EncoderController.bitrateKbps);
+    }
+    // The suffix-free core, reused by the Live session chain's encode cell —
+    // a running session may write no file at all, so a ".ec3" there would
+    // describe something that does not exist.
+    readonly property string planLineCore: {
         const codec = EncoderController.codecNames[EncoderController.codecIndex] || "";
-        const rate = EncoderController.vbrAvailable && EncoderController.vbrEnabled
-                     ? qsTr("quality %1").arg(EncoderController.vbrQuality)
-                     : qsTr("%1 kbps").arg(EncoderController.bitrateKbps);
         if (EncoderController.atmosEnabled) {
             const objects = EncoderController.objectCount;
             const shape = objects > 0 ? qsTr("5.1 bed + %1 objects").arg(objects)
                                       : qsTr("5.1 bed");
-            return qsTr("%1 · %2 · %3 · .%4")
-                .arg(codec).arg(shape).arg(rate).arg(EncoderController.outputSuffix());
+            return qsTr("%1 · %2 · %3").arg(codec).arg(shape).arg(window.planRateText);
         }
-        return qsTr("%1 · %2 · %3 · .%4")
-            .arg(codec).arg(EncoderController.channelShapeName).arg(rate)
-            .arg(EncoderController.outputSuffix());
+        return qsTr("%1 · %2 · %3")
+            .arg(codec).arg(EncoderController.channelShapeName).arg(window.planRateText);
     }
-    readonly property string planSubLine: EncoderController.dualMono && !EncoderController.atmosEnabled
-                                          ? qsTr("acmod 0 · two independent programmes in one stream · no soundfield, no downmix")
-                                          : EncoderController.layoutDetail
+    readonly property string planLine: qsTr("%1 · .%2")
+        .arg(window.planLineCore).arg(EncoderController.outputSuffix())
+    readonly property string planSubLine: {
+        if (EncoderController.dualMono && !EncoderController.atmosEnabled) {
+            return qsTr("acmod 0 · two independent programmes in one stream · no soundfield, no downmix");
+        }
+        // Object mode's fed count moves when objects are dragged, which
+        // planChanged never announces - depending on objectsRevision here is
+        // what keeps the sub-line honest mid-gesture.
+        void window.objectsRevision;
+        return EncoderController.layoutDetail;
+    }
+
+    // Quote a path or device name when it carries a space — the README's own
+    // command-bar rule.
+    function cliQuote(text) {
+        return text.indexOf(" ") >= 0 ? "\"" + text + "\"" : text;
+    }
+
     // ac3cli's actual grammar — real, pasteable syntax, not the handoff's
     // "--bed/--extras" sketch (which does not match ac3cli's positional
-    // subcommands). Assignments ride as map= once one exists.
+    // subcommands). Everything the positionals cannot say rides as trailing
+    // tokens: extra sources (src=), the assignment (map=), the metadata, and
+    // AC-3's bare `couple`. A live source renders the `live` subcommand; a
+    // Matroska container is honestly TWO commands, because pasting one would
+    // write a raw elementary stream into a file named .mkv.
     readonly property string cliLine: {
+        const eac3Stream = EncoderController.atmosEnabled || EncoderController.codecIndex === 1;
+        if (window.inputMode === "live") {
+            return ["ac3cli", "live", "out." + (eac3Stream ? "ec3" : "ac3"),
+                    String(Math.max(deviceBox.currentIndex, 0)), "10",
+                    String(EncoderController.bitrateKbps),
+                    liveMonitorCheck.checked ? "-1" : "-2",
+                    liveReceiverBox.currentIndex > 0
+                        ? String(liveReceiverBox.currentIndex - 1) : "-2",
+                    EncoderController.atmosEnabled ? "atmos" : "channels"].join(" ");
+        }
         const source = EncoderController.sourcePath.length > 0
-                       ? window.baseName(EncoderController.sourcePath) : "<source>";
-        const out = "out." + EncoderController.outputSuffix();
+                       ? window.cliQuote(window.baseName(EncoderController.sourcePath))
+                       : "<source>";
+        const mkv = EncoderController.containerIndex === 1;
+        const streamOut = "out." + (eac3Stream ? "ec3" : "ac3");
         const rate = String(EncoderController.bitrateKbps);
+        const meta = EncoderController.metaTokens;
+        const trailing = [];
+        for (const row of EncoderController.sourceModel) {
+            if (!row.primary) {
+                trailing.push("src=" + window.cliQuote(window.baseName(row.path)));
+            }
+        }
+        if (EncoderController.mapToken.length > 0) {
+            trailing.push(EncoderController.mapToken);
+        }
+
+        let line;
         if (EncoderController.atmosEnabled) {
-            return ["ac3cli", "atmos-encode", source, out, rate].join(" ");
+            // atmos-encode has no src=/map= grammar and no paths file (yet) —
+            // it takes the object count and honours the loudness tokens.
+            const parts = ["ac3cli", "atmos-encode", source, streamOut, rate];
+            if (EncoderController.objectCount > 0) {
+                parts.push(String(EncoderController.objectCount));
+            }
+            for (const token of meta.split(" ")) {
+                if (token.indexOf("dialnorm") === 0) {
+                    parts.push(token);
+                }
+            }
+            line = parts.join(" ");
+        } else if (EncoderController.codecIndex === 0) {
+            const parts = ["ac3cli", "encode", source, streamOut, rate,
+                           EncoderController.channelLocationsText];
+            if (EncoderController.coupling) {
+                parts.push("couple");
+            }
+            line = parts.concat(trailing).join(" ");
+            if (meta.length > 0) {
+                line += " " + meta;
+            }
+        } else {
+            const parts = ["ac3cli", "eac3-encode", source, streamOut, rate,
+                           EncoderController.toolsToken.length > 0
+                               ? EncoderController.toolsToken : "none",
+                           EncoderController.channelLocationsText];
+            if (EncoderController.vbrAvailable && EncoderController.vbrEnabled) {
+                parts.push(EncoderController.vbrToken);
+            }
+            line = parts.concat(trailing).join(" ");
+            if (meta.length > 0) {
+                line += " " + meta;
+            }
         }
-        if (EncoderController.codecIndex === 0) {
-            return ["ac3cli", "encode", source, out, rate,
-                    EncoderController.channelLocationsText].join(" ");
+        if (mkv) {
+            line += " && ac3cli mkv " + streamOut + " out.mkv";
         }
-        const parts = ["ac3cli", "eac3-encode", source, out, rate,
-                       EncoderController.toolsToken.length > 0
-                           ? EncoderController.toolsToken : "none",
-                       EncoderController.channelLocationsText];
-        if (EncoderController.vbrAvailable && EncoderController.vbrEnabled) {
-            parts.push(EncoderController.vbrToken);
-        }
-        return parts.join(" ");
+        return line;
     }
 
     FileDialog {
@@ -1264,11 +1381,54 @@ ApplicationWindow {
                 spacing: 0
 
                 // ---- failure banner ---------------------------------------
+                // One home for both a run that stopped and a refusal that
+                // never opened a run. The headline says WHAT stopped it (the
+                // cause's first sentence), not just which file was involved,
+                // and the mockup's two recovery actions are real buttons.
                 Rectangle {
+                    id: failureBanner
                     Layout.fillWidth: true
-                    visible: window.bannerRun !== null
+                    visible: window.bannerRun !== null || window.refusalText.length > 0
                     color: Theme.accent100
                     implicitHeight: bannerColumn.implicitHeight + Theme.space3 * 2
+
+                    function firstSentence(text) {
+                        const at = text.indexOf(". ");
+                        return at >= 0 ? text.substring(0, at + 1) : text;
+                    }
+                    readonly property string causeText: {
+                        if (window.bannerRun === null) {
+                            return window.refusalText;
+                        }
+                        const frames = window.bannerRun.framesText || "";
+                        const cause = firstSentence(window.bannerRun.detail || "");
+                        return frames.length > 0
+                               ? qsTr("Run %1 stopped after %2 — %3")
+                                     .arg(window.bannerRun.id).arg(frames).arg(cause)
+                               : qsTr("Run %1 stopped — %2")
+                                     .arg(window.bannerRun.id).arg(cause);
+                    }
+                    // The full story only when it says more than the headline.
+                    readonly property string detailText: {
+                        if (window.bannerRun === null) {
+                            return "";
+                        }
+                        const detail = window.bannerRun.detail || "";
+                        return firstSentence(detail) === detail ? "" : detail;
+                    }
+                    readonly property bool deviceClass: {
+                        const text = (window.bannerRun !== null
+                                      ? window.bannerRun.detail : window.refusalText) || "";
+                        return text.indexOf("device") >= 0 || text.indexOf("bitstream") >= 0
+                               || text.indexOf("IEC 61937") >= 0;
+                    }
+                    function dismiss() {
+                        if (window.bannerRun !== null) {
+                            window.dismissedRunId = window.bannerRun.id;
+                        }
+                        window.bannerRunId = -1;
+                        window.refusalText = "";
+                    }
 
                     Rectangle {
                         anchors.left: parent.left
@@ -1295,10 +1455,7 @@ ApplicationWindow {
 
                             Text {
                                 Layout.fillWidth: true
-                                text: window.bannerRun !== null
-                                      ? qsTr("Run %1 stopped — %2")
-                                        .arg(window.bannerRun.id).arg(window.bannerRun.filename)
-                                      : ""
+                                text: failureBanner.causeText
                                 font.pixelSize: 14
                                 font.weight: Font.DemiBold
                                 color: Theme.text
@@ -1306,19 +1463,44 @@ ApplicationWindow {
                             }
                             Text {
                                 Layout.fillWidth: true
-                                text: window.bannerRun !== null ? window.bannerRun.detail : ""
+                                visible: text.length > 0
+                                text: failureBanner.detailText
                                 font.pixelSize: 12
                                 color: Theme.neutral800
                                 wrapMode: Text.WordWrap
                             }
                         }
                         Button {
+                            objectName: "bannerChooseDevice"
+                            text: qsTr("Choose another device")
+                            flat: true
+                            visible: failureBanner.deviceClass
+                            onClicked: {
+                                // The relevant combo: the rail's capture list
+                                // for a live/record failure, the Format tab's
+                                // passthrough panel otherwise.
+                                if (window.inputMode === "live") {
+                                    EncoderController.refreshCaptureDevices();
+                                } else {
+                                    window.currentTab = "format";
+                                    EncoderController.refreshOutputDevices();
+                                }
+                            }
+                        }
+                        Button {
+                            objectName: "bannerRetryFile"
+                            text: qsTr("Retry as file")
+                            flat: true
+                            visible: EncoderController.sourceReady && !EncoderController.busy
+                            onClicked: {
+                                failureBanner.dismiss();
+                                window.startEncodeFlow();
+                            }
+                        }
+                        Button {
                             text: qsTr("Dismiss")
                             flat: true
-                            onClicked: {
-                                window.dismissedRunId = window.bannerRun.id;
-                                window.bannerRunId = -1;
-                            }
+                            onClicked: failureBanner.dismiss()
                         }
                     }
                 }
@@ -3862,6 +4044,7 @@ ApplicationWindow {
                                     required property var modelData
                                     readonly property bool encoding: modelData.status === "encoding"
                                     readonly property bool failed: modelData.status === "failed"
+                                    readonly property bool cancelled: modelData.status === "cancelled"
 
                                     Layout.leftMargin: 16
                                     spacing: 8
@@ -3869,17 +4052,31 @@ ApplicationWindow {
                                     Rectangle {
                                         width: 8
                                         height: 8
-                                        color: encoding || failed ? Theme.accent : Theme.neutral400
+                                        // A failure is not "still encoding" - the two used
+                                        // to share the accent, which made a failed chip
+                                        // read as busy at a glance.
+                                        color: encoding ? Theme.accent
+                                             : failed ? Theme.accent700
+                                                      : Theme.neutral400
                                     }
                                     Text {
                                         font.family: Theme.monoFamily
                                         font.pixelSize: 12
                                         color: Theme.text
+                                        // Terminal states say WHICH one they are - the
+                                        // mockup's "14 · failed · 212 frames" - instead of
+                                        // dressing a failure in a success's clothes.
                                         text: encoding
                                               ? qsTr("%1 · %2 · %3 · %4%")
                                                 .arg(modelData.id).arg(modelData.filename)
                                                 .arg(modelData.rateText)
                                                 .arg(Math.round(EncoderController.progress * 100))
+                                              : (failed || cancelled)
+                                              ? qsTr("%1 · %2 · %3%4")
+                                                .arg(modelData.id).arg(modelData.filename)
+                                                .arg(modelData.status)
+                                                .arg((modelData.framesText || "").length > 0
+                                                     ? " · " + modelData.framesText : "")
                                               : qsTr("%1 · %2 · %3 · %4%5")
                                                 .arg(modelData.id).arg(modelData.filename)
                                                 .arg(modelData.rateText).arg(modelData.durationText)
@@ -3901,7 +4098,25 @@ ApplicationWindow {
                                         onClicked: EncoderController.cancel()
                                     }
                                     Button {
+                                        objectName: "runShowInFolder"
+                                        visible: modelData.status === "done"
+                                                 && (modelData.path || "").length > 0
+                                        text: qsTr("Show in folder")
+                                        flat: true
+                                        onClicked: {
+                                            const path = modelData.path;
+                                            const cut = Math.max(path.lastIndexOf("/"),
+                                                                 path.lastIndexOf("\\"));
+                                            if (cut > 0) {
+                                                Qt.openUrlExternally("file:///"
+                                                                     + path.substring(0, cut));
+                                            }
+                                        }
+                                    }
+                                    Button {
                                         visible: failed
+                                                 || (cancelled
+                                                     && (modelData.detail || "").length > 0)
                                         text: qsTr("Details")
                                         flat: true
                                         onClicked: {

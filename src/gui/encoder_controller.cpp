@@ -69,6 +69,18 @@ QString to_qstring(std::string_view text) {
     return QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size()));
 }
 
+// "48 000" / "7 891" - the mockup's space-grouped integers (a locale-
+// independent stand-in for its thin space). Negative values never reach a
+// readout that groups, so only the digits are walked.
+QString group_digits(qint64 value) {
+    QString digits = QString::number(value);
+    const qsizetype first = digits.startsWith(QLatin1Char('-')) ? 1 : 0;
+    for (qsizetype at = digits.size() - 3; at > first; at -= 3) {
+        digits.insert(at, QLatin1Char(' '));
+    }
+    return digits;
+}
+
 // Live meters redraw no faster than this. A file encodes far quicker than it
 // plays, so without a wall-clock throttle a two-minute track would fire tens
 // of thousands of property updates the display could never show.
@@ -331,7 +343,13 @@ QVariantList EncoderController::extrasModel() const {
     QVariantList out;
     const bool locked = extrasLocked();
     const auto bed_mask = ac3::eac3::chanmap::acmod_map(bed_acmod_, bed_lfe_);
+    // extrasLocked() is only ever true for object mode or dual mono, and the
+    // two lock for different reasons: dual mono's extras are not "E-AC-3
+    // only" (its codec can be E-AC-3), they are simply not part of two mono
+    // programmes. The third reason survives for any future lock that is
+    // genuinely codec-driven.
     const QString lock_reason = atmos_enabled_ ? QStringLiteral("fixed by object mode")
+                                : isDualMono() ? QStringLiteral("not part of dual mono")
                                                : QStringLiteral("Dolby Digital Plus only");
 
     for (const auto& extra : kExtras) {
@@ -355,10 +373,19 @@ QVariantList EncoderController::extrasModel() const {
                              : to_qstring(ac3::eac3::chanmap::describe(result.error()));
         }
 
+        // The channel tokens themselves ("Lw Rw"), not a count - the row
+        // prints what the extra actually adds, in the same Table E2.5 names
+        // the channel map and the CLI's [layout] argument use.
+        QStringList tokens;
+        for (const auto location : ac3::eac3::chanmap::expand(extra.bits)) {
+            tokens.append(to_qstring(ac3::eac3::chanmap::name(location)));
+        }
+
         QVariantMap row;
         row[QStringLiteral("id")] = QString::fromLatin1(extra.id);
         row[QStringLiteral("label")] = QString::fromLatin1(extra.label);
         row[QStringLiteral("channels")] = ac3::eac3::chanmap::channel_count(extra.bits);
+        row[QStringLiteral("tokens")] = tokens.join(QStringLiteral(" "));
         row[QStringLiteral("checked")] = checked;
         row[QStringLiteral("enabled")] = !locked && result.has_value();
         row[QStringLiteral("reason")] = reason;
@@ -390,6 +417,10 @@ QVariantList EncoderController::objectModel() const {
         row[QStringLiteral("lfeSend")] = config.lfe_send;
         row[QStringLiteral("hasPath")] = !keyframes.empty();
         row[QStringLiteral("keyCount")] = static_cast<int>(keyframes.size());
+        // "orbit"/"lift" when a preset authored the path, empty for hand-
+        // authored ones - the table prints the label, or falls back to the
+        // key count.
+        row[QStringLiteral("pathLabel")] = object_path_labels_.value(static_cast<int>(i));
         out.append(row);
     }
     return out;
@@ -451,7 +482,13 @@ QString EncoderController::channelLocationsText() const {
 
 QString EncoderController::layoutDetail() const {
     if (atmos_enabled_) {
-        return QStringLiteral("5.1 bed · JOC + OAMD · objects carry the height");
+        // "4 of 6 bed positions fed" - counted by panning the objects
+        // exactly as the encoder will (fedChannels' own atmos branch), so
+        // the plan strip and the soundfield dots can never disagree.
+        const auto fed = fedChannels();
+        const auto nfed = std::ranges::count(fed, true);
+        return QStringLiteral("%1 of 6 bed positions fed · JOC + OAMD · objects carry the height")
+            .arg(nfed);
     }
     const auto cp = effectiveChannelPlan();
     const auto rendered = plan::rendered_channel_count(cp);
@@ -478,6 +515,96 @@ QString EncoderController::layoutDetail() const {
         .arg(dependents == 1 ? QString() : QStringLiteral("s"));
 }
 
+int EncoderController::codedChannelCount() const {
+    if (isDualMono() && !atmos_enabled_) {
+        return 2;
+    }
+    const auto cp = atmos_enabled_ ? plan::channel_plan_for(plan::LayoutId::k51)
+                                   : effectiveChannelPlan();
+    return static_cast<int>(plan::coded_channels(cp).size());
+}
+
+int EncoderController::renderedChannelCount() const {
+    if (isDualMono() && !atmos_enabled_) {
+        return 2;
+    }
+    const auto cp = atmos_enabled_ ? plan::channel_plan_for(plan::LayoutId::k51)
+                                   : effectiveChannelPlan();
+    return plan::rendered_channel_count(cp);
+}
+
+QString EncoderController::mapToken() const {
+    if (!has_explicit_assignment_ || !source_) {
+        return {};
+    }
+    return QStringLiteral("map=%1")
+        .arg(to_qstring(plan::format_assignment(sourceShapes(), assignment_)));
+}
+
+QString EncoderController::metaTokens() const {
+    // print_meta_usage()'s exact grammar, emitted only where the value
+    // differs from a default-constructed plan::Metadata - "everything
+    // defaults off, so a command line that says nothing about metadata
+    // produces exactly the stream it produced before this layer existed",
+    // and the reverse direction should hold too.
+    const plan::Metadata defaults{};
+    QStringList tokens;
+    if (drc_index_ > 0) {
+        tokens.append(QStringLiteral("drc=%1").arg(to_qstring(ac3::meta::profile_name(
+            kDrcProfiles[static_cast<std::size_t>(drc_index_ - 1)]))));
+    }
+    if (meta_.heavy) {
+        tokens.append(QStringLiteral("heavy"));
+        if (ceiling_db_ != -0.5) {
+            tokens.append(QStringLiteral("ceiling=%1").arg(ceiling_db_));
+        }
+        if (dialogue_db_ != -20.0) {
+            tokens.append(QStringLiteral("dialogue=%1").arg(dialogue_db_));
+        }
+    }
+    if (meta_.measure_dialnorm) {
+        tokens.append(QStringLiteral("dialnorm=auto"));
+    } else if (meta_.dialnorm != defaults.dialnorm) {
+        tokens.append(QStringLiteral("dialnorm=%1").arg(meta_.dialnorm));
+    }
+    if (isDualMono() && !atmos_enabled_) {
+        if (meta_.measure_dialnorm2) {
+            tokens.append(QStringLiteral("dialnorm2=auto"));
+        } else if (meta_.dialnorm2 != defaults.dialnorm2) {
+            tokens.append(QStringLiteral("dialnorm2=%1").arg(meta_.dialnorm2));
+        }
+    }
+    if (meta_.cmixlev != defaults.cmixlev) {
+        static constexpr std::array<const char*, 3> kCmix = {"-3", "-4.5", "-6"};
+        tokens.append(QStringLiteral("cmixlev=%1")
+                          .arg(QLatin1String(kCmix[static_cast<std::size_t>(meta_.cmixlev)])));
+    }
+    if (meta_.surmixlev != defaults.surmixlev) {
+        static constexpr std::array<const char*, 3> kSurmix = {"-3", "-6", "off"};
+        tokens.append(QStringLiteral("surmixlev=%1")
+                          .arg(QLatin1String(kSurmix[static_cast<std::size_t>(meta_.surmixlev)])));
+    }
+    if (codec_ == plan::Codec::kEac3 && meta_.mixmeta) {
+        tokens.append(QStringLiteral("mixmeta"));
+    }
+    // lfemix's default is a VALUE (kLfeMixLevelIdeal), so "off" is the
+    // non-default worth spelling; dmixmod's default is Lo/Ro, so "ltrt" and
+    // the explicit "none" are the two that need saying.
+    if (meta_.lfemix != defaults.lfemix) {
+        tokens.append(meta_.lfemix ? QStringLiteral("lfemix=%1").arg(*meta_.lfemix)
+                                   : QStringLiteral("lfemix=off"));
+    }
+    if (meta_.dmixmod != defaults.dmixmod) {
+        const QString name = meta_.dmixmod == ac3::meta::DownmixMode::kLtRt
+                                 ? QStringLiteral("ltrt")
+                                 : meta_.dmixmod == ac3::meta::DownmixMode::kLoRo
+                                       ? QStringLiteral("loro")
+                                       : QStringLiteral("none");
+        tokens.append(QStringLiteral("dmixmod=%1").arg(name));
+    }
+    return tokens.join(QLatin1Char(' '));
+}
+
 QVariantList EncoderController::bitrates() const {
     QVariantList out;
     // AC-3 indexes Table 5.18 and cannot express anything else. E-AC-3 signals
@@ -487,6 +614,13 @@ QVariantList EncoderController::bitrates() const {
         if (kbps >= 96) {
             out.append(static_cast<int>(kbps));
         }
+    }
+    // E-AC-3 signals frmsiz directly rather than indexing the table, so
+    // rungs past AC-3's 640 ceiling are legal there - 768 is what a wide
+    // object/7.2.4 session actually wants. setCodecIndex clamps back down
+    // when a switch to AC-3 would leave a rate Table 5.18 cannot express.
+    if (codec_ == plan::Codec::kEac3) {
+        out.append(768);
     }
     return out;
 }
@@ -609,6 +743,12 @@ void EncoderController::setCodecIndex(int index) {
     // plan validate() then rejects at encode time instead of here.
     if (codec_ == plan::Codec::kAc3) {
         extras_mask_ = 0;
+        // The E-AC-3-only rungs above 640 have no Table 5.18 code to fall
+        // back on - clamped for the same silently-invalid-plan reason the
+        // extras are dropped.
+        if (bitrate_kbps_ > 640) {
+            bitrate_kbps_ = 640;
+        }
     }
     emit planChanged();
     emit outputChanged();
@@ -938,6 +1078,12 @@ void EncoderController::setAtmosEnabled(bool enabled) {
     // flag it with.
     if (atmos_enabled_) {
         codec_ = plan::Codec::kEac3;
+        // The frame must hold a 5.1 bed plus the JOC+OAMD payload - the same
+        // floor the assignment table's "obj" path already raises to, applied
+        // here too so the switch is never "a flag the table ignores".
+        if (bitrate_kbps_ < 384) {
+            bitrate_kbps_ = 384;
+        }
     }
     emit planChanged();
     emit outputChanged();
@@ -1006,9 +1152,11 @@ std::vector<EncoderController::ObjectConfig> EncoderController::liveObjectSnapsh
     return live_object_snapshot_;
 }
 
-void EncoderController::setObjectPathKeyframes(int objectIndex, const QVariantList& keyframes) {
+void EncoderController::setObjectPathKeyframes(int objectIndex, const QVariantList& keyframes,
+                                               const QString& label) {
     if (keyframes.isEmpty()) {
         object_keyframes_.remove(objectIndex);
+        object_path_labels_.remove(objectIndex);
         emit objectsChanged();
         return;
     }
@@ -1024,10 +1172,16 @@ void EncoderController::setObjectPathKeyframes(int objectIndex, const QVariantLi
                           .lfe_send = map.value(QStringLiteral("lfeSend"), 0.0).toDouble()});
     }
     object_keyframes_[objectIndex] = std::move(parsed);
+    if (label.isEmpty()) {
+        object_path_labels_.remove(objectIndex);
+    } else {
+        object_path_labels_[objectIndex] = label;
+    }
     emit objectsChanged();
 }
 
 void EncoderController::clearObjectPath(int objectIndex) {
+    object_path_labels_.remove(objectIndex);
     if (object_keyframes_.remove(objectIndex)) {
         emit objectsChanged();
     }
@@ -1070,16 +1224,51 @@ void EncoderController::addObjectKeyframe(int objectIndex, double timeS) {
     const auto existing = std::ranges::find_if(keyframes, [&](const ac3::oba::Keyframe& key) {
         return std::abs(key.time_s - timeS) < kSameInstant;
     });
+    // Seeded with the same inverse-root gain a path-less object encodes at
+    // (encodeObjects' static fallback): unity here made an object ~3-9 dB
+    // louder the moment its first key was added, and several keyed objects
+    // could sum the shared bed past the headroom rule the fallback exists
+    // for. If keyframes already carry an authored gain, that gain is theirs;
+    // this only decides what a NEW cue starts from.
+    const auto ndynamic =
+        std::max<std::size_t>(std::min<std::size_t>(dynamicObjectChannels().size(), 15), 1);
     ac3::oba::Keyframe key{.time_s = timeS,
                            .position = {.x = config.x, .y = config.y, .z = config.z},
-                           .gain = 1.0,
+                           .gain = 0.7 / std::sqrt(static_cast<double>(ndynamic)),
                            .lfe_send = config.lfe_send};
     if (existing != keyframes.end()) {
+        key.gain = existing->gain;
         *existing = key;
     } else {
         keyframes.push_back(key);
     }
     object_keyframes_[objectIndex] = std::move(keyframes);
+    // A hand-placed cue on a preset-authored path means the path is no
+    // longer purely that preset.
+    object_path_labels_.remove(objectIndex);
+    emit objectsChanged();
+}
+
+void EncoderController::moveObjectKeyframe(int objectIndex, double fromS, double toS) {
+    auto keyframes = sortedKeyframes(objectIndex);
+    constexpr double kSameInstant = 0.01;
+    const auto found = std::ranges::find_if(keyframes, [&](const ac3::oba::Keyframe& key) {
+        return std::abs(key.time_s - fromS) < kSameInstant;
+    });
+    if (found == keyframes.end()) {
+        return;
+    }
+    auto moved = *found;
+    moved.time_s = std::max(0.0, toS);
+    keyframes.erase(found);
+    // Landing on another key replaces it - addObjectKeyframe's same-moment
+    // rule, so a drag can never stack two cues on one instant.
+    std::erase_if(keyframes, [&](const ac3::oba::Keyframe& key) {
+        return std::abs(key.time_s - moved.time_s) < kSameInstant;
+    });
+    keyframes.push_back(moved);
+    object_keyframes_[objectIndex] = std::move(keyframes);
+    object_path_labels_.remove(objectIndex);
     emit objectsChanged();
 }
 
@@ -1098,6 +1287,7 @@ void EncoderController::removeObjectKeyframe(int objectIndex, double timeS) {
     } else {
         object_keyframes_[objectIndex] = std::move(keyframes);
     }
+    object_path_labels_.remove(objectIndex);
     emit objectsChanged();
 }
 
@@ -1269,6 +1459,22 @@ EncoderController::pinnedObjectChannels() const {
     return out;
 }
 
+int EncoderController::pinnedObjectCount() const {
+    return static_cast<int>(pinnedObjectChannels().size());
+}
+
+QString EncoderController::groupDigits(qint64 value) const {
+    return group_digits(value);
+}
+
+bool EncoderController::outputDeviceCanBitstream(int deviceIndex) const {
+    if (deviceIndex < 0 || static_cast<std::size_t>(deviceIndex) >= outputs_.size()) {
+        return false;
+    }
+    const auto& device = outputs_[static_cast<std::size_t>(deviceIndex)];
+    return output_eac3_ ? device.supports_eac3_passthrough : device.supports_ac3_passthrough;
+}
+
 void EncoderController::recomputeObjectCount() {
     object_count_ =
         static_cast<int>(std::min<std::size_t>(dynamicObjectChannels().size(), 15));
@@ -1330,6 +1536,17 @@ void EncoderController::refreshRoutingSummary() {
             routing_summary_ =
                 QStringLiteral("Each source channel becomes an object over a 5.1 bed.");
         }
+        emit routingChanged();
+        return;
+    }
+
+    if (isDualMono()) {
+        // The mockup's own dual sentence, whether or not a source is loaded:
+        // there is no fold-down story to tell, because the two programmes
+        // never meet in a downmix at all.
+        routing_summary_ = QStringLiteral(
+            "Two programmes are multiplexed into one stream. A receiver plays one or the "
+            "other; they are never heard together, so no downmix coefficients apply.");
         emit routingChanged();
         return;
     }
@@ -1446,28 +1663,38 @@ void EncoderController::setBusy(bool busy) {
     emit busyChanged();
 }
 
-void EncoderController::startRun(const QString& path) {
-    double seconds = 0.0;
-    if (source_ && source_->wav.sample_rate > 0) {
-        seconds = static_cast<double>(source_->wav.frame_count()) /
-                  static_cast<double>(source_->wav.sample_rate);
+void EncoderController::startRun(const QString& path, const QString& durationText,
+                                 const QString& label, bool forceCbr) {
+    QString duration = durationText;
+    if (duration.isEmpty()) {
+        double seconds = 0.0;
+        if (source_ && source_->wav.sample_rate > 0) {
+            seconds = static_cast<double>(source_->wav.frame_count()) /
+                      static_cast<double>(source_->wav.sample_rate);
+        }
+        duration = QStringLiteral("%1:%2")
+                       .arg(static_cast<int>(seconds) / 60)
+                       .arg(static_cast<int>(seconds) % 60, 2, 10, QLatin1Char('0'));
     }
     QVariantMap run;
     run[QStringLiteral("id")] = next_run_id_;
-    run[QStringLiteral("filename")] = QFileInfo(path).fileName();
+    run[QStringLiteral("filename")] =
+        label.isEmpty() ? QFileInfo(path).fileName() : label;
+    // The full path, so a finished chip's "Show in folder" has something
+    // real to reveal; empty for a session that writes no file.
+    run[QStringLiteral("path")] = path;
     run[QStringLiteral("bitrateKbps")] = bitrate_kbps_;
-    run[QStringLiteral("durationText")] =
-        QStringLiteral("%1:%2")
-            .arg(static_cast<int>(seconds) / 60)
-            .arg(static_cast<int>(seconds) % 60, 2, 10, QLatin1Char('0'));
+    run[QStringLiteral("durationText")] = duration;
     run[QStringLiteral("status")] = QStringLiteral("encoding");
     run[QStringLiteral("sizeText")] = QString();
     run[QStringLiteral("detail")] = QString();
+    run[QStringLiteral("framesText")] = QString();
     // A VBR run has no target rate to show while it is still running - only
     // the quality it is aiming for. finishRun() replaces this with the real
-    // avg/min/max once the run's actual frame sizes are known.
+    // avg/min/max once the run's actual frame sizes are known. forceCbr is
+    // the live session, which drops VBR unconditionally (runLiveSession).
     run[QStringLiteral("rateText")] =
-        (vbr_enabled_ && codec_ == plan::Codec::kEac3 && !atmos_enabled_)
+        (!forceCbr && vbr_enabled_ && codec_ == plan::Codec::kEac3 && !atmos_enabled_)
             ? QStringLiteral("VBR q%1").arg(vbr_quality_)
             : QStringLiteral("%1 kbps").arg(bitrate_kbps_);
     // Newest first, matching the run strip's own reading order.
@@ -1499,6 +1726,16 @@ void EncoderController::finishRun(bool ok, const QString& message) {
         const auto match = kSizePattern.match(message);
         if (match.hasMatch()) {
             run[QStringLiteral("sizeText")] = match.captured(1);
+        }
+        // "212 frames" for the failed/cancelled chip - read out of the same
+        // message the status line shows ("Wrote 212 frames…", "…The 212
+        // frames already written are kept…"), not counted a second time.
+        static const QRegularExpression kFramesPattern(
+            QStringLiteral(R"((\d+) (?:Atmos access units|access units|frames))"));
+        const auto frames = kFramesPattern.match(message);
+        if (frames.hasMatch()) {
+            run[QStringLiteral("framesText")] =
+                QStringLiteral("%1 frames").arg(group_digits(frames.captured(1).toLongLong()));
         }
         if (!pending_rate_text_.isEmpty()) {
             run[QStringLiteral("rateText")] = pending_rate_text_;
@@ -1860,6 +2097,7 @@ void EncoderController::refreshObjectConfigs() {
     }
     for (const auto key : stale) {
         object_keyframes_.remove(key);
+        object_path_labels_.remove(key);
     }
     // objectModel's own NOTIFY - every call site above sets object_count_
     // and calls this, but only ever emits sourceChanged() itself
@@ -2131,6 +2369,7 @@ void EncoderController::startLiveSession(int captureDeviceIndex, bool monitor,
     if (captureDeviceIndex < 0 ||
         static_cast<std::size_t>(captureDeviceIndex) >= devices_.size()) {
         setStatus(QStringLiteral("Choose a capture device first."));
+        emit encodeRefused(status_);
         return;
     }
     const auto device = devices_[static_cast<std::size_t>(captureDeviceIndex)];
@@ -2138,6 +2377,7 @@ void EncoderController::startLiveSession(int captureDeviceIndex, bool monitor,
         setStatus(QStringLiteral("\"%1\" runs at %2 Hz; AC-3/E-AC-3 need 32, 44.1 or 48 kHz.")
                       .arg(QString::fromStdString(device.name))
                       .arg(device.sample_rate));
+        emit encodeRefused(status_);
         return;
     }
 
@@ -2145,6 +2385,7 @@ void EncoderController::startLiveSession(int captureDeviceIndex, bool monitor,
     p.sample_rate = *to_sample_rate(device.sample_rate);
     if (const auto bad = plan::validate(p)) {
         setStatus(to_qstring(plan::describe(*bad)));
+        emit encodeRefused(status_);
         return;
     }
 
@@ -2153,6 +2394,7 @@ void EncoderController::startLiveSession(int captureDeviceIndex, bool monitor,
     if (want_passthrough) {
         if (static_cast<std::size_t>(receiverDeviceIndex) >= outputs_.size()) {
             setStatus(QStringLiteral("Choose a receiver device first."));
+            emit encodeRefused(status_);
             return;
         }
         receiver = outputs_[static_cast<std::size_t>(receiverDeviceIndex)];
@@ -2163,6 +2405,7 @@ void EncoderController::startLiveSession(int captureDeviceIndex, bool monitor,
         path = fileUrl.isLocalFile() ? fileUrl.toLocalFile() : fileUrl.toString();
         if (path.isEmpty()) {
             setStatus(QStringLiteral("Choose where to save the take first."));
+            emit encodeRefused(status_);
             return;
         }
     }
@@ -2175,6 +2418,7 @@ void EncoderController::startLiveSession(int captureDeviceIndex, bool monitor,
         setStatus(QStringLiteral("Could not open \"%1\": %2")
                       .arg(QString::fromStdString(device.name),
                            QString::fromUtf8(why.data(), static_cast<qsizetype>(why.size()))));
+        emit encodeRefused(status_);
         return;
     }
 
@@ -2220,7 +2464,19 @@ void EncoderController::startLiveSession(int captureDeviceIndex, bool monitor,
     } else {
         live_receiver_plan_text_ = QStringLiteral("No passthrough this session.");
     }
-    live_gap_ = want_passthrough && (!passthrough_ok || atmos_enabled_);
+    // The GAP banner is for a receiver leg that carries LESS than the encode
+    // - today that is exactly the object case, where the leg is the 5.1 bed.
+    // A passthrough that failed to open outright is a different story with
+    // its own banner (liveWantedPassthrough && !livePassthrough): "everything
+    // past what the leg carries" would be a lie when the leg carries nothing.
+    live_gap_ = want_passthrough && passthrough_ok && atmos_enabled_;
+    live_wanted_passthrough_ = want_passthrough;
+    live_receiver_name_ =
+        want_passthrough ? QString::fromStdString(receiver.name) : QString();
+    live_receiver_eac3_ = want_passthrough && receiver.supports_eac3_passthrough;
+    live_capture_detail_ = QStringLiteral("%1 ch · %2 Hz")
+                               .arg(device.channels)
+                               .arg(group_digits(device.sample_rate));
 
     bool monitor_ok = false;
     if (monitor) {
@@ -2253,6 +2509,7 @@ void EncoderController::startLiveSession(int captureDeviceIndex, bool monitor,
             live_object_backup_ = LiveObjectBackup{.count = object_count_,
                                                    .configs = object_configs_,
                                                    .keyframes = object_keyframes_,
+                                                   .path_labels = object_path_labels_,
                                                    .selected_index = selected_object_index_};
             object_count_ = nobjects;
             refreshObjectConfigs();
@@ -2284,6 +2541,17 @@ void EncoderController::startLiveSession(int captureDeviceIndex, bool monitor,
     live_latency_ms_ =
         2000.0 * static_cast<double>(ac3::kSamplesPerFrame) / static_cast<double>(device.sample_rate);
     setBusy(true);
+    // A real session - a take on disk or a receiver leg - lands in the run
+    // history like any other encode: it is where a mid-session failure gets
+    // its chip and banner, and where a finished take's "Show in folder"
+    // lives. A monitor-only check deliberately does not (the rail's Monitor,
+    // auto-started by merely picking a device, would spam the history with
+    // entries nobody asked to keep).
+    if (writeToDisk || want_passthrough) {
+        startRun(path, QStringLiteral("live"),
+                 writeToDisk ? QString() : QStringLiteral("live session"),
+                 /*forceCbr=*/true);
+    }
     setStatus(QStringLiteral("Live session running from %1…")
                   .arg(QString::fromStdString(device.name)));
     emit liveActiveChanged();
@@ -2292,11 +2560,11 @@ void EncoderController::startLiveSession(int captureDeviceIndex, bool monitor,
     if (passthrough_ok) {
         // A freshly opened exclusive-mode stream is exactly when a physical
         // receiver drops lock to re-negotiate - the mockup's own copy quotes
-        // "expect a second of silence", so the banner clears on the same
-        // timescale.
+        // "expect a second of silence" and runs its banner ~2.2 s, so the
+        // pulse clears on the same timescale.
         live_reconnecting_ = true;
         emit liveReconnectingChanged();
-        QTimer::singleShot(1500, this, [this] {
+        QTimer::singleShot(2200, this, [this] {
             live_reconnecting_ = false;
             emit liveReconnectingChanged();
         });
@@ -2608,6 +2876,7 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device, bool mon
                 object_count_ = live_object_backup_->count;
                 object_configs_ = std::move(live_object_backup_->configs);
                 object_keyframes_ = std::move(live_object_backup_->keyframes);
+                object_path_labels_ = std::move(live_object_backup_->path_labels);
                 selected_object_index_ = live_object_backup_->selected_index;
                 live_object_backup_.reset();
                 emit objectsChanged();
@@ -2668,6 +2937,7 @@ void EncoderController::startRecording(int deviceIndex, const QUrl& url) {
     }
     if (deviceIndex < 0 || static_cast<std::size_t>(deviceIndex) >= devices_.size()) {
         setStatus(QStringLiteral("Choose a capture device first."));
+        emit encodeRefused(status_);
         return;
     }
     const auto device = devices_[static_cast<std::size_t>(deviceIndex)];
@@ -2678,6 +2948,7 @@ void EncoderController::startRecording(int deviceIndex, const QUrl& url) {
                                  "settings.")
                       .arg(QString::fromStdString(device.name))
                       .arg(device.sample_rate));
+        emit encodeRefused(status_);
         return;
     }
 
@@ -2694,10 +2965,12 @@ void EncoderController::startRecording(int deviceIndex, const QUrl& url) {
                       .arg(QString::fromStdString(device.name))
                       .arg(device.channels)
                       .arg(to_qstring(plan::describe(plan::PlanError::kNoSourceLayout))));
+        emit encodeRefused(status_);
         return;
     }
     if (const auto bad = plan::validate(p)) {
         setStatus(to_qstring(plan::describe(*bad)));
+        emit encodeRefused(status_);
         return;
     }
 
@@ -2709,16 +2982,23 @@ void EncoderController::startRecording(int deviceIndex, const QUrl& url) {
         setStatus(QStringLiteral("Could not open \"%1\": %2")
                       .arg(QString::fromStdString(device.name),
                            QString::fromUtf8(why.data(), static_cast<qsizetype>(why.size()))));
+        emit encodeRefused(status_);
         return;
     }
 
     const QString path = url.isLocalFile() ? url.toLocalFile() : url.toString();
     output_path_ = path;
+    output_eac3_ = p.codec == plan::Codec::kEac3;
     emit outputChanged();
 
     stop_recording_.store(false, std::memory_order_relaxed);
     setRecording(true);
     setBusy(true);
+    // A recording is an encode with a history like any other - the mockup's
+    // canonical failure is a device dying mid-take, and a failure with no
+    // run entry has no chip and no banner to land on. Length is unknowable
+    // at start, so the chip says what it honestly is.
+    startRun(path, QStringLiteral("live"));
     recorded_seconds_ = 0.0;
     emit recordedSecondsChanged();
 
@@ -3186,6 +3466,7 @@ void EncoderController::removeSource(int index) {
     // index is only honest when nothing shifted underneath it.
     object_configs_.clear();
     object_keyframes_.clear();
+    object_path_labels_.clear();
     selected_object_index_ = 0;
     refreshAfterSourceListChange();
 }
@@ -3335,6 +3616,7 @@ void EncoderController::encodeTo(const QUrl& url) {
     auto p = currentPlan();
     if (const auto bad = plan::validate(p)) {
         setStatus(to_qstring(plan::describe(*bad)));
+        emit encodeRefused(status_);
         return;
     }
 
@@ -3358,6 +3640,7 @@ void EncoderController::encodeTo(const QUrl& url) {
                       ? to_qstring(plan::describe(plan::PlanError::kNoSourceLayout))
                       : QStringLiteral("Set an assignment for every loaded channel before "
                                        "encoding."));
+        emit encodeRefused(status_);
         return;
     }
     if (object_mode) {
@@ -3370,6 +3653,7 @@ void EncoderController::encodeTo(const QUrl& url) {
         if (ndynamic + npinned == 0) {
             setStatus(QStringLiteral("Nothing is assigned to an object or a bed position — "
                                      "give at least one channel a destination."));
+            emit encodeRefused(status_);
             return;
         }
         if (ndynamic + npinned > 15) {
@@ -3378,12 +3662,14 @@ void EncoderController::encodeTo(const QUrl& url) {
                                      "assign fewer channels.")
                           .arg(static_cast<int>(ndynamic))
                           .arg(static_cast<int>(npinned)));
+            emit encodeRefused(status_);
             return;
         }
     }
 
     const QString path = url.isLocalFile() ? url.toLocalFile() : url.toString();
     output_path_ = path;
+    output_eac3_ = object_mode || codec_ == plan::Codec::kEac3;
     emit outputChanged();
 
     cancel_requested_.store(false, std::memory_order_relaxed);
