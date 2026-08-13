@@ -66,4 +66,17 @@ class AC3FORGE_EXPORT Eac3BurstPacker {
     int blocks_pending_ = 0;
 };
 
+// Wrap a whole stream's worth of ALREADY-SPLIT units into one concatenated
+// IEC 61937 payload - one AC-3 frame per unit (ac3::split_frames's
+// granularity), or one whole E-AC-3 access unit per unit
+// (ac3::split_access_units's granularity), matching `eac3`. For a caller
+// that already has its frames/access units in hand - e.g. a GUI's freshly
+// encoded output - rather than a raw elementary-stream buffer it would
+// otherwise have to split itself first. ac3cli's own `spdif`/`play` commands
+// split a raw buffer and wrap frame-by-frame instead (see main.cpp); both
+// paths bottom out in wrap_frame/Eac3BurstPacker above, so they cannot
+// disagree about how a unit becomes a burst.
+[[nodiscard]] AC3FORGE_EXPORT std::expected<std::vector<std::byte>, WrapError> wrap_stream(
+    std::span<const std::span<const std::byte>> units, bool eac3);
+
 }  // namespace ac3::iec61937

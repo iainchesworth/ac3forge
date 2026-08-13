@@ -1,9 +1,12 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <numbers>
 #include <optional>
 #include <span>
@@ -13,6 +16,7 @@
 #include "ac3/encoder/eac3_frame.hpp"
 #include "ac3/encoder/encoder.hpp"
 #include "ac3/encoder/silent_frame.hpp"
+#include "ac3/io/wav.hpp"
 #include "ac3/sinks/iec61937.hpp"
 
 // Byte-level regression for the IEC 61937 packers. AC-3's wrap_frame had no
@@ -284,4 +288,155 @@ TEST_CASE("Eac3BurstPacker: rejects non-syncframe input and resets on overflow",
     REQUIRE(result.has_value());
     REQUIRE(result->has_value());
     CHECK(le16(**result, 6) == static_cast<std::uint16_t>(frame.size()));
+}
+
+// --- wrap_stream + PCM16 WAV (the GUI's S/PDIF container, item 24) ---------
+// wrap_stream sits on top of wrap_frame/Eac3BurstPacker (already covered
+// above), so these tests only need to prove it strings them together over a
+// whole encoded stream correctly, and that write_wav_pcm16_raw's promise -
+// "the payload passes through untouched" - actually holds for what
+// wrap_stream hands it.
+
+namespace fs = std::filesystem;
+
+namespace {
+
+fs::path scratch_dir() {
+    auto dir = fs::temp_directory_path() / "ac3forge_iec61937_tests";
+    fs::create_directories(dir);
+    return dir;
+}
+
+// write_wav_pcm16_raw always emits the same minimal 44-byte header (RIFF +
+// fmt + data, no extra chunks - confirmed against its implementation in
+// wav.cpp), so a raw ifstream past that offset reaches the payload exactly.
+constexpr std::size_t kWavHeaderBytes = 44;
+
+}  // namespace
+
+TEST_CASE("wrap_stream: AC-3 frames become a byte-exact PCM16 WAV",
+         "[iec61937][spdif]") {
+    ac3::FrameEncoder encoder{{.bitrate_kbps = 192}};
+    std::uint64_t n = 0;
+    std::vector<std::vector<std::byte>> frames;
+    for (int f = 0; f < 3; ++f) {
+        auto pcm = tone_frame(2, n);
+        n += ac3::kSamplesPerFrame;
+        const std::vector<std::span<const float>> views{pcm[0], pcm[1]};
+        auto frame = encoder.encode_frame(views);
+        REQUIRE(frame.has_value());
+        frames.push_back(std::move(*frame));
+    }
+    std::vector<std::span<const std::byte>> units;
+    units.reserve(frames.size());
+    for (const auto& frame : frames) {
+        units.emplace_back(frame);
+    }
+    const auto payload = ac3::iec61937::wrap_stream(units, /*eac3=*/false);
+    REQUIRE(payload.has_value());
+    // AC-3 frames never need to accumulate (unlike E-AC-3's sub-six-block
+    // case) - one frame always fills exactly one burst.
+    CHECK(payload->size() == frames.size() * ac3::iec61937::kBurstBytes);
+
+    const auto path = scratch_dir() / "spdif_ac3.wav";
+    const auto written = ac3::io::write_wav_pcm16_raw(path.string(), *payload, 48000, 2);
+    REQUIRE(written.has_value());
+
+    std::ifstream in{path, std::ios::binary};
+    REQUIRE(in.is_open());
+    in.seekg(0, std::ios::end);
+    const auto size = static_cast<std::size_t>(in.tellg());
+    REQUIRE(size == kWavHeaderBytes + payload->size());
+    in.seekg(static_cast<std::streamoff>(kWavHeaderBytes));
+    std::vector<std::byte> data(payload->size());
+    in.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(data.size()));
+    // The assertion that fails if wrap_stream ever drops, reorders or
+    // otherwise mangles a unit: the WAV's data chunk must be exactly what
+    // wrapping each frame alone, in order, would have produced.
+    std::vector<std::byte> expected;
+    for (const auto& frame : frames) {
+        const auto burst = ac3::iec61937::wrap_frame(frame);
+        REQUIRE(burst.has_value());
+        expected.insert(expected.end(), burst->begin(), burst->end());
+    }
+    CHECK(std::equal(data.begin(), data.end(), expected.begin(), expected.end()));
+}
+
+TEST_CASE("wrap_stream: E-AC-3 access units become a decodable PCM16 WAV at 4x carrier rate",
+         "[iec61937][spdif]") {
+    ac3::eac3::AccessUnitEncoder encoder{{.independent = {.bitrate_kbps = 192}}};
+    std::uint64_t n = 0;
+    std::vector<std::vector<std::byte>> units_owned;
+    for (int f = 0; f < 3; ++f) {
+        auto pcm = tone_frame(2, n);
+        n += ac3::kSamplesPerFrame;
+        const std::vector<std::span<const float>> views{pcm[0], pcm[1]};
+        auto unit = encoder.encode_access_unit(views);
+        REQUIRE(unit.has_value());
+        units_owned.push_back(std::move(unit->bytes));
+    }
+    std::vector<std::span<const std::byte>> units;
+    units.reserve(units_owned.size());
+    for (const auto& u : units_owned) {
+        units.emplace_back(u);
+    }
+    const auto payload = ac3::iec61937::wrap_stream(units, /*eac3=*/true);
+    REQUIRE(payload.has_value());
+    // This project's own encoder always writes numblkscod 3 (six blocks), so
+    // each access unit fills exactly one burst - see Eac3BurstPacker's own
+    // accumulation tests above for the sub-six-block case.
+    CHECK(payload->size() == units_owned.size() * ac3::iec61937::kEac3BurstBytes);
+
+    constexpr std::uint32_t kContentRate = 48000;
+    const auto path = scratch_dir() / "spdif_eac3.wav";
+    const auto written =
+        ac3::io::write_wav_pcm16_raw(path.string(), *payload, kContentRate * 4, 2);
+    REQUIRE(written.has_value());
+
+    std::ifstream in{path, std::ios::binary};
+    REQUIRE(in.is_open());
+    // fmt chunk's sample rate field: RIFF(4)+size(4)+WAVE(4)+"fmt "(4)+16(4)+
+    // audioFormat(2)+channels(2) = byte 24.
+    std::array<char, 4> rate_bytes{};
+    in.seekg(24);
+    in.read(rate_bytes.data(), 4);
+    const auto stored_rate =
+        static_cast<std::uint32_t>(static_cast<std::uint8_t>(rate_bytes[0])) |
+        (static_cast<std::uint32_t>(static_cast<std::uint8_t>(rate_bytes[1])) << 8) |
+        (static_cast<std::uint32_t>(static_cast<std::uint8_t>(rate_bytes[2])) << 16) |
+        (static_cast<std::uint32_t>(static_cast<std::uint8_t>(rate_bytes[3])) << 24);
+    // The literal proof this is the "unusual, legal" 4x-rate WAV the task
+    // calls for, not a stream a plain PCM16 player would treat as 48 kHz.
+    CHECK(stored_rate == kContentRate * 4);
+
+    in.seekg(0, std::ios::end);
+    const auto size = static_cast<std::size_t>(in.tellg());
+    REQUIRE(size == kWavHeaderBytes + payload->size());
+    in.seekg(static_cast<std::streamoff>(kWavHeaderBytes));
+    std::vector<std::byte> data(payload->size());
+    in.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(data.size()));
+    CHECK(std::equal(data.begin(), data.end(), payload->begin(), payload->end()));
+
+    // Round trip through the WAV's own bytes (not the in-memory payload):
+    // un-swap the first burst back and confirm it decodes as real audio.
+    // This is the assertion that fails if wrap_stream is reverted to
+    // something that drops or reorders access units.
+    const auto recovered =
+        unswap_words(std::span{data}.first(ac3::iec61937::kEac3BurstBytes)
+                         .subspan(8, units_owned[0].size()));
+    ac3::Eac3Decoder decoder;
+    const auto decoded = decoder.decode_access_unit(recovered);
+    REQUIRE(decoded.has_value());
+    REQUIRE(decoded->has_value());
+    CHECK((*decoded)->channels.size() == 2);
+}
+
+TEST_CASE("wrap_stream: a bad unit fails the whole stream instead of silently skipping it",
+         "[iec61937][spdif]") {
+    const std::vector<std::byte> bad{std::byte{0}, std::byte{0}};
+    const std::vector<std::span<const std::byte>> units{bad};
+    CHECK(ac3::iec61937::wrap_stream(units, /*eac3=*/false).error() ==
+          ac3::iec61937::WrapError::kNotAFrame);
+    CHECK(ac3::iec61937::wrap_stream(units, /*eac3=*/true).error() ==
+          ac3::iec61937::WrapError::kNotAFrame);
 }
