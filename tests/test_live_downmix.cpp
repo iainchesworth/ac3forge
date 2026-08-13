@@ -119,11 +119,12 @@ TEST_CASE("the downmix leg's encoder carries every bed channel's own content, no
         n += static_cast<std::uint64_t>(ac3::kSamplesPerFrame);
 
         std::vector<std::span<const float>> views;
+        views.reserve(pcm.size());
         for (const auto& channel : pcm) {
             views.emplace_back(channel);
         }
         REQUIRE(views.size() == 6);
-        const auto frame = encoder.encode_frame(views);
+        auto frame = encoder.encode_frame(views);
         REQUIRE(frame.has_value());
         last_frame = std::move(*frame);
     }
