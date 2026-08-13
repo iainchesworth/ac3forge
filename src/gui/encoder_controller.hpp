@@ -342,6 +342,21 @@ class EncoderController : public QObject {
     // Timer, so the two can never drift apart.
     Q_PROPERTY(bool motionPreviewActive READ motionPreviewActive NOTIFY motionPreviewActiveChanged)
     Q_PROPERTY(double motionPreviewTime READ motionPreviewTime NOTIFY motionPreviewTimeChanged)
+    // ---- live session's object slots ---------------------------------------
+    // A live Atmos session pre-allocates a fixed budget of object slots (see
+    // startLiveSession's own comment on why objectCount is a budget, not a
+    // channel count, once a session is running) - these two answer which of
+    // that budget's slots actually carry a capture channel right now, index-
+    // aligned with objectModel(). Empty/zero outside a live Atmos session;
+    // NOTIFY objectsChanged the same as objectModel itself, since a bind or
+    // reassignment is exactly the kind of change that signal already covers.
+    Q_PROPERTY(QVariantList liveObjectChannels READ liveObjectChannels NOTIFY objectsChanged)
+    Q_PROPERTY(int liveObjectSlotsBound READ liveObjectSlotsBound NOTIFY objectsChanged)
+    // The live device's own channel count - what the Live session tab's
+    // channel picker for "Add an object"/reassignment builds its "Ch 1".."Ch
+    // N" model from, and what addLiveObject/reassignLiveObjectSlot validate
+    // a capture-channel argument against. 0 outside a live session.
+    Q_PROPERTY(int liveDeviceChannels READ liveDeviceChannels NOTIFY liveActiveChanged)
 
     // ---- live session -------------------------------------------------------
     // Capture, encode and (optionally) monitor+passthrough all running at
@@ -354,6 +369,15 @@ class EncoderController : public QObject {
     Q_PROPERTY(bool liveMonitoring READ liveMonitoring NOTIFY liveActiveChanged)
     Q_PROPERTY(bool livePassthrough READ livePassthrough NOTIFY liveActiveChanged)
     Q_PROPERTY(bool liveWritingToDisk READ liveWritingToDisk NOTIFY liveActiveChanged)
+    // The pre-flight "also write a raw-WAV safety copy" checkbox on the Live
+    // session tab - a plain property (not a startLiveSession argument) so its
+    // signature/semantics stay exactly what they were before this existed;
+    // startLiveSession reads this the same way it already reads
+    // keepPartialOutput. Meaningless without writeToDisk itself - the copy
+    // rides "alongside the take", not in place of it - so it is only
+    // consulted when a session is actually asked to write.
+    Q_PROPERTY(bool liveWavSafetyCopy READ liveWavSafetyCopy WRITE setLiveWavSafetyCopy NOTIFY
+                   liveWavSafetyCopyChanged)
     // What the receiver leg can actually carry, and whether that is less than
     // the main encode plan. Object mode is always a gap: TS 103 420's JOC
     // layer plays as its 5.1 bed on any real decoder we have tried, ours
@@ -383,10 +407,20 @@ class EncoderController : public QObject {
     Q_PROPERTY(qint64 liveFramesDropped READ liveFramesDropped NOTIFY liveStatsChanged)
     Q_PROPERTY(quint64 liveUnderruns READ liveUnderruns NOTIFY liveStatsChanged)
     // A computed lower bound (two frame periods: one to fill the capture
-    // buffer, one to encode and hand off), not a measurement - neither sink
-    // reports an end-to-end figure. Zero when nothing is running, since there
-    // is nothing to estimate yet.
-    Q_PROPERTY(double liveLatencyMs READ liveLatencyMs NOTIFY liveActiveChanged)
+    // buffer, one to encode and hand off) until the real thing lands - see
+    // liveLatencyMeasured. Zero when nothing is running, since there is
+    // nothing to estimate yet. NOTIFY is liveStatsChanged, not
+    // liveActiveChanged: the one-shot measurement replaces this mid-session,
+    // once per run, well after the value liveActiveChanged already covered
+    // at session start.
+    Q_PROPERTY(double liveLatencyMs READ liveLatencyMs NOTIFY liveStatsChanged)
+    // Whether liveLatencyMs is currently the real capture->monitor round
+    // trip (measured once, after the pipeline settles) or still the
+    // two-frame estimate above - what decides the "measured" vs "est."
+    // label the Live session tab prints next to it. Stays false for the
+    // whole session when monitoring is off, since there is nothing to time
+    // a round trip against.
+    Q_PROPERTY(bool liveLatencyMeasured READ liveLatencyMeasured NOTIFY liveStatsChanged)
 
 public:
     explicit EncoderController(QObject* parent = nullptr);
@@ -515,11 +549,16 @@ public:
     [[nodiscard]] int pinnedObjectCount() const;
     [[nodiscard]] bool motionPreviewActive() const { return motion_preview_active_; }
     [[nodiscard]] double motionPreviewTime() const { return motion_preview_time_; }
+    [[nodiscard]] QVariantList liveObjectChannels() const;
+    [[nodiscard]] int liveObjectSlotsBound() const;
+    [[nodiscard]] int liveDeviceChannels() const { return live_device_channels_; }
 
     [[nodiscard]] bool liveActive() const { return live_active_; }
     [[nodiscard]] bool liveMonitoring() const { return live_monitoring_; }
     [[nodiscard]] bool livePassthrough() const { return live_passthrough_; }
     [[nodiscard]] bool liveWritingToDisk() const { return live_writing_to_disk_; }
+    [[nodiscard]] bool liveWavSafetyCopy() const { return live_wav_safety_copy_; }
+    void setLiveWavSafetyCopy(bool on);
     [[nodiscard]] QString liveReceiverPlanText() const { return live_receiver_plan_text_; }
     [[nodiscard]] bool liveGap() const { return live_gap_; }
     [[nodiscard]] bool liveReconnecting() const { return live_reconnecting_; }
@@ -528,6 +567,7 @@ public:
     [[nodiscard]] qint64 liveFramesDropped() const { return live_frames_dropped_; }
     [[nodiscard]] quint64 liveUnderruns() const { return live_underruns_; }
     [[nodiscard]] double liveLatencyMs() const { return live_latency_ms_; }
+    [[nodiscard]] bool liveLatencyMeasured() const { return live_latency_measured_; }
     [[nodiscard]] QString liveCaptureDetail() const { return live_capture_detail_; }
     [[nodiscard]] QString liveReceiverName() const { return live_receiver_name_; }
     [[nodiscard]] bool liveWantedPassthrough() const { return live_wanted_passthrough_; }
@@ -748,6 +788,33 @@ public:
     // and a user who can hear the receiver has settled knows better than
     // the timer does.
     Q_INVOKABLE void settleReconnect();
+    // Binds the next free slot in the current live Atmos session's object
+    // budget to `captureChannel` (0-based, a device channel index - not an
+    // object index). A no-op (silently, the usual convention here) outside a
+    // live Atmos session, for a channel outside the device's own count, or
+    // when every allocated slot is already bound - "Add an object" refuses
+    // rather than growing the budget, since the budget is what JOC baked
+    // into the stream at session start (see startLiveSession).
+    Q_INVOKABLE void addLiveObject(int captureChannel);
+    // Changes which capture channel feeds `slotIndex` - the Live session
+    // tab's per-chip reassignment. `captureChannel` < 0 silences the slot
+    // (the same "unbound" state an unused allocated slot already has); a
+    // valid channel may be reused by more than one slot at once, since
+    // nothing here stops two objects panned to different positions sharing
+    // one microphone. A no-op outside a live Atmos session or for a
+    // slotIndex/captureChannel outside range.
+    Q_INVOKABLE void reassignLiveObjectSlot(int slotIndex, int captureChannel);
+    // Closes whatever passthrough sink is open (if any) and opens a new one
+    // for outputDevices()[receiverDeviceIndex] - or, for a negative index,
+    // just closes the current one - WITHOUT restarting capture or encode.
+    // Capture keeps running and the take on disk (if any) keeps growing
+    // straight through the swap; only the receiver leg blinks, the same
+    // "expect a second of silence" renegotiation a fresh session's own
+    // first open already carries (liveReconnecting narrates it exactly the
+    // same way). Refused with the same text startLiveSession's own
+    // passthrough open already uses when the chosen endpoint cannot take
+    // the current format. A no-op outside a live session.
+    Q_INVOKABLE void switchLiveReceiver(int receiverDeviceIndex);
     // Where a level sits on the meter scale, for the QML that draws the
     // gridline labels. The bars themselves get their positions in
     // channelLevels; this exists so the ticks cannot disagree with them.
@@ -792,6 +859,7 @@ signals:
     void liveActiveChanged();
     void liveStatsChanged();
     void liveReconnectingChanged();
+    void liveWavSafetyCopyChanged();
     void motionPreviewActiveChanged();
     void motionPreviewTimeChanged();
 
@@ -920,19 +988,45 @@ private:
     [[nodiscard]] std::optional<ObjectKey> keyForObjectIndex(int objectIndex) const;
 
     struct ObjectConfig;
+    struct LiveOutputWriters;
+    // Opens whatever runLiveSession will need to write incrementally - the
+    // take itself (or, for Matroska, its elementary-stream spool - see
+    // LiveOutputWriters' own comment) and the optional raw-WAV safety copy -
+    // on the GUI thread, before anything is marked live, so a bad
+    // destination refuses the session the same way a bad device choice
+    // already does rather than surfacing as a mid-session failure. Returns
+    // null (having already called setStatus/emitted encodeRefused itself,
+    // the same convention every other refusal in startLiveSession follows)
+    // on any open failure; a null return with write_to_disk false is not a
+    // failure, just "there is nothing to open" - runLiveSession itself reads
+    // write_to_disk again to tell the two apart. A unique_ptr rather than
+    // a plain return-by-value: LiveOutputWriters is only forward-declared
+    // here (its definition, alongside ac3::io::WavStreamWriter, has no
+    // business in this header), and unique_ptr is the one smart pointer that
+    // tolerates an incomplete type at the declaration site.
+    [[nodiscard]] std::unique_ptr<LiveOutputWriters> openLiveOutputWriters(
+        const QString& path, bool write_to_disk, const ac3::capture::DeviceInfo& device);
     // The live session worker. One function for both channel and object mode
     // (mirrors ac3cli's own `live` command, which combines them the same way)
     // rather than split like encodeChannels/encodeObjects: almost everything
     // here - capture, monitor, passthrough, the disk-write, the live counters
     // - is identical between the two, and only the "turn source samples into
-    // one encoded unit" step differs.
+    // one encoded unit" step differs. `writers` is already open (or, with
+    // write_to_disk false, null) - see openLiveOutputWriters.
     void runLiveSession(ac3::capture::DeviceInfo device, bool monitor, bool passthrough,
-                        bool write_to_disk, QString file_path);
+                        bool write_to_disk, QString file_path,
+                        std::unique_ptr<LiveOutputWriters> writers);
     // A snapshot of object_configs_ that setObjectPosition/setObjectLfeSend
     // also keep current, guarded by live_object_mutex_ - the one piece of
     // state the live worker thread and the GUI thread genuinely touch
     // concurrently (dragging the room while a live Atmos session runs).
     [[nodiscard]] std::vector<ObjectConfig> liveObjectSnapshot() const;
+    // Slot -> capture-channel bindings for the current live Atmos session's
+    // object budget, guarded the same way and for the same reason as
+    // liveObjectSnapshot (addLiveObject/reassignLiveObjectSlot write it from
+    // the GUI thread, the worker reads it once per frame). Empty outside a
+    // live Atmos session.
+    [[nodiscard]] std::vector<int> liveSlotChannels() const;
 
     // Writes an elementary stream, or muxes Matroska, according to the chosen
     // container. Returns an empty string on success and the reason otherwise.
@@ -1221,6 +1315,10 @@ private:
     bool live_monitoring_ = false;
     bool live_passthrough_ = false;
     bool live_writing_to_disk_ = false;
+    // Pre-flight only - startLiveSession reads this once, at session start,
+    // the same way it already reads keepPartialOutput; changing it mid-
+    // session has no effect on a copy already open.
+    bool live_wav_safety_copy_ = false;
     QString live_receiver_plan_text_;
     bool live_gap_ = false;
     QString live_capture_detail_;
@@ -1233,17 +1331,44 @@ private:
     qint64 live_frames_dropped_ = 0;
     quint64 live_underruns_ = 0;
     double live_latency_ms_ = 0.0;
+    bool live_latency_measured_ = false;
+    // The current live session's own device channel count - what
+    // addLiveObject/reassignLiveObjectSlot validate a capture-channel
+    // argument against, without either needing to reach into live_capture_
+    // (worker-owned once the session is running) from the GUI thread. Reset
+    // to 0 alongside every other live_* flag when a session ends.
+    int live_device_channels_ = 0;
     // Genuinely shared with the live worker thread (dragging the Live
     // session's room, or the Objects tab's, while a live Atmos session is
     // running): every read and write goes through live_object_mutex_.
     mutable std::mutex live_object_mutex_;
     std::vector<ObjectConfig> live_object_snapshot_;
+    // Slot -> capture-channel bindings (see liveSlotChannels' own comment);
+    // -1 marks an allocated-but-unbound slot, which the worker encodes as
+    // silence. Guarded by live_object_mutex_ alongside live_object_snapshot_
+    // above, for the same reason.
+    std::vector<int> live_slot_channels_;
     // Opened and (via the worker's final invokeMethod) closed on the GUI
     // thread, matching capture_'s own convention - only buffer()/submit()/
     // stats() are called from the worker while a session runs.
     std::unique_ptr<ac3::capture::Capture> live_capture_;
     std::unique_ptr<ac3::sinks::MonitorSink> live_monitor_sink_;
     std::unique_ptr<ac3::sinks::PassthroughSink> live_passthrough_sink_;
+    // switchLiveReceiver's handoff to the worker thread: the GUI thread
+    // writes a request here, the worker thread claims it (and clears it)
+    // once per outer-loop iteration and does the actual close-old/open-new
+    // itself - the only thread that ever calls submit() on
+    // live_passthrough_sink_, so performing the swap there too means there
+    // is never a window where another thread could be mid-submit on a sink
+    // this is about to destroy. A full RenderDeviceInfo rather than just an
+    // index, resolved from outputs_ on the GUI thread at request time, so
+    // the worker never has to touch outputs_ (GUI-thread-owned state) itself.
+    struct PendingReceiverSwitch {
+        bool want_passthrough = false;
+        ac3::sinks::RenderDeviceInfo receiver;  // valid only if want_passthrough
+    };
+    std::mutex live_receiver_switch_mutex_;
+    std::optional<PendingReceiverSwitch> live_receiver_switch_request_;
 
     // ---- Objects tab's audible motion preview ---------------------------
     // stop_motion_preview_ is the only piece of this the worker thread

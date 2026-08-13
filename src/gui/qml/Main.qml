@@ -1179,67 +1179,13 @@ ApplicationWindow {
                                 Item { Layout.fillWidth: true }
                             }
 
-                            RowLayout {
-                                Layout.fillWidth: true
-                                spacing: Theme.space2
-
-                                CheckBox {
-                                    id: liveMonitorCheck
-                                    text: qsTr("Monitor")
-                                    checked: true
-                                    enabled: !EncoderController.busy
-                                    font.pixelSize: 12
-                                }
-                                ComboBox {
-                                    id: liveReceiverBox
-                                    Layout.fillWidth: true
-                                    enabled: !EncoderController.busy
-                                    model: [qsTr("No passthrough")].concat(EncoderController.outputDevices)
-                                }
-                            }
-                            RowLayout {
-                                Layout.fillWidth: true
-                                spacing: Theme.space2
-
-                                CheckBox {
-                                    id: liveWriteCheck
-                                    text: qsTr("Also write the take to disk")
-                                    enabled: !EncoderController.busy
-                                    font.pixelSize: 12
-                                }
-                                Button {
-                                    text: qsTr("Start live session…")
-                                    enabled: EncoderController.captureSupported && !EncoderController.busy
-                                    onClicked: {
-                                        if (liveWriteCheck.checked) {
-                                            window.openSaveDialog(liveSessionDialog,
-                                                                  EncoderController.suggestedOutputName());
-                                        } else {
-                                            EncoderController.startLiveSession(
-                                                deviceBox.currentIndex, liveMonitorCheck.checked,
-                                                liveReceiverBox.currentIndex - 1, false, "");
-                                        }
-                                    }
-                                }
-                                Item { Layout.fillWidth: true }
-                            }
-
                             Text {
                                 visible: window.showExplanations
                                 Layout.fillWidth: true
-                                text: qsTr("Monitoring is free — nothing is written and no filename is asked for. The levels below are real. Record or start a session to commit a take.")
+                                text: qsTr("Monitoring is free — nothing is written and no filename is asked for. The levels below are real. Open Live session to set up and start a real take.")
                                 wrapMode: Text.WordWrap
                                 font.pixelSize: 11
                                 color: Theme.textMuted
-                            }
-                            Text {
-                                objectName: "liveVbrWarning"
-                                visible: EncoderController.vbrEnabled && EncoderController.vbrAvailable
-                                Layout.fillWidth: true
-                                text: qsTr("A live session always runs at the fixed bit rate — passthrough bursts are fixed-size, so frames cannot float. Variable rate applies to file encodes only.")
-                                wrapMode: Text.WordWrap
-                                font.pixelSize: 11
-                                color: Theme.accent700
                             }
                             Text {
                                 visible: !EncoderController.captureSupported
@@ -4601,11 +4547,126 @@ ApplicationWindow {
                                 Layout.rightMargin: 24
                                 title: qsTr("Live session")
 
+                                // ---- receiver: pre-flight AND hot-swap ---------
+                                // The one control that means something in BOTH
+                                // phases: before Start it is the pre-flight
+                                // choice startLiveSession reads; once live, an
+                                // explicit pick (onActivated, never a binding)
+                                // instead hot-swaps the passthrough leg without
+                                // restarting capture or encode - index 0 turns
+                                // passthrough off, same vocabulary either way.
                                 RowLayout {
                                     Layout.fillWidth: true
+                                    spacing: Theme.space2
+
+                                    Text {
+                                        text: qsTr("Receiver")
+                                        color: Theme.neutral600
+                                        font.pixelSize: 12
+                                    }
+                                    ComboBox {
+                                        id: liveReceiverBox
+                                        objectName: "liveReceiverBox"
+                                        Layout.fillWidth: true
+                                        model: [qsTr("No passthrough")].concat(EncoderController.outputDevices)
+                                        onActivated: {
+                                            if (EncoderController.liveActive) {
+                                                EncoderController.switchLiveReceiver(currentIndex - 1);
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // ---- idle: pre-flight -------------------------
+                                // Where a session starts, now that the rail's own
+                                // live branch keeps only the signal-side acts
+                                // (device pick, Refresh, Monitor, Record). Every
+                                // choice a real take needs - monitor, whether to
+                                // write, the safety copy - lives here, live and
+                                // editable, not a disabled readout.
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    visible: !EncoderController.liveActive
+                                    spacing: Theme.space2
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: Theme.space2
+
+                                        CheckBox {
+                                            id: liveMonitorCheck
+                                            objectName: "liveMonitorCheck"
+                                            text: qsTr("Monitor")
+                                            checked: true
+                                            font.pixelSize: 12
+                                        }
+                                        Item { Layout.fillWidth: true }
+                                    }
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: Theme.space2
+
+                                        CheckBox {
+                                            id: liveWriteCheck
+                                            objectName: "liveWriteCheck"
+                                            text: qsTr("Also write the take to disk")
+                                            font.pixelSize: 12
+                                        }
+                                        CheckBox {
+                                            id: liveWavSafetyCheck
+                                            objectName: "liveWavSafetyCheck"
+                                            text: qsTr("Raw-WAV safety copy")
+                                            enabled: liveWriteCheck.checked
+                                            checked: EncoderController.liveWavSafetyCopy
+                                            font.pixelSize: 12
+                                            onToggled: EncoderController.liveWavSafetyCopy = checked
+                                        }
+                                        Item { Layout.fillWidth: true }
+                                        Button {
+                                            objectName: "startSessionButton"
+                                            text: qsTr("Start session")
+                                            highlighted: true
+                                            enabled: EncoderController.captureSupported
+                                                     && !EncoderController.busy
+                                            onClicked: {
+                                                if (liveWriteCheck.checked) {
+                                                    window.openSaveDialog(liveSessionDialog,
+                                                                          EncoderController.suggestedOutputName());
+                                                } else {
+                                                    EncoderController.startLiveSession(
+                                                        deviceBox.currentIndex, liveMonitorCheck.checked,
+                                                        liveReceiverBox.currentIndex - 1, false, "");
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Text {
+                                        visible: window.showExplanations
+                                        Layout.fillWidth: true
+                                        text: qsTr("Pick a device on the rail first, then set up the take here — monitor, an optional receiver leg, and whether to write it to disk.")
+                                        wrapMode: Text.WordWrap
+                                        font.pixelSize: 11
+                                        color: Theme.textMuted
+                                    }
+                                    Text {
+                                        objectName: "liveVbrWarning"
+                                        visible: EncoderController.vbrEnabled && EncoderController.vbrAvailable
+                                        Layout.fillWidth: true
+                                        text: qsTr("A live session always runs at the fixed bit rate — passthrough bursts are fixed-size, so frames cannot float. Variable rate applies to file encodes only.")
+                                        wrapMode: Text.WordWrap
+                                        font.pixelSize: 11
+                                        color: Theme.accent700
+                                    }
+                                }
+
+                                // ---- running: the real transport ---------------
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    visible: EncoderController.liveActive
                                     spacing: Theme.space6
 
                                     Button {
+                                        objectName: "stopSessionButton"
                                         text: qsTr("Stop session")
                                         highlighted: true
                                         onClicked: EncoderController.stopLiveSession()
@@ -4816,11 +4877,13 @@ ApplicationWindow {
                                     Layout.preferredWidth: 340
                                     title: qsTr("Live room")
 
-                                    // The mockup's "Objects in this session" panel,
-                                    // read-only for now: which sounds are live objects
-                                    // and which one a drag would move. Adding or
-                                    // reassigning mid-stream is an open decision (the
-                                    // JOC object count is baked into the stream).
+                                    // The mockup's "Objects in this session" panel:
+                                    // which sounds are live objects, which one a drag
+                                    // would move, and - now that the session
+                                    // pre-allocates a fixed slot budget rather than
+                                    // exactly the device's channel count (see
+                                    // startLiveSession) - room to add one or
+                                    // reassign one below.
                                     RowLayout {
                                         Layout.fillWidth: true
                                         Text {
@@ -4831,7 +4894,12 @@ ApplicationWindow {
                                         }
                                         Item { Layout.fillWidth: true }
                                         Text {
-                                            text: qsTr("%1 objects live").arg(EncoderController.objectCount)
+                                            objectName: "liveObjectSlotsCounter"
+                                            text: EncoderController.liveActive
+                                                  ? qsTr("%1 of %2 slots live")
+                                                    .arg(EncoderController.liveObjectSlotsBound)
+                                                    .arg(EncoderController.objectCount)
+                                                  : qsTr("%1 objects live").arg(EncoderController.objectCount)
                                             color: Theme.accent700
                                             font.pixelSize: 10
                                             font.family: Theme.monoFamily
@@ -4875,6 +4943,55 @@ ApplicationWindow {
                                                                    sessionObjChip.modelData.index
                                                 }
                                             }
+                                        }
+                                    }
+
+                                    // Add or reassign, live: both just change which
+                                    // input plane feeds which object mid-loop (see
+                                    // addLiveObject/reassignLiveObjectSlot's own
+                                    // comments) - the JOC object COUNT stays fixed
+                                    // for the whole session, only the channel
+                                    // binding moves.
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        visible: EncoderController.liveActive
+                                        spacing: Theme.space2
+
+                                        ComboBox {
+                                            id: liveObjectChannelPicker
+                                            objectName: "liveObjectChannelPicker"
+                                            Layout.preferredWidth: 84
+                                            model: {
+                                                const list = [];
+                                                for (let i = 0; i < EncoderController.liveDeviceChannels; i++) {
+                                                    list.push(qsTr("Ch %1").arg(i + 1));
+                                                }
+                                                return list;
+                                            }
+                                        }
+                                        Button {
+                                            objectName: "addLiveObjectButton"
+                                            text: qsTr("Add")
+                                            flat: true
+                                            enabled: EncoderController.liveObjectSlotsBound
+                                                     < EncoderController.objectCount
+                                            onClicked: EncoderController.addLiveObject(
+                                                           liveObjectChannelPicker.currentIndex)
+                                        }
+                                        Button {
+                                            objectName: "reassignLiveObjectButton"
+                                            text: qsTr("Reassign selected")
+                                            flat: true
+                                            onClicked: EncoderController.reassignLiveObjectSlot(
+                                                           EncoderController.selectedObjectIndex,
+                                                           liveObjectChannelPicker.currentIndex)
+                                        }
+                                        Button {
+                                            objectName: "silenceLiveObjectButton"
+                                            text: qsTr("Silence selected")
+                                            flat: true
+                                            onClicked: EncoderController.reassignLiveObjectSlot(
+                                                           EncoderController.selectedObjectIndex, -1)
                                         }
                                     }
 
@@ -5059,7 +5176,10 @@ ApplicationWindow {
                                                 font.pixelSize: 9
                                             }
                                             Text {
-                                                text: qsTr("~%1 ms est.").arg(EncoderController.liveLatencyMs.toFixed(0))
+                                                objectName: "liveLatencyReadout"
+                                                text: EncoderController.liveLatencyMeasured
+                                                      ? qsTr("~%1 ms measured").arg(EncoderController.liveLatencyMs.toFixed(0))
+                                                      : qsTr("~%1 ms est.").arg(EncoderController.liveLatencyMs.toFixed(0))
                                                 color: Theme.text
                                                 font.pixelSize: 13
                                                 font.family: Theme.monoFamily

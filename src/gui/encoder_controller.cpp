@@ -24,6 +24,7 @@
 #include <utility>
 #include <vector>
 
+#include "ac3/capture/watchdog.hpp"
 #include "ac3/decoder/decoder.hpp"
 #include "ac3/encoder/eac3_frame.hpp"
 #include "ac3/encoder/encoder.hpp"
@@ -88,6 +89,16 @@ QString group_digits(qint64 value) {
 // plays, so without a wall-clock throttle a two-minute track would fire tens
 // of thousands of property updates the display could never show.
 constexpr auto kPublishInterval = std::chrono::milliseconds(33);
+
+// How often a live session's incremental writers (the take itself and the
+// optional raw-WAV safety copy) are flushed/header-patched to disk. Frequent
+// enough that a hard crash loses at most a second; infrequent enough that it
+// is not a per-frame fsync.
+constexpr auto kDiskFlushInterval = std::chrono::milliseconds(1000);
+
+// How long a live capture may go silent before the watchdog decides the
+// device itself is gone rather than just momentarily starved.
+constexpr auto kDeviceSilenceTimeout = std::chrono::milliseconds(3000);
 
 // A reserved source index (past any real sourceShapes() count, which never
 // gets remotely this large) for a live session's objects, which have no
@@ -264,6 +275,77 @@ QString partial_output_path(const QString& path) {
     return path + QStringLiteral(".partial");
 }
 
+// Splices a fixed suffix onto `path`'s stem, replacing whatever extension it
+// had - the shared "derive a sibling filename" logic live_stream_spool_path
+// and the raw-WAV safety copy's own path both need.
+QString sibling_path(const QString& path, const QString& suffix) {
+    const qsizetype dot = path.lastIndexOf(QLatin1Char('.'));
+    const qsizetype slash = std::max(path.lastIndexOf(QLatin1Char('/')),
+                                     path.lastIndexOf(QLatin1Char('\\')));
+    return (dot > slash ? path.left(dot) : path) + suffix;
+}
+
+// Where a live session's Matroska take spools its elementary stream while it
+// grows - matroska::mux() only ever produces a complete file from the WHOLE
+// set of frames, so the real .mkv can only be written once, at a clean stop
+// (see EncoderController::LiveOutputWriters' own comment). Named with its
+// own honest extension beside the final path, deliberately NOT using
+// partial_output_path's ".partial" suffix above - that means "kept only
+// because a run failed"; this spool exists for the entire life of every
+// Matroska live session, failed or not, and is folded into the .mkv (then
+// removed) on success. A crash leaves exactly this file behind holding
+// everything captured up to that point - "the elementary take" the live
+// session docs page promises.
+QString live_stream_spool_path(const QString& mkv_path, bool eac3) {
+    return sibling_path(mkv_path, eac3 ? QStringLiteral(".live.ec3") : QStringLiteral(".live.ac3"));
+}
+
+// Opens a PassthroughSink for `receiver`, or explains why it did not - the
+// same open-and-explain logic startLiveSession's own initial open always
+// used, factored out so switchLiveReceiver's mid-session hot-swap (running
+// on runLiveSession's worker thread) reproduces it byte-for-byte rather than
+// drifting from what a fresh session start does.
+struct LivePassthroughOpen {
+    bool ok = false;
+    std::unique_ptr<ac3::sinks::PassthroughSink> sink;
+    QString plan_text;
+};
+LivePassthroughOpen open_live_passthrough(const ac3::sinks::RenderDeviceInfo& receiver, bool eac3,
+                                          bool atmos_enabled, std::uint32_t sample_rate,
+                                          const QString& shape_name) {
+    LivePassthroughOpen result;
+    const bool supports =
+        eac3 ? receiver.supports_eac3_passthrough : receiver.supports_ac3_passthrough;
+    if (!supports) {
+        result.plan_text = QStringLiteral("\"%1\" cannot bitstream %2 over IEC 61937.")
+                                .arg(QString::fromStdString(receiver.name),
+                                     eac3 ? QStringLiteral("E-AC-3") : QStringLiteral("AC-3"));
+        return result;
+    }
+    auto psink = std::make_unique<ac3::sinks::PassthroughSink>();
+    const auto format =
+        eac3 ? ac3::sinks::BitstreamFormat::kEac3 : ac3::sinks::BitstreamFormat::kAc3;
+    const auto started = psink->start(receiver.id, sample_rate, format);
+    if (!started) {
+        const auto why = ac3::sinks::describe(started.error());
+        result.plan_text =
+            QStringLiteral("\"%1\" would not open: %2")
+                .arg(QString::fromStdString(receiver.name),
+                     QString::fromUtf8(why.data(), static_cast<qsizetype>(why.size())));
+        return result;
+    }
+    result.ok = true;
+    result.sink = std::move(psink);
+    result.plan_text =
+        atmos_enabled
+            ? QStringLiteral("Dolby Digital Plus · 5.1 bed only · %1")
+                  .arg(QString::fromStdString(receiver.name))
+            : QStringLiteral("%1 · %2 · %3")
+                  .arg(eac3 ? QStringLiteral("Dolby Digital Plus") : QStringLiteral("Dolby Digital"))
+                  .arg(shape_name, QString::fromStdString(receiver.name));
+    return result;
+}
+
 // The two soundfield rings: everything overhead goes on the ceiling plan,
 // everything else - however far back or wide - stays on the ear-level one.
 bool is_ceiling_location(ac3::eac3::chanmap::Location location) {
@@ -333,6 +415,24 @@ struct EncoderController::Source {
     // add of the same file overwrites rather than duplicates would need to
     // disambiguate.
     QString path;
+};
+
+// What runLiveSession needs to keep writing a take incrementally once its
+// GUI-thread preamble hands off to the worker - see
+// EncoderController::openLiveOutputWriters. `stream` IS the final output for
+// an elementary-stream container (every byte written here is already the
+// take); for Matroska it is the spool at live_stream_spool_path(), and
+// `frame_sizes` is the lightweight (one uint32 per unit, not the audio
+// itself) index that lets the clean-stop path split the spool back into
+// frames for matroska::mux() without ever having kept the encoded bytes in
+// RAM during the run.
+struct EncoderController::LiveOutputWriters {
+    std::ofstream stream;
+    QString stream_path;   // == the final path unless matroska
+    QString final_path;    // always the real destination the user chose
+    bool matroska = false;
+    std::vector<std::uint32_t> frame_sizes;
+    std::unique_ptr<ac3::io::WavStreamWriter> wav_safety;  // null when not requested
 };
 
 EncoderController::EncoderController(QObject* parent) : QObject(parent) {
@@ -452,19 +552,39 @@ QVariantList EncoderController::objectModel() const {
     // channel, when nothing is assigned) - the same mapping encodeObjects
     // uses, so the list names exactly what will ride as objects.
     const auto dynamic = dynamicObjectChannels();
+    // A live Atmos session's objects have no (source, channel) of their own
+    // to name - they name a SLOT's capture-channel binding instead (see
+    // liveObjectChannels' own comment). live_active_ is the direct signal
+    // for that, rather than keyForObjectIndex's own live_object_backup_
+    // check: the two agree in every case that matters here, and this one
+    // reads correctly even in the (very narrow) coincidence where a loaded
+    // file's object count happens to already match the live budget's own
+    // formula, which is the one case live_object_backup_ itself would stay
+    // unset for.
+    const bool live_slots = live_active_ && atmos_enabled_;
+    const auto slot_channels = live_slots ? liveSlotChannels() : std::vector<int>{};
     for (int i = 0; i < object_count_; ++i) {
         const auto key = keyForObjectIndex(i);
         const auto config = key ? map_value(object_configs_, *key) : ObjectConfig{};
         const auto keyframes = sortedKeyframes(i);
         QVariantMap row;
         row[QStringLiteral("index")] = i;
-        // Objects are a channel, one each, so the honest name for where one
-        // comes from is which channel it is - and, once more than one
-        // source is loaded, which FILE that channel is in (see
-        // objectSourceLabel's own comment).
-        row[QStringLiteral("sourceLabel")] = objectSourceLabel(
-            static_cast<std::size_t>(i) < dynamic.size() ? dynamic[static_cast<std::size_t>(i)]
-                                                          : static_cast<std::size_t>(i));
+        if (live_slots) {
+            const int bound = static_cast<std::size_t>(i) < slot_channels.size()
+                                  ? slot_channels[static_cast<std::size_t>(i)]
+                                  : -1;
+            row[QStringLiteral("sourceLabel")] = bound >= 0
+                                                     ? QStringLiteral("Capture ch %1").arg(bound + 1)
+                                                     : QStringLiteral("silent");
+        } else {
+            // Objects are a channel, one each, so the honest name for where
+            // one comes from is which channel it is - and, once more than
+            // one source is loaded, which FILE that channel is in (see
+            // objectSourceLabel's own comment).
+            row[QStringLiteral("sourceLabel")] = objectSourceLabel(
+                static_cast<std::size_t>(i) < dynamic.size() ? dynamic[static_cast<std::size_t>(i)]
+                                                              : static_cast<std::size_t>(i));
+        }
         // Which row of sourceModel this object's channel belongs to - the
         // same identity `key` already carries, exposed so QML can find
         // "every object this source owns" (the timeline clip-band's "move
@@ -484,6 +604,24 @@ QVariantList EncoderController::objectModel() const {
         out.append(row);
     }
     return out;
+}
+
+QVariantList EncoderController::liveObjectChannels() const {
+    QVariantList out;
+    for (const auto channel : liveSlotChannels()) {
+        out.append(channel);
+    }
+    return out;
+}
+
+int EncoderController::liveObjectSlotsBound() const {
+    int bound = 0;
+    for (const auto channel : liveSlotChannels()) {
+        if (channel >= 0) {
+            ++bound;
+        }
+    }
+    return bound;
 }
 
 QString EncoderController::channelShapeName() const {
@@ -1212,6 +1350,11 @@ void EncoderController::notifyObjectsChangedSoon() {
 std::vector<EncoderController::ObjectConfig> EncoderController::liveObjectSnapshot() const {
     std::lock_guard lock(live_object_mutex_);
     return live_object_snapshot_;
+}
+
+std::vector<int> EncoderController::liveSlotChannels() const {
+    std::lock_guard lock(live_object_mutex_);
+    return live_slot_channels_;
 }
 
 void EncoderController::setObjectPathKeyframes(int objectIndex, const QVariantList& keyframes,
@@ -2780,6 +2923,81 @@ void EncoderController::settleReconnect() {
     emit liveReconnectingChanged();
 }
 
+void EncoderController::setLiveWavSafetyCopy(bool on) {
+    if (on == live_wav_safety_copy_) {
+        return;
+    }
+    live_wav_safety_copy_ = on;
+    emit liveWavSafetyCopyChanged();
+}
+
+void EncoderController::addLiveObject(int captureChannel) {
+    if (!live_active_ || !atmos_enabled_) {
+        return;
+    }
+    if (captureChannel < 0 || captureChannel >= live_device_channels_) {
+        return;
+    }
+    bool bound = false;
+    {
+        std::lock_guard lock(live_object_mutex_);
+        for (auto& slot : live_slot_channels_) {
+            if (slot < 0) {
+                slot = captureChannel;
+                bound = true;
+                break;
+            }
+        }
+    }
+    if (bound) {
+        emit objectsChanged();
+    }
+}
+
+void EncoderController::reassignLiveObjectSlot(int slotIndex, int captureChannel) {
+    if (!live_active_ || !atmos_enabled_) {
+        return;
+    }
+    if (slotIndex < 0 || slotIndex >= object_count_) {
+        return;
+    }
+    if (captureChannel >= live_device_channels_) {
+        return;
+    }
+    {
+        std::lock_guard lock(live_object_mutex_);
+        if (static_cast<std::size_t>(slotIndex) >= live_slot_channels_.size()) {
+            return;
+        }
+        // Any negative value silences the slot - the same "unbound" state
+        // an allocated-but-never-bound slot already has, so a chip's
+        // "silent" choice and "never touched" both read identically.
+        live_slot_channels_[static_cast<std::size_t>(slotIndex)] =
+            captureChannel < 0 ? -1 : captureChannel;
+    }
+    emit objectsChanged();
+}
+
+void EncoderController::switchLiveReceiver(int receiverDeviceIndex) {
+    if (!live_active_) {
+        return;
+    }
+    PendingReceiverSwitch request;
+    if (receiverDeviceIndex >= 0) {
+        if (static_cast<std::size_t>(receiverDeviceIndex) >= outputs_.size()) {
+            return;
+        }
+        request.want_passthrough = true;
+        request.receiver = outputs_[static_cast<std::size_t>(receiverDeviceIndex)];
+    }
+    // outputs_ is read here, on the GUI thread where it is safe to touch -
+    // the worker thread never reaches into it itself, only into the
+    // RenderDeviceInfo this copies out of it (see PendingReceiverSwitch's
+    // own comment).
+    std::lock_guard lock(live_receiver_switch_mutex_);
+    live_receiver_switch_request_ = std::move(request);
+}
+
 void EncoderController::switchLiveLayout(const QString& presetName) {
     if (!live_active_ || !live_request_) {
         return;
@@ -2799,6 +3017,41 @@ void EncoderController::switchLiveLayout(const QString& presetName) {
                              "about a second of audio is lost.")
                   .arg(presetName));
     stopLiveSession();
+}
+
+std::unique_ptr<EncoderController::LiveOutputWriters> EncoderController::openLiveOutputWriters(
+    const QString& path, bool write_to_disk, const ac3::capture::DeviceInfo& device) {
+    if (!write_to_disk) {
+        return nullptr;
+    }
+    auto writers = std::make_unique<LiveOutputWriters>();
+    writers->final_path = path;
+    writers->matroska = container_index_ == kContainerMatroska;
+    const bool eac3 = atmos_enabled_ || codec_ == plan::Codec::kEac3;
+    writers->stream_path = writers->matroska ? live_stream_spool_path(path, eac3) : path;
+    writers->stream.open(writers->stream_path.toStdString(), std::ios::binary);
+    if (!writers->stream) {
+        setStatus(QStringLiteral("Could not open \"%1\" for writing.")
+                      .arg(QFileInfo(writers->stream_path).fileName()));
+        emit encodeRefused(status_);
+        return nullptr;
+    }
+    if (live_wav_safety_copy_) {
+        auto safety = std::make_unique<ac3::io::WavStreamWriter>();
+        const QString safety_path = sibling_path(path, QStringLiteral(".raw.wav"));
+        const auto opened = safety->open(safety_path.toStdString(), device.sample_rate,
+                                         device.channels);
+        if (!opened) {
+            const auto why = ac3::io::describe(opened.error());
+            setStatus(QStringLiteral("Could not open the raw-WAV safety copy at \"%1\": %2")
+                          .arg(QFileInfo(safety_path).fileName(),
+                               QString::fromUtf8(why.data(), static_cast<qsizetype>(why.size()))));
+            emit encodeRefused(status_);
+            return nullptr;
+        }
+        writers->wav_safety = std::move(safety);
+    }
+    return writers;
 }
 
 void EncoderController::startLiveSession(int captureDeviceIndex, bool monitor,
@@ -2863,44 +3116,32 @@ void EncoderController::startLiveSession(int captureDeviceIndex, bool monitor,
         return;
     }
 
+    // Opened next, before anything else is marked live - a bad destination
+    // is refused exactly like a bad device choice above rather than
+    // surfacing as a failure minutes into a take. After capture (not
+    // before): a device failure needs no cleanup this way, since nothing
+    // writer-side has been created yet for it to leave behind.
+    auto writers = openLiveOutputWriters(path, writeToDisk, device);
+    if (writeToDisk && !writers) {
+        live_capture_->stop();
+        live_capture_.reset();
+        return;  // openLiveOutputWriters already set the status and refused
+    }
+
     // §8.3.2.2's decoder-side object gate means nobody downstream ever hears
     // our objects AS objects (see docs/design's own note on this - the real
     // decoder's gate is keyed, and forging that key is deliberately not
     // done), so an Atmos session's receiver leg is always just its 5.1 bed,
     // independent of what the device itself can bitstream.
     const bool eac3 = atmos_enabled_ || p.codec == plan::Codec::kEac3;
-    const auto format =
-        eac3 ? ac3::sinks::BitstreamFormat::kEac3 : ac3::sinks::BitstreamFormat::kAc3;
     bool passthrough_ok = false;
     if (want_passthrough) {
-        const bool supports = eac3 ? receiver.supports_eac3_passthrough
-                                   : receiver.supports_ac3_passthrough;
-        if (!supports) {
-            live_receiver_plan_text_ =
-                QStringLiteral("\"%1\" cannot bitstream %2 over IEC 61937.")
-                    .arg(QString::fromStdString(receiver.name),
-                         eac3 ? QStringLiteral("E-AC-3") : QStringLiteral("AC-3"));
-        } else {
-            auto psink = std::make_unique<ac3::sinks::PassthroughSink>();
-            const auto pstarted = psink->start(receiver.id, device.sample_rate, format);
-            if (!pstarted) {
-                const auto why = ac3::sinks::describe(pstarted.error());
-                live_receiver_plan_text_ =
-                    QStringLiteral("\"%1\" would not open: %2")
-                        .arg(QString::fromStdString(receiver.name),
-                             QString::fromUtf8(why.data(), static_cast<qsizetype>(why.size())));
-            } else {
-                passthrough_ok = true;
-                live_passthrough_sink_ = std::move(psink);
-                live_receiver_plan_text_ =
-                    atmos_enabled_
-                        ? QStringLiteral("Dolby Digital Plus · 5.1 bed only · %1")
-                              .arg(QString::fromStdString(receiver.name))
-                        : QStringLiteral("%1 · %2 · %3")
-                              .arg(eac3 ? QStringLiteral("Dolby Digital Plus")
-                                        : QStringLiteral("Dolby Digital"))
-                              .arg(channelShapeName(), QString::fromStdString(receiver.name));
-            }
+        auto opened = open_live_passthrough(receiver, eac3, atmos_enabled_, device.sample_rate,
+                                            channelShapeName());
+        passthrough_ok = opened.ok;
+        live_receiver_plan_text_ = opened.plan_text;
+        if (passthrough_ok) {
+            live_passthrough_sink_ = std::move(opened.sink);
         }
     } else {
         live_receiver_plan_text_ = QStringLiteral("No passthrough this session.");
@@ -2932,13 +3173,22 @@ void EncoderController::startLiveSession(int captureDeviceIndex, bool monitor,
         }
     }
 
+    live_device_channels_ = static_cast<int>(device.channels);
     if (atmos_enabled_) {
         // A live session has no loaded file to size object_configs_ from -
-        // loadSourceFile is what normally does that. The capture device's
-        // channel count plays the same role here, so the Live room and the
-        // Objects tab have something to show/drag for a capture-only session
-        // that never opened a file at all.
-        const int nobjects = std::min<int>(static_cast<int>(device.channels), 15);
+        // loadSourceFile is what normally does that. Unlike a file (whose
+        // object count IS its channel count), a live session pre-allocates
+        // a fixed BUDGET of slots - max(8, device channels), capped at the
+        // TS 103 420 fifteen-object ceiling - rather than exactly the
+        // device's own channel count: the JOC object count is baked into
+        // the AtmosEncoder at construction (see runLiveSession) and cannot
+        // change mid-stream, so "add an object" needs slots already sitting
+        // there, allocated but unbound, for addLiveObject to bind into. A
+        // two-channel device still gets eight slots to grow into; a device
+        // with more than eight simply starts with all of them bound (see
+        // the identity binding built below).
+        const int nobjects =
+            std::clamp(std::max<int>(8, static_cast<int>(device.channels)), 8, 15);
         if (object_count_ != nobjects) {
             // Whatever is here right now is a loaded file's own object
             // state (or a previous live session's, already the device's own
@@ -2955,6 +3205,18 @@ void EncoderController::startLiveSession(int captureDeviceIndex, bool monitor,
             object_count_ = nobjects;
             refreshObjectConfigs();
             emit sourceChanged();
+        }
+        // The starting binding: slot i <- capture channel i, for as many
+        // slots as the device actually has channels for; anything beyond
+        // that (the "budget" over "device channels") starts unbound and
+        // silent, exactly what "Add an object" is for.
+        {
+            std::vector<int> initial(static_cast<std::size_t>(object_count_), -1);
+            for (std::size_t i = 0; i < initial.size() && i < device.channels; ++i) {
+                initial[i] = static_cast<int>(i);
+            }
+            std::lock_guard lock(live_object_mutex_);
+            live_slot_channels_ = std::move(initial);
         }
     }
 
@@ -2991,6 +3253,7 @@ void EncoderController::startLiveSession(int captureDeviceIndex, bool monitor,
     live_underruns_ = 0;
     live_latency_ms_ =
         2000.0 * static_cast<double>(ac3::kSamplesPerFrame) / static_cast<double>(device.sample_rate);
+    live_latency_measured_ = false;
     setBusy(true);
     // A real session - a take on disk or a receiver leg - lands in the run
     // history like any other encode: it is where a mid-session failure gets
@@ -3021,11 +3284,12 @@ void EncoderController::startLiveSession(int captureDeviceIndex, bool monitor,
         });
     }
 
-    runLiveSession(device, monitor_ok, passthrough_ok, writeToDisk, path);
+    runLiveSession(device, monitor_ok, passthrough_ok, writeToDisk, path, std::move(writers));
 }
 
 void EncoderController::runLiveSession(ac3::capture::DeviceInfo device, bool monitor,
-                                       bool passthrough, bool write_to_disk, QString file_path) {
+                                       bool passthrough, bool write_to_disk, QString file_path,
+                                       std::unique_ptr<LiveOutputWriters> writers) {
     auto p = currentPlan();
     p.sample_rate = *to_sample_rate(device.sample_rate);
     // Passthrough bursts are fixed-size per access unit, and a live session
@@ -3072,14 +3336,27 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device, bool mon
     }
     setMetering(true);
 
-    const std::size_t nobjects = atmos ? std::min<std::size_t>(device.channels, 15) : 0;
+    // The allocated slot BUDGET (see startLiveSession's own comment on why
+    // this is no longer just device.channels), not recomputed here - it has
+    // to match exactly what startLiveSession sized object_configs_/
+    // live_slot_channels_ to, and object_count_ is that single source of
+    // truth for the whole session's lifetime.
+    const std::size_t nobjects = atmos ? static_cast<std::size_t>(object_count_) : 0;
     const std::size_t channels = device.channels;
     const std::uint32_t sample_rate = device.sample_rate;
+    // Snapshotted once, for switchLiveReceiver's hot-swap path to reuse
+    // verbatim later on the worker thread - the layout stays fixed for a
+    // live session except via switchLiveLayout, which stops and restarts
+    // the whole session rather than hot-swapping, so this never goes stale
+    // mid-session.
+    const QString shape_name = channelShapeName();
 
     std::ignore = QtConcurrent::run([this, p, atmos, eac3, cp = std::move(cp),
                                      routing = std::move(routing), nobjects, channels,
                                      sample_rate, monitor, passthrough, write_to_disk,
-                                     file_path]() mutable {
+                                     file_path, shape_name,
+                                     device_name = QString::fromStdString(device.name),
+                                     writers = std::move(writers)]() mutable {
         // Heap-allocated: each of these carries a multi-KB internal history/
         // delay buffer, and stacking all four on this lambda's frame (which
         // PREfast's C6262 flagged) pushed it well past what's comfortable for
@@ -3132,33 +3409,128 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device, bool mon
             chan_views.emplace_back(channel);
         }
 
-        std::vector<std::vector<std::byte>> frames;
         std::uint64_t n0 = 0;
+        std::uint64_t frames_written = 0;
         auto published_at = std::chrono::steady_clock::now() - kPublishInterval;
+        auto last_disk_flush_at = std::chrono::steady_clock::now();
+        ac3::capture::SilenceWatchdog watchdog(kDeviceSilenceTimeout);
+        watchdog.reset(std::chrono::steady_clock::now());
+        bool device_lost = false;
+        // The one-shot capture->monitor latency measurement: only attempted
+        // once monitoring is on and the pipeline has run for about a second
+        // (past whatever startup transient the first few frames carry), and
+        // only until it succeeds once - see the measuring_latency check
+        // below and its use around the monitor submit() call.
+        bool latency_measured = false;
+        std::chrono::steady_clock::time_point capture_done_at{};
 
         while (!stop_live_.load(std::memory_order_relaxed)) {
+            // switchLiveReceiver's handoff: claimed and cleared here, once
+            // per frame period, on the only thread that ever calls submit()
+            // on live_passthrough_sink_ - performing the close-old/open-new
+            // itself right here (rather than on the GUI thread) is what
+            // makes the swap safe without holding a lock across it: there is
+            // never a window where another thread could be mid-submit on a
+            // sink this is about to destroy, because nothing else ever
+            // submits to it at all.
+            std::optional<PendingReceiverSwitch> switch_request;
+            {
+                std::lock_guard lock(live_receiver_switch_mutex_);
+                switch_request = std::move(live_receiver_switch_request_);
+                live_receiver_switch_request_.reset();
+            }
+            if (switch_request) {
+                if (live_passthrough_sink_) {
+                    live_passthrough_sink_->stop();
+                    live_passthrough_sink_.reset();
+                }
+                bool new_ok = false;
+                QString plan_text;
+                QString receiver_name;
+                bool receiver_eac3 = false;
+                if (switch_request->want_passthrough) {
+                    auto opened = open_live_passthrough(switch_request->receiver, eac3, atmos,
+                                                        sample_rate, shape_name);
+                    plan_text = opened.plan_text;
+                    if (opened.ok) {
+                        new_ok = true;
+                        live_passthrough_sink_ = std::move(opened.sink);
+                        receiver_name = QString::fromStdString(switch_request->receiver.name);
+                        receiver_eac3 = switch_request->receiver.supports_eac3_passthrough;
+                    }
+                } else {
+                    plan_text = QStringLiteral("No passthrough this session.");
+                }
+                passthrough = new_ok;
+                const bool wanted = switch_request->want_passthrough;
+                QMetaObject::invokeMethod(
+                    this, [this, new_ok, plan_text, receiver_name, receiver_eac3, wanted, atmos] {
+                        live_passthrough_ = new_ok;
+                        live_wanted_passthrough_ = wanted;
+                        live_receiver_name_ = receiver_name;
+                        live_receiver_eac3_ = receiver_eac3;
+                        live_receiver_plan_text_ = plan_text;
+                        live_gap_ = wanted && new_ok && atmos;
+                        emit liveActiveChanged();
+                        if (new_ok) {
+                            // Same "expect a second of silence" pulse a
+                            // fresh session's own first open already shows -
+                            // a hot-swap is a real exclusive-mode re-open too.
+                            live_reconnecting_ = true;
+                            emit liveReconnectingChanged();
+                            QTimer::singleShot(2200, this, [this] {
+                                live_reconnecting_ = false;
+                                emit liveReconnectingChanged();
+                            });
+                        }
+                    });
+            }
+
             std::size_t filled = 0;
             while (filled < interleaved.size() &&
                    !stop_live_.load(std::memory_order_relaxed)) {
                 const auto got = live_capture_->buffer()->read(
                     std::span{interleaved}.subspan(filled, interleaved.size() - filled));
                 filled += got;
+                const auto read_at = std::chrono::steady_clock::now();
+                watchdog.on_read(got, read_at);
                 if (got == 0) {
+                    if (watchdog.timed_out(read_at)) {
+                        device_lost = true;
+                        break;
+                    }
                     std::this_thread::sleep_for(std::chrono::milliseconds(2));
                 }
             }
+            if (device_lost) {
+                break;
+            }
             if (filled < interleaved.size()) {
                 break;  // stopped mid-frame; drop the partial frame
+            }
+            const bool measuring_latency =
+                monitor && !latency_measured && n0 >= static_cast<std::uint64_t>(sample_rate);
+            if (measuring_latency) {
+                capture_done_at = std::chrono::steady_clock::now();
             }
             n0 += static_cast<std::uint64_t>(ac3::kSamplesPerFrame);
 
             std::vector<std::byte> unit_bytes;
             if (atmos) {
+                // Slot `ch` carries whichever capture channel
+                // slot_channels[ch] names - -1 (unbound, or the slot count
+                // simply not having grown that far via addLiveObject yet)
+                // reads as silence, exactly like a bed position past the
+                // device's own channel count already did before per-slot
+                // binding existed.
+                const auto slot_channels = liveSlotChannels();
                 for (std::size_t ch = 0; ch < nobjects; ++ch) {
+                    const int bound = ch < slot_channels.size() ? slot_channels[ch] : -1;
+                    const bool silent = bound < 0 || static_cast<std::size_t>(bound) >= channels;
                     for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
                         const std::size_t base = static_cast<std::size_t>(i) * channels;
                         object_block[ch][static_cast<std::size_t>(i)] =
-                            ch < channels ? interleaved[base + ch] : 0.0f;
+                            silent ? 0.0f : interleaved[base + static_cast<std::size_t>(bound)];
                     }
                     object_views[ch] = object_block[ch];
                 }
@@ -3228,11 +3600,34 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device, bool mon
                         to_play = interleave_reordered(decoded->channels, order);
                     }
                 }
+                bool submitted = false;
                 if (to_play) {
-                    while (!live_monitor_sink_->submit(*to_play) &&
+                    while (!(submitted = live_monitor_sink_->submit(*to_play)) &&
                           !stop_live_.load(std::memory_order_relaxed)) {
                         std::this_thread::sleep_for(std::chrono::milliseconds(4));
                     }
+                }
+                // The real capture->monitor round trip: from this frame's
+                // capture buffer finishing (stamped above, before the encode
+                // even ran) to its decoded audio actually landing in the
+                // sink's queue. Neither sink reports its own buffered depth
+                // today, so this is the whole measurable span rather than
+                // that span plus an unavailable extra - see liveLatencyMs'
+                // own doc comment. A frame the decoder held back
+                // (to_play empty, §3.7) or lost the submit race to a stop
+                // just leaves latency_measured false for the next
+                // measuring_latency frame to try again.
+                if (measuring_latency && submitted) {
+                    const auto submit_at = std::chrono::steady_clock::now();
+                    const auto measured_ms =
+                        std::chrono::duration<double, std::milli>(submit_at - capture_done_at)
+                            .count();
+                    latency_measured = true;
+                    QMetaObject::invokeMethod(this, [this, measured_ms] {
+                        live_latency_ms_ = measured_ms;
+                        live_latency_measured_ = true;
+                        emit liveStatsChanged();
+                    });
                 }
             }
 
@@ -3257,8 +3652,34 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device, bool mon
                 }
             }
 
-            if (write_to_disk) {
-                frames.push_back(unit_bytes);
+            if (write_to_disk && writers) {
+                writers->stream.write(reinterpret_cast<const char*>(unit_bytes.data()),
+                                      static_cast<std::streamsize>(unit_bytes.size()));
+                if (writers->matroska) {
+                    // The lightweight index the clean-stop mux step splits
+                    // the spool back into frames with - a few bytes per
+                    // unit, not the audio itself, which is exactly what
+                    // keeps this incremental instead of the old
+                    // frames.push_back(unit_bytes) that held the WHOLE take
+                    // in RAM for as long as the session ran.
+                    writers->frame_sizes.push_back(static_cast<std::uint32_t>(unit_bytes.size()));
+                }
+                ++frames_written;
+                if (writers->wav_safety) {
+                    // The raw captured PCM, in the device's own channel
+                    // order, before any routing or encoding - a safety net
+                    // for the SOURCE audio, independent of channel/object
+                    // mode.
+                    std::ignore = writers->wav_safety->write(interleaved);
+                }
+                const auto flush_at = std::chrono::steady_clock::now();
+                if (flush_at - last_disk_flush_at >= kDiskFlushInterval) {
+                    last_disk_flush_at = flush_at;
+                    writers->stream.flush();
+                    if (writers->wav_safety) {
+                        writers->wav_safety->flush_header();
+                    }
+                }
             }
 
             const auto now = std::chrono::steady_clock::now();
@@ -3285,10 +3706,67 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device, bool mon
             }
         }
 
+        // The failure story, in priority order: a device that stopped
+        // delivering audio is the interesting cause even if the disk side
+        // finishes cleanly; a disk-side problem (only reachable for
+        // Matroska - an elementary-stream take is already fully written by
+        // the time the loop above exits) only replaces it when there was
+        // nothing more specific to say.
         QString problem;
-        if (write_to_disk) {
-            problem = writeOutput(file_path, frames, sample_rate,
-                                  static_cast<int>(coded_count));
+        if (device_lost) {
+            problem = QStringLiteral(
+                          "\"%1\" stopped delivering audio - the capture device may have been "
+                          "disconnected. Wrote %2 frames before it went quiet.")
+                          .arg(device_name)
+                          .arg(frames_written);
+        }
+        if (write_to_disk && writers) {
+            writers->stream.flush();
+            writers->stream.close();
+            if (writers->wav_safety) {
+                writers->wav_safety->close();
+            }
+            if (writers->matroska) {
+                // matroska::mux() only ever produces a complete file from
+                // the WHOLE set of frames, so the spool this session has
+                // been growing incrementally is read back and muxed HERE,
+                // once, at a clean stop - not per frame, which is the whole
+                // point of spooling instead of holding every frame in RAM
+                // for the run's whole duration (see LiveOutputWriters' own
+                // comment). A device-lost or otherwise interrupted session
+                // still reaches this (the loop's every `break` falls
+                // through to here), so the spool is folded into the .mkv
+                // whenever there is anything to fold; only an outright
+                // process crash leaves it behind unmuxed.
+                std::ifstream spool_in{writers->stream_path.toStdString(), std::ios::binary};
+                std::vector<std::vector<std::byte>> mux_frames;
+                mux_frames.reserve(writers->frame_sizes.size());
+                bool read_ok = static_cast<bool>(spool_in);
+                for (const auto size : writers->frame_sizes) {
+                    std::vector<std::byte> frame(size);
+                    spool_in.read(reinterpret_cast<char*>(frame.data()),
+                                 static_cast<std::streamsize>(size));
+                    if (!spool_in) {
+                        read_ok = false;
+                        break;
+                    }
+                    mux_frames.push_back(std::move(frame));
+                }
+                spool_in.close();
+                QString mux_problem = read_ok
+                    ? writeOutput(writers->final_path, mux_frames, sample_rate,
+                                 static_cast<int>(coded_count))
+                    : QStringLiteral("Could not read back the elementary stream to mux it.");
+                if (!mux_problem.isEmpty()) {
+                    mux_problem += QStringLiteral(" The elementary stream is kept at \"%1\".")
+                                       .arg(QFileInfo(writers->stream_path).fileName());
+                    if (problem.isEmpty()) {
+                        problem = mux_problem;
+                    }
+                } else {
+                    QFile::remove(writers->stream_path);
+                }
+            }
         }
 
         std::vector<ac3::analysis::ChannelLevel> totals(
@@ -3301,8 +3779,7 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device, bool mon
             totals[ch].clipped = stats.clipped_samples > 0;
         }
 
-        const auto count = frames.size();
-        QMetaObject::invokeMethod(this, [this, count, problem, write_to_disk,
+        QMetaObject::invokeMethod(this, [this, frames_written, problem, write_to_disk,
                                          totals = std::move(totals)] {
             const auto capture_stats = live_capture_->stats();
             live_capture_->stop();
@@ -3340,7 +3817,7 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device, bool mon
                 setStatus(problem);
             } else if (write_to_disk) {
                 setStatus(QStringLiteral("Live session ended - wrote %1 frames (%2 dropped).")
-                              .arg(count)
+                              .arg(frames_written)
                               .arg(capture_stats.frames_dropped));
             } else {
                 setStatus(QStringLiteral("Live session ended (%1 dropped, nothing written to "

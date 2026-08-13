@@ -43,7 +43,7 @@ button jumps to.
 ### Live capture
 
 A dropdown of capture endpoints — microphones and playback-device loopbacks, the system default
-marked `[default]` — plus **Refresh** and three ways to run:
+marked `[default]` — plus **Refresh** and two ways to run right here:
 
 - **Monitor** starts a live session that writes *nothing* — no filename is asked for, the meters
   and soundfield run against the real encoded-and-decoded-back signal, an accent square and a
@@ -55,9 +55,12 @@ marked `[default]` — plus **Refresh** and three ways to run:
   default it writes straight to the output folder under a timestamped take name following the
   naming pattern — the status line and run strip say where; a
   [capture preference](index.md#preferences) makes it ask for a filename first instead.
-- **Start live session…** runs the full capture → encode → monitor/passthrough/disk pipeline —
-  covered on [Live capture & session](live-session.md), along with the VBR note that appears on
-  this block whenever VBR is on.
+
+Setting up a *real* session — writing the take to disk, adding a receiver leg, or both — is not a
+control on this block any more. It happens on the **Live session** tab, whose own Card covers the
+take's idle and running states, the durability guarantees behind an incremental write, the
+device-drop watchdog, and the VBR note that used to sit here and now sits there instead — see
+[Live capture & session](live-session.md) for all of it.
 
 A capture endpoint feeds the encoder the same way a file does — same format, same layout, same
 metadata — its channels are just routed onto whatever layout is selected, live, instead of read

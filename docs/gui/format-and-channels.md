@@ -43,7 +43,7 @@ to vary; `frmsizecod` indexes a fixed table) and whenever the **live source is s
 61937 passthrough bursts are fixed-size per access unit — see
 [Live capture & session](live-session.md#the-vbr-warning)):
 
-![The VBR warning on the rail's live branch, the rate-mode panel absent](screenshots/format-vbr.png)
+![The rate-mode panel absent while a live source is selected](screenshots/format-vbr.png)
 
 **Constant** (the default) is the plain **Bit rate** dropdown above. **Variable** adds a
 **Quality** slider, 0 (smallest) to 100 (best) — encoder-relative, not a fixed target, and *not*

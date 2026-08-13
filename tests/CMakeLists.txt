@@ -75,7 +75,9 @@ add_executable(ac3tests
     test_spatial.cpp
     test_tables.cpp
     test_transient.cpp
-    test_transient_prenoise.cpp)
+    test_transient_prenoise.cpp
+    test_watchdog.cpp
+    test_wav_stream_writer.cpp)
 
 # test_signing.cpp reaches ac3::signing's internal crypto headers (sha256.hpp/
 # hmac_sha256.hpp) to run the FIPS/RFC known-answer vectors directly - they are
