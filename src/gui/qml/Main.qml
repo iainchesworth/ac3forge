@@ -492,7 +492,8 @@ ApplicationWindow {
     // tokens: extra sources (src=), the assignment (map=), the metadata, and
     // AC-3's bare `couple`. A live source renders the `live` subcommand; a
     // Matroska container is honestly TWO commands, because pasting one would
-    // write a raw elementary stream into a file named .mkv.
+    // write a raw elementary stream into a file named .mkv - S/PDIF is the
+    // same shape, one more ac3cli subcommand (spdif) over the same stream.
     readonly property string cliLine: {
         const eac3Stream = EncoderController.atmosEnabled || EncoderController.codecIndex === 1;
         if (window.inputMode === "live") {
@@ -515,6 +516,7 @@ ApplicationWindow {
                        ? window.cliQuote(window.baseName(EncoderController.sourcePath))
                        : "<source>";
         const mkv = EncoderController.containerIndex === 1;
+        const spdif = EncoderController.containerIndex === 2;
         const streamOut = "out." + (eac3Stream ? "ec3" : "ac3");
         const rate = String(EncoderController.bitrateKbps);
         const meta = EncoderController.metaTokens;
@@ -581,6 +583,8 @@ ApplicationWindow {
         }
         if (mkv) {
             line += " && ac3cli mkv " + streamOut + " out.mkv";
+        } else if (spdif) {
+            line += " && ac3cli spdif " + streamOut + " out.wav";
         }
         return line;
     }
@@ -699,9 +703,52 @@ ApplicationWindow {
         dialog.selectedFile = name;
         dialog.open();
     }
+    // Guided's contract: measured loudness + film-standard DRC. App-wide
+    // defaults stay spec-neutral (dialnorm 31, DRC none, measure off) - this
+    // is what GUIDED layers on top, and only while it is actually driving.
+    //
+    // Gated on tier being "guided" RIGHT NOW, not merely "was visited this
+    // session" - entering guided fires this same tier value before a source
+    // or a room is even chosen (dualMono isn't known yet then, and it fires
+    // on the very first tier assignment at startup too), so checking at the
+    // point this function is actually called is what lets it read settled
+    // facts. Never applies over an explicit edit: EncoderController.
+    // loudnessTouched is set only by LoudnessGroup.qml's own interactive
+    // handlers, never by the writes below, so this function can safely
+    // re-run on every call without ever mistaking its own writes for a
+    // user's.
+    //
+    // Called from two places: when Guided reaches its "What you are about
+    // to make" summary (GuidedWizard.qml's onCurrentStepKeyChanged), so the
+    // summary tells the truth before Encode is ever pressed, and again here
+    // in startEncodeFlow as a belt-and-suspenders final check covering the
+    // failure-banner retry and the plain Encode button being clicked while
+    // guided still nominally owns the tier. Idempotent both times - every
+    // write below is a no-op once already at its target value.
+    //
+    // Dual mono: measurement is refused outright at encode time (see
+    // LoudnessGroup.qml's own tooltip and encodeChannels' hard refusal), so
+    // the contract must never set measureDialnorm/measureDialnorm2 there -
+    // only its DRC half applies, and to BOTH programmes, since there is no
+    // reason guided should give one dual-mono programme its sensible
+    // default and leave the other at none.
+    function applyGuidedLoudnessContract() {
+        if (tier !== "guided" || EncoderController.loudnessTouched) {
+            return;
+        }
+        if (EncoderController.dualMono) {
+            EncoderController.drcIndex = 1;   // film-standard
+            EncoderController.drc2Index = 1;  // film-standard, Ch2's own
+        } else {
+            EncoderController.measureDialnorm = true;
+            EncoderController.drcIndex = 1;   // film-standard
+        }
+    }
+
     // What the Encode button and guided's "Encode now" both run — one flow,
     // so the two can never drift apart.
     function startEncodeFlow() {
+        applyGuidedLoudnessContract();
         openSaveDialog(saveDialog, plannedFileName());
     }
     // Record honours the capture preference: ask for a filename, or write
@@ -2202,6 +2249,29 @@ ApplicationWindow {
                                         currentIndex: EncoderController.containerIndex
                                         onActivated: EncoderController.containerIndex = currentIndex
                                     }
+
+                                    // Row 3: empty under Codec/Container - GridLayout fills
+                                    // cells row-major, so these three items together place
+                                    // the advisory under Bit rate specifically. Object mode
+                                    // has its own 384 kbps advisory already (Advanced tab
+                                    // below), so this one steps aside for it rather than
+                                    // showing two competing warnings.
+                                    Item {}
+                                    Text {
+                                        objectName: "bitrateFloorAdvisory"
+                                        Layout.fillWidth: true
+                                        visible: !EncoderController.atmosEnabled
+                                                 && EncoderController.bitrateKbps
+                                                    < EncoderController.fullBandwidthCodedChannelCount
+                                                      * EncoderController.kbpsPerChannelFloor
+                                        text: qsTr("%1 coded channels at %2 kbps will audibly starve — encoders refuse outright below the frame minimum.")
+                                              .arg(EncoderController.fullBandwidthCodedChannelCount)
+                                              .arg(EncoderController.bitrateKbps)
+                                        color: Theme.textMuted
+                                        font.pixelSize: 10
+                                        wrapMode: Text.WordWrap
+                                    }
+                                    Item {}
                                 }
 
                                 VbrPanel {
@@ -3109,6 +3179,84 @@ ApplicationWindow {
                                             Text {
                                                 Layout.fillWidth: true
                                                 text: qsTr("Heavy compression (§7.7.2) is a peak ceiling in the mono downmix at syncframe resolution — an assurance for links that overmodulate, not the subjectively pleasing reduction dynrng provides.")
+                                                color: Theme.textMuted
+                                                font.pixelSize: Theme.fontSmall
+                                                wrapMode: Text.WordWrap
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Ch2's own heavy compression (§7.7.2.2) - dual mono only. Lives
+                                // beside programme 1's card rather than inside LoudnessGroup.qml's
+                                // Programme 2 block: heavy compression itself is an Expert-tier-only
+                                // control (the card above), so its programme-2 twin belongs at the
+                                // same tier rather than newly appearing in Basic/Advanced, where
+                                // programme 1's heavy compression is not offered either.
+                                Card {
+                                    title: qsTr("Heavy compression — programme 2")
+                                    visible: EncoderController.dualMono
+
+                                    CheckBox {
+                                        text: qsTr("Heavy compression")
+                                        enabled: !EncoderController.busy
+                                        checked: EncoderController.heavy2
+                                        onToggled: EncoderController.heavy2 = checked
+                                    }
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        visible: EncoderController.heavy2
+                                        spacing: Theme.gap
+
+                                        Rectangle { Layout.preferredWidth: 2; Layout.fillHeight: true; color: Theme.accent200 }
+
+                                        ColumnLayout {
+                                            Layout.fillWidth: true
+                                            Layout.leftMargin: 8
+                                            spacing: Theme.gap
+
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                spacing: Theme.gap
+
+                                                Text {
+                                                    text: qsTr("ceiling")
+                                                    color: Theme.textMuted
+                                                    font.pixelSize: Theme.fontSmall
+                                                }
+                                                SpinBox {
+                                                    from: -200
+                                                    to: 0
+                                                    stepSize: 5
+                                                    enabled: !EncoderController.busy
+                                                    value: Math.round(EncoderController.ceiling2Db * 10)
+                                                    textFromValue: (value) => (value / 10).toFixed(1) + " dBFS"
+                                                    valueFromText: (text) => Math.round(parseFloat(text) * 10)
+                                                    onValueModified: EncoderController.ceiling2Db = value / 10
+                                                }
+
+                                                Text {
+                                                    text: qsTr("dialogue at")
+                                                    color: Theme.textMuted
+                                                    font.pixelSize: Theme.fontSmall
+                                                }
+                                                SpinBox {
+                                                    from: -40
+                                                    to: -5
+                                                    enabled: !EncoderController.busy
+                                                    value: Math.round(EncoderController.dialogue2Db)
+                                                    textFromValue: (value) => value + " dBFS"
+                                                    valueFromText: (text) => parseInt(text)
+                                                    onValueModified: EncoderController.dialogue2Db = value
+                                                }
+
+                                                Item { Layout.fillWidth: true }
+                                            }
+
+                                            Text {
+                                                Layout.fillWidth: true
+                                                text: qsTr("Ch2's own peak ceiling (§7.7.2.2) - dual mono has no downmix to bound, so this is measured on programme 2's own signal, independently of the card above.")
                                                 color: Theme.textMuted
                                                 font.pixelSize: Theme.fontSmall
                                                 wrapMode: Text.WordWrap

@@ -30,7 +30,10 @@ ColumnLayout {
             enabled: !EncoderController.busy
             model: EncoderController.drcNames
             currentIndex: EncoderController.drcIndex
-            onActivated: EncoderController.drcIndex = currentIndex
+            onActivated: {
+                EncoderController.drcIndex = currentIndex;
+                EncoderController.loudnessTouched = true;
+            }
         }
 
         Text {
@@ -47,7 +50,10 @@ ColumnLayout {
                 to: 31
                 enabled: !EncoderController.busy && !EncoderController.measureDialnorm
                 value: EncoderController.dialnorm
-                onValueModified: EncoderController.dialnorm = value
+                onValueModified: {
+                    EncoderController.dialnorm = value;
+                    EncoderController.loudnessTouched = true;
+                }
             }
             CheckBox {
                 text: qsTr("Measure it from the programme")
@@ -58,7 +64,10 @@ ColumnLayout {
                 // that would fail at encode time.
                 enabled: !EncoderController.busy && !EncoderController.dualMono
                 checked: EncoderController.measureDialnorm
-                onToggled: EncoderController.measureDialnorm = checked
+                onToggled: {
+                    EncoderController.measureDialnorm = checked;
+                    EncoderController.loudnessTouched = true;
+                }
 
                 ToolTip.visible: !enabled && hovered
                 ToolTip.text: qsTr("Not yet supported for dual mono — set both programmes' dialnorm by hand.")
@@ -86,6 +95,22 @@ ColumnLayout {
         visible: EncoderController.dualMono
 
         Text {
+            text: qsTr("DRC profile — programme 2")
+            color: Theme.text
+            font.pixelSize: Theme.fontNormal
+        }
+        ComboBox {
+            Layout.fillWidth: true
+            enabled: !EncoderController.busy
+            model: EncoderController.drcNames
+            currentIndex: EncoderController.drc2Index
+            onActivated: {
+                EncoderController.drc2Index = currentIndex;
+                EncoderController.loudnessTouched = true;
+            }
+        }
+
+        Text {
             text: qsTr("dialnorm — programme 2")
             color: Theme.text
             font.pixelSize: Theme.fontNormal
@@ -99,13 +124,19 @@ ColumnLayout {
                 to: 31
                 enabled: !EncoderController.busy && !EncoderController.measureDialnorm2
                 value: EncoderController.dialnorm2
-                onValueModified: EncoderController.dialnorm2 = value
+                onValueModified: {
+                    EncoderController.dialnorm2 = value;
+                    EncoderController.loudnessTouched = true;
+                }
             }
             CheckBox {
                 text: qsTr("Measure it from the programme")
                 enabled: false
                 checked: EncoderController.measureDialnorm2
-                onToggled: EncoderController.measureDialnorm2 = checked
+                onToggled: {
+                    EncoderController.measureDialnorm2 = checked;
+                    EncoderController.loudnessTouched = true;
+                }
 
                 ToolTip.visible: hovered
                 ToolTip.text: qsTr("Not yet supported for dual mono — set both programmes' dialnorm by hand.")

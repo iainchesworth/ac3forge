@@ -68,4 +68,55 @@ TestCase {
         compare(EncoderController.surround, false);
         compare(EncoderController.runs[0].status, "done");
     }
+
+    // --- Ch2's own DRC (bundle D, item 23) ----------------------------------
+
+    function test_drc2IsIndependentOfProgramme1sDrc() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        EncoderController.bedIndex = 0;  // 1+1
+        compare(EncoderController.dualMono, true);
+
+        EncoderController.drcIndex = 1;   // film-standard
+        EncoderController.drc2Index = 5;  // speech - deliberately different
+        compare(EncoderController.drcIndex, 1);
+        compare(EncoderController.drc2Index, 5);
+
+        // Changing one must never drag the other along - the whole point of
+        // item 23's fix (see plan::Metadata::drc2's own comment: dialnorm2
+        // already established that a dual-mono field has no fallback to its
+        // programme-1 sibling).
+        EncoderController.drcIndex = 2;
+        compare(EncoderController.drc2Index, 5);
+
+        EncoderController.drcIndex = 0;
+        EncoderController.drc2Index = 0;
+        EncoderController.applyChannelPreset("stereo");
+    }
+
+    function test_metaTokensEmitDrc2AndHeavy2OnlyUnderDualMono() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        EncoderController.bedIndex = 0;  // 1+1
+        compare(EncoderController.dualMono, true);
+
+        EncoderController.drc2Index = 5;  // speech
+        EncoderController.heavy2 = true;
+        verify(EncoderController.metaTokens.indexOf("drc2=speech") >= 0);
+        verify(EncoderController.metaTokens.indexOf("heavy2") >= 0);
+
+        // Leaving dual mono must stop advertising Ch2 tokens for a bed that
+        // no longer has a Ch2 - metaTokens gates this on isDualMono(), the
+        // same way the GUI's own Programme 2 controls disappear. drc2Index/
+        // heavy2 are deliberately left non-default across the bed switch:
+        // if they were cleared first, the tokens' absence would prove
+        // nothing about the isDualMono() gate specifically.
+        EncoderController.applyChannelPreset("stereo");
+        compare(EncoderController.dualMono, false);
+        verify(EncoderController.metaTokens.indexOf("drc2=") < 0);
+        verify(EncoderController.metaTokens.indexOf("heavy2") < 0);
+
+        EncoderController.heavy2 = false;
+        EncoderController.drc2Index = 0;
+    }
 }
