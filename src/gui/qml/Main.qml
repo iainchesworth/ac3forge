@@ -963,18 +963,62 @@ ApplicationWindow {
                                                 color: Theme.text
                                             }
                                             Text {
-                                                // "6 ch · 0:08 · feeds the bed" - the
-                                                // mockup's row says what the source DOES,
-                                                // not whether it was added second.
+                                                // "6 ch · 0:08 · feeds the bed · 44.1→48 k" -
+                                                // the mockup's row says what the source DOES,
+                                                // not whether it was added second; the
+                                                // resample label (see addSourceFile's own
+                                                // comment) only appears once a rate
+                                                // mismatch actually triggered a conversion.
                                                 text: {
                                                     const role = window.sourceRole(sourceRow.modelData.index);
-                                                    const head = qsTr("%1 ch · %2")
+                                                    let head = qsTr("%1 ch · %2")
                                                         .arg(sourceRow.modelData.channels)
                                                         .arg(sourceRow.modelData.duration);
-                                                    return role.length > 0 ? head + " · " + role : head;
+                                                    if (role.length > 0) {
+                                                        head += " · " + role;
+                                                    }
+                                                    if (sourceRow.modelData.resampleLabel.length > 0) {
+                                                        head += " · " + sourceRow.modelData.resampleLabel;
+                                                    }
+                                                    return head;
                                                 }
                                                 font.pixelSize: 11
                                                 color: Theme.textMuted
+                                            }
+                                        }
+                                        // The level pip: whole-programme peak/RMS for
+                                        // THIS source, pre-routing (see sourceLevels'
+                                        // own doc comment) - a miniature version of
+                                        // ChannelMeter's own track, looked up by index
+                                        // rather than folded into sourceModel itself so
+                                        // this Repeater's row identity never rebuilds on
+                                        // a meter tick.
+                                        Rectangle {
+                                            id: sourcePipTrack
+                                            Layout.preferredWidth: 40
+                                            Layout.preferredHeight: 8
+                                            color: Theme.neutral200
+                                            clip: true
+
+                                            readonly property var pip: {
+                                                const levels = EncoderController.sourceLevels;
+                                                return sourceRow.modelData.index < levels.length
+                                                       ? levels[sourceRow.modelData.index] : ({});
+                                            }
+                                            readonly property real peakDb:
+                                                pip.peakDb !== undefined ? pip.peakDb : -120
+
+                                            Rectangle {
+                                                x: 0
+                                                y: 0
+                                                height: parent.height
+                                                width: sourcePipTrack.width * (
+                                                    sourcePipTrack.pip.rmsDb !== undefined
+                                                        ? EncoderController.meterFraction(
+                                                              sourcePipTrack.pip.rmsDb)
+                                                        : 0)
+                                                color: sourcePipTrack.peakDb > -6.0
+                                                       ? Theme.accent : Theme.neutral800
                                             }
                                         }
                                         Button {
