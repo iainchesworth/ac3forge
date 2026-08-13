@@ -41,9 +41,12 @@ ColumnLayout {
             color: Theme.text
             font.pixelSize: Theme.fontNormal
         }
-        RowLayout {
+        // A ColumnLayout, not a RowLayout: the checkbox's own label is too
+        // long to share a row with the spinbox inside the card's narrow
+        // column without overflowing it (§dialnorm overflow fix).
+        ColumnLayout {
             Layout.fillWidth: true
-            spacing: Theme.gap
+            spacing: 4
 
             SpinBox {
                 from: 1
@@ -115,9 +118,9 @@ ColumnLayout {
             color: Theme.text
             font.pixelSize: Theme.fontNormal
         }
-        RowLayout {
+        ColumnLayout {
             Layout.fillWidth: true
-            spacing: Theme.gap
+            spacing: 4
 
             SpinBox {
                 from: 1
