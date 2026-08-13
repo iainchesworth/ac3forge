@@ -136,6 +136,12 @@ struct FrameConfig {
     // shared with the AC-3 path, which ffmpeg does verify, and the field's
     // placement is checked bit by bit (tests/test_drc.cpp, tools/eac3_parse.py).
     std::optional<meta::HeavyConfig> heavy = std::nullopt;
+    // Ch2's own drc/heavy, meaningful only under kDualMono - no fallback to
+    // drc/heavy when unset. See ac3::EncoderConfig::drc2 (the AC-3 sibling of
+    // this field) for why: dialnorm2 is already independent of dialnorm the
+    // same way, so this follows the same all-or-nothing precedent.
+    std::optional<meta::Profile> drc2 = std::nullopt;
+    std::optional<meta::HeavyConfig> heavy2 = std::nullopt;
     // The mixmdate group (Table E1.2). E-AC-3 dropped bsi's cmixlev and
     // surmixlev entirely, so without this a stream carries no downmix levels
     // at all and a receiver falls back on its own defaults.

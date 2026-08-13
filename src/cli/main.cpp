@@ -78,6 +78,11 @@ void print_meta_usage() {
     std::println("                    mono downmix, at syncframe resolution");
     std::println("  ceiling=<dBFS>    that ceiling (default -0.5)");
     std::println("  dialogue=<dBFS>   where heavy compression puts dialogue (default -20)");
+    std::println("  drc2=<profile>    Ch2's own DRC profile, layout 1+1 only (§7.7.1) - not "
+                 "inherited from drc=, set both to compress both programmes alike");
+    std::println("  heavy2            Ch2's own heavy compression, layout 1+1 only (§7.7.2.2)");
+    std::println("  ceiling2=<dBFS>   that ceiling for Ch2 (default -0.5)");
+    std::println("  dialogue2=<dBFS>  where Ch2's heavy compression puts dialogue (default -20)");
     std::println("  dialnorm=auto     measure BS.1770 loudness and derive dialnorm (§5.4.2.8)");
     std::println("  dialnorm=<1..31>  set it directly (default 31)");
     std::println("  dialnorm2=auto | <1..31>   Ch2's own dialnorm, layout 1+1 only "
@@ -163,9 +168,11 @@ bool parse_options(std::span<char*> tokens, Options& out) {
         const std::string_view value =
             eq == std::string_view::npos ? std::string_view{} : token.substr(eq + 1);
 
-        if (token == "couple" || token == "heavy" || token == "mixmeta") {
+        if (token == "couple" || token == "heavy" || token == "heavy2" || token == "mixmeta") {
             if (token == "heavy") {
                 out.p.heavy.emplace();
+            } else if (token == "heavy2") {
+                out.p.heavy2.emplace();
             } else if (token == "mixmeta") {
                 out.p.mixmeta = true;
             }
@@ -206,6 +213,35 @@ bool parse_options(std::span<char*> tokens, Options& out) {
                 out.p.heavy->peak_ceiling_dbfs = db;
             } else {
                 out.p.heavy->dialogue_target_dbfs = db;
+            }
+            continue;
+        }
+        if (key == "drc2") {
+            // Encode-side only, unlike drc= - nothing on the decode side
+            // corresponds to a per-programme DRC profile, since a decoder
+            // just applies whatever dynrng2 the stream carries.
+            ac3::meta::ProfileId id{};
+            if (!ac3::meta::parse_profile(value, id)) {
+                std::println(stderr, "error: unknown DRC profile '{}' ({})", value,
+                             ac3::meta::kProfileNames);
+                return false;
+            }
+            out.p.drc2 = ac3::meta::profile(id);
+            continue;
+        }
+        if (key == "ceiling2" || key == "dialogue2") {
+            double db = 0.0;
+            if (!parse_double(value, db)) {
+                std::println(stderr, "error: {} needs a level in dBFS", key);
+                return false;
+            }
+            if (!out.p.heavy2) {
+                out.p.heavy2.emplace();
+            }
+            if (key == "ceiling2") {
+                out.p.heavy2->peak_ceiling_dbfs = db;
+            } else {
+                out.p.heavy2->dialogue_target_dbfs = db;
             }
             continue;
         }

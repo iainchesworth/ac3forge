@@ -1271,15 +1271,18 @@ std::expected<std::vector<std::byte>, FrameError> build_silent_frame(
 FrameEncoder::FrameEncoder(const FrameConfig& config) : config_(config) {
     if (config_.drc) {
         range_.emplace(*config_.drc, config_.sample_rate);
-        if (config_.acmod == Acmod::kDualMono) {
-            range2_.emplace(*config_.drc, config_.sample_rate);
-        }
+    }
+    // Ch2's controller is built from drc2/heavy2, never drc/heavy - see
+    // ac3::FrameEncoder::FrameEncoder (the AC-3 sibling of this constructor)
+    // for why.
+    if (config_.acmod == Acmod::kDualMono && config_.drc2) {
+        range2_.emplace(*config_.drc2, config_.sample_rate);
     }
     if (config_.heavy) {
         heavy_.emplace(*config_.heavy, config_.sample_rate);
-        if (config_.acmod == Acmod::kDualMono) {
-            heavy2_.emplace(*config_.heavy, config_.sample_rate);
-        }
+    }
+    if (config_.acmod == Acmod::kDualMono && config_.heavy2) {
+        heavy2_.emplace(*config_.heavy2, config_.sample_rate);
     }
     const int nfchans = fullbw_channel_count(config_.acmod);
     transient_detectors_.reserve(static_cast<std::size_t>(nfchans));
@@ -2841,15 +2844,17 @@ AccessUnitEncoder::AccessUnitEncoder(const AccessUnitConfig& config) : config_(c
     const bool dual_mono = config_.independent.acmod == Acmod::kDualMono;
     if (config_.independent.drc) {
         range_.emplace(*config_.independent.drc, config_.independent.sample_rate);
-        if (dual_mono) {
-            range2_.emplace(*config_.independent.drc, config_.independent.sample_rate);
-        }
+    }
+    // Ch2's controller is built from drc2/heavy2, never drc/heavy - see
+    // ac3::FrameEncoder::FrameEncoder for why.
+    if (dual_mono && config_.independent.drc2) {
+        range2_.emplace(*config_.independent.drc2, config_.independent.sample_rate);
     }
     if (config_.independent.heavy) {
         heavy_.emplace(*config_.independent.heavy, config_.independent.sample_rate);
-        if (dual_mono) {
-            heavy2_.emplace(*config_.independent.heavy, config_.independent.sample_rate);
-        }
+    }
+    if (dual_mono && config_.independent.heavy2) {
+        heavy2_.emplace(*config_.independent.heavy2, config_.independent.sample_rate);
     }
 }
 

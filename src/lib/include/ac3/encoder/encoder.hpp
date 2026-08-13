@@ -57,6 +57,11 @@ struct EncoderConfig {
     // Heavy compression, independent of drc: the two answer different
     // questions (§7.7.2.1), so a stream may carry either, both or neither.
     std::optional<meta::HeavyConfig> heavy = std::nullopt;
+    // Ch2's own drc/heavy, meaningful only under kDualMono. No fallback to
+    // drc/heavy when unset - see plan::Metadata::drc2 for why: dialnorm2 is
+    // already independent of dialnorm the same way.
+    std::optional<meta::Profile> drc2 = std::nullopt;
+    std::optional<meta::HeavyConfig> heavy2 = std::nullopt;
     // Table 5.9 / Table 5.10. Transmitted only when the layout has the
     // channels they describe, but they always define the §7.8 downmix, so the
     // heavy-compression peak detector consults them whatever acmod is.
