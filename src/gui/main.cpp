@@ -1,3 +1,5 @@
+#include <QFont>
+#include <QFontDatabase>
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQuickStyle>
@@ -499,6 +501,22 @@ int main(int argc, char* argv[]) {
     QGuiApplication app(argc, argv);
     QGuiApplication::setApplicationName(QStringLiteral("ac3forge"));
     QGuiApplication::setOrganizationName(QStringLiteral("ac3forge"));
+
+    // The handoff's typeface ("Archivo throughout; headings weight 800,
+    // body 400/500/600"), bundled as resources so the design renders as
+    // designed everywhere. Registered before the engine loads so Theme's
+    // Qt.fontFamilies() probe finds it, and made the application default so
+    // every control - not just the Texts that name a family - uses it.
+    for (const auto* face :
+         {":/fonts/Archivo-Regular.ttf", ":/fonts/Archivo-Medium.ttf",
+          ":/fonts/Archivo-SemiBold.ttf", ":/fonts/Archivo-ExtraBold.ttf"}) {
+        if (QFontDatabase::addApplicationFont(QLatin1String(face)) < 0) {
+            std::println(stderr, "could not register bundled font {}", face);
+        }
+    }
+    QFont default_font = QGuiApplication::font();
+    default_font.setFamily(QStringLiteral("Archivo"));
+    QGuiApplication::setFont(default_font);
 
     // Fusion renders identically on every platform, so the layout we design
     // here is the layout everywhere; the native Windows style restyles

@@ -1,9 +1,11 @@
 #pragma once
 
+#include <QElapsedTimer>
 #include <QHash>
 #include <QObject>
 #include <QString>
 #include <QStringList>
+#include <QTimer>
 #include <QUrl>
 #include <QVariantList>
 #include <QVariantMap>
@@ -61,6 +63,12 @@ class EncoderController : public QObject {
     // explicitly assigned yet (an unset one reads "none"), so a caller can
     // always render one row per channel rather than special-casing the gap.
     Q_PROPERTY(QVariantList assignmentRows READ assignmentRows NOTIFY sourceChanged)
+    // plan::format_assignment() of the explicit assignment, prefixed "map=" -
+    // the exact token ac3cli's encode/eac3-encode take, so the command bar
+    // can append it verbatim and a GUI assignment is always reproducible on
+    // the command line. Empty while automatic single-source routing applies:
+    // there is no map= to print when nothing has been mapped.
+    Q_PROPERTY(QString mapToken READ mapToken NOTIFY sourceChanged)
     // "<source> ch <n> is loaded but goes nowhere" - plan::Assignment::
     // unassigned()'s inventory in prose. Empty only when automatic
     // single-source routing applies (see routingForSources) - every source
@@ -70,14 +78,21 @@ class EncoderController : public QObject {
     // time.
     Q_PROPERTY(QStringList unassignedWarnings READ unassignedWarnings NOTIFY sourceChanged)
     Q_PROPERTY(QString outputPath READ outputPath NOTIFY outputChanged)
+    // Keep whatever frames a failed or cancelled run already produced,
+    // written beside the intended output as <name>.partial.<ext> - partial
+    // output is named and kept, not silently discarded (the handoff's error
+    // state). Persisted as a preference by the GUI; on by default.
+    Q_PROPERTY(bool keepPartialOutput READ keepPartialOutput WRITE setKeepPartialOutput
+                   NOTIFY keepPartialOutputChanged)
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
     Q_PROPERTY(double progress READ progress NOTIFY progressChanged)
     // Encoding is a job with a history, not a modal moment: one entry per
-    // file encode (not a live recording, which already has its own elapsed-
-    // time readout), newest first. Each is {id, filename, bitrateKbps,
-    // rateText, durationText, status ("encoding"|"done"|"failed"|
-    // "cancelled"), sizeText, detail}. rateText is what the run strip
+    // file encode, recording, and real live session (one with a take on
+    // disk or a receiver leg - monitor-only checks deliberately stay out),
+    // newest first. Each is {id, filename, path, bitrateKbps, rateText,
+    // durationText, status ("encoding"|"done"|"failed"|"cancelled"),
+    // sizeText, detail, framesText}. rateText is what the run strip
     // actually displays - "384 kbps" for CBR, or, once a VBR run finishes,
     // "VBR q75 · avg 512 kbps (384-704)": a VBR run has no target rate to
     // show while "encoding" (only the quality it is aiming for), and a real
@@ -124,6 +139,12 @@ class EncoderController : public QObject {
     Q_PROPERTY(QStringList outputDevices READ outputDevices NOTIFY outputDevicesChanged)
     Q_PROPERTY(bool playing READ playing NOTIFY playingChanged)
     Q_PROPERTY(bool canPlay READ canPlay NOTIFY outputChanged)
+    // Whether the file at outputPath holds E-AC-3 (object mode included) or
+    // plain AC-3 - recorded when the encode/recording set outputPath, so the
+    // Play button can gate on the SELECTED endpoint's ability to bitstream
+    // this stream (outputDeviceCanBitstream) instead of failing after the
+    // click.
+    Q_PROPERTY(bool outputIsEac3 READ outputIsEac3 NOTIFY outputChanged)
     Q_PROPERTY(bool recording READ recording NOTIFY recordingChanged)
     Q_PROPERTY(double recordedSeconds READ recordedSeconds NOTIFY recordedSecondsChanged)
 
@@ -134,6 +155,13 @@ class EncoderController : public QObject {
     Q_PROPERTY(int codecIndex READ codecIndex WRITE setCodecIndex NOTIFY planChanged)
     Q_PROPERTY(QStringList codecNames READ codecNames CONSTANT)
     Q_PROPERTY(QString layoutDetail READ layoutDetail NOTIFY planChanged)
+    // The two halves of the mockup's "8 coded · 6 spk" split: how many
+    // channels the stream transmits, and how many speakers a receiver
+    // actually drives once a dependent substream's replacements are folded
+    // in. Dual mono answers its two programmes; object mode the fixed 5.1
+    // bed. Derived from the same resolve() every other display reads.
+    Q_PROPERTY(int codedChannelCount READ codedChannelCount NOTIFY planChanged)
+    Q_PROPERTY(int renderedChannelCount READ renderedChannelCount NOTIFY planChanged)
     Q_PROPERTY(int containerIndex READ containerIndex WRITE setContainerIndex NOTIFY planChanged)
     Q_PROPERTY(QStringList containerNames READ containerNames CONSTANT)
 
@@ -228,17 +256,40 @@ class EncoderController : public QObject {
     Q_PROPERTY(int lfeMix READ lfeMix WRITE setLfeMix NOTIFY planChanged)
     Q_PROPERTY(int dmixIndex READ dmixIndex WRITE setDmixIndex NOTIFY planChanged)
     Q_PROPERTY(QStringList dmixNames READ dmixNames CONSTANT)
+    // Every non-default metadata choice as ac3cli's own trailing tokens
+    // ("drc=film_standard dialnorm=auto heavy …"), space-joined and in
+    // print_meta_usage()'s exact grammar; empty when everything is at its
+    // default, so a plain encode's command line stays a plain line.
+    Q_PROPERTY(QString metaTokens READ metaTokens NOTIFY planChanged)
 
     // ---- what the plan will actually do to this source --------------------
     // Answered before the encode rather than after: a layout the source cannot
     // fill leaves speakers silent, and that is worth knowing in advance.
     Q_PROPERTY(QString routingSummary READ routingSummary NOTIFY routingChanged)
+    // The coded plan as a per-channel list - one entry per coded channel of
+    // the CURRENT plan (not of whatever layout the meters happen to be
+    // showing): {name, token, azimuthDeg, directional, ceiling, replaced,
+    // fed}. This is what the Format tab's channel map, the soundfield's
+    // solid/hollow dots and the "N of M positions fed" lines read, so they
+    // all count the same fed set. Dual mono lists its two programmes;
+    // object mode lists the 5.1 bed with fed answered by panning the
+    // objects. Notifies on routingChanged because fed is a routing fact:
+    // every bed/extras/assignment/source edit ends in refreshRouting().
+    Q_PROPERTY(QVariantList plannedChannels READ plannedChannels NOTIFY routingChanged)
 
     // ---- metering ---------------------------------------------------------
     // channelNames changes only when the layout does, so it — not the level
     // list — is what a Repeater should bind to: rebuilding six delegates
     // thirty times a second would throw away every animation mid-flight.
     Q_PROPERTY(QStringList channelNames READ channelNames NOTIFY layoutChanged)
+    // Everything about a meter row that does NOT move per tick - {name,
+    // azimuthDeg, directional, ceiling, replaced, fed} - so the meter and
+    // soundfield Repeaters have a model that only changes when the layout
+    // does. The per-tick values (peak/rms/hold/clipped) stay in
+    // channelLevels; a delegate reads its own entry by index. Binding a
+    // Repeater's model to channelLevels instead tears every delegate down
+    // ~30 times a second, which is exactly the jank this exists to prevent.
+    Q_PROPERTY(QVariantList channelMeta READ channelMeta NOTIFY layoutChanged)
     Q_PROPERTY(QString layoutName READ layoutName NOTIFY layoutChanged)
     Q_PROPERTY(bool hasLevels READ hasLevels NOTIFY layoutChanged)
     Q_PROPERTY(bool surround READ surround NOTIFY layoutChanged)
@@ -268,6 +319,11 @@ class EncoderController : public QObject {
     // at the ceiling). Backs both the room plan's markers and the object
     // list table, so the two can never disagree about a position.
     Q_PROPERTY(QVariantList objectModel READ objectModel NOTIFY objectsChanged)
+    // How many channels the assignment pins to bed positions in object mode
+    // (each one a static object - see pinnedObjectChannels). The Objects
+    // tab's "N of M" budget line subtracts these from the fifteen dynamic
+    // slots rather than overstating what is left.
+    Q_PROPERTY(int pinnedObjectCount READ pinnedObjectCount NOTIFY sourceChanged)
 
     // ---- live session -------------------------------------------------------
     // Capture, encode and (optionally) monitor+passthrough all running at
@@ -289,6 +345,17 @@ class EncoderController : public QObject {
     // device itself supports.
     Q_PROPERTY(QString liveReceiverPlanText READ liveReceiverPlanText NOTIFY liveActiveChanged)
     Q_PROPERTY(bool liveGap READ liveGap NOTIFY liveActiveChanged)
+    // The chain strip's capture sub-line ("2 ch · 48 000 Hz") and the pieces
+    // the session tab needs to tell the receiver's own story: which endpoint
+    // this session actually asked for (name), whether it was asked at all
+    // (wanted - livePassthrough false + wanted true is "asked and refused",
+    // a different banner from "never asked"), and whether that endpoint can
+    // take E-AC-3 - what decides which layout-switcher entries genuinely
+    // exceed the receiver leg rather than a hardcoded "anything past 5.1".
+    Q_PROPERTY(QString liveCaptureDetail READ liveCaptureDetail NOTIFY liveActiveChanged)
+    Q_PROPERTY(QString liveReceiverName READ liveReceiverName NOTIFY liveActiveChanged)
+    Q_PROPERTY(bool liveWantedPassthrough READ liveWantedPassthrough NOTIFY liveActiveChanged)
+    Q_PROPERTY(bool liveReceiverEac3 READ liveReceiverEac3 NOTIFY liveActiveChanged)
     // Set for a couple of seconds right after the passthrough endpoint opens
     // - a real exclusive-mode stream open, which is exactly when a physical
     // receiver drops its lock and re-negotiates.
@@ -312,8 +379,12 @@ public:
     [[nodiscard]] bool sourceReady() const { return source_ready_; }
     [[nodiscard]] QVariantList sourceModel() const;
     [[nodiscard]] QVariantList assignmentRows() const;
+    [[nodiscard]] QString mapToken() const;
+    [[nodiscard]] QString metaTokens() const;
     [[nodiscard]] QStringList unassignedWarnings() const;
     [[nodiscard]] QString outputPath() const { return output_path_; }
+    [[nodiscard]] bool keepPartialOutput() const { return keep_partial_output_; }
+    void setKeepPartialOutput(bool keep);
     [[nodiscard]] QString status() const { return status_; }
     [[nodiscard]] bool busy() const { return busy_; }
     [[nodiscard]] double progress() const { return progress_; }
@@ -335,12 +406,15 @@ public:
     [[nodiscard]] QStringList outputDevices() const { return output_devices_; }
     [[nodiscard]] bool playing() const { return playing_; }
     [[nodiscard]] bool canPlay() const { return !output_path_.isEmpty(); }
+    [[nodiscard]] bool outputIsEac3() const { return output_eac3_; }
     [[nodiscard]] bool recording() const { return recording_; }
     [[nodiscard]] double recordedSeconds() const { return recorded_seconds_; }
 
     [[nodiscard]] int codecIndex() const { return static_cast<int>(codec_); }
     [[nodiscard]] QStringList codecNames() const;
     [[nodiscard]] QString layoutDetail() const;
+    [[nodiscard]] int codedChannelCount() const;
+    [[nodiscard]] int renderedChannelCount() const;
     [[nodiscard]] int containerIndex() const { return container_index_; }
     [[nodiscard]] QStringList containerNames() const;
 
@@ -350,8 +424,13 @@ public:
     [[nodiscard]] bool dualMono() const { return isDualMono(); }
     [[nodiscard]] bool bedLfeLocked() const { return atmos_enabled_ || isDualMono(); }
     [[nodiscard]] QVariantList extrasModel() const;
+    // Object mode and dual mono lock the extras; plain AC-3 deliberately
+    // does NOT - ticking an extra under AC-3 PROMOTES the codec to E-AC-3
+    // (see toggleExtra), because extras must never be gated by a codec the
+    // extras themselves change. That circularity was a real bug during
+    // design and the handoff calls it out by name.
     [[nodiscard]] bool extrasLocked() const {
-        return atmos_enabled_ || isDualMono() || codec_ == ac3::plan::Codec::kAc3;
+        return atmos_enabled_ || isDualMono();
     }
     [[nodiscard]] QString channelShapeName() const;
     [[nodiscard]] int channelBudgetUsed() const;
@@ -390,8 +469,10 @@ public:
     [[nodiscard]] QStringList dmixNames() const;
 
     [[nodiscard]] QString routingSummary() const { return routing_summary_; }
+    [[nodiscard]] QVariantList plannedChannels() const;
 
     [[nodiscard]] QStringList channelNames() const { return channel_names_; }
+    [[nodiscard]] QVariantList channelMeta() const;
     [[nodiscard]] QString layoutName() const { return layout_name_; }
     [[nodiscard]] bool hasLevels() const { return !channel_names_.isEmpty(); }
     // Two or more full-bandwidth channels make a soundfield worth drawing;
@@ -413,6 +494,7 @@ public:
     [[nodiscard]] int objectCount() const { return object_count_; }
     [[nodiscard]] int selectedObjectIndex() const { return selected_object_index_; }
     [[nodiscard]] QVariantList objectModel() const;
+    [[nodiscard]] int pinnedObjectCount() const;
 
     [[nodiscard]] bool liveActive() const { return live_active_; }
     [[nodiscard]] bool liveMonitoring() const { return live_monitoring_; }
@@ -426,6 +508,10 @@ public:
     [[nodiscard]] qint64 liveFramesDropped() const { return live_frames_dropped_; }
     [[nodiscard]] quint64 liveUnderruns() const { return live_underruns_; }
     [[nodiscard]] double liveLatencyMs() const { return live_latency_ms_; }
+    [[nodiscard]] QString liveCaptureDetail() const { return live_capture_detail_; }
+    [[nodiscard]] QString liveReceiverName() const { return live_receiver_name_; }
+    [[nodiscard]] bool liveWantedPassthrough() const { return live_wanted_passthrough_; }
+    [[nodiscard]] bool liveReceiverEac3() const { return live_receiver_eac3_; }
 
     void setBitrateKbps(int kbps);
     void setVbrEnabled(bool on);
@@ -464,8 +550,18 @@ public:
     // Refused (silently, same as a bed button or LFE toggle) when locked or
     // when the result would leave chanmap::allocate() unable to satisfy it.
     Q_INVOKABLE void toggleExtra(const QString& id);
-    // Sets bed + LFE + extras together - "5.1", "7.1", "5.1.4", "7.1.4" or
-    // "5.2" - the starting points the Format tab's preset buttons offer.
+    // The Live session tab's layout switcher: stops the running session,
+    // applies the named preset (applyChannelPreset's vocabulary) and starts
+    // a new session with the same capture/monitor/receiver choices. A
+    // deliberate, visible act - the stream stops, the receiver re-locks and
+    // about a second of audio is lost, exactly as the handoff frames it.
+    // Refused while nothing is live, while object mode fixes the layout, and
+    // while the take is being written to disk (a restart would clobber the
+    // first half of the file; stopping and starting a new take is honest).
+    Q_INVOKABLE void switchLiveLayout(const QString& presetName);
+    // Sets bed + LFE + extras together - "stereo", "5.1", "7.1", "5.1.4",
+    // "7.1.4", "5.2" or "7.2.4" - the starting points the Format tab's
+    // preset buttons offer.
     // Upgrades AC-3 to E-AC-3 first if the preset needs a dependent substream,
     // the same way a manual extras tick would otherwise be refused outright.
     Q_INVOKABLE void applyChannelPreset(const QString& name);
@@ -475,7 +571,11 @@ public:
     // is a map with "time", "x", "y", "z", "gain" and "lfeSend" (the latter
     // two optional). An empty list clears the object's path, returning it to
     // the static fallback.
-    Q_INVOKABLE void setObjectPathKeyframes(int objectIndex, const QVariantList& keyframes);
+    // `label` names the shape a preset authored ("orbit", "lift") so the
+    // object table can print it; hand edits (addObjectKeyframe and friends)
+    // clear it - a path someone has nudged is no longer purely the preset.
+    Q_INVOKABLE void setObjectPathKeyframes(int objectIndex, const QVariantList& keyframes,
+                                            const QString& label = QString());
     Q_INVOKABLE void clearObjectPath(int objectIndex);
     // The room plan's drag target and the object list's editable cells - the
     // static position a path-less object holds for the whole file, or that a
@@ -493,6 +593,12 @@ public:
     // ways a path's contents change.
     Q_INVOKABLE void addObjectKeyframe(int objectIndex, double timeS);
     Q_INVOKABLE void removeObjectKeyframe(int objectIndex, double timeS);
+    // Retimes the keyframe at fromS (within the same 1/100 s window) to toS,
+    // keeping its position/gain/send - the timeline's drag-to-retime. A key
+    // already sitting at toS is replaced, the same same-moment rule
+    // addObjectKeyframe applies, so a drag can never stack two cues on one
+    // instant.
+    Q_INVOKABLE void moveObjectKeyframe(int objectIndex, double fromS, double toS);
     // Where an object sits at timeS: along its authored path if it has one,
     // else its static position, unmoving. What the motion timeline's preview
     // playhead reads so the room plan animates exactly what encodeObjects()
@@ -501,6 +607,11 @@ public:
     Q_INVOKABLE [[nodiscard]] QVariantMap evaluateObjectPath(int objectIndex, double timeS) const;
 
     Q_INVOKABLE void loadSourceFile(const QUrl& url);
+    // The first-run screen's third path in: synthesises an eight-second 5.1
+    // test signal (a distinct tone per channel, WAV speaker order) into the
+    // temp directory and loads it like any other file, so a user with no
+    // multichannel WAV to hand still gets a working session to explore.
+    Q_INVOKABLE void loadBundledTestSignal();
     // Adds another source alongside whatever is already loaded - or, if
     // nothing is loaded yet, is exactly loadSourceFile (so a caller offering
     // one "add a source" affordance never has to know which entry point to
@@ -524,6 +635,14 @@ public:
     // can never disagree about what a token means. Silently ignored if it
     // does not parse, same convention as toggleExtra/applyChannelPreset.
     Q_INVOKABLE void setAssignment(int sourceIndex, int channel, const QString& destToken);
+    // Fills every still-unassigned channel whose SOURCE has a natural AC-3
+    // layout (mono, stereo, 5.1, ...) with the bed position that channel
+    // holds in that layout - "assign by name": a 5.1 file's third WAV
+    // channel is its centre, so it goes to C. Positions the current plan
+    // does not carry are left unassigned (and keep their warning) rather
+    // than silently invented; rows already assigned - or deliberately set
+    // to nothing - are never overwritten.
+    Q_INVOKABLE void autoAssignByName();
     // Back to automatic routing - only meaningful with exactly one source
     // loaded (see routingForSources); with more than one, clearing merely
     // empties the table, since automatic panning has no defined meaning
@@ -539,6 +658,11 @@ public:
     Q_INVOKABLE void startRecording(int deviceIndex, const QUrl& url);
     Q_INVOKABLE void stopRecording();
     Q_INVOKABLE void refreshOutputDevices();
+    // Whether outputDevices()[index] can bitstream the stream outputPath
+    // currently holds (outputIsEac3 decides which capability flag applies) -
+    // what the Play button's enabled state reads, so an endpoint that would
+    // refuse the stream is greyed out rather than failing after the click.
+    Q_INVOKABLE [[nodiscard]] bool outputDeviceCanBitstream(int deviceIndex) const;
     Q_INVOKABLE void playToReceiver(int deviceIndex);
     // Starts a continuous capture -> encode session: unlike startRecording,
     // frames never wait for a stop to reach a sink - each is optionally
@@ -553,16 +677,25 @@ public:
                                       int receiverDeviceIndex, bool writeToDisk,
                                       const QUrl& fileUrl);
     Q_INVOKABLE void stopLiveSession();
+    // The reconnection banner's Skip: stop announcing the receiver's
+    // re-lock window early. Purely presentational - the pulse is advisory,
+    // and a user who can hear the receiver has settled knows better than
+    // the timer does.
+    Q_INVOKABLE void settleReconnect();
     // Where a level sits on the meter scale, for the QML that draws the
     // gridline labels. The bars themselves get their positions in
     // channelLevels; this exists so the ticks cannot disagree with them.
     Q_INVOKABLE [[nodiscard]] double meterFraction(double db) const {
         return ac3::analysis::meter_fraction(db, kMeterFloorDb);
     }
+    // "48 000" / "7 891" - the mockup's space-grouped integers, offered here
+    // so every readout groups digits the same way.
+    Q_INVOKABLE [[nodiscard]] QString groupDigits(qint64 value) const;
 
 signals:
     void sourceChanged();
     void outputChanged();
+    void keepPartialOutputChanged();
     void statusChanged();
     void busyChanged();
     void progressChanged();
@@ -583,6 +716,13 @@ signals:
     void levelsChanged();
     void meteringChanged();
     void encodeFinished(bool ok, const QString& message);
+    // A run that was refused before it ever opened a run entry - plan
+    // validation, an incomplete assignment, the sixteen-object cap, a
+    // capture device that would not open. `reason` is the same text
+    // setStatus just showed; the QML raises the failure banner from this,
+    // because a status line the run strip has scrolled away is not a home
+    // for a refusal (the mockup gives every failure the banner).
+    void encodeRefused(const QString& reason);
     void liveActiveChanged();
     void liveStatsChanged();
     void liveReconnectingChanged();
@@ -656,9 +796,11 @@ private:
     // showed.
     void encodeChannels(const QString& path, std::vector<std::vector<float>> planes,
                         const ac3::plan::Routing& routing, std::uint32_t sample_rate);
-    // One object per source channel, over a 5.1 bed. `planes` is the source's
-    // own channels; unlike the channel path they are not routed anywhere,
-    // because an object is not a speaker feed.
+    // Objects over a 5.1 bed. `planes` is every loaded channel in flat order;
+    // which of them ride as dynamic objects, which pin to a bed position as
+    // static objects, and which are dropped follows the assignment table
+    // (dynamicObjectChannels / pinnedObjectChannels) - with nothing assigned,
+    // every channel is a dynamic object, which is what this always did.
     void encodeObjects(const QString& path, std::vector<std::vector<float>> planes,
                        std::uint32_t sample_rate);
     // Resizes object_configs_ to object_count_, preserving any object index
@@ -705,8 +847,13 @@ private:
     // Adds a new "encoding" entry to runs_ and remembers its id, so the
     // encodeFinished this run eventually emits (there are several call
     // sites; a run is always started right after setBusy(true) rather than
-    // duplicated at each one) knows which entry to settle.
-    void startRun(const QString& path);
+    // duplicated at each one) knows which entry to settle. `durationText`
+    // overrides the source-derived length ("live" for captures, whose length
+    // nobody knows at start); `label` overrides the filename for a session
+    // that writes no file at all; `forceCbr` keeps a live session's rate
+    // text honest (runLiveSession drops VBR unconditionally).
+    void startRun(const QString& path, const QString& durationText = QString(),
+                  const QString& label = QString(), bool forceCbr = false);
     // Connected to encodeFinished in the constructor. A run whose message
     // mentions cancellation reads "cancelled" rather than "failed" - the
     // same text setStatus() already shows, not a second judgement of it.
@@ -714,9 +861,43 @@ private:
     void setProgress(double value);
     void setRecording(bool recording);
     void setMetering(bool metering);
-    // Recomputes routingSummary and the meter labels from the current plan and
-    // source. Called whenever either moves.
+    // Recomputes routingSummary from the current plan and source, then hands
+    // the meters to previewPlanMeters(). Called whenever either moves.
     void refreshRouting();
+    // The routingSummary half of refreshRouting - the prose only, split out
+    // so refreshRouting can always follow it with the meter preview without
+    // every early return in here having to remember to.
+    void refreshRoutingSummary();
+    // Points the meters at the CODED plan while nothing is running: labels,
+    // locations and fed flags immediately (cheap - no audio is touched), then
+    // a background pass that renders the loaded sources through the actual
+    // routing and publishes the whole-programme levels when it lands. This is
+    // what makes the meters follow the picker and the assignment table - the
+    // handoff's "the meters on the left follow these choices". A run starting
+    // before the pass lands invalidates it (preview_generation_), and busy_
+    // suppresses the whole thing: a live worker owns the meters then.
+    void previewPlanMeters();
+    // Flat channel indices (the sourceShapes()/Assignment addressing) that
+    // ride as DYNAMIC objects in object mode: every loaded channel while
+    // nothing is explicitly assigned, else exactly the channels assigned
+    // "obj". Order is flat order, which is object-index order.
+    [[nodiscard]] std::vector<std::size_t> dynamicObjectChannels() const;
+    // Flat channels assigned to a bed position in object mode. Each becomes a
+    // static object pinned at its speaker's azimuth - in a JOC stream the bed
+    // IS the panned objects, so "carried as a channel" and "an object that
+    // never moves off the L speaker" are the same coded thing. The LFE
+    // position pins as a pure lfe_send object (no direction points at it).
+    [[nodiscard]] std::vector<std::pair<std::size_t, ac3::eac3::chanmap::Location>>
+    pinnedObjectChannels() const;
+    // object_count_ from dynamicObjectChannels(), then refreshObjectConfigs().
+    // Called wherever the source list or the assignment changes.
+    void recomputeObjectCount();
+    // Coalesces objectsChanged for the drag paths (setObjectPosition /
+    // setObjectLfeSend): the first move in a gesture notifies immediately,
+    // further ones inside ~16 ms ride a trailing single-shot. Four Repeaters
+    // re-read objectModel on every emission, so per-mouse-move emission made
+    // dragging the room a delegate-rebuild storm.
+    void notifyObjectsChangedSoon();
 
     // Re-labels the meters and clears them to the floor. GUI thread only, and
     // always before a worker that will publish into them starts. `names` and
@@ -748,6 +929,10 @@ private:
     QString source_path_;
     QString source_info_;
     QString output_path_;
+    // The handoff's "partial output is named and kept" behaviour - see the
+    // keepPartialOutput property. Snapshotted into each encode worker at
+    // start, so mid-run preference edits apply to the NEXT run.
+    bool keep_partial_output_ = true;
     QString status_ = QStringLiteral("Choose a WAV file, or record from a capture device.");
     QString routing_summary_;
     bool source_ready_ = false;
@@ -803,6 +988,12 @@ private:
     // common case) falls back to the object's static ObjectConfig placement
     // in encodeObjects, held constant for the whole file.
     QHash<int, std::vector<ac3::oba::Keyframe>> object_keyframes_;
+    // The preset name that authored an object's path ("orbit", "lift"),
+    // absent for hand-authored or hand-edited paths - what the object
+    // table's Path column prints instead of a bare "path". Kept strictly in
+    // step with object_keyframes_: every place that clears or hand-edits a
+    // path clears its label too.
+    QHash<int, QString> object_path_labels_;
     // A snapshot of object_configs_/object_keyframes_/selected_object_index_
     // as they stood before a live Atmos session resized them to the CAPTURE
     // DEVICE's channel count instead of a loaded file's (see
@@ -816,6 +1007,7 @@ private:
         int count = 0;
         std::vector<ObjectConfig> configs;
         QHash<int, std::vector<ac3::oba::Keyframe>> keyframes;
+        QHash<int, QString> path_labels;
         int selected_index = 0;
     };
     std::optional<LiveObjectBackup> live_object_backup_;
@@ -832,6 +1024,9 @@ private:
     QString pending_rate_text_;
 
     bool playing_ = false;
+    // What outputPath holds - see the outputIsEac3 property. Snapshotted by
+    // encodeTo/startRecording alongside output_path_ itself.
+    bool output_eac3_ = false;
     QStringList capture_devices_;
     QStringList output_devices_;
     std::vector<ac3::capture::DeviceInfo> devices_;
@@ -851,11 +1046,24 @@ private:
     QVariantList channel_levels_;
     QVariantMap soundfield_;
 
-    std::unique_ptr<Source> source_;
+    // shared_ptr rather than unique_ptr for exactly one reason: the meter
+    // preview worker (previewPlanMeters) reads the WAV data off the GUI
+    // thread, and loadSourceFile may replace the source before that read
+    // finishes. WavData is immutable once loaded, so shared ownership is the
+    // whole synchronisation story; the stale worker's publish is dropped by
+    // its generation check instead.
+    std::shared_ptr<Source> source_;
     // Everything beyond the primary, in load order - source index (n+1) in
     // sourceShapes()/Assignment addressing. Always empty with the single-
     // source behaviour every existing call site (still) assumes.
-    std::vector<std::unique_ptr<Source>> extra_sources_;
+    std::vector<std::shared_ptr<Source>> extra_sources_;
+    // Invalidates in-flight meter previews: bumped by every new preview and
+    // by setBusy(true), checked (against busy_ too) before a preview's
+    // result is published.
+    std::atomic<int> preview_generation_{0};
+    // notifyObjectsChangedSoon()'s state - see its declaration.
+    QTimer object_notify_timer_;
+    QElapsedTimer object_notify_elapsed_;
     // Empty (every row implicitly kUnassigned) until setAssignment is
     // called at least once; see routingForSources for what that means for
     // which routing actually gets used.
@@ -875,6 +1083,19 @@ private:
     std::atomic_bool stop_recording_{false};
 
     // ---- live session --------------------------------------------------
+    // What startLiveSession was asked for, kept so switchLiveLayout can
+    // restart the session under a new preset without the QML having to
+    // re-supply choices it made minutes ago. Write-to-disk is deliberately
+    // NOT restartable - see switchLiveLayout's declaration.
+    struct LiveSessionRequest {
+        int capture_index = -1;
+        bool monitor = false;
+        int receiver_index = -1;
+    };
+    std::optional<LiveSessionRequest> live_request_;
+    // Set by switchLiveLayout, consumed once by the session-completion
+    // callback: apply this preset, then restart from live_request_.
+    std::optional<QString> pending_live_relayout_;
     // stop_live_ is the only piece of this state the worker thread reads;
     // everything else it only ever touches through a QMetaObject::invokeMethod
     // back onto the GUI thread (the same discipline startRecording's worker
@@ -887,6 +1108,10 @@ private:
     bool live_writing_to_disk_ = false;
     QString live_receiver_plan_text_;
     bool live_gap_ = false;
+    QString live_capture_detail_;
+    QString live_receiver_name_;
+    bool live_wanted_passthrough_ = false;
+    bool live_receiver_eac3_ = false;
     bool live_reconnecting_ = false;
     double live_running_seconds_ = 0.0;
     qint64 live_frames_encoded_ = 0;

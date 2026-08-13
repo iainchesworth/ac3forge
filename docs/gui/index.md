@@ -5,68 +5,115 @@
 logic the library doesn't also expose, and every setting it makes maps onto an equivalent
 [`ac3cli`](../cli/index.md) invocation shown live at the bottom of the window.
 
-The screenshots in this guide are of the current two-pane "workbench" layout. An earlier
-nine-card single-column design existed before it, and a two-tier Basic/Advanced control before
-that — if you find references to either elsewhere in the repo's history, they describe a
-superseded build predating this guide.
+The screenshots in this guide are of the current two-pane "workbench" layout, drawn in the
+Modernist design system's light palette (a dark theme is derived from the same tokens and follows
+the OS, or the Theme preference — see [Preferences](#preferences)). Earlier builds — a nine-card
+single-column design, and a first cut of the workbench before the design handoff was fully
+implemented — are superseded; if you find references to either elsewhere in the repo's history,
+they predate this guide.
+
+## First run
+
+Until a source has ever been chosen, the window shows a first-run screen instead of the workbench
+— three ways in (a WAV file, a capture device, or a bundled 5.1 test signal the app synthesises
+on the spot) and a one-sentence tour of the window:
+
+![The first-run screen](screenshots/firstrun.png)
 
 ## The window
 
 Minimum size 1280×900. Two panes, divided by a vertical rule:
 
-![Default window state, no source loaded, Advanced tier](screenshots/overview-default.png)
+![The workbench: a 5.1 source loaded, Advanced tier](screenshots/overview-default.png)
 
 - **Header** (top): the `ac3forge` wordmark and subtitle, a **Guided / Advanced / Expert**
   segmented control, and a **Preferences** button.
 - **Left rail — "the signal"** (always visible, never scrolled away, and never affected by which
-  tier is selected): three cards — [Source](loading-a-source.md#source),
-  [Live capture](loading-a-source.md#live-capture), and
-  [Channel levels](loading-a-source.md#channel-levels). This is what's coming *in*.
+  tier is selected): three numbered blocks — **01 Input** (one input, with a **File / Live
+  capture** selector, the loaded source list and its totals), **02 Levels** (the channel meters),
+  and **03 Soundfield** (the plan views). This is what's coming *in* — see
+  [Loading a source](loading-a-source.md).
 - **Right panel — "the stream"**: a plan strip showing the derived output headline
-  (`<codec> · <shape> · <bitrate> kbps` or, in VBR mode, `<codec> · <shape> · quality <n>` —
-  `· .<suffix>`) and the equivalent Annex E tools token. What fills the rest of the panel depends
-  on the tier — see below.
-- **Run strip** (bottom): past and in-flight encode runs, a live-generated `ac3cli` command line
-  with a Copy button, and the primary Encode button. Present in every tier, including Guided.
+  (`<codec> · <shape> · <bitrate> kbps · .<suffix>`, or `quality <n>` in VBR mode, or
+  `5.1 bed + <n> objects` in object mode), a sub-line counting speakers, coded channels and
+  dependent substreams, and the Annex E tools token on a chip. Beneath it, a tab bar (hidden in
+  Guided, which fills the panel with its own steps) — tabs carry a badge counting their
+  non-default settings, so a collapsed panel still declares itself.
+- **Run strip** (bottom): past and in-flight runs — file encodes, recordings, and real live
+  sessions alike — a live-generated `ac3cli` command line with a Copy button, and the primary
+  Encode button. Present in every tier, including Guided — a codec developer must always be able
+  to get back to a command line from what the UI shows. The line is genuinely complete: extra
+  sources ride as `src=`, the assignment as `map=`, non-default metadata in `print_meta_usage`'s
+  own grammar, AC-3's bare `couple`, quoting where names carry spaces; a live source renders the
+  `live` subcommand, and a Matroska container is honestly *two* commands (`… && ac3cli mkv …`),
+  because pasting one would write a raw elementary stream into a file named `.mkv`. Finished
+  chips carry **Show in folder**; failed and cancelled chips say which they are with a frame
+  count and a distinct square; a failure's banner names the cause first and offers **Choose
+  another device** / **Retry as file**; and a refusal that never opened a run (an incomplete
+  assignment, the sixteen-object cap) lands in the same banner instead of only a status line.
 
 ## Guided, Advanced, Expert
 
-Three tiers, not two — Guided is new; Advanced and Expert are renames of what this guide used to
-call Basic and Advanced, one notch further apart than before.
+- **Guided** (the default for a new session) replaces the tabbed right panel with a five-step
+  sequence — **Audio**, **Speakers**, **Quality**, **Movement**, **Where it goes** — that reads
+  and writes the exact same state Advanced and Expert do. There is no separate "wizard draft":
+  switch tiers mid-session and whatever guided set is exactly what Advanced or Expert already
+  show for the same field, and vice versa.
 
-- **Guided** (the default for a new session) replaces the tabbed right panel entirely with a
-  five-step wizard — Source, Format, Rate mode (E-AC-3 only, skipped otherwise), Loudness, Review
-  — that reads and writes the exact same state Advanced and Expert do. There is no separate
-  "wizard draft": switch tiers mid-session and whatever the wizard set is exactly what Advanced or
-  Expert already show for the same field, and vice versa.
+  ![Guided step 1 — Audio, with "What each sound does"](screenshots/guided-wizard-source.png)
 
-  ![Guided tier's Source step, no source loaded yet](screenshots/guided-wizard-source.png)
-
-  Loading a source, adding more of them, and live capture all still happen on the left rail —
-  the wizard's own Source step just points at it rather than duplicating a file picker. Object
-  (Atmos) placement and the multi-source assignment table are Advanced/Expert only: both are
-  inherently non-linear (a spatial canvas, a table), which a five-step sequence has nowhere
-  honest to put them.
-- **Advanced** shows a tabbed right panel — [Format](format-and-channels.md) with a Loudness card
-  folded in, and [Objects](objects-and-motion.md) — enough to encode a file at a sensible default
-  with full control over the channel picker, without the Annex E tools or broadcast metadata most
-  encodes don't need to touch.
-- **Expert** adds the [Coding tools](coding-tools.md) and [Metadata](metadata.md) tabs, plus a
-  Passthrough-to-a-receiver card on the Format tab in place of the Loudness one (Metadata absorbs
-  loudness instead, alongside downmix). [Live session](live-session.md) joins the tab bar in any
-  tier, but only while a session is actually running — it doesn't exist otherwise.
+  Guided is not a dead end and not a reduced feature set: step 1 carries its own **What each
+  sound does** list — the same per-channel destination dropdowns as the
+  [full assignment table](source-assignment.md), in plain language — and a jump to that table
+  with a lossless **Back to guided** return. Step 2's speaker cards can open a **room picker**
+  sub-screen (say what's *in the room*; the channel layout falls out of the parts). Step 4's
+  movement cards drive [object mode](objects-and-motion.md), with trajectory presets that author
+  real keyframes. Constraints apply the same way as everywhere else — they are explained rather
+  than hidden (turning movement on says it fixed the bed at 5.1, rather than silently locking
+  controls elsewhere).
+- **Advanced** shows a tabbed right panel — [Format](format-and-channels.md) (presets, the
+  channel picker, routing, the assignment table, a Loudness section) and
+  [Objects](objects-and-motion.md).
+- **Expert** adds the [Coding tools](coding-tools.md) and [Metadata](metadata.md) tabs (Metadata
+  absorbs the Loudness section, so it appears exactly once). [Live session](live-session.md)
+  joins the tab bar in Advanced and Expert whenever the live source is selected in the rail —
+  sessions running or not — and carries a `live` badge while one runs.
 
 Switching tiers never discards anything already set — it only changes what's visible (and, for
-Guided, how it's presented: one question at a time instead of a page of controls).
+Guided, how it's presented: one question at a time instead of a page of controls). Leaving Expert
+while a tab only it shows is current falls back to Format rather than showing an empty panel.
+
+## Preferences
+
+A real dialog, persisted across sessions (QSettings), three columns — every row wired to real
+behaviour:
+
+- **Appearance** — theme (Light / Dark / System); which meter rows to show by default
+  ([Coded / Rendered](loading-a-source.md#channel-levels)); **Explanations** — show the
+  plain-language notes beside controls, and optionally warn before a choice changes the codec
+  (the codec follows the channels either way; the warning only makes the moment deliberate).
+- **When ac3forge opens** — the Controls tier (including "whatever I used last"); reopen the
+  last session's sources and assignments (saved as one unit on close, restored on open — a file
+  gone missing fails its load with the usual message rather than aborting the rest); optionally
+  start on the last screen. **Files and runs** — the output folder ("beside the first source" by
+  default), the `{source}.{ext}` naming pattern every save dialog and auto-named take follows,
+  and keep-partial-output: a failed or cancelled run's frames land beside the intended output as
+  `<name>.partial.<ext>`, named and kept, never silently discarded.
+- **Defaults for a new encode** — container, rate mode, bit rate, VBR quality, DRC profile,
+  measure loudness. The codec is deliberately **not** a default — it follows the channels (see
+  [Format & channels](format-and-channels.md)), and a stale default would contradict that.
+  **Capture** — start monitoring as soon as a device is chosen, and whether Record asks for a
+  filename or writes straight to the output folder under a timestamped take name. **Command
+  line** — keep the `ac3cli` line visible.
 
 ## Next
 
 Walk the panes in the order a first encode actually goes:
 
-1. [Loading a source](loading-a-source.md) — pick a WAV (or several — see multi-source
-   below), or capture live; watch the channel meters
-2. [Format & channels](format-and-channels.md) — codec, layout, dual mono, VBR, bit rate,
-   container
+1. [Loading a source](loading-a-source.md) — pick a WAV (or several), or capture live; watch the
+   channel meters
+2. [Format & channels](format-and-channels.md) — layout, dual mono, VBR, bit rate, container —
+   and the assignment table everything else derives from
 3. [Coding tools](coding-tools.md) — Annex E tools (Expert, E-AC-3 only)
 4. [Metadata](metadata.md) — loudness, downmix, heavy compression (Expert)
 5. [Objects & motion](objects-and-motion.md) — Dolby Atmos objects

@@ -50,7 +50,7 @@ ColumnLayout {
                 onValueModified: EncoderController.dialnorm = value
             }
             CheckBox {
-                text: qsTr("measure")
+                text: qsTr("Measure it from the programme")
                 // Auto-measurement needs each programme measured on its own
                 // (see the Programme 2 block below) - encodeChannels refuses
                 // it for dual mono rather than measuring the wrong thing, so
@@ -102,7 +102,7 @@ ColumnLayout {
                 onValueModified: EncoderController.dialnorm2 = value
             }
             CheckBox {
-                text: qsTr("measure")
+                text: qsTr("Measure it from the programme")
                 enabled: false
                 checked: EncoderController.measureDialnorm2
                 onToggled: EncoderController.measureDialnorm2 = checked

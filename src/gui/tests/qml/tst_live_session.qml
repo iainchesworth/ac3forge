@@ -22,6 +22,11 @@ TestCase {
     function test_vbrWarningAppearsOnlyWhenVbrIsOnAndAvailable() {
         const win = createTemporaryObject(mainWindowComponent, testCase);
         verify(win !== null);
+        // The warning lives on the rail's live-capture branch, which only
+        // exists on screen once the first-run screen has been left and the
+        // input selector is on Live.
+        win.everHadSource = true;
+        win.inputMode = "live";
 
         let warning = null;
         tryVerify(() => {
