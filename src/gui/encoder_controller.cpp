@@ -26,6 +26,8 @@
 
 #include "ac3/capture/watchdog.hpp"
 #include "ac3/decoder/decoder.hpp"
+#include "ac3/dsp/biquad.hpp"
+#include "ac3/dsp/resampler.hpp"
 #include "ac3/encoder/eac3_frame.hpp"
 #include "ac3/encoder/encoder.hpp"
 #include "ac3/io/wav.hpp"
@@ -71,6 +73,32 @@ std::optional<ac3::SampleRate> to_sample_rate_for_file(std::uint32_t hz, plan::C
 
 QString to_qstring(std::string_view text) {
     return QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size()));
+}
+
+// Corner of the LFE low-pass bundle C's assignment table applies to an
+// explicitly LFE/LFE2-routed full-bandwidth channel - see docs/gui/
+// source-assignment.md's LFE note and ac3::dsp::LfeLowpass's own header
+// comment for why 120 Hz and why a 4th-order Butterworth.
+constexpr double kLfeLowpassCornerHz = 120.0;
+
+// Coded-channel indices at an LFE/LFE2 location, in `coded`'s own order -
+// exactly the channels an ASSIGNMENT-based routing (has_explicit_
+// assignment_ true, so plan::route(target, sources, assignment) or
+// dual_mono_routing built the Routing, not the automatic single-source
+// route(target, wav_channels, ...) overload) should low-pass. Every call
+// site guards on has_explicit_assignment_ itself before calling this - the
+// automatic overload's own dedicated-LFE-channel handling stays bit-exact,
+// per the assignment table's own documented distinction (see
+// DestinationKind::kLocation's routing comment in assignment.hpp).
+std::vector<std::size_t> lfe_coded_indices(const std::vector<plan::CodedChannel>& coded) {
+    std::vector<std::size_t> out;
+    using ac3::eac3::chanmap::Location;
+    for (std::size_t i = 0; i < coded.size(); ++i) {
+        if (coded[i].location == Location::kLfe || coded[i].location == Location::kLfe2) {
+            out.push_back(i);
+        }
+    }
+    return out;
 }
 
 // "48 000" / "7 891" - the mockup's space-grouped integers (a locale-
@@ -599,8 +627,9 @@ QVariantList EncoderController::objectModel() const {
             // one source is loaded, which FILE that channel is in (see
             // objectSourceLabel's own comment).
             row[QStringLiteral("sourceLabel")] = objectSourceLabel(
-                static_cast<std::size_t>(i) < dynamic.size() ? dynamic[static_cast<std::size_t>(i)]
-                                                              : static_cast<std::size_t>(i));
+                static_cast<std::size_t>(i) < dynamic.size()
+                    ? dynamic[static_cast<std::size_t>(i)]
+                    : std::vector<std::size_t>{static_cast<std::size_t>(i)});
         }
         // Which row of sourceModel this object's channel belongs to - the
         // same identity `key` already carries, exposed so QML can find
@@ -1605,8 +1634,13 @@ bool EncoderController::exportObjectPaths(const QUrl& url) const {
     const auto ndynamic =
         std::max<std::size_t>(std::min<std::size_t>(dynamic.size(), 15), 1);
     for (int i = 0; i < object_count_; ++i) {
+        // An objm group's export uses its first channel's flat index - the
+        // atmos-encode file format this feeds has no concept of a folded
+        // group (the same gap bed-pinned channels have, per this function's
+        // own header comment: they are not written at all; a group at
+        // least gets a representative single line here).
         const auto flat = static_cast<std::size_t>(i) < dynamic.size()
-                              ? dynamic[static_cast<std::size_t>(i)]
+                              ? dynamic[static_cast<std::size_t>(i)].front()
                               : static_cast<std::size_t>(i);
         const auto keyframes = sortedKeyframes(i);
         if (keyframes.empty()) {
@@ -1651,7 +1685,7 @@ void EncoderController::startMotionPreview() {
     std::vector<ac3::oba::ObjectPath> paths;
     paths.reserve(nobjects);
     for (std::size_t i = 0; i < ndynamic; ++i) {
-        const auto object_key = sourceChannelForFlatIndex(dynamic[i]);
+        const auto object_key = sourceChannelForFlatIndex(dynamic[i].front());
         const auto authored = object_keyframes_.find(object_key);
         if (authored != object_keyframes_.end() && !authored->second.empty()) {
             auto created = ac3::oba::KeyframePath::create(authored->second);
@@ -1689,7 +1723,10 @@ void EncoderController::startMotionPreview() {
     // in the same way (apply_channel_offsets + flatChannelOffsetSamples), so
     // a preview honours each source's start offset exactly like a real
     // encode does. Then repacked to object order (dynamic first, then
-    // pinned), the same as encodeObjects()'s own `object_planes`.
+    // pinned), the same as encodeObjects()'s own `object_planes` - each
+    // dynamic entry via buildObjectPlane, so a trimmed channel or an objm
+    // fold sounds exactly as it will in the real encode, not merely as it
+    // looked in the room plan.
     const auto sample_rate = source_->wav.sample_rate;
     std::vector<std::vector<float>> planes = source_->wav.channels;
     for (const auto& extra : extra_sources_) {
@@ -1700,7 +1737,7 @@ void EncoderController::startMotionPreview() {
     std::vector<std::vector<float>> object_planes;
     object_planes.reserve(nobjects);
     for (std::size_t i = 0; i < ndynamic; ++i) {
-        object_planes.push_back(std::move(planes[dynamic[i]]));
+        object_planes.push_back(buildObjectPlane(dynamic[i], planes));
     }
     for (const auto& [flat, location] : pinned) {
         object_planes.push_back(std::move(planes[flat]));
@@ -1731,6 +1768,7 @@ void EncoderController::startMotionPreview() {
     }
     setLayout(ac3::Acmod::k3_2, true, labels, QStringLiteral("5.1 bed"), coded, fedChannels());
     setMetering(true);
+    clearClipLatches();
 
     stop_motion_preview_.store(false, std::memory_order_relaxed);
     motion_preview_active_ = true;
@@ -1995,6 +2033,65 @@ QString EncoderController::objectSourceLabel(std::size_t flatIndex) const {
     return QStringLiteral("%1 ch %2").arg(QString::fromStdString(shapes[s].label)).arg(c + 1);
 }
 
+QString EncoderController::objectSourceLabel(const std::vector<std::size_t>& group) const {
+    if (group.size() <= 1) {
+        return objectSourceLabel(group.empty() ? std::size_t{0} : group.front());
+    }
+    const auto shapes = sourceShapes();
+    const auto [s, first] = sourceChannelForFlatIndex(group.front());
+    const auto [s2, last] = sourceChannelForFlatIndex(group.back());
+    // A contiguous objm group is always within one source (see
+    // DestinationKind::kObjectMono's own comment), so s2 == s always holds
+    // here - s2 is unused beyond that guarantee.
+    std::ignore = s2;
+    if (s >= shapes.size()) {
+        return QStringLiteral("Ch %1-%2 (mono)").arg(first + 1).arg(last + 1);
+    }
+    return QStringLiteral("%1 ch %2-%3 (mono)")
+        .arg(QString::fromStdString(shapes[s].label))
+        .arg(first + 1)
+        .arg(last + 1);
+}
+
+std::vector<float> EncoderController::buildObjectPlane(
+    const std::vector<std::size_t>& group, const std::vector<std::vector<float>>& planes) const {
+    const auto gain_for = [this](std::size_t flat) {
+        if (!has_explicit_assignment_) {
+            return 1.0;
+        }
+        const auto [s, c] = sourceChannelForFlatIndex(flat);
+        return std::pow(10.0, assignment_.at(s, c).trim_db / 20.0);
+    };
+    if (group.size() == 1) {
+        const auto flat = group.front();
+        std::vector<float> out = planes[flat];
+        const auto gain = gain_for(flat);
+        if (gain != 1.0) {
+            for (auto& sample : out) {
+                sample = static_cast<float>(static_cast<double>(sample) * gain);
+            }
+        }
+        return out;
+    }
+    std::size_t len = 0;
+    for (const auto flat : group) {
+        len = std::max(len, planes[flat].size());
+    }
+    std::vector<float> out(len, 0.0f);
+    // Equal-weight fold: each channel's own trim first, then 1/n so several
+    // full-range channels summed together do not clip past what one alone
+    // would - see DestinationKind::kObjectMono's own comment.
+    const double scale = 1.0 / static_cast<double>(group.size());
+    for (const auto flat : group) {
+        const double gain = gain_for(flat) * scale;
+        const auto& plane = planes[flat];
+        for (std::size_t i = 0; i < plane.size(); ++i) {
+            out[i] += static_cast<float>(static_cast<double>(plane[i]) * gain);
+        }
+    }
+    return out;
+}
+
 std::optional<EncoderController::ObjectKey> EncoderController::keyForObjectIndex(
     int objectIndex) const {
     if (objectIndex < 0 || objectIndex >= object_count_) {
@@ -2014,18 +2111,52 @@ std::optional<EncoderController::ObjectKey> EncoderController::keyForObjectIndex
     if (static_cast<std::size_t>(objectIndex) >= dynamic.size()) {
         return std::nullopt;
     }
-    return sourceChannelForFlatIndex(dynamic[static_cast<std::size_t>(objectIndex)]);
+    // A group's IDENTITY channel is its first - stable as long as the
+    // group's own shape does not change - what object_configs_/
+    // object_keyframes_/object_path_labels_ key authored state by, single
+    // channel or objm group alike.
+    const auto& group = dynamic[static_cast<std::size_t>(objectIndex)];
+    if (group.empty()) {
+        return std::nullopt;  // defensive; dynamicObjectChannels() never emits one
+    }
+    return sourceChannelForFlatIndex(group.front());
 }
 
-std::vector<std::size_t> EncoderController::dynamicObjectChannels() const {
-    std::vector<std::size_t> out;
+std::vector<std::vector<std::size_t>> EncoderController::dynamicObjectChannels() const {
+    std::vector<std::vector<std::size_t>> out;
     const auto shapes = sourceShapes();
     std::size_t flat = 0;
     for (std::size_t s = 0; s < shapes.size(); ++s) {
-        for (std::size_t c = 0; c < shapes[s].channels; ++c, ++flat) {
-            if (!has_explicit_assignment_ ||
-                assignment_.at(s, c).kind == plan::DestinationKind::kObject) {
-                out.push_back(flat);
+        for (std::size_t c = 0; c < shapes[s].channels;) {
+            if (!has_explicit_assignment_) {
+                out.push_back({flat});
+                ++c;
+                ++flat;
+                continue;
+            }
+            const auto kind = assignment_.at(s, c).kind;
+            if (kind == plan::DestinationKind::kObject) {
+                out.push_back({flat});
+                ++c;
+                ++flat;
+            } else if (kind == plan::DestinationKind::kObjectMono) {
+                // The maximal contiguous run of kObjectMono rows on this
+                // source - the group boundary DestinationKind::kObjectMono's
+                // own comment defines. Cannot cross a source boundary: the
+                // inner for's own condition (c < shapes[s].channels) stops
+                // it there regardless of what the NEXT source's channel 0
+                // happens to be assigned.
+                std::vector<std::size_t> group;
+                do {
+                    group.push_back(flat);
+                    ++c;
+                    ++flat;
+                } while (c < shapes[s].channels &&
+                         assignment_.at(s, c).kind == plan::DestinationKind::kObjectMono);
+                out.push_back(std::move(group));
+            } else {
+                ++c;
+                ++flat;  // not a dynamic-object destination
             }
         }
     }
@@ -2613,6 +2744,12 @@ void EncoderController::previewPlanMeters() {
     // that just changed - a stale one landing later would put the OLD
     // source list's levels under the NEW layout's labels.
     preview_generation_.fetch_add(1, std::memory_order_relaxed);
+    // Synchronous and unconditional, same as setLayout's own "start silent"
+    // discipline for channelLevels: a rail row's pip must never show a
+    // reading left over from a source that just changed position or left
+    // entirely. The real numbers, if any, arrive later from the async pass
+    // below and overwrite this.
+    resetSourceLevels();
     if (busy_ || !source_) {
         return;
     }
@@ -2636,6 +2773,7 @@ void EncoderController::previewPlanMeters() {
     }
 
     const auto cp = effectiveChannelPlan();
+    const auto coded = plan::coded_channels(cp);
     QStringList labels;
     if (isDualMono()) {
         labels = {QStringLiteral("Program 1"), QStringLiteral("Program 2")};
@@ -2644,8 +2782,7 @@ void EncoderController::previewPlanMeters() {
             labels.append(QString::fromStdString(name));
         }
     }
-    setLayout(cp.bed_acmod, cp.bed_lfe, labels, effectiveLabel(), plan::coded_channels(cp),
-              fedChannels());
+    setLayout(cp.bed_acmod, cp.bed_lfe, labels, effectiveLabel(), coded, fedChannels());
 
     const auto routing = routingForSources(cp, p);
     if (!routing) {
@@ -2674,12 +2811,24 @@ void EncoderController::previewPlanMeters() {
     // per-frame read-shift here rather than as leading silence baked into
     // owned storage (contrast encodeTo's apply_channel_offsets).
     const auto offsets = flatChannelOffsetSamples(sample_rate);
+    // Which coded channels get the LFE low-pass - only ever non-empty when
+    // this routing came from the assignment table (has_explicit_
+    // assignment_), never the automatic single-source route() overload -
+    // see lfe_coded_indices' own comment. Computed here, on the GUI thread,
+    // same as sample_rate/acmod/lfe above.
+    const auto lfe_indices = has_explicit_assignment_ ? lfe_coded_indices(coded)
+                                                      : std::vector<std::size_t>{};
     std::ignore = QtConcurrent::run([this, generation, routing = *routing,
                                      sources = std::move(sources), sample_rate, acmod, lfe,
-                                     offsets] {
+                                     offsets, lfe_indices] {
         const auto coded_count = static_cast<std::size_t>(routing.coded_channels);
         ac3::analysis::LevelMeter meter{acmod, lfe, sample_rate,
                                         static_cast<int>(coded_count)};
+        std::vector<ac3::dsp::LfeLowpass> lfe_filters;
+        lfe_filters.reserve(lfe_indices.size());
+        for (std::size_t i = 0; i < lfe_indices.size(); ++i) {
+            lfe_filters.emplace_back(kLfeLowpassCornerHz, sample_rate);
+        }
 
         std::vector<std::span<const float>> planes;
         for (const auto& src : sources) {
@@ -2692,6 +2841,19 @@ void EncoderController::previewPlanMeters() {
             const auto offset = ch < offsets.size() ? offsets[ch] : 0;
             total = std::max(total, offset + planes[ch].size());
         }
+
+        // Which SOURCE (not coded channel) each flat index belongs to - the
+        // rail's per-source pip (sourceLevels) pools every one of that
+        // source's own channels into one ac3::analysis::ChannelSummary,
+        // read off this same pre-routing source_block the coded-channel
+        // meter below reads from too, so the two never disagree about what
+        // the loaded files actually contain.
+        std::vector<std::size_t> flat_source;
+        flat_source.reserve(planes.size());
+        for (std::size_t si = 0; si < sources.size(); ++si) {
+            flat_source.insert(flat_source.end(), sources[si]->wav.channels.size(), si);
+        }
+        std::vector<ac3::analysis::ChannelSummary> source_summaries(sources.size());
 
         std::vector<std::vector<float>> source_block(planes.size(),
                                                      std::vector<float>(ac3::kSamplesPerFrame));
@@ -2723,8 +2885,18 @@ void EncoderController::previewPlanMeters() {
                     source_block[ch][static_cast<std::size_t>(i)] =
                         at >= offset && shifted < len ? planes[ch][shifted] : 0.0f;
                 }
+                auto& acc = source_summaries[flat_source[ch]];
+                for (std::size_t i = 0; i < valid; ++i) {
+                    const double s = static_cast<double>(source_block[ch][i]);
+                    acc.peak = std::max(acc.peak, std::abs(s));
+                    acc.sum_squares += s * s;
+                }
+                acc.samples += valid;
             }
             plan::render(routing, in, out, ac3::kSamplesPerFrame);
+            for (std::size_t i = 0; i < lfe_indices.size(); ++i) {
+                lfe_filters[i].process(std::span<float>(block[lfe_indices[i]]));
+            }
             for (std::size_t ch = 0; ch < coded_count; ++ch) {
                 metered[ch] = std::span{block[ch]}.first(valid);
             }
@@ -2740,13 +2912,15 @@ void EncoderController::previewPlanMeters() {
             totals[ch].rms_db = stats.rms_db();
             totals[ch].clipped = stats.clipped_samples > 0;
         }
-        QMetaObject::invokeMethod(this, [this, generation, totals = std::move(totals)] {
+        QMetaObject::invokeMethod(this, [this, generation, totals = std::move(totals),
+                                         source_summaries = std::move(source_summaries)] {
             // busy_ means a run owns the meters now; the generation check
             // drops a preview that answered a plan nobody is looking at.
             if (busy_ || generation != preview_generation_.load(std::memory_order_relaxed)) {
                 return;
             }
             publishLevels(totals);
+            publishSourceLevels(source_summaries);
         });
     });
 }
@@ -2831,6 +3005,7 @@ void EncoderController::clearLayout() {
     channel_replaced_.clear();
     layout_name_.clear();
     channel_levels_.clear();
+    clip_latched_.clear();
     soundfield_.clear();
     setMetering(false);
     emit layoutChanged();
@@ -2838,6 +3013,12 @@ void EncoderController::clearLayout() {
 }
 
 void EncoderController::publishLevels(std::span<const ac3::analysis::ChannelLevel> levels) {
+    // Grow-or-shrink only - resize() never touches a surviving element's
+    // value, which is exactly what a latch needs: it must not un-set itself
+    // just because another snapshot arrived. Only clearClipLatches()
+    // (called at a transport's start, never from here) actually zeroes one.
+    clip_latched_.resize(levels.size(), false);
+
     QVariantList entries;
     entries.reserve(static_cast<qsizetype>(levels.size()));
     for (std::size_t ch = 0; ch < levels.size(); ++ch) {
@@ -2848,11 +3029,21 @@ void EncoderController::publishLevels(std::span<const ac3::analysis::ChannelLeve
         const auto azimuth = has_location ? location_azimuth_deg(location) : std::nullopt;
         const bool ceiling = has_location && is_ceiling_location(location);
         const bool replaced = ch < channel_replaced_.size() && channel_replaced_[ch];
+        // Latched, not raw: once true, clip_latched_[ch] stays true across
+        // every future publishLevels() call until clearClipLatch(ch) or a
+        // transport-start clearClipLatches() resets it - see ChannelMeter's
+        // CLIP box, which reads exactly this field and has no latch logic
+        // of its own.
+        clip_latched_[ch] = clip_latched_[ch] || level.clipped;
         entries.append(QVariantMap{
             {QStringLiteral("peakDb"), level.peak_db},
             {QStringLiteral("rmsDb"), level.rms_db},
             {QStringLiteral("holdDb"), level.hold_db},
-            {QStringLiteral("clipped"), level.clipped},
+            // std::vector<bool>::operator[] returns a proxy reference, not a
+            // plain bool - QVariant's constructor overload set can only
+            // chain ONE implicit user-defined conversion, so the proxy has
+            // to be cast explicitly rather than handed over as-is.
+            {QStringLiteral("clipped"), static_cast<bool>(clip_latched_[ch])},
             // Bar positions are computed here rather than in QML: a front end
             // that mapped decibels its own way would quietly disagree with
             // every other reading of the same signal.
@@ -2896,6 +3087,61 @@ void EncoderController::publishSummary(const ac3::analysis::LevelMeter& meter) {
         levels[ch].clipped = stats.clipped_samples > 0;
     }
     publishLevels(levels);
+}
+
+void EncoderController::clearClipLatches() {
+    std::ranges::fill(clip_latched_, false);
+    // publishLevels() itself is what channel_levels_'s `clipped` field
+    // actually rebuilds from - clearing clip_latched_ alone would not clear
+    // the ALREADY-PUBLISHED value QML is reading right now. Every call site
+    // calls this immediately after setLayout()'s own publishLevels(default)
+    // though, which already has clipped=false throughout (a fresh, all-
+    // default ChannelLevel vector) - so no republish is needed here, unlike
+    // clearClipLatch()'s single-channel case, which has no such guarantee
+    // about what just ran before it.
+}
+
+void EncoderController::clearClipLatch(int channel) {
+    if (channel < 0 || static_cast<std::size_t>(channel) >= clip_latched_.size()) {
+        return;
+    }
+    clip_latched_[static_cast<std::size_t>(channel)] = false;
+    if (static_cast<std::size_t>(channel) >= static_cast<std::size_t>(channel_levels_.size())) {
+        return;
+    }
+    // Mutates the already-published entry directly so the box goes dark the
+    // instant it is clicked, rather than waiting for whatever next tick
+    // publishLevels() happens to run - which, once a run has finished and
+    // metering is off, might be never.
+    auto row = channel_levels_[channel].toMap();
+    row[QStringLiteral("clipped")] = false;
+    channel_levels_[channel] = row;
+    emit levelsChanged();
+}
+
+void EncoderController::resetSourceLevels() {
+    QVariantList out;
+    for (std::size_t i = 0; i < sourceShapes().size(); ++i) {
+        out.append(QVariantMap{
+            {QStringLiteral("peakDb"), ac3::analysis::kFloorDb},
+            {QStringLiteral("rmsDb"), ac3::analysis::kFloorDb},
+        });
+    }
+    source_levels_ = std::move(out);
+    emit sourceLevelsChanged();
+}
+
+void EncoderController::publishSourceLevels(std::span<const ac3::analysis::ChannelSummary> levels) {
+    QVariantList out;
+    out.reserve(static_cast<qsizetype>(levels.size()));
+    for (const auto& summary : levels) {
+        out.append(QVariantMap{
+            {QStringLiteral("peakDb"), summary.peak_db()},
+            {QStringLiteral("rmsDb"), summary.rms_db()},
+        });
+    }
+    source_levels_ = std::move(out);
+    emit sourceLevelsChanged();
 }
 
 void EncoderController::refreshOutputDevices() {
@@ -3526,6 +3772,7 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device,
                  fedChannels());
     }
     setMetering(true);
+    clearClipLatches();
 
     // The allocated slot BUDGET (see startLiveSession's own comment on why
     // this is no longer just device.channels), not recomputed here - it has
@@ -4288,6 +4535,7 @@ void EncoderController::startRecording(int deviceIndex, const QUrl& url) {
     }
     setLayout(cp.bed_acmod, cp.bed_lfe, labels, label, coded, fed);
     setMetering(true);
+    clearClipLatches();
     setStatus(QStringLiteral("Recording from %1…").arg(QString::fromStdString(device.name)));
 
     const auto channels = capture_->channels();
@@ -4583,8 +4831,15 @@ QVariantList EncoderController::sourceModel() const {
     if (!source_) {
         return out;
     }
+    auto khz_label = [](std::uint32_t hz) {
+        QString s = QString::number(static_cast<double>(hz) / 1000.0, 'f', 1);
+        if (s.endsWith(QStringLiteral(".0"))) {
+            s.chop(2);
+        }
+        return s;
+    };
     auto addRow = [&](const QString& path, const ac3::io::WavData& wav, bool primary,
-                      double offset_seconds) {
+                      double offset_seconds, std::optional<std::uint32_t> resampled_from) {
         const double seconds =
             wav.sample_rate > 0
                 ? static_cast<double>(wav.frame_count()) / static_cast<double>(wav.sample_rate)
@@ -4604,12 +4859,21 @@ QVariantList EncoderController::sourceModel() const {
                                               .arg(static_cast<int>(seconds) % 60, 2, 10,
                                                    QLatin1Char('0'));
         row[QStringLiteral("offsetSeconds")] = offset_seconds;
+        // "44.1→48 k" when addSourceFile had to resample this source onto
+        // the primary's rate, empty otherwise - see addSourceFile's own
+        // comment.
+        row[QStringLiteral("resampleLabel")] =
+            resampled_from ? QStringLiteral("%1→%2 k")
+                                 .arg(khz_label(*resampled_from), khz_label(wav.sample_rate))
+                           : QString();
         out.append(row);
     };
-    addRow(source_->path, source_->wav, true, source_offset_seconds_);
+    addRow(source_->path, source_->wav, true, source_offset_seconds_, std::nullopt);
     for (std::size_t i = 0; i < extra_sources_.size(); ++i) {
         addRow(extra_sources_[i]->path, extra_sources_[i]->wav, false,
-              i < extra_source_offsets_seconds_.size() ? extra_source_offsets_seconds_[i] : 0.0);
+              i < extra_source_offsets_seconds_.size() ? extra_source_offsets_seconds_[i] : 0.0,
+              i < extra_source_original_rates_.size() ? extra_source_original_rates_[i]
+                                                       : std::nullopt);
     }
     return out;
 }
@@ -4629,6 +4893,9 @@ QVariantList EncoderController::assignmentRows() const {
             // one nobody has visited; touched is what tells a table's
             // "Nothing" apart from its "Choose…" placeholder.
             row[QStringLiteral("touched")] = touched_channels_.contains({s, c});
+            // The row's own trim control reads its starting value from
+            // here - see setAssignmentTrim.
+            row[QStringLiteral("trimDb")] = assignment_.at(s, c).trim_db;
             out.append(row);
         }
     }
@@ -4700,20 +4967,36 @@ void EncoderController::addSourceFile(const QUrl& url) {
                                                  ac3::io::describe(wav.error()).size()))));
         return;
     }
+    std::optional<std::uint32_t> original_rate;
     if (wav->sample_rate != source_->wav.sample_rate) {
-        // plan::render has no notion of resampling, and a silently
-        // mismatched pair would drift apart rather than error - the same
-        // reasoning ac3cli's own load_sources() gives for the identical
-        // check (see main.cpp).
-        setStatus(QStringLiteral("%1 is %2 Hz, but the loaded source is %3 Hz — every source "
-                                 "must share a sample rate.")
-                      .arg(QFileInfo(path).fileName())
-                      .arg(wav->sample_rate)
-                      .arg(source_->wav.sample_rate));
-        return;
+        // A mismatch is resampled to the PRIMARY's rate rather than refused
+        // outright: plan::render itself still has no notion of resampling,
+        // but there is no reason to make the USER fix that by hand first
+        // when ac3::dsp::resample_planar() (a proper offline windowed-sinc
+        // conversion - see its own header comment on why it can afford a
+        // better kernel than the live capture path's drift resampler) can
+        // do it once, here, before anything reaches render(). The refusal
+        // survives only when the PRIMARY's own rate has no legal AC-3
+        // target at all (to_sample_rate_for_file) - resampling TO an
+        // illegal rate would just move the problem, not solve it, the same
+        // edge case ac3cli's own load_sources() would still refuse too.
+        if (!to_sample_rate_for_file(source_->wav.sample_rate, codec_)) {
+            setStatus(QStringLiteral("%1 is %2 Hz, but the loaded source's %3 Hz is not a rate "
+                                     "AC-3 can encode at all — load a source at a legal rate "
+                                     "first.")
+                          .arg(QFileInfo(path).fileName())
+                          .arg(wav->sample_rate)
+                          .arg(source_->wav.sample_rate));
+            return;
+        }
+        original_rate = wav->sample_rate;
+        wav->channels =
+            ac3::dsp::resample_planar(wav->channels, *original_rate, source_->wav.sample_rate);
+        wav->sample_rate = source_->wav.sample_rate;
     }
     extra_sources_.push_back(std::make_shared<Source>(Source{std::move(*wav), path}));
     extra_source_offsets_seconds_.push_back(0.0);
+    extra_source_original_rates_.push_back(original_rate);
     refreshAfterSourceListChange();
 }
 
@@ -4764,8 +5047,10 @@ void EncoderController::removeSource(int index) {
         selected_object_index_ = 0;
         source_offset_seconds_ = 0.0;
         extra_source_offsets_seconds_.clear();
+        extra_source_original_rates_.clear();
         refreshObjectConfigs();
         clearLayout();
+        resetSourceLevels();
         emit sourceChanged();
         setStatus(QStringLiteral("Choose a WAV file, or record from a capture device."));
         return;
@@ -4778,6 +5063,10 @@ void EncoderController::removeSource(int index) {
     if (extra_index < extra_source_offsets_seconds_.size()) {
         extra_source_offsets_seconds_.erase(extra_source_offsets_seconds_.begin() +
                                             static_cast<std::ptrdiff_t>(extra_index));
+    }
+    if (extra_index < extra_source_original_rates_.size()) {
+        extra_source_original_rates_.erase(extra_source_original_rates_.begin() +
+                                           static_cast<std::ptrdiff_t>(extra_index));
     }
     // The removed source's rows addressed positions by index, and every
     // later source's index just shifted down by one - there is no honest
@@ -4824,6 +5113,27 @@ void EncoderController::setAssignment(int sourceIndex, int channel, const QStrin
     // ObjectKey): reassigning it away from "obj" and back does not lose it.
     recomputeObjectCount();
     emit objectsChanged();
+    emit sourceChanged();
+    refreshRouting();
+}
+
+void EncoderController::setAssignmentTrim(int sourceIndex, int channel, double dbTrim) {
+    if (!source_ || sourceIndex < 0 || channel < 0) {
+        return;
+    }
+    const auto s = static_cast<std::size_t>(sourceIndex);
+    const auto c = static_cast<std::size_t>(channel);
+    auto dest = assignment_.at(s, c);
+    if (dest.kind == plan::DestinationKind::kUnassigned) {
+        return;  // "none" has no destination for a trim to ride
+    }
+    // The identical clamp-then-snap-to-a-tenth-of-a-dB-grid formula
+    // assignment.cpp's own (private) snap_trim applies to a parsed "@"
+    // suffix - see setAssignmentTrim's own header comment on why the two
+    // must compute the same double.
+    const double clamped = std::clamp(dbTrim, -24.0, 24.0);
+    dest.trim_db = static_cast<double>(std::llround(clamped * 10.0)) / 10.0;
+    assignment_.set(s, c, dest);
     emit sourceChanged();
     refreshRouting();
 }
@@ -5101,11 +5411,16 @@ void EncoderController::encodeChannels(const QString& path,
     }
     setLayout(cp.bed_acmod, cp.bed_lfe, labels, label, coded, fedChannels());
     setMetering(true);
+    clearClipLatches();
 
     const bool eac3 = p.codec == plan::Codec::kEac3;
     const bool keep_partial = keep_partial_output_;
+    // See previewPlanMeters' identical comment: only ever non-empty for an
+    // assignment-based routing, never the automatic single-source overload.
+    const auto lfe_indices =
+        has_explicit_assignment_ ? lfe_coded_indices(coded) : std::vector<std::size_t>{};
     std::ignore = QtConcurrent::run([this, path, p, routing, cp, sample_rate,
-                                     eac3, label, keep_partial,
+                                     eac3, label, keep_partial, lfe_indices,
                                      planes = std::move(planes)]() mutable {
         const auto coded_count = static_cast<std::size_t>(routing.coded_channels);
         // Heap-allocated, not stack: each carries a multi-KB internal history
@@ -5116,6 +5431,11 @@ void EncoderController::encodeChannels(const QString& path,
         auto eac3_encoder = std::make_unique<ac3::eac3::AccessUnitEncoder>(plan::eac3_config(p));
         ac3::analysis::LevelMeter meter{cp.bed_acmod, cp.bed_lfe, sample_rate,
                                         static_cast<int>(coded_count)};
+        std::vector<ac3::dsp::LfeLowpass> lfe_filters;
+        lfe_filters.reserve(lfe_indices.size());
+        for (std::size_t i = 0; i < lfe_indices.size(); ++i) {
+            lfe_filters.emplace_back(kLfeLowpassCornerHz, sample_rate);
+        }
 
         // The longest loaded channel, not just channel 0's - a run with
         // several sources of different lengths covers all of them (each
@@ -5172,6 +5492,9 @@ void EncoderController::encodeChannels(const QString& path,
                 }
             }
             plan::render(routing, in, out, ac3::kSamplesPerFrame);
+            for (std::size_t i = 0; i < lfe_indices.size(); ++i) {
+                lfe_filters[i].process(std::span<float>(block[lfe_indices[i]]));
+            }
             for (std::size_t ch = 0; ch < coded_count; ++ch) {
                 metered[ch] = std::span{block[ch]}.first(valid);
             }
@@ -5327,12 +5650,13 @@ void EncoderController::encodeObjects(const QString& path,
     std::vector<ac3::oba::ObjectPath> paths;
     paths.reserve(nobjects);
     for (std::size_t i = 0; i < ndynamic; ++i) {
-        // dynamic[i]'s (source, channel) identity - the same key every
-        // other object accessor resolves through keyForObjectIndex; encode
-        // is always file-mode (never live, see encodeTo's busy_ gate), so
-        // this can go straight to the identity without that helper's
+        // dynamic[i]'s IDENTITY channel (its first - see
+        // dynamicObjectChannels' own comment) - the same key every other
+        // object accessor resolves through keyForObjectIndex; encode is
+        // always file-mode (never live, see encodeTo's busy_ gate), so this
+        // can go straight to the identity without that helper's
         // live-session branch.
-        const auto object_key = sourceChannelForFlatIndex(dynamic[i]);
+        const auto object_key = sourceChannelForFlatIndex(dynamic[i].front());
         const auto authored = object_keyframes_.find(object_key);
         if (authored != object_keyframes_.end() && !authored->second.empty()) {
             auto created = ac3::oba::KeyframePath::create(authored->second);
@@ -5380,14 +5704,15 @@ void EncoderController::encodeObjects(const QString& path,
     }
 
     // The worker's planes are re-packed to object order: dynamic objects
-    // first (object i = the i-th "obj"-assigned channel, the objectModel/
-    // config addressing), then the pinned channels. Channels assigned
-    // nowhere are dropped here, which is what "Unassigned - it will not be
-    // heard" means.
+    // first (object i = the i-th "obj"/"objm"-assigned group, the
+    // objectModel/config addressing, each built via buildObjectPlane so a
+    // trim or an objm fold reaches the stream), then the pinned channels.
+    // Channels assigned nowhere are dropped here, which is what
+    // "Unassigned - it will not be heard" means.
     std::vector<std::vector<float>> object_planes;
     object_planes.reserve(nobjects);
     for (std::size_t i = 0; i < ndynamic; ++i) {
-        object_planes.push_back(std::move(planes[dynamic[i]]));
+        object_planes.push_back(buildObjectPlane(dynamic[i], planes));
     }
     for (const auto& [flat, location] : pinned) {
         object_planes.push_back(std::move(planes[flat]));
@@ -5404,6 +5729,7 @@ void EncoderController::encodeObjects(const QString& path,
     }
     setLayout(ac3::Acmod::k3_2, true, labels, QStringLiteral("5.1 bed"), coded, fedChannels());
     setMetering(true);
+    clearClipLatches();
 
     const bool keep_partial = keep_partial_output_;
     std::ignore = QtConcurrent::run([this, path, p, sample_rate, nobjects, keep_partial,

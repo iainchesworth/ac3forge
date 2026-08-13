@@ -32,7 +32,13 @@
 // declared Q_PROPERTY works: codecIndex=1, layoutIndex=5, coupling=true,
 // drcIndex=2, atmosEnabled=true, containerIndex=1, and (on the window itself)
 // tier=expert; preset=7.1.4 invokes applyChannelPreset() instead - see
-// apply_properties' own comment.
+// apply_properties' own comment. --smoke-shot in particular also takes
+// scrollY=<pixels> (a plain QML property on the window, Main.qml's own
+// smokeScrollY) to put a below-the-fold section - the assignment table
+// partway down the Format tab, say - into frame before the grab; there is
+// no scroll-to-item helper, just a raw pixel offset into the tab area's own
+// Flickable, so finding the right value is trial and error against a local
+// build.
 //
 // Both --smoke and --smoke-record fail unless every channel the routing FEEDS
 // has its needle leave the floor, so --smoke-record against a silent endpoint

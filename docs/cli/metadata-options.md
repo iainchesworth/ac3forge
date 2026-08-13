@@ -111,8 +111,10 @@ order, and `levels` names them `Ch1`/`Ch2` rather than a speaker position that w
 ```text
 source options (encode/eac3-encode; any order, after the positional arguments):
   src=<path>        an additional input source; repeat for more than one
-  map=<spec>        <source>.<channel>[-<channel2>]:<dest>[,...] - dest is a channel name, obj,
-                     p1, p2 or none; a channel range is only legal with obj or none
+  map=<spec>        <source>.<channel>[-<channel2>]:<dest>[@<trim>][,...] - dest is a channel
+                     name, obj, objm, p1, p2 or none; a channel range is only legal with obj,
+                     objm or none, and folds to one mono object with objm; trim is an optional
+                     signed dB gain in [-24,24] on dest, e.g. L@-3.5
                      once given, every loaded channel must appear - explicit 'none' silences
                      the goes-nowhere warning without giving it anywhere to go
   offset=<sourceIndex>:<seconds>   leading silence ahead of that source's own channels
@@ -133,24 +135,32 @@ meaning across several files, so every loaded channel needs an explicit entry (o
 `none`) before the encode will run.
 
 Each `map=` entry is `<source>.<channel>:<dest>`, comma-separated, `<channel>` 0-indexed. A
-channel *range* (`<channel>-<channel2>`) is only legal when `<dest>` is `obj` or `none` — a
-location or a programme names exactly one channel, so a range there would be ambiguous about
-which one it means. Two entries naming the same location, or more than one entry per dual-mono
-programme, is refused.
+channel *range* (`<channel>-<channel2>`) is only legal when `<dest>` is `obj`, `objm` or `none` —
+a location or a programme names exactly one channel, so a range there would be ambiguous about
+which one it means. `objm` folds the whole range into ONE mono object (equal-weight sum, scaled by
+`1/n` so several full-range channels summed together don't clip past what one alone would) rather
+than one object per channel the way a plain `obj` range does. Two entries naming the same location,
+or more than one entry per dual-mono programme, is refused.
+
+Any `<dest>` may carry an optional trailing `@<trim>` — a signed decibel gain in `[-24, 24]`,
+snapped to a tenth of a dB (`L@-3.5`, `obj@2`) — applied as linear gain wherever that channel's
+content reaches the stream: folded into the routing matrix for a bed position or a dual-mono
+programme, or into the object's plane at assembly for `obj`/`objm`. Omitted (no `@`) means no
+trim, the same as an explicit `@0`.
 
 ```bash
 ac3cli eac3-encode roundtrip-stereo.wav out.ec3 384 none 51 \
     src=roundtrip-51.wav \
-    map=0.0:C,0.1:none,1.0:L,1.1:R,1.2:none,1.3:LFE,1.4:Ls,1.5:Rs \
+    map=0.0:C,0.1:none,1.0:L,1.1:R@-3,1.2:none,1.3:LFE,1.4:Ls,1.5:Rs \
     offset=1:2.5
 ```
 
 `roundtrip-stereo.wav`'s left channel (source 0, channel 0) carries the centre; its right channel
-is explicitly silenced. `roundtrip-51.wav` (source 1) fills the rest, with its own centre channel
-(`1.2`) also sent nowhere so it doesn't collide with the first source's. `[vbr]` and `[in2.wav]`
-are both skippable here even though they come earlier in `eac3-encode`'s own positional order —
-the parser treats the first token containing `=` as the start of the trailing options, whichever
-positional slot would otherwise have been next.
+is explicitly silenced. `roundtrip-51.wav` (source 1) fills the rest, its right channel (`1.1`)
+trimmed 3 dB down, with its own centre channel (`1.2`) also sent nowhere so it doesn't collide
+with the first source's. `[vbr]` and `[in2.wav]` are both skippable here even though they come
+earlier in `eac3-encode`'s own positional order — the parser treats the first token containing `=`
+as the start of the trailing options, whichever positional slot would otherwise have been next.
 
 `offset=1:2.5` delays `roundtrip-51.wav` (source 1) by 2.5 seconds of leading silence ahead of its
 own channels — every channel that source contributes shifts together, as when it starts, not what
@@ -165,6 +175,13 @@ it always has.
 `dialnorm=auto`/`dialnorm2=auto` are not yet supported alongside `src=`/`map=` — pass an explicit
 `dialnorm=<1..31>` (and `dialnorm2=` for `1+1`) instead; measuring loudness per source is a later
 extension, not a hole in the routing itself.
+
+A full-bandwidth channel explicitly mapped onto `LFE`/`LFE2` (e.g. `1.3:LFE` above) is sent through
+a 120 Hz low-pass rather than passed through untouched — an explicit `map=` entry states raw
+content for that position, and a real subwoofer (and the LFE channel's own +10 dB mixing headroom)
+assumes it only ever carries deep bass. This does not apply to a source's own dedicated LFE channel
+reaching `LFE` through automatic single-source routing (no `src=`/`map=` at all) — that stays
+bit-exact, since nothing there claims full-bandwidth content belongs on that position.
 
 The GUI's own multi-source Format-tab table (**Add source…** plus a per-channel assignment field)
 is a direct front end over this same grammar — see

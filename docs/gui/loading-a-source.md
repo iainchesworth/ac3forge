@@ -14,8 +14,9 @@ channels get routed onto the plan.
 **Choose WAV…** opens a file picker. Each loaded source gets a row — filename, channel count,
 duration, what its channels *do* (`feeds the bed`, `2 objects · 4 to the bed`, `unassigned` —
 derived from the same assignment rows the table edits, so the rail and the table can never
-disagree), a numeric **Start offset** field, and a **Remove** button — and a totals strip beneath
-the list sums the session (`RATE 48 000 · SOURCES 2 · 8 ch · LENGTH 0:02`):
+disagree), a numeric **Start offset** field, a small **level pip** (see below), and a **Remove**
+button — and a totals strip beneath the list sums the session (`RATE 48 000 · SOURCES 2 · 8 ch ·
+LENGTH 0:02`):
 
 ![A 6-channel WAV loaded, guided tier](screenshots/loading-a-source-loaded.png)
 
@@ -24,6 +25,14 @@ independently on the [Format tab](format-and-channels.md) and need not match the
 narrower than the chosen output layout leaves the missing channels silent; a wider one folds down
 per §7.8 using the centre/surround downmix levels on the [Metadata tab](metadata.md), *unless*
 more than one source is loaded — see below.
+
+Each **file** row's level pip is a whole-programme peak/RMS reduction over that source's own
+channels, *before* routing — every channel pooled into one reading, so it answers "how loud is
+this file" independently of where (or whether) its channels currently go, unlike the coded-channel
+meters in **02 · Levels** below, which read the plan. It is computed in the same background pass
+that already renders the loaded sources for those meters, so it lags an edit by the same small
+amount. Live capture rows show no pip — a device's level belongs to the capture chain the Live
+session tab already reports on, not this reduction.
 
 **Start offset** delays a source's own channels by that many seconds of leading silence — all of
 them shift together, encoded exactly as `ac3cli`'s `offset=` token would (see
@@ -34,11 +43,14 @@ one moves the other. The totals strip's `LENGTH` grows to cover it: once any off
 reads `max(offset + duration)` over every source, not just the longest source's own raw length,
 so a source pushed out further is never implied to have been cut short.
 
-**+ Add files…** appends another WAV rather than replacing the primary — every source must share
-a sample rate, or the add is refused with a status message naming the mismatch. With two or more
-sources loaded, automatic fold-down no longer applies: every loaded channel needs an explicit
-destination in the [assignment table](source-assignment.md), which the **Assign** link beside the
-button jumps to.
+**+ Add files…** appends another WAV rather than replacing the primary. A source whose rate
+doesn't match the primary's is resampled to it right here at load — a proper offline windowed-sinc
+conversion, not the cheap interpolation a live capture's drift correction uses — and its row's
+duration line grows a small `44.1→48 k` label so the resample is never invisible; only a primary
+whose own rate has no legal AC-3 target at all still refuses the add outright, since resampling TO
+an illegal rate would just move the problem. With two or more sources loaded, automatic fold-down
+no longer applies: every loaded channel needs an explicit destination in the [assignment
+table](source-assignment.md), which the **Assign** link beside the button jumps to.
 
 ### Live capture
 
@@ -111,6 +123,13 @@ channels replace part of the bed (§E3.8.2), and in object mode, where the bed i
 are panned onto. During a run, a red dot and the word **live** appear beside the headline while
 metering updates in real time (~30 snapshots/sec); once the run finishes, the bars settle on the
 exact whole-file peak/RMS, with per-channel **CLIP** indicators.
+
+**CLIP latches**: once a channel clips during a run, its box stays lit — not just the newest
+snapshot — until either it is clicked (clearing that one channel) or a new transport starts
+(encode, record, a live session, the Objects tab's motion preview), which clears every channel's
+latch at once. Idly browsing the assignment table or switching tabs never clears one; a latch is
+only ever cleared by an explicit click or a fresh run beginning, so a clip caught mid-file is
+never missed just because the level happened to be under 0 dBFS again by the time you looked.
 
 ## 03 · Soundfield
 

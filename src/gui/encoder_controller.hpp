@@ -15,6 +15,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <span>
 #include <utility>
@@ -59,14 +60,36 @@ class EncoderController : public QObject {
     // anything - see routingForSources(). offsetSeconds is that source's
     // start offset (see setSourceOffset) - the Objects tab's derived
     // timeline length is max(offsetSeconds + seconds) over every row.
+    // resampleLabel is "44.1→48 k" when addSourceFile had to resample this
+    // source to the primary's rate (empty otherwise, including for the
+    // primary itself, which is never resampled) - see addSourceFile's own
+    // comment on why a mismatch is fixed up rather than refused now.
     Q_PROPERTY(QVariantList sourceModel READ sourceModel NOTIFY sourceChanged)
+    // Whole-programme peak/RMS PRE-ROUTING, one entry per sourceModel row in
+    // the same order ({peakDb, rmsDb}) - the rail's per-source level pip.
+    // Deliberately a SEPARATE property from sourceModel rather than a field
+    // on it: sourceModel is what a Repeater should bind to for row identity
+    // (see its own doc comment above), and folding a value that moves with
+    // every meter tick into it would rebuild every rail delegate the same
+    // way binding a Repeater to channelLevels instead of channelMeta would -
+    // see channelMeta's doc comment for the identical reasoning. A rail row
+    // looks its own entry up BY INDEX, the same lookup-by-index pattern
+    // ChannelMeter's delegate already uses against channelLevels. Computed
+    // in the same background pass previewPlanMeters() already runs
+    // (file sources only - see previewPlanMeters' own comment on why object
+    // mode and live capture rows are out of scope here), so it lags exactly
+    // as far behind an edit as channelLevels already does.
+    Q_PROPERTY(QVariantList sourceLevels READ sourceLevels NOTIFY sourceLevelsChanged)
     // One row per (source, channel) sourceModel declares -
-    // {source, channel, sourceLabel, destToken} - destToken in
-    // plan::parse_destination's own vocabulary ("L", "obj", "p1", "p2",
-    // "none"), so setAssignment's argument is always something this list
-    // itself already printed. Every row exists whether or not it has been
-    // explicitly assigned yet (an unset one reads "none"), so a caller can
-    // always render one row per channel rather than special-casing the gap.
+    // {source, channel, sourceLabel, destToken, touched, trimDb} -
+    // destToken in plan::parse_destination's own vocabulary ("L", "obj",
+    // "objm", "p1", "p2", "none"), so setAssignment's argument is always
+    // something this list itself already printed. Every row exists whether
+    // or not it has been explicitly assigned yet (an unset one reads
+    // "none"), so a caller can always render one row per channel rather
+    // than special-casing the gap. trimDb is that row's current
+    // Destination::trim_db (0 for an untrimmed or unassigned row) - the
+    // trim control's starting value; setAssignmentTrim is its write side.
     Q_PROPERTY(QVariantList assignmentRows READ assignmentRows NOTIFY sourceChanged)
     // plan::format_assignment() of the explicit assignment, prefixed "map=" -
     // the exact token ac3cli's encode/eac3-encode take, so the command bar
@@ -489,6 +512,7 @@ public:
     [[nodiscard]] QString sourceInfo() const { return source_info_; }
     [[nodiscard]] bool sourceReady() const { return source_ready_; }
     [[nodiscard]] QVariantList sourceModel() const;
+    [[nodiscard]] QVariantList sourceLevels() const { return source_levels_; }
     [[nodiscard]] QVariantList assignmentRows() const;
     [[nodiscard]] QString mapToken() const;
     [[nodiscard]] QString metaTokens() const;
@@ -812,6 +836,18 @@ public:
     // can never disagree about what a token means. Silently ignored if it
     // does not parse, same convention as toggleExtra/applyChannelPreset.
     Q_INVOKABLE void setAssignment(int sourceIndex, int channel, const QString& destToken);
+    // AssignmentPanel's per-row dB trim control: rewrites ONLY that row's
+    // Destination::trim_db, keeping whatever kind/location it already has -
+    // a slider drag never needs to re-state the destination itself. Clamped
+    // to [-24, +24] and snapped to the same tenth-of-a-dB grid parse_
+    // destination's own "@" suffix snaps to (see assignment.cpp's
+    // snap_trim's doc comment on why a fixed grid, not this function's own
+    // copy of it - the two must compute the identical double for mapToken()
+    // to always format what the GUI just set). A no-op, silently, on an
+    // out-of-range index or a row that is still kUnassigned - "none" has no
+    // destination for a trim to ride (Assignment::set erases it outright
+    // regardless - see Destination::trim_db's own comment).
+    Q_INVOKABLE void setAssignmentTrim(int sourceIndex, int channel, double dbTrim);
     // Fills every still-unassigned channel whose SOURCE has a natural AC-3
     // layout (mono, stereo, 5.1, ...) with the bed position that channel
     // holds in that layout - "assign by name": a 5.1 file's third WAV
@@ -910,6 +946,13 @@ public:
     // "48 000" / "7 891" - the mockup's space-grouped integers, offered here
     // so every readout groups digits the same way.
     Q_INVOKABLE [[nodiscard]] QString groupDigits(qint64 value) const;
+    // Clears channel `channel`'s latched CLIP indicator - ChannelMeter's own
+    // click handler, the only way a latch ever comes back off before the
+    // next run-start (see clearClipLatches, the automatic reset every
+    // transport-starting entry point already calls). A no-op for an out-of-
+    // range channel. See publishLevels' own comment for how the latch itself
+    // is set.
+    Q_INVOKABLE void clearClipLatch(int channel);
 
 signals:
     void sourceChanged();
@@ -949,6 +992,7 @@ signals:
     void liveWavSafetyCopyChanged();
     void motionPreviewActiveChanged();
     void motionPreviewTimeChanged();
+    void sourceLevelsChanged();
 
 private:
     struct Source;
@@ -1008,6 +1052,13 @@ private:
     // object and the channel it came from are named the same way everywhere
     // this app names one.
     [[nodiscard]] QString objectSourceLabel(std::size_t flatIndex) const;
+    // The group overload: group.size() == 1 is exactly the single-channel
+    // case above; a multi-channel objm group instead reads "<file> ch
+    // <a>-<b> (mono)", making the fold buildObjectPlane performs for it
+    // visible in the label. A contiguous objm group is always within one
+    // source (see DestinationKind::kObjectMono's own comment), so the
+    // group's first and last channel share one source's label.
+    [[nodiscard]] QString objectSourceLabel(const std::vector<std::size_t>& group) const;
     // The routing a run should actually use: automatic single-source panning
     // when exactly one source is loaded and nothing has been assigned
     // explicitly (byte-identical to what this controller has always done),
@@ -1161,11 +1212,36 @@ private:
     // before the pass lands invalidates it (preview_generation_), and busy_
     // suppresses the whole thing: a live worker owns the meters then.
     void previewPlanMeters();
-    // Flat channel indices (the sourceShapes()/Assignment addressing) that
-    // ride as DYNAMIC objects in object mode: every loaded channel while
-    // nothing is explicitly assigned, else exactly the channels assigned
-    // "obj". Order is flat order, which is object-index order.
-    [[nodiscard]] std::vector<std::size_t> dynamicObjectChannels() const;
+    // One entry per DYNAMIC object in object mode, each entry the group of
+    // flat channel indices (the sourceShapes()/Assignment addressing) that
+    // fold together into it: size 1 for an ordinary "obj" channel (or every
+    // channel, while nothing is explicitly assigned - unchanged from what
+    // this has always done), or every channel of one contiguous "objm"
+    // range (see DestinationKind::kObjectMono) folded to a single mono
+    // object. Order is flat order (source, then channel), which is object-
+    // index order - dynamicObjectChannels().size() is still the dynamic
+    // object COUNT regardless of any internal grouping, so every caller
+    // that only ever read that size (recomputeObjectCount, encodeTo's
+    // fifteen-object budget check, ...) needs no change at all; a caller
+    // that used to read one flat index per object now reads
+    // group.front() for that object's IDENTITY (what keyForObjectIndex
+    // keys authored motion by - a group's shape never changing mid-file is
+    // what keeps that stable) or the whole group, via buildObjectPlane, for
+    // its actual audio.
+    [[nodiscard]] std::vector<std::vector<std::size_t>> dynamicObjectChannels() const;
+    // Builds one dynamic object's plane: `group`'s own content (linear-gain
+    // trimmed by that channel's Destination::trim_db - see assignment.hpp)
+    // for an ordinary single-channel group, or the equal-weight fold of
+    // every (also trimmed) channel in a multi-channel objm group - sum *
+    // 1/n, so several full-range channels folded together do not sum past
+    // what one channel alone would peak at (documented alongside
+    // DestinationKind::kObjectMono). `planes` is in sourceShapes()'s own
+    // flat order, already offset-shifted where the caller does that
+    // (encodeObjects'/startMotionPreview's own `planes` construction) -
+    // shared by both so they can never fold or trim a group differently.
+    [[nodiscard]] std::vector<float> buildObjectPlane(
+        const std::vector<std::size_t>& group,
+        const std::vector<std::vector<float>>& planes) const;
     // Flat channels assigned to a bed position in object mode. Each becomes a
     // static object pinned at its speaker's azimuth - in a JOC stream the bed
     // IS the panned objects, so "carried as a channel" and "an object that
@@ -1204,11 +1280,37 @@ private:
     void clearLayout();
     // Publishes one snapshot. Workers reach this through a queued call, so
     // the level state itself never crosses a thread boundary unguarded.
+    // Each channel's CLIP is latched here (clip_latched_[ch] ||=
+    // levels[ch].clipped) rather than shown raw - the published `clipped`
+    // field is always the latched value, so QML never has to know latching
+    // exists (see clearClipLatch/clearClipLatches for the only two ways a
+    // latch ever comes back down).
     void publishLevels(std::span<const ac3::analysis::ChannelLevel> levels);
     // The same, built from a meter's exact whole-run statistics rather than
     // its ballistics: what a finished encode or a freshly loaded file should
     // leave on the display.
     void publishSummary(const ac3::analysis::LevelMeter& meter);
+    // Zeroes every channel's latched CLIP flag (not the ballistic levels
+    // themselves) - called once at the start of every real transport (see
+    // encodeChannels/encodeObjects/runLiveSession/startRecording/
+    // startMotionPreview's own call sites), never from setLayout/
+    // previewPlanMeters, so idly browsing the assignment table or Format tab
+    // never clears a latch a completed run actually earned.
+    void clearClipLatches();
+    // sourceLevels' reset half - a fresh floor-filled list sized to the
+    // CURRENT source count, published synchronously and unconditionally at
+    // the top of previewPlanMeters() the same way setLayout's own
+    // publishLevels(default) starts channelLevels silent, so a stale
+    // reading never sits under a source row that just changed (added,
+    // removed, or reordered by a primary swap).
+    void resetSourceLevels();
+    // sourceLevels' real half - one whole-programme peak/RMS reduction per
+    // loaded source, pooling every one of that source's own channels into a
+    // single ac3::analysis::ChannelSummary (not per-channel: a rail row is
+    // one pip, not one per channel) - published by previewPlanMeters'
+    // background pass once it lands, the exact same async-then-overwrite
+    // shape channelLevels already follows via publishLevels.
+    void publishSourceLevels(std::span<const ac3::analysis::ChannelSummary> levels);
 
     QString source_path_;
     QString source_info_;
@@ -1343,7 +1445,16 @@ private:
     std::vector<bool> channel_replaced_;
     QString layout_name_;
     QVariantList channel_levels_;
+    // One flag per coded channel, parallel to channel_levels_ - see
+    // publishLevels' own comment on how this OR's into the `clipped` field
+    // it publishes, and clearClipLatch/clearClipLatches for the only two
+    // ways a latch clears. Resized (grow-or-shrink, never touching a
+    // surviving element's value) by publishLevels alongside channel_levels_
+    // itself; actually zeroed only by clearClipLatches.
+    std::vector<bool> clip_latched_;
     QVariantMap soundfield_;
+    // sourceLevels' storage - see that property's own doc comment.
+    QVariantList source_levels_;
 
     // shared_ptr rather than unique_ptr for exactly one reason: the meter
     // preview worker (previewPlanMeters) reads the WAV data off the GUI
@@ -1365,6 +1476,14 @@ private:
     // flatChannelOffsetSamples for how these turn into a read-shift.
     double source_offset_seconds_ = 0.0;
     std::vector<double> extra_source_offsets_seconds_;
+    // Parallel to extra_sources_, kept in step with it by every add/remove
+    // site the same way extra_source_offsets_seconds_ already is: nullopt
+    // for a source whose rate matched the primary's at load, else the rate
+    // it actually carried on disk BEFORE addSourceFile resampled it to the
+    // primary's - what sourceModel's resampleLabel reads to print
+    // "44.1→48 k". The primary itself has no equivalent field: it is never
+    // resampled (every OTHER source matches IT, not the reverse).
+    std::vector<std::optional<std::uint32_t>> extra_source_original_rates_;
     // Invalidates in-flight meter previews: bumped by every new preview and
     // by setBusy(true), checked (against busy_ too) before a preview's
     // result is published.

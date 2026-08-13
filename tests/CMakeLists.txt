@@ -55,6 +55,8 @@ add_executable(ac3tests
     test_crc16.cpp
     test_decoder.cpp
     test_drc.cpp
+    test_dsp_biquad.cpp
+    test_dsp_resampler.cpp
     test_eac3.cpp
     test_eac3_decoder.cpp
     test_elementary.cpp

@@ -29,6 +29,17 @@ TestCase {
     readonly property url surroundUrl:
         Qt.resolvedUrl("../../../../fuzz/seeds/fuzz_wav_read/roundtrip-51.wav")
 
+    // The controller singleton is shared across every tst_*.qml file in this
+    // binary - see tst_sweep_conformance.qml's own cleanup() and its
+    // comment on why leaving atmosEnabled/a loaded source here would break
+    // another file.
+    function cleanup() {
+        EncoderController.atmosEnabled = false;
+        if (EncoderController.sourceModel.length > 0) {
+            EncoderController.removeSource(0);
+        }
+    }
+
     function test_objectLabelsNameTheSourceOnceMoreThanOneIsLoaded() {
         const win = createTemporaryObject(mainWindowComponent, testCase);
         verify(win !== null);
@@ -215,5 +226,37 @@ TestCase {
 
         compare(EncoderController.runs.length, before + 1);
         compare(EncoderController.runs[0].status, "done");
+    }
+
+    function test_objmFoldsAPairIntoOneObjectAndBreaksWhenEitherRowChanges() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        EncoderController.atmosEnabled = true;
+
+        EncoderController.loadSourceFile(stereoUrl);  // exactly two channels
+        tryCompare(EncoderController, "sourceReady", true);
+        // Nothing assigned yet: one object per channel, as always.
+        compare(EncoderController.objectCount, 2);
+
+        // Folding both channels into objm collapses the pair into ONE
+        // object - the stereo-source "One object, folded to mono"
+        // affordance, at the controller level (AssignmentPanel.qml's own
+        // "objm-pair" is just a convenience spelling of these same two
+        // calls).
+        EncoderController.setAssignment(0, 0, "objm");
+        EncoderController.setAssignment(0, 1, "objm");
+        tryVerify(() => EncoderController.objectCount === 1);
+        const label = EncoderController.sourceModel[0].label;
+        compare(EncoderController.objectModel[0].sourceLabel, label + " ch 1-2 (mono)");
+
+        // Sending EITHER channel somewhere else breaks the pairing on its
+        // own - dynamicObjectChannels() only groups a CONTIGUOUS run of
+        // objm rows, so one row leaving objm is enough; the OTHER channel
+        // (still objm, now alone) rides as its own solo object instead of
+        // vanishing.
+        EncoderController.setAssignment(0, 0, "obj");
+        tryVerify(() => EncoderController.objectCount === 2);
+        verify(EncoderController.objectModel[0].sourceLabel.indexOf("(mono)") < 0);
+        verify(EncoderController.objectModel[1].sourceLabel.indexOf("(mono)") < 0);
     }
 }
