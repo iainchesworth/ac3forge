@@ -3331,13 +3331,20 @@ int run_live(std::string_view out_path, int capture_device, std::uint32_t second
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
             }
         }
-        if (device2) {
+        if (slave_resampler.has_value() && slave_drift.has_value()) {
             // Opportunistic, non-blocking drain: whatever capture2 has ready
             // right now joins the scratch FIFO's tail. Unlike the master's
             // read above, this never waits - a slave that is momentarily
             // behind just leaves the resampler's next render() with less to
             // work from, which is exactly the drift the estimator is
             // steering against, not a stall to block the session on.
+            //
+            // Guarded on slave_resampler/slave_drift's own has_value() rather
+            // than device2 (always in lockstep with it by construction, both
+            // populated together right after capture2 opens) so clang-tidy's
+            // bugprone-unchecked-optional-access can actually see the
+            // invariant instead of having to trust a same-lockstep but
+            // type-unrelated raw pointer.
             const std::size_t capacity_frames = slave_scratch.size() / capture2_channels;
             const std::size_t free_frames = capacity_frames - slave_scratch_valid_frames;
             if (free_frames > 0) {
@@ -3502,7 +3509,7 @@ int run_live(std::string_view out_path, int capture_device, std::uint32_t second
                  atmos ? "E-AC-3 access units" : "AC-3 frames", bitrate, out_path);
     std::println("captured {} frames, {} silence-filled, {} dropped", stats.frames_captured,
                  stats.frames_silence_filled, stats.frames_dropped);
-    if (device2) {
+    if (slave_drift.has_value()) {
         std::println("capture2 drift: {:+.1f} ppm", slave_drift->drift_ppm());
     }
     print_channel_summary(meter);
