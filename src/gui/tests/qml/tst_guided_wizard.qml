@@ -21,6 +21,8 @@ TestCase {
 
     readonly property url stereoUrl:
         Qt.resolvedUrl("../../../../fuzz/seeds/fuzz_wav_read/roundtrip-stereo.wav")
+    readonly property url surroundUrl:
+        Qt.resolvedUrl("../../../../fuzz/seeds/fuzz_wav_read/roundtrip-51.wav")
 
     // The window (and the Layout chain feeding this page's real geometry)
     // takes a handful of polish passes after creation to settle; a real
@@ -196,15 +198,88 @@ TestCase {
 
         // The preset writes through setObjectPathKeyframes — the same keys
         // the Objects tab's timeline shows and encodeObjects plays back.
+        // Key count follows the source's own derived duration now (one key
+        // per whole second, plus a final key exactly at the end) rather
+        // than a fixed 8 s - roundtrip-stereo.wav is 1.024 s, so that's
+        // keys at 0 s, 1 s and 1.024 s.
+        const duration = EncoderController.sourceModel[0].seconds;
         wizard.authorTrajectories("orbit");
         compare(EncoderController.objectModel[0].hasPath, true);
-        compare(EncoderController.objectKeyframes(0).length, 9);
+        compare(EncoderController.objectKeyframes(0).length, 3);
+        compare(EncoderController.objectKeyframes(0)[2].time, duration);
 
         wizard.authorTrajectories("hold");
         compare(EncoderController.objectModel[0].hasPath, false);
         compare(EncoderController.objectKeyframes(0).length, 0);
 
         EncoderController.atmosEnabled = false;
+    }
+
+    function test_trajectoryPresetsSpanTheWholeDerivedProgramme() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        EncoderController.atmosEnabled = false;
+        EncoderController.loadSourceFile(stereoUrl);
+        tryCompare(EncoderController, "sourceReady", true);
+        EncoderController.addSourceFile(surroundUrl);
+        tryVerify(() => EncoderController.sourceModel.length === 2);
+        // Pushes the second source's own end (1.024 s) well past 8 s, so
+        // the derived programme length (offset + duration, the same
+        // max() the Objects tab's timelineLength uses) covers more than
+        // one 8 s lap - 20 + 1.024 = 21.024 s, three whole laps.
+        EncoderController.setSourceOffset(1, 20);
+        const wizard = waitForWizardLayout(win);
+        verify(wizard !== null);
+
+        EncoderController.atmosEnabled = true;
+        tryVerify(() => EncoderController.objectCount > 0);
+
+        wizard.authorTrajectories("orbit");
+        const keys = EncoderController.objectKeyframes(0);
+        // 0..21 inclusive by whole seconds (22 keys, since 21 < 21.024)
+        // plus one final key exactly at 21.024 s.
+        compare(keys.length, 23);
+        compare(keys[keys.length - 1].time, 21.024);
+        // A seamless loop: the position 8 s into the first lap is exactly
+        // the position at 0 s (and at 16 s, the third lap's own start) -
+        // the phase wraps every cycleSeconds rather than the whole path
+        // being one single 21 s ellipse.
+        fuzzyCompare(keys[8].x, keys[0].x, 0.0001);
+        fuzzyCompare(keys[8].y, keys[0].y, 0.0001);
+        fuzzyCompare(keys[16].x, keys[0].x, 0.0001);
+        fuzzyCompare(keys[16].y, keys[0].y, 0.0001);
+
+        wizard.authorTrajectories("hold");
+        EncoderController.atmosEnabled = false;
+        EncoderController.setSourceOffset(1, 0);
+    }
+
+    function test_trajectoryPresetsLoopFixedlyForALiveSession() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        // A live session has no file duration to derive a programme length
+        // from - the preset falls back to looping one fixed 8 s cycle
+        // instead (see authorTrajectories' own comment).
+        EncoderController.atmosEnabled = false;
+        EncoderController.loadSourceFile(stereoUrl);
+        tryCompare(EncoderController, "sourceReady", true);
+        win.inputMode = "live";
+        const wizard = waitForWizardLayout(win);
+        verify(wizard !== null);
+        compare(wizard.liveSession, true);
+
+        EncoderController.atmosEnabled = true;
+        tryVerify(() => EncoderController.objectCount > 0);
+
+        wizard.authorTrajectories("orbit");
+        // The old fixed-8-second shape, independent of the loaded file's
+        // own (much shorter) duration: keys at 0..8 s inclusive.
+        compare(EncoderController.objectKeyframes(0).length, 9);
+        compare(EncoderController.objectKeyframes(0)[8].time, 8);
+
+        wizard.authorTrajectories("hold");
+        EncoderController.atmosEnabled = false;
+        win.inputMode = "file";
     }
 
     function test_movementCardsDriveObjectModeWithItsConstraints() {

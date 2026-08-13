@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
 import QtQuick.Layouts
+import QtQuick.Window
 
 import Ac3Forge
 
@@ -118,13 +119,42 @@ ColumnLayout {
     // The step-4 preview's clock: loops the authored paths so the movement
     // card is watched, not imagined. Runs only while the step is on screen.
     property real previewT: 0
+    // Resolved fresh through requestWindow() each time, rather than reading
+    // the Component.onCompleted-cached appWindow: that walk runs once,
+    // early, and is not guaranteed to already see a fully-parented tree at
+    // that point - a lazy re-walk here is what actually gets the settled
+    // answer.
+    readonly property bool liveSession: {
+        const win = requestWindow();
+        return win !== null && win.inputMode === "live";
+    }
+    // One lap/cycle's own length - what a preset repeats every this-many
+    // seconds, whether authored across a whole file or looped live.
+    readonly property real cycleSeconds: 8
+    // Mirrors the Objects tab's own timelineLength formula (Main.qml) -
+    // max(offset + duration) over every loaded source, falling back to
+    // cycleSeconds when nothing is derivable yet. A live session has no
+    // fixed programme length to author across at all - see
+    // authorTrajectories' own comment on why it uses cycleSeconds instead.
+    function derivedDuration() {
+        let end = 0;
+        const sources = EncoderController.sourceModel;
+        for (let i = 0; i < sources.length; i++) {
+            const at = sources[i].offsetSeconds + sources[i].seconds;
+            if (at > end) end = at;
+        }
+        return end > 0 ? end : cycleSeconds;
+    }
     Timer {
         interval: 50
         repeat: true
         running: wizard.currentStepKey === "motion" && wizard.visible
                  && EncoderController.atmosEnabled && EncoderController.objectCount > 0
                  && wizard.traj !== "hold"
-        onTriggered: wizard.previewT = (wizard.previewT + 0.05) % 8
+        onTriggered: {
+            const loop = wizard.liveSession ? wizard.cycleSeconds : wizard.derivedDuration();
+            wizard.previewT = (wizard.previewT + 0.05) % loop;
+        }
     }
     function authorTrajectories(kind) {
         traj = kind;
@@ -132,33 +162,48 @@ ColumnLayout {
         if (n <= 0) return;
         const scale = 1 / Math.sqrt(Math.max(1, n));
         const objects = EncoderController.objectModel;
+        // A live session has no fixed programme length to author across -
+        // the preset loops one fixed-length cycle instead, for as long as
+        // the session runs. A file source authors keys across its own
+        // derived length, in whole laps/cycles: the phase below wraps
+        // every cycleSeconds, so the pattern repeats seamlessly rather
+        // than the last lap being cut off mid-turn or stretched thin to
+        // fit.
+        const duration = wizard.liveSession ? wizard.cycleSeconds : wizard.derivedDuration();
         for (let i = 0; i < n; i++) {
             if (kind === "hold") {
                 EncoderController.clearObjectPath(i);
                 continue;
             }
             const obj = objects[i];
-            const keys = [];
-            for (let t = 0; t <= 8; t++) {
+            const keyAt = (t) => {
                 let x = obj.x;
                 let y = obj.y;
                 let z = obj.z;
+                const phase = (t % wizard.cycleSeconds) / wizard.cycleSeconds;
                 if (kind === "orbit") {
-                    // One full lap in 8 s, each object offset around the
+                    // One full lap per cycle, each object offset around the
                     // circle so they never bunch up.
-                    const angle = 2 * Math.PI * (t / 8) + 2 * Math.PI * i / n;
+                    const angle = 2 * Math.PI * phase + 2 * Math.PI * i / n;
                     x = 0.5 + 0.35 * Math.cos(angle);
                     y = 0.5 + 0.35 * Math.sin(angle);
                     z = 0;
                 } else if (kind === "lift") {
                     // Floor-ish to the ceiling and back — height is the
                     // point, so x/y hold the object's own place.
-                    z = Math.min(1, -0.2 + 1.2 * Math.sin(Math.PI * t / 8));
+                    z = Math.min(1, -0.2 + 1.2 * Math.sin(Math.PI * phase));
                 }
-                keys.push({ time: t, x: x, y: y, z: z,
-                            gain: 0.7 * scale, lfeSend: obj.lfeSend * scale });
+                return { time: t, x: x, y: y, z: z,
+                         gain: 0.7 * scale, lfeSend: obj.lfeSend * scale };
+            };
+            const keys = [];
+            for (let t = 0; t < duration; t++) {
+                keys.push(keyAt(t));
             }
-            EncoderController.setObjectPathKeyframes(i, keys);
+            // Always closes exactly at the derived length, even when it is
+            // not a whole number of seconds - the last lap never cuts off.
+            keys.push(keyAt(duration));
+            EncoderController.setObjectPathKeyframes(i, keys, kind);
         }
     }
 
@@ -178,12 +223,15 @@ ColumnLayout {
     }
 
     function requestWindow() {
-        // The enclosing ApplicationWindow, for tier/tab jumps.
-        let item = wizard.parent;
-        while (item && !item.goAssign) {
-            item = item.parent;
-        }
-        return item;
+        // The enclosing ApplicationWindow, for tier/tab jumps. Item.parent
+        // does NOT reliably chain up to it - content declared inside
+        // ApplicationWindow's default property is hosted under an
+        // internal contentItem whose own .parent is not exposed, so a
+        // manual walk (this used to be one) dead-ends at null before ever
+        // reaching the window. The Window attached property is what
+        // actually answers "which window is this item shown in", for any
+        // item, regardless of that.
+        return wizard.Window.window;
     }
 
     // ---- step bar -----------------------------------------------------------
@@ -1074,13 +1122,22 @@ ColumnLayout {
                     spacing: Theme.space2
 
                     Repeater {
+                        // orbit/lift's body names how the preset actually
+                        // scales: whole laps/cycles across the derived
+                        // programme length for a file source, or a fixed
+                        // loop for a live session with no such length -
+                        // see authorTrajectories' own comment.
                         model: [
                             { key: "hold", title: qsTr("Stay put"),
                               body: qsTr("Every sound holds its speaker position.") },
                             { key: "orbit", title: qsTr("Circle the room"),
-                              body: qsTr("Sounds travel round the listener at ear level.") },
+                              body: wizard.liveSession
+                                    ? qsTr("One lap every eight seconds, looping for as long as the session runs.")
+                                    : qsTr("One lap every eight seconds, for the length of the programme.") },
                             { key: "lift", title: qsTr("Lift overhead"),
-                              body: qsTr("Rises from the floor to the ceiling as it plays.") },
+                              body: wizard.liveSession
+                                    ? qsTr("Rises and falls every eight seconds, looping for as long as the session runs.")
+                                    : qsTr("Rises and falls every eight seconds, for the length of the programme.") },
                             { key: "custom", title: qsTr("Place them myself"),
                               body: qsTr("Opens the room and the timeline, one object at a time. (Advanced →)") },
                         ]
@@ -1201,8 +1258,11 @@ ColumnLayout {
                     Text {
                         Layout.fillWidth: true
                         Layout.alignment: Qt.AlignVCenter
-                        text: qsTr("%1 objects on their paths, looping over eight seconds — the room on the left meters the same encode.")
-                              .arg(EncoderController.objectCount)
+                        text: wizard.liveSession
+                              ? qsTr("%1 objects on their paths, looping every eight seconds — the room on the left meters the same encode.")
+                                    .arg(EncoderController.objectCount)
+                              : qsTr("%1 objects on their paths across the programme — the room on the left meters the same encode.")
+                                    .arg(EncoderController.objectCount)
                         wrapMode: Text.WordWrap
                         font.pixelSize: 12
                         color: Theme.neutral700
