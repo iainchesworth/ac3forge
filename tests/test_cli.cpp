@@ -170,6 +170,55 @@ TEST_CASE("offset= rejects malformed tokens", "[cli][offset]") {
     }
 }
 
+// capture2= is 'live'-only, but its rejection happens in parse_options,
+// before Needs::kCapture is even checked (see run_main: parse_options runs
+// on the whole trailing-options span before the per-command needs gate) -
+// so a malformed token is refused the same way regardless of which command
+// carries it, and 'encode' (Needs::kNothing) lets this run without a real
+// capture device, the same way the offset= tests above do.
+TEST_CASE("capture2= rejects malformed tokens", "[cli][capture2]") {
+    const auto dir = scratch_dir();
+    const auto wav_path = dir / "capture2_parse_in.wav";
+    const auto channels = make_tone_channels(2, 4000, 48000);
+    REQUIRE(ac3::io::write_wav_f32(wav_path.string(), channels, 48000).has_value());
+
+    SECTION("non-numeric value") {
+        const auto out_path = dir / "capture2_parse_nonnumeric.ac3";
+        const auto log = dir / "capture2_parse_nonnumeric.log";
+        fs::remove(out_path);
+        const auto rc = run_cli("encode \"" + wav_path.string() + "\" \"" + out_path.string() +
+                                    "\" 192 stereo capture2=x",
+                                log);
+        CHECK(rc != 0);
+        CHECK_FALSE(fs::exists(out_path));
+        CHECK(read_log(log).find("capture2=") != std::string::npos);
+    }
+
+    SECTION("negative value") {
+        const auto out_path = dir / "capture2_parse_negative.ac3";
+        const auto log = dir / "capture2_parse_negative.log";
+        fs::remove(out_path);
+        const auto rc = run_cli("encode \"" + wav_path.string() + "\" \"" + out_path.string() +
+                                    "\" 192 stereo capture2=-1",
+                                log);
+        CHECK(rc != 0);
+        CHECK_FALSE(fs::exists(out_path));
+        CHECK(read_log(log).find("capture2=") != std::string::npos);
+    }
+
+    SECTION("empty value") {
+        const auto out_path = dir / "capture2_parse_empty.ac3";
+        const auto log = dir / "capture2_parse_empty.log";
+        fs::remove(out_path);
+        const auto rc = run_cli("encode \"" + wav_path.string() + "\" \"" + out_path.string() +
+                                    "\" 192 stereo capture2=",
+                                log);
+        CHECK(rc != 0);
+        CHECK_FALSE(fs::exists(out_path));
+        CHECK(read_log(log).find("capture2=") != std::string::npos);
+    }
+}
+
 TEST_CASE("offset= applies leading silence and grows the programme", "[cli][offset]") {
     const auto dir = scratch_dir();
     const auto wav_path = dir / "offset_apply_in.wav";

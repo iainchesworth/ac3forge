@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <optional>
@@ -139,6 +140,24 @@ inline constexpr std::array<std::uint16_t, 19> kBitratesKbps = {
 
 [[nodiscard]] constexpr bool is_valid_bitrate(std::uint32_t kbps) {
     return bitrate_index(kbps).has_value();
+}
+
+// The largest Table 5.18 rung at or below `requested_kbps`, capped at 640 -
+// what a caller wanting "as close to this rate as AC-3 can legally carry"
+// needs (kBitratesKbps is sorted ascending, so the first entry is always a
+// safe floor). Used where a plan's own bitrate - possibly an E-AC-3-only
+// rung like 768, or simply not on the table at all - has to be reduced to
+// something plain AC-3 can carry, such as the live session's parallel 5.1
+// downmix receiver leg (see docs/gui/live-session.md).
+[[nodiscard]] constexpr std::uint32_t clamp_to_legal_ac3_bitrate(std::uint32_t requested_kbps) {
+    const std::uint32_t capped = std::min<std::uint32_t>(requested_kbps, kBitratesKbps.back());
+    std::uint32_t best = kBitratesKbps.front();
+    for (const auto kbps : kBitratesKbps) {
+        if (kbps <= capped) {
+            best = kbps;
+        }
+    }
+    return best;
 }
 
 // A/52 Table 5.18 "Frame Size Code Table (1 word = 16 bits)", transcribed

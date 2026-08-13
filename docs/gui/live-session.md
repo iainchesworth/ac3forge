@@ -2,12 +2,14 @@
 
 ## Starting a capture
 
-The rail's [Input block](loading-a-source.md#01--input), switched to **Live capture**, is where a
-device gets chosen and where the two signal-side acts live: **Monitor** (a session that writes
-nothing and asks for no filename — the meters and soundfield run against the real encoded signal,
-and checking a device never commits to a take) and **Record…** (capture straight to a file). That
-is all the rail keeps now. Where a *real* session — one with a take on disk or a receiver leg —
-actually starts is the **Live session** tab's own **Live session** Card.
+The rail's [Input block](loading-a-source.md#01--input), switched to **Live capture**, is where
+devices get chosen (up to two, see [Two-device capture](#two-device-capture-clock-master-model)
+below) and where the two signal-side acts live: **Monitor** (a session that writes nothing and
+asks for no filename — the meters and soundfield run against the real encoded signal, and checking
+a device never commits to a take) and **Record…** (capture straight to a file). Both act on the
+master device alone, the same as a single-device session always has. That is all the rail keeps
+now. Where a *real* session — one with a take on disk or a receiver leg — actually starts is the
+**Live session** tab's own **Live session** Card.
 
 The Card has two states. Idle, it is the pre-flight: a **Receiver** combo (`No passthrough` plus
 every entry from `EncoderController.outputDevices`), a **Monitor** checkbox (checked by default),
@@ -58,6 +60,82 @@ run entry a real session opens says so too — its rate text is always the fixed
     revisiting, someone running the app locally can drop a real screenshot into
     `docs/gui/screenshots/` and this note can go.
 
+## Two-device capture: clock-master model
+
+A session is capped at **two** capture devices. The rail's live branch is a per-device list now
+(mirroring the file branch's own per-source list) rather than a single ComboBox: one row per
+selected device — name, `N ch · 48 000 Hz`, **Remove** — plus **Add input…** (disabled at the cap,
+with a "two devices per session" note) and a totals line (`2 devices · 4 channels captured`).
+`EncoderController.captureDeviceRows` is the model; row 0 is always the **master**, row 1, when
+present, the **slave**.
+
+**Clock model.** The master's delivery paces the session's frame loop exactly as a single-device
+session always has — nothing about it changes. The slave is an independent
+`ac3::capture::Capture`, and there is no shared hardware clock between two WASAPI shared-mode
+endpoints, even nominally identical ones on the same PC: left alone, the slave's stream drifts
+against the master's a sample at a time. Two new, Qt-free, allocation-free library pieces in
+`src/audio/include/ac3/capture/resampler.hpp` correct that:
+
+- **`ac3::capture::DriftResampler`** — a streaming linear-interpolation fractional resampler.
+  Linear interpolation, not a windowed-sinc design: at the drift magnitudes a free-running consumer
+  clock actually exhibits (tens of parts-per-million) linear interpolation's error sits far below
+  the codec's psychoacoustic floor, and at a genuine nominal-rate conversion (44.1 → 48 kHz) it
+  trades some high-frequency accuracy near Nyquist for an allocation-free, state-tiny
+  implementation appropriate to a live capture hot path. It carries only a fractional read position
+  between `render()` calls — no sample data of its own.
+- **`ac3::capture::ClockDriftEstimator`** — the servo that decides the resampler's ratio: a small
+  proportional controller steering the worker's own slave-side scratch FIFO back towards a target
+  occupancy (one frame period's worth), smoothed with a one-pole filter so the ratio moves in
+  small, audio-safe steps rather than jumping. `ratio()` is the nominal conversion
+  (`master_rate / slave_rate`, 1.0 when both devices run the same nominal rate) composed with the
+  measured correction; `drift_ppm()` is that correction alone, signed, zero until the servo has
+  seen data.
+
+Each frame period, after the master's own blocking capture-fill completes, the worker opportunistically
+drains whatever the slave's ring buffer holds (non-blocking — the master's wait already gave it
+roughly one frame period's worth of wall-clock time to deliver), feeds the FIFO's occupancy to the
+estimator, and resamples exactly `kSamplesPerFrame` slave frames to sit alongside the master's own.
+If the slave's nominal rate differs from the master's, the same resampler handles the nominal
+conversion and the drift correction together — one ratio, composed once per frame period.
+
+**Drift visibility.** The Live session tab's chain capture cell shows the slave's *measured*
+correction — `EncoderController.liveDriftText`, e.g. `slave −18 ppm` — updated with the same
+~30 Hz cadence as every other live stat, empty (and the line hidden) outside a two-device session.
+Honest, not estimated ahead of time: it is the correction the resampler is actually applying.
+
+**Channel space.** The flat capture-channel space object slots address gains the slave's channels
+after the master's — devices are sources, the same identity concept the earlier timeline/object
+work gave loaded files. `EncoderController.liveDeviceChannels`
+is the combined count; `EncoderController.liveCaptureChannelLabels` names each flat index (`Ch 1`…
+for the master, `Dev2 Ch 1`… for the slave) for the Live room's channel picker. The existing
+per-slot bind/reassign (`addLiveObject`/`reassignLiveObjectSlot`, see
+[Objects & motion](objects-and-motion.md)) continues to work unchanged across both devices — a
+slot simply addresses a wider space now. A **plain channel-mode session's
+bed still comes from the master alone**: `plan::route()`'s panning model treats a source's channel
+*count* as a specific named WAV speaker layout (§7.8), which has no sound meaning for two
+independent devices concatenated together, so there is no principled default position to auto-pan
+the slave's channels into. The slave's audio is still captured, drift-corrected, watched by its own
+`SilenceWatchdog` and reflected in the drift readout either way — just not auto-routed into a bed
+position with no honest default. A future bundle could add an explicit assignment surface for this
+if wanted.
+
+**Session plumbing.** `startLiveSession`'s own signature is unchanged; the second device rides
+`EncoderController.captureDeviceRows` (the rail's own selection state), which the worker resolves
+against the `captureDeviceIndex` argument at session start. This state persists across
+[a layout-switcher restart](#switching-layout-mid-session) automatically, without needing to be
+threaded through `LiveSessionRequest` — it is independent, rail-owned selection, not part of what a
+given start call was asked for. A bad or vanished slave (unplugged between selection and start)
+degrades non-fatally to an ordinary single-device session, the same low-ceremony treatment a failed
+monitor-sink open already gets. `SilenceWatchdog` covers **each** device independently: either
+going silent for three seconds fails the session, and the failure text names the one that actually
+went quiet.
+
+**CLI parity.** `ac3cli live` takes a trailing `capture2=<index>` token naming the second device,
+implemented in `run_live` (`src/cli/main.cpp`) against the same shared `DriftResampler`/
+`ClockDriftEstimator` pair — see [CLI → Metadata options](../cli/metadata-options.md#live-options-live-capture2)
+for its grammar. The GUI's own command bar emits it whenever the rail has two devices selected, so
+the line stays honest.
+
 ## The Live session tab
 
 The **Live session** tab exists whenever the live source is selected in the rail (Advanced and
@@ -76,11 +154,14 @@ already underway. It carries:
   its `2 ch · 48 000 Hz` sub-line) → **Live encode** (follows the picker — what the meters and
   soundfield show, printed without a file suffix a session may never write) → **Receiver leg —
   IEC 61937** (with the burst data type it is actually sending).
-- A gap banner when the receiver leg carries less than the encode — today that is exactly object
-  mode, whose leg is the 5.1 bed: every object move is visible on the meters and the soundfield,
-  but a consumer decoder gates object decoding, so the amplifier plays the bed, not the motion.
-  A passthrough that was asked for and did *not open* gets its own banner instead, carrying the
-  reason — "everything past what the leg carries" would be a lie when the leg carries nothing.
+- A gap banner when the receiver leg carries less than the encode — three reasons reach it now:
+  object mode against an E-AC-3-capable receiver (the leg is always just the 5.1 bed — a consumer
+  decoder gates object decoding regardless of what the receiver itself can bitstream), object mode
+  against an AC-3-only receiver (the leg is the [parallel downmix](#parallel-downmix-receiver-leg)
+  of that same bed), and a wide channel layout against an AC-3-only receiver (the leg is a 5.1
+  downmix of the full layout). The banner text names whichever applies. A passthrough that was
+  asked for and did *not open* gets its own banner instead, carrying the reason — "everything past
+  what the leg carries" would be a lie when the leg carries nothing.
 - A draggable **Live room** plan — the same object-placement view as
   [Objects & motion](objects-and-motion.md) with its crosshair and wall names, active only in
   Atmos mode, applying each drag to the running encode immediately — plus a read-only **Objects
@@ -90,9 +171,10 @@ already underway. It carries:
   count works — rather than the device's channel count exactly: a two-channel device still gets
   eight slots to grow into, a device with more than eight starts with all of them bound identity-
   wise (slot *i* fed by capture channel *i*). Which capture channel feeds which slot is otherwise
-  live and mutable: a channel-picker ComboBox — its "Ch 1"…"Ch N" entries built off
-  `EncoderController.liveDeviceChannels`, the live device's own channel count (0 outside a
-  session) — plus **Add** (`EncoderController.addLiveObject(captureChannel)`, binds the next free
+  live and mutable: a channel-picker ComboBox — its entries from
+  `EncoderController.liveCaptureChannelLabels` (`Ch 1`…`Ch N` for the master, `Dev2 Ch 1`… for a
+  selected slave — see [Two-device capture](#two-device-capture-clock-master-model)) — plus **Add**
+  (`EncoderController.addLiveObject(captureChannel)`, binds the next free
   slot), **Reassign selected** (`EncoderController.reassignLiveObjectSlot(slotIndex,
   captureChannel)`, acting on whichever object the room has selected) and **Silence selected** (the
   same call with a negative channel) sit on the Card, visible only while live. Every slot's current
@@ -112,8 +194,10 @@ already underway. It carries:
   the Card serves both phases of a session: before Start it is the pre-flight pick; once live, an
   explicit choice hot-swaps the passthrough leg instead of restarting anything — see
   [Receiver hot-swap](#receiver-hot-swap). The reports card leads with the receiver-display rows
-  the mockup draws — **Format** (`DOLBY DIGITAL PLUS`) and **Input** (the leg's shape) — above
-  Lock, Underruns and Monitor.
+  the mockup draws — **Format** and **Input** — above Lock, Underruns and Monitor. Both read the
+  ACTUAL leg on the wire, not the main plan: `DOLBY DIGITAL PLUS`/the full shape when the receiver
+  takes the main format, or `DOLBY DIGITAL`/`5.1` whenever the
+  [parallel downmix leg](#parallel-downmix-receiver-leg) is the one actually carrying the signal.
 
 Real sessions also land in the [run history](format-and-channels.md): a take or a receiver leg
 opens a run entry (duration `live`), so a mid-session failure — including the device-drop
@@ -216,6 +300,49 @@ This is a different act from **switching layout**, below: that still stops the w
 applies the preset, and starts a fresh one; a hot-swap never stops anything, and only ever
 changes the receiver leg.
 
+## Parallel downmix receiver leg
+
+Passthrough used to be all-or-nothing: an AC-3-only receiver during an E-AC-3 or Atmos session got
+the "cannot bitstream" refusal (`open_live_passthrough`'s own text) and no audio on the receiver
+leg at all — the encode, meters and monitor kept working, but the amplifier heard nothing. It now
+gets a **capped leg** instead: a second, independent `ac3::FrameEncoder` running inside
+`runLiveSession`'s worker loop, alongside — never in place of — the main encode.
+
+**When it engages.** Exactly when passthrough is wanted, the main plan needs E-AC-3 (any object
+session, or a wide channel layout), and the chosen receiver cannot take E-AC-3 but can take plain
+AC-3 (`wants_downmix_leg()` in `encoder_controller.cpp`). A receiver that can take neither format is
+still a genuine refusal — the leg only ever turns a receiver limitation into sound, never papers
+over an actual open failure.
+
+**What it encodes.** No new §7.8 fold-down math exists for this — every layout in this codebase
+(5.1, 7.1, 5.1.4, 7.1.4) has `bed_acmod = k3_2, bed_lfe = true`, and `plan::route()`/`plan::render()`
+already feed each bed-position coded channel a rendering of the BED layout alone, so a wide
+session's own coded channels 0–5 (`chan_views.first(6)`) are ALREADY a self-sufficient 5.1 downmix,
+computed once per frame for the main encode using the plan's own `cmixlev`/`surmixlev`. An Atmos
+session's `AtmosEncoder::bed()` is the same thing for object mode. The leg simply feeds those
+already-computed buffers to a second `ac3::FrameEncoder` — no separate fold to get right or keep in
+sync with the main one. Its bit rate is the main session's own rate reduced to the nearest legal
+Table 5.18 rung at or below 640 (`ac3::clamp_to_legal_ac3_bitrate()`, `src/lib/include/ac3/core/tables.hpp`
+— shared, unit-tested library code, not GUI-local).
+
+**Where it goes.** The leg reuses `open_live_passthrough` — the same helper a session's initial
+open and [receiver hot-swap](#receiver-hot-swap) already share — with an explicit `downmix_leg`
+flag that both requests plain AC-3 (rather than whatever the main plan would have asked for) and
+picks the right `plan_text` wording (`Dolby Digital · 5.1 · <name>`, distinct from the ordinary
+AC-3-session wording and from Atmos's existing "5.1 bed only" text). There is still only **one**
+`PassthroughSink` per session — the leg does not open a second device, it changes what the existing
+sink is asked to carry. `switchLiveReceiver`'s hot-swap re-runs the same capability check between
+frames: moving to an E-AC-3-capable receiver drops the leg and bitstreams the main format again;
+moving to an AC-3-only one spins the leg up. `EncoderController.liveDownmixLeg` is true for exactly
+as long as the leg is the one actually on the wire.
+
+**Truthful UI.** The chain's receiver cell, the Receiver reports Format/Input rows and the gap
+banner all read the *actual* leg rather than the main plan (see the bullets above and
+[Two-device capture](#two-device-capture-clock-master-model) for how the two properties compose).
+The [layout switcher's](#switching-layout-mid-session) legend copy is aligned too: a dotted layout
+was never a dead end to begin with, just capped to the 5.1 downmix rather than bitstreaming as
+encoded.
+
 ## Switching layout mid-session
 
 The **Layout — switching re-locks the receiver** card offers the presets (5.1, 7.1, 5.1.4,
@@ -225,23 +352,31 @@ starts a new session with the same capture/monitor/receiver choices* — the del
 stop-renegotiate-resume the reconnection banner narrates, not a silent switch, and not the lighter
 [receiver hot-swap](#receiver-hot-swap) above, which never stops anything at all. The dots and the
 legend are derived from the **actual receiver**: against an AC-3-only endpoint, layouts past 5.1
-carry the dot and the legend names the device (*"…bitstreams Dolby Digital only — its leg stays
-5.1"*); an E-AC-3-capable receiver bitstreams every layout as encoded, and the legend says that
-instead. The switcher refuses two states honestly: object mode (the layout is fixed at a 5.1
-bed — the card says so) and a take being written to disk (a restart would clobber the first half
-of the file; stop the session and start a new take instead).
+carry the dot and the legend names the device (*"Dotted layouts encode and meter fully — Denon
+AVR-X3800H bitstreams Dolby Digital only, so this receiver hears a 5.1 downmix of them."*) — with
+the [parallel downmix leg](#parallel-downmix-receiver-leg) in place, a dotted layout is never a
+dead end: it still encodes and meters fully, the receiver just hears the capped 5.1 downmix rather
+than the layout itself. An E-AC-3-capable receiver bitstreams every layout as encoded, and the
+legend says that instead. The switcher refuses two states honestly: object mode (the layout is
+fixed at a 5.1 bed — the card says so) and a take being written to disk (a restart would clobber
+the first half of the file; stop the session and start a new take instead).
 
 This is the GUI equivalent of `ac3cli live`: capture → encode → optional live monitor and/or
 passthrough, running continuously and still writing the file `record` always has. See
 [CLI → Commands](../cli/commands.md#live-hardware) for the command-line form, including the
 `live mode` distinction between `channels` and `atmos` — the GUI's Atmos-mode live room is that
-same `atmos` mode, with the timeline replaced by real-time motion. The parity has a real gap
-today, worth being honest about: `ac3cli live` (`run_live` in `src/cli/main.cpp`) still reserves
-and fills a `frames` vector across the whole run and writes it once at the end, has no device-drop
-watchdog, and still pans exactly one object per capture channel with no add/reassign — none of
-this page's [take durability](#take-durability), [device-drop detection](#device-drop-detection),
-live object-slot budget, or [receiver hot-swap](#receiver-hot-swap) has reached the CLI's `live`
-command yet.
+same `atmos` mode, with the timeline replaced by real-time motion. **Two-device capture is at
+parity** — `capture2=<index>` (see [Two-device capture](#two-device-capture-clock-master-model))
+uses the same shared `DriftResampler`/`ClockDriftEstimator` pair on both sides. The rest of the
+parity gap remains, worth being honest about: `ac3cli live` (`run_live` in `src/cli/main.cpp`)
+still reserves and fills a `frames` vector across the whole run and writes it once at the end, has
+no device-drop watchdog, still pans exactly one object per capture channel with no add/reassign,
+and has no parallel downmix leg of its own (an AC-3-only receiver during an `atmos`/E-AC-3 CLI
+session still just gets the plain refusal) — none of this page's
+[take durability](#take-durability), [device-drop detection](#device-drop-detection), live
+object-slot budget, [receiver hot-swap](#receiver-hot-swap), or
+[parallel downmix leg](#parallel-downmix-receiver-leg) has reached the CLI's `live` command beyond
+the two-device clock model itself.
 
 ## Next
 

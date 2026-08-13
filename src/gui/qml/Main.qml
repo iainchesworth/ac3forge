@@ -287,6 +287,19 @@ ApplicationWindow {
         return candidate && candidate.id !== dismissedRunId ? candidate : null;
     }
 
+    // The rail's live branch is a per-device LIST (captureDeviceRows) now,
+    // not a single ComboBox with its own `currentIndex` - these are what
+    // every other live-session call site (recording, monitoring, cliLine,
+    // the chain's capture cell) reads instead of a `deviceBox` id. Row 0 is
+    // always the master; -1/"" with nothing selected reproduces exactly
+    // what an empty ComboBox already meant to every one of those call sites.
+    readonly property int liveMasterCaptureIndex: EncoderController.captureDeviceRows.length > 0
+                                                  ? EncoderController.captureDeviceRows[0].deviceIndex
+                                                  : -1
+    readonly property string liveMasterCaptureName: EncoderController.captureDeviceRows.length > 0
+                                                     ? EncoderController.captureDeviceRows[0].name
+                                                     : ""
+
     readonly property var tabOrder: ["format", "coding", "meta", "objects", "session"]
     readonly property var visibleTabs: {
         const tabs = [{ key: "format", label: qsTr("Format"), badge: "" }];
@@ -467,13 +480,20 @@ ApplicationWindow {
     readonly property string cliLine: {
         const eac3Stream = EncoderController.atmosEnabled || EncoderController.codecIndex === 1;
         if (window.inputMode === "live") {
-            return ["ac3cli", "live", "out." + (eac3Stream ? "ec3" : "ac3"),
-                    String(Math.max(deviceBox.currentIndex, 0)), "10",
-                    String(EncoderController.bitrateKbps),
-                    liveMonitorCheck.checked ? "-1" : "-2",
-                    liveReceiverBox.currentIndex > 0
-                        ? String(liveReceiverBox.currentIndex - 1) : "-2",
-                    EncoderController.atmosEnabled ? "atmos" : "channels"].join(" ");
+            const liveCmd = ["ac3cli", "live", "out." + (eac3Stream ? "ec3" : "ac3"),
+                             String(Math.max(window.liveMasterCaptureIndex, 0)), "10",
+                             String(EncoderController.bitrateKbps),
+                             liveMonitorCheck.checked ? "-1" : "-2",
+                             liveReceiverBox.currentIndex > 0
+                                 ? String(liveReceiverBox.currentIndex - 1) : "-2",
+                             EncoderController.atmosEnabled ? "atmos" : "channels"];
+            // The rail's second device, when one is selected - the same
+            // capture2= token ac3cli's own `live` command takes, so the
+            // command bar stays honest about a two-device session.
+            if (EncoderController.captureDeviceRows.length > 1) {
+                liveCmd.push("capture2=" + EncoderController.captureDeviceRows[1].deviceIndex);
+            }
+            return liveCmd.join(" ");
         }
         const source = EncoderController.sourcePath.length > 0
                        ? window.cliQuote(window.baseName(EncoderController.sourcePath))
@@ -578,7 +598,7 @@ ApplicationWindow {
         id: recordDialog
         title: qsTr("Record to a file")
         fileMode: FileDialog.SaveFile
-        onAccepted: EncoderController.startRecording(deviceBox.currentIndex, selectedFile)
+        onAccepted: EncoderController.startRecording(window.liveMasterCaptureIndex, selectedFile)
     }
 
     FileDialog {
@@ -586,7 +606,7 @@ ApplicationWindow {
         title: qsTr("Save the live take")
         fileMode: FileDialog.SaveFile
         onAccepted: EncoderController.startLiveSession(
-                        deviceBox.currentIndex, liveMonitorCheck.checked,
+                        window.liveMasterCaptureIndex, liveMonitorCheck.checked,
                         liveReceiverBox.currentIndex - 1, true, selectedFile)
     }
 
@@ -680,7 +700,7 @@ ApplicationWindow {
         const pad = (n) => String(n).padStart(2, "0");
         const stem = "take-" + now.getFullYear() + pad(now.getMonth() + 1) + pad(now.getDate())
                      + "-" + pad(now.getHours()) + pad(now.getMinutes()) + pad(now.getSeconds());
-        EncoderController.startRecording(deviceBox.currentIndex,
+        EncoderController.startRecording(window.liveMasterCaptureIndex,
                                          outputFolderUrl() + "/" + plannedFileName(stem));
     }
     // "Warn before a choice changes the codec": when the preference is on
@@ -1098,27 +1118,179 @@ ApplicationWindow {
                         }
 
                         // ---- live branch ---------------------------------
-                        ColumnLayout {
-                            visible: window.inputMode === "live"
+                        // Loader-gated rather than a plain visible: toggle:
+                        // this branch's per-device Repeater constructs a real
+                        // native Button per selected device, and with a real
+                        // capture endpoint on the machine (auto-selected as
+                        // the master - see refreshCaptureDevices()) that
+                        // Repeater is never empty, so an eagerly-constructed
+                        // ColumnLayout here would build those Buttons on
+                        // EVERY window this suite creates, file branch or
+                        // not - dozens of them over a full run. Gating
+                        // construction on inputMode actually being "live"
+                        // keeps that cost where the file branch's own
+                        // per-source Repeater already keeps it: built only
+                        // when there is something to show.
+                        Loader {
+                            active: window.inputMode === "live"
+                            visible: active
                             Layout.fillWidth: true
-                            spacing: Theme.space2
+                            sourceComponent: liveBranchComponent
+                        }
+                    }
 
-                            ComboBox {
-                                id: deviceBox
-                                Layout.fillWidth: true
-                                enabled: !EncoderController.busy
-                                model: EncoderController.captureDevices
-                                // "Start monitoring as soon as a device is
-                                // chosen" — on the explicit pick gesture only
-                                // (onActivated is user interaction, never a
-                                // binding), and never over a running session.
-                                onActivated: {
-                                    if (appSettings.autoMonitor && !EncoderController.busy
-                                        && EncoderController.captureSupported) {
-                                        EncoderController.startLiveSession(
-                                            deviceBox.currentIndex, true, -1, false, "");
+                    Component {
+                        id: liveBranchComponent
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 0
+
+                            // Mirrors the file branch's per-source list just
+                            // above: one row per SELECTED device (not every
+                            // device captureDevices() lists - see
+                            // EncoderController.captureDeviceRows' own doc
+                            // comment). Row 0 is always the master, whose
+                            // delivery paces the session exactly as a
+                            // single-device session always has; row 1, when
+                            // present, is the slave, clock-conformed to it.
+                            Repeater {
+                                id: captureDeviceList
+                                objectName: "captureDeviceList"
+                                model: EncoderController.captureDeviceRows
+                                delegate: ColumnLayout {
+                                    id: deviceRow
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    spacing: 0
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        Layout.topMargin: 8
+                                        Layout.bottomMargin: 8
+
+                                        Text {
+                                            objectName: "liveDeviceName" + deviceRow.modelData.slotIndex
+                                            Layout.fillWidth: true
+                                            text: deviceRow.modelData.isMaster
+                                                  ? deviceRow.modelData.name
+                                                  : qsTr("%1 — slave").arg(deviceRow.modelData.name)
+                                            elide: Text.ElideMiddle
+                                            color: Theme.text
+                                            font.pixelSize: 12
+                                            font.family: Theme.monoFamily
+                                            font.weight: Font.DemiBold
+                                        }
+                                        // A plain Text+MouseArea rather than a
+                                        // native Button: this row is rebuilt
+                                        // per device on a Repeater over real,
+                                        // often non-empty data (a real capture
+                                        // endpoint auto-selects as master - see
+                                        // refreshCaptureDevices()), and this
+                                        // machine's offscreen Qt Quick Controls
+                                        // native-style path (see the recurring
+                                        // "OpenThemeData() failed" warning)
+                                        // hangs when a native Button lands
+                                        // here under some real-object-mode
+                                        // states - a lightweight control sidesteps
+                                        // it entirely rather than working around
+                                        // a platform-styling issue this app has
+                                        // no other lever over.
+                                        Text {
+                                            objectName: "liveDeviceRemove" + deviceRow.modelData.slotIndex
+                                            text: qsTr("Remove")
+                                            color: removeArea.containsMouse ? Theme.text : Theme.textMuted
+                                            font.pixelSize: 12
+                                            font.family: Theme.monoFamily
+                                            opacity: EncoderController.busy ? 0.4 : 1.0
+
+                                            MouseArea {
+                                                id: removeArea
+                                                anchors.fill: parent
+                                                anchors.margins: -4
+                                                hoverEnabled: true
+                                                enabled: !EncoderController.busy
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: EncoderController.removeCaptureDevice(
+                                                               deviceRow.modelData.slotIndex)
+                                            }
+                                        }
+                                    }
+                                    Text {
+                                        objectName: "liveDeviceMeta" + deviceRow.modelData.slotIndex
+                                        text: deviceRow.modelData.rateText
+                                        color: Theme.textMuted
+                                        font.pixelSize: 11
+                                        font.family: Theme.monoFamily
+                                    }
+                                    Rectangle {
+                                        Layout.fillWidth: true
+                                        Layout.topMargin: 8
+                                        height: 1
+                                        color: Theme.neutral200
                                     }
                                 }
+                            }
+
+                            Text {
+                                visible: captureDeviceList.count === 0
+                                Layout.fillWidth: true
+                                Layout.topMargin: 8
+                                Layout.bottomMargin: 8
+                                text: qsTr("No capture devices were found.")
+                                wrapMode: Text.WordWrap
+                                font.pixelSize: 11
+                                color: Theme.accent700
+                            }
+
+                            RowLayout {
+                                visible: EncoderController.captureSupported
+                                Layout.fillWidth: true
+                                Layout.topMargin: 8
+                                Layout.bottomMargin: 8
+                                spacing: Theme.space2
+
+                                ComboBox {
+                                    id: addDeviceBox
+                                    Layout.fillWidth: true
+                                    enabled: !EncoderController.captureDeviceCapReached
+                                             && !EncoderController.busy
+                                    model: EncoderController.captureDevices
+                                }
+                                Button {
+                                    objectName: "addCaptureDeviceButton"
+                                    text: qsTr("Add input…")
+                                    enabled: !EncoderController.captureDeviceCapReached
+                                             && !EncoderController.busy
+                                    onClicked: EncoderController.addCaptureDevice(
+                                                   addDeviceBox.currentIndex)
+                                }
+                            }
+                            Text {
+                                objectName: "captureDeviceCapNote"
+                                visible: EncoderController.captureDeviceCapReached
+                                Layout.fillWidth: true
+                                text: qsTr("Two devices per session — remove one to add another.")
+                                wrapMode: Text.WordWrap
+                                font.pixelSize: 11
+                                color: Theme.textMuted
+                            }
+                            Text {
+                                objectName: "captureDeviceTotals"
+                                visible: EncoderController.captureDeviceCount > 0
+                                Layout.fillWidth: true
+                                Layout.topMargin: 4
+                                text: EncoderController.captureDeviceTotals
+                                font.pixelSize: 11
+                                font.family: Theme.monoFamily
+                                color: Theme.textMuted
+                            }
+                            Rectangle {
+                                visible: EncoderController.captureDeviceCount > 0
+                                Layout.fillWidth: true
+                                Layout.topMargin: 8
+                                Layout.bottomMargin: 8
+                                height: 1
+                                color: Theme.neutral300
                             }
 
                             RowLayout {
@@ -1145,7 +1317,7 @@ ApplicationWindow {
                                             EncoderController.stopLiveSession();
                                         } else {
                                             EncoderController.startLiveSession(
-                                                deviceBox.currentIndex, true, -1, false, "");
+                                                window.liveMasterCaptureIndex, true, -1, false, "");
                                         }
                                     }
                                 }
@@ -4634,7 +4806,7 @@ ApplicationWindow {
                                                                           EncoderController.suggestedOutputName());
                                                 } else {
                                                     EncoderController.startLiveSession(
-                                                        deviceBox.currentIndex, liveMonitorCheck.checked,
+                                                        window.liveMasterCaptureIndex, liveMonitorCheck.checked,
                                                         liveReceiverBox.currentIndex - 1, false, "");
                                                 }
                                             }
@@ -4730,12 +4902,14 @@ ApplicationWindow {
                                     spacing: 0
 
                                     ColumnLayout {
+                                        objectName: "chainCaptureCell"
                                         Layout.fillWidth: true
                                         Text { text: qsTr("CAPTURE"); color: Theme.neutral600; font.pixelSize: 10 }
                                         Text {
+                                            objectName: "chainCaptureName"
                                             Layout.fillWidth: true
-                                            text: deviceBox.currentText.length > 0
-                                                  ? deviceBox.currentText : qsTr("Capture device")
+                                            text: window.liveMasterCaptureName.length > 0
+                                                  ? window.liveMasterCaptureName : qsTr("Capture device")
                                             color: Theme.text
                                             font.pixelSize: Theme.fontNormal
                                             wrapMode: Text.WordWrap
@@ -4743,6 +4917,18 @@ ApplicationWindow {
                                         Text {
                                             visible: EncoderController.liveCaptureDetail.length > 0
                                             text: EncoderController.liveCaptureDetail
+                                            color: Theme.textMuted
+                                            font.pixelSize: 10
+                                            font.family: Theme.monoFamily
+                                        }
+                                        // The slave's measured clock correction - honest,
+                                        // updated with the same ~30 Hz cadence as every
+                                        // other live stat, empty (and this row hidden)
+                                        // outside a two-device session.
+                                        Text {
+                                            objectName: "chainCaptureDrift"
+                                            visible: EncoderController.liveDriftText.length > 0
+                                            text: EncoderController.liveDriftText
                                             color: Theme.textMuted
                                             font.pixelSize: 10
                                             font.family: Theme.monoFamily
@@ -4781,9 +4967,11 @@ ApplicationWindow {
                                         Layout.rightMargin: Theme.space2
                                     }
                                     ColumnLayout {
+                                        objectName: "chainReceiverCell"
                                         Layout.fillWidth: true
                                         Text { text: qsTr("RECEIVER LEG — IEC 61937"); color: Theme.neutral600; font.pixelSize: 10 }
                                         Text {
+                                            objectName: "chainReceiverPlanText"
                                             Layout.fillWidth: true
                                             text: EncoderController.liveReceiverPlanText
                                             color: Theme.text
@@ -4792,7 +4980,13 @@ ApplicationWindow {
                                         }
                                         Text {
                                             visible: EncoderController.livePassthrough
-                                            text: EncoderController.atmosEnabled || EncoderController.codecIndex === 1
+                                            // The capped downmix leg bitstreams plain
+                                            // AC-3 even when the main plan needs E-AC-3
+                                            // (that is the whole point of the leg) - so
+                                            // this reads the ACTUAL format on the wire,
+                                            // not the main plan's.
+                                            text: (EncoderController.atmosEnabled || EncoderController.codecIndex === 1)
+                                                  && !EncoderController.liveDownmixLeg
                                                   ? qsTr("exclusive · E-AC-3 bursts (data type 21)")
                                                   : qsTr("exclusive · AC-3 bursts (data type 1)")
                                             color: Theme.textMuted
@@ -4804,9 +4998,15 @@ ApplicationWindow {
                             }
 
                             // The GAP banner: the receiver leg carries less than the
-                            // encode - today that is exactly object mode, whose leg is
-                            // the 5.1 bed. Named from the two plans, not a stock
-                            // sentence about a passthrough that has already landed.
+                            // encode. Three reasons now reach here, all making liveGap
+                            // true - object mode with an E-AC-3-capable receiver (the
+                            // leg is always just the 5.1 bed, independent of the
+                            // capped downmix leg below), object mode with an AC-3-only
+                            // receiver (the leg is the capped downmix of that SAME
+                            // bed), and a wide channel layout with an AC-3-only
+                            // receiver (the leg is a 5.1 downmix of the full layout) -
+                            // named from the two plans, not a stock sentence about a
+                            // passthrough that has already landed.
                             Rectangle {
                                 Layout.fillWidth: true
                                 Layout.leftMargin: 24
@@ -4824,10 +5024,21 @@ ApplicationWindow {
                                 }
                                 Text {
                                     id: gapMsg
+                                    objectName: "liveGapMessage"
                                     anchors.fill: parent
                                     anchors.margins: Theme.space3
-                                    text: qsTr("The encode is a 5.1 bed with %1 objects; the receiver leg is that Dolby Digital Plus 5.1 bed. Every object move is visible on the meters and the soundfield, but a consumer decoder gates object decoding — the amplifier plays the bed, not the motion.")
-                                          .arg(EncoderController.objectCount)
+                                    text: {
+                                        if (EncoderController.atmosEnabled) {
+                                            return EncoderController.liveDownmixLeg
+                                                ? qsTr("The encode is a 5.1 bed with %1 objects; the receiver leg is a Dolby Digital 5.1 downmix of that bed. Every object move is visible on the meters and the soundfield, but %2 can only bitstream Dolby Digital — the amplifier plays the downmix, not the motion.")
+                                                      .arg(EncoderController.objectCount)
+                                                      .arg(EncoderController.liveReceiverName)
+                                                : qsTr("The encode is a 5.1 bed with %1 objects; the receiver leg is that Dolby Digital Plus 5.1 bed. Every object move is visible on the meters and the soundfield, but a consumer decoder gates object decoding — the amplifier plays the bed, not the motion.")
+                                                      .arg(EncoderController.objectCount);
+                                        }
+                                        return qsTr("The encode is %1; the receiver leg is a Dolby Digital 5.1 downmix — everything past it is visible on the meters, not audible on the amplifier.")
+                                              .arg(EncoderController.channelShapeName);
+                                    }
                                     color: Theme.accent800
                                     font.pixelSize: Theme.fontSmall
                                     wrapMode: Text.WordWrap
@@ -4960,14 +5171,13 @@ ApplicationWindow {
                                         ComboBox {
                                             id: liveObjectChannelPicker
                                             objectName: "liveObjectChannelPicker"
-                                            Layout.preferredWidth: 84
-                                            model: {
-                                                const list = [];
-                                                for (let i = 0; i < EncoderController.liveDeviceChannels; i++) {
-                                                    list.push(qsTr("Ch %1").arg(i + 1));
-                                                }
-                                                return list;
-                                            }
+                                            Layout.preferredWidth: 96
+                                            // One label per flat capture-channel index -
+                                            // "Ch 1".."Ch N" for the master, then "Dev2
+                                            // Ch 1".."Dev2 Ch N" for a selected slave - so
+                                            // a two-device session's picker names which
+                                            // device a channel actually comes from.
+                                            model: EncoderController.liveCaptureChannelLabels
                                         }
                                         Button {
                                             objectName: "addLiveObjectButton"
@@ -5279,8 +5489,13 @@ ApplicationWindow {
                                                 color: Theme.accent
                                             }
                                             Text {
+                                                objectName: "liveLayoutLegendCapped"
                                                 Layout.fillWidth: true
-                                                text: qsTr("Dotted layouts encode and meter, but %1 bitstreams Dolby Digital only — its leg stays 5.1.")
+                                                // The capped downmix leg means a dotted
+                                                // layout is never a dead end now - %1
+                                                // still hears sound, just the 5.1 downmix
+                                                // rather than the layout itself.
+                                                text: qsTr("Dotted layouts encode and meter fully — %1 bitstreams Dolby Digital only, so this receiver hears a 5.1 downmix of them.")
                                                       .arg(EncoderController.liveReceiverName)
                                                 color: Theme.textMuted
                                                 font.pixelSize: 10
@@ -5289,6 +5504,7 @@ ApplicationWindow {
                                             }
                                         }
                                         Text {
+                                            objectName: "liveLayoutLegendFull"
                                             visible: !EncoderController.atmosEnabled
                                                      && EncoderController.livePassthrough
                                                      && EncoderController.liveReceiverEac3
@@ -5326,7 +5542,10 @@ ApplicationWindow {
                                             }
                                             Item { Layout.fillWidth: true }
                                             Text {
+                                                objectName: "receiverReportFormat"
                                                 text: !EncoderController.livePassthrough ? "—"
+                                                      : EncoderController.liveDownmixLeg
+                                                        ? qsTr("DOLBY DIGITAL")
                                                       : (EncoderController.atmosEnabled
                                                          || EncoderController.codecIndex === 1)
                                                         ? qsTr("DOLBY DIGITAL PLUS") : qsTr("DOLBY DIGITAL")
@@ -5346,8 +5565,10 @@ ApplicationWindow {
                                             }
                                             Item { Layout.fillWidth: true }
                                             Text {
+                                                objectName: "receiverReportInput"
                                                 text: !EncoderController.livePassthrough ? "—"
-                                                      : EncoderController.atmosEnabled
+                                                      : (EncoderController.atmosEnabled
+                                                         || EncoderController.liveDownmixLeg)
                                                         ? qsTr("5.1") : EncoderController.channelShapeName
                                                 color: Theme.text
                                                 font.pixelSize: Theme.fontNormal

@@ -65,11 +65,13 @@ add_executable(ac3tests
     test_fft.cpp
     test_frame.cpp
     test_iec61937.cpp
+    test_live_downmix.cpp
     test_mantissas.cpp
     test_matroska.cpp
     test_mdct.cpp
     test_oba.cpp
     test_plan.cpp
+    test_resampler.cpp
     test_ring_buffer.cpp
     test_signing.cpp
     test_spatial.cpp

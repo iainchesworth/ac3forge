@@ -22,6 +22,7 @@
 
 #include "ac3/analysis/levels.hpp"
 #include "ac3/capture/capture.hpp"
+#include "ac3/capture/resampler.hpp"
 #include "ac3/core/tables.hpp"
 #include "ac3/encoder/assignment.hpp"
 #include "ac3/encoder/plan.hpp"
@@ -140,6 +141,37 @@ class EncoderController : public QObject {
     Q_PROPERTY(QString vbrToken READ vbrToken NOTIFY planChanged)
     Q_PROPERTY(QStringList captureDevices READ captureDevices NOTIFY captureDevicesChanged)
     Q_PROPERTY(bool captureSupported READ captureSupported NOTIFY captureDevicesChanged)
+    // ---- live capture device selection (the rail's live branch) -----------
+    // The devices a live session will use once started - not every device
+    // captureDevices() lists, just the ones picked via addCaptureDevice.
+    // Capped at two (the clock-master model's own limit): row 0 is always
+    // the MASTER, whose delivery paces the session's frame loop exactly as a
+    // single-device session always has; row 1, when present, is the SLAVE,
+    // resampled to track the master (see docs/gui/live-session.md). One row
+    // per selection - {slotIndex, deviceIndex, name, channels, rateText,
+    // isMaster} - deviceIndex is captureDevices()'s own numbering, the same
+    // ac3::capture::enumerate_devices() index startLiveSession/
+    // addLiveObject already take. Monitor/Record (the rail's own buttons,
+    // outside a real session) only ever use row 0 - see RailBlock's live
+    // branch in Main.qml.
+    Q_PROPERTY(QVariantList captureDeviceRows READ captureDeviceRows NOTIFY captureDeviceRowsChanged)
+    Q_PROPERTY(int captureDeviceCount READ captureDeviceCount NOTIFY captureDeviceRowsChanged)
+    // True at the two-device cap - what "Add input…" disables on, with the
+    // rail's own "two devices per session" note explaining why.
+    Q_PROPERTY(bool captureDeviceCapReached READ captureDeviceCapReached NOTIFY
+                   captureDeviceRowsChanged)
+    // "2 devices · 4 channels captured" - the rail's totals line. Empty with
+    // nothing selected, the same convention sourceModel's own totals line
+    // uses.
+    Q_PROPERTY(QString captureDeviceTotals READ captureDeviceTotals NOTIFY
+                   captureDeviceRowsChanged)
+    // One label per flat capture-channel index across every selected device
+    // ("Ch 1".."Ch N" for device 1, then "Dev2 Ch 1".."Dev2 Ch N") - what the
+    // Live room's object-channel picker builds its model from once a second
+    // device can contribute channels of its own. liveDeviceChannels is the
+    // combined count these index into.
+    Q_PROPERTY(QStringList liveCaptureChannelLabels READ liveCaptureChannelLabels NOTIFY
+                   liveActiveChanged)
     Q_PROPERTY(QStringList outputDevices READ outputDevices NOTIFY outputDevicesChanged)
     Q_PROPERTY(bool playing READ playing NOTIFY playingChanged)
     Q_PROPERTY(bool canPlay READ canPlay NOTIFY outputChanged)
@@ -421,6 +453,33 @@ class EncoderController : public QObject {
     // whole session when monitoring is off, since there is nothing to time
     // a round trip against.
     Q_PROPERTY(bool liveLatencyMeasured READ liveLatencyMeasured NOTIFY liveStatsChanged)
+    // ---- two-device capture -------------------------------------------------
+    // Whether this session actually opened a second capture device (as
+    // opposed to one merely being selected in captureDeviceRows - a device
+    // can vanish between selection and start, the same as the master
+    // already can).
+    Q_PROPERTY(bool liveSecondDeviceActive READ liveSecondDeviceActive NOTIFY liveActiveChanged)
+    Q_PROPERTY(QString liveSecondDeviceName READ liveSecondDeviceName NOTIFY liveActiveChanged)
+    // The slave's measured clock correction, in signed parts-per-million
+    // relative to its nominal rate - positive means the slave is running
+    // fast and the resampler is dropping extra input to keep pace. Zero
+    // (and liveDriftText empty) until liveSecondDeviceActive and the
+    // estimator's sliding window has data. Honest, not estimated ahead of
+    // time: this is the correction the resampler is actually applying,
+    // published with the same ~30 Hz cadence as the other live stats.
+    Q_PROPERTY(double liveDriftPpm READ liveDriftPpm NOTIFY liveStatsChanged)
+    // "slave -18 ppm" - what the chain's capture cell prints under the
+    // device detail line. Empty outside a two-device session.
+    Q_PROPERTY(QString liveDriftText READ liveDriftText NOTIFY liveStatsChanged)
+    // ---- parallel downmix receiver leg --------------------------------------
+    // True when the receiver leg is NOT bitstreaming the main plan but a
+    // second, independent AC-3 encoder's 5.1 fold-down instead - because the
+    // main plan needs E-AC-3 (a wide channel layout, or any object session)
+    // and the chosen receiver cannot take it, but can take plain AC-3. Drives
+    // the chain's receiver cell, the Receiver reports rows, the gap banner
+    // text and the layout switcher's legend copy - see liveGap, which this
+    // also makes true (the leg always carries less than the main encode).
+    Q_PROPERTY(bool liveDownmixLeg READ liveDownmixLeg NOTIFY liveActiveChanged)
 
 public:
     explicit EncoderController(QObject* parent = nullptr);
@@ -455,6 +514,13 @@ public:
     [[nodiscard]] QString vbrToken() const;
     [[nodiscard]] QStringList captureDevices() const { return capture_devices_; }
     [[nodiscard]] bool captureSupported() const { return !capture_devices_.isEmpty(); }
+    [[nodiscard]] QVariantList captureDeviceRows() const;
+    [[nodiscard]] int captureDeviceCount() const {
+        return static_cast<int>(live_selected_devices_.size());
+    }
+    [[nodiscard]] bool captureDeviceCapReached() const { return live_selected_devices_.size() >= 2; }
+    [[nodiscard]] QString captureDeviceTotals() const;
+    [[nodiscard]] QStringList liveCaptureChannelLabels() const;
     [[nodiscard]] QStringList outputDevices() const { return output_devices_; }
     [[nodiscard]] bool playing() const { return playing_; }
     [[nodiscard]] bool canPlay() const { return !output_path_.isEmpty(); }
@@ -568,6 +634,11 @@ public:
     [[nodiscard]] quint64 liveUnderruns() const { return live_underruns_; }
     [[nodiscard]] double liveLatencyMs() const { return live_latency_ms_; }
     [[nodiscard]] bool liveLatencyMeasured() const { return live_latency_measured_; }
+    [[nodiscard]] bool liveSecondDeviceActive() const { return live_second_device_active_; }
+    [[nodiscard]] QString liveSecondDeviceName() const { return live_second_device_name_; }
+    [[nodiscard]] double liveDriftPpm() const { return live_drift_ppm_; }
+    [[nodiscard]] QString liveDriftText() const;
+    [[nodiscard]] bool liveDownmixLeg() const { return live_downmix_leg_; }
     [[nodiscard]] QString liveCaptureDetail() const { return live_capture_detail_; }
     [[nodiscard]] QString liveReceiverName() const { return live_receiver_name_; }
     [[nodiscard]] bool liveWantedPassthrough() const { return live_wanted_passthrough_; }
@@ -761,6 +832,21 @@ public:
     // dialog. Derived rather than typed, so a .ac3 file can never hold E-AC-3.
     Q_INVOKABLE [[nodiscard]] QString outputSuffix() const;
     Q_INVOKABLE void refreshCaptureDevices();
+    // Adds deviceIndex to captureDeviceRows (the rail's live device list) at
+    // the next free slot - becomes the master if nothing was selected yet,
+    // else the slave. A no-op (silently, the usual convention here) for an
+    // out-of-range index, a device already selected, or once
+    // captureDeviceCapReached is already true - "Add input…" is disabled at
+    // that point, but a stale click should not reach around it either.
+    Q_INVOKABLE void addCaptureDevice(int deviceIndex);
+    // Removes captureDeviceRows[slotIndex]. Removing the master (slot 0)
+    // while a slave is selected promotes the slave to master, the same
+    // "there is no honest way to guess which one should take its place"
+    // reasoning removeSource(0) already applies does NOT hold here (unlike
+    // sourceModel, a live device selection carries no per-row authored state
+    // to lose) - so unlike removeSource, slot 1 simply becomes slot 0. A
+    // no-op for an out-of-range slotIndex.
+    Q_INVOKABLE void removeCaptureDevice(int slotIndex);
     Q_INVOKABLE void startRecording(int deviceIndex, const QUrl& url);
     Q_INVOKABLE void stopRecording();
     Q_INVOKABLE void refreshOutputDevices();
@@ -841,6 +927,7 @@ signals:
     void objectsChanged();
     void routingChanged();
     void captureDevicesChanged();
+    void captureDeviceRowsChanged();
     void outputDevicesChanged();
     void playingChanged();
     void recordingChanged();
@@ -1013,8 +1100,13 @@ private:
     // - is identical between the two, and only the "turn source samples into
     // one encoded unit" step differs. `writers` is already open (or, with
     // write_to_disk false, null) - see openLiveOutputWriters.
-    void runLiveSession(ac3::capture::DeviceInfo device, bool monitor, bool passthrough,
-                        bool write_to_disk, QString file_path,
+    // `device2` is the slave, when a second device was selected and opened
+    // successfully - nullopt for an ordinary single-device session, which
+    // then behaves exactly as it always has. See docs/gui/live-session.md
+    // for the clock-master model this implements.
+    void runLiveSession(ac3::capture::DeviceInfo device,
+                        std::optional<ac3::capture::DeviceInfo> device2, bool monitor,
+                        bool passthrough, bool write_to_disk, QString file_path,
                         std::unique_ptr<LiveOutputWriters> writers);
     // A snapshot of object_configs_ that setObjectPosition/setObjectLfeSend
     // also keep current, guarded by live_object_mutex_ - the one piece of
@@ -1231,6 +1323,13 @@ private:
     QStringList output_devices_;
     std::vector<ac3::capture::DeviceInfo> devices_;
     std::vector<ac3::sinks::RenderDeviceInfo> outputs_;
+    // captureDeviceRows' own selection - indices into devices_, size 0..2,
+    // row 0 the master. Mutated only by addCaptureDevice/removeCaptureDevice
+    // and clamped by refreshCaptureDevices when a device disappears; a
+    // running session does not touch this, so it survives a stop/restart
+    // (switchLiveLayout's own restart) without needing to be threaded
+    // through LiveSessionRequest.
+    std::vector<int> live_selected_devices_;
 
     ac3::Acmod acmod_ = ac3::Acmod::k2_0;
     bool lfe_ = false;
@@ -1338,6 +1437,12 @@ private:
     // (worker-owned once the session is running) from the GUI thread. Reset
     // to 0 alongside every other live_* flag when a session ends.
     int live_device_channels_ = 0;
+    // ---- two-device capture ---------------------------------------------
+    bool live_second_device_active_ = false;
+    QString live_second_device_name_;
+    double live_drift_ppm_ = 0.0;
+    // ---- parallel downmix receiver leg -----------------------------------
+    bool live_downmix_leg_ = false;
     // Genuinely shared with the live worker thread (dragging the Live
     // session's room, or the Objects tab's, while a live Atmos session is
     // running): every read and write goes through live_object_mutex_.
@@ -1352,6 +1457,10 @@ private:
     // thread, matching capture_'s own convention - only buffer()/submit()/
     // stats() are called from the worker while a session runs.
     std::unique_ptr<ac3::capture::Capture> live_capture_;
+    // The slave device, when a two-device session opened one - same
+    // GUI-thread-owns-open/close, worker-thread-only-reads convention as
+    // live_capture_ itself. Null for an ordinary single-device session.
+    std::unique_ptr<ac3::capture::Capture> live_capture2_;
     std::unique_ptr<ac3::sinks::MonitorSink> live_monitor_sink_;
     std::unique_ptr<ac3::sinks::PassthroughSink> live_passthrough_sink_;
     // switchLiveReceiver's handoff to the worker thread: the GUI thread

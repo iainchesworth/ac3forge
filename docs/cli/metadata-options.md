@@ -170,6 +170,32 @@ The GUI's own multi-source Format-tab table (**Add source…** plus a per-channe
 is a direct front end over this same grammar — see
 [GUI → Multi-source & assignment](../gui/source-assignment.md).
 
+## Live options (`live`): `capture2=`
+
+```text
+live options (live; any order, after the positional arguments):
+  capture2=<index>  a second capture device, clock-conformed to the first (see 'devices')
+```
+
+`capture2=<index>` names a second capture device — same 0-based numbering `devices` prints and the
+`capture_device` positional already uses — that joins the session alongside the master. The master
+(`capture_device`) still paces the session exactly as it always has: frame timing, target frame
+count and every other positional argument mean what they meant before this option existed.
+`capture2`'s own sample rate does not need to match the master's, only be a legal AC-3 rate itself
+(32, 44.1 or 48 kHz) — a drift-tracking resampler continuously conforms the slave's stream to the
+master's pacing, correcting both the nominal rate conversion and whatever free-running clock drift
+the two devices accumulate against each other. The slave's channels are appended after the
+master's own, at new, higher channel indices, in the same interleaved per-frame block that feeds
+the encoder — so a two-device `atmos` session simply gets more objects to place. The measured
+drift is printed once, in signed parts-per-million, when the session ends.
+
+```bash
+ac3cli live out.ec3 0 30 448 -2 -2 atmos capture2=1
+```
+
+Captures 30 seconds of Atmos-mode E-AC-3 from device 0 (the clock master) plus device 1
+(clock-conformed to device 0), no monitor or passthrough, writing `out.ec3`.
+
 ## Command-specific notes
 
 - **`mkv`** reads format, packet boundaries, sample rate and channel count from the bitstream

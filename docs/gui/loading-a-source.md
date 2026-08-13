@@ -42,29 +42,47 @@ button jumps to.
 
 ### Live capture
 
-A dropdown of capture endpoints — microphones and playback-device loopbacks, the system default
-marked `[default]` — plus **Refresh** and two ways to run right here:
+A per-device list now, mirroring the File branch just above: one row per **selected** device (not
+every endpoint the platform reports — that full list lives in the **Add input…** picker below),
+each showing its name, `N ch · 48 000 Hz`, and a **Remove** button. Below the list, **Add input…**
+picks from a combo of every enumerated endpoint — microphones and playback-device loopbacks, the
+system default marked `[default]` — and adds it as a new row; **capped at two devices per
+session**, with a note explaining why once the cap is reached. A totals line beneath the list sums
+the selection (`2 devices · 4 channels captured`), and **Refresh** re-enumerates the platform's
+endpoints.
+
+The first row is always the **master**, whose delivery paces the session exactly as a
+single-device session always has; a second row, when added, is the **slave** — its stream is
+resampled in software to track the master's clock rather than sharing one, since two WASAPI
+endpoints never do. See [Live capture & session → Two-device
+capture](live-session.md#two-device-capture-clock-master-model) for the clock model, the drift
+readout, and how the two devices' channels compose in the flat capture-channel space object slots
+address.
+
+Two ways to run right here — both act on the **master** device alone, same as a single-device
+session always has:
 
 - **Monitor** starts a live session that writes *nothing* — no filename is asked for, the meters
   and soundfield run against the real encoded-and-decoded-back signal, an accent square and a
   `monitoring 12.4 s` readout count it, and the button becomes **Stop**. Checking the signal
   never commits to a take, never opens a run entry, and never steals the tab you are
-  configuring. With the [capture preference](index.md#preferences) on (it is by default), simply
-  choosing a device in the dropdown starts monitoring on its own.
+  configuring.
 - **Record…** captures to a file (the button becomes **Stop** with a live elapsed readout). By
   default it writes straight to the output folder under a timestamped take name following the
   naming pattern — the status line and run strip say where; a
   [capture preference](index.md#preferences) makes it ask for a filename first instead.
 
-Setting up a *real* session — writing the take to disk, adding a receiver leg, or both — is not a
-control on this block any more. It happens on the **Live session** tab, whose own Card covers the
-take's idle and running states, the durability guarantees behind an incremental write, the
-device-drop watchdog, and the VBR note that used to sit here and now sits there instead — see
-[Live capture & session](live-session.md) for all of it.
+Setting up a *real* session — writing the take to disk, adding a receiver leg, or both, with
+either device — is not a control on this block any more. It happens on the **Live session** tab,
+whose own Card covers the take's idle and running states, the durability guarantees behind an
+incremental write, the device-drop watchdog (now per device), and the VBR note that used to sit
+here and now sits there instead — see [Live capture & session](live-session.md) for all of it.
 
 A capture endpoint feeds the encoder the same way a file does — same format, same layout, same
 metadata — its channels are just routed onto whatever layout is selected, live, instead of read
-from disk.
+from disk. With two devices selected, the master's channels alone reach a plain channel-mode
+session's bed (see the two-device page linked above for why); both devices' channels reach a live
+Atmos session's object slots.
 
 !!! note "Platform backend"
     Live capture needs the platform's audio backend (WASAPI on Windows, ALSA on Linux). See
