@@ -4184,7 +4184,14 @@ ApplicationWindow {
                                         id: reconnectMsg
                                         Layout.fillWidth: true
                                         Layout.preferredWidth: 1
-                                        text: qsTr("Renegotiating with the receiver. It is re-locking to the new bitstream format — expect a second of silence. This is normal AVR behaviour on a format change.")
+                                        textFormat: Text.StyledText
+                                        // The actual endpoint, by name - "the receiver"
+                                        // is a hedge when the session knows exactly who
+                                        // is re-locking.
+                                        text: EncoderController.liveReceiverName.length > 0
+                                              ? qsTr("<b>Renegotiating with %1.</b> The receiver is re-locking to the new bitstream format — expect a second of silence. This is normal AVR behaviour on a format change.")
+                                                .arg(EncoderController.liveReceiverName)
+                                              : qsTr("Renegotiating with the receiver. It is re-locking to the new bitstream format — expect a second of silence. This is normal AVR behaviour on a format change.")
                                         color: Theme.accent800
                                         font.pixelSize: Theme.fontSmall
                                         wrapMode: Text.WordWrap
@@ -4222,7 +4229,8 @@ ApplicationWindow {
                                                 const s = EncoderController.liveRunningSeconds;
                                                 const m = Math.floor(s / 60);
                                                 const rem = s - m * 60;
-                                                return m + ":" + rem.toFixed(1).padStart(4, "0");
+                                                return String(m).padStart(2, "0") + ":"
+                                                       + rem.toFixed(1).padStart(4, "0");
                                             }
                                             color: Theme.text
                                             font.pixelSize: 15
@@ -4233,7 +4241,7 @@ ApplicationWindow {
                                         spacing: 2
                                         Text { text: qsTr("FRAMES"); color: Theme.neutral600; font.pixelSize: 10 }
                                         Text {
-                                            text: EncoderController.liveFramesEncoded
+                                            text: EncoderController.groupDigits(EncoderController.liveFramesEncoded)
                                             color: Theme.text
                                             font.pixelSize: 15
                                             font.family: Theme.monoFamily
@@ -4243,7 +4251,7 @@ ApplicationWindow {
                                         spacing: 2
                                         Text { text: qsTr("DROPPED"); color: Theme.neutral600; font.pixelSize: 10 }
                                         Text {
-                                            text: EncoderController.liveFramesDropped
+                                            text: EncoderController.groupDigits(EncoderController.liveFramesDropped)
                                             color: EncoderController.liveFramesDropped > 0 ? Theme.accent700 : Theme.text
                                             font.pixelSize: 15
                                             font.family: Theme.monoFamily
@@ -4281,6 +4289,13 @@ ApplicationWindow {
                                             font.pixelSize: Theme.fontNormal
                                             wrapMode: Text.WordWrap
                                         }
+                                        Text {
+                                            visible: EncoderController.liveCaptureDetail.length > 0
+                                            text: EncoderController.liveCaptureDetail
+                                            color: Theme.textMuted
+                                            font.pixelSize: 10
+                                            font.family: Theme.monoFamily
+                                        }
                                     }
                                     Text {
                                         text: "→"
@@ -4294,7 +4309,9 @@ ApplicationWindow {
                                         Text { text: qsTr("LIVE ENCODE"); color: Theme.neutral600; font.pixelSize: 10 }
                                         Text {
                                             Layout.fillWidth: true
-                                            text: window.planLine
+                                            // Suffix-free: a session may write no file,
+                                            // so ".ec3" here would describe nothing.
+                                            text: window.planLineCore
                                             color: Theme.text
                                             font.pixelSize: Theme.fontNormal
                                             wrapMode: Text.WordWrap
@@ -4322,10 +4339,23 @@ ApplicationWindow {
                                             font.pixelSize: Theme.fontNormal
                                             wrapMode: Text.WordWrap
                                         }
+                                        Text {
+                                            visible: EncoderController.livePassthrough
+                                            text: EncoderController.atmosEnabled || EncoderController.codecIndex === 1
+                                                  ? qsTr("exclusive · E-AC-3 bursts (data type 21)")
+                                                  : qsTr("exclusive · AC-3 bursts (data type 1)")
+                                            color: Theme.textMuted
+                                            font.pixelSize: 10
+                                            font.family: Theme.monoFamily
+                                        }
                                     }
                                 }
                             }
 
+                            // The GAP banner: the receiver leg carries less than the
+                            // encode - today that is exactly object mode, whose leg is
+                            // the 5.1 bed. Named from the two plans, not a stock
+                            // sentence about a passthrough that has already landed.
                             Rectangle {
                                 Layout.fillWidth: true
                                 Layout.leftMargin: 24
@@ -4345,7 +4375,40 @@ ApplicationWindow {
                                     id: gapMsg
                                     anchors.fill: parent
                                     anchors.margins: Theme.space3
-                                    text: qsTr("Everything past what the receiver leg carries — the extra channels, every object move — is visible on the meters and the soundfield but not audible on the amplifier, until Dolby Digital Plus passthrough lands.")
+                                    text: qsTr("The encode is a 5.1 bed with %1 objects; the receiver leg is that Dolby Digital Plus 5.1 bed. Every object move is visible on the meters and the soundfield, but a consumer decoder gates object decoding — the amplifier plays the bed, not the motion.")
+                                          .arg(EncoderController.objectCount)
+                                    color: Theme.accent800
+                                    font.pixelSize: Theme.fontSmall
+                                    wrapMode: Text.WordWrap
+                                }
+                            }
+
+                            // A passthrough that was asked for and did NOT open is a
+                            // different story - the leg carries nothing, and the text
+                            // already on liveReceiverPlanText says why.
+                            Rectangle {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 24
+                                Layout.rightMargin: 24
+                                visible: EncoderController.liveActive
+                                         && EncoderController.liveWantedPassthrough
+                                         && !EncoderController.livePassthrough
+                                color: Theme.accent100
+                                implicitHeight: noPassMsg.implicitHeight + Theme.space3 * 2
+
+                                Rectangle {
+                                    anchors.left: parent.left
+                                    anchors.top: parent.top
+                                    anchors.bottom: parent.bottom
+                                    width: 2
+                                    color: Theme.accent
+                                }
+                                Text {
+                                    id: noPassMsg
+                                    anchors.fill: parent
+                                    anchors.margins: Theme.space3
+                                    text: qsTr("No passthrough opened — %1 The session still encodes, meters and monitors; only the receiver leg is missing.")
+                                          .arg(EncoderController.liveReceiverPlanText)
                                     color: Theme.accent800
                                     font.pixelSize: Theme.fontSmall
                                     wrapMode: Text.WordWrap
@@ -4363,6 +4426,68 @@ ApplicationWindow {
                                     Layout.preferredWidth: 340
                                     title: qsTr("Live room")
 
+                                    // The mockup's "Objects in this session" panel,
+                                    // read-only for now: which sounds are live objects
+                                    // and which one a drag would move. Adding or
+                                    // reassigning mid-stream is an open decision (the
+                                    // JOC object count is baked into the stream).
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        Text {
+                                            text: qsTr("OBJECTS IN THIS SESSION")
+                                            color: Theme.neutral600
+                                            font.pixelSize: 10
+                                            font.letterSpacing: 1
+                                        }
+                                        Item { Layout.fillWidth: true }
+                                        Text {
+                                            text: qsTr("%1 objects live").arg(EncoderController.objectCount)
+                                            color: Theme.accent700
+                                            font.pixelSize: 10
+                                            font.family: Theme.monoFamily
+                                        }
+                                    }
+                                    Flow {
+                                        Layout.fillWidth: true
+                                        spacing: 4
+
+                                        Repeater {
+                                            model: EncoderController.objectModel
+
+                                            delegate: Rectangle {
+                                                id: sessionObjChip
+                                                required property var modelData
+                                                readonly property bool isSelected:
+                                                    modelData.index === EncoderController.selectedObjectIndex
+                                                width: sessionObjText.implicitWidth + 12
+                                                height: 20
+                                                color: isSelected ? Theme.accent100 : Theme.neutral100
+                                                border.color: isSelected ? Theme.accent : Theme.divider
+                                                border.width: 1
+
+                                                Text {
+                                                    id: sessionObjText
+                                                    anchors.centerIn: parent
+                                                    text: sessionObjChip.isSelected
+                                                          ? qsTr("obj %1 · %2 · dragging")
+                                                            .arg(sessionObjChip.modelData.index + 1)
+                                                            .arg(sessionObjChip.modelData.sourceLabel)
+                                                          : qsTr("obj %1 · %2")
+                                                            .arg(sessionObjChip.modelData.index + 1)
+                                                            .arg(sessionObjChip.modelData.sourceLabel)
+                                                    font.pixelSize: 9
+                                                    font.family: Theme.monoFamily
+                                                    color: Theme.text
+                                                }
+                                                MouseArea {
+                                                    anchors.fill: parent
+                                                    onClicked: EncoderController.selectedObjectIndex =
+                                                                   sessionObjChip.modelData.index
+                                                }
+                                            }
+                                        }
+                                    }
+
                                     RowLayout {
                                         Layout.fillWidth: true
                                         Text {
@@ -4372,12 +4497,6 @@ ApplicationWindow {
                                             font.family: Theme.monoFamily
                                         }
                                         Item { Layout.fillWidth: true }
-                                        Text {
-                                            text: qsTr("latency %1 ms").arg(EncoderController.liveLatencyMs.toFixed(0))
-                                            color: Theme.neutral600
-                                            font.pixelSize: 10
-                                            font.family: Theme.monoFamily
-                                        }
                                     }
 
                                     Rectangle {
@@ -4387,6 +4506,39 @@ ApplicationWindow {
                                         color: Theme.neutral100
                                         border.color: Theme.divider
                                         border.width: 1
+
+                                        // The crosshair and the walls' names - the same
+                                        // furniture the Objects tab's room carries.
+                                        Rectangle {
+                                            anchors.horizontalCenter: parent.horizontalCenter
+                                            anchors.top: parent.top
+                                            anchors.bottom: parent.bottom
+                                            width: 1
+                                            color: Theme.neutral300
+                                        }
+                                        Rectangle {
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            anchors.left: parent.left
+                                            anchors.right: parent.right
+                                            height: 1
+                                            color: Theme.neutral300
+                                        }
+                                        Text {
+                                            anchors.left: parent.left
+                                            anchors.top: parent.top
+                                            anchors.margins: 6
+                                            text: qsTr("front")
+                                            color: Theme.neutral500
+                                            font.pixelSize: 9
+                                        }
+                                        Text {
+                                            anchors.left: parent.left
+                                            anchors.bottom: parent.bottom
+                                            anchors.margins: 6
+                                            text: qsTr("rear")
+                                            color: Theme.neutral500
+                                            font.pixelSize: 9
+                                        }
 
                                         MouseArea {
                                             anchors.fill: parent
@@ -4412,6 +4564,7 @@ ApplicationWindow {
                                         Repeater {
                                             model: EncoderController.objectCount
                                             Rectangle {
+                                                id: liveMarker
                                                 required property int index
                                                 readonly property var obj: {
                                                     const list = EncoderController.objectModel;
@@ -4425,11 +4578,101 @@ ApplicationWindow {
                                                 color: isSelected ? Theme.accent : Theme.neutral800
                                                 x: (obj ? obj.x : 0.5) * liveRoom.width - width / 2
                                                 y: (obj ? obj.y : 0.5) * liveRoom.height - height / 2
+                                                z: isSelected ? 1 : 0
+
+                                                Rectangle {
+                                                    visible: liveMarker.isSelected
+                                                    anchors.left: parent.right
+                                                    anchors.leftMargin: 4
+                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    width: liveChipText.implicitWidth + 6
+                                                    height: liveChipText.implicitHeight + 2
+                                                    color: Theme.bg
+
+                                                    Text {
+                                                        id: liveChipText
+                                                        anchors.centerIn: parent
+                                                        text: qsTr("obj %1").arg(liveMarker.index + 1)
+                                                        color: Theme.text
+                                                        font.pixelSize: 10
+                                                        font.family: Theme.monoFamily
+                                                    }
+                                                }
 
                                                 MouseArea {
                                                     anchors.fill: parent
-                                                    onClicked: EncoderController.selectedObjectIndex = index
+                                                    onPressed: EncoderController.selectedObjectIndex = liveMarker.index
+                                                    onPositionChanged: (mouse) => {
+                                                        if (!(mouse.buttons & Qt.LeftButton)
+                                                                || !EncoderController.liveActive) {
+                                                            return;
+                                                        }
+                                                        const p = mapToItem(liveRoom, mouse.x, mouse.y);
+                                                        EncoderController.setObjectPosition(
+                                                            liveMarker.index,
+                                                            Math.max(0, Math.min(1, p.x / liveRoom.width)),
+                                                            Math.max(0, Math.min(1, p.y / liveRoom.height)),
+                                                            liveMarker.obj ? liveMarker.obj.z : 0);
+                                                    }
                                                 }
+                                            }
+                                        }
+                                    }
+
+                                    // The mockup's readout grid: where the dragged
+                                    // object sits, and the honest (estimated) delay
+                                    // before it is heard.
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: Theme.space3
+
+                                        Repeater {
+                                            model: ["x", "y", "z"]
+
+                                            ColumnLayout {
+                                                required property string modelData
+                                                Layout.fillWidth: true
+                                                spacing: 2
+
+                                                Text {
+                                                    text: parent.modelData
+                                                    color: Theme.neutral600
+                                                    font.pixelSize: 9
+                                                    font.capitalization: Font.AllUppercase
+                                                }
+                                                Text {
+                                                    text: {
+                                                        const list = EncoderController.objectModel;
+                                                        const sel = EncoderController.selectedObjectIndex;
+                                                        let obj = null;
+                                                        for (let i = 0; i < list.length; ++i) {
+                                                            if (list[i].index === sel) { obj = list[i]; break; }
+                                                        }
+                                                        if (!obj) return "—";
+                                                        return (parent.modelData === "x" ? obj.x
+                                                                : parent.modelData === "y" ? obj.y
+                                                                                           : obj.z).toFixed(2);
+                                                    }
+                                                    color: Theme.text
+                                                    font.pixelSize: 13
+                                                    font.family: Theme.monoFamily
+                                                }
+                                            }
+                                        }
+                                        ColumnLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 2
+
+                                            Text {
+                                                text: qsTr("LATENCY")
+                                                color: Theme.neutral600
+                                                font.pixelSize: 9
+                                            }
+                                            Text {
+                                                text: qsTr("~%1 ms est.").arg(EncoderController.liveLatencyMs.toFixed(0))
+                                                color: Theme.text
+                                                font.pixelSize: 13
+                                                font.family: Theme.monoFamily
                                             }
                                         }
                                     }
@@ -4464,7 +4707,15 @@ ApplicationWindow {
                                                     required property string modelData
                                                     readonly property bool active:
                                                         EncoderController.channelShapeName === modelData
-                                                    readonly property bool beyondReceiver: modelData !== "5.1"
+                                                    // Derived from the ACTUAL receiver: a
+                                                    // layout is only "beyond" a leg that
+                                                    // cannot take the E-AC-3 it needs. An
+                                                    // E-AC-3-capable receiver bitstreams
+                                                    // every one of these.
+                                                    readonly property bool beyondReceiver:
+                                                        EncoderController.livePassthrough
+                                                        && !EncoderController.liveReceiverEac3
+                                                        && modelData !== "5.1"
                                                     readonly property bool locked:
                                                         EncoderController.liveReconnecting
                                                         || EncoderController.liveWritingToDisk
@@ -4483,17 +4734,17 @@ ApplicationWindow {
                                                         anchors.centerIn: parent
                                                         spacing: 5
 
-                                                        Rectangle {
-                                                            visible: liveLayoutButton.beyondReceiver
-                                                            width: 6
-                                                            height: 6
-                                                            color: Theme.accent
-                                                        }
                                                         Text {
                                                             text: liveLayoutButton.modelData
                                                             font.pixelSize: 12
                                                             font.family: Theme.monoFamily
                                                             color: liveLayoutButton.active ? Theme.bg : Theme.text
+                                                        }
+                                                        Rectangle {
+                                                            visible: liveLayoutButton.beyondReceiver
+                                                            width: 6
+                                                            height: 6
+                                                            color: Theme.accent
                                                         }
                                                     }
                                                     MouseArea {
@@ -4505,10 +4756,35 @@ ApplicationWindow {
                                             }
                                         }
 
+                                        RowLayout {
+                                            visible: !EncoderController.atmosEnabled
+                                                     && EncoderController.livePassthrough
+                                                     && !EncoderController.liveReceiverEac3
+                                            Layout.fillWidth: true
+                                            spacing: 6
+
+                                            Rectangle {
+                                                width: 6
+                                                height: 6
+                                                color: Theme.accent
+                                            }
+                                            Text {
+                                                Layout.fillWidth: true
+                                                text: qsTr("Dotted layouts encode and meter, but %1 bitstreams Dolby Digital only — its leg stays 5.1.")
+                                                      .arg(EncoderController.liveReceiverName)
+                                                color: Theme.textMuted
+                                                font.pixelSize: 10
+                                                font.family: Theme.monoFamily
+                                                wrapMode: Text.WordWrap
+                                            }
+                                        }
                                         Text {
                                             visible: !EncoderController.atmosEnabled
+                                                     && EncoderController.livePassthrough
+                                                     && EncoderController.liveReceiverEac3
                                             Layout.fillWidth: true
-                                            text: qsTr("Dotted layouts encode and meter, but the receiver leg stays Dolby Digital 5.1 until DD+ passthrough lands.")
+                                            text: qsTr("%1 takes Dolby Digital Plus — every layout here bitstreams as encoded.")
+                                                  .arg(EncoderController.liveReceiverName)
                                             color: Theme.textMuted
                                             font.pixelSize: 10
                                             font.family: Theme.monoFamily
@@ -4528,20 +4804,44 @@ ApplicationWindow {
                                     Card {
                                         title: qsTr("Receiver reports")
 
+                                        // The mockup's receiver-display rows: what the
+                                        // front panel would say, in its own voice.
                                         RowLayout {
                                             Layout.fillWidth: true
                                             Text {
                                                 Layout.preferredWidth: 80
-                                                text: qsTr("Receiver")
+                                                text: qsTr("Format")
                                                 color: Theme.neutral600
                                                 font.pixelSize: 10
                                             }
+                                            Item { Layout.fillWidth: true }
                                             Text {
-                                                Layout.fillWidth: true
-                                                text: EncoderController.liveReceiverPlanText
+                                                text: !EncoderController.livePassthrough ? "—"
+                                                      : (EncoderController.atmosEnabled
+                                                         || EncoderController.codecIndex === 1)
+                                                        ? qsTr("DOLBY DIGITAL PLUS") : qsTr("DOLBY DIGITAL")
                                                 color: Theme.text
                                                 font.pixelSize: Theme.fontNormal
-                                                wrapMode: Text.WordWrap
+                                                font.family: Theme.monoFamily
+                                                font.letterSpacing: 1
+                                            }
+                                        }
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            Text {
+                                                Layout.preferredWidth: 80
+                                                text: qsTr("Input")
+                                                color: Theme.neutral600
+                                                font.pixelSize: 10
+                                            }
+                                            Item { Layout.fillWidth: true }
+                                            Text {
+                                                text: !EncoderController.livePassthrough ? "—"
+                                                      : EncoderController.atmosEnabled
+                                                        ? qsTr("5.1") : EncoderController.channelShapeName
+                                                color: Theme.text
+                                                font.pixelSize: Theme.fontNormal
+                                                font.family: Theme.monoFamily
                                             }
                                         }
                                         RowLayout {
