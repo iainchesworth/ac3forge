@@ -43,6 +43,7 @@ fs::path scratch_dir() {
 int run_cli(const std::string& args, const fs::path& log) {
     const std::string command =
         "\"" + std::string(AC3CLI_EXE) + "\" " + args + " > \"" + log.string() + "\" 2>&1";
+#ifdef _WIN32
     // std::system() on Windows hands this to `cmd.exe /c <command>`; since
     // `command` both contains spaces AND starts with its own quoted
     // executable path, the CRT's own argument quoting backslash-escapes
@@ -53,9 +54,15 @@ int run_cli(const std::string& args, const fs::path& log) {
     // this outside Catch2 too). Wrapping the whole thing in one more pair of
     // quotes first is the standard workaround: cmd.exe's own "strip a
     // matching outer quote pair" rule then removes exactly this pair,
-    // handing cmd the original, uncorrupted command line beneath it.
+    // handing cmd the original, uncorrupted command line beneath it. POSIX's
+    // `sh -c` has no such rule - the same extra pair there would make `sh`
+    // read the entire command (redirections included) as one big quoted
+    // word, which is exactly the "not found" this guard avoids.
     const std::string wrapped = "\"" + command + "\"";
     return std::system(wrapped.c_str());
+#else
+    return std::system(command.c_str());
+#endif
 }
 
 std::string read_log(const fs::path& log) {

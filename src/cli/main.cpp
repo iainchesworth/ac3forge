@@ -910,7 +910,7 @@ std::size_t offset_samples_for(std::span<const std::pair<std::size_t, double>> o
     std::size_t result = 0;
     for (const auto& [i, seconds] : offsets) {
         if (i == index) {
-            result = static_cast<std::size_t>(seconds * static_cast<double>(sample_rate) + 0.5);
+            result = static_cast<std::size_t>(std::lround(seconds * static_cast<double>(sample_rate)));
         }
     }
     return result;
