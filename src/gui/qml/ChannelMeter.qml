@@ -107,6 +107,9 @@ RowLayout {
         color: root.clipped ? Theme.accent : "transparent"
         border.color: root.clipped ? Theme.accent : Theme.neutral300
         border.width: 1
+        // An unfed channel cannot clip - its CLIP box dims with the rest of
+        // the row instead of implying a judgement is being made.
+        opacity: root.fed ? 1.0 : 0.45
 
         Text {
             anchors.centerIn: parent

@@ -103,8 +103,10 @@ ColumnLayout {
 
             Item {
                 id: earPlan
-                Layout.preferredWidth: 150
-                Layout.preferredHeight: 150
+                // Half the rail each, square - the plans scale with the rail
+                // instead of pinning themselves at a 150 px thumbnail.
+                Layout.preferredWidth: (root.width - 16) / 2
+                Layout.preferredHeight: (root.width - 16) / 2
 
                 readonly property real cx: width / 2
                 readonly property real cy: height / 2
@@ -229,8 +231,8 @@ ColumnLayout {
 
             Item {
                 id: ceilingPlan
-                Layout.preferredWidth: 150
-                Layout.preferredHeight: 150
+                Layout.preferredWidth: (root.width - 16) / 2
+                Layout.preferredHeight: (root.width - 16) / 2
 
                 readonly property real cx: width / 2
                 readonly property real cy: height / 2

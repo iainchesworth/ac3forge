@@ -404,6 +404,52 @@ ApplicationWindow {
         return text.indexOf(" ") >= 0 ? "\"" + text + "\"" : text;
     }
 
+    // What a source's channels DO, in a phrase — "feeds the bed",
+    // "2 objects · 4 to the bed" — derived from the same assignment rows the
+    // table edits, so the rail and the table can never disagree.
+    function sourceRole(sourceIndex) {
+        const rows = EncoderController.assignmentRows;
+        let bed = 0, obj = 0, prog = 0, silent = 0, open = 0, total = 0;
+        for (const row of rows) {
+            if (row.source !== sourceIndex) continue;
+            total++;
+            const token = row.destToken;
+            if (token === "obj") obj++;
+            else if (token === "p1" || token === "p2") prog++;
+            else if (token === "none") { if (row.touched) silent++; else open++; }
+            else bed++;
+        }
+        if (total === 0) {
+            return "";
+        }
+        if (open === total) {
+            // Nothing assigned yet: exactly one source routes automatically;
+            // several with nothing set genuinely go nowhere and say so.
+            if (EncoderController.sourceModel.length === 1) {
+                return EncoderController.atmosEnabled ? qsTr("each channel an object")
+                                                      : qsTr("feeds the bed");
+            }
+            return qsTr("unassigned");
+        }
+        const parts = [];
+        if (bed > 0) {
+            parts.push(bed === total ? qsTr("feeds the bed") : qsTr("%1 to the bed").arg(bed));
+        }
+        if (obj > 0) {
+            parts.push(obj === 1 ? qsTr("1 object") : qsTr("%1 objects").arg(obj));
+        }
+        if (prog > 0) {
+            parts.push(qsTr("programme feed"));
+        }
+        if (silent > 0) {
+            parts.push(qsTr("%1 silent").arg(silent));
+        }
+        if (open > 0) {
+            parts.push(qsTr("%1 unassigned").arg(open));
+        }
+        return parts.join(" · ");
+    }
+
     // ac3cli's actual grammar — real, pasteable syntax, not the handoff's
     // "--bed/--extras" sketch (which does not match ac3cli's positional
     // subcommands). Everything the positionals cannot say rides as trailing
@@ -839,10 +885,16 @@ ApplicationWindow {
                                                 color: Theme.text
                                             }
                                             Text {
-                                                text: qsTr("%1 ch · %2%3")
-                                                      .arg(sourceRow.modelData.channels)
-                                                      .arg(sourceRow.modelData.duration)
-                                                      .arg(sourceRow.modelData.primary ? "" : qsTr(" · added"))
+                                                // "6 ch · 0:08 · feeds the bed" - the
+                                                // mockup's row says what the source DOES,
+                                                // not whether it was added second.
+                                                text: {
+                                                    const role = window.sourceRole(sourceRow.modelData.index);
+                                                    const head = qsTr("%1 ch · %2")
+                                                        .arg(sourceRow.modelData.channels)
+                                                        .arg(sourceRow.modelData.duration);
+                                                    return role.length > 0 ? head + " · " + role : head;
+                                                }
                                                 font.pixelSize: 11
                                                 color: Theme.textMuted
                                             }
@@ -927,7 +979,7 @@ ApplicationWindow {
                                         const mm = Math.floor(seconds / 60);
                                         const ss = String(Math.floor(seconds % 60)).padStart(2, "0");
                                         return [
-                                            { label: qsTr("RATE"), value: sources.length > 0 ? String(sources[0].rate) : "—" },
+                                            { label: qsTr("RATE"), value: sources.length > 0 ? EncoderController.groupDigits(sources[0].rate) : "—" },
                                             { label: qsTr("SOURCES"), value: qsTr("%1 · %2 ch").arg(sources.length).arg(channels) },
                                             { label: qsTr("LENGTH"), value: mm + ":" + ss },
                                         ];
@@ -1017,11 +1069,17 @@ ApplicationWindow {
                                         }
                                     }
                                 }
+                                Rectangle {
+                                    visible: EncoderController.liveActive || EncoderController.recording
+                                    width: 8
+                                    height: 8
+                                    color: Theme.accent
+                                }
                                 Text {
                                     visible: EncoderController.liveActive || EncoderController.recording
                                     text: EncoderController.recording
-                                          ? qsTr("%1 s").arg(EncoderController.recordedSeconds.toFixed(1))
-                                          : qsTr("%1 s").arg(EncoderController.liveRunningSeconds.toFixed(1))
+                                          ? qsTr("recording %1 s").arg(EncoderController.recordedSeconds.toFixed(1))
+                                          : qsTr("monitoring %1 s").arg(EncoderController.liveRunningSeconds.toFixed(1))
                                     font.pixelSize: 12
                                     font.family: Theme.monoFamily
                                     color: Theme.accent700
@@ -1124,15 +1182,32 @@ ApplicationWindow {
                             }
                             return EncoderController.atmosEnabled || meta.fed !== false;
                         }
+                        // Rendered mode counts only the rows it shows: a bed
+                        // channel a dependent replaces is not a speaker, and
+                        // including it in either side of "N of M" made the
+                        // footer disagree with the meters above it.
                         readonly property int fedCount: {
                             const meta = EncoderController.channelMeta;
                             let fed = 0;
                             for (let i = 0; i < meta.length; i++) {
+                                if (window.meterMode === "rendered" && meta[i].replaced === true) {
+                                    continue;
+                                }
                                 if (meta[i].fed !== false) fed++;
                             }
                             return fed;
                         }
-                        readonly property int rowCount: EncoderController.channelMeta.length
+                        readonly property int rowCount: {
+                            const meta = EncoderController.channelMeta;
+                            if (window.meterMode === "coded") {
+                                return meta.length;
+                            }
+                            let rows = 0;
+                            for (let i = 0; i < meta.length; i++) {
+                                if (meta[i].replaced !== true) rows++;
+                            }
+                            return rows;
+                        }
 
                         RowLayout {
                             Layout.fillWidth: true
@@ -1304,7 +1379,11 @@ ApplicationWindow {
                         Layout.margins: Theme.space4
 
                         SoundfieldView {
-                            visible: EncoderController.surround
+                            // Mono draws too - one dot at centre is a true
+                            // statement about where the sound sits. Only dual
+                            // mono has genuinely nothing to draw.
+                            visible: EncoderController.hasLevels
+                                     && !(EncoderController.dualMono && !EncoderController.atmosEnabled)
                             Layout.fillWidth: true
                         }
 
@@ -1327,21 +1406,26 @@ ApplicationWindow {
                                     border.color: Theme.divider
                                     border.width: 1
 
-                                    ColumnLayout {
+                                    RowLayout {
                                         anchors.verticalCenter: parent.verticalCenter
                                         anchors.left: parent.left
                                         anchors.leftMargin: Theme.space3
-                                        spacing: 1
-                                        Text {
-                                            text: programmeCard.modelData
-                                            font.pixelSize: 13
-                                            font.weight: Font.DemiBold
-                                            color: Theme.text
-                                        }
-                                        Text {
-                                            text: qsTr("its own dialnorm and compression")
-                                            font.pixelSize: 10
-                                            color: Theme.textMuted
+                                        spacing: Theme.space3
+
+                                        Rectangle { width: 10; height: 10; color: Theme.text }
+                                        ColumnLayout {
+                                            spacing: 1
+                                            Text {
+                                                text: programmeCard.modelData
+                                                font.pixelSize: 13
+                                                font.weight: Font.DemiBold
+                                                color: Theme.text
+                                            }
+                                            Text {
+                                                text: qsTr("its own dialnorm and compression")
+                                                font.pixelSize: 10
+                                                color: Theme.textMuted
+                                            }
                                         }
                                     }
                                 }
@@ -1356,10 +1440,9 @@ ApplicationWindow {
                         }
 
                         Text {
-                            visible: !EncoderController.surround
-                                     && !(EncoderController.dualMono && EncoderController.hasLevels)
+                            visible: !EncoderController.hasLevels
                             Layout.fillWidth: true
-                            text: qsTr("Two or more full-bandwidth channels make a soundfield worth drawing.")
+                            text: qsTr("Load a source, or start a live capture, and the plan's positions are drawn here at their real angles.")
                             wrapMode: Text.WordWrap
                             font.pixelSize: 12
                             color: Theme.textMuted
@@ -1746,8 +1829,21 @@ ApplicationWindow {
                                             objectName: "preset-" + modelData
                                             Layout.fillWidth: true
                                             text: modelData
-                                            enabled: !EncoderController.busy && !EncoderController.atmosEnabled
-                                            onClicked: EncoderController.applyChannelPreset(modelData)
+                                            // During a live session a preset is still a real
+                                            // act - the mockup's own interaction table has it
+                                            // renegotiate the running stream, which is what
+                                            // switchLiveLayout does (and refuses, with a
+                                            // status line, while a take is on disk).
+                                            enabled: (!EncoderController.busy
+                                                      || EncoderController.liveActive)
+                                                     && !EncoderController.atmosEnabled
+                                            onClicked: {
+                                                if (EncoderController.liveActive) {
+                                                    EncoderController.switchLiveLayout(modelData);
+                                                } else {
+                                                    EncoderController.applyChannelPreset(modelData);
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -1784,7 +1880,13 @@ ApplicationWindow {
                                         color: Theme.textMuted
                                     }
                                     Text {
-                                        text: qsTr("Bit rate")
+                                        // Under VBR the fixed rate is not a target any
+                                        // more - it keeps feeding the coupling/SPX band-
+                                        // edge defaults (its other job), and saying so is
+                                        // what stops two rate controls competing.
+                                        text: EncoderController.vbrAvailable && EncoderController.vbrEnabled
+                                              ? qsTr("Bit rate — band-edge reference, not a target")
+                                              : qsTr("Bit rate")
                                         font.pixelSize: 11
                                         color: Theme.textMuted
                                     }
@@ -1833,6 +1935,10 @@ ApplicationWindow {
                                 VbrPanel {
                                     Layout.fillWidth: true
                                     showExplanations: window.showExplanations
+                                    // The mockup never renders Rate mode under a live
+                                    // source - a live session always runs CBR, and the
+                                    // rail's own warning covers the transition case.
+                                    visible: window.inputMode !== "live"
                                 }
                             }
 
@@ -1856,10 +1962,10 @@ ApplicationWindow {
                                     }
                                     Item { Layout.fillWidth: true }
                                     Text {
-                                        text: qsTr("%1 of %2 positions used · %3")
+                                        text: qsTr("%1 of %2 positions used · %3 coded channels")
                                               .arg(EncoderController.channelBudgetUsed)
                                               .arg(EncoderController.channelBudgetMax)
-                                              .arg(EncoderController.channelShapeName)
+                                              .arg(EncoderController.codedChannelCount)
                                         font.pixelSize: 11
                                         font.family: Theme.monoFamily
                                         color: Theme.neutral700
@@ -1891,10 +1997,30 @@ ApplicationWindow {
                                             Layout.fillWidth: true
                                             Layout.preferredHeight: 40
                                             color: active ? Theme.text : "transparent"
+                                            // 1+1 draws DASHED - "categorically different"
+                                            // (a bed of two programmes, not a speaker
+                                            // shape) - via the Canvas below, since a
+                                            // Rectangle border cannot dash.
                                             border.color: active ? Theme.text
-                                                                 : (dual ? Theme.neutral500 : Theme.divider)
+                                                                 : (dual ? "transparent" : Theme.divider)
                                             border.width: 1
                                             opacity: locked && !active ? 0.25 : 1.0
+
+                                            Canvas {
+                                                anchors.fill: parent
+                                                visible: bedButton.dual && !bedButton.active
+                                                property color dashColor: Theme.neutral500
+                                                onDashColorChanged: requestPaint()
+                                                onVisibleChanged: if (visible) requestPaint()
+                                                onPaint: {
+                                                    const ctx = getContext("2d");
+                                                    ctx.clearRect(0, 0, width, height);
+                                                    ctx.strokeStyle = String(dashColor);
+                                                    ctx.lineWidth = 1;
+                                                    ctx.setLineDash([4, 3]);
+                                                    ctx.strokeRect(0.5, 0.5, width - 1, height - 1);
+                                                }
+                                            }
 
                                             ColumnLayout {
                                                 anchors.centerIn: parent
@@ -2093,8 +2219,12 @@ ApplicationWindow {
                                                         color: Theme.text
                                                     }
                                                     Text {
-                                                        text: qsTr("%1 channels").arg(extraRow.modelData.channels)
+                                                        // The channel tokens themselves ("Lw Rw"),
+                                                        // the same names the channel map prints -
+                                                        // not a count.
+                                                        text: extraRow.modelData.tokens
                                                         font.pixelSize: 11
+                                                        font.family: Theme.monoFamily
                                                         color: Theme.textMuted
                                                     }
                                                 }
@@ -2121,6 +2251,36 @@ ApplicationWindow {
                                                 color: Theme.neutral200
                                             }
                                         }
+                                    }
+                                }
+
+                                // The mockup's accent dual-mono note - what 1+1 is FOR,
+                                // shown whenever it is the bed, independent of the
+                                // explanations preference (it is a state banner, not a
+                                // tutorial).
+                                Rectangle {
+                                    visible: EncoderController.dualMono && !EncoderController.atmosEnabled
+                                    Layout.fillWidth: true
+                                    color: Theme.accent100
+                                    implicitHeight: dualNoteText.implicitHeight + 24
+
+                                    Rectangle {
+                                        anchors.left: parent.left
+                                        anchors.top: parent.top
+                                        anchors.bottom: parent.bottom
+                                        width: 2
+                                        color: Theme.accent
+                                    }
+                                    Text {
+                                        id: dualNoteText
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 14
+                                        anchors.rightMargin: 14
+                                        anchors.topMargin: 12
+                                        text: qsTr("Dual mono carries two unrelated soundtracks — a second language, a commentary track — chosen by the listener, not mixed together. There is no stereo pair, no surround, no LFE and no downmix, and each programme carries its own dialnorm and compression.")
+                                        wrapMode: Text.WordWrap
+                                        font.pixelSize: 12
+                                        color: Theme.text
                                     }
                                 }
 
@@ -2155,7 +2315,7 @@ ApplicationWindow {
                                 spacing: Theme.space3
 
                                 Text {
-                                    text: qsTr("ROUTING")
+                                    text: qsTr("ROUTING — WHAT HAPPENS TO THIS SOURCE")
                                     font.pixelSize: 10
                                     font.letterSpacing: 1
                                     color: Theme.textMuted
@@ -2232,7 +2392,14 @@ ApplicationWindow {
                                                     if (EncoderController.atmosEnabled) {
                                                         return qsTr("%1 objects + 5.1 bed").arg(EncoderController.objectCount);
                                                     }
-                                                    return EncoderController.channelShapeName;
+                                                    // The coded/speaker split, not the shape
+                                                    // name (that is the plan strip's job) -
+                                                    // this cell is where a dependent
+                                                    // substream's replaced channels stop
+                                                    // being invisible bookkeeping.
+                                                    return qsTr("%1 coded · %2 spk")
+                                                        .arg(EncoderController.codedChannelCount)
+                                                        .arg(EncoderController.renderedChannelCount);
                                                 }
                                                 font.pixelSize: 19
                                                 font.family: Theme.headingFamily
@@ -2257,7 +2424,6 @@ ApplicationWindow {
                                 Flow {
                                     Layout.fillWidth: true
                                     spacing: 6
-                                    visible: !EncoderController.dualMono || EncoderController.atmosEnabled
 
                                     Repeater {
                                         model: EncoderController.plannedChannels
@@ -2283,7 +2449,6 @@ ApplicationWindow {
                                     }
                                 }
                                 Text {
-                                    visible: !EncoderController.dualMono || EncoderController.atmosEnabled
                                     text: qsTr("Filled = fed by a source. Outlined = carried silent.")
                                     font.pixelSize: 10
                                     font.family: Theme.monoFamily
@@ -2393,16 +2558,22 @@ ApplicationWindow {
                                         onClicked: EncoderController.refreshOutputDevices()
                                     }
                                     Button {
+                                        objectName: "playToReceiver"
                                         text: EncoderController.playing ? qsTr("Playing…") : qsTr("Play")
+                                        // Greyed for an endpoint that cannot bitstream
+                                        // THIS stream, instead of failing after the
+                                        // click - the labels already say why.
                                         enabled: EncoderController.canPlay && !EncoderController.busy
                                                  && !EncoderController.playing
+                                                 && EncoderController.outputDevices.length > 0
+                                                 && EncoderController.outputDeviceCanBitstream(outputBox.currentIndex)
                                         onClicked: EncoderController.playToReceiver(outputBox.currentIndex)
                                     }
                                 }
                                 Text {
-                                    visible: window.tier === "expert" && window.showExplanations
+                                    visible: window.tier !== "guided" && window.showExplanations
                                     Layout.fillWidth: true
-                                    text: qsTr("Sends the encoded stream as IEC 61937 bursts in exclusive mode, so the receiver decodes it. The packer emits AC-3 bursts only (data type 1), so an E-AC-3 stream is refused here rather than sent as something it is not. Only S/PDIF and HDMI endpoints can bitstream at all.")
+                                    text: qsTr("Sends the encoded stream as IEC 61937 bursts in exclusive mode, so the receiver decodes it. AC-3 rides data-type-1 bursts and E-AC-3 data-type-21 bursts at four-times rate — each endpoint's label says which it accepts, and Play stays greyed for a stream the selected endpoint cannot take. Only S/PDIF and HDMI endpoints can bitstream at all.")
                                     wrapMode: Text.WordWrap
                                     font.pixelSize: 11
                                     color: Theme.textMuted
