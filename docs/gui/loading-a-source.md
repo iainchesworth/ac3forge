@@ -12,8 +12,10 @@ channels get routed onto the plan.
 ### File
 
 **Choose WAV…** opens a file picker. Each loaded source gets a row — filename, channel count,
-duration, and a **Remove** button — and a totals strip beneath the list sums the session
-(`RATE 48000 · SOURCES 2 · 8 ch · LENGTH 0:02`):
+duration, what its channels *do* (`feeds the bed`, `2 objects · 4 to the bed`, `unassigned` —
+derived from the same assignment rows the table edits, so the rail and the table can never
+disagree), and a **Remove** button — and a totals strip beneath the list sums the session
+(`RATE 48 000 · SOURCES 2 · 8 ch · LENGTH 0:02`):
 
 ![A 6-channel WAV loaded, guided tier](screenshots/loading-a-source-loaded.png)
 
@@ -35,10 +37,11 @@ A dropdown of capture endpoints — microphones and playback-device loopbacks, t
 marked `[default]` — plus **Refresh** and three ways to run:
 
 - **Monitor** starts a live session that writes *nothing* — no filename is asked for, the meters
-  and soundfield run against the real encoded-and-decoded-back signal, and the button becomes
-  **Stop**. Checking the signal never commits to a take. With the
-  [capture preference](index.md#preferences) on (it is by default), simply choosing a device in
-  the dropdown starts monitoring on its own.
+  and soundfield run against the real encoded-and-decoded-back signal, an accent square and a
+  `monitoring 12.4 s` readout count it, and the button becomes **Stop**. Checking the signal
+  never commits to a take, never opens a run entry, and never steals the tab you are
+  configuring. With the [capture preference](index.md#preferences) on (it is by default), simply
+  choosing a device in the dropdown starts monitoring on its own.
 - **Record…** captures to a file (the button becomes **Stop** with a live elapsed readout). By
   default it writes straight to the output folder under a timestamped take name following the
   naming pattern — the status line and run strip say where; a
@@ -82,12 +85,14 @@ exact whole-file peak/RMS, with per-channel **CLIP** indicators.
 ## 03 · Soundfield
 
 Two square plan views — **Ear level** and, whenever the plan carries height channels, **Ceiling**
-(a flat ring can't show a ceiling layer, so there are two rings). One dot per position at its
-real angle: **solid when a source feeds it, hollow when the stream carries it silent**, each dot
-brightening with its own live level, plus the energy vector the analysis layer computes. The LFE
-is stated, not drawn — it has no direction, so a caption beneath the rings reads `one
-low-frequency channel · no direction` (or `two independent low-frequency channels` on a 7.2.4)
-instead of a dot pretending it has a place.
+(a flat ring can't show a ceiling layer, so there are two rings) — each scaling to half the
+rail's width rather than pinning at a thumbnail. One dot per position at its real angle: **solid
+when a source feeds it, hollow when the stream carries it silent**, each dot brightening with
+its own live level, plus the energy vector the analysis layer computes. Mono draws too — one dot
+at centre is a true statement about where the sound sits; only dual mono has genuinely nothing
+to draw. The LFE is stated, not drawn — it has no direction, so a caption beneath the rings
+reads `one low-frequency channel · no direction` (or `two independent low-frequency channels` on
+a 7.2.4) instead of a dot pretending it has a place.
 
 A `1+1` dual-mono bed replaces the plans entirely with two named programme cards — dual mono has
 no soundstage to draw (see [Dual mono](format-and-channels.md#dual-mono)).

@@ -39,9 +39,18 @@ Minimum size 1280×900. Two panes, divided by a vertical rule:
   dependent substreams, and the Annex E tools token on a chip. Beneath it, a tab bar (hidden in
   Guided, which fills the panel with its own steps) — tabs carry a badge counting their
   non-default settings, so a collapsed panel still declares itself.
-- **Run strip** (bottom): past and in-flight encode runs, a live-generated `ac3cli` command line
-  with a Copy button, and the primary Encode button. Present in every tier, including Guided —
-  a codec developer must always be able to get back to a command line from what the UI shows.
+- **Run strip** (bottom): past and in-flight runs — file encodes, recordings, and real live
+  sessions alike — a live-generated `ac3cli` command line with a Copy button, and the primary
+  Encode button. Present in every tier, including Guided — a codec developer must always be able
+  to get back to a command line from what the UI shows. The line is genuinely complete: extra
+  sources ride as `src=`, the assignment as `map=`, non-default metadata in `print_meta_usage`'s
+  own grammar, AC-3's bare `couple`, quoting where names carry spaces; a live source renders the
+  `live` subcommand, and a Matroska container is honestly *two* commands (`… && ac3cli mkv …`),
+  because pasting one would write a raw elementary stream into a file named `.mkv`. Finished
+  chips carry **Show in folder**; failed and cancelled chips say which they are with a frame
+  count and a distinct square; a failure's banner names the cause first and offers **Choose
+  another device** / **Retry as file**; and a refusal that never opened a run (an incomplete
+  assignment, the sixteen-object cap) lands in the same banner instead of only a status line.
 
 ## Guided, Advanced, Expert
 
@@ -67,8 +76,8 @@ Minimum size 1280×900. Two panes, divided by a vertical rule:
   [Objects](objects-and-motion.md).
 - **Expert** adds the [Coding tools](coding-tools.md) and [Metadata](metadata.md) tabs (Metadata
   absorbs the Loudness section, so it appears exactly once). [Live session](live-session.md)
-  joins the tab bar in any tier, but only while a session is actually running — it doesn't exist
-  otherwise.
+  joins the tab bar in Advanced and Expert whenever the live source is selected in the rail —
+  sessions running or not — and carries a `live` badge while one runs.
 
 Switching tiers never discards anything already set — it only changes what's visible (and, for
 Guided, how it's presented: one question at a time instead of a page of controls). Leaving Expert

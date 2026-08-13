@@ -24,30 +24,38 @@ choice is real (both codecs genuinely carry it, and VBR needs E-AC-3), so the fi
 there. What never happens is the old circular gate, where extras were locked behind a codec the
 extras themselves change.
 
-The plan strip above the tabs updates live: `E-AC-3 · 7.1.4 · 192 kbps · .ec3` (or `quality <n>`
-in VBR mode), with a sub-line counting what differs when it does (`12 speakers from 12 coded
-channels · 2 dependent substreams` — see
-[Metadata options](../cli/metadata-options.md#the-layout-grammar)).
+The plan strip above the tabs updates live: `E-AC-3 · 7.1.4 · 192 kbps · .ec3` (or
+`quality 75 · ≥192 ≤640` in VBR mode, bounds included), with a sub-line counting what differs
+when it does (`12 speakers from 12 coded channels · 2 dependent substreams`; in object mode it
+counts the fed bed positions live — `4 of 6 bed positions fed · JOC + OAMD · objects carry the
+height` — even mid-drag). See
+[Metadata options](../cli/metadata-options.md#the-layout-grammar).
 
-## Rate mode: CBR or VBR
+The **Bit rate** list carries the 19 nominal AC-3 rates plus a 768 kbps rung that exists for
+E-AC-3 only — E-AC-3 signals its frame size directly rather than indexing Table 5.18, and a wide
+object or 7.2.4 session genuinely wants it. Switching back to AC-3 clamps an over-table rate to
+640 rather than leaving a plan `validate()` would refuse at encode time.
+
+## Rate mode: Constant or Variable
 
 E-AC-3 only, and file output only — the control disappears entirely for AC-3 (no free word count
-to vary; `frmsizecod` indexes a fixed table) and during a live session (IEC 61937 passthrough
-bursts are fixed-size per access unit — see
+to vary; `frmsizecod` indexes a fixed table) and whenever the **live source is selected** (IEC
+61937 passthrough bursts are fixed-size per access unit — see
 [Live capture & session](live-session.md#the-vbr-warning)):
 
-![Rate mode set to VBR: quality 75, no floor, an upper bound at 640 kbps](screenshots/format-vbr.png)
+![The VBR warning on the rail's live branch, the rate-mode panel absent](screenshots/format-vbr.png)
 
-**CBR** (the default) is the plain **Bit rate** dropdown above. **VBR** replaces it with a
+**Constant** (the default) is the plain **Bit rate** dropdown above. **Variable** adds a
 **Quality** slider, 0 (smallest) to 100 (best) — encoder-relative, not a fixed target, and *not*
 linear in bit cost: cost rises steeply above roughly half the range, so a high quality with no
 upper bound will often refuse real programme material outright (`FrameError::kInvalidBitrate`)
-rather than silently producing an oversized frame. Two checkboxes, **Minimum** and **Maximum**,
-each reveal a kbps field when ticked — presence lives on the checkbox, never a sentinel value:
-unticked means no bound at all in that direction, not a default one. The line beneath states the
-current bounds in words (`no floor · ≤ 640 kbps`). **Bit rate** above still matters in VBR mode —
-it keeps feeding the same coupling/spectral-extension band-edge defaults it always has, just not
-as a target rate.
+rather than silently producing an oversized frame. Two checkboxes, **Set a minimum bit rate**
+and **Set a maximum bit rate**, each reveal a kbps field when ticked — presence lives on the
+checkbox, never a sentinel value: *"Bounds are optional — unticked means no bound at all, not a
+default one"*, as the line beneath says, before stating the current bounds in words. **Bit
+rate** above still matters in VBR mode — its label relabels itself *band-edge reference, not a
+target*: it keeps feeding the same coupling/spectral-extension band-edge defaults it always
+has.
 
 A finished VBR run reports what it actually spent, since it has no target: the run strip reads
 `VBR q75 · avg 512 kbps (384–704)` instead of a plain `NNN kbps` figure. At the foot of the
@@ -57,21 +65,24 @@ panel, a monospace `ac3cli vbr token` readout shows the exact
 
 ## Channels — the two-tier picker
 
-A budget counter in the section header (`12 of 16 positions used · 7.1.4` — Table E2.5's channel
-space) tracks the whole selection. Beneath it, the two tiers:
+A budget counter in the section header (`12 of 16 positions used · 14 coded channels` — Table
+E2.5's channel space on one side, what the stream actually transmits on the other) tracks the
+whole selection. Beneath it, the two tiers:
 
-1. **Bed — pick one.** Eight buttons: `1+1` (dual mono, drawn apart from the other seven), then
-   `1/0` through `3/2`, each showing its channel names. There is no "no bed" state — the format
-   cannot carry any channel, ceiling ones included, without one.
+1. **Bed — pick one.** Eight buttons: `1+1` (dual mono, drawn with a dashed border because it is
+   categorically different — two programmes, not a speaker shape), then `1/0` through `3/2`,
+   each showing its channel names. There is no "no bed" state — the format cannot carry any
+   channel, ceiling ones included, without one.
 2. **Low frequency — a count, not a flag.** Three buttons: **None**, **One · LFE**, **Two ·
    LFE + LFE2**. Two means two *independent* low-frequency channels carrying different signal —
    not one signal sent to two subwoofers — which is what makes a 7.2.4 rather than a 7.1.4 (and,
    like everything past a bed and its LFE, needs Dolby Digital Plus).
 3. **Extras — added to the bed.** Four checkbox rows — front wide, rear surround, ceiling front,
    ceiling rear — each a *pair* that toggles together (you can't add a left ceiling channel
-   without its right pair). A row that can't currently be ticked says why in its own right-hand
-   column: `Dolby Digital Plus only` under a plain bed, `fixed by object mode`, `no budget left`
-   at the 16-position cap, or (when unticked under AC-3) `moves to Dolby Digital Plus` — the cost
+   without its right pair), each printing the channel tokens it adds (`Lw Rw`) in the same
+   Table E2.5 names the channel map uses. A row that can't currently be ticked says why in its
+   own right-hand column: `fixed by object mode`, `not part of dual mono`, `no budget left` at
+   the 16-position cap, or (when unticked under AC-3) `moves to Dolby Digital Plus` — the cost
    stated only while it is actually true.
 
     !!! note "No ceiling middle"
@@ -88,8 +99,11 @@ substream carries what is the encoder's business.
 
 Not a speaker layout at all — two independent, single-channel programmes sharing one syncframe
 (§5.4.2's "1+1 dual mono"). Selecting it clears the LFE and extras and greys those controls with
-the reason (`not part of dual mono`); the soundfield plans are replaced with two named programme
-cards, and the meters read **Program 1 / Program 2** — never a correlated pair:
+the reason (`not part of dual mono`); an accent note under the picker says what 1+1 is *for*
+(a second language, a commentary track — chosen by the listener, never mixed); the routing
+sentence states the multiplex plainly; the channel map shows the two `p1`/`p2` tags; the
+soundfield plans are replaced with two named programme cards; and the meters read
+**Program 1 / Program 2** — never a correlated pair:
 
 ![1+1 selected: LFE count and extras locked, programme cards in the rail](screenshots/format-dual-mono.png)
 
@@ -99,12 +113,14 @@ ch 2 → programme 2) or any loaded channels assigned `Programme 1` / `Programme
 [Metadata tab](metadata.md#loudness) (`dialnorm2` for programme 2); automatic `dialnorm=auto`
 measurement is not yet supported for dual mono, so both have to be set by hand.
 
-## Routing
+## Routing — what happens to this source
 
-A **Source → Coded** strip (`2 sources · 8 ch → 5.1`), a generated sentence describing what the
-routing actually does (naming any coded position carried silent), and a **channel map**: one tag
-per coded position, filled when a source feeds it and outlined when it is carried silent — the
-before-the-fact half of the same answer the meters' fed footer gives during a run.
+A **Source → Coded** strip (`2 sources · 8 ch → 8 coded · 6 spk` — the coded/speaker split, so a
+dependent substream's replaced channels stop being invisible bookkeeping), a generated sentence
+describing what the routing actually does (naming any coded position carried silent), and a
+**channel map**: one tag per coded position, filled when a source feeds it and outlined when it
+is carried silent — the before-the-fact half of the same answer the meters' fed footer gives
+during a run.
 
 ## Assignments
 
@@ -126,9 +142,12 @@ Advanced and Expert — a device dropdown annotated with what each endpoint can 
 
 ![Expert tier: the full Format tab down to Passthrough](screenshots/format-expert-passthrough.png)
 
-An E-AC-3 stream is refused at the Play button outright, since the packer only emits AC-3 bursts
-(data type 1). See [Live capture & session](live-session.md) for the live equivalent, and
-[Platform notes](../platforms/windows.md) for which platforms have this hardware-confirmed.
+**Play greys out for an endpoint that cannot bitstream the encoded stream** — the device labels
+already say what each accepts (`AC-3 + E-AC-3 ready`, `cannot bitstream`, …), and the button
+reads them rather than failing after the click. AC-3 rides data-type-1 bursts and E-AC-3
+data-type-21 bursts at four-times rate. See [Live capture & session](live-session.md) for the
+live equivalent, and [Platform notes](../platforms/windows.md) for which platforms have this
+hardware-confirmed.
 
 ## Next
 

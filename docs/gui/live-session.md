@@ -13,17 +13,18 @@ what's hardware-confirmed where.
 ### The VBR warning
 
 [Rate mode](format-and-channels.md#rate-mode-cbr-or-vbr) lives on the Format tab, shared with
-plain file encoding — nothing there knows whether the *next* thing clicked is Encode or Start
-live session, so a note appears on the Input block's live branch instead, whenever VBR is on and
-available:
+plain file encoding — and, per the design, it does not render at all while the live source is
+selected: a live session cannot honour it, so the control would only mislead. A VBR choice made
+earlier still exists, so a note appears on the Input block's live branch whenever it is on,
+naming the rule; the Format tab's Bit rate field meanwhile relabels itself as the band-edge
+reference it becomes under VBR:
 
-![VBR panel with the live-session warning visible in the rail's live branch](screenshots/format-vbr.png)
+![The live-session VBR warning visible in the rail's live branch](screenshots/format-vbr.png)
 
 A live session always runs at the fixed bit rate, regardless of the rate mode: IEC 61937
 passthrough bursts are fixed-size per access unit, and nothing renegotiates burst framing
-mid-stream, so `runLiveSession` drops `vbr` unconditionally before a session ever starts. There's
-also no "finished run" for a live session to summarize a variable rate against the way a file
-encode's run strip does.
+mid-stream, so `runLiveSession` drops `vbr` unconditionally before a session ever starts. The
+run entry a real session opens says so too — its rate text is always the fixed rate.
 
 !!! note "No screenshot of an active session here"
     Every other screenshot in this guide is real capture, taken against a running build. This one
@@ -35,36 +36,54 @@ encode's run strip does.
 
 ## The Live session tab
 
-Once a session is running, a **Live session** tab appears (it doesn't exist in the tab bar
-otherwise) with:
+The **Live session** tab exists whenever the live source is selected in the rail (Advanced and
+Expert) — it is where a session is *understood*, not a modal that only appears once one is
+already underway. Starting a real session (a take on disk, or a receiver leg) focuses it;
+merely monitoring never steals the tab you were configuring on. It carries:
 
-- A reconnection banner while the receiver re-locks to a new bitstream format — a layout change
-  is a deliberate, visible act, and about a second of audio is lost; the banner says so rather
-  than hiding the dropout, and a **Skip** dismisses it early for whoever can hear the receiver
-  has already settled.
-- A transport row: Stop session, a running indicator, frame count, dropped-frame count, and
-  whether the take is being written to disk.
-- A "chain" strip showing the three legs as separate plans: **Capture** (the actual device) →
-  **Live encode** (follows the picker — what the meters and soundfield show) → **Receiver leg —
-  IEC 61937** (capped at what can be bitstreamed today).
-- A gap banner whenever the receiver leg carries less than the encode — everything past it, and
-  every object move, is visible on the meters and the soundfield but not audible on the
-  amplifier until DD+ passthrough lands.
+- A reconnection banner while the receiver re-locks to a new bitstream format — named after the
+  actual endpoint (*"Renegotiating with Denon AVR-X3800H."*), because the session knows exactly
+  who is re-locking. A layout change is a deliberate, visible act, and about a second of audio
+  is lost; the banner says so rather than hiding the dropout, and a **Skip** dismisses it early
+  for whoever can hear the receiver has already settled.
+- A transport row: Stop session, a zero-padded running clock, space-grouped frame and
+  dropped-frame counts, and whether the take is being written to disk.
+- A "chain" strip showing the three legs as separate plans: **Capture** (the actual device, with
+  its `2 ch · 48 000 Hz` sub-line) → **Live encode** (follows the picker — what the meters and
+  soundfield show, printed without a file suffix a session may never write) → **Receiver leg —
+  IEC 61937** (with the burst data type it is actually sending).
+- A gap banner when the receiver leg carries less than the encode — today that is exactly object
+  mode, whose leg is the 5.1 bed: every object move is visible on the meters and the soundfield,
+  but a consumer decoder gates object decoding, so the amplifier plays the bed, not the motion.
+  A passthrough that was asked for and did *not open* gets its own banner instead, carrying the
+  reason — "everything past what the leg carries" would be a lie when the leg carries nothing.
 - A draggable **Live room** plan — the same object-placement view as
-  [Objects & motion](objects-and-motion.md), active only in Atmos mode, applying each drag to the
-  running encode immediately — with a latency readout.
-- A **Layout** switcher and a receiver-reports card (see below).
+  [Objects & motion](objects-and-motion.md) with its crosshair and wall names, active only in
+  Atmos mode, applying each drag to the running encode immediately — plus a read-only **Objects
+  in this session** chip list with its live counter, and an x/y/z/latency readout grid (the
+  latency honestly labelled an estimate).
+- A **Layout** switcher and a receiver-reports card (see below). The reports card leads with the
+  receiver-display rows the mockup draws — **Format** (`DOLBY DIGITAL PLUS`) and **Input**
+  (the leg's shape) — above Lock, Underruns and Monitor.
+
+Real sessions also land in the [run history](format-and-channels.md): a take or a receiver leg
+opens a run entry (duration `live`), so a mid-session failure has a chip and a banner to land
+on, and a finished take has a **Show in folder**. Monitor-only checks deliberately stay out of
+the history.
 
 ## Switching layout mid-session
 
 The **Layout — switching re-locks the receiver** card offers the presets (5.1, 7.1, 5.1.4,
-7.1.4). Picking one *stops the running session, applies the preset, and starts a new session with
-the same capture/monitor/receiver choices* — the deliberate stop-renegotiate-resume the
-reconnection banner narrates, not a silent switch. Layouts past 5.1 carry an accent dot and a
-legend: they encode and meter, but the receiver leg stays Dolby Digital 5.1 until DD+ passthrough
-lands. The switcher refuses two states honestly: object mode (the layout is fixed at a 5.1 bed —
-the card says so) and a take being written to disk (a restart would clobber the first half of the
-file; stop the session and start a new take instead).
+7.1.4) — and the Format tab's own preset buttons do the same thing during a live session, per
+the design's interaction table. Picking one *stops the running session, applies the preset, and
+starts a new session with the same capture/monitor/receiver choices* — the deliberate
+stop-renegotiate-resume the reconnection banner narrates, not a silent switch. The dots and the
+legend are derived from the **actual receiver**: against an AC-3-only endpoint, layouts past 5.1
+carry the dot and the legend names the device (*"…bitstreams Dolby Digital only — its leg stays
+5.1"*); an E-AC-3-capable receiver bitstreams every layout as encoded, and the legend says that
+instead. The switcher refuses two states honestly: object mode (the layout is fixed at a 5.1
+bed — the card says so) and a take being written to disk (a restart would clobber the first half
+of the file; stop the session and start a new take instead).
 
 This is the GUI equivalent of `ac3cli live`: capture → encode → optional live monitor and/or
 passthrough, running continuously and still writing the file `record` always has. See
