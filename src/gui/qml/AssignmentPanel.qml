@@ -28,8 +28,17 @@ ColumnLayout {
     // Sending a source to an object is the entry point to object mode: it
     // fixes E-AC-3 over a 5.1 bed and raises the bit rate to at least
     // 384 kbps, atomically with the assignment — the handoff's own rule.
+    // "objm-pair" is this panel's own synthetic spelling (never a real
+    // destToken - EncoderController never sees it) for "fold this
+    // two-channel source's pair into one mono object": it writes objm to
+    // BOTH channels at once, through the exact same setAssignment path a
+    // single channel takes, so nothing downstream needs to know a pair
+    // affordance exists at all. Picking anything else on EITHER row breaks
+    // the group on its own — dynamicObjectChannels() only groups a
+    // CONTIGUOUS run of objm rows, so one row leaving objm is enough.
     function assignDestination(sourceIndex, channel, token) {
-        if (token === "obj" && !EncoderController.atmosEnabled) {
+        const entersObjectMode = token === "obj" || token === "objm-pair";
+        if (entersObjectMode && !EncoderController.atmosEnabled) {
             if (EncoderController.dualMono) {
                 return; // dual mono offers no object option at all
             }
@@ -39,7 +48,19 @@ ColumnLayout {
                 EncoderController.bitrateKbps = 384;
             }
         }
+        if (token === "objm-pair") {
+            EncoderController.setAssignment(sourceIndex, 0, "objm");
+            EncoderController.setAssignment(sourceIndex, 1, "objm");
+            return;
+        }
         EncoderController.setAssignment(sourceIndex, channel, token);
+    }
+
+    // Formats a trim for the row's own field: "0" at the neutral default,
+    // one decimal otherwise ("-3.5") - the control only ever needs to show
+    // what setAssignmentTrim's own tenth-of-a-dB grid already snapped to.
+    function formatTrim(dbTrim) {
+        return (dbTrim === undefined || dbTrim === 0) ? "0" : dbTrim.toFixed(1);
     }
 
     // With exactly one source and nothing explicitly assigned, the controller
@@ -95,6 +116,28 @@ ColumnLayout {
             options.push({ value: "obj", label: qsTr("A new object") });
         }
         options.push({ value: "none", label: qsTr("Nothing") });
+        return options;
+    }
+
+    // destinationOptions plus, for either row of a two-channel source, the
+    // "objm-pair" affordance (see assignDestination's own comment) - the
+    // stereo-source shortcut for "fold both channels into one mono object".
+    // Never offered for a wider source (a range picker for >2 channels is
+    // out of this panel's per-row model entirely) or under dual mono (no
+    // object option exists there at all).
+    function rowDestinationOptions(sourceIndex, channel) {
+        const options = root.destinationOptions.slice();
+        if (EncoderController.dualMono) {
+            return options;
+        }
+        const sources = EncoderController.sourceModel;
+        if (sourceIndex >= sources.length || sources[sourceIndex].channels !== 2) {
+            return options;
+        }
+        // Ahead of "Nothing" (the list's last entry), matching where "A new
+        // object" itself sits relative to it.
+        options.splice(options.length - 1, 0,
+                       { value: "objm-pair", label: qsTr("One object, folded to mono") });
         return options;
     }
 
@@ -197,17 +240,22 @@ ColumnLayout {
                     id: destBox
                     objectName: "assignDest-" + row.modelData.source + "-" + row.modelData.channel
                     Layout.preferredWidth: 200
-                    model: root.destinationOptions
+                    model: root.rowDestinationOptions(row.modelData.source, row.modelData.channel)
                     textRole: "label"
                     valueRole: "value"
                     font.pixelSize: 12
                     // "none" untouched shows the placeholder; touched shows
-                    // the deliberate "Nothing".
+                    // the deliberate "Nothing". A row's own "objm" reads as
+                    // this ComboBox's "objm-pair" entry when one is offered
+                    // here - there is no separate plain "objm" spelling in
+                    // the list, only the pair affordance (see
+                    // rowDestinationOptions).
                     currentIndex: {
                         const token = row.modelData.destToken;
                         const shown = token === "none" && row.modelData.touched !== true
-                                      ? "" : token;
-                        const options = root.destinationOptions;
+                                      ? "" : (token === "objm" ? "objm-pair" : token);
+                        const options = root.rowDestinationOptions(row.modelData.source,
+                                                                    row.modelData.channel);
                         for (let i = 0; i < options.length; i++) {
                             if (options[i].value === shown) return i;
                         }
@@ -230,6 +278,38 @@ ColumnLayout {
                     color: row.modelData.destToken === "none" && row.modelData.touched !== true
                            && !root.automaticRouting
                            ? Theme.accent700 : Theme.textMuted
+                }
+                // The trim control: a small dB field, one per row, riding
+                // alongside every destination kind (see
+                // Destination::trim_db's own comment - it applies wherever
+                // the channel's content reaches the stream, bed or object
+                // alike). 0 dB - the default, nothing trimmed - renders
+                // muted; any other value stands out the way a deliberate
+                // "Nothing" already does above.
+                TextField {
+                    id: trimField
+                    objectName: "assignTrim-" + row.modelData.source + "-" + row.modelData.channel
+                    Layout.preferredWidth: 52
+                    horizontalAlignment: Text.AlignRight
+                    font.pixelSize: 12
+                    font.family: Theme.monoFamily
+                    color: (row.modelData.trimDb || 0) !== 0 ? Theme.text : Theme.textMuted
+                    enabled: row.modelData.destToken !== "none"
+                    opacity: enabled ? 1.0 : 0.45
+                    validator: DoubleValidator { bottom: -24; top: 24; decimals: 1 }
+                    text: root.formatTrim(row.modelData.trimDb)
+                    onEditingFinished: {
+                        const value = parseFloat(text);
+                        if (!isNaN(value)) {
+                            EncoderController.setAssignmentTrim(row.modelData.source,
+                                                                row.modelData.channel, value);
+                        }
+                    }
+                }
+                Text {
+                    text: qsTr("dB")
+                    font.pixelSize: 10
+                    color: Theme.textMuted
                 }
             }
             Rectangle {

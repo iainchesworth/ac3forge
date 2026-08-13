@@ -1521,6 +1521,7 @@ ApplicationWindow {
                                         Layout.fillWidth: true
                                         channelName: meterRow.modelData.name
                                         fed: meterRow.modelData.fed !== false
+                                        channelIndex: meterRow.index
                                         level: {
                                             const levels = EncoderController.channelLevels;
                                             return meterRow.index < levels.length

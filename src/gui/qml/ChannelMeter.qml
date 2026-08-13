@@ -16,6 +16,12 @@ RowLayout {
     // the two properties beneath, which only change when the layout does.
     property var level: ({})
     property string channelName: ""
+    // This row's index into EncoderController.channelLevels/channelMeta -
+    // what the CLIP box's click handler passes to clearClipLatch(). -1 (the
+    // default) is deliberately never a valid channel, so a caller that
+    // forgets to set this just gets a CLIP box that does nothing when
+    // clicked, rather than clearing the wrong channel's latch.
+    property int channelIndex: -1
     // A channel the routing puts nothing into. It reads -inf for a legitimate
     // reason — the source has nothing that belongs there — which is worth
     // telling apart from a channel that should be carrying audio and is not.
@@ -102,6 +108,8 @@ RowLayout {
     }
 
     Rectangle {
+        id: clipBox
+        objectName: "clipBox"
         Layout.preferredWidth: 30
         Layout.preferredHeight: 13
         color: root.clipped ? Theme.accent : "transparent"
@@ -117,6 +125,19 @@ RowLayout {
             color: root.clipped ? Theme.bg : Theme.neutral500
             font.pixelSize: 8
             font.bold: true
+        }
+
+        // Text+MouseArea, deliberately NOT a native QQC2 Button here - a
+        // native Button inside a Repeater fed real data has hung this
+        // project's offscreen Qt Quick Test binary before (see the
+        // lesson this file's git history/memory carries). Clicking clears
+        // ONLY this channel's latched CLIP - clearClipLatch's own doc
+        // comment on why the latch lives in the controller, not here.
+        MouseArea {
+            anchors.fill: parent
+            enabled: root.fed && root.clipped
+            cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+            onClicked: EncoderController.clearClipLatch(root.channelIndex)
         }
     }
 }

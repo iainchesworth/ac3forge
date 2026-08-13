@@ -23,6 +23,25 @@ TestCase {
     readonly property url surroundUrl:
         Qt.resolvedUrl("../../../../fuzz/seeds/fuzz_wav_read/roundtrip-51.wav")
 
+    // The controller is one singleton shared across every tst_*.qml file in
+    // this binary, run in a platform-dependent order - a test here that left
+    // a source loaded or an explicit assignment set broke unrelated tests in
+    // other files before (see tst_sweep_conformance.qml's own cleanup() and
+    // its comment). Every test in this file sets atmosEnabled, loads
+    // sources, and/or calls setAssignment/setAssignmentTrim, so it resets
+    // the same ground tst_sweep_conformance.qml's own cleanup() does.
+    function cleanup() {
+        EncoderController.atmosEnabled = false;
+        if (EncoderController.sourceModel.length > 0) {
+            EncoderController.removeSource(0);
+        }
+        EncoderController.containerIndex = 0;
+        EncoderController.drcIndex = 0;
+        EncoderController.codecIndex = 0;
+        EncoderController.bitrateKbps = 192;
+        EncoderController.applyChannelPreset("stereo");
+    }
+
     function test_addingASecondSourceNeedsAnAssignment() {
         const win = createTemporaryObject(mainWindowComponent, testCase);
         verify(win !== null);
@@ -139,5 +158,38 @@ TestCase {
 
         compare(EncoderController.runs.length, before + 1);
         compare(EncoderController.runs[0].status, "done");
+    }
+
+    function test_trimRoundTripsThroughSetAssignmentTrimAndMapToken() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+
+        EncoderController.loadSourceFile(surroundUrl);
+        tryCompare(EncoderController, "sourceReady", true);
+        EncoderController.applyChannelPreset("5.1");
+        EncoderController.setAssignment(0, 0, "L");
+        // A plain destination pick carries no trim yet - only
+        // setAssignmentTrim (the row's own dB field) ever sets one.
+        compare(EncoderController.assignmentRows[0].trimDb, 0);
+
+        EncoderController.setAssignmentTrim(0, 0, -3.5);
+        compare(EncoderController.assignmentRows[0].trimDb, -3.5);
+        // mapToken carries it through in the exact map= grammar - the
+        // command bar has to be able to paste this straight into a CLI
+        // call (see CLI -> Metadata options' map= section).
+        verify(EncoderController.mapToken.indexOf("0.0:L@-3.5") >= 0);
+
+        // Clamped to the documented +-24dB bound, snapped to a tenth of a
+        // dB - the same grid parse_destination's own "@" suffix uses.
+        EncoderController.setAssignmentTrim(0, 0, 100);
+        compare(EncoderController.assignmentRows[0].trimDb, 24);
+        EncoderController.setAssignmentTrim(0, 0, -12.34);
+        compare(EncoderController.assignmentRows[0].trimDb, -12.3);
+
+        // "none" has no destination for a trim to ride - Assignment::set
+        // erases the row outright, so setAssignmentTrim on it is a no-op.
+        EncoderController.setAssignment(0, 1, "none");
+        EncoderController.setAssignmentTrim(0, 1, 6.0);
+        compare(EncoderController.assignmentRows[1].trimDb, 0);
     }
 }

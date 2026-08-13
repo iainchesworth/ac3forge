@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cerrno>
+#include <cmath>
+#include <cstdlib>
 
 namespace ac3::plan {
 
@@ -71,6 +74,16 @@ namespace {
 
 }  // namespace
 
+namespace {
+
+// dB to linear amplitude, for a Destination::trim_db riding a Routing gain
+// entry that would otherwise be unity.
+[[nodiscard]] double linear_gain(double trim_db) {
+    return std::pow(10.0, trim_db / 20.0);
+}
+
+}  // namespace
+
 std::optional<Routing> route(const ChannelPlan& target, std::span<const SourceShape> sources,
                              const Assignment& assignment) {
     if (sources.empty()) {
@@ -101,6 +114,7 @@ std::optional<Routing> route(const ChannelPlan& target, std::span<const SourceSh
                 return std::nullopt;  // two rows targeting the same location
             }
             const auto flat = flat_index(sources, s, c);
+            const auto gain = linear_gain(dest.trim_db);
             bool found = false;
             for (std::size_t coded_index = 0; coded_index < coded.size(); ++coded_index) {
                 if (coded[coded_index].location != dest.location) {
@@ -111,7 +125,7 @@ std::optional<Routing> route(const ChannelPlan& target, std::span<const SourceSh
                 // always engaged here. clang-tidy can't see across the loop
                 // condition into the callee, hence the suppression.
                 // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
-                out.gain[coded_index * total + *flat] = 1.0;
+                out.gain[coded_index * total + *flat] = gain;
                 found = true;
             }
             if (!found) {
@@ -139,8 +153,8 @@ std::optional<Routing> dual_mono_routing(std::span<const SourceShape> sources,
     Routing out{.source_channels = static_cast<int>(total),
                 .coded_channels = 2,
                 .gain = std::vector<double>(total * 2, 0.0)};
-    out.gain[0 * total + *i1] = 1.0;
-    out.gain[1 * total + *i2] = 1.0;
+    out.gain[0 * total + *i1] = linear_gain(assignment.at(p1[0].first, p1[0].second).trim_db);
+    out.gain[1 * total + *i2] = linear_gain(assignment.at(p2[0].first, p2[0].second).trim_db);
     return out;
 }
 
@@ -151,39 +165,137 @@ Codec derive_codec(const ChannelPlan& target, const Tools& tools, const Metadata
     return needs_eac3 ? Codec::kEac3 : Codec::kAc3;
 }
 
+namespace {
+
+// dB range a trim can express - see Destination::trim_db's own comment.
+constexpr double kMinTrimDb = -24.0;
+constexpr double kMaxTrimDb = 24.0;
+
+// Snaps to a tenth-of-a-dB grid and clamps to [kMinTrimDb, kMaxTrimDb].
+// A trim is a coarse control (a GUI spinner, not a mixing console), and a
+// fixed decimal grid is what lets format_destination/parse_destination
+// round-trip a trim EXACTLY: an arbitrary double would need up to 17
+// significant decimal digits to survive a round trip losslessly, which
+// "L@-3.5" is deliberately not trying to be. format_trim() below reprints
+// from the same integer-tenths value this derives, never from trim_db
+// directly, so the two stay in lockstep.
+[[nodiscard]] double snap_trim(double trim_db) {
+    const double clamped = std::clamp(trim_db, kMinTrimDb, kMaxTrimDb);
+    return static_cast<double>(std::llround(clamped * 10.0)) / 10.0;
+}
+
+// Not std::from_chars: its floating-point overload is absent from some
+// libc++ builds this project targets (see parse_unit_double's identical
+// note in plan.cpp), so this hand-rolls the same locale-independent,
+// reject-all-trailing-garbage contract with strtod instead. strtod itself
+// is locale-sensitive; nothing in this codebase ever calls setlocale, so
+// the process locale stays "C" for its entire lifetime and this is safe in
+// practice, not just in theory.
+[[nodiscard]] bool parse_trim(std::string_view text, double& out) {
+    if (text.empty()) {
+        return false;
+    }
+    const std::string buffer(text);
+    errno = 0;
+    char* end = nullptr;
+    const double value = std::strtod(buffer.c_str(), &end);
+    if (end != buffer.c_str() + buffer.size() || errno == ERANGE) {
+        return false;
+    }
+    // A little slack before rejecting outright: snap_trim's own clamp would
+    // silently absorb a small overshoot, but a token wildly outside the
+    // documented range (e.g. a stray "@240") is more likely a caller
+    // mistake than a trim - reject rather than silently clamp that far.
+    if (value < kMinTrimDb - 1.0 || value > kMaxTrimDb + 1.0) {
+        return false;
+    }
+    out = snap_trim(value);
+    return true;
+}
+
+// Prints a trim already on the tenth-of-a-dB grid (see snap_trim) as the
+// shortest exact decimal - a whole-dB trim reads as "-3", a fractional one
+// as "-3.5" - built from the same integer-tenths value snap_trim derives,
+// never printed straight from the double, so format_trim(snap_trim(x)) and
+// parse_trim's own snap_trim(strtod(...)) always agree exactly.
+[[nodiscard]] std::string format_trim(double trim_db) {
+    const auto tenths = std::llround(trim_db * 10.0);
+    const auto whole = tenths / 10;
+    const auto frac = std::abs(tenths % 10);
+    std::string out;
+    if (tenths < 0 && whole == 0) {
+        out += '-';  // e.g. -0.5: whole truncates to 0 and loses the sign
+    }
+    out += std::to_string(whole);
+    if (frac != 0) {
+        out += '.';
+        out += static_cast<char>('0' + frac);
+    }
+    return out;
+}
+
+}  // namespace
+
 std::string format_destination(Destination dest) {
+    std::string out;
     switch (dest.kind) {
         case DestinationKind::kUnassigned:
-            return "none";
+            out = "none";
+            break;
         case DestinationKind::kLocation:
-            return std::string{eac3::chanmap::name(dest.location)};
+            out = std::string{eac3::chanmap::name(dest.location)};
+            break;
         case DestinationKind::kObject:
-            return "obj";
+            out = "obj";
+            break;
+        case DestinationKind::kObjectMono:
+            out = "objm";
+            break;
         case DestinationKind::kProgramme1:
-            return "p1";
+            out = "p1";
+            break;
         case DestinationKind::kProgramme2:
-            return "p2";
+            out = "p2";
+            break;
     }
-    return "none";  // unreachable; every DestinationKind is handled above
+    if (dest.trim_db != 0.0) {
+        out += '@';
+        out += format_trim(dest.trim_db);
+    }
+    return out;
 }
 
 std::optional<Destination> parse_destination(std::string_view token) {
-    if (token == "none") {
-        return Destination{};
+    // The trim suffix, if any, splits off first - everything before '@' (or
+    // the whole token, if there is none) is the base destination spelling.
+    const auto at = token.find('@');
+    const auto base = token.substr(0, at);
+
+    Destination dest;
+    if (base == "none") {
+        dest = Destination{};
+    } else if (base == "obj") {
+        dest = Destination{.kind = DestinationKind::kObject};
+    } else if (base == "objm") {
+        dest = Destination{.kind = DestinationKind::kObjectMono};
+    } else if (base == "p1") {
+        dest = Destination{.kind = DestinationKind::kProgramme1};
+    } else if (base == "p2") {
+        dest = Destination{.kind = DestinationKind::kProgramme2};
+    } else if (const auto location = eac3::chanmap::parse_location(base)) {
+        dest = Destination{.kind = DestinationKind::kLocation, .location = *location};
+    } else {
+        return std::nullopt;
     }
-    if (token == "obj") {
-        return Destination{.kind = DestinationKind::kObject};
+
+    if (at != std::string_view::npos) {
+        double trim = 0.0;
+        if (!parse_trim(token.substr(at + 1), trim)) {
+            return std::nullopt;
+        }
+        dest.trim_db = trim;
     }
-    if (token == "p1") {
-        return Destination{.kind = DestinationKind::kProgramme1};
-    }
-    if (token == "p2") {
-        return Destination{.kind = DestinationKind::kProgramme2};
-    }
-    if (const auto location = eac3::chanmap::parse_location(token)) {
-        return Destination{.kind = DestinationKind::kLocation, .location = *location};
-    }
-    return std::nullopt;
+    return dest;
 }
 
 namespace {
@@ -254,10 +366,13 @@ bool parse_assignment(std::string_view text, std::span<const SourceShape> source
         } else {
             // A range only makes sense for a destination with no notion of
             // "which one": an object gets its own identity per channel
-            // regardless, and "none" does not care how many there are. A
-            // location or a programme names exactly one channel, so a range
-            // there would be ambiguous about which channel it actually means.
+            // regardless (or, for objm, the whole range folds to ONE
+            // identity together - still no single channel it "means"), and
+            // "none" does not care how many there are. A location or a
+            // programme names exactly one channel, so a range there would
+            // be ambiguous about which channel it actually means.
             if ((dest->kind != DestinationKind::kObject &&
+                 dest->kind != DestinationKind::kObjectMono &&
                  dest->kind != DestinationKind::kUnassigned) ||
                 !parse_size(channel_text.substr(0, dash), first) ||
                 !parse_size(channel_text.substr(dash + 1), last) || last < first) {
