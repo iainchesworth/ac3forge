@@ -10,8 +10,8 @@ assignment table.
 
 A row of layout **presets** (5.1, 7.1, 5.1.4, 7.1.4, 5.2, 7.2.4 — starting points, not the
 model: they set the bed, LFE count and extras together, but the channel picker below is what the
-encode plan actually reads), then **Codec**, **Bit rate**, and **Container** (elementary stream
-or Matroska):
+encode plan actually reads), then **Codec**, **Bit rate**, and **Container** (elementary stream,
+Matroska, or S/PDIF — see below):
 
 ![E-AC-3, 7.1.4 preset, rear + ceiling extras on](screenshots/format-eac3-714.png)
 
@@ -35,6 +35,26 @@ The **Bit rate** list carries the 19 nominal AC-3 rates plus a 768 kbps rung tha
 E-AC-3 only — E-AC-3 signals its frame size directly rather than indexing Table 5.18, and a wide
 object or 7.2.4 session genuinely wants it. Switching back to AC-3 clamps an over-table rate to
 640 rather than leaving a plan `validate()` would refuse at encode time.
+
+A muted line can appear under the field itself: *"N coded channels at M kbps will audibly
+starve — encoders refuse outright below the frame minimum."* This is a field-level hint, not a
+second gate — it fires when the rate works out to less than roughly 77 kbps per full-bandwidth
+coded channel (LFE excluded), the same per-channel rate the object-mode 384 kbps advice already
+implies for a 5.1 bed (384 / 5). Nothing here refuses an encode; a deliberate stress test at an
+implausibly low rate still runs, right up to the frame's own hard minimum, which is a separate,
+harder line enforced only at encode time. Object mode's own 384 kbps warning (below) takes over
+instead of this one whenever objects are in play, so the two are never shown together. Guided's
+Quality step shows the same idea in plain language when a wide room still has "Good" selected.
+
+**Container**'s third option, **S/PDIF (.wav)**, wraps the encoded stream's IEC 61937 bursts —
+exactly what `ac3cli spdif` produces from a finished file — as a 2-channel 16-bit PCM WAV, playable
+bit-exactly (100% volume, no mixing) into an S/PDIF or HDMI output so a receiver locks onto it and
+lights up its Dolby Digital indicator. Works for both codecs: an E-AC-3 stream's carrier runs at
+four times the content sample rate (Dolby Digital Plus over IEC 60958/61937), which is legal and
+expected, if unusual for a plain PCM16 file. Like Matroska, this container is not something the
+encoder itself writes in one step — the copyable command line is honestly two commands
+(`ac3cli encode … out.ac3 && ac3cli spdif out.ac3 out.wav`), because pasting one command would
+otherwise write a raw elementary stream into a file the receiver expects to be a WAV.
 
 ## Rate mode: Constant or Variable
 
@@ -109,9 +129,12 @@ soundfield plans are replaced with two named programme cards; and the meters rea
 
 The two programmes' channels come from either one two-channel WAV (automatic: ch 1 → programme 1,
 ch 2 → programme 2) or any loaded channels assigned `Programme 1` / `Programme 2` in the
-[assignment table](source-assignment.md). Each programme gets its own **dialnorm** on the
-[Metadata tab](metadata.md#loudness) (`dialnorm2` for programme 2); automatic `dialnorm=auto`
-measurement is not yet supported for dual mono, so both have to be set by hand.
+[assignment table](source-assignment.md). Each programme gets its own **dialnorm**, **DRC
+profile**, and (Expert) **heavy compression** on the [Metadata tab](metadata.md#loudness)
+(`dialnorm2`/`drc2`/`heavy2` for programme 2) — the two programmes are unrelated, so programme 2's
+curve is never inherited from programme 1's; a plan that wants both compressed alike sets both
+explicitly. Automatic `dialnorm=auto` measurement is not yet supported for dual mono, so dialnorm
+has to be set by hand on both — DRC and heavy compression have no such restriction.
 
 ## Routing — what happens to this source
 

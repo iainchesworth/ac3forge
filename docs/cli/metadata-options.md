@@ -11,6 +11,11 @@ metadata options (any order, after the positional arguments):
                     mono downmix, at syncframe resolution
   ceiling=<dBFS>    that ceiling (default -0.5)
   dialogue=<dBFS>   where heavy compression puts dialogue (default -20)
+  drc2=<profile>    Ch2's own DRC profile, layout 1+1 only (§7.7.1) - not
+                    inherited from drc=, set both to compress both programmes alike
+  heavy2            Ch2's own heavy compression, layout 1+1 only (§7.7.2.2)
+  ceiling2=<dBFS>   that ceiling for Ch2 (default -0.5)
+  dialogue2=<dBFS>  where Ch2's heavy compression puts dialogue (default -20)
   dialnorm=auto     measure BS.1770 loudness and derive dialnorm (§5.4.2.8)
   dialnorm=<1..31>  set it directly (default 31)
   dialnorm2=auto | <1..31>   Ch2's own dialnorm, layout 1+1 only (§5.4.2.16, default 31)
@@ -102,9 +107,10 @@ syncframe (§5.4.2's "1+1 dual mono") — so it's never inferred from a source's
 way `mono`/`stereo`/`51`/etc. are; it has to be named explicitly. `encode`/`eac3-encode` take its
 two channels either as one two-channel WAV (channel 0 = Ch1, channel 1 = Ch2) or as two mono WAV
 files (`in.wav` = Ch1, the trailing `in2.wav` positional = Ch2) — see [Commands](commands.md) for
-both forms. `dialnorm2=` above sets Ch2's own dialnorm; `heavy`/`drc` apply to both channels
-independently, each getting its own compressor. `decode` writes Ch1/Ch2 back out in that same
-order, and `levels` names them `Ch1`/`Ch2` rather than a speaker position that would not apply.
+both forms. `dialnorm2=`/`drc2=`/`heavy2` above set Ch2's own dialnorm/DRC/heavy compression;
+none of the three is inherited from Ch1's — a stream that wants both programmes treated alike sets
+both explicitly. `decode` writes Ch1/Ch2 back out in that same order, and `levels` names them
+`Ch1`/`Ch2` rather than a speaker position that would not apply.
 
 ## Source options (`encode`/`eac3-encode`): `src=`, `map=` and `offset=`
 
@@ -218,6 +224,13 @@ Captures 30 seconds of Atmos-mode E-AC-3 from device 0 (the clock master) plus d
 - **`mkv`** reads format, packet boundaries, sample rate and channel count from the bitstream
   itself, so it cannot be told the wrong ones. E-AC-3 dependent substreams are grouped into their
   access unit and counted as the channels they render.
+- **`spdif`** wraps an already-encoded AC-3 or E-AC-3 file's IEC 61937 bursts as a 2-channel
+  16-bit PCM WAV, playable bit-exactly (100% volume, no mixing) into an S/PDIF or HDMI output to
+  light up a receiver's Dolby Digital indicator. Detects AC-3 vs. E-AC-3 from the stream itself
+  (`bsid`); E-AC-3's carrier runs at four times the content sample rate (WASAPI's own
+  `make_eac3_format` convention), which is legal though unusual for a plain PCM16 file. The GUI's
+  S/PDIF container option is this same command, run automatically as the second half of a
+  two-command encode — see [GUI → Format & channels](../gui/format-and-channels.md).
 - **`atmos`** encodes objects orbiting the room at different heights and rates as a 5.1 E-AC-3 bed
   plus JOC + OAMD side data (TS 103 420); FFmpeg reports the result as "Dolby Digital Plus + Dolby
   Atmos". **`atmos-encode`** does the same but makes each channel of a real source file an object
