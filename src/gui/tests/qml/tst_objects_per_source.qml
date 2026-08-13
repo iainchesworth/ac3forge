@@ -9,9 +9,11 @@ import Ac3Forge
 // comment). Two things follow once more than one source can be loaded:
 // objectModel's own sourceLabel should name which FILE an object came from,
 // not just a channel number nothing distinguishes source-to-source; and
-// removing a source from the middle of the list - which shifts every later
-// index down - must not let authored position/motion silently reattach to
-// whatever different channel now sits at an index it used to own.
+// authored position/motion is keyed by (source, channel) identity, not by
+// an object's position in the list (EncoderController::ObjectKey), so
+// removing a source from the middle - which shifts every later source index
+// down - must not lose a SURVIVING source's authored state, only the
+// departed source's own.
 TestCase {
     id: testCase
     name: "ObjectsPerSource"
@@ -54,7 +56,7 @@ TestCase {
         compare(EncoderController.objectModel[7].sourceLabel, surroundLabel + " ch 6");
     }
 
-    function test_removingAMiddleSourceResetsAuthoredObjectState() {
+    function test_removingAMiddleSourceKeepsSurvivingSourcesObjectState() {
         const win = createTemporaryObject(mainWindowComponent, testCase);
         verify(win !== null);
         EncoderController.atmosEnabled = true;
@@ -66,27 +68,32 @@ TestCase {
         EncoderController.addSourceFile(stereoUrl);         // objects 8-9
         tryVerify(() => EncoderController.objectModel.length === 10);
 
-        // A distinctive position for the third source's first channel -
-        // nowhere near any default spread position (see
+        // A distinctive position and a keyframe for the third source's
+        // first channel - nowhere near any default spread position (see
         // refreshObjectConfigs' own x formula, which never reaches 0.9).
         EncoderController.setObjectPosition(8, 0.9, 0.9, 0.5);
         compare(EncoderController.objectModel[8].x, 0.9);
+        EncoderController.addObjectKeyframe(8, 1.5);
+        compare(EncoderController.objectKeyframes(8).length, 1);
 
         // Removing the MIDDLE source (the surround file, sourceModel index
-        // 1) shifts every later flat index down - a different channel now
-        // sits where the authored position used to point, so the controller
-        // clears the whole table rather than guess. Objects follow the
-        // assignments now, and with the table cleared NOTHING rides as an
-        // object until channels are assigned again - the same "refuse to
-        // guess" call the assignment itself makes.
+        // 1) shifts every later source index down by one - the third
+        // source becomes source index 1. The assignment table still clears
+        // (a row there addressed a position, and every later one just
+        // changed - see source-assignment.md), so nothing rides as an
+        // object again until channels are reassigned. But object state
+        // itself is keyed by (source, channel) identity, not position (see
+        // EncoderController::ObjectKey), so it survives the shift dormant
+        // rather than being wiped - only the departed source's OWN entries
+        // are dropped.
         EncoderController.removeSource(1);
         tryVerify(() => EncoderController.objectModel.length === 0);
         compare(EncoderController.objectCount, 0);
         verify(EncoderController.unassignedWarnings.length > 0);
 
-        // Assigning a surviving channel to an object brings it back with a
-        // FRESH default - never the stale 0.9/0.9 authored for the channel
-        // that used to sit at its index.
+        // The primary's first channel was never touched - assigning IT to
+        // an object gets a fresh default, not the 0.9/0.9 authored for a
+        // different channel.
         EncoderController.setAssignment(0, 0, "obj");
         tryVerify(() => EncoderController.objectModel.length === 1);
         verify(Math.abs(EncoderController.objectModel[0].x - 0.9) > 0.01
@@ -95,6 +102,66 @@ TestCase {
         compare(EncoderController.objectKeyframes(0).length, 0);
         const primaryLabel = EncoderController.sourceModel[0].label;
         compare(EncoderController.objectModel[0].sourceLabel, primaryLabel + " ch 1");
+
+        // The surviving third source (now source index 1, channel 0) is
+        // the one the 0.9/0.9/0.5 position and the keyframe were actually
+        // authored on - assigning it back to an object recovers them
+        // exactly, proving the removal above never touched it.
+        EncoderController.setAssignment(1, 0, "obj");
+        tryVerify(() => EncoderController.objectModel.length === 2);
+        const recovered = EncoderController.objectModel[1];
+        compare(recovered.x, 0.9);
+        compare(recovered.y, 0.9);
+        compare(recovered.z, 0.5);
+        compare(recovered.hasPath, true);
+        compare(EncoderController.objectKeyframes(1).length, 1);
+        compare(EncoderController.objectKeyframes(1)[0].time, 1.5);
+        const thirdLabel = EncoderController.sourceModel[1].label;
+        compare(EncoderController.objectModel[1].sourceLabel, thirdLabel + " ch 1");
+    }
+
+    function test_reassigningAChannelAwayFromObjectAndBackKeepsItsMotion() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        EncoderController.atmosEnabled = true;
+
+        EncoderController.loadSourceFile(surroundUrl);
+        tryCompare(EncoderController, "sourceReady", true);
+        tryVerify(() => EncoderController.objectModel.length === 6);
+
+        // Explicit assignments for every channel, all to "an object" - the
+        // moment ANY channel gets an explicit destination, automatic
+        // routing stops applying to the rest too (see
+        // source-assignment.md), so this is the baseline the test then
+        // edits one entry of rather than relying on the implicit default.
+        for (let c = 0; c < 6; c++) {
+            EncoderController.setAssignment(0, c, "obj");
+        }
+        tryVerify(() => EncoderController.objectModel.length === 6);
+
+        EncoderController.setObjectPosition(2, 0.85, 0.2, 0.6);
+        EncoderController.addObjectKeyframe(2, 2.0);
+        compare(EncoderController.objectKeyframes(2).length, 1);
+
+        // Sending channel 2 to the bed's L instead removes it from the
+        // dynamic-object list (five objects left). Its motion does not
+        // travel with the position it used to hold in that list; it stays
+        // with the channel.
+        EncoderController.setAssignment(0, 2, "L");
+        tryVerify(() => EncoderController.objectModel.length === 5);
+
+        // Sending it back to "an object" - it lands wherever the current
+        // dynamic-object order puts it, but its own authored position and
+        // keyframe come back untouched.
+        EncoderController.setAssignment(0, 2, "obj");
+        tryVerify(() => EncoderController.objectModel.length === 6);
+        const restored = EncoderController.objectModel.find(
+            (obj) => obj.sourceLabel === "Ch 3");
+        verify(restored !== undefined);
+        compare(restored.x, 0.85);
+        compare(restored.y, 0.2);
+        compare(restored.z, 0.6);
+        compare(restored.hasPath, true);
     }
 
     readonly property url outputUrl:
