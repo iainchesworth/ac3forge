@@ -44,8 +44,10 @@ target_link_libraries(ac3bench PRIVATE ac3::forge ac3::warnings)
 # performance programme these three both belong to (Tracy zones give the
 # real-time breakdown, this gives an offline one that needs no profiler
 # attached). Not ctest-registered, same reasoning as ac3bench above: nothing
-# here asserts anything, and its JSON is for local/manual trend-watching
-# rather than a CI gate.
+# here asserts anything, and its JSON feeds scripts/append-kernel-history.py
+# (docs/performance-trend.md's per-kernel tables) as a trend signal, never a
+# CI gate - see that script's docstring for why it is deliberately
+# non-gating.
 # ---------------------------------------------------------------------------
 add_executable(ac3kernelbench kernel_bench.cpp)
 

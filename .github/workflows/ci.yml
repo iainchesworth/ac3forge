@@ -454,7 +454,11 @@ jobs:
   # ac3perf (a hard, absolute real-time gate that runs on every push/PR as
   # part of build-and-test's own ctest, not here). This job answers a softer
   # question on top of that gate: is throughput drifting slower over time even
-  # while ac3perf keeps passing.
+  # while ac3perf keeps passing. It records two granularities per run:
+  # ac3bench's whole-frame ms/frame (gating at the +100% tier, below) and
+  # ac3kernelbench's per-kernel ns/call (never gating - see
+  # scripts/append-kernel-history.py for why), so a whole-frame drift can be
+  # attributed to the kernel that caused it without re-running a profiler.
   #
   # One leg (linux-gcc), not the whole matrix: unlike the gold-reference SNR
   # numbers (genuinely cross-platform floating-point comparisons worth seeing
@@ -505,14 +509,24 @@ jobs:
       - name: Configure
         run: cmake --preset config-linux-gcc
 
-      - name: Build ac3bench
-        run: cmake --build --preset build-linux-gcc --target ac3bench -- -k 0
+      - name: Build ac3bench and ac3kernelbench
+        run: cmake --build --preset build-linux-gcc --target ac3bench ac3kernelbench -- -k 0
 
       - name: Run ac3bench
         run: |
           set -euo pipefail
           mkdir -p results/performance-linux-gcc
           build/config-linux-gcc/bin/ac3bench --json-out results/performance-linux-gcc/bench.json
+
+      # A separate results tree from ac3bench's on purpose:
+      # append-performance-history.py globs every *.json under its legs and
+      # requires ac3bench's schema, so the two producers' outputs must never
+      # share a directory - see append-kernel-history.py's load_leg_results.
+      - name: Run ac3kernelbench
+        run: |
+          set -euo pipefail
+          mkdir -p kernel-results/kernels-linux-gcc
+          build/config-linux-gcc/bin/ac3kernelbench --json-out kernel-results/kernels-linux-gcc/kernels.json
 
       # Same mechanic as quality-trend's own step in _build.yml (plain git
       # over an HTTPS remote carrying the token, not actions/checkout, which
@@ -552,6 +566,28 @@ jobs:
           commit_date="$(git show -s --format=%cI "$COMMIT_SHA")"
           python3 scripts/append-performance-history.py \
             --results-dir results \
+            --history-dir history \
+            --branch "$BRANCH" \
+            --commit "$COMMIT_SHA" \
+            --commit-date "$commit_date"
+
+      # Its own step (and script) rather than more legs in the one above:
+      # the kernel series is deliberately non-gating - both regression tiers
+      # are ::warning:: annotations and there is no hard_regression output -
+      # so keeping it out of the `append` step keeps that step's output
+      # contract (which the fail-on-hard-regression step below keys off)
+      # about the whole-frame series only.
+      - name: Append kernel-trend history
+        shell: bash
+        env:
+          BRANCH: ${{ github.ref_name }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory '*'
+          commit_date="$(git show -s --format=%cI "$COMMIT_SHA")"
+          python3 scripts/append-kernel-history.py \
+            --results-dir kernel-results \
             --history-dir history \
             --branch "$BRANCH" \
             --commit "$COMMIT_SHA" \
