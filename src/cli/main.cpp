@@ -3945,8 +3945,9 @@ int run_main(int argc, char** argv) {
     for (std::size_t i = 1; i < raw.size(); ++i) {
         const std::string_view token{raw[i]};
         const bool is_option = token.find('=') != std::string_view::npos ||
-                               token == "couple" || token == "heavy" || token == "mixmeta" ||
-                               token == "sign-objects" || token == "keep-partial";
+                               token == "couple" || token == "heavy" || token == "heavy2" ||
+                               token == "mixmeta" || token == "sign-objects" ||
+                               token == "keep-partial";
         if (token == "couple") {
             couple_flag = true;
         }

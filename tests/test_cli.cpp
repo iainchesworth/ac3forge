@@ -403,3 +403,52 @@ TEST_CASE("keep-partial", "[cli][keep-partial]") {
         CHECK_FALSE(fs::exists(out_path));
     }
 }
+
+TEST_CASE("bare heavy2 token turns on Ch2 heavy compression on a 1+1 encode",
+          "[cli][encode][heavy2]") {
+    const auto dir = scratch_dir();
+    const auto wav_path = dir / "heavy2_token_in.wav";
+    constexpr std::uint32_t kSampleRate = 48000;
+    constexpr std::size_t kFrames = 4 * static_cast<std::size_t>(ac3::kSamplesPerFrame);
+    // Two channels, one two-channel file: layout 1+1's "Ch1, Ch2 in one file"
+    // shape (prepare_dual_mono_source), so no in2.wav positional is needed.
+    // AC-3, not E-AC-3: run_decode's classic-AC3 path is the one that reports
+    // compr2 presence (run_decode_eac3's dual-mono branch prints nothing about
+    // metadata at all), so that is the path this test needs to observe through.
+    const auto channels = make_tone_channels(2, kFrames, kSampleRate);
+    REQUIRE(ac3::io::write_wav_f32(wav_path.string(), channels, kSampleRate).has_value());
+
+    const auto plain_ac3 = dir / "heavy2_token_plain.ac3";
+    const auto plain_wav = dir / "heavy2_token_plain_decoded.wav";
+    REQUIRE(run_cli("encode \"" + wav_path.string() + "\" \"" + plain_ac3.string() +
+                        "\" 192 1+1",
+                    dir / "heavy2_token_plain_encode.log") == 0);
+    REQUIRE(run_cli("decode \"" + plain_ac3.string() + "\" \"" + plain_wav.string() + "\"",
+                    dir / "heavy2_token_plain_decode.log") == 0);
+    const auto plain_log = read_log(dir / "heavy2_token_plain_decode.log");
+    INFO(plain_log);
+    CHECK(plain_log.find("compr2 present") == std::string::npos);
+
+    // Before the fix, a bare 'heavy2' token was not recognised as an option
+    // by run_main's is_option classification (only parse_options itself knew
+    // about it), so it fell through to encode's args[] instead - landing on
+    // the optional in2.wav positional and making the command fail outright
+    // (prepare_dual_mono_source rejects a 2-channel first file once a second
+    // input path is given). Succeeding at all is therefore already part of
+    // what this proves; 'compr2 present' in the decode is the rest.
+    const auto heavy2_ac3 = dir / "heavy2_token_heavy2.ac3";
+    const auto heavy2_wav = dir / "heavy2_token_heavy2_decoded.wav";
+    const auto encode_rc =
+        run_cli("encode \"" + wav_path.string() + "\" \"" + heavy2_ac3.string() +
+                    "\" 192 1+1 heavy2",
+                dir / "heavy2_token_heavy2_encode.log");
+    INFO(read_log(dir / "heavy2_token_heavy2_encode.log"));
+    REQUIRE(encode_rc == 0);
+    const auto decode_rc = run_cli("decode \"" + heavy2_ac3.string() + "\" \"" +
+                                       heavy2_wav.string() + "\"",
+                                   dir / "heavy2_token_heavy2_decode.log");
+    REQUIRE(decode_rc == 0);
+    const auto heavy2_log = read_log(dir / "heavy2_token_heavy2_decode.log");
+    INFO(heavy2_log);
+    CHECK(heavy2_log.find("compr2 present") != std::string::npos);
+}
