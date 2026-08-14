@@ -42,6 +42,24 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   a bundled `signing.key` asset written from the `ATMOS_SIGNING_KEY` CI secret at build
   time. See [docs/concepts/object-signing.md](docs/concepts/object-signing.md).
 
+### Library examples & documentation
+
+- **Eight new `examples/` programs**, each a build target and `ctest` entry like every other
+  example: `wav_roundtrip` (real WAV file I/O, not just in-memory PCM), `custom_layout` (a
+  channel selection no named `LayoutId` covers, via `Plan::custom_locations`),
+  `multi_source_assignment` (combining separate sources via `ac3::plan::Assignment`),
+  `scripted_object_motion` (authored `KeyframePath`/`OrbitPath` driving `AtmosEncoder`),
+  `object_signing` (`ac3::signing::sign_atmos_stream`, previously undemonstrated),
+  `level_metering` (`ac3::analysis::LevelMeter`/`energy_vector`), `decode_robustness`
+  (recovering from one damaged frame in an otherwise-good stream via `ac3::split_frames`), and
+  `atmos_fallback` (`AtmosConfig::emit_object_metadata`'s objects-or-nothing design decision,
+  side by side). Three new library reference pages —
+  [Channel plans & routing](docs/library/channel-plans-and-routing.md),
+  [File I/O](docs/library/file-io.md) and [Object signing](docs/library/signing.md) — and new
+  sections on the existing [Spatial & Atmos objects](docs/library/spatial-and-atmos.md),
+  [Decoding](docs/library/decoding.md) and [Muxing & sinks](docs/library/muxing-and-sinks.md)
+  pages are written from them.
+
 ## [0.3.0-beta.1] - 2026-08-11
 
 Second tagged release. Adds the two remaining Annex E coding tools (enhanced coupling,

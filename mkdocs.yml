@@ -84,8 +84,11 @@ nav:
       - Decoding: library/decoding.md
       - Spatial & Atmos objects: library/spatial-and-atmos.md
       - A worked scene — station broadcast: library/station-broadcast.md
+      - Channel plans & routing: library/channel-plans-and-routing.md
       - Metadata: library/metadata.md
       - Muxing & sinks: library/muxing-and-sinks.md
+      - File I/O: library/file-io.md
+      - Object signing: library/signing.md
       - Header map: library/header-map.md
   - CLI reference:
       - Overview: cli/index.md

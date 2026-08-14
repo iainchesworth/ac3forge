@@ -55,6 +55,10 @@ auto loaded = ac3::signing::load_signing_key("/path/key"); // file/env resolver
 int n = ac3::signing::sign_atmos_stream(stream, key);
 ```
 
+Full program: [`examples/object_signing.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/object_signing.cpp)
+— encodes a two-object Atmos stream and signs it; see [Object signing](../library/signing.md)
+in the library reference for the rest of the API surface.
+
 - `SigningKey` owns the key bytes and **zeroizes them on destruction**; it is never persisted.
 - An empty `SigningKey` (the default) signs nothing — `sign_atmos_stream` returns 0 and leaves the
   stream untouched. There is no way to end up signed without having supplied a key.
