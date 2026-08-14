@@ -283,6 +283,7 @@ ColumnLayout {
                     Connections {
                         target: Theme
                         function onDarkChanged() { ceilingRing.requestPaint(); }
+                        function onPaletteChoiceChanged() { ceilingRing.requestPaint(); }
                     }
                 }
 

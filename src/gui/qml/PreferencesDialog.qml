@@ -34,6 +34,7 @@ Dialog {
 
     // The working copy.
     property string themeChoice: "system"
+    property string paletteChoice: "signal"
     property string controlsChoice: "guided"
     property string meterChoice: "coded"
     property bool explanationsChoice: true
@@ -55,6 +56,7 @@ Dialog {
 
     onAboutToShow: {
         themeChoice = settings.theme;
+        paletteChoice = settings.palette;
         controlsChoice = settings.controlsOnOpen;
         meterChoice = settings.meterMode;
         explanationsChoice = settings.showExplanations;
@@ -132,7 +134,31 @@ Dialog {
                     onSelected: (value) => root.themeChoice = value
                 }
                 PrefsNote {
-                    text: qsTr("Meter colours invert with the theme; the level thresholds do not move.")
+                    text: qsTr("Light and dark are each hand-tuned per palette; the level thresholds never move.")
+                }
+
+                Item { Layout.preferredHeight: Theme.space2 }
+
+                PrefsLabel { text: qsTr("Palette") }
+                ComboBox {
+                    objectName: "prefsPalette"
+                    Layout.fillWidth: true
+                    model: [
+                        { value: "signal", label: qsTr("Signal — the design system's red") },
+                        { value: "ink", label: qsTr("Ink — a cooler blue") },
+                        { value: "console", label: qsTr("Console — studio amber") },
+                        { value: "system", label: qsTr("System — the desktop's accent colour") },
+                    ]
+                    textRole: "label"
+                    valueRole: "value"
+                    currentIndex: {
+                        const values = ["signal", "ink", "console", "system"];
+                        return Math.max(0, values.indexOf(root.paletteChoice));
+                    }
+                    onActivated: root.paletteChoice = currentValue
+                }
+                PrefsNote {
+                    text: qsTr("System follows the accent colour the desktop exposes — Windows, macOS and KDE provide one natively; elsewhere it falls back to the highlight colour. Changing it in the OS Settings lands here live.")
                 }
 
                 Item { Layout.preferredHeight: Theme.space2 }
@@ -402,6 +428,7 @@ Dialog {
                 highlighted: true
                 onClicked: {
                     settings.theme = root.themeChoice;
+                    settings.palette = root.paletteChoice;
                     settings.controlsOnOpen = root.controlsChoice;
                     settings.meterMode = root.meterChoice;
                     settings.showExplanations = root.explanationsChoice;

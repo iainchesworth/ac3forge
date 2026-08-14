@@ -6,11 +6,16 @@ logic the library doesn't also expose, and every setting it makes maps onto an e
 [`ac3cli`](../cli/index.md) invocation shown live at the bottom of the window.
 
 The screenshots in this guide are of the current two-pane "workbench" layout, drawn in the
-Modernist design system's light palette (a dark theme is derived from the same tokens and follows
-the OS, or the Theme preference — see [Preferences](#preferences)). Earlier builds — a nine-card
-single-column design, and a first cut of the workbench before the design handoff was fully
-implemented — are superseded; if you find references to either elsewhere in the repo's history,
-they predate this guide.
+default **Signal** palette's light mode. The app ships four palettes — Signal (the design
+system's red), Ink (a cooler blue), Console (studio amber), and **System**, which takes the
+desktop's own accent colour (`QPalette::Accent`: the Windows accent, macOS's control accent,
+KDE's — Qt fills it natively, falling back to the highlight colour elsewhere, and an accent
+change in the OS Settings lands live). Each palette defines light **and dark by hand** — dark
+is no longer a mechanical inversion of the light ramp, which is what used to make dark mode
+read as a black-and-red glare. Both the mode (Light / Dark / System) and the palette are
+[Preferences](#preferences). Earlier builds — a nine-card single-column design, and a first
+cut of the workbench before the design handoff was fully implemented — are superseded; if you
+find references to either elsewhere in the repo's history, they predate this guide.
 
 ## First run
 
@@ -134,10 +139,12 @@ set by hand, the way it always has been for `1+1`.
 A real dialog, persisted across sessions (QSettings), three columns — every row wired to real
 behaviour:
 
-- **Appearance** — theme (Light / Dark / System); which meter rows to show by default
-  ([Coded / Rendered](loading-a-source.md#channel-levels)); **Explanations** — show the
-  plain-language notes beside controls, and optionally warn before a choice changes the codec
-  (the codec follows the channels either way; the warning only makes the moment deliberate).
+- **Appearance** — theme (Light / Dark / System) and the **palette** (Signal / Ink / Console /
+  System — the last follows the desktop's accent colour where the platform exposes one); which
+  meter rows to show by default ([Coded / Rendered](loading-a-source.md#channel-levels));
+  **Explanations** — show the plain-language notes beside controls, and optionally warn before
+  a choice changes the codec (the codec follows the channels either way; the warning only makes
+  the moment deliberate).
 - **When ac3forge opens** — the Controls tier (including "whatever I used last"); reopen the
   last session's sources and assignments (saved as one unit on close, restored on open — a file
   gone missing fails its load with the usual message rather than aborting the rest); optionally

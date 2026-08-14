@@ -14,7 +14,9 @@ qt_standard_project_setup(REQUIRES 6.5)
 qt_add_executable(ac3gui
     main.cpp
     encoder_controller.cpp
-    encoder_controller.hpp)
+    encoder_controller.hpp
+    system_theme.cpp
+    system_theme.hpp)
 
 # The QML lives in qml/ on disk but belongs at the root of the QML module, so
 # every file is aliased to its bare name. Left alone, Qt lays the module out as
