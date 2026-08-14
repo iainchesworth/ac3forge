@@ -24,6 +24,10 @@ metadata options (any order, after the positional arguments):
   mixmeta           E-AC-3 only: emit the mixmdate group (Table E1.2)
   lfemix=<0..31>|off      E-AC-3 LFE mix level, 10-code dB (§E2.3.1.11)
   dmixmod=ltrt|loro|none  preferred stereo downmix (Table D2.2)
+  keep-partial      encode/eac3-encode/atmos-encode: if the run fails partway, keep whatever
+                    frames were already encoded (named beside the intended output as
+                    <name>.partial.<ext>) instead of discarding them - off by default, matching
+                    the GUI's own keep-partial-output preference
 ```
 
 For `decode`, `drc=<scale>` instead applies §7.7.1 partial compression (`0` = ignore, `1` = as
@@ -247,6 +251,15 @@ Captures 30 seconds of Atmos-mode E-AC-3 from device 0 (the clock master) plus d
   `AC3FORGE_SIGNING_KEY_FILE` / `AC3FORGE_SIGNING_KEY` instead of `signing-key=`. The key is never
   stored by the tool; the algorithm is in-tree but the key is yours to provision. Full details in
   [Object signing](../concepts/object-signing.md).
+- **`keep-partial`**: `encode`, `eac3-encode` and `atmos-encode` refuse a frame that cannot fit the
+  configuration mid-run just as they always have, but with `keep-partial` given, whatever frames
+  were already encoded before that point are written to `<name>.partial.<ext>` (`out.ec3` →
+  `out.partial.ec3`) rather than discarded — the run still exits non-zero and prints the same
+  error either way, only what happens to the frames already produced changes. Off by default, the
+  same as every other bare token here; a plain invocation with no `keep-partial` behaves exactly
+  as it always has. Mirrors the GUI's own keep-partial-output preference (see
+  [GUI → window layout](../gui/index.md#preferences)) rather than a separate idea — the same
+  `.partial.` naming either way, so a file produced by either front end is named alike.
 
 ## Next
 

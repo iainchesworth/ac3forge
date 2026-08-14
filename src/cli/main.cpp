@@ -92,6 +92,10 @@ void print_meta_usage() {
     std::println("  mixmeta           E-AC-3 only: emit the mixmdate group (Table E1.2)");
     std::println("  lfemix=<0..31>|off      E-AC-3 LFE mix level, 10-code dB (§E2.3.1.11)");
     std::println("  dmixmod=ltrt|loro|none  preferred stereo downmix (Table D2.2)");
+    std::println("  keep-partial      encode/eac3-encode/atmos-encode: if the run fails partway, "
+                 "keep whatever frames were already encoded (named beside the intended output as "
+                 "<name>.partial.<ext>) instead of discarding them - off by default, matching the "
+                 "GUI's own keep-partial-output preference");
     std::println();
     std::println("source options (encode/eac3-encode; any order, after the positional "
                  "arguments):");
@@ -149,6 +153,15 @@ struct Options {
     // positional already reads. Unset means the classic single-device
     // session, unchanged from before this option existed.
     std::optional<int> capture2 = std::nullopt;
+    // Off by default, matching every bare token here - keep whatever frames
+    // a failed encode already produced, written beside the intended output
+    // as <name>.partial.<ext> instead of discarded outright. The same
+    // "named and kept, never silently discarded" behaviour the GUI's own
+    // keepPartialOutput preference gives EncoderController's file encodes
+    // (see gui/encoder_controller.cpp's partial_output_path), offered here
+    // per invocation rather than as a standing preference - see
+    // write_partial_output.
+    bool keep_partial = false;
 };
 
 bool parse_double(std::string_view text, double& out) {
@@ -168,13 +181,16 @@ bool parse_options(std::span<char*> tokens, Options& out) {
         const std::string_view value =
             eq == std::string_view::npos ? std::string_view{} : token.substr(eq + 1);
 
-        if (token == "couple" || token == "heavy" || token == "heavy2" || token == "mixmeta") {
+        if (token == "couple" || token == "heavy" || token == "heavy2" || token == "mixmeta" ||
+            token == "keep-partial") {
             if (token == "heavy") {
                 out.p.heavy.emplace();
             } else if (token == "heavy2") {
                 out.p.heavy2.emplace();
             } else if (token == "mixmeta") {
                 out.p.mixmeta = true;
+            } else if (token == "keep-partial") {
+                out.keep_partial = true;
             }
             continue;
         }
@@ -495,6 +511,39 @@ bool write_frames(std::string_view path, std::span<const std::vector<std::byte>>
                   static_cast<std::streamsize>(frame.size()));
     }
     return true;
+}
+
+// Where a failed encode's frames land when keep-partial is given: ".partial"
+// spliced in before the suffix, so "out.ec3" keeps its half-finished take as
+// "out.partial.ec3" - the same naming EncoderController::partial_output_path
+// gives the GUI's own keepPartialOutput preference (see gui/
+// encoder_controller.cpp), so a file produced either way is named alike.
+std::string partial_output_path(std::string_view path) {
+    const auto dot = path.rfind('.');
+    const auto slash = path.find_last_of("/\\");
+    if (dot != std::string_view::npos && (slash == std::string_view::npos || dot > slash)) {
+        return std::string(path.substr(0, dot)) + ".partial" + std::string(path.substr(dot));
+    }
+    return std::string(path) + ".partial";
+}
+
+// Writes whatever frames a failed encode already produced to
+// partial_output_path(out_path) when keep_partial asked for it and there is
+// at least one - "named and kept, never silently discarded", the same rule
+// the GUI's own keep-partial-output preference follows. A no-op (silently)
+// when keep_partial is false or nothing was encoded yet; a write failure for
+// the partial itself is reported but does not change the caller's own exit
+// code, since the ORIGINAL error is still the one that matters.
+void write_partial_output(std::string_view out_path, bool keep_partial,
+                          std::span<const std::vector<std::byte>> frames) {
+    if (!keep_partial || frames.empty()) {
+        return;
+    }
+    const auto partial = partial_output_path(out_path);
+    if (write_frames(partial, frames)) {
+        std::println(stderr, "note: the {} frames already encoded are kept at {}", frames.size(),
+                     partial);
+    }
 }
 
 // Interleaves `channels` (one vector per decoded channel, AC-3/E-AC-3 coded
@@ -1203,6 +1252,7 @@ int run_eac3_encode_multi(std::string_view in_path, std::string_view out_path,
         auto unit = encoder.encode_access_unit(views);
         if (!unit) {
             std::println(stderr, "error: the encoder cannot express this configuration");
+            write_partial_output(out_path, meta.keep_partial, frames);
             return 1;
         }
         frames.push_back(std::move(unit->bytes));
@@ -1364,6 +1414,7 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
         auto unit = encoder.encode_access_unit(views);
         if (!unit) {
             std::println(stderr, "error: the encoder cannot express this configuration");
+            write_partial_output(out_path, meta.keep_partial, frames);
             return 1;
         }
         frames.push_back(std::move(unit->bytes));
@@ -1827,6 +1878,7 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
                          "error: cannot encode {} objects at {} kbps — the metadata and the "
                          "mantissas share one frame, so try a higher bit rate",
                          count, bitrate);
+            write_partial_output(out_path, meta.keep_partial, out);
             return 1;
         }
         // The bed exists only once the frame is encoded, so it is metered
@@ -2135,6 +2187,7 @@ int run_encode_multi(std::string_view in_path, std::string_view out_path, std::u
         auto frame = encoder->encode_frame(views);
         if (!frame) {
             std::println(stderr, "error: bitrate must be a legal AC-3 rate");
+            write_partial_output(out_path, meta.keep_partial, frames);
             return 1;
         }
         frames.push_back(std::move(*frame));
@@ -2293,6 +2346,7 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
         auto frame = encoder->encode_frame(views);
         if (!frame) {
             std::println(stderr, "error: bitrate must be a legal AC-3 rate");
+            write_partial_output(out_path, meta.keep_partial, frames);
             return 1;
         }
         frames.push_back(std::move(*frame));
@@ -3892,7 +3946,7 @@ int run_main(int argc, char** argv) {
         const std::string_view token{raw[i]};
         const bool is_option = token.find('=') != std::string_view::npos ||
                                token == "couple" || token == "heavy" || token == "mixmeta" ||
-                               token == "sign-objects";
+                               token == "sign-objects" || token == "keep-partial";
         if (token == "couple") {
             couple_flag = true;
         }
