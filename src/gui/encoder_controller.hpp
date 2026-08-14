@@ -119,17 +119,44 @@ class EncoderController : public QObject {
     // and never by guided's own contract application.
     Q_PROPERTY(bool loudnessTouched READ loudnessTouched WRITE setLoudnessTouched NOTIFY
                    loudnessTouchedChanged)
+    // The loudnessTouched pattern, generalised to Preferences' OTHER
+    // session-carrying defaults - container, rate mode, bit rate and VBR
+    // quality (DRC profile and measure-loudness stay on loudnessTouched
+    // itself; there is no reason to invent a second flag for fields that
+    // mechanism already covers). Written only by the genuinely interactive
+    // controls that edit those four fields (the Format tab's container/
+    // bit-rate pickers, VbrPanel's rate-mode/quality controls, Guided's
+    // quality-step rate cards, the Objects tab's "Set it" 384 kbps button) -
+    // never by an automatic floor bump (AssignmentPanel's/Guided's own
+    // object-mode 384 kbps correction), Preferences' own initial
+    // Component.onCompleted application, or session restore. Read by
+    // PreferencesDialog's onApplied handler before re-applying a changed
+    // default on Save, the same guard loudnessTouched already gives DRC/
+    // measure-loudness.
+    Q_PROPERTY(bool formatDefaultsTouched READ formatDefaultsTouched WRITE setFormatDefaultsTouched
+                   NOTIFY formatDefaultsTouchedChanged)
     Q_PROPERTY(double progress READ progress NOTIFY progressChanged)
     // Encoding is a job with a history, not a modal moment: one entry per
     // file encode, recording, and real live session (one with a take on
     // disk or a receiver leg - monitor-only checks deliberately stay out),
     // newest first. Each is {id, filename, path, bitrateKbps, rateText,
     // durationText, status ("encoding"|"done"|"failed"|"cancelled"),
-    // sizeText, detail, framesText}. rateText is what the run strip
-    // actually displays - "384 kbps" for CBR, or, once a VBR run finishes,
-    // "VBR q75 · avg 512 kbps (384-704)": a VBR run has no target rate to
-    // show while "encoding" (only the quality it is aiming for), and a real
-    // one to report once its actual frame sizes are known (see
+    // sizeText, detail, framesText, cliLine, eac3, playDeviceIndex}. cliLine
+    // is the ac3cli command line SNAPSHOTTED when the run started (see
+    // setPendingCliLine) - never recomputed later, so a popover opened long
+    // after still shows what actually ran rather than whatever the command
+    // bar currently reads. eac3 is whether THIS run's own output holds
+    // E-AC-3 (captured at start, independent of the shared outputIsEac3
+    // property a later run can overwrite) - what a run chip's own Play
+    // action checks a receiver against, via outputDeviceSupportsFormat.
+    // playDeviceIndex is the receiver device Guided's amp destination had
+    // already picked when this run started (see setPendingPlayDevice), or
+    // -1 for a run with no such pre-selection - Play falls back to the
+    // Format tab's own passthrough picker for those. rateText is what the
+    // run strip actually displays - "384 kbps" for CBR, or, once a VBR run
+    // finishes, "VBR q75 · avg 512 kbps (384-704)": a VBR run has no target
+    // rate to show while "encoding" (only the quality it is aiming for), and
+    // a real one to report once its actual frame sizes are known (see
     // encodeChannels' completion callback and finishRun()). There is at
     // most one "encoding" entry at a time (busy_ gates a new run), and its
     // live progress is read off the existing `progress` property rather
@@ -551,6 +578,8 @@ public:
     [[nodiscard]] bool busy() const { return busy_; }
     [[nodiscard]] bool loudnessTouched() const { return loudness_touched_; }
     void setLoudnessTouched(bool touched);
+    [[nodiscard]] bool formatDefaultsTouched() const { return format_defaults_touched_; }
+    void setFormatDefaultsTouched(bool touched);
     [[nodiscard]] double progress() const { return progress_; }
     [[nodiscard]] QVariantList runs() const { return runs_; }
     [[nodiscard]] int bitrateKbps() const { return bitrate_kbps_; }
@@ -930,7 +959,54 @@ public:
     // what the Play button's enabled state reads, so an endpoint that would
     // refuse the stream is greyed out rather than failing after the click.
     Q_INVOKABLE [[nodiscard]] bool outputDeviceCanBitstream(int deviceIndex) const;
+    // The general form outputDeviceCanBitstream reads output_eac3_ for:
+    // whether outputDevices()[deviceIndex] can bitstream a stream of the
+    // given format, independent of what the controller most recently
+    // encoded. Two callers need exactly that independence - a run chip's
+    // own Play action, checking a device against THAT run's own stored
+    // "eac3" field rather than whatever the shared outputIsEac3 currently
+    // holds (see runs' own doc comment), and Guided's amp-destination
+    // auto-pick (item 30), checking against the PROSPECTIVE plan's format
+    // before anything has been encoded at all.
+    Q_INVOKABLE [[nodiscard]] bool outputDeviceSupportsFormat(int deviceIndex, bool eac3) const;
     Q_INVOKABLE void playToReceiver(int deviceIndex);
+    // The run strip's own Play action (item 27): plays `path` - a FINISHED
+    // run's own output, read straight from that run's `path` field rather
+    // than output_path_, which only ever holds the MOST RECENT run's -
+    // to outputDevices()[deviceIndex], otherwise identical to playToReceiver
+    // (same busy_/playing_ gate, same IEC 61937 bursting). A no-op, silently,
+    // while anything is already playing or busy, or for an empty path.
+    Q_INVOKABLE void playFileToReceiver(const QString& path, int deviceIndex);
+    // Snapshots the ac3cli command line QML's own window.cliLine computed
+    // for the run about to start, read once by startRun() into that run's
+    // "cliLine" field and cleared immediately after - see runs' own doc
+    // comment on why this has to be a snapshot rather than something the
+    // details popover recomputes live. Called from QML right before every
+    // encodeTo/startRecording/startLiveSession call that might open a run
+    // entry; harmless to call ahead of one that gets refused, since the
+    // NEXT real startRun() always overwrites whatever this last set.
+    Q_INVOKABLE void setPendingCliLine(const QString& text);
+    // Guided's own amp-destination auto-pick (item 30), threaded through to
+    // the run about to start so its finished chip's Play action can reuse
+    // the SAME device rather than asking again (item 27) - read once by
+    // startRun() into that run's "playDeviceIndex" field and reset to -1
+    // immediately after, the same one-shot handoff setPendingCliLine uses.
+    // -1 (the default) means "no guided pre-selection" - every entry point
+    // other than Guided's own amp-destination encode leaves this alone.
+    Q_INVOKABLE void setPendingPlayDevice(int deviceIndex);
+    // Restores runs from a previous session - Main.qml's own "reopen the
+    // last session" persistence (saveSession/restoreSession), the run
+    // strip's counterpart to sourceModel/assignment restoration. `saved` is
+    // exactly what runs() itself last printed, JSON round-tripped; a saved
+    // "encoding" entry belonged to a process that never finished it (most
+    // likely killed outright) and is dropped rather than resurrected as
+    // though still running. Restored entries get fresh, THIS process' own
+    // ids (continuing after next_run_id_, since their original ids could
+    // collide with ones this process goes on to assign) and are appended
+    // AFTER whatever runs_ already holds - normally empty this early in
+    // startup, so in practice this simply becomes the run strip's initial
+    // content, oldest last exactly like the list it was saved from.
+    Q_INVOKABLE void restoreRuns(const QVariantList& saved);
     // Starts a continuous capture -> encode session: unlike startRecording,
     // frames never wait for a stop to reach a sink - each is optionally
     // handed to a MonitorSink (decoded back for an honest preview of what
@@ -1009,6 +1085,8 @@ signals:
     // block themselves from re-applying, and a genuine user edit is never
     // silently overwritten.
     void loudnessTouchedChanged();
+    // See formatDefaultsTouched's own comment.
+    void formatDefaultsTouchedChanged();
     // One signal for every encoding decision. They are read together by the
     // summary lines and gate each other besides - the codec decides which
     // layouts exist, which decides whether the tools apply - so splitting them
@@ -1372,6 +1450,15 @@ private:
     bool busy_ = false;
     // See loudnessTouchedChanged()'s own comment.
     bool loudness_touched_ = false;
+    // See formatDefaultsTouched's own comment.
+    bool format_defaults_touched_ = false;
+    // setPendingCliLine's one-shot handoff into the next startRun() call -
+    // see its own comment.
+    QString pending_cli_line_;
+    // setPendingPlayDevice's one-shot handoff into the next startRun() call
+    // - see its own comment. -1 is "no pre-selection", the value every run
+    // not opened through Guided's amp destination keeps.
+    int pending_play_device_ = -1;
     bool recording_ = false;
     double progress_ = 0.0;
     double recorded_seconds_ = 0.0;

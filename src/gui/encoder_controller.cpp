@@ -2272,11 +2272,15 @@ QString EncoderController::groupDigits(qint64 value) const {
 }
 
 bool EncoderController::outputDeviceCanBitstream(int deviceIndex) const {
+    return outputDeviceSupportsFormat(deviceIndex, output_eac3_);
+}
+
+bool EncoderController::outputDeviceSupportsFormat(int deviceIndex, bool eac3) const {
     if (deviceIndex < 0 || static_cast<std::size_t>(deviceIndex) >= outputs_.size()) {
         return false;
     }
     const auto& device = outputs_[static_cast<std::size_t>(deviceIndex)];
-    return output_eac3_ ? device.supports_eac3_passthrough : device.supports_ac3_passthrough;
+    return eac3 ? device.supports_eac3_passthrough : device.supports_ac3_passthrough;
 }
 
 void EncoderController::recomputeObjectCount() {
@@ -2579,6 +2583,14 @@ void EncoderController::setLoudnessTouched(bool touched) {
     emit loudnessTouchedChanged();
 }
 
+void EncoderController::setFormatDefaultsTouched(bool touched) {
+    if (touched == format_defaults_touched_) {
+        return;
+    }
+    format_defaults_touched_ = touched;
+    emit formatDefaultsTouchedChanged();
+}
+
 void EncoderController::setBusy(bool busy) {
     if (busy == busy_) {
         return;
@@ -2626,11 +2638,43 @@ void EncoderController::startRun(const QString& path, const QString& durationTex
         (!forceCbr && vbr_enabled_ && codec_ == plan::Codec::kEac3 && !atmos_enabled_)
             ? QStringLiteral("VBR q%1").arg(vbr_quality_)
             : QStringLiteral("%1 kbps").arg(bitrate_kbps_);
+    // Snapshotted at start, not recomputed when the details popover opens -
+    // see runs' and setPendingCliLine's own doc comments.
+    run[QStringLiteral("cliLine")] = pending_cli_line_;
+    run[QStringLiteral("eac3")] = atmos_enabled_ || codec_ == plan::Codec::kEac3;
+    run[QStringLiteral("playDeviceIndex")] = pending_play_device_;
+    pending_cli_line_.clear();
+    pending_play_device_ = -1;
     // Newest first, matching the run strip's own reading order.
     runs_.prepend(run);
     current_run_id_ = next_run_id_;
     ++next_run_id_;
     emit runsChanged();
+}
+
+void EncoderController::setPendingCliLine(const QString& text) {
+    pending_cli_line_ = text;
+}
+
+void EncoderController::setPendingPlayDevice(int deviceIndex) {
+    pending_play_device_ = deviceIndex;
+}
+
+void EncoderController::restoreRuns(const QVariantList& saved) {
+    bool changed = false;
+    for (const auto& variant : saved) {
+        auto run = variant.toMap();
+        if (run.value(QStringLiteral("status")).toString() == QStringLiteral("encoding")) {
+            continue;  // belonged to a process that never finished it
+        }
+        run[QStringLiteral("id")] = next_run_id_;
+        ++next_run_id_;
+        runs_.append(run);
+        changed = true;
+    }
+    if (changed) {
+        emit runsChanged();
+    }
 }
 
 void EncoderController::finishRun(bool ok, const QString& message) {
@@ -3266,7 +3310,11 @@ void EncoderController::refreshOutputDevices() {
 }
 
 void EncoderController::playToReceiver(int deviceIndex) {
-    if (playing_ || busy_ || output_path_.isEmpty()) {
+    playFileToReceiver(output_path_, deviceIndex);
+}
+
+void EncoderController::playFileToReceiver(const QString& path, int deviceIndex) {
+    if (playing_ || busy_ || path.isEmpty()) {
         return;
     }
     if (deviceIndex < 0 || static_cast<std::size_t>(deviceIndex) >= outputs_.size()) {
@@ -3279,7 +3327,6 @@ void EncoderController::playToReceiver(int deviceIndex) {
     emit playingChanged();
     setStatus(QStringLiteral("Streaming to %1…").arg(QString::fromStdString(device.name)));
 
-    const QString path = output_path_;
     std::ignore = QtConcurrent::run([this, path, device] {
         std::ifstream in{path.toStdString(), std::ios::binary};
         const std::vector<char> raw{std::istreambuf_iterator<char>(in),
