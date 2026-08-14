@@ -3253,6 +3253,27 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             spacing: Theme.gap
 
+                            // The tools card hides itself when the tools do
+                            // not apply - which used to leave this page a
+                            // bare void. An empty page never explains itself;
+                            // this does.
+                            Card {
+                                Layout.fillWidth: true
+                                Layout.margins: 24
+                                title: qsTr("Annex E coding tools")
+                                visible: !EncoderController.toolsAvailable
+
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: EncoderController.atmosEnabled
+                                          ? qsTr("Object mode is on — the Annex E tools don't apply here. The JOC bed is coded with the encoder's own fixed tool choices; turn object mode off on the Objects tab to hand-drive coupling, SPX or AHT.")
+                                          : qsTr("AC-3 has no Annex E tools — coupling bands, spectral extension and AHT exist in the E-AC-3 syntax only. Switch the codec to Dolby Digital Plus on the Format tab and they appear here.")
+                                    wrapMode: Text.WordWrap
+                                    font.pixelSize: Theme.fontNormal
+                                    color: Theme.textMuted
+                                }
+                            }
+
                             Card {
                                 Layout.fillWidth: true
                                 Layout.margins: 24
@@ -3459,6 +3480,10 @@ ApplicationWindow {
                                         ColumnLayout {
                                             Layout.fillWidth: true
                                             Layout.leftMargin: 8
+                                            // Mirror the accent rule's inset on the
+                                            // right - without it the explainer text
+                                            // ran flush into the card border.
+                                            Layout.rightMargin: 8
                                             spacing: Theme.gap
 
                                             RowLayout {
@@ -3501,6 +3526,11 @@ ApplicationWindow {
 
                                             Text {
                                                 Layout.fillWidth: true
+                                                // preferredWidth 1 lets the row SHRINK
+                                                // this below its implicit width - without
+                                                // it the text ran through the card's own
+                                                // right border mid-word.
+                                                Layout.preferredWidth: 1
                                                 text: qsTr("Heavy compression (§7.7.2) is a peak ceiling in the mono downmix at syncframe resolution — an assurance for links that overmodulate, not the subjectively pleasing reduction dynrng provides.")
                                                 color: Theme.textMuted
                                                 font.pixelSize: Theme.fontSmall
@@ -3537,6 +3567,10 @@ ApplicationWindow {
                                         ColumnLayout {
                                             Layout.fillWidth: true
                                             Layout.leftMargin: 8
+                                            // Mirror the accent rule's inset on the
+                                            // right - without it the explainer text
+                                            // ran flush into the card border.
+                                            Layout.rightMargin: 8
                                             spacing: Theme.gap
 
                                             RowLayout {
@@ -3609,6 +3643,10 @@ ApplicationWindow {
                                         ColumnLayout {
                                             Layout.fillWidth: true
                                             Layout.leftMargin: 8
+                                            // Mirror the accent rule's inset on the
+                                            // right - without it the explainer text
+                                            // ran flush into the card border.
+                                            Layout.rightMargin: 8
                                             spacing: Theme.gap
 
                                             RowLayout {
@@ -6185,6 +6223,11 @@ ApplicationWindow {
                 RowLayout {
                     Layout.fillWidth: true
                     Layout.preferredHeight: 34
+                    // Hard cap, not just preferred: the strip's inner
+                    // ScrollView pins its content to availableHeight (the
+                    // centring fix), and without a cap that feedback settled
+                    // at a stretched lane on some layout passes.
+                    Layout.maximumHeight: 34
                     spacing: 0
 
                     Text {
@@ -6208,6 +6251,12 @@ ApplicationWindow {
                         // along the top edge.
                         contentHeight: availableHeight
                         ScrollBar.vertical.policy: ScrollBar.AlwaysOff
+                        // No horizontal bar either: inside a hard 34 px lane
+                        // it OVERLAYS the chips and eats their clicks (the
+                        // details-popover click landed on the bar, not the
+                        // chip). Wheel and drag still pan the strip, which
+                        // is all the mockup's own strip ever offered.
+                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
 
                         RowLayout {
                             id: runStrip
@@ -6494,9 +6543,19 @@ ApplicationWindow {
 
                     Button {
                         objectName: "encodeButton"
-                        text: EncoderController.busy
-                              ? qsTr("Encoding…")
-                              : qsTr("Encode to .%1").arg(EncoderController.outputSuffix())
+                        // outputSuffix() is an invokable with no NOTIFY of
+                        // its own - without the explicit dependencies below
+                        // this binding only re-ran on busy flips, and the
+                        // button kept promising ".ac3" after the codec had
+                        // moved the plan to .ec3 (or the container to .mkv).
+                        text: {
+                            void EncoderController.codecIndex;
+                            void EncoderController.containerIndex;
+                            void EncoderController.atmosEnabled;
+                            return EncoderController.busy
+                                   ? qsTr("Encoding…")
+                                   : qsTr("Encode to .%1").arg(EncoderController.outputSuffix());
+                        }
                         enabled: EncoderController.sourceReady && !EncoderController.busy
                         highlighted: true
                         implicitHeight: 44
