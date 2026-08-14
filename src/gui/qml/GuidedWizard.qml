@@ -64,6 +64,52 @@ ColumnLayout {
     // Where the encode ends up — a file, or straight to the amplifier.
     property string dest: "file"
 
+    // ---- item 30: the amp destination's own device pick --------------------
+    // -1 means "let the auto-pick decide"; "change…" (below, step 5) sets a
+    // real index to override it. Read back by Main.qml's startEncodeFlow via
+    // ampDeviceIndex when dest is "amp", so the run this produces already
+    // knows which receiver to play to - see EncoderController.
+    // setPendingPlayDevice and item 27's run-chip Play action.
+    property int ampDeviceOverride: -1
+    // Whether the stream about to be encoded is E-AC-3 - the same rule
+    // window.cliLine's own eac3Stream uses, computed here because nothing
+    // has actually been encoded yet for outputIsEac3 to answer honestly.
+    readonly property bool ampEac3: EncoderController.atmosEnabled
+                                    || EncoderController.codecIndex === 1
+    // The first output device that can bitstream ampEac3 - the same
+    // "AC-3 + E-AC-3 ready" / "cannot bitstream" capability
+    // outputDeviceSupportsFormat and the Format tab's own device labels
+    // already use (docs/gui/format-and-channels.md), just asked against the
+    // PROSPECTIVE plan instead of a past encode. -1 when nothing qualifies.
+    readonly property int autoAmpDeviceIndex: {
+        const devices = EncoderController.outputDevices;
+        for (let i = 0; i < devices.length; i++) {
+            if (EncoderController.outputDeviceSupportsFormat(i, wizard.ampEac3)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+    // ampDeviceOverride when it still names a real device, else the
+    // auto-pick - an override surviving a device list refresh that dropped
+    // it would otherwise silently point nowhere.
+    readonly property int ampDeviceIndex: (wizard.ampDeviceOverride >= 0
+                                           && wizard.ampDeviceOverride
+                                              < EncoderController.outputDevices.length)
+                                          ? wizard.ampDeviceOverride
+                                          : wizard.autoAmpDeviceIndex
+
+    // ---- item 29: Good/Better/Best -> VBR quality when VBR is "in force" ---
+    // True when a VBR default (Preferences' rate-mode default) or an
+    // already-selected VBR rate mode applies to the CURRENT plan -
+    // vbrAvailable gates both, since VBR means nothing for AC-3, object
+    // mode or a live session regardless of either. When this is true the
+    // step 3 rate cards below set a VBR quality target instead of a fixed
+    // CBR bitrate.
+    readonly property bool vbrQualityMode: EncoderController.vbrAvailable
+        && (EncoderController.vbrEnabled
+            || (wizard.appWindow !== null && wizard.appWindow.settings.defaultVbr))
+
     // The speakers step's sub-screen: buttons that edit what is IN THE ROOM,
     // with the bed falling out of the parts rather than being named. Open is
     // wizard-local UI state; everything it edits is controller state, so the
@@ -125,6 +171,42 @@ ColumnLayout {
     // inverse-root law the static fallback uses, so a preset never makes
     // the summed bed hotter than static placement would.
     property string traj: "hold"
+    // ---- item 28: "what should move" -----------------------------------
+    // Which of the two what-moves cards is the CURRENT choice - "all"
+    // rewrote every loaded channel's assignment to an object (no bed left);
+    // "picked" left an existing bed assignment alone and only turned
+    // still-unassigned channels into objects. A card tap is an action
+    // applied once, the same as traj above - a later hand-edit in the
+    // assignment table can leave neither description exactly true any
+    // more, which is fine; this only tracks which button was pressed last.
+    property string whatMoves: ""
+    // Sends every loaded (source, channel) to "obj" through the exact
+    // setAssignment path the full assignment table itself uses, so the
+    // result is indistinguishable from doing it by hand there - no bed
+    // position survives.
+    function setWhatMovesAll() {
+        wizard.whatMoves = "all";
+        const sources = EncoderController.sourceModel;
+        for (let s = 0; s < sources.length; s++) {
+            for (let c = 0; c < sources[s].channels; c++) {
+                EncoderController.setAssignment(s, c, "obj");
+            }
+        }
+    }
+    // Leaves every row that already has a real destination (a bed position
+    // from step 1, or an object from an earlier pass here) untouched, and
+    // sends only "none"/untouched rows - the ones a newly loaded file's
+    // channels start as - to "obj". A no-op when everything is already
+    // assigned, which is exactly right: there is nothing new to pick up.
+    function setWhatMovesPicked() {
+        wizard.whatMoves = "picked";
+        const rows = EncoderController.assignmentRows;
+        for (let i = 0; i < rows.length; i++) {
+            if (rows[i].destToken === "none" && rows[i].touched !== true) {
+                EncoderController.setAssignment(rows[i].source, rows[i].channel, "obj");
+            }
+        }
+    }
     // The step-4 preview's clock: loops the authored paths so the movement
     // card is watched, not imagined. Runs only while the step is on screen.
     property real previewT: 0
@@ -929,20 +1011,27 @@ ColumnLayout {
 
                 Repeater {
                     model: [
-                        { rate: 192, title: qsTr("Good"),
+                        { rate: 192, vbrQuality: 40, title: qsTr("Good"),
                           body: qsTr("Fine for speech, streaming and anything stereo."),
                           detail: qsTr("192 kbps · 24 KB/s") },
-                        { rate: 448, title: qsTr("Better"),
+                        { rate: 448, vbrQuality: 75, title: qsTr("Better"),
                           body: qsTr("What a DVD carries. A sensible default for 5.1."),
                           detail: qsTr("448 kbps · 56 KB/s") },
-                        { rate: 768, title: qsTr("Best"),
+                        { rate: 768, vbrQuality: 90, title: qsTr("Best"),
                           body: qsTr("Worth it for wide rooms, ceiling channels and objects."),
                           detail: qsTr("768 kbps · 96 KB/s") },
                     ]
                     delegate: Rectangle {
                         id: rateCard
                         required property var modelData
-                        readonly property bool active: EncoderController.bitrateKbps === modelData.rate
+                        // Under vbrQualityMode, active reads the quality
+                        // target these cards actually set instead of the
+                        // fixed bitrate - see the TapHandler below.
+                        readonly property bool active: wizard.vbrQualityMode
+                            ? (EncoderController.vbrEnabled
+                               && EncoderController.vbrQuality === modelData.vbrQuality)
+                            : (!EncoderController.vbrEnabled
+                               && EncoderController.bitrateKbps === modelData.rate)
 
                         objectName: "wizardRate-" + modelData.rate
                         Layout.fillWidth: true
@@ -972,7 +1061,9 @@ ColumnLayout {
                             }
                             Item { Layout.fillHeight: true }
                             Text {
-                                text: rateCard.modelData.detail
+                                text: wizard.vbrQualityMode
+                                      ? qsTr("VBR quality %1").arg(rateCard.modelData.vbrQuality)
+                                      : rateCard.modelData.detail
                                 font.pixelSize: 11
                                 font.family: Theme.monoFamily
                                 color: Theme.neutral600
@@ -980,7 +1071,18 @@ ColumnLayout {
                         }
                         TapHandler {
                             enabled: !EncoderController.busy
-                            onTapped: EncoderController.bitrateKbps = rateCard.modelData.rate
+                            onTapped: {
+                                EncoderController.formatDefaultsTouched = true;
+                                // Still the coupling/spx band-edge reference
+                                // even under VBR (EncoderController.
+                                // bitrateKbps' own doc comment) - a card tap
+                                // sets it either way.
+                                EncoderController.bitrateKbps = rateCard.modelData.rate;
+                                if (wizard.vbrQualityMode) {
+                                    EncoderController.vbrEnabled = true;
+                                    EncoderController.vbrQuality = rateCard.modelData.vbrQuality;
+                                }
+                            }
                         }
                     }
                 }
@@ -1071,6 +1173,7 @@ ColumnLayout {
                         onTapped: {
                             EncoderController.atmosEnabled = false;
                             wizard.traj = "hold";
+                            wizard.whatMoves = "";
                         }
                     }
                 }
@@ -1126,6 +1229,106 @@ ColumnLayout {
                 wrapMode: Text.WordWrap
                 font.pixelSize: 12
                 color: Theme.textMuted
+            }
+
+            // ---- what should move (item 28) - object mode only -------------
+            // Rewrites the assignment table (the same one step 1's "What each
+            // sound does" and the full table edit) rather than inventing a
+            // second notion of "which channels are objects" - dynamicObjectChannels()
+            // already reads exactly this, so a choice made here is visible
+            // and editable everywhere the assignment already is.
+            ColumnLayout {
+                visible: EncoderController.atmosEnabled
+                Layout.fillWidth: true
+                spacing: Theme.space2
+
+                Text {
+                    text: qsTr("WHAT SHOULD MOVE")
+                    font.pixelSize: 10
+                    font.letterSpacing: 1.5
+                    color: Theme.textMuted
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.space3
+
+                    Rectangle {
+                        id: allMoveCard
+                        objectName: "wizardWhatMoves-all"
+                        readonly property bool active: wizard.whatMoves === "all"
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 88
+                        color: active ? Theme.accent100 : "transparent"
+                        border.color: active ? Theme.accent : Theme.divider
+                        border.width: active ? 2 : 1
+
+                        ColumnLayout {
+                            anchors.fill: parent
+                            anchors.margins: Theme.space3
+                            spacing: 2
+
+                            Text {
+                                text: qsTr("Everything moves")
+                                font.pixelSize: 14
+                                font.weight: Font.DemiBold
+                                color: Theme.text
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: qsTr("Every loaded channel becomes its own object — there is no bed left underneath them.")
+                                wrapMode: Text.WordWrap
+                                font.pixelSize: 11
+                                color: Theme.neutral700
+                            }
+                        }
+                        TapHandler {
+                            enabled: !EncoderController.busy
+                            onTapped: wizard.setWhatMovesAll()
+                        }
+                    }
+
+                    Rectangle {
+                        id: pickedMoveCard
+                        objectName: "wizardWhatMoves-picked"
+                        readonly property bool active: wizard.whatMoves === "picked"
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 88
+                        color: active ? Theme.accent100 : "transparent"
+                        border.color: active ? Theme.accent : Theme.divider
+                        border.width: active ? 2 : 1
+
+                        ColumnLayout {
+                            anchors.fill: parent
+                            anchors.margins: Theme.space3
+                            spacing: 2
+
+                            Text {
+                                text: qsTr("Keep the bed, add movers")
+                                font.pixelSize: 14
+                                font.weight: Font.DemiBold
+                                color: Theme.text
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: qsTr("Leaves an existing mix exactly where it is; only channels not yet assigned to anything — a file added since — become objects.")
+                                wrapMode: Text.WordWrap
+                                font.pixelSize: 11
+                                color: Theme.neutral700
+                            }
+                        }
+                        TapHandler {
+                            enabled: !EncoderController.busy
+                            onTapped: wizard.setWhatMovesPicked()
+                        }
+                    }
+                }
+                Text {
+                    Layout.fillWidth: true
+                    text: qsTr("This edits the same per-channel destinations step 1's assignment table shows — change any one there afterwards and it sticks.")
+                    wrapMode: Text.WordWrap
+                    font.pixelSize: 11
+                    color: Theme.textMuted
+                }
             }
 
             // Trajectory presets — real keyframes through the same API the
@@ -1394,32 +1597,75 @@ ColumnLayout {
                         }
                         Item { Layout.fillHeight: true }
                         Text {
-                            // The first enumerated endpoint - the same list the
-                            // passthrough panel's combo defaults to.
-                            text: EncoderController.outputDevices.length > 0
-                                  ? EncoderController.outputDevices[0]
-                                  : qsTr("no output device found")
+                            objectName: "wizardAmpDevicePreview"
+                            // The first PASSTHROUGH-CAPABLE endpoint for THIS
+                            // stream (item 30), not just the first enumerated
+                            // one - a device that cannot bitstream the format
+                            // about to be encoded is not a real answer to
+                            // "where does this go".
+                            text: EncoderController.outputDevices.length === 0
+                                  ? qsTr("no output device found")
+                                  : wizard.ampDeviceIndex >= 0
+                                    ? EncoderController.outputDevices[wizard.ampDeviceIndex]
+                                    : qsTr("no device here can take this stream")
                             elide: Text.ElideRight
                             Layout.fillWidth: true
                             font.pixelSize: 11
                             font.family: Theme.monoFamily
-                            color: Theme.neutral600
+                            color: wizard.ampDeviceIndex >= 0 ? Theme.neutral600 : Theme.accent700
                         }
                     }
                     TapHandler { onTapped: wizard.dest = "amp" }
                 }
             }
 
+            // "change…" - overrides the auto-pick above with a specific
+            // device (item 30). Sits outside the amp card's own TapHandler
+            // (which selects the destination itself) so a tap here cannot
+            // also register as one on the card underneath it.
+            RowLayout {
+                Layout.fillWidth: true
+                visible: wizard.dest === "amp" && EncoderController.outputDevices.length > 1
+                spacing: Theme.space2
+
+                Text {
+                    objectName: "wizardAmpDeviceChange"
+                    text: qsTr("Choose a different device →")
+                    font.pixelSize: 12
+                    font.weight: Font.DemiBold
+                    color: Theme.accent700
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: ampDeviceMenu.popup()
+                    }
+                }
+                Item { Layout.fillWidth: true }
+
+                Menu {
+                    id: ampDeviceMenu
+                    Repeater {
+                        model: EncoderController.outputDevices
+                        MenuItem {
+                            required property string modelData
+                            required property int index
+                            text: modelData
+                            onTriggered: wizard.ampDeviceOverride = index
+                        }
+                    }
+                }
+            }
+
             // The endpoint-specific caveat the shared notice below cannot
-            // know: an E-AC-3 stream against an endpoint that only takes
-            // AC-3 fails at Play, not at a fold-down.
+            // know: no device here can bitstream what is about to be
+            // encoded, so Play will stay greyed rather than fail after the
+            // click - driven by the same auto-pick above, not a separate
+            // guess at which devices/formats disagree.
             Text {
                 Layout.fillWidth: true
-                visible: wizard.dest === "amp" && EncoderController.codecIndex === 1
-                         && EncoderController.renderedChannelCount <= 6
-                         && (EncoderController.outputDevices.length === 0
-                             || EncoderController.outputDevices[0].indexOf("E-AC-3") < 0)
-                text: qsTr("This stream is Dolby Digital Plus, and the output above cannot bitstream it — Play will stay greyed. Pick an E-AC-3-ready endpoint on the Format tab, or save a file.")
+                visible: wizard.dest === "amp" && EncoderController.outputDevices.length > 0
+                         && wizard.ampDeviceIndex < 0
+                text: qsTr("None of the output devices here can bitstream this stream — Play will stay greyed. Pick a different layout or codec, or save a file instead.")
                 wrapMode: Text.WordWrap
                 font.pixelSize: 12
                 color: Theme.accent700
