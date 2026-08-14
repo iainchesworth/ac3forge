@@ -210,6 +210,21 @@ un-recorded just because it also failed. See `REGRESSION_DROP_DB` and
     });
   }
 
+  // verify-gold-reference.sh runs more than one check per codec now - e.g.
+  // eac3's tools=none baseline, its tools=cpl variant, and the unrelated
+  // eac3_cplbndstrce0 third-party-bitstream interop fixture all share
+  // codec:"eac3" but compare fundamentally different things at deliberately
+  // different SNR floors (see scripts/append-quality-history.py's own
+  // "check" field, added for the same reason). This page's chart has only
+  // ever shown one line per codec, so it sticks to each codec's original,
+  // continuous baseline check (check === codec) rather than folding in the
+  // newer variants - a record with no "check" at all is older history
+  // written before that field existed, and was always that baseline check
+  // by construction, so it counts too.
+  function isPrimaryCheck(r) {
+    return !r.check || r.check === r.codec;
+  }
+
   // One point per commit per branch: the worst worst_db across every leg for
   // the selected codec, since a per-leg-and-codec chart (up to 5 legs x 2
   // codecs x 2 branches) would be unreadable as lines. Leg-level detail is
@@ -217,7 +232,7 @@ un-recorded just because it also failed. See `REGRESSION_DROP_DB` and
   function worstPerCommit(records, codec) {
     const byCommit = new Map();
     for (const r of records) {
-      if (r.codec !== codec) continue;
+      if (r.codec !== codec || !isPrimaryCheck(r)) continue;
       const cur = byCommit.get(r.commit);
       if (!cur || r.worst_db < cur.worst_db) {
         byCommit.set(r.commit, r);
@@ -234,7 +249,7 @@ un-recorded just because it also failed. See `REGRESSION_DROP_DB` and
     const byLeg = {};
     for (const legDef of LEGS) byLeg[legDef.leg] = [];
     for (const r of records) {
-      if (r.codec !== codec || r.branch !== branch) continue;
+      if (r.codec !== codec || r.branch !== branch || !isPrimaryCheck(r)) continue;
       if (byLeg[r.leg]) byLeg[r.leg].push(r);
     }
     for (const leg of Object.keys(byLeg)) {
@@ -244,12 +259,16 @@ un-recorded just because it also failed. See `REGRESSION_DROP_DB` and
   }
 
   // Always computed against the full, unfiltered history for the (leg,
-  // codec, branch) - collapsing develop's *display* to its latest commit
-  // shouldn't change what counts as a regression against its own trailing
-  // average.
-  function regressionBaseline(allRecords, leg, codec, branch, beforeCommitDate) {
+  // codec, check, branch) - collapsing develop's *display* to its latest
+  // commit shouldn't change what counts as a regression against its own
+  // trailing average. "check" (falling back to codec for pre-"check" history,
+  // same reasoning as isPrimaryCheck above) keeps this matched to the same
+  // check the row itself came from, instead of averaging across unrelated
+  // checks that happen to share a codec.
+  function regressionBaseline(allRecords, leg, codec, check, branch, beforeCommitDate) {
     const trail = allRecords
-      .filter((r) => r.leg === leg && r.codec === codec && r.branch === branch && r.commit_date < beforeCommitDate)
+      .filter((r) => r.leg === leg && r.codec === codec && (r.check || r.codec) === check &&
+                     r.branch === branch && r.commit_date < beforeCommitDate)
       .sort((a, b) => a.commit_date.localeCompare(b.commit_date))
       .slice(-REGRESSION_WINDOW);
     if (trail.length === 0) return null;
@@ -330,7 +349,7 @@ un-recorded just because it also failed. See `REGRESSION_DROP_DB` and
       .sort((a, b) => b.commit_date.localeCompare(a.commit_date))
       .slice(0, TABLE_ROWS)
       .map((r) => {
-        const baseline = regressionBaseline(allRecords, r.leg, r.codec, r.branch, r.commit_date);
+        const baseline = regressionBaseline(allRecords, r.leg, r.codec, r.check || r.codec, r.branch, r.commit_date);
         const regressed = baseline !== null && baseline - r.worst_db >= REGRESSION_DROP_DB;
         const flag = regressed
           ? `<span class="quality-trend-regression" title="${(baseline - r.worst_db).toFixed(2)} dB below the trailing ${REGRESSION_WINDOW}-run mean (${baseline.toFixed(2)} dB)">▼ regression</span>`
