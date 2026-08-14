@@ -98,10 +98,32 @@ what backs `ac3cli record`/`live` and the GUI's live-session tab.
 ## Metering: `ac3::analysis`
 
 `ac3/analysis/levels.hpp`. Peak/RMS metering with console ballistics, plus the Gerzon energy
-vector computed over the BS.775 ring — the metering used for level display in `ac3cli` and the
-GUI. This is a separate concern from the BS.1770 integrated-loudness measurement in
+vector computed over the BS.775 ring — the metering `ac3cli` and the GUI share so their two
+displays never disagree about what a signal contains. One `LevelMeter` instance drives both: the
+moving display (`levels()`, ballistic) and the exact end-of-run report (`summary()`,
+unweighted), fed by the same pass over the samples.
+
+```cpp
+ac3::analysis::LevelMeter meter{acmod, lfe, 48000};
+meter.process(decoded_views);   // once per frame, planar A/52 order
+```
+
+```cpp
+const auto& stats = meter.summary()[static_cast<std::size_t>(ch)];  // exact, not ballistic
+std::printf("peak %.1f dBFS  rms %.1f dBFS\n", stats.peak_db(), stats.rms_db());
+
+const auto energy = ac3::analysis::energy_vector(meter.levels(), acmod);
+```
+
+Full program: [`examples/level_metering.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/level_metering.cpp)
+— decodes a 5.1 stream and reports both the per-channel peak/RMS and the soundfield's energy
+vector.
+
+This is a separate concern from the BS.1770 integrated-loudness measurement in
 `ac3::meta::LoudnessMeter` (see [Metadata](metadata.md)): one is instantaneous display
-metering, the other is the gated whole-programme measurement `dialnorm` is derived from.
+metering, the other the gated whole-programme measurement `dialnorm` is derived from.
+`energy_vector` is computed from the integrated RMS of the full-bandwidth channels only — the
+LFE has no direction to contribute, and a subwoofer's level would otherwise swamp the sum.
 
 ---
 

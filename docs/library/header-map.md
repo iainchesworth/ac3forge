@@ -29,3 +29,4 @@
 | `ac3/platform/audio_backend.hpp` | `ac3::platform::audio_backend()` — whether capture, monitor playback and passthrough are available at all on this build's platform, and why not when they aren't. Backs the CLI's `UNAVAILABLE HERE` messaging for `devices`, `record`, `monitor`, `live`, `outputs` and `play`. |
 | `ac3/analysis/levels.hpp` | Peak/RMS metering and the Gerzon energy vector. |
 | `matroska/matroska.hpp` | `mux`, `AudioTrack`, `MuxOptions`. |
+| `ac3/signing/signing_key.hpp`, `emdf_atmos_signer.hpp` | `SigningKey`, `load_signing_key`, `decode_signing_key`, `sign_atmos_stream`, `sign_atmos_frame` — the EMDF object-signing library, `ac3::signing`. A separate CMake target from `ac3::forge`, not part of the distributed package's link line: signing is a strictly optional step a front end applies to already-encoded frames. |
