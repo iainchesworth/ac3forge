@@ -114,6 +114,14 @@ run encode bootstrap_51.wav enc_cmix.ac3 224 stereo cmixlev=-4.5
 run_ffmpeg_check enc_cmix.ac3
 run encode bootstrap_51.wav enc_surmix.ac3 224 51 surmixlev=off
 run_ffmpeg_check enc_surmix.ac3
+# fast-mdct=off: every other encode in this matrix now runs the default
+# §7.9.4 fast forward MDCT, so this is the leg that keeps the direct
+# §8.2.3.2 reference form - the validation oracle - walked under the
+# sanitizers too. (E-AC-3's spelling of the same choice is the nofastmdct
+# tool token below.)
+run encode bootstrap_51.wav enc_fastmdct_off.ac3 256 51 fast-mdct=off
+run decode enc_fastmdct_off.ac3 enc_fastmdct_off.wav
+run_ffmpeg_check enc_fastmdct_off.ac3
 
 # The synthetic panning-orbit generator: same AC-3 encode path as 'sine', with
 # object motion baked in rather than a fixed layout.
@@ -138,9 +146,12 @@ run_ffmpeg_check eac3_silence.ec3
 
 # "atten:N" and "noatten" alone tune spectral extension's notch but do not,
 # by themselves, turn spx on (see parse_tools in src/lib/src/encoder/plan.cpp)
-# - so they round-trip like "none". Anything that actually sets
-# coupling/spx/aht does not, per the note above.
-for tools in none "atten:2" noatten; do
+# - so they round-trip like "none". "nofastmdct" is the same shape one step
+# further: not a coding tool at all, just the direct-form forward MDCT
+# instead of the default fast path, so its stream differs from "none"'s only
+# at the coefficient-rounding level. Anything that actually sets
+# coupling/spx/aht does not round-trip like "none", per the note above.
+for tools in none "atten:2" noatten nofastmdct; do
     safe=$(echo "$tools" | tr ':+' '__')
     run eac3-encode bootstrap_51.wav "eac3enc_${safe}.ec3" 192 "$tools" 51
     run decode "eac3enc_${safe}.ec3" "eac3enc_${safe}.wav"
@@ -149,7 +160,8 @@ done
 # Both the in-repo decoder and FFmpeg read every one of these now - two
 # independent decoders agreeing is stronger proof these Annex-E-tool encodes
 # are spec-correct than either checked alone.
-for tools in cpl spx aht all "spx+aht" "cpl:4+spx:5" "aht:0" "all+atten:2" "all+noatten"; do
+for tools in cpl spx aht all "spx+aht" "cpl:4+spx:5" "aht:0" "all+atten:2" "all+noatten" \
+             "all+nofastmdct"; do
     safe=$(echo "$tools" | tr ':+' '__')
     run eac3-encode bootstrap_51.wav "eac3enc_${safe}.ec3" 192 "$tools" 51
     run decode "eac3enc_${safe}.ec3" "eac3enc_${safe}.wav"
