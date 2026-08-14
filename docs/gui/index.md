@@ -47,10 +47,21 @@ Minimum size 1280×900. Two panes, divided by a vertical rule:
   own grammar, AC-3's bare `couple`, quoting where names carry spaces; a live source renders the
   `live` subcommand, and a Matroska container is honestly *two* commands (`… && ac3cli mkv …`),
   because pasting one would write a raw elementary stream into a file named `.mkv`. Finished
-  chips carry **Show in folder**; failed and cancelled chips say which they are with a frame
-  count and a distinct square; a failure's banner names the cause first and offers **Choose
-  another device** / **Retry as file**; and a refusal that never opened a run (an incomplete
-  assignment, the sixteen-object cap) lands in the same banner instead of only a status line.
+  chips carry **Show in folder** and **Play** — sends that run's own output to a receiver over the
+  same IEC 61937 passthrough path the Format tab's own Passthrough section uses (see [Format &
+  channels](format-and-channels.md#loudness-and-passthrough)), greyed out when no device here can
+  bitstream what that particular run actually produced. A run encoded through Guided's **Play it on
+  my receiver** destination (step 5) carries the device Guided already auto-picked along with it, so
+  its Play needs no fresh device pick. **Clicking a chip** (anywhere but its buttons) opens that
+  run's own details popover — status, rate, duration, size, frame count, the failure text if it
+  failed, and the exact `ac3cli` command line as it stood *when that run started*, snapshotted
+  rather than read live, so an old chip's popover still shows what actually ran even after the
+  command bar above has since moved on. Failed and cancelled chips also say which they are, in the
+  chip text itself, with a frame count and a distinct square; a failure's banner names the cause
+  first and offers **Choose another device** / **Retry as file**; and a refusal that never opened a
+  run (an incomplete assignment, the sixteen-object cap) lands in the same banner instead of only a
+  status line. The strip's last thirty finished runs persist across a restart, restored alongside
+  the "reopen the last session's sources" preference below.
 
 ## Guided, Advanced, Expert
 
@@ -66,11 +77,25 @@ Minimum size 1280×900. Two panes, divided by a vertical rule:
   sound does** list — the same per-channel destination dropdowns as the
   [full assignment table](source-assignment.md), in plain language — and a jump to that table
   with a lossless **Back to guided** return. Step 2's speaker cards can open a **room picker**
-  sub-screen (say what's *in the room*; the channel layout falls out of the parts). Step 4's
-  movement cards drive [object mode](objects-and-motion.md), with trajectory presets that author
-  real keyframes. Constraints apply the same way as everywhere else — they are explained rather
-  than hidden (turning movement on says it fixed the bed at 5.1, rather than silently locking
-  controls elsewhere).
+  sub-screen (say what's *in the room*; the channel layout falls out of the parts). Step 3's
+  **Good / Better / Best** rate cards set a fixed CBR bit rate (192 / 448 / 768 kbps) normally, or
+  — when a VBR default (see Preferences below) or an already-selected Variable rate mode applies —
+  a VBR quality target instead (40 / 75 / 90), since a fixed bit rate is not what either of those
+  is actually asking for. Step 4's movement cards drive [object mode](objects-and-motion.md), with
+  trajectory presets that author real keyframes; once objects are on, two more cards ask **what
+  should move** — *Everything moves* rewrites every loaded channel's assignment to an object (no
+  bed left underneath them), while *Keep the bed, add movers* leaves an existing mix exactly where
+  it is and only turns still-unassigned channels (a file added since) into objects — both edit the
+  same [assignment table](source-assignment.md) step 1 shows, so a later hand edit there always
+  sticks. Step 5's **Play it on my receiver** destination auto-picks the first output device that
+  can actually bitstream what is about to be encoded (the same "AC-3 + E-AC-3 ready" capability
+  labelling the Format tab's own passthrough picker uses — see [Format &
+  channels](format-and-channels.md#loudness-and-passthrough)), with a **Choose a different
+  device →** link to override it and a stated reason when nothing here qualifies; encoding writes
+  straight to the planned filename (no save dialog, since the real destination is the receiver) and
+  the finished run's own **Play** action reuses that same device. Constraints apply the same way as
+  everywhere else — they are explained rather than hidden (turning movement on says it fixed the
+  bed at 5.1, rather than silently locking controls elsewhere).
 - **Advanced** shows a tabbed right panel — [Format](format-and-channels.md) (presets, the
   channel picker, routing, the assignment table, a Loudness section) and
   [Objects](objects-and-motion.md).
@@ -118,6 +143,12 @@ behaviour:
 - **Defaults for a new encode** — container, rate mode, bit rate, VBR quality, DRC profile,
   measure loudness. The codec is deliberately **not** a default — it follows the channels (see
   [Format & channels](format-and-channels.md)), and a stale default would contradict that.
+  Clicking **Save** applies a changed default to whichever of these fields nothing has explicitly
+  touched *this session* yet — the same contract [the loudness contract](#the-loudness-contract)
+  already gives DRC profile and measure loudness, generalised to container/rate mode/bit
+  rate/VBR quality too. An edit made before Save is never clobbered by it: touch a field once (in
+  Guided, Advanced or Expert, any of them count) and Preferences stops overwriting it for the rest
+  of the session, exactly as the loudness contract already promises for Loudness/Metadata.
   **Capture** — start monitoring as soon as a device is chosen, and whether Record asks for a
   filename or writes straight to the output folder under a timestamped take name. **Command
   line** — keep the `ac3cli` line visible.

@@ -330,3 +330,76 @@ TEST_CASE("atmos-encode with a keyframes file authors motion", "[cli][atmos-enco
     const bool differs = static_bytes != motion_bytes;
     CHECK(differs);
 }
+
+// keep-partial (item 34): a bare trailing token, same style as heavy/
+// mixmeta/sign-objects, that keeps whatever frames a failed encode already
+// produced at <name>.partial.<ext> instead of discarding them - see
+// write_partial_output in main.cpp. FrameError's own causes (kInvalidBitrate
+// and friends - see silent_frame.hpp) are all checked against the fixed
+// config (bitrate, tools, channel count, dialnorm...), never per-frame
+// audio content, so for a GIVEN invocation either every frame fails
+// (nothing to keep - frames stays empty) or none do; there is no reachable
+// "some frames succeeded, then a later one failed" case through ac3cli's
+// own command line today. These tests cover exactly what IS reachable: the
+// token parses and is inert on a run that succeeds, and produces no
+// spurious partial file on a run that fails with nothing yet encoded -
+// matching EncoderController's own `keep_partial && !frames.empty()` guard
+// for the GUI's equivalent preference.
+TEST_CASE("keep-partial", "[cli][keep-partial]") {
+    const auto dir = scratch_dir();
+    const auto wav_path = dir / "keep_partial_in.wav";
+    const auto channels = make_tone_channels(6, 3 * static_cast<std::size_t>(ac3::kSamplesPerFrame),
+                                             48000);
+    REQUIRE(ac3::io::write_wav_f32(wav_path.string(), channels, 48000).has_value());
+
+    SECTION("is inert on a run that succeeds - no spurious partial file") {
+        const auto out_path = dir / "keep_partial_ok.ec3";
+        const auto partial_path = dir / "keep_partial_ok.partial.ec3";
+        const auto log = dir / "keep_partial_ok.log";
+        fs::remove(out_path);
+        fs::remove(partial_path);
+
+        const auto rc = run_cli("eac3-encode \"" + wav_path.string() + "\" \"" +
+                                    out_path.string() + "\" 448 cpl 51 keep-partial",
+                                log);
+        INFO(read_log(log));
+        CHECK(rc == 0);
+        CHECK(fs::exists(out_path));
+        CHECK_FALSE(fs::exists(partial_path));
+    }
+
+    // 64 kbps with every Annex E tool on over a 5.1 bed cannot hold the
+    // side information at all, let alone any mantissas - refused on the
+    // very first frame, deterministically, regardless of the source
+    // material (confirmed empirically: this is a config-level ceiling, not
+    // a content-dependent one - see this test's own top comment).
+    SECTION("a run that fails before any frame succeeds keeps nothing, "
+           "keep-partial or not") {
+        const auto out_path = dir / "keep_partial_fail.ec3";
+        const auto partial_path = dir / "keep_partial_fail.partial.ec3";
+        const auto log = dir / "keep_partial_fail.log";
+        fs::remove(out_path);
+        fs::remove(partial_path);
+
+        const auto rc = run_cli("eac3-encode \"" + wav_path.string() + "\" \"" +
+                                    out_path.string() + "\" 64 all 51 keep-partial",
+                                log);
+        INFO(read_log(log));
+        CHECK(rc != 0);
+        CHECK_FALSE(fs::exists(out_path));
+        CHECK_FALSE(fs::exists(partial_path));
+    }
+
+    SECTION("an unrecognised bare token still fails to parse - keep-partial "
+           "is not silently accepting everything") {
+        const auto out_path = dir / "keep_partial_typo.ec3";
+        const auto log = dir / "keep_partial_typo.log";
+        fs::remove(out_path);
+
+        const auto rc = run_cli("eac3-encode \"" + wav_path.string() + "\" \"" +
+                                    out_path.string() + "\" 448 cpl 51 keep-partiel",
+                                log);
+        CHECK(rc != 0);
+        CHECK_FALSE(fs::exists(out_path));
+    }
+}

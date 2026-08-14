@@ -172,6 +172,12 @@ data-type-21 bursts at four-times rate. See [Live capture & session](live-sessio
 live equivalent, and [Platform notes](../platforms/windows.md) for which platforms have this
 hardware-confirmed.
 
+Every **finished run chip in the run strip** (not just the most recent one) carries this same
+Play, sending *that* run's own output rather than whatever the most recent encode happened to
+produce — see [the window layout's own run strip section](index.md#the-window) for the chip-level
+detail, including how a run encoded through Guided's amp destination carries its device pick along
+with it so Play there needs no fresh pick.
+
 ## Next
 
 - [Multi-source & assignment](source-assignment.md) — the table everything above derives from.
