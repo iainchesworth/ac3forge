@@ -1,0 +1,14 @@
+{"branch": "develop", "commit": "07d2e02cfd4269407b6f12b55f08f4157ac8e14f", "commit_date": "2026-08-15T00:38:49+10:00", "iters": 3159, "kernel": "mdct512_forward", "leg": "linux-gcc", "ns_per_call": 63326.3}
+{"branch": "develop", "commit": "07d2e02cfd4269407b6f12b55f08f4157ac8e14f", "commit_date": "2026-08-15T00:38:49+10:00", "iters": 32766, "kernel": "mdct512_forward_fast", "leg": "linux-gcc", "ns_per_call": 6103.94}
+{"branch": "develop", "commit": "07d2e02cfd4269407b6f12b55f08f4157ac8e14f", "commit_date": "2026-08-15T00:38:49+10:00", "iters": 7873, "kernel": "mdct256_pair", "leg": "linux-gcc", "ns_per_call": 25404.7}
+{"branch": "develop", "commit": "07d2e02cfd4269407b6f12b55f08f4157ac8e14f", "commit_date": "2026-08-15T00:38:49+10:00", "iters": 20324, "kernel": "imdct512_windowed", "leg": "linux-gcc", "ns_per_call": 9841}
+{"branch": "develop", "commit": "07d2e02cfd4269407b6f12b55f08f4157ac8e14f", "commit_date": "2026-08-15T00:38:49+10:00", "iters": 207419, "kernel": "compute_bit_allocation", "leg": "linux-gcc", "ns_per_call": 964.235}
+{"branch": "develop", "commit": "07d2e02cfd4269407b6f12b55f08f4157ac8e14f", "commit_date": "2026-08-15T00:38:49+10:00", "iters": 236589, "kernel": "encode_exponents", "leg": "linux-gcc", "ns_per_call": 845.349}
+{"branch": "develop", "commit": "07d2e02cfd4269407b6f12b55f08f4157ac8e14f", "commit_date": "2026-08-15T00:38:49+10:00", "iters": 203012, "kernel": "mantissa_bits_per_block", "leg": "linux-gcc", "ns_per_call": 985.166}
+{"branch": "develop", "commit": "07d2e02cfd4269407b6f12b55f08f4157ac8e14f", "commit_date": "2026-08-15T00:38:49+10:00", "iters": 818648, "kernel": "quantize_mantissa_loop", "leg": "linux-gcc", "ns_per_call": 244.305}
+{"branch": "develop", "commit": "07d2e02cfd4269407b6f12b55f08f4157ac8e14f", "commit_date": "2026-08-15T00:38:49+10:00", "iters": 5786218, "kernel": "aht_forward", "leg": "linux-gcc", "ns_per_call": 34.5649}
+{"branch": "develop", "commit": "07d2e02cfd4269407b6f12b55f08f4157ac8e14f", "commit_date": "2026-08-15T00:38:49+10:00", "iters": 1494117, "kernel": "aht_vector_quantize", "leg": "linux-gcc", "ns_per_call": 133.858}
+{"branch": "develop", "commit": "07d2e02cfd4269407b6f12b55f08f4157ac8e14f", "commit_date": "2026-08-15T00:38:49+10:00", "iters": 497, "kernel": "ecpl_channel_spectrum", "leg": "linux-gcc", "ns_per_call": 402651}
+{"branch": "develop", "commit": "07d2e02cfd4269407b6f12b55f08f4157ac8e14f", "commit_date": "2026-08-15T00:38:49+10:00", "iters": 445, "kernel": "band_energy", "leg": "linux-gcc", "ns_per_call": 450003}
+{"branch": "develop", "commit": "07d2e02cfd4269407b6f12b55f08f4157ac8e14f", "commit_date": "2026-08-15T00:38:49+10:00", "iters": 4847, "kernel": "band_energy_fast", "leg": "linux-gcc", "ns_per_call": 41264.6}
+{"branch": "develop", "commit": "07d2e02cfd4269407b6f12b55f08f4157ac8e14f", "commit_date": "2026-08-15T00:38:49+10:00", "iters": 29676, "kernel": "bits_at_one_eval", "leg": "linux-gcc", "ns_per_call": 6739.63}
