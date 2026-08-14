@@ -122,7 +122,7 @@ and build and smoke-test `ac3gui` in addition to the CLI. A third leg, `linux-ll
 (AddressSanitizer + UndefinedBehaviorSanitizer), is also required but stays **CLI-only on
 purpose**, to keep a Qt kit out of the sanitizer leg's install time.
 
-The ALSA backend adds 14 tests of its own (`tests/platform/alsa/`): the suite is 286 ctest
-entries on a Linux build without `libasound2-dev`, the same count as Windows, and 300 with ALSA
-included. See [Verified configuration](../building.md#verified-configuration) for the full CI
-matrix.
+The ALSA backend adds 14 tests of its own (`tests/platform/alsa/`): the suite is 345 ctest
+entries on a Linux build with the GUI on and `libasound2-dev` absent, the same count as Windows,
+and 359 with ALSA included too. See [Verified configuration](../building.md#verified-configuration)
+for the full CI matrix.

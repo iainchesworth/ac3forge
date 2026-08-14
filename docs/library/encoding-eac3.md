@@ -35,7 +35,7 @@ for (int frame = 0; frame < 31; ++frame) {
 | `spx_atten`, `spxattencod` | `true`, -1 | The §E3.6.4.2.3 notch across the seam. Six bits per channel per frame. |
 | `aht`, `gaqmod` | `false`, -1 | Adaptive hybrid transform (§E3.4): a second 6-point DCT down each bin across the frame's six blocks. Decided per channel per frame — setting the flag permits it, not forces it. |
 | `coupling`, `cplbegf` | `false`, -1 | §E3.3. With `spx` also on, §E3.3.1 derives the coupling end frequency from `spxbegf`. |
-| `enhanced` | `false` | §E3.5: enhanced coupling instead of standard — 22 sub-bands, amplitude/angle/chaos-quantized coordinates and a phase-restoring reconstruction built on a full DFT, rather than a single per-band scale factor. Only meaningful with `coupling` also set (`cpl+ecpl`); combines with `spx` the same way standard coupling does. This encoder's own coordinate fit always sends `angle`/`chaos` as zero (an amplitude-only fit), which costs quality when two channels' content genuinely shares one narrow coupling band. |
+| `enhanced` | `false` | §E3.5: enhanced coupling instead of standard — 22 sub-bands, amplitude/angle/chaos-quantized coordinates and a phase-restoring reconstruction built on a full DFT, rather than a single per-band scale factor. Only meaningful with `coupling` also set (`cpl+ecpl`); combines with `spx` the same way standard coupling does. This encoder fits real amplitude/angle coordinates per band (an exact 2-variable linear least squares, since §3.5.5.4's reconstruction is linear in the complex gain the pair expresses) and chooses chaos by searching its 8 legal codes against the decoder's own deterministic de-correlation sequence. Two genuinely different channels forced into one narrow coupling band still cost quality — a single coordinate per band has a real, structural limit on what it can separate — but it is no longer the amplitude-only fit's all-or-nothing loss. |
 | `transient_prenoise` | `false` | §3.7 (`tpn`): a post-IMDCT correction that overwrites the pre-echo ahead of a detected transient with a synthesized copy of the clean audio just before it. Reuses the same transient detector block switching relies on, so it only has an effect on channels/frames that also block-switch. See [Decoding](decoding.md) for the one-frame decoder-side latency this introduces and the `flush()` call it requires. |
 | `mixing` | none | The `mixmdate` group (Table E1.2). E-AC-3 dropped `cmixlev`/`surmixlev` from `bsi` entirely, so without this the stream carries no downmix levels at all. |
 | `strmtyp`, `substreamid`, `chanmap`, `last_dependent` | independent, 0, none, false | Substream identity. Set by `AccessUnitEncoder`; you rarely touch these directly. |
@@ -54,6 +54,14 @@ anywhere in the frame is excluded from both coupling (same reasoning as AC-3's) 
 generation only, from AHT for that frame: AHT's own "stationary" premise (§E3.4, the opposite of
 what triggered the switch) already selects against a switching channel most of the time, but the
 exclusion is explicit rather than relying on that correlation.
+
+Rematrixing (§7.5.3) is automatic too, `acmod` 2/0 only, no config field — the same minimum-power
+decision AC-3's own encoder makes (see [Encoding AC-3](encoding-ac3.md)), over the same Table 7.25
+bands. Annex E §3.3's "Modifications to Previously Defined Parameters" only changes how many of
+those bands are active (`nrematbd`, accounting for coupling, enhanced coupling and spectral
+extension all separately taking over the top of the spectrum) — the boundaries and the decision
+rule are untouched, so nothing here needed reinventing beyond that band count and clamping the
+last active band to wherever this channel's own coding actually stops.
 
 `FrameConfig::dialnorm2` (see "Dual mono" in [Encoding AC-3](encoding-ac3.md)) works exactly
 the same way here: set it alongside `dialnorm` when `acmod` is `kDualMono`. Dual mono is always a

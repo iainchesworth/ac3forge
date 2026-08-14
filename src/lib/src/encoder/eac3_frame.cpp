@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <numbers>
 
 #include "ac3/core/bitalloc.hpp"
 #include "ac3/core/bitwriter.hpp"
@@ -201,10 +202,14 @@ struct CouplingPlan {
     int ecpl_end_subbnd = 0;
     std::array<bool, kEcplSubBands> ecpl_structure{};
     BandLayout ecpl_bands{};
-    // Amplitude only (§3.5.4's angle/chaos are fixed at zero - see the MVP
-    // note where these are computed): [blk][ch][bnd], band-indexed like
-    // ecpl_bands.
+    // §3.5.5 per-band coordinates: [blk][ch][bnd], band-indexed like
+    // ecpl_bands - see fit_ecpl_band's own comment for how angle/chaos are
+    // fit. The first coupled channel's angle/chaos are always defined as
+    // zero and never transmitted (§E2.3.3.20-26), so its slots here just
+    // hold 0 for uniform indexing with every other channel's.
     std::vector<int> ecplamp;
+    std::vector<int> ecplangle;
+    std::vector<int> ecplchaos;
     int fleak = 0;
     int sleak = 0;
     // Coordinates go out in blocks 0, 2 and 4 and are reused in between
@@ -257,6 +262,12 @@ struct Payload {
     std::vector<int> transproclen;  // samples
     CouplingPlan cpl;
     SpxPlan spx;
+    // §7.5.3, 2/0 only: [blk][band], band-indexed like rematrix_band_count's
+    // own return value (0..3, ac3::kRematrixBands' index). Left at all-false
+    // for every other acmod and for silence, which is exactly "never
+    // rematrixed" - the same bit pattern a stream with nothing to gain from
+    // it would choose anyway.
+    std::array<std::array<bool, 4>, kBlocksPerFrame> rematflg{};
     std::vector<ChannelPlan> chans;
     std::array<std::vector<MantissaToken>, kBlocksPerFrame> mantissas;
     // §7.7.1 words per block. All unity when the config carries no profile,
@@ -272,9 +283,9 @@ struct Payload {
 
 // §E3.3.2: the rematrixing bands cannot reach above whichever tool takes over
 // the spectrum first, so both their count and where the last one stops depend
-// on coupling and spectral extension. Nothing here rematrixes yet, but the
-// COUNT is transmitted, so getting it wrong shifts every later field in
-// block 0.
+// on coupling and spectral extension. The COUNT alone is always transmitted
+// (even at nrematbd == 0, which sends zero rematflg bits, not the field's
+// absence), so getting it wrong shifts every later field in block 0.
 [[nodiscard]] int rematrix_band_count(const CouplingPlan& cpl, const SpxPlan& spx) {
     if (cpl.in_use) {
         // §3.3.2: enhanced coupling has its own table, keyed off
@@ -302,6 +313,118 @@ struct Payload {
         return spx.begf < 2 ? 3 : 4;
     }
     return 4;
+}
+
+// §3.5.5's per-band amplitude/angle/chaos fit for a coupled channel other
+// than the first (whose own angle/chaos are always defined as zero and never
+// transmitted - see the emission site's own comment).
+//
+// `baseline_a`/`baseline_b` are this block's shared enhanced coupling
+// channel, already reconstructed via ecpl_channel_coefficients at (amp=1,
+// angle=0) and (amp=1, angle=0.5) respectively, sliced to this band's own
+// bins. Those two are enough to express what ANY (amp, angle) pair would
+// reconstruct, because §3.5.5.4's reconstruction is linear in the complex
+// gain g = amp * exp(i*pi*angle): reconstruction(g)[bin] = g_re *
+// baseline_a[bin] + g_im * baseline_b[bin] (baseline_a is g at (1,0),
+// baseline_b is g at (0,1) - the real and imaginary unit gains). Fitting
+// (g_re, g_im) to minimize squared error against the channel's own real
+// coefficients is therefore a plain 2-variable linear least squares, not an
+// approximation - solved directly below rather than searched.
+//
+// Chaos does not admit the same closed form: §3.5.5.3 adds chaos*noise to
+// the fitted angle independently PER BIN (a discontinuous effect, not
+// another degree of freedom the linear model above can absorb). But
+// ecpl_rand_notrans is a pure, deterministic function of (channel, bin) -
+// the exact sequence the decoder will use - so instead of estimating chaos
+// from some statistical proxy for phase spread, this searches the 8 legal
+// codes directly: for each, reconstruct the band exactly as the decoder
+// would with that code and the already-fitted angle, and keep whichever
+// reconstruction lands closest to the real channel by squared error. Eight
+// evaluations of a handful of bins is cheap, and it answers the question
+// that actually matters - which code's decode ends up closer to the source
+// - rather than a proxy for it.
+struct EcplBandFit {
+    double amp = 0.0;
+    double angle = 0.0;
+    int chaos_code = 0;
+};
+
+[[nodiscard]] EcplBandFit fit_ecpl_band(std::span<const double> channel,
+                                        std::span<const double> baseline_a,
+                                        std::span<const double> baseline_b,
+                                        std::span<const double, 256> zr,
+                                        std::span<const double, 256> zi, int ch, int low) {
+    const std::size_t n = channel.size();
+    double saa = 0.0;
+    double sab = 0.0;
+    double sbb = 0.0;
+    double sac = 0.0;
+    double sbc = 0.0;
+    for (std::size_t i = 0; i < n; ++i) {
+        saa += baseline_a[i] * baseline_a[i];
+        sab += baseline_a[i] * baseline_b[i];
+        sbb += baseline_b[i] * baseline_b[i];
+        sac += baseline_a[i] * channel[i];
+        sbc += baseline_b[i] * channel[i];
+    }
+    const double det = saa * sbb - sab * sab;
+    // A near-singular system means this band's shared-channel content is too
+    // small, or too close to a single real direction, to trust a two-degree
+    // fit - the same "not enough signal" case the old amplitude-only fit
+    // guarded with a single division, just at the tolerance a 2x2 solve
+    // needs. Falls back to that same energy-ratio answer, angle/chaos left
+    // at zero.
+    if (!(det > 1e-12 * std::max(saa * sbb, 1e-30))) {
+        double power_ch = 0.0;
+        for (const double c : channel) {
+            power_ch += c * c;
+        }
+        return {.amp = saa > 0.0 ? std::sqrt(power_ch / saa) : 0.0, .angle = 0.0, .chaos_code = 0};
+    }
+    const double g_re = (sac * sbb - sbc * sab) / det;
+    const double g_im = (saa * sbc - sab * sac) / det;
+    const double amp0 = std::hypot(g_re, g_im);
+    const double angle0 = std::atan2(g_im, g_re) / std::numbers::pi;
+
+    const std::vector<double> amp_scratch(n, amp0);
+    std::vector<double> angle_scratch(n);
+    std::array<double, 256> recon_scratch{};
+    int best_code = 0;
+    double best_err = 0.0;
+    bool have_best = false;
+    for (int code = 0; code < 8; ++code) {
+        const double chaos_val = decode_ecplchaos(code);
+        for (std::size_t i = 0; i < n; ++i) {
+            const int bin = low + static_cast<int>(i);
+            double angle = angle0 + chaos_val * ecpl_rand_notrans(ch, bin);
+            if (angle < -1.0) {
+                angle += 2.0;
+            } else if (angle >= 1.0) {
+                angle -= 2.0;
+            }
+            angle_scratch[i] = angle;
+        }
+        ecpl_channel_coefficients(zr, zi, amp_scratch, angle_scratch, low,
+                                  low + static_cast<int>(n), recon_scratch);
+        double err = 0.0;
+        for (std::size_t i = 0; i < n; ++i) {
+            const double d = channel[i] - recon_scratch[static_cast<std::size_t>(low) + i];
+            err += d * d;
+        }
+        if (!have_best || err < best_err) {
+            have_best = true;
+            best_err = err;
+            best_code = code;
+        }
+    }
+    const double chosen_chaos = decode_ecplchaos(best_code);
+    // ecpl_amplitudes multiplies decode_ecplamp(ecplamp) by (1 + 0.38 *
+    // chaos) for every channel but the first, so what gets quantized and
+    // transmitted has to be pre-divided by that same factor for the
+    // amplitude the decoder reconstructs to land on amp0 - never near zero
+    // (1 + 0.38*chaos spans [0.62, 1.0] over chaos's own [-1, 0] range).
+    const double final_amp = amp0 / (1.0 + 0.38 * chosen_chaos);
+    return {.amp = final_amp, .angle = angle0, .chaos_code = best_code};
 }
 
 // Where coupling should start when the caller does not say. Sub-band 4 - bin
@@ -795,11 +918,9 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
             // §E2.3.3.20-26: this encoder always couples channel 0 first
             // (every fbw channel couples, chincpl never partial), so
             // firstchincpl is always 0 and angle/chaos are never transmitted
-            // for it. ecplangle/ecplchaos are always sent as index 0 (angle
-            // 0.0, chaos 0.0) for every other channel - see CouplingPlan::
-            // ecplamp's own note on why this encoder does not yet fit a real
-            // angle/chaos. ecpltrans is always 0: no per-block transient
-            // tuning yet either.
+            // for it - see fit_ecpl_band for how every other channel's real
+            // angle/chaos are fit. ecpltrans is always 0: no per-block
+            // transient tuning yet.
             w.put(0, 1);  // ecplangleintrp: no interpolation
             const bool send = cpl.send[static_cast<std::size_t>(blk)];
             const auto nbnd_e = static_cast<std::size_t>(std::max(cpl.ecpl_bands.count, 1));
@@ -824,9 +945,17 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
                     }
                 }
                 if (param2) {
+                    const auto at = (static_cast<std::size_t>(blk) *
+                                         static_cast<std::size_t>(nfchans) +
+                                     static_cast<std::size_t>(ch)) *
+                                    nbnd_e;
                     for (int bnd = 0; bnd < cpl.ecpl_bands.count; ++bnd) {
-                        w.put(0, 6);  // ecplangle: index 0 -> angle 0.0
-                        w.put(0, 3);  // ecplchaos: index 0 -> chaos 0.0
+                        w.put(static_cast<std::uint32_t>(
+                                  cpl.ecplangle[at + static_cast<std::size_t>(bnd)]),
+                              6);
+                        w.put(static_cast<std::uint32_t>(
+                                  cpl.ecplchaos[at + static_cast<std::size_t>(bnd)]),
+                              3);
                     }
                 }
                 if (ch > 0) {
@@ -839,11 +968,23 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
             // Unlike AC-3, block 0's rematstr is IMPLIED 1 rather than
             // transmitted - only later blocks carry the bit. Sending it
             // anyway shifts the rest of the block by one.
+            const int nrematbd = rematrix_band_count(cpl, spx);
             if (!first) {
-                w.put(0, 1);  // rematstr: keep the previous flags
+                const bool send = payload.rematflg[static_cast<std::size_t>(blk)] !=
+                                  payload.rematflg[static_cast<std::size_t>(blk) - 1];
+                w.put(send ? 1 : 0, 1);  // rematstr
+                if (send) {
+                    for (int band = 0; band < nrematbd; ++band) {
+                        w.put(payload.rematflg[static_cast<std::size_t>(blk)]
+                                             [static_cast<std::size_t>(band)]
+                                  ? 1
+                                  : 0,
+                              1);
+                    }
+                }
             } else {
-                for (int band = 0; band < rematrix_band_count(cpl, spx); ++band) {
-                    w.put(0, 1);  // rematflg
+                for (int band = 0; band < nrematbd; ++band) {
+                    w.put(payload.rematflg[0][static_cast<std::size_t>(band)] ? 1 : 0, 1);
                 }
             }
         }
@@ -1130,15 +1271,18 @@ std::expected<std::vector<std::byte>, FrameError> build_silent_frame(
 FrameEncoder::FrameEncoder(const FrameConfig& config) : config_(config) {
     if (config_.drc) {
         range_.emplace(*config_.drc, config_.sample_rate);
-        if (config_.acmod == Acmod::kDualMono) {
-            range2_.emplace(*config_.drc, config_.sample_rate);
-        }
+    }
+    // Ch2's controller is built from drc2/heavy2, never drc/heavy - see
+    // ac3::FrameEncoder::FrameEncoder (the AC-3 sibling of this constructor)
+    // for why.
+    if (config_.acmod == Acmod::kDualMono && config_.drc2) {
+        range2_.emplace(*config_.drc2, config_.sample_rate);
     }
     if (config_.heavy) {
         heavy_.emplace(*config_.heavy, config_.sample_rate);
-        if (config_.acmod == Acmod::kDualMono) {
-            heavy2_.emplace(*config_.heavy, config_.sample_rate);
-        }
+    }
+    if (config_.acmod == Acmod::kDualMono && config_.heavy2) {
+        heavy2_.emplace(*config_.heavy2, config_.sample_rate);
     }
     const int nfchans = fullbw_channel_count(config_.acmod);
     transient_detectors_.reserve(static_cast<std::size_t>(nfchans));
@@ -1647,19 +1791,20 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
             }
         }
 
-        // §3.5.5's amplitude-only fit (this encoder always sends angle == 0,
-        // chaos == 0, ecpltrans == 0 - see CouplingPlan::ecplamp): reconstruct
-        // the same non-aliased spectrum the decoder will (§3.5.5.1), fold it
-        // through amp == 1/angle == 0 to get the shared, channel-independent
-        // baseline every channel's own amplitude scales, then fit that
-        // amplitude per band exactly the way standard coupling above fits its
-        // plain coordinate - sqrt of a power ratio, just against this
-        // baseline instead of the raw shared sum.
+        // §3.5.5's per-band amplitude/angle/chaos fit: reconstruct the same
+        // non-aliased spectrum the decoder will (§3.5.5.1), fold it through
+        // (amp=1, angle=0) and (amp=1, angle=0.5) to get the two baselines
+        // fit_ecpl_band needs, then fit every channel but the first (whose
+        // own angle/chaos §E2.3.3.20-26 defines as zero) with it. The first
+        // channel keeps the plain energy-ratio fit standard coupling's own
+        // coordinate above already uses, since angle/chaos are moot for it.
         if (cpl.enhanced) {
             const auto nbnd_e = static_cast<std::size_t>(std::max(cpl.ecpl_bands.count, 1));
-            cpl.ecplamp.assign(static_cast<std::size_t>(kBlocksPerFrame) *
-                                   static_cast<std::size_t>(nfchans) * nbnd_e,
-                               0);
+            const auto ecpl_size = static_cast<std::size_t>(kBlocksPerFrame) *
+                                   static_cast<std::size_t>(nfchans) * nbnd_e;
+            cpl.ecplamp.assign(ecpl_size, 0);
+            cpl.ecplangle.assign(ecpl_size, 0);
+            cpl.ecplchaos.assign(ecpl_size, 0);
             const auto ecpl_slot = [&](int blk, int ch) {
                 return (static_cast<std::size_t>(blk) * static_cast<std::size_t>(nfchans) +
                        static_cast<std::size_t>(ch)) *
@@ -1669,7 +1814,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
             const int bins = cpl.endmant - cpl.strtmant;
             std::vector<double> unity_amp(static_cast<std::size_t>(bins), 1.0);
             std::vector<double> zero_angle(static_cast<std::size_t>(bins), 0.0);
-            std::vector<double> amp_values(nbnd_e, 0.0);
+            std::vector<double> half_angle(static_cast<std::size_t>(bins), 0.5);
             for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
                 const auto& prev = blk > 0 ? coeffs_at(cpl_stream, blk - 1) : kZero;
                 const auto& curr = coeffs_at(cpl_stream, blk);
@@ -1678,30 +1823,46 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                 std::array<double, 256> zr{};
                 std::array<double, 256> zi{};
                 ecpl_channel_spectrum(prev, curr, next, zr, zi);
-                std::array<double, 256> baseline{};
+                std::array<double, 256> baseline_a{};
+                std::array<double, 256> baseline_b{};
                 ecpl_channel_coefficients(zr, zi, unity_amp, zero_angle, cpl.strtmant,
-                                          cpl.endmant, baseline);
+                                          cpl.endmant, baseline_a);
+                ecpl_channel_coefficients(zr, zi, unity_amp, half_angle, cpl.strtmant,
+                                          cpl.endmant, baseline_b);
 
                 for (int ch = 0; ch < nfchans; ++ch) {
-                    for (int bnd = 0; bnd < cpl.ecpl_bands.count; ++bnd) {
-                        const int low = cpl.ecpl_bands.start[static_cast<std::size_t>(bnd)];
-                        const int high = low + cpl.ecpl_bands.size[static_cast<std::size_t>(bnd)];
-                        double power_ch = 0.0;
-                        double power_f = 0.0;
-                        for (int bin = low; bin < high; ++bin) {
-                            const double value =
-                                coeffs_at(ch, blk)[static_cast<std::size_t>(bin)];
-                            const double f = baseline[static_cast<std::size_t>(bin)];
-                            power_ch += value * value;
-                            power_f += f * f;
-                        }
-                        const double ratio = power_f > 0.0 ? std::sqrt(power_ch / power_f) : 0.0;
-                        amp_values[static_cast<std::size_t>(bnd)] = ratio;
-                    }
                     if (cpl.send[static_cast<std::size_t>(blk)]) {
                         for (int bnd = 0; bnd < cpl.ecpl_bands.count; ++bnd) {
-                            cpl.ecplamp[ecpl_slot(blk, ch) + static_cast<std::size_t>(bnd)] =
-                                quantize_ecplamp(amp_values[static_cast<std::size_t>(bnd)]);
+                            const int low = cpl.ecpl_bands.start[static_cast<std::size_t>(bnd)];
+                            const int width = cpl.ecpl_bands.size[static_cast<std::size_t>(bnd)];
+                            const auto ulow = static_cast<std::size_t>(low);
+                            const auto uwidth = static_cast<std::size_t>(width);
+                            const std::span<const double> channel_band{
+                                &coeffs_at(ch, blk)[ulow], uwidth};
+                            const auto slot = ecpl_slot(blk, ch) + static_cast<std::size_t>(bnd);
+                            if (ch == 0) {
+                                double power_ch = 0.0;
+                                double power_f = 0.0;
+                                for (std::size_t i = 0; i < uwidth; ++i) {
+                                    power_ch += channel_band[i] * channel_band[i];
+                                    power_f += baseline_a[ulow + i] * baseline_a[ulow + i];
+                                }
+                                const double ratio =
+                                    power_f > 0.0 ? std::sqrt(power_ch / power_f) : 0.0;
+                                cpl.ecplamp[slot] = quantize_ecplamp(ratio);
+                                cpl.ecplangle[slot] = 0;
+                                cpl.ecplchaos[slot] = 0;
+                            } else {
+                                const std::span<const double> baseline_a_band{
+                                    &baseline_a[ulow], uwidth};
+                                const std::span<const double> baseline_b_band{
+                                    &baseline_b[ulow], uwidth};
+                                const auto fit = fit_ecpl_band(channel_band, baseline_a_band,
+                                                               baseline_b_band, zr, zi, ch, low);
+                                cpl.ecplamp[slot] = quantize_ecplamp(fit.amp);
+                                cpl.ecplangle[slot] = quantize_ecplangle(fit.angle);
+                                cpl.ecplchaos[slot] = fit.chaos_code;
+                            }
                         }
                     } else {
                         // Same reuse rule as standard coupling's coordinates:
@@ -1710,6 +1871,10 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                         for (std::size_t bnd = 0; bnd < nbnd_e; ++bnd) {
                             cpl.ecplamp[ecpl_slot(blk, ch) + bnd] =
                                 cpl.ecplamp[ecpl_slot(blk - 1, ch) + bnd];
+                            cpl.ecplangle[ecpl_slot(blk, ch) + bnd] =
+                                cpl.ecplangle[ecpl_slot(blk - 1, ch) + bnd];
+                            cpl.ecplchaos[ecpl_slot(blk, ch) + bnd] =
+                                cpl.ecplchaos[ecpl_slot(blk - 1, ch) + bnd];
                         }
                     }
                 }
@@ -1717,7 +1882,57 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         }
     }
 
-    // --- 4. Which streams take the adaptive hybrid transform ---------------
+    // --- 4. Rematrixing (2/0 only, §7.5.3) ----------------------------------
+    // The exact same minimum-power decision AC-3's own encoder already makes
+    // (see encoder.cpp): Annex E §3.3's "Modifications to Previously Defined
+    // Parameters" only touches nrematbd (rematrix_band_count above already
+    // accounts for coupling/enhanced coupling/spectral extension there) -
+    // Table 7.25's band boundaries and §7.5's decision rule are untouched, so
+    // there is nothing E-AC-3-specific to derive here beyond which bins are
+    // this channel's OWN to decide about. That is exactly fbw_endmant: below
+    // it a full-bandwidth channel always codes its own coefficients,
+    // whichever tool (if any) takes over above it, so rematrixing - like
+    // AC-3's - clamps its last active band to fbw_endmant - 1 and never
+    // touches a bin coupling or spectral extension will overwrite anyway.
+    if (config_.acmod == Acmod::k2_0) {
+        const int nrematbd = rematrix_band_count(cpl, spx);
+        for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
+            auto& left = coeffs_at(0, blk);
+            auto& right = coeffs_at(1, blk);
+            for (int band = 0; band < nrematbd; ++band) {
+                const int low = kRematrixBands[static_cast<std::size_t>(band)][0];
+                const int high = std::min(kRematrixBands[static_cast<std::size_t>(band)][1],
+                                          fbw_endmant - 1);
+                if (low > high) {
+                    continue;
+                }
+                double power_l = 0.0;
+                double power_r = 0.0;
+                double power_sum = 0.0;
+                double power_diff = 0.0;
+                for (int bin = low; bin <= high; ++bin) {
+                    const double l = left[static_cast<std::size_t>(bin)];
+                    const double r = right[static_cast<std::size_t>(bin)];
+                    power_l += l * l;
+                    power_r += r * r;
+                    power_sum += (l + r) * (l + r);
+                    power_diff += (l - r) * (l - r);
+                }
+                if (std::min(power_sum, power_diff) < std::min(power_l, power_r)) {
+                    payload.rematflg[static_cast<std::size_t>(blk)]
+                                    [static_cast<std::size_t>(band)] = true;
+                    for (int bin = low; bin <= high; ++bin) {
+                        const double l = left[static_cast<std::size_t>(bin)];
+                        const double r = right[static_cast<std::size_t>(bin)];
+                        left[static_cast<std::size_t>(bin)] = 0.5 * (l + r);
+                        right[static_cast<std::size_t>(bin)] = 0.5 * (l - r);
+                    }
+                }
+            }
+        }
+    }
+
+    // --- 5. Which streams take the adaptive hybrid transform ---------------
     // AHT is worth having exactly when the six blocks look alike, because
     // that is when the DCT down each bin collapses them into one large
     // coefficient and five small ones. On a transient it does the opposite -
@@ -1752,7 +1967,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         payload.ahte = payload.ahte || plan.aht;
     }
 
-    // --- 5. Fixed point and one frame-constant exponent set per stream -----
+    // --- 6. Fixed point and one frame-constant exponent set per stream -----
     AC3_ZONE_BEGIN(zone_exponents, "step5_exponents");
     // Table E2.10 code 0 sends D15 in block 0 and reuses it for the other
     // five, so a bin's exponent has to accommodate its LOUDEST block. The
@@ -1900,7 +2115,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
 
     AC3_ZONE_END(zone_exponents);
 
-    // --- 6. Coupling leak seeds ---------------------------------------------
+    // --- 7. Coupling leak seeds ---------------------------------------------
     // The coupling channel's allocation starts above the low-frequency region
     // entirely, so instead of running lowcomp it continues the masking decay
     // from transmitted leak state. Deriving the seeds from the coupling
@@ -1913,7 +2128,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         cpl.sleak = std::clamp((psd - slow_gain(kBamode0Codes.sgaincod) - 768) >> 8, 0, 7);
     }
 
-    // --- 7. SNR-offset search ----------------------------------------------
+    // --- 8. SNR-offset search ----------------------------------------------
     // The side info is offset-independent here (bamode 0, no delta
     // allocation), so it can be measured once and the remainder handed
     // wholly to the mantissas.
@@ -2176,7 +2391,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     payload.csnroffst = lo >> 4;
     payload.fsnroffst = lo & 15;
 
-    // --- 8. Mantissa tokens per block --------------------------------------
+    // --- 9. Mantissa tokens per block --------------------------------------
     AC3_ZONE_BEGIN(zone_mantissas, "step8_mantissa_tokens");
     // §E2.2.4 ordering: each fbw channel's mantissas, with the coupling
     // channel's inserted right after the FIRST coupled channel, then the LFE.
@@ -2285,7 +2500,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     (void)token_bits;
     AC3_ZONE_END(zone_mantissas);
 
-    // --- 9. Spectral extension coordinates ----------------------------------
+    // --- 10. Spectral extension coordinates ---------------------------------
     // Last, because the gains have to be measured against what the DECODER
     // will hold, not against what the encoder started with. The copy source is
     // the baseband this function has just quantized, and at low rates a good
@@ -2629,15 +2844,17 @@ AccessUnitEncoder::AccessUnitEncoder(const AccessUnitConfig& config) : config_(c
     const bool dual_mono = config_.independent.acmod == Acmod::kDualMono;
     if (config_.independent.drc) {
         range_.emplace(*config_.independent.drc, config_.independent.sample_rate);
-        if (dual_mono) {
-            range2_.emplace(*config_.independent.drc, config_.independent.sample_rate);
-        }
+    }
+    // Ch2's controller is built from drc2/heavy2, never drc/heavy - see
+    // ac3::FrameEncoder::FrameEncoder for why.
+    if (dual_mono && config_.independent.drc2) {
+        range2_.emplace(*config_.independent.drc2, config_.independent.sample_rate);
     }
     if (config_.independent.heavy) {
         heavy_.emplace(*config_.independent.heavy, config_.independent.sample_rate);
-        if (dual_mono) {
-            heavy2_.emplace(*config_.independent.heavy, config_.independent.sample_rate);
-        }
+    }
+    if (dual_mono && config_.independent.heavy2) {
+        heavy2_.emplace(*config_.independent.heavy2, config_.independent.sample_rate);
     }
 }
 

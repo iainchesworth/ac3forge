@@ -422,3 +422,51 @@ is self-consistency only: round-trip unit tests in `tests/test_eac3_decoder.cpp`
 `tools/quality_race.py`'s CI gate, extended with a `decode_scores_ours` path that decodes through
 this project's own `ac3cli decode` instead of FFmpeg for exactly these two tools, with SNR/LSD
 floors sized off a real measured run rather than guessed.
+
+## Enhanced coupling's real angle/chaos fit
+
+The amplitude-only MVP above was closed by `fit_ecpl_band` (`src/lib/src/encoder/eac3_frame.cpp`):
+§3.5.5.4's reconstruction turns out to be linear in the complex gain a band's (amplitude, angle)
+pair expresses — the same shared coupling channel folded through unity gain at angle 0 and at
+angle 0.5 (a quarter-turn) spans every gain a single coordinate pair could ever produce, so fitting
+the pair that best matches a channel's real coefficients is an exact 2-variable linear least
+squares, not a search or an approximation. Chaos does not reduce the same way — §3.5.5.3 adds
+chaos-scaled noise to the fitted angle independently per bin, a discontinuous effect no extra
+linear degree of freedom absorbs - but `ecpl_rand_notrans` is a pure, deterministic function of
+(channel, bin), the *exact* sequence the decoder will use, so instead of a statistical proxy for
+how much decorrelation a band needs, the encoder searches its 8 legal codes directly: reconstruct
+the band exactly as the decoder would for each, keep whichever lands closest to the real channel
+by squared error.
+
+The regression test built for the amplitude-only MVP (two channels' different tones forced into
+one 6-bin coupling band, the narrowest §E3.5.2 allows) measured the improvement directly rather
+than assuming one: ~3 dB under the old fit, ~6 dB under the real one. Real, worthwhile — and also
+the ceiling this test was designed to demonstrate rather than defeat, since no single coordinate
+pair per band can fully separate two genuinely different signals sharing that few bins; the test's
+own comment and threshold were updated to say so rather than imply the tool has been made
+transparent there. Verified against real gcc-15, clang-21 and MSVC builds before landing, following
+the lesson from the previous merge: a feature exercised only on one compiler locally is not
+verified everywhere the fleet is required to be green.
+
+## E-AC-3 rematrixing
+
+E-AC-3's `acmod` 2/0 rematrixing had always emitted valid but permanently-off syntax — `rematflg`
+unconditionally zero, `rematstr` never claiming a change — even though the bitstream field layout
+and the in-repo decoder's undo path were both already complete. Only the encoder's own §7.5.3
+minimum-power decision was missing, and it turned out to need no new decision logic at all:
+Annex E §3.3's "Modifications to Previously Defined Parameters" touches `nrematbd` (how many of
+Table 7.25's four bands are active, given whichever of coupling/enhanced coupling/spectral
+extension takes over the top of the spectrum first) and nothing else about rematrixing — the band
+boundaries and the decision rule are exactly AC-3's own. `kRematrixBands` (previously a local
+table private to the AC-3 encoder) moved to `ac3/core/tables.hpp` as shared, format-agnostic
+infrastructure, and both decoders' own independent copies of the same four ranges were pointed at
+it too, closing a three-way literal duplication risk that predated this work rather than adding a
+new one.
+
+Two existing bit-placement tests (`tests/test_eac3.cpp`) had hardcoded `rematflg` at zero, true
+only because the encoder never set it before; both now assert genuine engagement (at least one
+band fires) for their already-correlated test material instead, catching the field's PRESENCE
+without pinning a value that is legitimately content-dependent. The existing stereo round-trip
+test's identical-tone case already exercised the decoder's real undo path end to end once
+rematrixing went live, without needing a new test written for it. Verified against real gcc-15,
+clang-21 and MSVC builds, plus clang-tidy, before landing.

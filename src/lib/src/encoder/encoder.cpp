@@ -17,11 +17,6 @@ namespace ac3 {
 
 namespace {
 
-// Rematrixing bands, coupling not in use (Table 7.25): [low, high] inclusive.
-constexpr std::array<std::array<int, 2>, 4> kRematrixBands = {{
-    {13, 24}, {25, 36}, {37, 60}, {61, 252},
-}};
-
 constexpr bool has_three_front(Acmod acmod) {
     const auto value = static_cast<std::uint8_t>(acmod);
     return (value & 0x1) != 0 && acmod != Acmod::k1_0;
@@ -118,15 +113,19 @@ struct StreamPlan {
 FrameEncoder::FrameEncoder(const EncoderConfig& config) : config_(config) {
     if (config_.drc) {
         range_.emplace(*config_.drc, config_.sample_rate);
-        if (config_.acmod == Acmod::kDualMono) {
-            range2_.emplace(*config_.drc, config_.sample_rate);
-        }
+    }
+    // Ch2's controller is built from drc2/heavy2, never drc/heavy - the two
+    // programmes are unrelated, and dialnorm2's existing all-or-nothing rule
+    // (§5.4.2.16, checked below in encode_frame) is the precedent for not
+    // inheriting one programme's setting into the other's.
+    if (config_.acmod == Acmod::kDualMono && config_.drc2) {
+        range2_.emplace(*config_.drc2, config_.sample_rate);
     }
     if (config_.heavy) {
         heavy_.emplace(*config_.heavy, config_.sample_rate);
-        if (config_.acmod == Acmod::kDualMono) {
-            heavy2_.emplace(*config_.heavy, config_.sample_rate);
-        }
+    }
+    if (config_.acmod == Acmod::kDualMono && config_.heavy2) {
+        heavy2_.emplace(*config_.heavy2, config_.sample_rate);
     }
     const int nfchans = fullbw_channel_count(config_.acmod);
     transient_detectors_.reserve(static_cast<std::size_t>(nfchans));
@@ -947,7 +946,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         if (config_.heavy) bsi += 8;                   // compr (§5.4.2.10)
         if (dual_mono) {
             bsi += 5 + 1 + 1 + 1;  // dialnorm2, compr2e, langcod2e, audprodi2e
-            if (config_.heavy) bsi += 8;  // compr2
+            if (config_.heavy2) bsi += 8;  // compr2 - Ch2's OWN heavy flag, not Ch1's
         }
         bits += bsi;
         BitWriter counter;
@@ -1116,8 +1115,12 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     w.put(0, 1);  // audprodie
     if (dual_mono) {
         w.put(static_cast<std::uint32_t>(*config_.dialnorm2), 5);
-        w.put(config_.heavy ? 1 : 0, 1);  // compr2e
-        if (config_.heavy) {
+        // compr2e is Ch2's OWN flag (§5.4.2.11 mirrors §5.4.2.10 for the
+        // second programme) - it does not piggyback on Ch1's compre, or a
+        // 1+1 stream with only Ch1 heavy-compressed would wrongly claim a
+        // compr2 word it never computed.
+        w.put(config_.heavy2 ? 1 : 0, 1);  // compr2e
+        if (config_.heavy2) {
             w.put(compr2, 8);
         }
         w.put(0, 1);  // langcod2e

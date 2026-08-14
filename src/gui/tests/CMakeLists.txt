@@ -23,7 +23,9 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS QuickTest)
 qt_add_executable(ac3gui_qmltests
     tests/qml_test_main.cpp
     encoder_controller.cpp
-    encoder_controller.hpp)
+    encoder_controller.hpp
+    system_theme.cpp
+    system_theme.hpp)
 
 qt_add_qml_module(ac3gui_qmltests
     URI Ac3Forge

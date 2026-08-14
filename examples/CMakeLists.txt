@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# The examples from docs/LIBRARY.md, as buildable programs.
+# The examples from docs/library/, as buildable programs.
 #
 # They exist to be compiled: a snippet in a document rots silently, and one
 # that is a build target cannot. Each is also runnable and prints what it
@@ -15,7 +15,16 @@ set(AC3FORGE_EXAMPLES
     metadata
     spatial_objects
     atmos_objects
-    mux_mkv)
+    station_broadcast
+    mux_mkv
+    wav_roundtrip
+    custom_layout
+    multi_source_assignment
+    scripted_object_motion
+    object_signing
+    level_metering
+    decode_robustness
+    atmos_fallback)
 
 foreach(example IN LISTS AC3FORGE_EXAMPLES)
     add_executable(${example} "${example}.cpp")
@@ -27,6 +36,9 @@ endforeach()
 
 # Only this one needs the container writer.
 target_link_libraries(mux_mkv PRIVATE matroska::matroska)
+
+# Only this one needs the object signer.
+target_link_libraries(object_signing PRIVATE ac3::signing)
 
 # A shared ac3::forge/matroska::matroska (-DBUILD_SHARED_LIBS=ON) lands its
 # .dll in ${CMAKE_BINARY_DIR}/bin, one level up from where the loop above

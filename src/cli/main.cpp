@@ -22,6 +22,7 @@
 
 #include "ac3/analysis/levels.hpp"
 #include "ac3/capture/capture.hpp"
+#include "ac3/capture/resampler.hpp"
 #include "ac3/decoder/decoder.hpp"
 #include "ac3/encoder/assignment.hpp"
 #include "ac3/encoder/eac3_frame.hpp"
@@ -41,8 +42,9 @@
 #include "ac3/sinks/passthrough.hpp"
 #include "ac3/spatial/spatial.hpp"
 #include "ac3/version.hpp"
+#include "ac3/signing/emdf_atmos_signer.hpp"
+#include "ac3/signing/signing_key.hpp"
 #include "matroska/matroska.hpp"
-#include "quarantine_hook.hpp"
 
 namespace {
 
@@ -76,6 +78,11 @@ void print_meta_usage() {
     std::println("                    mono downmix, at syncframe resolution");
     std::println("  ceiling=<dBFS>    that ceiling (default -0.5)");
     std::println("  dialogue=<dBFS>   where heavy compression puts dialogue (default -20)");
+    std::println("  drc2=<profile>    Ch2's own DRC profile, layout 1+1 only (§7.7.1) - not "
+                 "inherited from drc=, set both to compress both programmes alike");
+    std::println("  heavy2            Ch2's own heavy compression, layout 1+1 only (§7.7.2.2)");
+    std::println("  ceiling2=<dBFS>   that ceiling for Ch2 (default -0.5)");
+    std::println("  dialogue2=<dBFS>  where Ch2's heavy compression puts dialogue (default -20)");
     std::println("  dialnorm=auto     measure BS.1770 loudness and derive dialnorm (§5.4.2.8)");
     std::println("  dialnorm=<1..31>  set it directly (default 31)");
     std::println("  dialnorm2=auto | <1..31>   Ch2's own dialnorm, layout 1+1 only "
@@ -85,6 +92,10 @@ void print_meta_usage() {
     std::println("  mixmeta           E-AC-3 only: emit the mixmdate group (Table E1.2)");
     std::println("  lfemix=<0..31>|off      E-AC-3 LFE mix level, 10-code dB (§E2.3.1.11)");
     std::println("  dmixmod=ltrt|loro|none  preferred stereo downmix (Table D2.2)");
+    std::println("  keep-partial      encode/eac3-encode/atmos-encode: if the run fails partway, "
+                 "keep whatever frames were already encoded (named beside the intended output as "
+                 "<name>.partial.<ext>) instead of discarding them - off by default, matching the "
+                 "GUI's own keep-partial-output preference");
     std::println();
     std::println("source options (encode/eac3-encode; any order, after the positional "
                  "arguments):");
@@ -92,6 +103,14 @@ void print_meta_usage() {
     std::println("  map=<spec>        {}", plan::kAssignmentSyntax);
     std::println("                    once given, every loaded channel must appear - explicit "
                  "'none' silences the goes-nowhere warning without giving it anywhere to go");
+    std::println("  offset=<sourceIndex>:<seconds>   leading silence ahead of that source's own "
+                 "channels (seconds >= 0), same 0-based numbering as src=");
+    std::println("                    the programme is still as long as the longest one once "
+                 "every offset is applied");
+    std::println();
+    std::println("live options (live; any order, after the positional arguments):");
+    std::println("  capture2=<index>  a second capture device, clock-conformed to the first "
+                 "(see 'devices')");
 }
 
 // Everything a command accepts after its positional arguments, in any order.
@@ -114,6 +133,35 @@ struct Options {
     // parse_options itself cannot do (it only sees command-line text, not
     // opened files).
     std::optional<std::string> map_spec;
+    // Each offset= occurrence: (sourceIndex, seconds) - leading silence ahead
+    // of that source's own audio, in the same 0-based numbering src=
+    // establishes (0 = the primary positional argument, 1..N = each src= in
+    // order). encode/eac3-encode only, including the classic single-file
+    // path, where source 0 is the only source there is. A given sourceIndex
+    // may appear more than once; the last occurrence wins (see
+    // offset_samples_for).
+    std::vector<std::pair<std::size_t, double>> offsets;
+    // Atmos object signing (atmos/atmos-path/atmos-encode). Off unless the
+    // operator both asks (sign-objects) and provides a key - either
+    // signing-key=<path> here, or the AC3FORGE_SIGNING_KEY[_FILE] env vars
+    // load_signing_key() falls back to. The key is never stored by this tool;
+    // see docs/concepts/object-signing.md.
+    bool sign_objects = false;
+    std::optional<std::string> signing_key;
+    // 'live' only: a second ("slave") capture device index, same numbering
+    // ac3::capture::enumerate_devices()/'devices' uses and the capture_device
+    // positional already reads. Unset means the classic single-device
+    // session, unchanged from before this option existed.
+    std::optional<int> capture2 = std::nullopt;
+    // Off by default, matching every bare token here - keep whatever frames
+    // a failed encode already produced, written beside the intended output
+    // as <name>.partial.<ext> instead of discarded outright. The same
+    // "named and kept, never silently discarded" behaviour the GUI's own
+    // keepPartialOutput preference gives EncoderController's file encodes
+    // (see gui/encoder_controller.cpp's partial_output_path), offered here
+    // per invocation rather than as a standing preference - see
+    // write_partial_output.
+    bool keep_partial = false;
 };
 
 bool parse_double(std::string_view text, double& out) {
@@ -133,12 +181,21 @@ bool parse_options(std::span<char*> tokens, Options& out) {
         const std::string_view value =
             eq == std::string_view::npos ? std::string_view{} : token.substr(eq + 1);
 
-        if (token == "couple" || token == "heavy" || token == "mixmeta") {
+        if (token == "couple" || token == "heavy" || token == "heavy2" || token == "mixmeta" ||
+            token == "keep-partial") {
             if (token == "heavy") {
                 out.p.heavy.emplace();
+            } else if (token == "heavy2") {
+                out.p.heavy2.emplace();
             } else if (token == "mixmeta") {
                 out.p.mixmeta = true;
+            } else if (token == "keep-partial") {
+                out.keep_partial = true;
             }
+            continue;
+        }
+        if (token == "sign-objects") {
+            out.sign_objects = true;
             continue;
         }
         if (key == "drc") {
@@ -172,6 +229,35 @@ bool parse_options(std::span<char*> tokens, Options& out) {
                 out.p.heavy->peak_ceiling_dbfs = db;
             } else {
                 out.p.heavy->dialogue_target_dbfs = db;
+            }
+            continue;
+        }
+        if (key == "drc2") {
+            // Encode-side only, unlike drc= - nothing on the decode side
+            // corresponds to a per-programme DRC profile, since a decoder
+            // just applies whatever dynrng2 the stream carries.
+            ac3::meta::ProfileId id{};
+            if (!ac3::meta::parse_profile(value, id)) {
+                std::println(stderr, "error: unknown DRC profile '{}' ({})", value,
+                             ac3::meta::kProfileNames);
+                return false;
+            }
+            out.p.drc2 = ac3::meta::profile(id);
+            continue;
+        }
+        if (key == "ceiling2" || key == "dialogue2") {
+            double db = 0.0;
+            if (!parse_double(value, db)) {
+                std::println(stderr, "error: {} needs a level in dBFS", key);
+                return false;
+            }
+            if (!out.p.heavy2) {
+                out.p.heavy2.emplace();
+            }
+            if (key == "ceiling2") {
+                out.p.heavy2->peak_ceiling_dbfs = db;
+            } else {
+                out.p.heavy2->dialogue_target_dbfs = db;
             }
             continue;
         }
@@ -269,6 +355,50 @@ bool parse_options(std::span<char*> tokens, Options& out) {
                 return false;
             }
             out.map_spec = std::string{value};
+            continue;
+        }
+        if (key == "offset") {
+            const auto colon = value.find(':');
+            std::size_t index = 0;
+            double seconds = 0.0;
+            bool ok = colon != std::string_view::npos;
+            if (ok) {
+                const auto index_text = value.substr(0, colon);
+                const auto seconds_text = value.substr(colon + 1);
+                const auto [ptr, ec] = std::from_chars(
+                    index_text.data(), index_text.data() + index_text.size(), index);
+                ok = ec == std::errc{} && ptr == index_text.data() + index_text.size();
+                ok = ok && parse_double(seconds_text, seconds) && seconds >= 0.0;
+            }
+            if (!ok) {
+                std::println(stderr,
+                             "error: offset= needs <sourceIndex>:<seconds> (seconds >= 0)");
+                return false;
+            }
+            // A given sourceIndex may appear more than once; offset_samples_for
+            // reads this in order and keeps the last match, so no dedupe here.
+            out.offsets.emplace_back(index, seconds);
+            continue;
+        }
+        if (key == "capture2") {
+            int index = 0;
+            const auto [ptr, ec] =
+                std::from_chars(value.data(), value.data() + value.size(), index);
+            const bool ok =
+                ec == std::errc{} && ptr == value.data() + value.size() && index >= 0;
+            if (!ok) {
+                std::println(stderr, "error: capture2= needs a non-negative device index");
+                return false;
+            }
+            out.capture2 = index;
+            continue;
+        }
+        if (key == "signing-key") {
+            if (value.empty()) {
+                std::println(stderr, "error: signing-key= needs a key file path");
+                return false;
+            }
+            out.signing_key = std::string{value};
             continue;
         }
         std::println(stderr, "error: unknown option '{}'", token);
@@ -381,6 +511,39 @@ bool write_frames(std::string_view path, std::span<const std::vector<std::byte>>
                   static_cast<std::streamsize>(frame.size()));
     }
     return true;
+}
+
+// Where a failed encode's frames land when keep-partial is given: ".partial"
+// spliced in before the suffix, so "out.ec3" keeps its half-finished take as
+// "out.partial.ec3" - the same naming EncoderController::partial_output_path
+// gives the GUI's own keepPartialOutput preference (see gui/
+// encoder_controller.cpp), so a file produced either way is named alike.
+std::string partial_output_path(std::string_view path) {
+    const auto dot = path.rfind('.');
+    const auto slash = path.find_last_of("/\\");
+    if (dot != std::string_view::npos && (slash == std::string_view::npos || dot > slash)) {
+        return std::string(path.substr(0, dot)) + ".partial" + std::string(path.substr(dot));
+    }
+    return std::string(path) + ".partial";
+}
+
+// Writes whatever frames a failed encode already produced to
+// partial_output_path(out_path) when keep_partial asked for it and there is
+// at least one - "named and kept, never silently discarded", the same rule
+// the GUI's own keep-partial-output preference follows. A no-op (silently)
+// when keep_partial is false or nothing was encoded yet; a write failure for
+// the partial itself is reported but does not change the caller's own exit
+// code, since the ORIGINAL error is still the one that matters.
+void write_partial_output(std::string_view out_path, bool keep_partial,
+                          std::span<const std::vector<std::byte>> frames) {
+    if (!keep_partial || frames.empty()) {
+        return;
+    }
+    const auto partial = partial_output_path(out_path);
+    if (write_frames(partial, frames)) {
+        std::println(stderr, "note: the {} frames already encoded are kept at {}", frames.size(),
+                     partial);
+    }
 }
 
 // Interleaves `channels` (one vector per decoded channel, AC-3/E-AC-3 coded
@@ -830,18 +993,43 @@ struct LoadedSources {
     std::vector<ac3::io::WavData> wavs;
     std::vector<plan::SourceShape> shapes;
     std::uint32_t sample_rate = 0;
-    // The longest source's frame count, not the primary file's - a run
-    // covers everything any loaded source carries. Each source still holds
-    // its own last real sample past its own end (see gather_frame), so a
-    // short source does not go silent early relative to a long one.
+    // Per-source leading silence, in samples at sample_rate - parallel to
+    // wavs/shapes (index 0 = in_path, 1..N = each src= in load order, the
+    // same numbering offset= addresses), computed from Options::offsets once
+    // sample_rate is known. Applied in gather_frame, ahead of a source's own
+    // samples.
+    std::vector<std::size_t> offset_samples;
+    // The longest source's frame count once ITS OWN offset is applied, not
+    // the longest raw source alone - a run covers everything any loaded
+    // source carries, including whatever offset= shifted it by. Each source
+    // still holds its own last real sample past its own end (see
+    // gather_frame), so a short source does not go silent early relative to
+    // a long one.
     std::size_t total_frames = 0;
 };
+
+// The leading-silence sample count offset= asked for on source `index`
+// (the same 0-based numbering src= establishes), from every offset= the
+// operator gave - the last occurrence for that index wins, since
+// parse_options does not dedupe. Shared by load_sources (every loaded
+// source) and the classic single-file path (source index always 0).
+std::size_t offset_samples_for(std::span<const std::pair<std::size_t, double>> offsets,
+                               std::size_t index, std::uint32_t sample_rate) {
+    std::size_t result = 0;
+    for (const auto& [i, seconds] : offsets) {
+        if (i == index) {
+            result = static_cast<std::size_t>(std::lround(seconds * static_cast<double>(sample_rate)));
+        }
+    }
+    return result;
+}
 
 // Opens `in_path` plus every path in `extra`, in that order, and checks they
 // all share one sample rate - plan::render has no notion of resampling, and
 // a silently mismatched pair would drift apart rather than error.
-std::optional<LoadedSources> load_sources(std::string_view in_path,
-                                          std::span<const std::string> extra) {
+std::optional<LoadedSources> load_sources(
+    std::string_view in_path, std::span<const std::string> extra,
+    std::span<const std::pair<std::size_t, double>> offsets) {
     auto primary = ac3::io::read_wav(std::string{in_path});
     if (!primary) {
         std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(primary.error()));
@@ -849,7 +1037,6 @@ std::optional<LoadedSources> load_sources(std::string_view in_path,
     }
     LoadedSources out;
     out.sample_rate = primary->sample_rate;
-    out.total_frames = primary->frame_count();
     out.shapes.push_back({.channels = primary->channels.size(), .label = std::string{in_path}});
     out.wavs.push_back(std::move(*primary));
 
@@ -866,9 +1053,21 @@ std::optional<LoadedSources> load_sources(std::string_view in_path,
                          path, wav->sample_rate, in_path, out.sample_rate);
             return std::nullopt;
         }
-        out.total_frames = std::max(out.total_frames, wav->frame_count());
         out.shapes.push_back({.channels = wav->channels.size(), .label = path});
         out.wavs.push_back(std::move(*wav));
+    }
+
+    // A sourceIndex offset= names beyond how many sources actually loaded has
+    // nothing to shift - ignored rather than an error, the same way an unused
+    // trailing option elsewhere in this file is simply inert.
+    out.offset_samples.resize(out.wavs.size());
+    for (std::size_t i = 0; i < out.wavs.size(); ++i) {
+        out.offset_samples[i] = offset_samples_for(offsets, i, out.sample_rate);
+    }
+    out.total_frames = 0;
+    for (std::size_t i = 0; i < out.wavs.size(); ++i) {
+        out.total_frames =
+            std::max(out.total_frames, out.offset_samples[i] + out.wavs[i].frame_count());
     }
     return out;
 }
@@ -909,8 +1108,9 @@ std::optional<plan::Routing> routing_for_sources(const plan::Plan& p, const Load
 }
 
 // Fills `dest` (one entry per flattened source channel, source 0 first) with
-// samples [start, start + kSamplesPerFrame) from `sources`, holding each
-// source's own last real sample past its own end - independently per
+// samples [start, start + kSamplesPerFrame) from `sources`, applying each
+// source's own offset= leading silence ahead of its real samples, then
+// holding its own last real sample past its own end - independently per
 // source, the same tail padding the classic path already applies to its one
 // file, so a short source loaded alongside a long one goes silent-by-
 // holding at its own end rather than at whichever source happens to be
@@ -918,14 +1118,21 @@ std::optional<plan::Routing> routing_for_sources(const plan::Plan& p, const Load
 void gather_frame(const LoadedSources& sources, std::size_t start,
                   std::vector<std::vector<float>>& dest) {
     std::size_t flat = 0;
-    for (const auto& wav : sources.wavs) {
+    for (std::size_t s = 0; s < sources.wavs.size(); ++s) {
+        const auto& wav = sources.wavs[s];
         const std::size_t total = wav.frame_count();
+        const std::size_t offset = sources.offset_samples[s];
         for (const auto& channel : wav.channels) {
             const float hold = total > 0 ? channel[total - 1] : 0.0f;
             auto& out = dest[flat];
             for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
                 const std::size_t at = start + static_cast<std::size_t>(i);
-                out[static_cast<std::size_t>(i)] = at < total ? channel[at] : hold;
+                if (at < offset) {
+                    out[static_cast<std::size_t>(i)] = 0.0f;
+                    continue;
+                }
+                const std::size_t shifted = at - offset;
+                out[static_cast<std::size_t>(i)] = shifted < total ? channel[shifted] : hold;
             }
             ++flat;
         }
@@ -971,7 +1178,7 @@ void print_routing(const plan::Plan& p, const plan::Routing& routing, std::strin
 int run_eac3_encode_multi(std::string_view in_path, std::string_view out_path,
                           std::uint32_t bitrate, std::string_view tools,
                           std::string_view layout, std::string_view vbr, const Options& meta) {
-    auto sources = load_sources(in_path, meta.sources);
+    auto sources = load_sources(in_path, meta.sources, meta.offsets);
     if (!sources) {
         return 1;
     }
@@ -1045,6 +1252,7 @@ int run_eac3_encode_multi(std::string_view in_path, std::string_view out_path,
         auto unit = encoder.encode_access_unit(views);
         if (!unit) {
             std::println(stderr, "error: the encoder cannot express this configuration");
+            write_partial_output(out_path, meta.keep_partial, frames);
             return 1;
         }
         frames.push_back(std::move(unit->bytes));
@@ -1163,7 +1371,12 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
     ac3::eac3::AccessUnitEncoder encoder{plan::eac3_config(p)};
     const auto nchans = static_cast<std::size_t>(routing->coded_channels);
     assert(static_cast<int>(nchans) == encoder.channel_count());
-    const std::size_t total = wav->frame_count();
+    // The classic path has exactly one source, always index 0 in offset='s
+    // numbering - see LoadedSources::offset_samples for the multi-source
+    // equivalent of this same leading silence.
+    const std::size_t offset = offset_samples_for(meta.offsets, 0, wav->sample_rate);
+    const std::size_t frame_count = wav->frame_count();
+    const std::size_t total = offset + frame_count;
 
     std::vector<std::vector<float>> source(wav->channels.size(),
                                            std::vector<float>(ac3::kSamplesPerFrame));
@@ -1181,12 +1394,19 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
         // hard zero - see run_encode's identical padding for why: a sudden
         // drop to silence is itself a transient the encoder would (correctly)
         // spend a block-switch on, for a discontinuity that only exists
-        // because this frame ends mid-buffer.
+        // because this frame ends mid-buffer. Ahead of the source's own
+        // samples, offset= silence is real silence, not padding.
         for (std::size_t c = 0; c < source.size(); ++c) {
-            const float hold = total > 0 ? wav->channels[c][total - 1] : 0.0f;
+            const float hold = frame_count > 0 ? wav->channels[c][frame_count - 1] : 0.0f;
             for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
                 const std::size_t at = start + static_cast<std::size_t>(i);
-                source[c][static_cast<std::size_t>(i)] = at < total ? wav->channels[c][at] : hold;
+                if (at < offset) {
+                    source[c][static_cast<std::size_t>(i)] = 0.0f;
+                    continue;
+                }
+                const std::size_t shifted = at - offset;
+                source[c][static_cast<std::size_t>(i)] =
+                    shifted < frame_count ? wav->channels[c][shifted] : hold;
             }
             in[c] = source[c];
         }
@@ -1194,6 +1414,7 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
         auto unit = encoder.encode_access_unit(views);
         if (!unit) {
             std::println(stderr, "error: the encoder cannot express this configuration");
+            write_partial_output(out_path, meta.keep_partial, frames);
             return 1;
         }
         frames.push_back(std::move(unit->bytes));
@@ -1232,6 +1453,36 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
     }
     print_routing(p, *routing, label);
     return 0;
+}
+
+// Applies EMDF object signing to freshly-encoded Atmos units when the operator
+// asked for it (sign-objects) and supplied a key. Returns the number of frames
+// signed, or nullopt if signing was requested but the key could not be loaded
+// (the message is already printed). Not requested -> 0, units untouched. The
+// key comes from the operator at runtime (signing-key=<path> or the
+// AC3FORGE_SIGNING_KEY[_FILE] env vars) and is never stored - see
+// docs/concepts/object-signing.md.
+std::optional<int> apply_object_signing(std::vector<std::vector<std::byte>>& units,
+                                        const Options& meta) {
+    if (!meta.sign_objects) {
+        return 0;
+    }
+    const auto key = ac3::signing::load_signing_key(meta.signing_key.value_or(""));
+    if (!key) {
+        if (key.error().kind == ac3::signing::KeyErrorKind::kAbsent) {
+            std::println(stderr,
+                         "error: sign-objects needs a key — pass signing-key=<path>, or set "
+                         "AC3FORGE_SIGNING_KEY_FILE / AC3FORGE_SIGNING_KEY");
+        } else {
+            std::println(stderr, "error: {}", key.error().message);
+        }
+        return std::nullopt;
+    }
+    int signed_count = 0;
+    for (auto& unit : units) {
+        signed_count += ac3::signing::sign_atmos_stream(unit, *key);
+    }
+    return signed_count;
 }
 
 // Objects moving in three dimensions, out as one 5.1 E-AC-3 stream carrying
@@ -1322,12 +1573,17 @@ int run_atmos(std::string_view out_path, std::uint32_t seconds, std::uint32_t bi
         }
         out.push_back(std::move(unit->bytes));
     }
-    // Optional, non-clean-room: sign the EMDF protection field so a Dolby
-    // decoder accepts the objects as Atmos. A no-op unless this build was
-    // configured with -DAC3FORGE_QUARANTINE_SIGNER=ON, which requires the
-    // local-only src/quarantine overlay - see quarantine_hook.hpp.
-    if (const int signed_count = ac3cli::maybe_sign_atmos_units(out); signed_count > 0) {
-        std::println("  signed {} frames with the (RE-derived) EMDF protection MAC", signed_count);
+    // Optional object signing: writes the keyed EMDF-protection tag so a
+    // decoder that validates it accepts the JOC objects instead of falling
+    // back to the 5.1 bed. Off unless the operator passes sign-objects with a
+    // key; the algorithm is in-tree (clean-room), only the key is supplied.
+    const auto signed_count = apply_object_signing(out, meta);
+    if (!signed_count) {
+        return 1;
+    }
+    if (*signed_count > 0) {
+        std::println("  signed {} frames' EMDF object container with the supplied key",
+                     *signed_count);
     }
     if (!write_frames(out_path, out)) {
         return 1;
@@ -1483,7 +1739,7 @@ int run_atmos_path(std::string_view out_path, std::string_view paths_path, std::
 // front ends can be compared on the same file.
 int run_atmos_encode(std::string_view in_path, std::string_view out_path,
                      std::uint32_t bitrate, std::uint32_t objects,
-                     const Options& meta) {
+                     const Options& meta, std::string_view paths_path = {}) {
     const auto wav = ac3::io::read_wav(std::string{in_path});
     if (!wav) {
         std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(wav.error()));
@@ -1556,6 +1812,40 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
                         .lfe_send = 0.0};
     }
 
+    // An authored keyframe file (same format/addressing as atmos-path, object
+    // index == this WAV channel index) drives motion instead of the static
+    // placement above; empty (the default) leaves that placement reused
+    // unchanged every frame, exactly as before this argument existed - see
+    // the per-frame loop below.
+    std::optional<std::vector<ac3::oba::ObjectPath>> paths;
+    if (!paths_path.empty()) {
+        const auto parsed = parse_path_file(paths_path);
+        if (!parsed) {
+            return 1;
+        }
+        paths.emplace();
+        paths->reserve(count);
+        for (std::size_t i = 0; i < count; ++i) {
+            if (i < parsed->size() && !(*parsed)[i].empty()) {
+                auto created = ac3::oba::KeyframePath::create((*parsed)[i]);
+                if (!created) {
+                    std::println(stderr, "error: object {} has two keyframes at the same time_s",
+                                 i);
+                    return 1;
+                }
+                paths->emplace_back(std::move(*created));
+                continue;
+            }
+            // Not mentioned in the file: keep exactly the placement this
+            // object has today, just re-expressed as a (never-moving) path.
+            auto fallback = ac3::oba::KeyframePath::create({{.time_s = 0.0,
+                                                              .position = placement[i].position,
+                                                              .gain = placement[i].gain,
+                                                              .lfe_send = placement[i].lfe_send}});
+            paths->emplace_back(std::move(*fallback));
+        }
+    }
+
     ac3::analysis::LevelMeter meter{ac3::Acmod::k3_2, true, wav->sample_rate};
     const std::size_t total = wav->frame_count();
     std::vector<std::vector<float>> block(count, std::vector<float>(ac3::kSamplesPerFrame));
@@ -1573,12 +1863,22 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
             }
             views[ch] = block[ch];
         }
-        auto unit = encoder.encode_frame(views, placement);
+        // With paths_path, the object placement moves - evaluated at the
+        // frame's END time, the same convention run_atmos_path and the GUI's
+        // encodeObjects use. Without it, every frame reuses the one static
+        // placement computed above, byte-identical to before this argument
+        // existed.
+        auto unit = paths ? encoder.encode_frame(
+                                views, ac3::oba::evaluate_placements(
+                                           *paths, static_cast<double>(start + ac3::kSamplesPerFrame) /
+                                                       static_cast<double>(wav->sample_rate)))
+                          : encoder.encode_frame(views, placement);
         if (!unit) {
             std::println(stderr,
                          "error: cannot encode {} objects at {} kbps — the metadata and the "
                          "mantissas share one frame, so try a higher bit rate",
                          count, bitrate);
+            write_partial_output(out_path, meta.keep_partial, out);
             return 1;
         }
         // The bed exists only once the frame is encoded, so it is metered
@@ -1806,7 +2106,7 @@ int run_record(std::string_view out_path, std::uint32_t seconds, std::uint32_t b
 // why loudness auto-measurement is not supported here yet.
 int run_encode_multi(std::string_view in_path, std::string_view out_path, std::uint32_t bitrate,
                      bool couple, std::string_view layout, const Options& meta) {
-    auto sources = load_sources(in_path, meta.sources);
+    auto sources = load_sources(in_path, meta.sources, meta.offsets);
     if (!sources) {
         return 1;
     }
@@ -1887,6 +2187,7 @@ int run_encode_multi(std::string_view in_path, std::string_view out_path, std::u
         auto frame = encoder->encode_frame(views);
         if (!frame) {
             std::println(stderr, "error: bitrate must be a legal AC-3 rate");
+            write_partial_output(out_path, meta.keep_partial, frames);
             return 1;
         }
         frames.push_back(std::move(*frame));
@@ -1993,7 +2294,12 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
     auto encoder = std::make_unique<ac3::FrameEncoder>(config);
     ac3::analysis::LevelMeter meter{config.acmod, config.lfe, wav->sample_rate};
     const auto nchans = static_cast<std::size_t>(routing->coded_channels);
-    const std::size_t total = wav->frame_count();
+    // The classic path has exactly one source, always index 0 in offset='s
+    // numbering - see LoadedSources::offset_samples for the multi-source
+    // equivalent of this same leading silence.
+    const std::size_t offset = offset_samples_for(meta.offsets, 0, wav->sample_rate);
+    const std::size_t frame_count = wav->frame_count();
+    const std::size_t total = offset + frame_count;
 
     std::vector<std::vector<float>> source(wav->channels.size(),
                                            std::vector<float>(ac3::kSamplesPerFrame));
@@ -2015,12 +2321,20 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
         // §8.2.2 detector would (correctly) spend a block-switch on it,
         // paying real side-info bits to preserve a discontinuity that exists
         // only because this frame ends mid-buffer, not in the source audio.
+        // Ahead of the source's own samples, offset= silence is real
+        // silence, not padding.
         const auto valid = std::min<std::size_t>(ac3::kSamplesPerFrame, total - start);
         for (std::size_t c = 0; c < source.size(); ++c) {
-            const float hold = total > 0 ? wav->channels[c][total - 1] : 0.0f;
+            const float hold = frame_count > 0 ? wav->channels[c][frame_count - 1] : 0.0f;
             for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
                 const std::size_t at = start + static_cast<std::size_t>(i);
-                source[c][static_cast<std::size_t>(i)] = at < total ? wav->channels[c][at] : hold;
+                if (at < offset) {
+                    source[c][static_cast<std::size_t>(i)] = 0.0f;
+                    continue;
+                }
+                const std::size_t shifted = at - offset;
+                source[c][static_cast<std::size_t>(i)] =
+                    shifted < frame_count ? wav->channels[c][shifted] : hold;
             }
             in[c] = source[c];
         }
@@ -2032,6 +2346,7 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
         auto frame = encoder->encode_frame(views);
         if (!frame) {
             std::println(stderr, "error: bitrate must be a legal AC-3 rate");
+            write_partial_output(out_path, meta.keep_partial, frames);
             return 1;
         }
         frames.push_back(std::move(*frame));
@@ -2878,7 +3193,7 @@ int run_monitor(std::string_view in_path, int device_index) {
 // its current position, still evaluated fresh every frame inside this same loop.
 int run_live(std::string_view out_path, int capture_device, std::uint32_t seconds,
             std::uint32_t bitrate, int monitor_device, int passthrough_device,
-            std::string_view mode) {
+            std::string_view mode, const Options& meta) {
     if (mode != "channels" && mode != "atmos") {
         std::println(stderr, "error: mode is 'channels' (default) or 'atmos'");
         return 1;
@@ -2897,6 +3212,19 @@ int run_live(std::string_view out_path, int capture_device, std::uint32_t second
     }
     const auto& device = (*devices)[static_cast<std::size_t>(capture_device)];
 
+    // capture2=: a second, independently-clocked device. Range-checked the
+    // same way as the master above - a bad index refuses the whole command
+    // rather than silently falling back to a single-device session.
+    if (meta.capture2 && (*meta.capture2 < 0 ||
+                          static_cast<std::size_t>(*meta.capture2) >= devices->size())) {
+        std::println(stderr,
+                     "error: capture2 device index {} out of range (see 'ac3cli devices')",
+                     *meta.capture2);
+        return 1;
+    }
+    const ac3::capture::DeviceInfo* device2 =
+        meta.capture2 ? &(*devices)[static_cast<std::size_t>(*meta.capture2)] : nullptr;
+
     ac3::SampleRate sr{};
     switch (device.sample_rate) {
         case 48000: sr = ac3::SampleRate::k48000; break;
@@ -2909,6 +3237,27 @@ int run_live(std::string_view out_path, int capture_device, std::uint32_t second
             return 1;
     }
 
+    // capture2's own rate only has to be a legal AC-3 rate itself - it does
+    // NOT need to match the master's, since the resampler's nominal-
+    // conversion side is exactly what absorbs a 44.1/48 kHz mismatch between
+    // the two devices.
+    double nominal_ratio = 1.0;
+    if (device2) {
+        switch (device2->sample_rate) {
+            case 48000:
+            case 44100:
+            case 32000: break;
+            default:
+                std::println(stderr,
+                             "error: capture2 \"{}\" runs at {} Hz; AC-3/E-AC-3 need 32, 44.1 "
+                             "or 48 kHz",
+                             device2->name, device2->sample_rate);
+                return 1;
+        }
+        nominal_ratio =
+            static_cast<double>(device.sample_rate) / static_cast<double>(device2->sample_rate);
+    }
+
     ac3::capture::Capture capture;
     const auto started = capture.start(device.id, device.kind);
     if (!started) {
@@ -2918,12 +3267,45 @@ int run_live(std::string_view out_path, int capture_device, std::uint32_t second
     const auto channels = capture.channels();
     const auto rate_hz = capture.sample_rate();
 
+    // Clock-master model: capture paces the session exactly as before -
+    // nothing about its own timing changes below. capture2, when present, is
+    // a second, independently-clocked device whose stream gets resampled
+    // into lockstep with capture's pacing every frame, then appended after
+    // capture's own channels.
+    ac3::capture::Capture capture2;
+    std::size_t capture2_channels = 0;
+    std::optional<ac3::capture::DriftResampler> slave_resampler;
+    std::optional<ac3::capture::ClockDriftEstimator> slave_drift;
+    std::vector<float> slave_scratch;
+    std::size_t slave_scratch_valid_frames = 0;
+    std::vector<float> slave_out;
+    if (device2) {
+        const auto started2 = capture2.start(device2->id, device2->kind);
+        if (!started2) {
+            std::println(stderr, "error: {}", ac3::capture::describe(started2.error()));
+            return 1;
+        }
+        capture2_channels = capture2.channels();
+        slave_resampler.emplace(capture2_channels);
+        slave_drift.emplace(nominal_ratio, static_cast<std::size_t>(ac3::kSamplesPerFrame));
+        slave_scratch.resize(4 * static_cast<std::size_t>(ac3::kSamplesPerFrame) *
+                             capture2_channels);
+        slave_out.resize(static_cast<std::size_t>(ac3::kSamplesPerFrame) * capture2_channels);
+        slave_resampler->reset();
+        std::println("capture2: \"{}\", {} ch @ {} Hz (nominal ratio {:.6f})", device2->name,
+                     device2->channels, device2->sample_rate, nominal_ratio);
+    }
+
     // Object mode pans every captured channel into the 5.1 bed as its own
     // object (mirrors encodeObjects/run_atmos_encode); channel mode carries
     // the first two channels straight through as AC-3 stereo (mirrors
     // run_record, which this supersedes for anything wanting monitor or
-    // passthrough alongside the file).
-    const std::size_t nobjects = atmos ? std::min<std::size_t>(channels, 15) : 2;
+    // passthrough alongside the file). capture2's channels, once resampled
+    // into lockstep, widen this the same way an extra source channel would -
+    // capture's own channels keep their existing indices, the slave's land
+    // at the new, higher ones.
+    const std::size_t total_channels = static_cast<std::size_t>(channels) + capture2_channels;
+    const std::size_t nobjects = atmos ? std::min<std::size_t>(total_channels, 15) : 2;
 
     auto resolve_render_device = [&](int index) -> std::optional<ac3::sinks::RenderDeviceInfo> {
         if (index < 0) {
@@ -3039,11 +3421,53 @@ int run_live(std::string_view out_path, int capture_device, std::uint32_t second
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
             }
         }
+        if (slave_resampler.has_value() && slave_drift.has_value()) {
+            // Opportunistic, non-blocking drain: whatever capture2 has ready
+            // right now joins the scratch FIFO's tail. Unlike the master's
+            // read above, this never waits - a slave that is momentarily
+            // behind just leaves the resampler's next render() with less to
+            // work from, which is exactly the drift the estimator is
+            // steering against, not a stall to block the session on.
+            //
+            // Guarded on slave_resampler/slave_drift's own has_value() rather
+            // than device2 (always in lockstep with it by construction, both
+            // populated together right after capture2 opens) so clang-tidy's
+            // bugprone-unchecked-optional-access can actually see the
+            // invariant instead of having to trust a same-lockstep but
+            // type-unrelated raw pointer.
+            const std::size_t capacity_frames = slave_scratch.size() / capture2_channels;
+            const std::size_t free_frames = capacity_frames - slave_scratch_valid_frames;
+            if (free_frames > 0) {
+                const auto got = capture2.buffer()->read(std::span{slave_scratch}.subspan(
+                    slave_scratch_valid_frames * capture2_channels,
+                    free_frames * capture2_channels));
+                slave_scratch_valid_frames += got / capture2_channels;
+            }
+            slave_drift->update(slave_scratch_valid_frames);
+            slave_resampler->set_ratio(slave_drift->ratio());
+            const auto consumed = slave_resampler->render(
+                std::span{slave_scratch}.first(slave_scratch_valid_frames * capture2_channels),
+                slave_scratch_valid_frames, std::span{slave_out},
+                static_cast<std::size_t>(ac3::kSamplesPerFrame));
+            const std::size_t remaining_frames = slave_scratch_valid_frames - consumed;
+            std::copy(slave_scratch.begin() + static_cast<std::ptrdiff_t>(
+                                                   consumed * capture2_channels),
+                     slave_scratch.begin() + static_cast<std::ptrdiff_t>(
+                                                  slave_scratch_valid_frames * capture2_channels),
+                     slave_scratch.begin());
+            slave_scratch_valid_frames = remaining_frames;
+        }
         for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
             const std::size_t base = static_cast<std::size_t>(i) * channels;
+            const std::size_t base2 = static_cast<std::size_t>(i) * capture2_channels;
             for (std::size_t ch = 0; ch < nobjects; ++ch) {
-                block[ch][static_cast<std::size_t>(i)] =
-                    ch < channels ? interleaved[base + ch] : 0.0f;
+                if (ch < channels) {
+                    block[ch][static_cast<std::size_t>(i)] = interleaved[base + ch];
+                } else if (ch < total_channels) {
+                    block[ch][static_cast<std::size_t>(i)] = slave_out[base2 + (ch - channels)];
+                } else {
+                    block[ch][static_cast<std::size_t>(i)] = 0.0f;
+                }
             }
         }
         for (std::size_t ch = 0; ch < nobjects; ++ch) {
@@ -3148,6 +3572,9 @@ int run_live(std::string_view out_path, int capture_device, std::uint32_t second
     std::println("");
 
     capture.stop();
+    if (device2) {
+        capture2.stop();
+    }
     if (monitoring) {
         while (monitor_sink.stats().frames_rendered < monitor_sink.stats().frames_submitted) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -3172,6 +3599,9 @@ int run_live(std::string_view out_path, int capture_device, std::uint32_t second
                  atmos ? "E-AC-3 access units" : "AC-3 frames", bitrate, out_path);
     std::println("captured {} frames, {} silence-filled, {} dropped", stats.frames_captured,
                  stats.frames_silence_filled, stats.frames_dropped);
+    if (slave_drift.has_value()) {
+        std::println("capture2 drift: {:+.1f} ppm", slave_drift->drift_ppm());
+    }
     print_channel_summary(meter);
     return 0;
 }
@@ -3298,10 +3728,13 @@ constexpr std::array<Command, 21> kCommands{{
          return run_atmos_path(x.str(1), x.str(2), x.u32(3, 8), x.u32(4, 448), x.u32(5, 0),
                                x.meta);
      }},
-    {"atmos-encode", 3, "<in.wav> <out.ec3> [bitrate_kbps] [objects]",
-     "every source channel as an object", Needs::kNothing,
+    {"atmos-encode", 3, "<in.wav> <out.ec3> [bitrate_kbps] [objects] [paths.txt]",
+     "every source channel as an object; optional: authored per-object motion from a keyframe "
+     "file (same format as atmos-path), objects it doesn't mention keep their default placement",
+     Needs::kNothing,
      [](const Args& x) {
-         return run_atmos_encode(x.str(1), x.str(2), x.u32(3, 448), x.u32(4, 0), x.meta);
+         return run_atmos_encode(x.str(1), x.str(2), x.u32(3, 448), x.u32(4, 0), x.meta,
+                                 x.str(5));
      }},
     {"record", 2, "<out.ac3> [seconds] [bitrate_kbps] [device_index]", "", Needs::kCapture,
      [](const Args& x) {
@@ -3313,7 +3746,7 @@ constexpr std::array<Command, 21> kCommands{{
      "capture -> encode -> live monitor and/or passthrough", Needs::kCapture,
      [](const Args& x) {
          return run_live(x.str(1), x.i32(2, 0), x.u32(3, 10), x.u32(4, 192), x.i32(5, -2),
-                         x.i32(6, -2), x.str(7, "channels"));
+                         x.i32(6, -2), x.str(7, "channels"), x.meta);
      }},
     {"encode", 3, "<in.wav> <out.ac3> [bitrate_kbps] [layout] [in2.wav]",
      "in2.wav: layout 1+1's Ch2, when Ch1 is a separate mono file; or use src=/map= "
@@ -3416,6 +3849,10 @@ void print_usage() {
     std::println("       pans every captured channel into a 5.1 bed as its own object, moving");
     std::println("       it every frame the same way 'atmos' orbits its synthetic ones — the");
     std::println("       hook a real live position source drops into once one exists.");
+    std::println("live capture2=<index>: the capture_device positional stays the session's");
+    std::println("       clock master, paced exactly as it always has been; capture2= adds a");
+    std::println("       second, independently-clocked device whose stream is resampled to");
+    std::println("       track the master, with the measured drift printed at session end.");
     std::println("monitor/live --monitor play the 5.1 BED of an Atmos-mode stream: the in-repo");
     std::println("       decoder's E-AC-3 scope is A/52 Annex E syntax, not TS 103 420's object");
     std::println("       layer, so this is what a legacy decoder hears, not unmixed objects.");
@@ -3470,6 +3907,9 @@ void print_usage() {
     std::println("       atmos-encode makes each channel of a real file an object instead.");
     std::println("       Both emit a 5.1 E-AC-3 bed with JOC + OAMD side data (TS 103 420).");
     std::println("       FFmpeg reports \"Dolby Digital Plus + Dolby Atmos\".");
+    std::println("       atmos-encode's [paths.txt] takes authored per-object motion the same");
+    std::println("       way atmos-path does, keyed by WAV channel index; an object it doesn't");
+    std::println("       mention keeps atmos-encode's own default (fanned-out) placement.");
     std::println("");
     std::println("mkv wraps an AC-3 or E-AC-3 elementary stream in Matroska, taking the");
     std::println("format, packet boundaries, sample rate and channel count from the bitstream");
@@ -3496,16 +3936,18 @@ int run_main(int argc, char** argv) {
         return 0;
     }
     // Split the command line into positional arguments and metadata options. An
-    // option is a key=value token or one of the three bare flags, so the
-    // positional arguments keep their places whether options are present or
-    // not, and options may appear in any order.
+    // option is a key=value token or one of the bare flags, so the positional
+    // arguments keep their places whether options are present or not, and
+    // options may appear in any order.
     std::vector<char*> args{};      // args[0] is the command
     std::vector<char*> options{};
     bool couple_flag = false;
     for (std::size_t i = 1; i < raw.size(); ++i) {
         const std::string_view token{raw[i]};
         const bool is_option = token.find('=') != std::string_view::npos ||
-                               token == "couple" || token == "heavy" || token == "mixmeta";
+                               token == "couple" || token == "heavy" || token == "heavy2" ||
+                               token == "mixmeta" || token == "sign-objects" ||
+                               token == "keep-partial";
         if (token == "couple") {
             couple_flag = true;
         }

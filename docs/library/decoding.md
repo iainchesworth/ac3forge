@@ -112,6 +112,41 @@ computing `bap`. Neither encoder emits it on the coupling channel yet (see the l
 reduced rate reuses the same bit-allocation tables as its double-rate parent (§E2.3.1.4), so
 nothing else about decoding changes.
 
+## Recovering from a damaged frame
+
+`ac3::split_frames` delimits syncframes by sync word and declared size alone — it does not
+validate a frame's CRC, so it still finds every boundary correctly even when one frame's payload
+is corrupt. That means a caller can decode frame by frame, catch the one bad `decode_frame`
+call, and keep going rather than losing the rest of the stream over a single damaged frame — the
+shape real capture/transport corruption takes, since a torn or bit-flipped frame does not
+usually take its neighbours down with it.
+
+```cpp
+const auto frames = ac3::split_frames(stream);
+
+ac3::FrameDecoder decoder;
+for (const auto& frame : *frames) {
+    const auto decoded = decoder.decode_frame(frame);
+    if (!decoded) {
+        // CRC/sync/reserved-value failure on this one frame - skip it and
+        // keep decoding the rest.
+        continue;
+    }
+    // ... use decoded->channels
+}
+```
+
+Full program: [`examples/decode_robustness.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/decode_robustness.cpp)
+— corrupts one frame in the middle of an otherwise-good eight-frame stream and confirms the
+other seven still decode.
+
+`split_access_units` is the E-AC-3 sibling for `Eac3Decoder::decode_access_unit`, delimiting by
+independent-substream boundaries the same way. Losing an entire access unit (rather than one
+frame within it) is not recoverable the same way — `decode_access_unit` needs every substream
+of a unit in the one call — so a transport that can drop whole units needs its own
+redundancy/retransmission above this layer; this API only guarantees that *finding* the next
+good boundary never depends on the previous one having decoded cleanly.
+
 ---
 
 See also: [Encoding AC-3](encoding-ac3.md) and [Encoding E-AC-3](encoding-eac3.md) — what

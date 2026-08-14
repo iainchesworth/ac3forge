@@ -12,13 +12,13 @@ Usage:
   ac3cli orbit        <out.ac3> [seconds] [bitrate_kbps] [orbit_seconds]
   ac3cli atmos        <out.ec3> [seconds] [bitrate_kbps] [objects] [orbit_seconds] [mode]
   ac3cli atmos-path   <out.ec3> <paths.txt> [seconds] [bitrate_kbps] [objects] (objects driven by an authored keyframe file instead of the built-in orbit)
-  ac3cli atmos-encode <in.wav> <out.ec3> [bitrate_kbps] [objects] (every source channel as an object)
+  ac3cli atmos-encode <in.wav> <out.ec3> [bitrate_kbps] [objects] [paths.txt] (every source channel as an object; optional: authored per-object motion from a keyframe file (same format as atmos-path), objects it doesn't mention keep their default placement)
   ac3cli record       <out.ac3> [seconds] [bitrate_kbps] [device_index]
   ac3cli live         <out.ac3|out.ec3> <capture_device> [seconds] [bitrate_kbps] [monitor_device] [passthrough_device] [mode] (capture -> encode -> live monitor and/or passthrough)
-  ac3cli encode       <in.wav> <out.ac3> [bitrate_kbps] [layout] [in2.wav] (in2.wav: layout 1+1's Ch2, when Ch1 is a separate mono file)
+  ac3cli encode       <in.wav> <out.ac3> [bitrate_kbps] [layout] [in2.wav] (in2.wav: layout 1+1's Ch2, when Ch1 is a separate mono file; or use src=/map= for more than one source)
   ac3cli eac3-silence <out.ec3> [seconds] [bitrate_kbps] [layout]
   ac3cli eac3-sine    <out.ec3> [seconds] [bitrate_kbps] [freq_hz] [amp_pct] [layout]
-  ac3cli eac3-encode  <in.wav> <out.ec3> [bitrate_kbps] [tools] [layout] [vbr] [in2.wav] (in2.wav: layout 1+1's Ch2, when Ch1 is a separate mono file)
+  ac3cli eac3-encode  <in.wav> <out.ec3> [bitrate_kbps] [tools] [layout] [vbr] [in2.wav] (in2.wav: layout 1+1's Ch2, when Ch1 is a separate mono file; or use src=/map= for more than one source)
   ac3cli decode       <in.ac3|in.ec3> <out.wav>               (AC-3 or E-AC-3; bsid decides)
   ac3cli levels       <in.wav|in.ac3|in.ec3>                  (per-channel peak/RMS report)
   ac3cli loudness     <in.wav>                                (BS.1770-4 loudness -> dialnorm)
@@ -58,7 +58,7 @@ coded channels of a 7.1.4 layout.
 |---|---|
 | `encode` | WAV → AC-3. Without `[layout]`, follows the source channel count (1→mono, 2→stereo, 3–6→5.1, 8→7.1, 10→5.1.4, 12→7.1.4). |
 | `eac3-encode` | WAV → E-AC-3, with the Annex E `tools:` token and an optional `vbr:` token available (see [Metadata options](metadata-options.md)) |
-| `atmos-encode` | WAV → E-AC-3 Atmos, every source channel becomes its own object |
+| `atmos-encode` | WAV → E-AC-3 Atmos, every source channel becomes its own object; optional `[paths.txt]` drives per-object motion from an authored keyframe file the same way `atmos-path` does, keyed by WAV channel index — an object it doesn't mention keeps its default (fanned-out) placement |
 
 ```bash
 ac3cli encode in.wav out.ac3 448 couple
@@ -109,7 +109,7 @@ for what's actually confirmed against real hardware on each OS.
 | `record` | Captures from a device straight to an AC-3 file, metering live |
 | `play` | Exclusive-mode IEC 61937 passthrough of an existing file — `bsid` decides AC-3 vs. E-AC-3 |
 | `monitor` | Decodes an existing file and plays it on an ordinary, non-bitstreamed output — the shared-mode preview path. For an Atmos-mode stream, this plays the 5.1 **bed**: the in-repo decoder's E-AC-3 scope is A/52 Annex E syntax, not TS 103 420's object layer, so this is what a legacy decoder hears, not unmixed objects. |
-| `live` | Capture → encode → optional live monitor and/or IEC 61937 passthrough, running continuously, still writing the file `record` always has |
+| `live` | Capture → encode → optional live monitor and/or IEC 61937 passthrough, running continuously, still writing the file `record` always has; optionally a second, clock-conformed capture device via `capture2=` |
 
 `live`'s device arguments: `monitor_device`/`passthrough_device` take `-2` (default, leaves that
 leg off), `-1` (the default render endpoint), or an index from `outputs`. Either or both legs may
@@ -119,6 +119,11 @@ run alongside the file `live` always writes.
 `atmos` pans every captured channel into a 5.1 bed as its own object, moving it every frame the
 same way `atmos`'s synthetic orbit does — the hook a real live position source drops into once
 one exists.
+
+`live capture2=<index>`: the `capture_device` positional stays the session's clock master, paced
+exactly as it always has been; `capture2=` adds a second, independently-clocked device (see
+[Metadata options](metadata-options.md#live-options-live-capture2) for the full grammar) whose
+stream is resampled to track the master, with the measured drift printed at session end.
 
 ## Next
 

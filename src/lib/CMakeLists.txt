@@ -118,6 +118,8 @@ target_sources(forge_objects
         src/decoder/decoder.cpp
         src/decoder/eac3_decoder.cpp
         src/decoder/transient_prenoise.cpp
+        src/dsp/biquad.cpp
+        src/dsp/resampler.cpp
         src/emdf/emdf.cpp
         src/encoder/assignment.cpp
         src/encoder/coupling.cpp
@@ -128,6 +130,7 @@ target_sources(forge_objects
         src/encoder/transient.cpp
         src/io/elementary.cpp
         src/io/wav.cpp
+        src/io/wav_stream_writer.cpp
         src/meta/drc.cpp
         src/meta/loudness.cpp
         src/meta/mixing.cpp

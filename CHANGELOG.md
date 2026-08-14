@@ -12,6 +12,287 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 
 ## [Unreleased]
 
+## [0.4.0-beta.1] - 2026-08-14
+
+Third tagged release. The GUI is rebuilt to the canon design handoff — a numbered-rail workflow,
+a single assignment table driving all channel routing, an audible timeline with per-source
+offsets and motion editing, live capture (including two-device parallel capture with software
+clock-drift correction), per-source gain/LFE/resample controls, dual-mono independent DRC,
+S/PDIF-wrapped WAV output, four selectable colour palettes with a native system-accent theme, and
+a full round of dark-mode fixes. Alongside the GUI work: enhanced coupling's encoder now fits
+real angle/chaos coordinates instead of sending them as zero, the decoder accepts Annex E's
+default coupling band structure, the EMDF object signer is a committed clean-room library, eight
+new library examples ship, an external-encoder (FFmpeg/DEE) comparison joins the quality
+dashboards, and Android release builds sign with a real keystore.
+
+### E-AC-3 encoding and decoding
+
+- **Enhanced coupling's encoder now fits real angle and chaos coordinates**, closing the last
+  known gap from 0.3.0-beta.1's enhanced coupling work — it no longer sends angle/chaos as zero.
+  Amplitude and angle are solved as an exact 2-variable linear least squares per band (§3.5.5.4's
+  reconstruction is linear in the complex gain a band's amplitude/angle pair expresses); chaos is
+  chosen by searching its 8 legal codes directly against the decoder's own deterministic
+  de-correlation sequence and keeping whichever reconstructs closest to the source, rather than
+  estimated from a statistical proxy. Quality on ordinary material is unchanged (a correlated
+  signal's best fit lands near angle zero anyway); the case the amplitude-only fit could not
+  represent at all — two channels' different content forced into the same narrow coupling band —
+  improves measurably, from a ~3 dB floor to ~6 dB, without threatening the coding tool's own
+  structural limit on how much a single coordinate per band can ever separate.
+- **E-AC-3 stereo (2/0) rematrixing** — the bitstream syntax and decoder undo path have existed
+  since 0.2.0-beta.1; only the encoder's own §7.5.3 minimum-power decision was missing, and it
+  turned out to need no new logic at all, just the same rule AC-3's own encoder already makes,
+  over the same Table 7.25 bands (Annex E only changes how many of the four are active, not their
+  boundaries or the rule itself).
+- **The decoder now accepts Annex E's legal default coupling band structure (`cplbndstrce=0`)**
+  instead of rejecting it with `DecodeError::kUnsupported`. This project's own encoder always
+  transmits an explicit band structure, so the default path had only ever been exercised against
+  the encoder's own output — decoding FFmpeg's E-AC-3, which legally chooses the default, failed
+  immediately. The root cause was a stale assumption that Table E2.12's array needed
+  relative-to-`cplbegf` indexing; cross-checked against FFmpeg's own `decode_band_structure()`,
+  the table is indexed absolutely from `cplbegf == 0`. A permanent regression fixture (a real
+  FFmpeg 8.0.1 encode with nonzero `cplbegf`) now covers this in the gold-reference gate.
+
+### Atmos object signing
+
+- **The EMDF object signer is now a committed, clean-room library (`ac3::signing`)** rather than a
+  gitignored overlay. The HMAC-SHA-256 construction and the layout of what gets signed are in-tree
+  and dependency-free; the **key** is the only secret and is supplied by the operator at runtime,
+  never embedded and never written to disk. `ac3cli atmos` gains `sign-objects` with
+  `signing-key=<path>` (or the `AC3FORGE_SIGNING_KEY_FILE` / `AC3FORGE_SIGNING_KEY` env vars);
+  signing engages only when both a request and a key are present. The Shield app reads its key from
+  a bundled `signing.key` asset written from the `ATMOS_SIGNING_KEY` CI secret at build
+  time. See [docs/concepts/object-signing.md](docs/concepts/object-signing.md).
+
+### GUI: canon workbench redesign
+
+- **The desktop GUI is rebuilt to the canon design handoff**, replacing the earlier workbench that
+  had drifted from it — the numbered rail (01 Input / 02 Levels / 03 Soundfield), plan strip,
+  two-tier bitrate picker, routing strip and command bar now match the handoff, landed via a
+  6-agent conformance sweep against the mockup (~70 fixes across CLI parity, run history, timeline
+  editing, live-tab truth and guided copy).
+- **A single assignment table now drives channel routing everywhere**, replacing the free-text
+  token field that only appeared once a second source was loaded. Each source channel gets one
+  destination dropdown (bed position / a new object / programme / nothing); sending a channel to
+  an object turns object mode on, fixes the 5.1 bed, and raises the rate to ≥384 kbps atomically.
+  In object mode, a channel assigned to a bed position becomes a static object pinned at that
+  speaker's azimuth; unassigned channels drop with a named warning, and encoding enforces the
+  sixteen-object cap over dynamic + pinned together.
+- **Meter and soundfield redraws no longer tear down and rebuild ~30x/second.** The 30 Hz level
+  stream previously rebuilt fresh JS arrays (and every delegate) on every tick; meter/soundfield
+  models are now layout-keyed and read by index, and encode-progress/object-drag updates are
+  coalesced onto the ~30–60 Hz publish cadence instead of flooding the GUI event queue per frame.
+- **A real first-run screen, Preferences dialog and honest run history** round out the shell: first
+  run synthesizes a bundled 5.1 test signal into a real WAV; Preferences persists via `QSettings`;
+  and run history, failure-banner actions, and the live tab now reflect actual encoder/session
+  state rather than mockup placeholders.
+
+### GUI: timeline & time model
+
+- **Timeline length is now derived, not fixed** — `max(offset + duration)` over every loaded
+  source, rather than a hardcoded 8 s.
+- **Each source gets an independent start offset**, settable from a rail numeric field or by
+  dragging its clip band, applied as leading silence in both the channel and object encode loops
+  and the meter preview — and reproducible on the command line via a new `offset=` CLI token.
+- **Keyframes stay programme-absolute when a clip is dragged**; Shift-drag explicitly carries a
+  source's object keyframes along by the same delta (clamped at 0), so a plain drag no longer
+  silently drags authored motion with it.
+- **Zoom (wheel/button, up to 40x) and snap** — ruler-tick and drag-snap tiers at 1 s / 0.1 s / a
+  32 ms floor — move together as the view scales.
+- **The Preview button is now audible**: it renders every object through the Atmos encoder and
+  plays the 5.1 bed back live through the monitor sink, paced in real time with the playhead
+  following the audio clock.
+- **Object identity is now keyed by (source, channel)** instead of position in the dynamic-object
+  list, so reassigning a channel or removing a non-primary source no longer silently migrates or
+  destroys motion belonging to a different or surviving channel.
+- **`atmos-encode` gains an optional keyframes-file argument**, matching `atmos-path`'s grammar;
+  the GUI's "Export paths…" writes that exact format, closing the last gap in object-mode CLI
+  reproducibility.
+
+### GUI: live session and two-device capture
+
+- **A live take now streams to disk incrementally** instead of buffering the whole session in RAM:
+  an elementary-stream take *is* the growing output file, muxed to Matroska once at a clean stop,
+  so a crash still leaves the elementary take behind. An optional raw-WAV safety copy streams the
+  untouched captured PCM alongside it.
+- **A silence watchdog fails a session ~3 s after a capture device goes quiet**, instead of the
+  transport reading "Running" forever against a vanished device, with a "Choose another device"
+  recovery action on the resulting failure banner.
+- **Live Atmos sessions pre-allocate a fixed object-slot budget** rather than baking the capture
+  device's channel count straight into the JOC stream, so objects can be added or reassigned to a
+  different capture channel mid-session.
+- **Changing the receiver — or toggling passthrough — mid-session now hot-swaps the passthrough
+  sink** on the worker thread between frames, without restarting capture or encode.
+- **A live session can now pace a second capture device off the first's clock in software.** The
+  master device's delivery paces the frame loop as before; the second device is conformed to the
+  master's clock via a streaming linear-interpolation fractional resampler and a proportional
+  drift-correction servo, since there's no shared hardware clock between two independent capture
+  endpoints. Available from the GUI and from `ac3cli`'s new `live capture2=<index>` token, with
+  the slave device's measured drift correction visible in the chain's capture cell. A plain
+  channel-mode session's bed still comes from the master device alone — there is no principled
+  default position to auto-pan a second, independent device's audio into.
+
+### GUI: source gain, metering, and format/output controls
+
+- **Per-assignment gain/trim** on the channel routing table, applied inside the same routing
+  matrix that drives encode, meter preview, and fed-channel flags.
+- **Source-side metering pips**: a whole-programme, pre-routing peak/RMS reading per loaded file
+  source.
+- **Resample-on-load**: adding a source at a different sample rate than the primary no longer
+  refuses outright — it resamples to the primary's rate via an offline windowed-sinc polyphase
+  resampler and labels the row accordingly; the refusal survives only when the primary's own rate
+  has no legal AC-3 target at all.
+- **LFE low-pass filtering**: a full-bandwidth channel explicitly routed onto LFE through the
+  assignment table now runs through a 120 Hz 4th-order Butterworth low-pass in preview and
+  channel-encode. Automatic single-source routing (a file's own dedicated LFE channel) stays
+  bit-exact.
+- **CLIP latches per channel** in the meters — once lit, stays lit until clicked or a new
+  transport starts.
+- **`objm` fold-to-mono**: the range grammar (`0.1-2:objm`) can now fold a contiguous run of one
+  source's channels into a single dynamic object.
+- **Dual-mono programmes get independent DRC.** A/52 §7.7.1/§7.7.2.2 give 1+1's two programmes
+  independent DRC curves and heavy-compression ceilings, but the encoder was building the second
+  programme's controller from the first's own config. CLI gains `drc2=`/`heavy2`/`ceiling2=`/
+  `dialogue2=`; GUI gains a Programme 2 DRC combo and a "Heavy compression — programme 2" card.
+- **A third container option: S/PDIF-wrapped WAV**, reusing the existing IEC 61937 burst-wrapping
+  machinery. Works for both codecs — E-AC-3's carrier runs at 4x rate.
+- **An advisory bit-rate floor for wide layouts**: a muted hint under Bit rate when the CBR rate
+  works out to fewer than ~77 kbps per full-bandwidth coded channel. A hint, not a gate.
+- **Guided now applies measured loudness and film-standard DRC automatically** while it's driving
+  and Loudness/Metadata is untouched this session; dual mono gets the DRC-only half of the
+  contract on both programmes, since loudness measurement is refused there.
+
+### GUI: guided-mode workflow polish
+
+- **Finished run chips now carry their own Play action**, sending that run's own output to a
+  receiver — not whatever the most recent encode happened to produce.
+- **Run history now survives a restart.** The last 30 completed runs persist to Settings as JSON;
+  clicking a run chip opens a details popover with status, rate, duration, size, frames, failure
+  text, and the `ac3cli` command line snapshotted when that run started.
+- **Guided's amp destination now auto-picks a bitstream-capable output device** — the first device
+  that can carry the prospective encode plan — with a "Choose a different device" override and a
+  stated reason when nothing qualifies.
+- **Guided's Movement step, once object mode is on, offers two cards**: *Everything moves* (every
+  loaded channel becomes an object) and *Keep the bed, add movers* (only claims still-unassigned
+  channels).
+- **Good/Better/Best now maps to VBR quality, not a fixed bitrate**, when a VBR default or an
+  already-selected Variable rate mode applies — Guided's Quality step rate cards set a VBR quality
+  target (40/75/90) instead of a CBR number.
+- **Preferences defaults apply on Save to untouched fields only**, generalising the existing
+  loudness-touched contract to container/rate mode/bit rate/VBR quality.
+- **The guided wizard's Back/Next footer no longer disappears off-screen.** It previously shared
+  the tab `StackLayout`, whose implicit height is the max over every page — inheriting the Format
+  tab's height let the footer stretch a full screen below the visible content. The wizard now owns
+  its own surface outside the tab stack: the step bar and footer stay pinned, only the step content
+  scrolls between them.
+- **The always-on `ac3cli` command bar is now a popover.** Encode runs the encoder in-process, so
+  the full command line is reference material, not the primary act: a compact chip opens a popover
+  with the complete line, wrapped, with Copy.
+- Fixed the runs lane's empty-state text riding the top edge instead of centring in the strip.
+
+### CLI
+
+- **Fixed: a bare `heavy2` token was silently misparsed** as `encode`/`eac3-encode`'s optional
+  `in2.wav` positional instead of enabling Ch2 heavy compression — `run_main`'s bare-token
+  classifier was missing it alongside `couple`/`heavy`/`mixmeta`/`sign-objects`/`keep-partial`.
+- **`keep-partial` token**: a bare trailing-options token that keeps whatever frames
+  `encode`/`eac3-encode`/`atmos-encode` already produced before a failure, at
+  `<name>.partial.<ext>` — mirrors the GUI's own keep-partial-output preference.
+
+### GUI: theming
+
+- **Four selectable colour palettes, including a native system-accent theme.** *Signal* (the
+  design system's red, default), *Ink* (cool greys, cobalt accent), and *Console* (warm greys,
+  studio amber) join *System* — a new `SystemTheme` singleton that reads the platform's native
+  accent colour and re-announces on OS colour-scheme changes, so changing the OS accent colour
+  restyles the running app live. All four are selectable in Preferences → Appearance.
+- **Dark mode is now hand-tuned per palette instead of a mechanical inversion of the light ramp.**
+  The previous approach turned near-white accent tints into murky red-blacks and left the
+  fully-saturated accent glaring against near-black; each palette now defines both modes by hand.
+
+### GUI: dark-mode audit fixes
+
+- **A round of dark-mode fixes found by auditing every tab across all four palettes.** Smoke-mode
+  screenshot captures are now hermetic — session restore previously ran at window creation, so a
+  screenshot inherited whatever session the last run saved, and closing the smoke binary could
+  clobber the user's real saved session with smoke state. The Coding tools tab now explains itself
+  instead of rendering a bare void when object mode or plain AC-3 hides its contents. The runs
+  lane's hard-capped height had exposed a horizontal scrollbar overlaying the chips and eating
+  their clicks — the scrollbar is now off, wheel/drag still pan. The Encode button's `.ac3`/`.ec3`
+  suffix no longer goes stale after the codec moves the plan between containers.
+
+### Quality & verification tooling
+
+- **Added an external-encoder landscape comparison against FFmpeg and Dolby DEE**, giving the
+  encoder a real point of reference beyond its own gold-reference gate. A new stereo fixture
+  exercises coupling, enhanced coupling, spx, AHT, transient pre-noise, and rematrixing together; a
+  local-only baseline tool encodes fixed legs through FFmpeg, DEE, and `ac3cli`, while CI itself
+  runs a compute-only trend mode scoring against those legs using only this project's own decoder —
+  no FFmpeg or DEE invocation at CI time. Results render in two new docs pages,
+  `docs/tool-comparison-trend.md` (per-commit, per-variant detail) and `docs/landscape.md`
+  (release-over-release headline table). This work directly surfaced the `cplbndstrce=0` decoder
+  gap fixed above, and found that the installed DEE build silently drops the Ls channel on discrete
+  5.1 input — the affected rows are honestly marked `"status": "unverified"` rather than reporting
+  a fabricated score.
+- **The gold-reference gate now checks a real Annex E tool-enabled stream (`tools=cpl`)**, not just
+  the `tools=none` baseline, at the existing 55 dB SNR floor. `spx`/`aht`/`all` are deliberately
+  left off this specific check: those tools are approximate/generative reconstruction where two
+  independent spec-correct decoders legitimately diverge much further, so a 55 dB floor would
+  false-fail on normal divergence rather than catch a real regression.
+- **The quality trend chart and tool-comparison trend chart both gained a per-series breakdown
+  view** ("Worst of legs, by branch" / "By platform leg", and "By branch" / "By variant"), so one
+  CI leg — or one Annex E tool-set — quietly drifting relative to its siblings is visible as a
+  trend line instead of only by scanning table rows.
+
+### Android (Shield)
+
+- **Android release builds now sign with a real release keystore instead of the debug key**, once
+  a maintainer has provisioned the `ANDROID_KEYSTORE_*` secrets per
+  [docs/releasing.md](docs/releasing.md). Local dev, ordinary CI, and any release run with no
+  keystore provisioned all still degrade to the debug keystore exactly as before.
+
+### Bug fixes
+
+- **Windows audio backends no longer list a blank row in the device picker.** A real WASAPI
+  endpoint that never fills in its friendly-name property was enumerated with an empty display
+  string, and both the capture and passthrough front ends put that straight into a combo box as an
+  unlabeled entry. The fix resolves a display name through a fallback chain (friendly name → device
+  description → an endpoint-id-carrying stand-in), and an endpoint whose id can't be read is now
+  skipped entirely rather than listed.
+
+### Library examples & documentation
+
+- **Eight new `examples/` programs**, each a build target and `ctest` entry like every other
+  example: `wav_roundtrip` (real WAV file I/O, not just in-memory PCM), `custom_layout` (a
+  channel selection no named `LayoutId` covers, via `Plan::custom_locations`),
+  `multi_source_assignment` (combining separate sources via `ac3::plan::Assignment`),
+  `scripted_object_motion` (authored `KeyframePath`/`OrbitPath` driving `AtmosEncoder`),
+  `object_signing` (`ac3::signing::sign_atmos_stream`, previously undemonstrated),
+  `level_metering` (`ac3::analysis::LevelMeter`/`energy_vector`), `decode_robustness`
+  (recovering from one damaged frame in an otherwise-good stream via `ac3::split_frames`), and
+  `atmos_fallback` (`AtmosConfig::emit_object_metadata`'s objects-or-nothing design decision,
+  side by side). Three new library reference pages —
+  [Channel plans & routing](docs/library/channel-plans-and-routing.md),
+  [File I/O](docs/library/file-io.md) and [Object signing](docs/library/signing.md) — and new
+  sections on the existing [Spatial & Atmos objects](docs/library/spatial-and-atmos.md),
+  [Decoding](docs/library/decoding.md) and [Muxing & sinks](docs/library/muxing-and-sinks.md)
+  pages are written from them.
+
+### Known gaps
+
+- Objects will not decode as *objects* in Dolby's own decoder: DD+ JOC gates that on an
+  authenticity tag keyed to a secret embedded in Dolby's decoder binaries, which this project
+  does not produce. The bed still decodes as plain 5.1 anywhere.
+- Exclusive-mode S/PDIF/HDMI passthrough has not been confirmed against real bitstreaming hardware
+  on either platform (no such endpoint was available during development).
+- `fscod2` audio content has no external decode oracle at all, not even Dolby's own Reference
+  Player — verified only by this project's own encoder/decoder round trip.
+- The external-encoder landscape comparison's Dolby DEE leg silently drops the Ls channel on
+  discrete 5.1 input — a limitation of the installed DEE build used as a comparison oracle, not of
+  this project's own encoder; affected rows are marked `unverified` rather than scored.
+
+See [Validation](docs/verification.md) for the full account of what is and isn't independently
+verified, and [docs/project/history.md](docs/project/history.md) for how this was built.
+
 ## [0.3.0-beta.1] - 2026-08-11
 
 Second tagged release. Adds the two remaining Annex E coding tools (enhanced coupling,
@@ -99,9 +380,8 @@ assignment, and a GUI tier split for first-time users through experts.
   keystore is provisioned in this repo yet, so it's a sideload-only build, not one suited for
   store distribution.
 - Enhanced coupling's encoder always sends angle/chaos as zero (an amplitude-only fit) — quality
-  degrades if two channels' content shares one narrow coupling band. Enhanced coupling and
-  spectral extension are never combined by this encoder, and `decode_access_unit` refuses rather
-  than supports transient pre-noise processing across multiple substreams of one access unit.
+  degrades if two channels' content shares one narrow coupling band. Closed in the next release;
+  see [Unreleased](#unreleased).
 - Objects will not decode as *objects* in Dolby's own decoder: DD+ JOC gates that on an
   authenticity tag keyed to a secret embedded in Dolby's decoder binaries, which this project
   does not produce. The bed still decodes as plain 5.1 anywhere.

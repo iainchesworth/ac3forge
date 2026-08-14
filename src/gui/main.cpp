@@ -1,7 +1,11 @@
+#include <QFont>
+#include <QFontDatabase>
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQuickStyle>
 #include <QQuickWindow>
+#include <QSettings>
+#include <QTemporaryDir>
 #include <QTimer>
 #include <QUrl>
 #include <QVariantList>
@@ -9,6 +13,7 @@
 #include <algorithm>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <print>
 #include <vector>
 
@@ -30,7 +35,13 @@
 // declared Q_PROPERTY works: codecIndex=1, layoutIndex=5, coupling=true,
 // drcIndex=2, atmosEnabled=true, containerIndex=1, and (on the window itself)
 // tier=expert; preset=7.1.4 invokes applyChannelPreset() instead - see
-// apply_properties' own comment.
+// apply_properties' own comment. --smoke-shot in particular also takes
+// scrollY=<pixels> (a plain QML property on the window, Main.qml's own
+// smokeScrollY) to put a below-the-fold section - the assignment table
+// partway down the Format tab, say - into frame before the grab; there is
+// no scroll-to-item helper, just a raw pixel offset into the tab area's own
+// Flickable, so finding the right value is trial and error against a local
+// build.
 //
 // Both --smoke and --smoke-record fail unless every channel the routing FEEDS
 // has its needle leave the floor, so --smoke-record against a silent endpoint
@@ -499,6 +510,38 @@ int main(int argc, char* argv[]) {
     QGuiApplication app(argc, argv);
     QGuiApplication::setApplicationName(QStringLiteral("ac3forge"));
     QGuiApplication::setOrganizationName(QStringLiteral("ac3forge"));
+
+    // A smoke run must neither INHERIT the user's saved session (session
+    // restore runs at window creation - a restored object-mode session under
+    // a screenshot's own props made "reproducible" screenshots depend on
+    // whatever ran last) nor CLOBBER that session on close (saveSession
+    // fires for every window, smoke windows included). The same scratch-
+    // store recipe the QML test binary uses keeps every smoke mode hermetic;
+    // the temporary directory lives to the end of main and evaporates.
+    std::optional<QTemporaryDir> smoke_settings_scratch;
+    if (argc > 1
+        && QString::fromLocal8Bit(argv[1]).startsWith(QLatin1String("--smoke"))) {
+        smoke_settings_scratch.emplace();
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope,
+                           smoke_settings_scratch->path());
+    }
+
+    // The handoff's typeface ("Archivo throughout; headings weight 800,
+    // body 400/500/600"), bundled as resources so the design renders as
+    // designed everywhere. Registered before the engine loads so Theme's
+    // Qt.fontFamilies() probe finds it, and made the application default so
+    // every control - not just the Texts that name a family - uses it.
+    for (const auto* face :
+         {":/fonts/Archivo-Regular.ttf", ":/fonts/Archivo-Medium.ttf",
+          ":/fonts/Archivo-SemiBold.ttf", ":/fonts/Archivo-ExtraBold.ttf"}) {
+        if (QFontDatabase::addApplicationFont(QLatin1String(face)) < 0) {
+            std::println(stderr, "could not register bundled font {}", face);
+        }
+    }
+    QFont default_font = QGuiApplication::font();
+    default_font.setFamily(QStringLiteral("Archivo"));
+    QGuiApplication::setFont(default_font);
 
     // Fusion renders identically on every platform, so the layout we design
     // here is the layout everywhere; the native Windows style restyles

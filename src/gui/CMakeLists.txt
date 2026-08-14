@@ -14,7 +14,9 @@ qt_standard_project_setup(REQUIRES 6.5)
 qt_add_executable(ac3gui
     main.cpp
     encoder_controller.cpp
-    encoder_controller.hpp)
+    encoder_controller.hpp
+    system_theme.cpp
+    system_theme.hpp)
 
 # The QML lives in qml/ on disk but belongs at the root of the QML module, so
 # every file is aliased to its bare name. Left alone, Qt lays the module out as
@@ -37,7 +39,11 @@ set(AC3_QML_FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/qml/SegmentedControl.qml"
     "${CMAKE_CURRENT_SOURCE_DIR}/qml/LoudnessGroup.qml"
     "${CMAKE_CURRENT_SOURCE_DIR}/qml/VbrPanel.qml"
-    "${CMAKE_CURRENT_SOURCE_DIR}/qml/GuidedWizard.qml")
+    "${CMAKE_CURRENT_SOURCE_DIR}/qml/GuidedWizard.qml"
+    "${CMAKE_CURRENT_SOURCE_DIR}/qml/RailBlock.qml"
+    "${CMAKE_CURRENT_SOURCE_DIR}/qml/AssignmentPanel.qml"
+    "${CMAKE_CURRENT_SOURCE_DIR}/qml/FirstRunScreen.qml"
+    "${CMAKE_CURRENT_SOURCE_DIR}/qml/PreferencesDialog.qml")
 
 foreach(qml_file IN LISTS AC3_QML_FILES)
     get_filename_component(qml_name "${qml_file}" NAME)
@@ -63,6 +69,23 @@ qt_add_qml_module(ac3gui
     URI Ac3Forge
     VERSION 1.0
     QML_FILES ${AC3_QML_FILES})
+
+# The handoff's typeface, bundled so the design renders as designed on a
+# machine that never installed it. Archivo is SIL OFL 1.1 (fonts/OFL.txt
+# ships beside the faces - keep them together; the license requires it).
+# Static weights rather than the variable font: Qt's font database resolves
+# named static weights on every platform this builds for, while variable-
+# font axis selection is only dependable from Qt 6.7 up. main.cpp registers
+# these with QFontDatabase before the engine loads.
+qt_add_resources(ac3gui "ac3gui_fonts"
+    PREFIX "/fonts"
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}/fonts"
+    FILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/fonts/Archivo-Regular.ttf"
+        "${CMAKE_CURRENT_SOURCE_DIR}/fonts/Archivo-Medium.ttf"
+        "${CMAKE_CURRENT_SOURCE_DIR}/fonts/Archivo-SemiBold.ttf"
+        "${CMAKE_CURRENT_SOURCE_DIR}/fonts/Archivo-ExtraBold.ttf"
+        "${CMAKE_CURRENT_SOURCE_DIR}/fonts/OFL.txt")
 
 # Qt generates a lot of C++ into this target - moc output, the QML type
 # registrations, the rcc resources and qmlcachegen's AOT-compiled QML - and it

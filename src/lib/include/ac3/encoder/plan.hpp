@@ -282,6 +282,17 @@ struct Metadata {
     // alone cannot describe both.
     int dialnorm2 = 31;
     bool measure_dialnorm2 = false;
+    // Ch2's own DRC curve and heavy-compression config (§7.7.1/§7.7.2.2: dual
+    // mono's two programmes are unrelated, so compr2 bounds Ch2's own signal
+    // the same way compr bounds Ch1's, never a mix of the two). Deliberately
+    // NOT a fallback to `drc`/`heavy` when unset - dialnorm2 sets that
+    // precedent already (a missing dialnorm2 under dual mono is a hard
+    // error, never inherited from dialnorm), so a plan that wants both
+    // programmes compressed the same way says so explicitly by setting both
+    // fields to the same value, rather than one programme's setting quietly
+    // leaking into the other's.
+    std::optional<meta::Profile> drc2 = std::nullopt;
+    std::optional<meta::HeavyConfig> heavy2 = std::nullopt;
     // E-AC-3 only: emit the mixmdate group. AC-3 carries cmixlev/surmixlev in
     // bsi and has nowhere to put the rest.
     bool mixmeta = false;

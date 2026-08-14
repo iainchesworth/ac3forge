@@ -183,6 +183,19 @@ jobs:
       # so `git describe` alone would find nothing (or the previous release).
       fetch_depth: 0
       version_tag: ${{ needs.resolve-version.outputs.version_tag }}
+    # ci.yml's call to _build.yml passes none of these - it never sets
+    # do_package for a release APK, so build-android's signing step has
+    # nothing to decode there regardless. Threaded through even on a dry
+    # run: assembleRelease itself still runs then (do_package is
+    # unconditionally true above), so a dry run genuinely exercises the
+    # signing path too, not just the unsigned/debug one - it just never
+    # reaches the github-release job below to get uploaded anywhere.
+    secrets:
+      ATMOS_SIGNING_KEY: ${{ secrets.ATMOS_SIGNING_KEY }}
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
 
   # Downloads whatever packages actually got built, signs and attests them,
   # generates an SBOM, and publishes the GitHub Release. Skipped entirely on

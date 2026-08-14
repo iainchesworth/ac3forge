@@ -37,6 +37,16 @@ enum class DestinationKind : std::uint8_t {
     kUnassigned,
     kLocation,
     kObject,
+    // A contiguous range of channels within ONE source that fold to a
+    // SINGLE mono dynamic object, rather than each channel becoming its own
+    // object the way a plain kObject range does - the mockup's "objm", the
+    // stereo-source affordance ("One object, folded to mono"). Still one
+    // Destination per channel (set() is called once per channel in the
+    // range, same as kObject), so which channels belong to the same objm
+    // group is exactly "the maximal contiguous run of kObjectMono rows for
+    // one source" - a caller groups them by adjacency, not by any group id
+    // stored here.
+    kObjectMono,
     kProgramme1,
     kProgramme2,
 };
@@ -45,6 +55,19 @@ struct Destination {
     DestinationKind kind = DestinationKind::kUnassigned;
     // Meaningful only when kind == kLocation.
     eac3::chanmap::Location location{};
+    // A linear-gain trim applied to this channel wherever its content
+    // reaches the stream - a routing matrix's gain entry (route()/
+    // dual_mono_routing(), covering kLocation and dual-mono's programme
+    // rows for free) or an object's plane at assembly (kObject/
+    // kObjectMono, applied by the caller that builds object planes - see
+    // encoder_controller.cpp's encodeObjects). Decibels, clamped to
+    // [-24, +24] and snapped to a tenth-of-a-dB grid by set()/
+    // parse_destination() - see assignment.cpp's snap_trim() for why a
+    // fixed grid rather than an arbitrary double: it is what lets
+    // format_destination/parse_destination round-trip a trim exactly.
+    // Meaningless (and always 0) on a kUnassigned row, since Assignment::
+    // set() erases those outright rather than storing them.
+    double trim_db = 0.0;
 
     [[nodiscard]] bool operator==(const Destination&) const = default;
 };
@@ -88,14 +111,18 @@ class AC3FORGE_EXPORT Assignment {
 // Builds a Routing over the CONCATENATION of every source's channels (source
 // 0's channels first, then source 1's, and so on) from an explicit
 // Assignment rather than route()'s automatic panning: every kLocation row
-// becomes a unity-gain entry into EVERY coded channel carrying that
-// location - a bed channel and any dependent that shares it alike, since an
-// explicit assignment states raw content for a location rather than a
-// direction to render, and both the bed's legacy fallback and a full
-// decoder's discrete channel should hear the same thing. kObject/
-// kProgramme*/kUnassigned rows contribute nothing (all-zero) - object audio
-// reaches the stream through the Atmos path, not Routing, and programme
-// rows are dual_mono_routing()'s concern.
+// becomes a gain entry - unity unless the row carries a trim_db, in which
+// case that row's linear-equivalent gain, per Destination::trim_db's own
+// comment - into EVERY coded channel carrying that location - a bed channel
+// and any dependent that shares it alike, since an explicit assignment
+// states raw content for a location rather than a direction to render, and
+// both the bed's legacy fallback and a full decoder's discrete channel
+// should hear the same (trimmed) thing. kObject/kObjectMono/kProgramme*/
+// kUnassigned rows contribute nothing to this Routing (all-zero) - object
+// audio reaches the stream through the Atmos path, not Routing (their own
+// trim is applied where their planes are assembled instead - see
+// encoder_controller.cpp's encodeObjects), and programme rows are
+// dual_mono_routing()'s concern.
 //
 // Returns nullopt if `sources` is empty, if two rows target the same
 // location, or if `target` cannot express a targeted location at all. Does
@@ -134,22 +161,30 @@ class AC3FORGE_EXPORT Assignment {
                                                  SampleRate sample_rate);
 
 // The `map=` token grammar's destination spelling: a Table E2.5 location
-// name (as eac3::chanmap::name() prints it, e.g. "Ls", "LFE2"), "obj", "p1",
-// "p2", or "none" for an explicit, silence-the-warning unassigned. The
-// inverse of parse_destination - round-trips the way format_channels
-// already round-trips through parse_channels.
+// name (as eac3::chanmap::name() prints it, e.g. "Ls", "LFE2"), "obj",
+// "objm", "p1", "p2", or "none" for an explicit, silence-the-warning
+// unassigned - optionally followed by "@<trim>", a signed decibel trim
+// (e.g. "L@-3.5"), present in the returned/accepted text only when
+// dest.trim_db is non-zero. "@" cannot collide with any existing token: no
+// location name, and none of obj/objm/p1/p2/none, contains it. The inverse
+// of parse_destination - round-trips the way format_channels already
+// round-trips through parse_channels.
 [[nodiscard]] AC3FORGE_EXPORT std::string format_destination(Destination dest);
 [[nodiscard]] AC3FORGE_EXPORT std::optional<Destination> parse_destination(std::string_view token);
 
 inline constexpr std::string_view kAssignmentSyntax =
-    "<source>.<channel>[-<channel2>]:<dest>[,...] - dest is a channel name, obj, p1, p2 or "
-    "none; a channel range is only legal with obj or none";
+    "<source>.<channel>[-<channel2>]:<dest>[@<trim>][,...] - dest is a channel name, obj, objm, "
+    "p1, p2 or none; a channel range is only legal with obj, objm or none, and folds to one mono "
+    "object with objm; trim is an optional signed dB gain in [-24,24] on <dest>, e.g. L@-3.5, "
+    "applied wherever that channel's content reaches the stream";
 
 // The `map=` option's whole spec: comma-separated `<source>.<channel>:<dest>`
 // entries (`<channel>` may be a `first-last` range, legal only when `<dest>`
-// is "obj" or "none" - a location or a programme names exactly one channel,
-// so a range there would be ambiguous about which one it means). `<source>`
-// indexes `sources` in load order.
+// is "obj", "objm" or "none" - a location or a programme names exactly one
+// channel, so a range there would be ambiguous about which one it means; an
+// objm range further requires every channel in it to come from the SAME
+// source, which a range already guarantees since `<source>` is shared by
+// the whole entry). `<source>` indexes `sources` in load order.
 //
 // Unlike parse_channels/parse_tools/parse_vbr, this ALSO requires every
 // channel `sources` declares to appear in some entry, `none` included -

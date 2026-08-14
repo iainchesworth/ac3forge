@@ -72,6 +72,18 @@ un-recorded just because it also failed. See `REGRESSION_DROP_DB` and
   // different channel count) falls back to a plain index label rather than
   // guessing at a mapping.
   const CHANNEL_LABELS_51 = ["L", "R", "C", "LFE", "Ls", "Rs"];
+  // Mirrors _build.yml's gold_reference matrix - the same 5 legs
+  // scripts/append-quality-history.py strips the "gold-reference-" artifact
+  // prefix down to. Fixed order/colors so a leg's line keeps the same color
+  // across renders instead of shuffling with whichever legs happen to have
+  // data in the current view.
+  const LEGS = [
+    { leg: "windows-msvc", color: "#7c4dff" },
+    { leg: "windows-llvm", color: "#00acc1" },
+    { leg: "linux-gcc", color: "#43a047" },
+    { leg: "linux-llvm", color: "#fb8c00" },
+    { leg: "macos-llvm", color: "#e53935" },
+  ];
 
   const root = document.getElementById("quality-trend-app");
 
@@ -80,12 +92,25 @@ un-recorded just because it also failed. See `REGRESSION_DROP_DB` and
   // thread its way back in as a parameter.
   const state = {
     codec: "ac3",
+    // "branch": one line per branch, worst-of-5-legs per commit (the
+    // original view - good for "did anything regress"). "leg": one line per
+    // CI leg for a single branch, un-folded (good for "is one platform
+    // drifting relative to the others over time") - see LEGS above. Never
+    // both branch and leg as line dimensions at once: up to 5 legs x 2
+    // branches = 10 lines was exactly the "unreadable" case worstPerCommit
+    // was written to avoid, so leg view picks one branch instead of folding
+    // it away.
+    view: "branch",
     branches: { main: true, develop: true },
     // develop pushes far more often than main (every commit vs. only release
     // promotions) and fans out to the same 5 legs x 2 codecs per commit, so
     // showing its full history by default crowds main's rows out of the
     // table entirely. Collapsed to its latest commit until asked to expand.
     developFullHistory: false,
+    // Which branch's per-leg lines are drawn in "leg" view. develop by
+    // default since it has enough push frequency for the per-leg lines to
+    // actually look like trends; main's own history is comparatively sparse.
+    legBranch: "develop",
   };
 
   function rawUrl(branch, file) {
@@ -185,6 +210,21 @@ un-recorded just because it also failed. See `REGRESSION_DROP_DB` and
     });
   }
 
+  // verify-gold-reference.sh runs more than one check per codec now - e.g.
+  // eac3's tools=none baseline, its tools=cpl variant, and the unrelated
+  // eac3_cplbndstrce0 third-party-bitstream interop fixture all share
+  // codec:"eac3" but compare fundamentally different things at deliberately
+  // different SNR floors (see scripts/append-quality-history.py's own
+  // "check" field, added for the same reason). This page's chart has only
+  // ever shown one line per codec, so it sticks to each codec's original,
+  // continuous baseline check (check === codec) rather than folding in the
+  // newer variants - a record with no "check" at all is older history
+  // written before that field existed, and was always that baseline check
+  // by construction, so it counts too.
+  function isPrimaryCheck(r) {
+    return !r.check || r.check === r.codec;
+  }
+
   // One point per commit per branch: the worst worst_db across every leg for
   // the selected codec, since a per-leg-and-codec chart (up to 5 legs x 2
   // codecs x 2 branches) would be unreadable as lines. Leg-level detail is
@@ -192,7 +232,7 @@ un-recorded just because it also failed. See `REGRESSION_DROP_DB` and
   function worstPerCommit(records, codec) {
     const byCommit = new Map();
     for (const r of records) {
-      if (r.codec !== codec) continue;
+      if (r.codec !== codec || !isPrimaryCheck(r)) continue;
       const cur = byCommit.get(r.commit);
       if (!cur || r.worst_db < cur.worst_db) {
         byCommit.set(r.commit, r);
@@ -201,13 +241,34 @@ un-recorded just because it also failed. See `REGRESSION_DROP_DB` and
     return Array.from(byCommit.values()).sort((a, b) => a.commit_date.localeCompare(b.commit_date));
   }
 
+  // The un-folded counterpart to worstPerCommit above: every (leg, codec,
+  // branch) record, one series per leg, nothing dropped. This is what "leg"
+  // view charts - the same per-leg detail worstPerCommit discards, just kept
+  // instead of collapsed to a single worst-of-legs point.
+  function perLegSeries(records, codec, branch) {
+    const byLeg = {};
+    for (const legDef of LEGS) byLeg[legDef.leg] = [];
+    for (const r of records) {
+      if (r.codec !== codec || r.branch !== branch || !isPrimaryCheck(r)) continue;
+      if (byLeg[r.leg]) byLeg[r.leg].push(r);
+    }
+    for (const leg of Object.keys(byLeg)) {
+      byLeg[leg].sort((a, b) => a.commit_date.localeCompare(b.commit_date));
+    }
+    return byLeg;
+  }
+
   // Always computed against the full, unfiltered history for the (leg,
-  // codec, branch) - collapsing develop's *display* to its latest commit
-  // shouldn't change what counts as a regression against its own trailing
-  // average.
-  function regressionBaseline(allRecords, leg, codec, branch, beforeCommitDate) {
+  // codec, check, branch) - collapsing develop's *display* to its latest
+  // commit shouldn't change what counts as a regression against its own
+  // trailing average. "check" (falling back to codec for pre-"check" history,
+  // same reasoning as isPrimaryCheck above) keeps this matched to the same
+  // check the row itself came from, instead of averaging across unrelated
+  // checks that happen to share a codec.
+  function regressionBaseline(allRecords, leg, codec, check, branch, beforeCommitDate) {
     const trail = allRecords
-      .filter((r) => r.leg === leg && r.codec === codec && r.branch === branch && r.commit_date < beforeCommitDate)
+      .filter((r) => r.leg === leg && r.codec === codec && (r.check || r.codec) === check &&
+                     r.branch === branch && r.commit_date < beforeCommitDate)
       .sort((a, b) => a.commit_date.localeCompare(b.commit_date))
       .slice(-REGRESSION_WINDOW);
     if (trail.length === 0) return null;
@@ -219,9 +280,15 @@ un-recorded just because it also failed. See `REGRESSION_DROP_DB` and
   // history against main's single latest entry: an index-based axis would
   // stack main's one point at the start of the line instead of at its actual
   // (recent) date.
-  function buildChart(seriesByBranch, codec, releasesBySha) {
+  //
+  // Generic over what a "track" is: branch view passes one track per branch
+  // (worst-of-legs points), leg view passes one track per CI leg for a
+  // single branch (un-folded points) - same x/y math and SVG either way,
+  // only the line count and labels differ. Each track is
+  // { key, label, color, points }.
+  function buildChart(tracks, codec, releasesBySha) {
     const width = 760, height = 220, pad = { top: 12, right: 12, bottom: 32, left: 42 };
-    const allPoints = TRACKS.flatMap((t) => seriesByBranch[t.branch] || []);
+    const allPoints = tracks.flatMap((t) => t.points);
     if (allPoints.length === 0) {
       return `<p class="quality-trend-status">No ${codec} history in the current view.</p>`;
     }
@@ -245,8 +312,8 @@ un-recorded just because it also failed. See `REGRESSION_DROP_DB` and
     svg += `<text x="${pad.left}" y="${height - 8}" text-anchor="start" font-size="10" fill="var(--md-default-fg-color--light)">${new Date(minT).toISOString().slice(0, 10)}</text>`;
     svg += `<text x="${width - pad.right}" y="${height - 8}" text-anchor="end" font-size="10" fill="var(--md-default-fg-color--light)">${new Date(maxT).toISOString().slice(0, 10)}</text>`;
 
-    for (const track of TRACKS) {
-      const pts = seriesByBranch[track.branch] || [];
+    for (const track of tracks) {
+      const pts = track.points;
       if (pts.length === 0) continue;
       if (pts.length > 1) {
         const path = pts.map((p, i) => `${i === 0 ? "M" : "L"}${x(Date.parse(p.commit_date)).toFixed(1)},${y(p.worst_db).toFixed(1)}`).join(" ");
@@ -256,7 +323,7 @@ un-recorded just because it also failed. See `REGRESSION_DROP_DB` and
         const cx = x(Date.parse(p.commit_date)).toFixed(1);
         const cy = y(p.worst_db).toFixed(1);
         const release = releasesBySha[p.commit];
-        const title = `${track.branch} ${shortSha(p.commit)} - ${p.worst_db.toFixed(2)} dB (${worstChannelLabel(p)}, worst of ${channelBreakdownText(p)}) on ${p.commit_date.slice(0, 10)}${release ? ` - release ${release.name}` : ""}`;
+        const title = `${track.label} ${shortSha(p.commit)} - ${p.worst_db.toFixed(2)} dB (${worstChannelLabel(p)}, worst of ${channelBreakdownText(p)}) on ${p.commit_date.slice(0, 10)}${release ? ` - release ${release.name}` : ""}`;
         svg += `<circle cx="${cx}" cy="${cy}" r="3" fill="${track.color}"><title>${title}</title></circle>`;
         if (release) {
           svg += `<circle cx="${cx}" cy="${cy}" r="6.5" fill="none" stroke="${track.color}" stroke-width="1.5" stroke-dasharray="2,1.5"><title>${title}</title></circle>`;
@@ -267,12 +334,9 @@ un-recorded just because it also failed. See `REGRESSION_DROP_DB` and
     return svg;
   }
 
-  function buildLegend(seriesByBranch, releasesBySha) {
-    const items = TRACKS.filter((t) => state.branches[t.branch]).map((t) => {
-      const note = t.branch === "develop" && !state.developFullHistory ? " (latest commit only)" : "";
-      return `<span><i style="background:${t.color}"></i>${t.branch}${note}</span>`;
-    });
-    const anyRelease = Object.values(seriesByBranch).flat().some((p) => releasesBySha[p.commit]);
+  function buildLegend(tracks, releasesBySha) {
+    const items = tracks.map((t) => `<span><i style="background:${t.color}"></i>${t.label}</span>`);
+    const anyRelease = tracks.some((t) => t.points.some((p) => releasesBySha[p.commit]));
     if (anyRelease) {
       items.push('<span><i style="background:none;border:1.5px dashed var(--md-default-fg-color--light);"></i>tagged release</span>');
     }
@@ -285,7 +349,7 @@ un-recorded just because it also failed. See `REGRESSION_DROP_DB` and
       .sort((a, b) => b.commit_date.localeCompare(a.commit_date))
       .slice(0, TABLE_ROWS)
       .map((r) => {
-        const baseline = regressionBaseline(allRecords, r.leg, r.codec, r.branch, r.commit_date);
+        const baseline = regressionBaseline(allRecords, r.leg, r.codec, r.check || r.codec, r.branch, r.commit_date);
         const regressed = baseline !== null && baseline - r.worst_db >= REGRESSION_DROP_DB;
         const flag = regressed
           ? `<span class="quality-trend-regression" title="${(baseline - r.worst_db).toFixed(2)} dB below the trailing ${REGRESSION_WINDOW}-run mean (${baseline.toFixed(2)} dB)">▼ regression</span>`
@@ -316,6 +380,7 @@ un-recorded just because it also failed. See `REGRESSION_DROP_DB` and
   }
 
   function buildControls() {
+    const legView = state.view === "leg";
     return `
       <div class="quality-trend-controls">
         <label for="quality-trend-codec">Codec
@@ -324,9 +389,24 @@ un-recorded just because it also failed. See `REGRESSION_DROP_DB` and
             <option value="eac3" ${state.codec === "eac3" ? "selected" : ""}>E-AC-3 (256 kbps)</option>
           </select>
         </label>
-        <label><input type="checkbox" id="quality-trend-branch-main" ${state.branches.main ? "checked" : ""}/> main</label>
-        <label><input type="checkbox" id="quality-trend-branch-develop" ${state.branches.develop ? "checked" : ""}/> develop</label>
-        ${state.branches.develop ? `<label><input type="checkbox" id="quality-trend-develop-history" ${state.developFullHistory ? "checked" : ""}/> develop: show full history</label>` : ""}
+        <label for="quality-trend-view">Chart
+          <select id="quality-trend-view">
+            <option value="branch" ${!legView ? "selected" : ""}>Worst of legs, by branch</option>
+            <option value="leg" ${legView ? "selected" : ""}>By platform leg</option>
+          </select>
+        </label>
+        ${legView ? `
+          <label for="quality-trend-leg-branch">Branch
+            <select id="quality-trend-leg-branch">
+              <option value="develop" ${state.legBranch === "develop" ? "selected" : ""}>develop</option>
+              <option value="main" ${state.legBranch === "main" ? "selected" : ""}>main</option>
+            </select>
+          </label>
+        ` : `
+          <label><input type="checkbox" id="quality-trend-branch-main" ${state.branches.main ? "checked" : ""}/> main</label>
+          <label><input type="checkbox" id="quality-trend-branch-develop" ${state.branches.develop ? "checked" : ""}/> develop</label>
+        `}
+        ${!legView && state.branches.develop ? `<label><input type="checkbox" id="quality-trend-develop-history" ${state.developFullHistory ? "checked" : ""}/> develop: show full history</label>` : ""}
       </div>
     `;
   }
@@ -336,14 +416,31 @@ un-recorded just because it also failed. See `REGRESSION_DROP_DB` and
       state.codec = e.target.value;
       render(allRecords, releasesBySha);
     });
-    document.getElementById("quality-trend-branch-main").addEventListener("change", (e) => {
-      state.branches.main = e.target.checked;
+    document.getElementById("quality-trend-view").addEventListener("change", (e) => {
+      state.view = e.target.value;
       render(allRecords, releasesBySha);
     });
-    document.getElementById("quality-trend-branch-develop").addEventListener("change", (e) => {
-      state.branches.develop = e.target.checked;
-      render(allRecords, releasesBySha);
-    });
+    const legBranchSelect = document.getElementById("quality-trend-leg-branch");
+    if (legBranchSelect) {
+      legBranchSelect.addEventListener("change", (e) => {
+        state.legBranch = e.target.value;
+        render(allRecords, releasesBySha);
+      });
+    }
+    const mainToggle = document.getElementById("quality-trend-branch-main");
+    if (mainToggle) {
+      mainToggle.addEventListener("change", (e) => {
+        state.branches.main = e.target.checked;
+        render(allRecords, releasesBySha);
+      });
+    }
+    const developToggle = document.getElementById("quality-trend-branch-develop");
+    if (developToggle) {
+      developToggle.addEventListener("change", (e) => {
+        state.branches.develop = e.target.checked;
+        render(allRecords, releasesBySha);
+      });
+    }
     const historyToggle = document.getElementById("quality-trend-develop-history");
     if (historyToggle) {
       historyToggle.addEventListener("change", (e) => {
@@ -353,18 +450,41 @@ un-recorded just because it also failed. See `REGRESSION_DROP_DB` and
     }
   }
 
-  function render(allRecords, releasesBySha) {
-    const visible = visibleRecords(allRecords);
-    const seriesByBranch = {};
-    for (const track of TRACKS) {
-      seriesByBranch[track.branch] = state.branches[track.branch]
-        ? worstPerCommit(visible.filter((r) => r.branch === track.branch), state.codec)
-        : [];
+  // Builds this render's tracks per state.view - branch view folds each
+  // branch down to its worst-of-legs line (worstPerCommit); leg view
+  // un-folds a single branch into one line per CI leg (perLegSeries). Kept
+  // out of render() itself so render() stays about assembling the page, not
+  // about which view is active.
+  function buildTracks(visible) {
+    if (state.view === "leg") {
+      const byLeg = perLegSeries(visible, state.codec, state.legBranch);
+      return LEGS.map((legDef) => ({
+        key: legDef.leg,
+        label: legDef.leg,
+        color: legDef.color,
+        points: byLeg[legDef.leg] || [],
+      }));
     }
+    return TRACKS.map((t) => ({
+      key: t.branch,
+      label: t.branch === "develop" && !state.developFullHistory ? `${t.branch} (latest commit only)` : t.branch,
+      color: t.color,
+      points: state.branches[t.branch] ? worstPerCommit(visible.filter((r) => r.branch === t.branch), state.codec) : [],
+    }));
+  }
+
+  function render(allRecords, releasesBySha) {
+    // Leg view always looks at one branch's full history - the whole point
+    // is seeing a per-leg trend over many commits, so the develop-collapse
+    // and other-branch filters that branch view uses don't apply here.
+    const visible = state.view === "leg"
+      ? allRecords.filter((r) => r.branch === state.legBranch)
+      : visibleRecords(allRecords);
+    const tracks = buildTracks(visible);
     root.innerHTML = `
       ${buildControls()}
-      <div class="quality-trend-chart-wrap">${buildChart(seriesByBranch, state.codec, releasesBySha)}</div>
-      ${buildLegend(seriesByBranch, releasesBySha)}
+      <div class="quality-trend-chart-wrap">${buildChart(tracks, state.codec, releasesBySha)}</div>
+      ${buildLegend(tracks, releasesBySha)}
       ${buildTable(visible, allRecords, releasesBySha)}
     `;
     attachControlListeners(allRecords, releasesBySha);
@@ -389,10 +509,21 @@ Each row is one (commit, CI leg, codec) result — the gate runs on every
 `gold_reference` leg (`windows-msvc`, `windows-llvm`, `linux-gcc`,
 `linux-llvm`, `macos-llvm`; not the ASan+UBSan leg, which stays
 diagnostic-only), so a single commit contributes up to five rows per codec.
-The chart plots the worst of those per commit, per branch, against a shared
-calendar x-axis — a cross-leg floating-point difference (a ~62 dB vs. ~68 dB
-macOS/Linux split is a known, expected effect of platform floating-point
-differences) is expected and not itself a regression.
+
+The **Chart** control picks what the lines represent. "Worst of legs, by
+branch" (the default) plots the worst of the five legs per commit, one line
+per branch, against a shared calendar x-axis — a cross-leg floating-point
+difference (a ~62 dB vs. ~68 dB macOS/Linux split is a known, expected
+effect of platform floating-point differences) is expected and not itself a
+regression, so folding it away is deliberate here: this view answers "did
+*anything* regress," not "which platform." "By platform leg" answers that
+second question instead — it un-folds a single branch (picked with the
+**Branch** control that replaces the branch checkboxes in this view) into
+one line per leg, so a leg drifting relative to the other four, or trending
+down over many commits while the rest hold steady, is visible as a shape in
+the chart rather than something you'd only catch by scanning the table leg
+by leg. Both views read the same underlying rows; nothing about which view
+is active changes what counts as a regression in the table below.
 
 `develop` and `main` are shown as separate tracks because they represent
 different points in the codec's history — `main` only advances on a release

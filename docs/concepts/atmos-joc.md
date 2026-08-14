@@ -84,18 +84,23 @@ encoder; it's an inherent property of parametric object coding — the side info
 describes *how much* energy came from where, not a perfect per-object recording, so directly
 overlapping objects are approximated rather than perfectly isolated.
 
-**Dolby's own decoder additionally requires an authenticity tag this project doesn't produce.**
-Beyond the spec, Dolby's decoder gates object decoding on a cryptographic tag over the object
-data, keyed on a secret embedded in Dolby-licensed decoder binaries — something only a
-Dolby-licensed encoder can produce. Streams from a from-scratch implementation like this one
-are spec-correct — they validate against independent tooling and the bed decodes correctly —
-but they aren't signed with that key, so Dolby's own decoder falls back to playing just the
-plain 5.1 bed rather than reconstructing the objects. This is an authenticity gate, not a
-correctness or conformance problem: the stream is a valid Atmos-in-E-AC-3 stream by the
-published standard, it just doesn't carry a signature only Dolby can issue.
+**Dolby's own decoder additionally requires an authenticity tag, and that tag needs a key you
+provide.** Beyond the spec, a Dolby-licensed decoder gates object decoding on a keyed HMAC carried
+in the stream's EMDF protection field. A stream from this encoder is spec-correct — it validates
+against independent tooling and the bed decodes correctly — but unless that tag is present and
+valid, the licensed decoder falls back to playing just the plain 5.1 bed rather than
+reconstructing the objects. This is an authenticity gate, not a correctness or conformance problem.
+
+The signer that produces the tag ships in the tree (`ac3::signing`): the HMAC construction and the
+layout of what gets signed are clean-room and committed, and the **only** thing you supply is the
+key — provisioned at runtime, never embedded, the same way a licensed tool receives its own. With a
+matching key, a validating decoder reconstructs the objects; without one, the stream stays a valid
+Atmos-in-E-AC-3 stream that plays as 5.1 on that decoder. See
+[Object signing](object-signing.md) for the full picture and how to turn it on.
 
 !!! example "See it in code"
     - [Spatial & Atmos objects](../library/spatial-and-atmos.md)
+    - [Object signing](object-signing.md) — the EMDF protection tag and how to provision a key
     - [CLI commands](../cli/commands.md) — see the `atmos` and `atmos-encode` commands
     - [Objects & motion (GUI)](../gui/objects-and-motion.md)
 

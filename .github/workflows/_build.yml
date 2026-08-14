@@ -61,6 +61,19 @@ on:
         description: "github.ref_name at the call site, for the same reason as persist_quality_trend above. Empty when persist_quality_trend is false."
         type: string
         default: ""
+    secrets:
+      ATMOS_SIGNING_KEY:
+        description: "EMDF object-signing key, base64-encoded. When set (passed by BOTH ci.yml and release.yml), build-android decodes it into the app's bundled signing.key asset so the Shield app signs Atmos objects at runtime - on any build, debug or release. Unset -> no asset is written and the app streams the safe unsigned bed51. A signed APK contains this key and must never be distributed."
+        required: false
+      ANDROID_KEYSTORE_BASE64:
+        description: "Release keystore, base64-encoded. Passed by release.yml only; unset on ci.yml's call, which never sets do_package for a release APK anyway. See build-android's own comment for why the app still builds fine without it."
+        required: false
+      ANDROID_KEYSTORE_PASSWORD:
+        required: false
+      ANDROID_KEY_ALIAS:
+        required: false
+      ANDROID_KEY_PASSWORD:
+        required: false
 
 permissions:
   contents: read
@@ -632,11 +645,24 @@ jobs:
   # for an actual release (do_package), matching release_package's "only the
   # canonical shipped build" reasoning on the desktop legs.
   #
-  # Never signs: CI has no src/quarantine/ (gitignored, never committed) and
-  # no platform/android/local.properties entry to turn the quarantine signer
-  # on even if it did - see build.gradle.kts's quarantineSignerEnabled and
-  # shield_quarantine_hook.hpp's signing_available(). Every build this job
-  # produces is the safe, bed51-equivalent unsigned app.
+  # Object signing (the JOC objects a licensed decoder unlocks) is driven solely
+  # by whether the ATMOS_SIGNING_KEY secret is set - NOT by do_package, so it
+  # applies to every build this job produces, debug or release. When the secret
+  # is present (both ci.yml and release.yml forward it), "Materialize Android
+  # object-signing key" below decodes it into the app's bundled signing.key
+  # asset and the app signs at runtime; when it is absent the step is skipped
+  # and every build is the safe, bed51-equivalent unsigned-object app
+  # (shield_signing_hook.hpp's signing_available() returns false with no key
+  # asset). A signed APK CONTAINS that key and must never be distributed - see
+  # docs/concepts/object-signing.md. This is separate from APK signing below.
+  #
+  # APK signing is separate from the above and optional: the release build
+  # is debug-keystore signed unless ANDROID_KEYSTORE_BASE64 and its three
+  # companion secrets are provisioned (release.yml's call only - ci.yml's
+  # never sets do_package for a release APK, so it never needs them), in
+  # which case "Decode release keystore" below makes them available and
+  # build.gradle.kts's releaseSigningAvailable picks up the real key
+  # instead. See the commands in docs/releasing.md for provisioning one.
   #
   # Promoted (no continue-on-error) the same way macos-llvm was: three
   # consecutive real, hosted-runner runs went green
@@ -647,6 +673,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      # A step's `if:` cannot read `secrets` directly, only `env` - so the
+      # presence check happens once here and the materialize step reads this
+      # (the same pattern release.yml's github-release job uses for
+      # HAVE_GPG_KEY). Drives whether object signing happens at all: set on any
+      # build with the key provisioned, empty otherwise.
+      HAVE_ATMOS_KEY: ${{ secrets.ATMOS_SIGNING_KEY != '' && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -677,6 +710,29 @@ jobs:
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;26.1.10909125"
 
+      # The Shield app signs Atmos objects on-device, so the key has to be in
+      # the APK as an asset (src/main/assets/signing.key, gitignored). Runs
+      # whenever the ATMOS_SIGNING_KEY secret is set - on ANY build, debug or
+      # release, not gated on do_package - so a debug APK signs too when the key
+      # is provisioned. Ordinary runs with no secret skip this entirely and the
+      # app streams unsigned bed51. The secret is base64 and is written verbatim;
+      # shield_signing_hook.cpp's decode_signing_key() base64-decodes it at
+      # startup (the same decode the desktop CLI applies), so no `base64 -d` is
+      # needed here. The asset lives only on this runner and is gone when it is
+      # torn down; $RUNNER_TEMP is not used because the app's build has to find
+      # it under src/main/assets to package it. Never uploaded on its own.
+      - name: Materialize Android object-signing key
+        if: env.HAVE_ATMOS_KEY == 'true'
+        env:
+          ATMOS_SIGNING_KEY: ${{ secrets.ATMOS_SIGNING_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset_dir="platform/android/app/src/main/assets"
+          mkdir -p "$asset_dir"
+          printf '%s' "$ATMOS_SIGNING_KEY" > "$asset_dir/signing.key"
+          echo "Wrote $asset_dir/signing.key ($(wc -c < "$asset_dir/signing.key") base64 chars) - object signing enabled."
+
       - name: Build debug APK
         working-directory: platform/android
         shell: bash
@@ -684,6 +740,38 @@ jobs:
           set -euo pipefail
           chmod +x gradlew
           ./gradlew :app:assembleDebug --console=plain
+
+      # Only meaningful for a release build with a keystore actually
+      # provisioned - release.yml's call passes these four secrets, ci.yml's
+      # never does, so this no-ops there the same way GPG signing is off by
+      # default in release.yml's own github-release job. Secrets flow in via
+      # `env:`, never interpolated straight into the script body, the same
+      # pattern release.yml's "Import GPG signing key" step already uses.
+      # $RUNNER_TEMP, not the repo workspace: never at risk of an
+      # artifact-upload glob picking it up, and gone the moment this runner
+      # is torn down regardless.
+      - name: Decode release keystore
+        if: inputs.do_package
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "No ANDROID_KEYSTORE_BASE64 secret provisioned - assembleRelease will fall back to the debug keystore."
+            exit 0
+          fi
+          keystore_path="$RUNNER_TEMP/ac3forge-shield-release.keystore"
+          base64 -d <<<"$ANDROID_KEYSTORE_BASE64" > "$keystore_path"
+          {
+            echo "ANDROID_KEYSTORE_PATH=$keystore_path"
+            echo "ANDROID_KEYSTORE_PASSWORD=$ANDROID_KEYSTORE_PASSWORD"
+            echo "ANDROID_KEY_ALIAS=$ANDROID_KEY_ALIAS"
+            echo "ANDROID_KEY_PASSWORD=$ANDROID_KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
 
       - name: Build release APK
         if: inputs.do_package

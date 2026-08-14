@@ -55,6 +55,8 @@ add_executable(ac3tests
     test_crc16.cpp
     test_decoder.cpp
     test_drc.cpp
+    test_dsp_biquad.cpp
+    test_dsp_resampler.cpp
     test_eac3.cpp
     test_eac3_decoder.cpp
     test_elementary.cpp
@@ -65,16 +67,28 @@ add_executable(ac3tests
     test_fft.cpp
     test_frame.cpp
     test_iec61937.cpp
+    test_live_downmix.cpp
     test_mantissas.cpp
     test_matroska.cpp
     test_mdct.cpp
     test_oba.cpp
     test_plan.cpp
+    test_resampler.cpp
     test_ring_buffer.cpp
+    test_signing.cpp
     test_spatial.cpp
     test_tables.cpp
     test_transient.cpp
-    test_transient_prenoise.cpp)
+    test_transient_prenoise.cpp
+    test_watchdog.cpp
+    test_wav_stream_writer.cpp)
+
+# test_signing.cpp reaches ac3::signing's internal crypto headers (sha256.hpp/
+# hmac_sha256.hpp) to run the FIPS/RFC known-answer vectors directly - they are
+# not part of the target's public API, so put its private src/ dir on this
+# target's include path only, the same pattern the alsa backend's internal
+# header uses below.
+target_include_directories(ac3tests PRIVATE "${CMAKE_SOURCE_DIR}/src/signing/src")
 
 # ---------------------------------------------------------------------------
 # Toolchain hook: keep a failing assert from opening a modal dialog that hangs
@@ -118,12 +132,29 @@ elseif(AC3FORGE_AUDIO_BACKEND STREQUAL "android")
     target_include_directories(ac3tests PRIVATE "${AC3FORGE_AUDIO_BACKEND_DIR}")
 endif()
 
+# ---------------------------------------------------------------------------
+# ac3cli integration tests (test_cli.cpp). main.cpp compiles straight into
+# the ac3cli executable with everything in an anonymous namespace, so there
+# is no library surface for parse_options/gather_frame/run_atmos_encode's own
+# logic to link against directly - these tests instead run the real, built
+# ac3cli binary as a subprocess and inspect what it actually wrote.
+#
+# Only added when ac3cli itself is being built (AC3FORGE_BUILD_CLI): the
+# top-level CMakeLists.txt processes src/cli before tests/, so the target
+# already exists here whenever it is going to.
+# ---------------------------------------------------------------------------
+if(TARGET ac3cli)
+    target_sources(ac3tests PRIVATE test_cli.cpp)
+    target_compile_definitions(ac3tests PRIVATE "AC3CLI_EXE=\"$<TARGET_FILE:ac3cli>\"")
+endif()
+
 target_include_directories(ac3tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 
 target_link_libraries(ac3tests
     PRIVATE
         ac3::forge
         ac3::audio
+        ac3::signing
         matroska::matroska
         ac3::warnings
         ac3::coverage

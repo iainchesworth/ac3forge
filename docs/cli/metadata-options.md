@@ -11,6 +11,11 @@ metadata options (any order, after the positional arguments):
                     mono downmix, at syncframe resolution
   ceiling=<dBFS>    that ceiling (default -0.5)
   dialogue=<dBFS>   where heavy compression puts dialogue (default -20)
+  drc2=<profile>    Ch2's own DRC profile, layout 1+1 only (§7.7.1) - not
+                    inherited from drc=, set both to compress both programmes alike
+  heavy2            Ch2's own heavy compression, layout 1+1 only (§7.7.2.2)
+  ceiling2=<dBFS>   that ceiling for Ch2 (default -0.5)
+  dialogue2=<dBFS>  where Ch2's heavy compression puts dialogue (default -20)
   dialnorm=auto     measure BS.1770 loudness and derive dialnorm (§5.4.2.8)
   dialnorm=<1..31>  set it directly (default 31)
   dialnorm2=auto | <1..31>   Ch2's own dialnorm, layout 1+1 only (§5.4.2.16, default 31)
@@ -19,6 +24,10 @@ metadata options (any order, after the positional arguments):
   mixmeta           E-AC-3 only: emit the mixmdate group (Table E1.2)
   lfemix=<0..31>|off      E-AC-3 LFE mix level, 10-code dB (§E2.3.1.11)
   dmixmod=ltrt|loro|none  preferred stereo downmix (Table D2.2)
+  keep-partial      encode/eac3-encode/atmos-encode: if the run fails partway, keep whatever
+                    frames were already encoded (named beside the intended output as
+                    <name>.partial.<ext>) instead of discarding them - off by default, matching
+                    the GUI's own keep-partial-output preference
 ```
 
 For `decode`, `drc=<scale>` instead applies §7.7.1 partial compression (`0` = ignore, `1` = as
@@ -102,19 +111,26 @@ syncframe (§5.4.2's "1+1 dual mono") — so it's never inferred from a source's
 way `mono`/`stereo`/`51`/etc. are; it has to be named explicitly. `encode`/`eac3-encode` take its
 two channels either as one two-channel WAV (channel 0 = Ch1, channel 1 = Ch2) or as two mono WAV
 files (`in.wav` = Ch1, the trailing `in2.wav` positional = Ch2) — see [Commands](commands.md) for
-both forms. `dialnorm2=` above sets Ch2's own dialnorm; `heavy`/`drc` apply to both channels
-independently, each getting its own compressor. `decode` writes Ch1/Ch2 back out in that same
-order, and `levels` names them `Ch1`/`Ch2` rather than a speaker position that would not apply.
+both forms. `dialnorm2=`/`drc2=`/`heavy2` above set Ch2's own dialnorm/DRC/heavy compression;
+none of the three is inherited from Ch1's — a stream that wants both programmes treated alike sets
+both explicitly. `decode` writes Ch1/Ch2 back out in that same order, and `levels` names them
+`Ch1`/`Ch2` rather than a speaker position that would not apply.
 
-## Source options (`encode`/`eac3-encode`): `src=` and `map=`
+## Source options (`encode`/`eac3-encode`): `src=`, `map=` and `offset=`
 
 ```text
 source options (encode/eac3-encode; any order, after the positional arguments):
   src=<path>        an additional input source; repeat for more than one
-  map=<spec>        <source>.<channel>[-<channel2>]:<dest>[,...] - dest is a channel name, obj,
-                     p1, p2 or none; a channel range is only legal with obj or none
+  map=<spec>        <source>.<channel>[-<channel2>]:<dest>[@<trim>][,...] - dest is a channel
+                     name, obj, objm, p1, p2 or none; a channel range is only legal with obj,
+                     objm or none, and folds to one mono object with objm; trim is an optional
+                     signed dB gain in [-24,24] on dest, e.g. L@-3.5
                      once given, every loaded channel must appear - explicit 'none' silences
                      the goes-nowhere warning without giving it anywhere to go
+  offset=<sourceIndex>:<seconds>   leading silence ahead of that source's own channels
+                     (seconds >= 0), same 0-based numbering as src=
+                     the programme is still as long as the longest one once every offset is
+                     applied
 ```
 
 `src=` loads another WAV alongside `in.wav` (source index 0), in the order given — `src=a.wav
@@ -129,45 +145,121 @@ meaning across several files, so every loaded channel needs an explicit entry (o
 `none`) before the encode will run.
 
 Each `map=` entry is `<source>.<channel>:<dest>`, comma-separated, `<channel>` 0-indexed. A
-channel *range* (`<channel>-<channel2>`) is only legal when `<dest>` is `obj` or `none` — a
-location or a programme names exactly one channel, so a range there would be ambiguous about
-which one it means. Two entries naming the same location, or more than one entry per dual-mono
-programme, is refused.
+channel *range* (`<channel>-<channel2>`) is only legal when `<dest>` is `obj`, `objm` or `none` —
+a location or a programme names exactly one channel, so a range there would be ambiguous about
+which one it means. `objm` folds the whole range into ONE mono object (equal-weight sum, scaled by
+`1/n` so several full-range channels summed together don't clip past what one alone would) rather
+than one object per channel the way a plain `obj` range does. Two entries naming the same location,
+or more than one entry per dual-mono programme, is refused.
+
+Any `<dest>` may carry an optional trailing `@<trim>` — a signed decibel gain in `[-24, 24]`,
+snapped to a tenth of a dB (`L@-3.5`, `obj@2`) — applied as linear gain wherever that channel's
+content reaches the stream: folded into the routing matrix for a bed position or a dual-mono
+programme, or into the object's plane at assembly for `obj`/`objm`. Omitted (no `@`) means no
+trim, the same as an explicit `@0`.
 
 ```bash
 ac3cli eac3-encode roundtrip-stereo.wav out.ec3 384 none 51 \
     src=roundtrip-51.wav \
-    map=0.0:C,0.1:none,1.0:L,1.1:R,1.2:none,1.3:LFE,1.4:Ls,1.5:Rs
+    map=0.0:C,0.1:none,1.0:L,1.1:R@-3,1.2:none,1.3:LFE,1.4:Ls,1.5:Rs \
+    offset=1:2.5
 ```
 
 `roundtrip-stereo.wav`'s left channel (source 0, channel 0) carries the centre; its right channel
-is explicitly silenced. `roundtrip-51.wav` (source 1) fills the rest, with its own centre channel
-(`1.2`) also sent nowhere so it doesn't collide with the first source's. `[vbr]` and `[in2.wav]`
-are both skippable here even though they come earlier in `eac3-encode`'s own positional order —
-the parser treats the first token containing `=` as the start of the trailing options, whichever
-positional slot would otherwise have been next.
+is explicitly silenced. `roundtrip-51.wav` (source 1) fills the rest, its right channel (`1.1`)
+trimmed 3 dB down, with its own centre channel (`1.2`) also sent nowhere so it doesn't collide
+with the first source's. `[vbr]` and `[in2.wav]` are both skippable here even though they come
+earlier in `eac3-encode`'s own positional order — the parser treats the first token containing `=`
+as the start of the trailing options, whichever positional slot would otherwise have been next.
+
+`offset=1:2.5` delays `roundtrip-51.wav` (source 1) by 2.5 seconds of leading silence ahead of its
+own channels — every channel that source contributes shifts together, as when it starts, not what
+it contains. `offset=` applies as silence, not truncation: the programme's overall length grows to
+cover whichever source ends latest once every offset is applied, not just the longest source's own
+raw length, so a delayed source is never cut short to fit. `<sourceIndex>` uses the same numbering
+`src=` establishes (`0` is the primary positional file, `1..N` are `src=` in the order given), and
+works with a single source too — `ac3cli encode in.wav out.ac3 384 5.1 offset=0:2.5` needs no
+`src=`/`map=` at all. Omitting `offset=` for a source (or giving it `0` seconds) behaves exactly as
+it always has.
 
 `dialnorm=auto`/`dialnorm2=auto` are not yet supported alongside `src=`/`map=` — pass an explicit
 `dialnorm=<1..31>` (and `dialnorm2=` for `1+1`) instead; measuring loudness per source is a later
 extension, not a hole in the routing itself.
 
+A full-bandwidth channel explicitly mapped onto `LFE`/`LFE2` (e.g. `1.3:LFE` above) is sent through
+a 120 Hz low-pass rather than passed through untouched — an explicit `map=` entry states raw
+content for that position, and a real subwoofer (and the LFE channel's own +10 dB mixing headroom)
+assumes it only ever carries deep bass. This does not apply to a source's own dedicated LFE channel
+reaching `LFE` through automatic single-source routing (no `src=`/`map=` at all) — that stays
+bit-exact, since nothing there claims full-bandwidth content belongs on that position.
+
 The GUI's own multi-source Format-tab table (**Add source…** plus a per-channel assignment field)
 is a direct front end over this same grammar — see
 [GUI → Multi-source & assignment](../gui/source-assignment.md).
+
+## Live options (`live`): `capture2=`
+
+```text
+live options (live; any order, after the positional arguments):
+  capture2=<index>  a second capture device, clock-conformed to the first (see 'devices')
+```
+
+`capture2=<index>` names a second capture device — same 0-based numbering `devices` prints and the
+`capture_device` positional already uses — that joins the session alongside the master. The master
+(`capture_device`) still paces the session exactly as it always has: frame timing, target frame
+count and every other positional argument mean what they meant before this option existed.
+`capture2`'s own sample rate does not need to match the master's, only be a legal AC-3 rate itself
+(32, 44.1 or 48 kHz) — a drift-tracking resampler continuously conforms the slave's stream to the
+master's pacing, correcting both the nominal rate conversion and whatever free-running clock drift
+the two devices accumulate against each other. The slave's channels are appended after the
+master's own, at new, higher channel indices, in the same interleaved per-frame block that feeds
+the encoder — so a two-device `atmos` session simply gets more objects to place. The measured
+drift is printed once, in signed parts-per-million, when the session ends.
+
+```bash
+ac3cli live out.ec3 0 30 448 -2 -2 atmos capture2=1
+```
+
+Captures 30 seconds of Atmos-mode E-AC-3 from device 0 (the clock master) plus device 1
+(clock-conformed to device 0), no monitor or passthrough, writing `out.ec3`.
 
 ## Command-specific notes
 
 - **`mkv`** reads format, packet boundaries, sample rate and channel count from the bitstream
   itself, so it cannot be told the wrong ones. E-AC-3 dependent substreams are grouped into their
   access unit and counted as the channels they render.
+- **`spdif`** wraps an already-encoded AC-3 or E-AC-3 file's IEC 61937 bursts as a 2-channel
+  16-bit PCM WAV, playable bit-exactly (100% volume, no mixing) into an S/PDIF or HDMI output to
+  light up a receiver's Dolby Digital indicator. Detects AC-3 vs. E-AC-3 from the stream itself
+  (`bsid`); E-AC-3's carrier runs at four times the content sample rate (WASAPI's own
+  `make_eac3_format` convention), which is legal though unusual for a plain PCM16 file. The GUI's
+  S/PDIF container option is this same command, run automatically as the second half of a
+  two-command encode — see [GUI → Format & channels](../gui/format-and-channels.md).
 - **`atmos`** encodes objects orbiting the room at different heights and rates as a 5.1 E-AC-3 bed
   plus JOC + OAMD side data (TS 103 420); FFmpeg reports the result as "Dolby Digital Plus + Dolby
   Atmos". **`atmos-encode`** does the same but makes each channel of a real source file an object
-  instead of synthesizing motion.
+  instead of synthesizing motion. Its optional `[paths.txt]` (same format `atmos-path` reads)
+  authors that motion instead of the default static, fanned-out placement — keyed by WAV channel
+  index, so an object index the file doesn't mention keeps its default placement unchanged.
 - **`atmos` mode**: `objects` (default) writes the JOC+OAMD container; `bed51` omits it so the
   5.1 bed still plays on a decoder that would otherwise refuse an object container it can't
   validate, instead of falling back to the bed on its own. See
   [Atmos & JOC](../concepts/atmos-joc.md) for why a decoder can tell the difference at all.
+- **`sign-objects`** (with **`signing-key=<path>`**): signs the object container's EMDF protection
+  tag so a validating decoder reconstructs the objects instead of playing the bed. Off unless you
+  pass both — `sign-objects` alone with no key is an error. The key may also come from
+  `AC3FORGE_SIGNING_KEY_FILE` / `AC3FORGE_SIGNING_KEY` instead of `signing-key=`. The key is never
+  stored by the tool; the algorithm is in-tree but the key is yours to provision. Full details in
+  [Object signing](../concepts/object-signing.md).
+- **`keep-partial`**: `encode`, `eac3-encode` and `atmos-encode` refuse a frame that cannot fit the
+  configuration mid-run just as they always have, but with `keep-partial` given, whatever frames
+  were already encoded before that point are written to `<name>.partial.<ext>` (`out.ec3` →
+  `out.partial.ec3`) rather than discarded — the run still exits non-zero and prints the same
+  error either way, only what happens to the frames already produced changes. Off by default, the
+  same as every other bare token here; a plain invocation with no `keep-partial` behaves exactly
+  as it always has. Mirrors the GUI's own keep-partial-output preference (see
+  [GUI → window layout](../gui/index.md#preferences)) rather than a separate idea — the same
+  `.partial.` naming either way, so a file produced by either front end is named alike.
 
 ## Next
 

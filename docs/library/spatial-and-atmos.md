@@ -89,8 +89,69 @@ direction cannot be separated by any linear combination of the bed, and Dolby's 
 not treat these as objects at all. Both are covered in
 [Atmos & JOC](../concepts/atmos-joc.md#two-honest-limitations).
 
+## Scripted motion: `ac3::oba::motion`
+
+`ac3/oba/motion.hpp`. `AtmosEncoder::encode_frame` always took a fresh `ObjectPlacement` per
+call; what this adds is a shared way to say *where* an object is at a given moment, so a caller
+stops reimplementing that per-frame math independently the way `atmos_objects.cpp` does.
+
+```cpp
+// A closed-form orbit - evaluated exactly rather than decimated into
+// keyframes, so it stays an exact circle.
+const auto orbit = ac3::oba::make_orbit_path(/*rate_hz=*/0.5, /*phase_rad=*/0.0,
+                                             /*height=*/0.5, /*gain=*/0.6, /*lfe_send=*/0.0);
+
+// Sparse authored points, linearly interpolated between neighbours and held
+// at the ends rather than extrapolated.
+auto keyframed = ac3::oba::KeyframePath::create({
+    {.time_s = 0.0, .position = {.x = 0.0, .y = 0.5, .z = 0.0}, .gain = 0.0},
+    {.time_s = 0.8, .position = {.x = 0.5, .y = 0.9, .z = 0.0}, .gain = 0.8},
+    {.time_s = 1.6, .position = {.x = 1.0, .y = 0.5, .z = 0.0}, .gain = 0.0},
+});
+```
+
+```cpp
+// One call per frame gets every object's placement at that instant, in
+// path order - exactly the span encode_frame() wants.
+const auto placement = ac3::oba::evaluate_placements(paths, seconds);
+const auto unit = encoder.encode_frame(views, placement);
+```
+
+Full program: [`examples/scripted_object_motion.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/scripted_object_motion.cpp).
+
+`ObjectPath` is a `std::variant` of the two kinds behind one `evaluate(time_s)` interface, so a
+caller (CLI, GUI) doesn't need to know which one it holds. This layer is scoped to
+authored/batch motion — `evaluate(time_s)` is deliberately time-based so a future live-driven
+cursor could reuse it, but that plumbing isn't built here. It backs `ac3cli atmos-path` and
+`live`'s `atmos` mode, and the [station broadcast](station-broadcast.md) scene's ten authored
+object paths.
+
+## Objects-or-nothing: `AtmosConfig::emit_object_metadata`
+
+Whether to emit the EMDF object container (OAMD + JOC) at all. On by default: an object-aware
+decoder gets the objects, and one that ignores the container plays the 5.1 bed underneath it —
+the design target. Turning it off is the *only* way to keep the bed playable on a decoder that
+**validates** `emdf_protection` (see [Object signing](../concepts/object-signing.md)): such a
+decoder treats the container's sync word as a commitment to object decoding and refuses the
+whole stream if the tag doesn't check out, rather than falling back. With no container there is
+no sync word to find, so it decodes the bed as ordinary 5.1. The choice is objects-or-nothing,
+never both.
+
+```cpp
+ac3::oba::AtmosEncoder encoder{{.bitrate_kbps = 448, .emit_object_metadata = false}, kObjects};
+```
+
+Full program: [`examples/atmos_fallback.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/atmos_fallback.cpp)
+— encodes the same objects both ways and confirms both decode as an ordinary 5.1 bed.
+
+The stream size is unaffected either way — this is CBR, so `frmsiz` follows `bitrate_kbps`
+regardless of what rides in the skip field. What differs is where those bits *go*: with the
+container left out, the frame's rate control gives the freed skip-field bytes back to the
+mantissas, so the two configurations' decoded bed is close but not bit-identical.
+
 ---
 
 See also: [Encoding E-AC-3](encoding-eac3.md) — Atmos objects ride inside an ordinary E-AC-3
-stream; [Header map](header-map.md) — `ac3/oba/motion.hpp` covers authored/orbit object paths,
-which this page doesn't.
+stream; [Object signing](../concepts/object-signing.md) — what makes a validating decoder
+accept the container in the first place; [A worked scene: the station broadcast](station-broadcast.md)
+— a complete 115-second authored scene built on this API, from synthesis to `.ec3`.

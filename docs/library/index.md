@@ -43,8 +43,11 @@ stopped compiling would break the build rather than sit here being wrong.
 - [Encoding E-AC-3](encoding-eac3.md) — `ac3::eac3::FrameEncoder` and wide layouts via `ac3::eac3::AccessUnitEncoder`.
 - [Decoding](decoding.md) — scanning a stream with `ac3::io::scan` and decoding it.
 - [Spatial & Atmos objects](spatial-and-atmos.md) — the plain-AC-3 object layer and `ac3::oba::AtmosEncoder`.
+- [Channel plans & routing](channel-plans-and-routing.md) — custom channel selections and multi-source assignment.
 - [Metadata](metadata.md) — loudness, DRC and downmix metadata.
-- [Muxing & sinks](muxing-and-sinks.md) — `matroska::mux`, the IEC 61937/passthrough/monitor sinks, and capture.
+- [Muxing & sinks](muxing-and-sinks.md) — `matroska::mux`, metering, the IEC 61937/passthrough/monitor sinks, and capture.
+- [File I/O](file-io.md) — reading and writing WAV.
+- [Object signing](signing.md) — `ac3::signing`, the EMDF protection tag.
 - [Header map](header-map.md) — every public header and what lives in it.
 
 ## Conventions

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <optional>
@@ -109,6 +110,20 @@ enum class ExpStrategy : std::uint8_t {
     kD45 = 3,
 };
 
+// §7.5, Table 7.25 "Rematrix Banding Table A": [low, high] inclusive bin
+// bounds of the (at most) four 2/0 rematrixing bands, coupling not in use.
+// Coupling active shortens the table from the end (Tables 7.26-7.28 are the
+// same four ranges with the last one or two dropped and the new last one's
+// high bound clamped to where coupling begins) rather than moving any
+// boundary, so this one table plus a band COUNT is everything either format
+// needs - E-AC-3 reuses it unchanged: Annex E §3.3's "Modifications to
+// Previously Defined Parameters" touches nrematbd (how many of these bands
+// are active, given coupling/enhanced-coupling/spectral extension) but never
+// the ranges themselves.
+inline constexpr std::array<std::array<int, 2>, 4> kRematrixBands = {{
+    {13, 24}, {25, 36}, {37, 60}, {61, 252},
+}};
+
 // A/52 Table 5.18: the 19 nominal bit rates. frmsizecod / 2 indexes this list.
 inline constexpr std::array<std::uint16_t, 19> kBitratesKbps = {
     32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 448, 512, 576, 640,
@@ -125,6 +140,24 @@ inline constexpr std::array<std::uint16_t, 19> kBitratesKbps = {
 
 [[nodiscard]] constexpr bool is_valid_bitrate(std::uint32_t kbps) {
     return bitrate_index(kbps).has_value();
+}
+
+// The largest Table 5.18 rung at or below `requested_kbps`, capped at 640 -
+// what a caller wanting "as close to this rate as AC-3 can legally carry"
+// needs (kBitratesKbps is sorted ascending, so the first entry is always a
+// safe floor). Used where a plan's own bitrate - possibly an E-AC-3-only
+// rung like 768, or simply not on the table at all - has to be reduced to
+// something plain AC-3 can carry, such as the live session's parallel 5.1
+// downmix receiver leg (see docs/gui/live-session.md).
+[[nodiscard]] constexpr std::uint32_t clamp_to_legal_ac3_bitrate(std::uint32_t requested_kbps) {
+    const std::uint32_t capped = std::min<std::uint32_t>(requested_kbps, kBitratesKbps.back());
+    std::uint32_t best = kBitratesKbps.front();
+    for (const auto kbps : kBitratesKbps) {
+        if (kbps <= capped) {
+            best = kbps;
+        }
+    }
+    return best;
 }
 
 // A/52 Table 5.18 "Frame Size Code Table (1 word = 16 bits)", transcribed

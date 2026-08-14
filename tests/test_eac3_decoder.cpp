@@ -475,13 +475,17 @@ TEST_CASE("E-AC-3 dual mono codes two independent programmes, never one into the
     // any cross-talk - coupling switched on by mistake, a shared downmix
     // measurement, Ch1 and Ch2 swapped - shows up directly rather than
     // needing a correlation check to notice.
+    // heavy2 is set explicitly alongside heavy - compre2 is Ch2's own flag,
+    // not inherited from Ch1's, so leaving it unset here would (correctly)
+    // silence compr2 and defeat the compr2.has_value() check below.
     const ac3::eac3::AccessUnitConfig config{
         .independent = {.bitrate_kbps = 192,
                         .acmod = Acmod::kDualMono,
                         .dialnorm = 27,
                         .dialnorm2 = 18,
                         .drc = ac3::meta::profile(ac3::meta::ProfileId::kFilmStandard),
-                        .heavy = ac3::meta::HeavyConfig{}}};
+                        .heavy = ac3::meta::HeavyConfig{},
+                        .heavy2 = ac3::meta::HeavyConfig{}}};
     ac3::eac3::AccessUnitEncoder encoder{config};
     REQUIRE(encoder.channel_count() == 2);
 
@@ -547,6 +551,109 @@ TEST_CASE("E-AC-3 dual mono codes two independent programmes, never one into the
     CHECK((*au)->acmod == Acmod::kDualMono);
     CHECK((*au)->layout.count == 0);
     REQUIRE((*au)->channels.size() == 2);
+}
+
+TEST_CASE("E-AC-3 dual mono: Ch2's own heavy compression is not Ch1's, and is not assumed",
+          "[eac3][decoder][dual-mono]") {
+    using ac3::Acmod;
+    // Eac3Decoder never applies compr/compr2 to the reconstructed audio (no
+    // heavy_compression toggle exists on it - see the class comment), and
+    // DecodedSubstream exposes only compr2, not Ch1's own compr (see the
+    // struct - there is nothing to compare compr2 against directly the way
+    // the sibling AC-3 test in test_drc.cpp compares decoded peaks). So
+    // divergence is shown by comparing Ch2's OWN compr2 word across two
+    // encodes that differ only in heavy2's ceiling: if Ch2's controller
+    // were still built from `heavy` instead of `heavy2`, both encodes would
+    // produce the identical word regardless of what heavy2 says.
+    constexpr double kLooseCeiling = -1.0;
+    constexpr double kTightCeiling = -6.0;
+
+    auto encode_and_get_compr2 = [](double heavy2_ceiling) -> std::uint8_t {
+        const ac3::eac3::AccessUnitConfig config{
+            .independent = {.bitrate_kbps = 192,
+                            .acmod = Acmod::kDualMono,
+                            .dialnorm = 24,
+                            .dialnorm2 = 24,
+                            .heavy = ac3::meta::HeavyConfig{.peak_ceiling_dbfs = kLooseCeiling},
+                            .heavy2 = ac3::meta::HeavyConfig{.peak_ceiling_dbfs = heavy2_ceiling}}};
+        ac3::eac3::AccessUnitEncoder encoder{config};
+        REQUIRE(encoder.channel_count() == 2);
+
+        std::vector<float> loud(ac3::kSamplesPerFrame);
+        std::uint64_t n0 = 0;
+        std::vector<std::byte> stream;
+        for (int f = 0; f < 4; ++f) {
+            for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+                const double t = static_cast<double>(n0 + static_cast<std::uint64_t>(i)) / 48000.0;
+                loud[static_cast<std::size_t>(i)] =
+                    static_cast<float>(0.95 * std::sin(2.0 * std::numbers::pi * 1200.0 * t));
+            }
+            n0 += ac3::kSamplesPerFrame;
+            const std::vector<std::span<const float>> views{loud, loud};
+            auto unit = encoder.encode_access_unit(views);
+            REQUIRE(unit.has_value());
+            stream.insert(stream.end(), unit->bytes.begin(), unit->bytes.end());
+        }
+
+        const auto units = ac3::split_access_units(stream);
+        REQUIRE(units.has_value());
+        ac3::Eac3Decoder decoder;
+        ac3::DecodedSubstream last_substream{};
+        for (const auto& unit : *units) {
+            const auto frames = ac3::split_frames(unit);
+            REQUIRE(frames.has_value());
+            const auto decoded = decoder.decode_substream(frames->front());
+            REQUIRE(decoded.has_value());
+            REQUIRE(decoded->has_value());
+            last_substream = **decoded;
+        }
+        REQUIRE(last_substream.compr2.has_value());
+        return *last_substream.compr2;
+    };
+
+    const auto loose_word = encode_and_get_compr2(kLooseCeiling);
+    const auto tight_word = encode_and_get_compr2(kTightCeiling);
+    const double loose_db = 20.0 * std::log10(ac3::meta::compr_gain(loose_word));
+    const double tight_db = 20.0 * std::log10(ac3::meta::compr_gain(tight_word));
+    // The same loud signal, on the same programme 2 channel, needs
+    // meaningfully more gain reduction under the tighter ceiling.
+    CHECK(loose_db > tight_db + 3.0);
+
+    // And the literal regression: heavy alone (no heavy2) must not carry
+    // Ch1's compr as Ch2's compr2 too.
+    const ac3::eac3::AccessUnitConfig heavy_only_config{
+        .independent = {.bitrate_kbps = 192,
+                        .acmod = Acmod::kDualMono,
+                        .dialnorm = 24,
+                        .dialnorm2 = 24,
+                        .heavy = ac3::meta::HeavyConfig{.peak_ceiling_dbfs = kLooseCeiling}}};
+    ac3::eac3::AccessUnitEncoder heavy_only_encoder{heavy_only_config};
+    std::vector<float> loud(ac3::kSamplesPerFrame);
+    std::uint64_t n0 = 0;
+    std::vector<std::byte> heavy_only_stream;
+    for (int f = 0; f < 4; ++f) {
+        for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+            const double t = static_cast<double>(n0 + static_cast<std::uint64_t>(i)) / 48000.0;
+            loud[static_cast<std::size_t>(i)] =
+                static_cast<float>(0.95 * std::sin(2.0 * std::numbers::pi * 1200.0 * t));
+        }
+        n0 += ac3::kSamplesPerFrame;
+        const std::vector<std::span<const float>> views{loud, loud};
+        auto unit = heavy_only_encoder.encode_access_unit(views);
+        REQUIRE(unit.has_value());
+        heavy_only_stream.insert(heavy_only_stream.end(), unit->bytes.begin(), unit->bytes.end());
+    }
+    const auto heavy_only_units = ac3::split_access_units(heavy_only_stream);
+    REQUIRE(heavy_only_units.has_value());
+    ac3::Eac3Decoder heavy_only_decoder;
+    for (const auto& unit : *heavy_only_units) {
+        const auto frames = ac3::split_frames(unit);
+        REQUIRE(frames.has_value());
+        const auto decoded = heavy_only_decoder.decode_substream(frames->front());
+        REQUIRE(decoded.has_value());
+        REQUIRE(decoded->has_value());
+        CHECK_FALSE((*decoded)->compr2.has_value());
+    }
 }
 
 TEST_CASE("bsid at bit 40 picks the framing", "[eac3][decoder]") {
@@ -806,19 +913,21 @@ TEST_CASE("E-AC-3 enhanced coupling degrades gracefully when two channels share 
     // ecplbegf pinned to 0 starts the coupled region at bin 13 - enhanced
     // coupling's lowest possible sub-band, only 6 bins wide (§E3.5.2's
     // Table E3.7). With R's and Rs's tones (1200/1400 Hz, bins ~12.8/~14.9)
-    // both landing inside that one band, this decoder's amplitude-only MVP
-    // (ecplangle/ecplchaos always 0 - see CouplingPlan::ecplamp) has no way
-    // to represent their different per-bin shapes within it: amplitude is a
-    // single scalar per band, so both channels reconstruct as the same
-    // shared shape at two different overall levels, not their own true
-    // waveforms. This is a real, known quality gap in the MVP - a genuine
-    // angle/chaos fit (deferred, see the same note) is what §3.5 has that
-    // amplitude-only coupling does not - not a decode bug: the standard
-    // round-trip test above stays at the same 20 dB bar as standard
-    // coupling for every case that does NOT force two channels into one
-    // narrow band. This test exists to catch a REGRESSION (a stream that
-    // stops decoding, or degrades further than this), not to demand
-    // transparency this MVP cannot yet deliver.
+    // both landing inside that one band, this is an adversarial case for
+    // ANY single-coordinate-per-band scheme, fit_ecpl_band included: two
+    // genuinely different pure tones sharing 6 bins is more than one
+    // (amplitude, angle, chaos) triple can represent exactly, whatever the
+    // fit - chaos only adds statistical decorrelation, not a deterministic
+    // reconstruction of two distinct per-bin phase patterns. That is a real
+    // property of the coding tool itself, not a gap in this encoder's fit:
+    // measured at ~6 dB after fit_ecpl_band landed, versus ~3 dB from the
+    // amplitude-only fit it replaced - real, worthwhile improvement, just
+    // not transparency this band width structurally cannot deliver. The
+    // standard round-trip test above stays at the same 20 dB bar as
+    // standard coupling for every case that does NOT force two channels
+    // into one narrow band. This test exists to catch a REGRESSION (a
+    // stream that stops decoding, or degrades below the real fit's own
+    // floor), not to demand transparency the tool cannot deliver here.
     auto cpl_bed_pinned = bed(192);
     cpl_bed_pinned.coupling = true;
     cpl_bed_pinned.enhanced = true;
@@ -841,7 +950,7 @@ TEST_CASE("E-AC-3 enhanced coupling degrades gracefully when two channels share 
         // pin), so those stay near-transparent; only R and Rs share the
         // narrow band described above.
         const bool shares_the_narrow_band = ch == 2 || ch == 4;
-        CHECK(snr_db(rt.source[ch], rt.rendered[ch]) > (shares_the_narrow_band ? 3.0 : 20.0));
+        CHECK(snr_db(rt.source[ch], rt.rendered[ch]) > (shares_the_narrow_band ? 5.0 : 20.0));
     }
 }
 
@@ -1094,10 +1203,21 @@ TEST_CASE("the E-AC-3 decoder rejects malformed coupling streams",
         patch_bits(broken, kEcplinuBit, 1, 1);
         CHECK_FALSE(decoder.decode_access_unit(broken).has_value());
     }
-    SECTION("cplbndstrce cleared: the Annex E default band table is refused, not guessed at") {
+    SECTION("cplbndstrce cleared without also removing the now-unread structure bits fails") {
+        // The decoder applies Table E2.12 when cplbndstrce is 0 rather than
+        // refusing it (see eac3_tools.hpp's kDefaultCplBandStructure), so
+        // clearing just this one bit no longer hits a blanket "unsupported"
+        // check. This encoder always transmits an explicit structure, so the
+        // ncplsubnd - 1 bits it wrote are still sitting in the stream right
+        // after cplbndstrce; the decoder now skips over them instead of
+        // consuming them, which misaligns every field that follows. That
+        // must still fail somehow - here it trips a downstream range check -
+        // which is what this asserts. A genuine cplbndstrce == 0 stream (no
+        // structure bits present at all) is covered by real interop
+        // fixtures, not a hand-patched one from this project's own encoder.
         auto broken = whole;
         patch_bits(broken, kCplbndstrceBit, 1, 0);
-        CHECK(decoder.decode_access_unit(broken).error() == ac3::DecodeError::kUnsupported);
+        CHECK(decoder.decode_access_unit(broken).error() == ac3::DecodeError::kInvalidStream);
     }
     SECTION("cplbegf past cplendf collapses the coupled region to nothing") {
         auto broken = whole;

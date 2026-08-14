@@ -38,7 +38,7 @@ depend on them.
 | Exponents | D15 / D25 / D45, strategy chosen per block from the reuse span (§8.2.8) | frame-level, Table E2.10 code 0: D15 in block 0, reused for the other five |
 | Coupling | yes (§7.4), begin and end frequencies auto or pinned | yes (§E3.3) |
 | Delta bit allocation | automatic (§7.2.2.6), like rematrixing below — no toggle | automatic, same as AC-3 |
-| Rematrixing | yes, 2/0 (§7.5.3 minimum-power rule) | no — the syntax is written, the flags are always zero |
+| Rematrixing | yes, 2/0 (§7.5.3 minimum-power rule) | yes, 2/0 — the same rule, over Table 7.25's bands clamped to wherever coupling or spectral extension takes over |
 | Annex E tools | — | spectral extension (§E3.6), enhanced coupling (§E3.5), adaptive hybrid transform with GAQ (§E3.4), transient pre-noise processing (§3.7) |
 | Objects | panned to a 5.1 bed (no metadata survives) | OAMD + JOC in an EMDF container (TS 103 420) |
 
@@ -128,11 +128,12 @@ load-bearing enough to flag up front:
     logic in general, but says nothing about ALSA's own implementation specifically.
 
 Enhanced coupling and transient pre-noise processing are both implemented (see
-[Decoding](library/decoding.md) and the `ecpl`/`tpn` tool tokens), each with a known MVP
-limitation - see [What it does not do](https://github.com/iainchesworth/ac3forge/blob/main/README.md#what-it-does-not-do).
-Neither has an
-external decode oracle at all - not even the FFmpeg-can't-but-the-in-repo-decoder-can situation
-7.1.4 is in, since FFmpeg's own Annex E parser has never read either tool's syntax - so
+[Decoding](library/decoding.md), [Encoding E-AC-3](library/encoding-eac3.md) and the `ecpl`/`tpn`
+tool tokens) - transient pre-noise processing's decoder buffers one frame at a time once a stream
+turns it on, an API characteristic rather than a gap, covered in [What it does not
+do](https://github.com/iainchesworth/ac3forge/blob/main/README.md#what-it-does-not-do). Neither
+tool has an external decode oracle at all - not even the FFmpeg-can't-but-the-in-repo-decoder-can
+situation 7.1.4 is in, since FFmpeg's own Annex E parser has never read either tool's syntax - so
 `tools/quality_race.py`'s CI gate scores both through this project's own decoder instead (see
 [Validation](verification.md#where-the-oracles-dont-reach)). Variable bit rate is
 E-AC-3 only — AC-3's frame size indexes Table 5.18 rather than stating a word count directly, so

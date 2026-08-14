@@ -1,6 +1,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <cmath>
 #include <cstddef>
 #include <optional>
 #include <vector>
@@ -193,6 +194,44 @@ TEST_CASE("object and unassigned rows contribute nothing, but are not an error",
     }
 }
 
+TEST_CASE("objm rows contribute nothing to route(), same as obj", "[assignment]") {
+    // route() only ever carries kLocation content; an objm group's folded
+    // content reaches the stream through the object plane assembly instead
+    // (see encoder_controller.cpp's encodeObjects) - route() itself must
+    // treat kObjectMono exactly like kObject: present, but all-zero here.
+    const auto target = ac3::plan::channel_plan_for(ac3::plan::LayoutId::k51);
+    const std::vector<SourceShape> sources{{.channels = 2, .label = "a.wav"}};
+    Assignment assignment;
+    assignment.set(0, 0, {.kind = DestinationKind::kObjectMono});
+    assignment.set(0, 1, {.kind = DestinationKind::kObjectMono});
+
+    const auto routing = ac3::plan::route(target, sources, assignment);
+    REQUIRE(routing.has_value());
+    for (int c = 0; c < routing->coded_channels; ++c) {
+        for (int s = 0; s < routing->source_channels; ++s) {
+            CHECK(routing->at(c, s) == Approx(0.0));
+        }
+    }
+}
+
+TEST_CASE("route() applies a row's trim as linear gain, not just unity", "[assignment]") {
+    const auto target = ac3::plan::channel_plan_for(ac3::plan::LayoutId::kStereo);
+    const std::vector<SourceShape> sources{{.channels = 2, .label = "a.wav"}};
+    Assignment assignment;
+    assignment.set(0, 0, {.kind = DestinationKind::kLocation, .location = Location::kLeft,
+                          .trim_db = -6.0});
+    assignment.set(0, 1, {.kind = DestinationKind::kLocation, .location = Location::kRight,
+                          .trim_db = 0.0});
+
+    const auto routing = ac3::plan::route(target, sources, assignment);
+    REQUIRE(routing.has_value());
+    // -6dB is not exactly a factor of 0.5, but close enough that a test
+    // asserting "roughly half" would not catch a formula bug (e.g. dividing
+    // by 6 instead of 20) - so this checks the exact 10^(-6/20) figure.
+    CHECK(routing->at(0, 0) == Approx(std::pow(10.0, -6.0 / 20.0)).epsilon(1e-9));
+    CHECK(routing->at(1, 1) == Approx(1.0));  // untrimmed row stays unity
+}
+
 TEST_CASE("route() refuses an empty source list", "[assignment]") {
     const auto target = ac3::plan::channel_plan_for(ac3::plan::LayoutId::k51);
     const Assignment assignment;
@@ -241,6 +280,18 @@ TEST_CASE("dual_mono_routing spans two independent one-channel sources", "[assig
     CHECK(routing->at(1, 1) == Approx(1.0));
     CHECK(routing->at(0, 1) == Approx(0.0));
     CHECK(routing->at(1, 0) == Approx(0.0));
+}
+
+TEST_CASE("dual_mono_routing applies each programme row's own trim", "[assignment][dual-mono]") {
+    const std::vector<SourceShape> sources{{.channels = 2, .label = "orbit.wav"}};
+    Assignment assignment;
+    assignment.set(0, 0, {.kind = DestinationKind::kProgramme1, .trim_db = -12.0});
+    assignment.set(0, 1, {.kind = DestinationKind::kProgramme2, .trim_db = 6.0});
+
+    const auto routing = ac3::plan::dual_mono_routing(sources, assignment);
+    REQUIRE(routing.has_value());
+    CHECK(routing->at(0, 0) == Approx(std::pow(10.0, -12.0 / 20.0)).epsilon(1e-9));
+    CHECK(routing->at(1, 1) == Approx(std::pow(10.0, 6.0 / 20.0)).epsilon(1e-9));
 }
 
 TEST_CASE("dual_mono_routing rejects a missing or doubled programme", "[assignment][dual-mono]") {
@@ -308,10 +359,16 @@ TEST_CASE("destination tokens round-trip through format/parse", "[assignment]") 
     const std::vector<Destination> cases{
         {.kind = DestinationKind::kUnassigned},
         {.kind = DestinationKind::kObject},
+        {.kind = DestinationKind::kObjectMono},
         {.kind = DestinationKind::kProgramme1},
         {.kind = DestinationKind::kProgramme2},
         to_location(Location::kLeft),
         to_location(Location::kLfe2),
+        {.kind = DestinationKind::kLocation, .location = Location::kLeft, .trim_db = -3.5},
+        {.kind = DestinationKind::kObject, .trim_db = 12.0},
+        {.kind = DestinationKind::kObjectMono, .trim_db = -0.5},
+        {.kind = DestinationKind::kProgramme1, .trim_db = 24.0},
+        {.kind = DestinationKind::kProgramme2, .trim_db = -24.0},
     };
     for (const auto& dest : cases) {
         const auto token = ac3::plan::format_destination(dest);
@@ -319,13 +376,54 @@ TEST_CASE("destination tokens round-trip through format/parse", "[assignment]") 
         const auto parsed = ac3::plan::parse_destination(token);
         REQUIRE(parsed.has_value());
         CHECK(parsed->kind == dest.kind);
+        CHECK(parsed->trim_db == dest.trim_db);
         if (dest.kind == DestinationKind::kLocation) {
             CHECK(parsed->location == dest.location);
         }
     }
 
     CHECK(ac3::plan::format_destination({.kind = DestinationKind::kUnassigned}) == "none");
+    CHECK(ac3::plan::format_destination({.kind = DestinationKind::kObjectMono}) == "objm");
     CHECK_FALSE(ac3::plan::parse_destination("not-a-real-token").has_value());
+}
+
+TEST_CASE("a trim suffix formats compactly and parses back exactly", "[assignment]") {
+    // format_destination's spelling: whole dB values print with no decimal,
+    // fractional ones with exactly one - never float-formatting noise like
+    // "-3.50" or "-3.4999999999999996".
+    CHECK(ac3::plan::format_destination(to_location(Location::kLeft)) == "L");  // no trim -> no @
+    CHECK(ac3::plan::format_destination(
+              {.kind = DestinationKind::kLocation, .location = Location::kLeft, .trim_db = -3.5}) ==
+          "L@-3.5");
+    CHECK(ac3::plan::format_destination(
+              {.kind = DestinationKind::kLocation, .location = Location::kLeft, .trim_db = 2.0}) ==
+          "L@2");
+    CHECK(ac3::plan::format_destination(
+              {.kind = DestinationKind::kLocation, .location = Location::kLeft, .trim_db = -0.5}) ==
+          "L@-0.5");
+
+    const auto parsed = ac3::plan::parse_destination("obj@-6.5");
+    REQUIRE(parsed.has_value());
+    CHECK(parsed->kind == DestinationKind::kObject);
+    CHECK(parsed->trim_db == -6.5);
+}
+
+TEST_CASE("a trim outside the documented range is clamped or rejected", "[assignment]") {
+    // A small overshoot (within 1dB of the boundary) snaps to the boundary
+    // rather than failing outright - see parse_trim's own comment on why a
+    // coarse trim control is allowed a little slack.
+    const auto slight = ac3::plan::parse_destination("L@24.5");
+    REQUIRE(slight.has_value());
+    CHECK(slight->trim_db == 24.0);
+    const auto slight_low = ac3::plan::parse_destination("L@-24.7");
+    REQUIRE(slight_low.has_value());
+    CHECK(slight_low->trim_db == -24.0);
+
+    // Wildly out of range is a mistake to report, not silently clamp.
+    CHECK_FALSE(ac3::plan::parse_destination("L@30").has_value());
+    CHECK_FALSE(ac3::plan::parse_destination("L@1000").has_value());
+    CHECK_FALSE(ac3::plan::parse_destination("L@not-a-number").has_value());
+    CHECK_FALSE(ac3::plan::parse_destination("L@").has_value());
 }
 
 // ---------------------------------------------------------------------------
@@ -361,6 +459,27 @@ TEST_CASE("parse_assignment expands a channel range for obj and none only", "[as
     // about which one it means, so it is rejected rather than guessed at.
     Assignment rejected;
     CHECK_FALSE(ac3::plan::parse_assignment("0.0-3:L", sources, rejected));
+}
+
+TEST_CASE("parse_assignment expands a channel range for objm too, folding to one group",
+          "[assignment]") {
+    const std::vector<SourceShape> sources{{.channels = 4, .label = "a.wav"}};
+    Assignment assignment;
+    REQUIRE(ac3::plan::parse_assignment("0.0-1:objm,0.2-3:obj", sources, assignment));
+    CHECK(assignment.at(0, 0).kind == DestinationKind::kObjectMono);
+    CHECK(assignment.at(0, 1).kind == DestinationKind::kObjectMono);
+    // The other range on the same source stays plain obj - objm is a
+    // per-range choice, not sticky for the whole source.
+    CHECK(assignment.at(0, 2).kind == DestinationKind::kObject);
+    CHECK(assignment.at(0, 3).kind == DestinationKind::kObject);
+}
+
+TEST_CASE("parse_assignment reads a per-channel trim alongside the destination", "[assignment]") {
+    const std::vector<SourceShape> sources{{.channels = 2, .label = "a.wav"}};
+    Assignment assignment;
+    REQUIRE(ac3::plan::parse_assignment("0.0:L@-3.5,0.1:R", sources, assignment));
+    CHECK(assignment.at(0, 0).trim_db == -3.5);
+    CHECK(assignment.at(0, 1).trim_db == 0.0);
 }
 
 TEST_CASE("parse_assignment requires every declared channel to appear", "[assignment]") {
@@ -408,5 +527,23 @@ TEST_CASE("format_assignment round-trips through parse_assignment", "[assignment
         for (std::size_t c = 0; c < sources[s].channels; ++c) {
             CHECK(roundtripped.at(s, c) == original.at(s, c));
         }
+    }
+}
+
+TEST_CASE("format_assignment round-trips trims and an objm group", "[assignment]") {
+    const std::vector<SourceShape> sources{{.channels = 3, .label = "a.wav"}};
+    Assignment original;
+    original.set(0, 0, {.kind = DestinationKind::kLocation,
+                        .location = Location::kLeft,
+                        .trim_db = -3.5});
+    original.set(0, 1, {.kind = DestinationKind::kObjectMono, .trim_db = 6.0});
+    original.set(0, 2, {.kind = DestinationKind::kObjectMono, .trim_db = 6.0});
+
+    const auto text = ac3::plan::format_assignment(sources, original);
+    INFO("map= text: " << text);
+    Assignment roundtripped;
+    REQUIRE(ac3::plan::parse_assignment(text, sources, roundtripped));
+    for (std::size_t c = 0; c < 3; ++c) {
+        CHECK(roundtripped.at(0, c) == original.at(0, c));
     }
 }

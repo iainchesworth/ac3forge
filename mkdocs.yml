@@ -75,6 +75,7 @@ nav:
       - Overview: concepts/index.md
       - AC-3 & E-AC-3: concepts/ac3-eac3.md
       - Atmos & JOC: concepts/atmos-joc.md
+      - Object signing: concepts/object-signing.md
   - Validation: verification.md
   - Library:
       - Conventions: library/index.md
@@ -82,8 +83,12 @@ nav:
       - Encoding E-AC-3: library/encoding-eac3.md
       - Decoding: library/decoding.md
       - Spatial & Atmos objects: library/spatial-and-atmos.md
+      - A worked scene — station broadcast: library/station-broadcast.md
+      - Channel plans & routing: library/channel-plans-and-routing.md
       - Metadata: library/metadata.md
       - Muxing & sinks: library/muxing-and-sinks.md
+      - File I/O: library/file-io.md
+      - Object signing: library/signing.md
       - Header map: library/header-map.md
   - CLI reference:
       - Overview: cli/index.md
@@ -104,3 +109,5 @@ nav:
       - History: project/history.md
       - Quality trend: quality-trend.md
       - Performance trend: performance-trend.md
+      - Landscape: landscape.md
+      - Tool comparison trend: tool-comparison-trend.md

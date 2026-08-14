@@ -134,11 +134,13 @@ download), not DEB/RPM (a correct runtime/`-dev` split needs per-component `Depe
 a separate initiative if ever wanted), not DragNDrop (no macOS host to build or verify it
 against at all).
 
-The Shield `.apk` ships debug-signed via AGP's default debug keystore - no release keystore is
-provisioned in this repo (see `platform/android/app/build.gradle.kts`'s `quarantineSignerEnabled`
-comment, which is about the project's own EMDF/Atmos authenticity signer, not APK code-signing).
-Fine for sideloading onto a Shield in developer mode; a real release keystore is a prerequisite
-before this could ever go through the Play Store.
+The Shield `.apk` is signed with a real release keystore when one is provisioned (see
+"Provisioning the Android release keystore" below), and falls back to AGP's default debug
+keystore cleanly if it isn't - either way it's fine for sideloading onto a Shield in developer
+mode. A release keystore is a prerequisite before this could ever go through the Play Store,
+which sideloading itself doesn't require. (Not to be confused with **object signing** - the EMDF
+Atmos authenticity tag, provisioned separately via the `ATMOS_SIGNING_KEY` secret and
+unrelated to APK code-signing; see "Provisioning the Android object-signing key" below.)
 
 No leg is `experimental: true` any more (see `ci.yml`'s status table), so all four package
 for real rather than best-effort - a packaging failure on any of them blocks the release the
@@ -175,6 +177,81 @@ secret store is ever compromised - decide deliberately rather than defaulting to
 key-rotation procedure documented here; if you want one, design it before you need it, not
 during an incident.
 
+## Provisioning the Android release keystore (optional, one-time)
+
+Off by default the same way GPG signing is - `_build.yml`'s `build-android` job checks whether
+`ANDROID_KEYSTORE_BASE64` and its three companion secrets are set, and falls back to the debug
+keystore cleanly if they aren't (see `build.gradle.kts`'s `releaseSigningAvailable`). **Nobody
+should ever paste a private key into chat with an agent, or ask one to generate/handle key
+material** - do this yourself, locally:
+
+```bash
+# 1. Generate a release keystore. Requires a JDK (keytool ships with any
+#    JDK - `java -version` to check; CI uses Temurin 17, matching that isn't
+#    required but keeps things consistent). Leave -storepass/-keypass off so
+#    it prompts interactively - keeps the passwords out of shell history and
+#    the process list. The -dname prompts (name/org/etc) only populate the
+#    certificate's subject line, not security-relevant - answer them however
+#    you like. PKCS12 (the modern default) uses one password for both the
+#    keystore and the key - there is no separate key password to set.
+keytool -genkeypair -v \
+  -keystore ac3forge-shield-release.keystore \
+  -storetype PKCS12 \
+  -alias ac3forge-shield \
+  -keyalg RSA -keysize 4096 \
+  -validity 10000
+
+# 2. Back up the keystore file itself right now, before doing anything else -
+#    e.g. into a password manager's secure file storage, or an encrypted
+#    offline drive. Unlike a GPG key, there is no separate keyring backing
+#    this file up - it IS the private key, with no other copy anywhere.
+#    Losing it means never being able to sign an update to this app under
+#    the same identity again.
+
+# 3. Base64-encode it into one line, ready to paste into a GitHub secret
+#    (GitHub Actions secrets are text; this is the standard way to carry a
+#    binary keystore through one).
+base64 -w0 ac3forge-shield-release.keystore > ac3forge-shield-release.keystore.b64
+```
+
+4. In the GitHub repo, go to Settings > Secrets and variables > Actions, and add:
+   - `ANDROID_KEYSTORE_BASE64` - the full contents of `ac3forge-shield-release.keystore.b64`.
+   - `ANDROID_KEYSTORE_PASSWORD` - the password from step 1.
+   - `ANDROID_KEY_ALIAS` - `ac3forge-shield` (or whatever `-alias` you used).
+   - `ANDROID_KEY_PASSWORD` - the same password as `ANDROID_KEYSTORE_PASSWORD` (PKCS12 doesn't
+     support a different one - see step 1).
+5. Delete the local `ac3forge-shield-release.keystore.b64` file. **Keep the `.keystore` file
+   itself** - see step 2.
+
+No key-rotation procedure is documented here for the same reason as the GPG key above - design
+one before an incident forces the question, not during it.
+
+## Provisioning the Android object-signing key (optional, one-time)
+
+Separate from the APK keystore above: this is the EMDF Atmos authenticity key that lets a
+validating decoder reconstruct the objects (see [Object signing](concepts/object-signing.md)). Off
+by default - `build-android` checks whether `ATMOS_SIGNING_KEY` is set and, if not, writes
+no key asset, so the app ships the safe unsigned bed51 stream. **The key is yours to provision; do
+not paste key material into a chat with an agent - do this yourself, locally.**
+
+```bash
+# Base64-encode your 32-byte key file into one line, ready to paste into a
+# GitHub secret. CI writes this base64 verbatim into the app's bundled
+# signing.key asset; the app base64-decodes it at startup (the same
+# decode_signing_key() the desktop CLI uses, which also accepts a raw key).
+base64 -w0 atmos.key > atmos.key.b64
+```
+
+Then, in the GitHub repo, go to Settings > Secrets and variables > Actions and add
+`ATMOS_SIGNING_KEY` - the full contents of `atmos.key.b64` - and delete the local
+`atmos.key.b64` afterward.
+
+!!! danger "A signed APK carries the key"
+    Because the app signs on-device, **any** Shield build with this secret set — the debug APK CI
+    produces on every push included, not just releases — bundles the key as an asset. Treat every
+    such APK as key material: it must never be distributed. A build without the secret is the safe
+    unsigned app.
+
 ## Verifying a download
 
 ```bash
@@ -196,9 +273,10 @@ you dispatched from) hasn't been merged to `main` yet.
 or delete the existing tag first if it was created in error:
 `git push origin :refs/tags/vX.Y.Z && git tag -d vX.Y.Z`.
 
-**No package for a platform in the release** - that leg's `experimental: true` build failed
-(check the run's `build-packages` job); expected until that leg is promoted out of experimental
-in `_build.yml` - see the table in `ci.yml`.
+**No package for a platform in the release** - that leg's `build-packages` job failed for real.
+No leg is `experimental: true` any more (see [What gets published](#what-gets-published) above),
+so a missing package is a genuine failure to investigate, not an expected gap for a
+not-yet-promoted leg - check the run's `build-packages` job.
 
 ## What's deliberately not here
 

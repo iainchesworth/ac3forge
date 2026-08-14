@@ -776,22 +776,21 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
                 if (cplendmant > 253 || cplstrtmant >= cplendmant) {
                     return std::unexpected(DecodeError::kInvalidStream);
                 }
-                if (r.read(1) == 0) {  // cplbndstrce
-                    // Table E2.12's default band structure: no stream this
-                    // project produces sets cplbndstrce to 0 - the encoder
-                    // always transmits an explicit structure, precisely because
-                    // the default's indexing is ambiguous (see eac3_tools.hpp's
-                    // kDefaultCplBandStructure comment) - so it is recognised
-                    // and refused here rather than guessed at.
-                    return std::unexpected(DecodeError::kUnsupported);
-                }
+                const bool cplbndstrce = r.read(1) != 0;
                 // cplbndstrc: a 1 folds this sub-band into the previous coupling
                 // band, so coordinates are per band and duplicated back out
-                // across the sub-bands they cover.
+                // across the sub-bands they cover. When cplbndstrce is 0 this
+                // block doesn't transmit cplbndstrc and falls back to Table
+                // E2.12 instead - but that table is indexed absolutely from
+                // cplbegf == 0, not relative to this block's actual cplbegf,
+                // so the slice consulted starts at kDefaultCplBandStructure[cplbegf].
                 subband_band.assign(static_cast<std::size_t>(subband_count), 0);
                 ncplbnd = 1;
                 for (int bnd = 1; bnd < subband_count; ++bnd) {
-                    const bool merged = r.read(1) != 0;
+                    const bool merged =
+                        cplbndstrce ? r.read(1) != 0
+                                    : eac3::kDefaultCplBandStructure[static_cast<std::size_t>(
+                                          cplbegf + bnd)];
                     if (!merged) {
                         ++ncplbnd;
                     }
@@ -1592,16 +1591,13 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
         if (bsi->acmod == Acmod::k2_0) {
             // §7.5.4: L = L' + R', R = L' - R' in flagged bands, up to the
             // lower bandwidth of the two channels.
-            static constexpr std::array<std::array<int, 2>, 4> kBands = {{
-                {13, 24}, {25, 36}, {37, 60}, {61, 252},
-            }};
             const int cap = std::min(tail.endmant[0], tail.endmant[1]) - 1;
-            for (std::size_t band = 0; band < kBands.size(); ++band) {
+            for (std::size_t band = 0; band < kRematrixBands.size(); ++band) {
                 if (!tail.rematflg[band]) {
                     continue;
                 }
-                const int high = std::min(kBands[band][1], cap);
-                for (int bin = kBands[band][0]; bin <= high; ++bin) {
+                const int high = std::min(kRematrixBands[band][1], cap);
+                for (int bin = kRematrixBands[band][0]; bin <= high; ++bin) {
                     const double l = coeffs[0][static_cast<std::size_t>(bin)];
                     const double rr = coeffs[1][static_cast<std::size_t>(bin)];
                     coeffs[0][static_cast<std::size_t>(bin)] = l + rr;
