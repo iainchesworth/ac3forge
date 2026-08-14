@@ -100,6 +100,12 @@ ApplicationWindow {
         property bool sessionAtmos: false
         property string sessionTab: "format"
         property string sessionInput: "file"
+        // The last kMaxPersistedRuns completed runs (item 32) - same JSON-
+        // string convention as the session properties above, restored
+        // alongside them so a run strip that showed real history before a
+        // restart shows it again after one, rather than starting blank
+        // every time the app opens.
+        property string sessionRuns: "[]"
     }
 
     // The Preferences "show the plain-language notes" knob, read once per
@@ -111,6 +117,9 @@ ApplicationWindow {
     // on the Overlay), and the tests exercise preference-driven flows.
     readonly property alias settings: appSettings
     readonly property alias prefsDialog: preferencesDialog
+    // Same reason as prefsDialog above - item 33's run details popover also
+    // lives on the Overlay.
+    readonly property alias runDetailsPopup: runDetailsDialog
 
     Component.onCompleted: {
         Theme.preference = appSettings.theme;
@@ -167,6 +176,23 @@ ApplicationWindow {
         appSettings.sessionAtmos = EncoderController.atmosEnabled;
         appSettings.sessionTab = currentTab;
         appSettings.sessionInput = inputMode;
+
+        // Item 32: the last kMaxPersistedRuns completed runs, newest first
+        // (EncoderController.runs' own order). Thirty is a run strip a
+        // couple of screens deep - enough to matter across a restart
+        // without the settings store growing without bound; "encoding" is
+        // dropped here rather than left for restoreRuns() to drop, since a
+        // run still "encoding" when the app closed belonged to a process
+        // that never finished it and has nothing worth keeping.
+        const kMaxPersistedRuns = 30;
+        const persistedRuns = [];
+        const allRuns = EncoderController.runs;
+        for (let i = 0; i < allRuns.length && persistedRuns.length < kMaxPersistedRuns; i++) {
+            if (allRuns[i].status !== "encoding") {
+                persistedRuns.push(allRuns[i]);
+            }
+        }
+        appSettings.sessionRuns = JSON.stringify(persistedRuns);
     }
 
     function restoreSession() {
@@ -179,6 +205,18 @@ ApplicationWindow {
         // must not have a saved session STACKED on top of what is loaded.
         if (EncoderController.sourceModel.length > 0) {
             return;
+        }
+        // Run history (item 32) restores independently of whatever else
+        // this function goes on to do below - a run strip with real
+        // history from before a restart is worth keeping even for a
+        // session that then loads something brand new, or nothing at all.
+        try {
+            const savedRuns = JSON.parse(appSettings.sessionRuns);
+            if (Array.isArray(savedRuns) && savedRuns.length > 0) {
+                EncoderController.restoreRuns(savedRuns);
+            }
+        } catch (error) {
+            // a mangled store restores nothing rather than half of it
         }
         let paths = [];
         let assignments = [];
@@ -301,6 +339,21 @@ ApplicationWindow {
             }
         }
         return candidate && candidate.id !== dismissedRunId ? candidate : null;
+    }
+
+    // ---- item 33: the per-run details popover -------------------------------
+    // -1 while runDetailsDialog is closed; set by a run chip's own click
+    // handler in the run strip, read back by that dialog. A plain lookup by
+    // id, the same shape bannerRun's own uses just above.
+    property int detailsRunId: -1
+    readonly property var detailsRun: {
+        if (detailsRunId < 0) {
+            return null;
+        }
+        for (const run of EncoderController.runs) {
+            if (run.id === detailsRunId) return run;
+        }
+        return null;
     }
 
     // The rail's live branch is a per-device LIST (captureDeviceRows) now,
@@ -611,23 +664,35 @@ ApplicationWindow {
         id: saveDialog
         title: qsTr("Save encoded audio")
         fileMode: FileDialog.SaveFile
-        onAccepted: EncoderController.encodeTo(selectedFile)
+        // Snapshotted right before the run opens - see runs' and
+        // EncoderController.setPendingCliLine's own doc comments on why the
+        // details popover needs this rather than window.cliLine's live value.
+        onAccepted: {
+            EncoderController.setPendingCliLine(window.cliLine);
+            EncoderController.encodeTo(selectedFile);
+        }
     }
 
     FileDialog {
         id: recordDialog
         title: qsTr("Record to a file")
         fileMode: FileDialog.SaveFile
-        onAccepted: EncoderController.startRecording(window.liveMasterCaptureIndex, selectedFile)
+        onAccepted: {
+            EncoderController.setPendingCliLine(window.cliLine);
+            EncoderController.startRecording(window.liveMasterCaptureIndex, selectedFile);
+        }
     }
 
     FileDialog {
         id: liveSessionDialog
         title: qsTr("Save the live take")
         fileMode: FileDialog.SaveFile
-        onAccepted: EncoderController.startLiveSession(
-                        window.liveMasterCaptureIndex, liveMonitorCheck.checked,
-                        liveReceiverBox.currentIndex - 1, true, selectedFile)
+        onAccepted: {
+            EncoderController.setPendingCliLine(window.cliLine);
+            EncoderController.startLiveSession(
+                window.liveMasterCaptureIndex, liveMonitorCheck.checked,
+                liveReceiverBox.currentIndex - 1, true, selectedFile);
+        }
     }
 
     // The Objects tab's "Export paths…" - writes every dynamic object's
@@ -749,6 +814,21 @@ ApplicationWindow {
     // so the two can never drift apart.
     function startEncodeFlow() {
         applyGuidedLoudnessContract();
+        // Guided's amp destination (item 27/30): "Encodes the same file,
+        // then bitstreams it" is the card's own promise, so this writes
+        // straight to the planned name in the output folder - no save
+        // dialog, since the destination the user actually picked is a
+        // receiver, not a file location - and remembers the device Guided
+        // already auto-picked (or the user overrode via "change…") on the
+        // run this opens, so its finished chip's Play needs no fresh
+        // device pick (EncoderController.setPendingPlayDevice/runs' own
+        // "playDeviceIndex" field).
+        if (tier === "guided" && guidedWizard.dest === "amp") {
+            EncoderController.setPendingCliLine(window.cliLine);
+            EncoderController.setPendingPlayDevice(guidedWizard.ampDeviceIndex);
+            EncoderController.encodeTo(outputFolderUrl() + "/" + plannedFileName());
+            return;
+        }
         openSaveDialog(saveDialog, plannedFileName());
     }
     // Record honours the capture preference: ask for a filename, or write
@@ -763,6 +843,7 @@ ApplicationWindow {
         const pad = (n) => String(n).padStart(2, "0");
         const stem = "take-" + now.getFullYear() + pad(now.getMonth() + 1) + pad(now.getDate())
                      + "-" + pad(now.getHours()) + pad(now.getMinutes()) + pad(now.getSeconds());
+        EncoderController.setPendingCliLine(window.cliLine);
         EncoderController.startRecording(window.liveMasterCaptureIndex,
                                          outputFolderUrl() + "/" + plannedFileName(stem));
     }
@@ -797,10 +878,30 @@ ApplicationWindow {
     PreferencesDialog {
         id: preferencesDialog
         settings: appSettings
+        // Item 31: a default here applies to a field ONLY while nothing has
+        // explicitly touched it this session yet - the exact loudnessTouched
+        // contract applyGuidedLoudnessContract already follows, generalised
+        // to the other default-carrying fields (formatDefaultsTouched covers
+        // container/rate mode/bit rate/VBR quality; DRC profile and measure-
+        // loudness stay on loudnessTouched itself, the mechanism they
+        // already had - see EncoderController.formatDefaultsTouched's own
+        // comment for why this reuses rather than reinvents it). An edit
+        // made BEFORE this Save never gets clobbered by it, the same
+        // guarantee the guided contract gives Loudness/Metadata.
         onApplied: {
             Theme.preference = appSettings.theme;
             window.meterMode = appSettings.meterMode;
             EncoderController.keepPartialOutput = appSettings.keepPartial;
+            if (!EncoderController.formatDefaultsTouched) {
+                EncoderController.containerIndex = appSettings.defaultContainerIndex;
+                EncoderController.bitrateKbps = appSettings.defaultBitrateKbps;
+                EncoderController.vbrQuality = appSettings.defaultVbrQuality;
+                EncoderController.vbrEnabled = appSettings.defaultVbr;
+            }
+            if (!EncoderController.loudnessTouched) {
+                EncoderController.drcIndex = appSettings.defaultDrcIndex;
+                EncoderController.measureDialnorm = appSettings.defaultMeasureDialnorm;
+            }
         }
     }
 
@@ -852,6 +953,170 @@ ApplicationWindow {
                         codecWarnDialog.accept();
                         if (action) action();
                     }
+                }
+            }
+        }
+    }
+
+    // Item 33: a run chip's own details popover - id, status, rate/duration/
+    // size/frames, the failure text when it failed or was cancelled with
+    // something to say, and the ac3cli command line SNAPSHOTTED when that
+    // run started (never window.cliLine's live value - see runs' own doc
+    // comment).
+    Dialog {
+        id: runDetailsDialog
+        objectName: "runDetailsDialog"
+        modal: true
+        anchors.centerIn: parent
+        padding: Theme.space4
+        title: ""
+
+        background: Rectangle {
+            color: Theme.bg
+            border.color: Theme.text
+            border.width: 2
+        }
+
+        onClosed: window.detailsRunId = -1
+
+        contentItem: ColumnLayout {
+            spacing: Theme.space3
+
+            Text {
+                // The preferred width that sizes the whole dialog (matching
+                // codecWarnDialog's own convention: a plain ColumnLayout used
+                // as contentItem has no Layout parent of its own to read an
+                // explicit width from, so one representative child sets it).
+                Layout.preferredWidth: 480
+                Layout.fillWidth: true
+                text: window.detailsRun
+                      ? qsTr("Run %1 — %2").arg(window.detailsRun.id).arg(window.detailsRun.filename)
+                      : ""
+                wrapMode: Text.WordWrap
+                font.pixelSize: 15
+                font.weight: Font.DemiBold
+                color: Theme.text
+            }
+
+            GridLayout {
+                Layout.fillWidth: true
+                columns: 2
+                columnSpacing: Theme.space3
+                rowSpacing: 4
+
+                Text { text: qsTr("Status"); font.pixelSize: 11; color: Theme.textMuted }
+                Text {
+                    text: window.detailsRun ? window.detailsRun.status : ""
+                    font.pixelSize: 12
+                    color: Theme.text
+                }
+                Text { text: qsTr("Rate"); font.pixelSize: 11; color: Theme.textMuted }
+                Text {
+                    text: window.detailsRun ? window.detailsRun.rateText : ""
+                    font.pixelSize: 12
+                    color: Theme.text
+                }
+                Text { text: qsTr("Duration"); font.pixelSize: 11; color: Theme.textMuted }
+                Text {
+                    text: window.detailsRun ? window.detailsRun.durationText : ""
+                    font.pixelSize: 12
+                    color: Theme.text
+                }
+                Text {
+                    visible: window.detailsRun && (window.detailsRun.sizeText || "").length > 0
+                    text: qsTr("Size")
+                    font.pixelSize: 11
+                    color: Theme.textMuted
+                }
+                Text {
+                    visible: window.detailsRun && (window.detailsRun.sizeText || "").length > 0
+                    text: window.detailsRun ? window.detailsRun.sizeText : ""
+                    font.pixelSize: 12
+                    color: Theme.text
+                }
+                Text {
+                    visible: window.detailsRun && (window.detailsRun.framesText || "").length > 0
+                    text: qsTr("Frames")
+                    font.pixelSize: 11
+                    color: Theme.textMuted
+                }
+                Text {
+                    visible: window.detailsRun && (window.detailsRun.framesText || "").length > 0
+                    text: window.detailsRun ? window.detailsRun.framesText : ""
+                    font.pixelSize: 12
+                    color: Theme.text
+                }
+                Text {
+                    visible: window.detailsRun && (window.detailsRun.path || "").length > 0
+                    text: qsTr("Path")
+                    font.pixelSize: 11
+                    color: Theme.textMuted
+                }
+                Text {
+                    objectName: "runDetailsPath"
+                    visible: window.detailsRun && (window.detailsRun.path || "").length > 0
+                    Layout.fillWidth: true
+                    text: window.detailsRun ? window.detailsRun.path : ""
+                    elide: Text.ElideMiddle
+                    font.pixelSize: 11
+                    font.family: Theme.monoFamily
+                    color: Theme.text
+                }
+            }
+
+            // The failure/cancellation text - the same string the top-of-
+            // panel banner shows for a failed run, but here for ANY run this
+            // popover opens on, not only the most recent failure.
+            Text {
+                visible: window.detailsRun && (window.detailsRun.detail || "").length > 0
+                Layout.fillWidth: true
+                text: window.detailsRun ? window.detailsRun.detail : ""
+                wrapMode: Text.WordWrap
+                font.pixelSize: 12
+                color: Theme.accent700
+            }
+
+            Text {
+                text: qsTr("COMMAND LINE AT START")
+                font.pixelSize: 10
+                font.letterSpacing: 1
+                color: Theme.textMuted
+            }
+            Rectangle {
+                Layout.fillWidth: true
+                implicitHeight: runDetailsCliLine.implicitHeight + Theme.space2 * 2
+                color: Theme.surface
+                border.color: Theme.divider
+                border.width: 1
+
+                Text {
+                    id: runDetailsCliLine
+                    objectName: "runDetailsCliLine"
+                    anchors.fill: parent
+                    anchors.margins: Theme.space2
+                    text: (window.detailsRun && window.detailsRun.cliLine)
+                          ? window.detailsRun.cliLine : qsTr("(not recorded)")
+                    wrapMode: Text.WrapAnywhere
+                    font.family: Theme.monoFamily
+                    font.pixelSize: 11
+                    color: Theme.text
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                Item { Layout.fillWidth: true }
+                Button {
+                    objectName: "runDetailsCopyCliLine"
+                    text: qsTr("Copy command line")
+                    enabled: window.detailsRun && (window.detailsRun.cliLine || "").length > 0
+                    onClicked: clipboardProxy.copyText(window.detailsRun.cliLine)
+                }
+                Button {
+                    objectName: "runDetailsClose"
+                    text: qsTr("Close")
+                    highlighted: true
+                    onClicked: runDetailsDialog.close()
                 }
             }
         }
@@ -2238,6 +2503,7 @@ ApplicationWindow {
                                             text: qsTr("%1 kbps").arg(modelData)
                                             onClicked: {
                                                 EncoderController.bitrateKbps = modelData;
+                                                EncoderController.formatDefaultsTouched = true;
                                                 bitrateBox.popup.close();
                                             }
                                         }
@@ -2247,7 +2513,10 @@ ApplicationWindow {
                                         enabled: !EncoderController.busy
                                         model: EncoderController.containerNames
                                         currentIndex: EncoderController.containerIndex
-                                        onActivated: EncoderController.containerIndex = currentIndex
+                                        onActivated: {
+                                            EncoderController.containerIndex = currentIndex;
+                                            EncoderController.formatDefaultsTouched = true;
+                                        }
                                     }
 
                                     // Row 3: empty under Codec/Container - GridLayout fills
@@ -3577,7 +3846,10 @@ ApplicationWindow {
                                         Button {
                                             text: qsTr("Set it")
                                             enabled: !EncoderController.busy
-                                            onClicked: EncoderController.bitrateKbps = 384
+                                            onClicked: {
+                                                EncoderController.bitrateKbps = 384;
+                                                EncoderController.formatDefaultsTouched = true;
+                                            }
                                         }
                                     }
                                 }
@@ -5015,6 +5287,7 @@ ApplicationWindow {
                                                     window.openSaveDialog(liveSessionDialog,
                                                                           EncoderController.suggestedOutputName());
                                                 } else {
+                                                    EncoderController.setPendingCliLine(window.cliLine);
                                                     EncoderController.startLiveSession(
                                                         window.liveMasterCaptureIndex, liveMonitorCheck.checked,
                                                         liveReceiverBox.currentIndex - 1, false, "");
@@ -5841,6 +6114,7 @@ ApplicationWindow {
                         // Guided wizard — one more page, not a fourth tab.
                         // =====================================================
                         GuidedWizard {
+                            id: guidedWizard
                             Layout.fillWidth: true
                         }
                     }
@@ -5898,6 +6172,7 @@ ApplicationWindow {
                                                       : Theme.neutral400
                                     }
                                     Text {
+                                        objectName: "runChipSummary-" + modelData.id
                                         font.family: Theme.monoFamily
                                         font.pixelSize: 12
                                         color: Theme.text
@@ -5920,6 +6195,21 @@ ApplicationWindow {
                                                 .arg(modelData.rateText).arg(modelData.durationText)
                                                 .arg(modelData.sizeText.length > 0
                                                      ? " · " + modelData.sizeText : "")
+
+                                        // Item 33: clicking a run chip opens its own
+                                        // details popover - id, status, rate/duration/
+                                        // size/frames, the failure text if it failed, and
+                                        // the ac3cli command line SNAPSHOTTED when this
+                                        // run started (runDetailsDialog reads modelData.
+                                        // cliLine, never window.cliLine's live value).
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                window.detailsRunId = modelData.id;
+                                                runDetailsDialog.open();
+                                            }
+                                        }
                                     }
                                     ProgressBar {
                                         visible: encoding
@@ -5934,6 +6224,32 @@ ApplicationWindow {
                                         text: qsTr("Cancel")
                                         flat: true
                                         onClicked: EncoderController.cancel()
+                                    }
+                                    Button {
+                                        objectName: "runPlay-" + modelData.id
+                                        // Item 27: sends THIS run's own output - never
+                                        // output_path_/outputIsEac3, which only ever hold
+                                        // the MOST RECENT run's - to a receiver via the
+                                        // same IEC 61937 path the Format tab's own Play
+                                        // uses. playDeviceIndex is the device Guided's amp
+                                        // destination already picked for this run (item
+                                        // 30); every other run falls back to whatever the
+                                        // Format tab's own passthrough picker currently
+                                        // shows, so it never asks for a fresh pick when
+                                        // one was already made.
+                                        readonly property int device: modelData.playDeviceIndex >= 0
+                                                                       ? modelData.playDeviceIndex
+                                                                       : outputBox.currentIndex
+                                        visible: modelData.status === "done"
+                                                 && (modelData.path || "").length > 0
+                                                 && EncoderController.outputDevices.length > 0
+                                        text: qsTr("Play")
+                                        flat: true
+                                        enabled: !EncoderController.busy && !EncoderController.playing
+                                                 && EncoderController.outputDeviceSupportsFormat(
+                                                        device, modelData.eac3 === true)
+                                        onClicked: EncoderController.playFileToReceiver(
+                                                       modelData.path, device)
                                     }
                                     Button {
                                         objectName: "runShowInFolder"

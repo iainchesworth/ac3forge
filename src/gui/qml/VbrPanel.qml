@@ -32,8 +32,10 @@ ColumnLayout {
             model: [{ value: "cbr", label: qsTr("Constant") },
                     { value: "vbr", label: qsTr("Variable") }]
             currentValue: EncoderController.vbrEnabled ? "vbr" : "cbr"
-            onSelected: (value) =>
-                EncoderController.vbrEnabled = value === "vbr"
+            onSelected: (value) => {
+                EncoderController.vbrEnabled = value === "vbr";
+                EncoderController.formatDefaultsTouched = true;
+            }
         }
         Item { Layout.fillWidth: true }
     }
@@ -75,8 +77,10 @@ ColumnLayout {
                 to: 100
                 stepSize: 1
                 value: EncoderController.vbrQuality
-                onMoved: EncoderController.vbrQuality =
-                             Math.round(value)
+                onMoved: {
+                    EncoderController.vbrQuality = Math.round(value);
+                    EncoderController.formatDefaultsTouched = true;
+                }
             }
             Text {
                 text: qsTr("100 · best")
