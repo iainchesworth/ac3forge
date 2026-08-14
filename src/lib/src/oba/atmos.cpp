@@ -143,6 +143,7 @@ AtmosEncoder::AtmosEncoder(const AtmosConfig& config, int objects)
                           .acmod = Acmod::k3_2,
                           .lfe = true,
                           .dialnorm = config.dialnorm,
+                          .fast_mdct = config.fast_mdct,
                           // §8.3.2.2: the object count, bed included.
                           .oba_complexity_index = object_count(program_)}}),
       gains_(static_cast<std::size_t>(objects)),

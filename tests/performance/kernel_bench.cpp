@@ -214,6 +214,15 @@ int main(int argc, char** argv) {
         g_sink += coeffs[64];
     }));
 
+    // --- mdct512_forward, fast path (opt-in §7.9.4 N/4-FFT structure,
+    // EncoderConfig::fast_mdct / eac3::FrameConfig::fast_mdct) - the number
+    // this kernel's own fast/direct comparison exists to produce.
+    results.push_back(time_kernel("mdct512_forward_fast", [&] {
+        std::array<double, 256> coeffs{};
+        ac3::mdct512_forward(windowed_block, coeffs, /*fast=*/true);
+        g_sink += coeffs[64];
+    }));
+
     // --- mdct256 pair (block-switched short transform) -----------------------
     results.push_back(time_kernel("mdct256_pair", [&] {
         const std::span<const double, 512> full(windowed_block);

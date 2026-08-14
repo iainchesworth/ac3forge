@@ -96,6 +96,8 @@ void print_meta_usage() {
                  "keep whatever frames were already encoded (named beside the intended output as "
                  "<name>.partial.<ext>) instead of discarding them - off by default, matching the "
                  "GUI's own keep-partial-output preference");
+    std::println("  fast-mdct         encode/sine: opt into the §7.9.4 fast forward MDCT - off "
+                 "by default; eac3-encode/eac3-sine reach the same flag via tools=fastmdct");
     std::println();
     std::println("source options (encode/eac3-encode; any order, after the positional "
                  "arguments):");
@@ -162,6 +164,12 @@ struct Options {
     // per invocation rather than as a standing preference - see
     // write_partial_output.
     bool keep_partial = false;
+    // encode/sine: opts into the §7.9.4 fast forward MDCT (plan::Tools::
+    // fast_mdct), off by default. E-AC-3's own tools= string already has a
+    // "fastmdct" token that reaches the same field (plan::parse_tools) - AC-3
+    // has no tools= string to extend, so this bare word is its equivalent,
+    // the same relationship 'couple' has to cpl/cpl:N.
+    bool fast_mdct = false;
 };
 
 bool parse_double(std::string_view text, double& out) {
@@ -182,7 +190,7 @@ bool parse_options(std::span<char*> tokens, Options& out) {
             eq == std::string_view::npos ? std::string_view{} : token.substr(eq + 1);
 
         if (token == "couple" || token == "heavy" || token == "heavy2" || token == "mixmeta" ||
-            token == "keep-partial") {
+            token == "keep-partial" || token == "fast-mdct") {
             if (token == "heavy") {
                 out.p.heavy.emplace();
             } else if (token == "heavy2") {
@@ -191,6 +199,8 @@ bool parse_options(std::span<char*> tokens, Options& out) {
                 out.p.mixmeta = true;
             } else if (token == "keep-partial") {
                 out.keep_partial = true;
+            } else if (token == "fast-mdct") {
+                out.fast_mdct = true;
             }
             continue;
         }
@@ -765,6 +775,7 @@ int run_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_t bit
         return 1;
     }
     p.tools.coupling = couple;
+    p.tools.fast_mdct = meta.fast_mdct;
     const auto config = plan::ac3_config(p);
     const auto cp = plan::resolve(p);
 
@@ -2138,6 +2149,7 @@ int run_encode_multi(std::string_view in_path, std::string_view out_path, std::u
         return 1;
     }
     p.tools.coupling = couple;
+    p.tools.fast_mdct = meta.fast_mdct;
     if (const auto bad = plan::validate(p)) {
         std::println(stderr, "error: {}", plan::describe(*bad));
         return 1;
@@ -2249,6 +2261,7 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
         return 1;
     }
     p.tools.coupling = couple;
+    p.tools.fast_mdct = meta.fast_mdct;
     if (const auto bad = plan::validate(p)) {
         std::println(stderr, "error: {}", plan::describe(*bad));
         return 1;
@@ -3947,7 +3960,7 @@ int run_main(int argc, char** argv) {
         const bool is_option = token.find('=') != std::string_view::npos ||
                                token == "couple" || token == "heavy" || token == "heavy2" ||
                                token == "mixmeta" || token == "sign-objects" ||
-                               token == "keep-partial";
+                               token == "keep-partial" || token == "fast-mdct";
         if (token == "couple") {
             couple_flag = true;
         }

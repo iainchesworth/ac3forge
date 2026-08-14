@@ -216,6 +216,15 @@ struct FrameConfig {
     // channels/frames that also block-switch (§8.2.2/§7.9).
     bool transient_prenoise = false;
 
+    // §7.9.4 fast N/4-FFT forward MDCT (see mdct.hpp's mdct512_forward),
+    // opt-in and off by default until the owner is comfortable with the
+    // output-quality change it implies (verified max relative error ~3e-12
+    // against the direct form; see tests/test_mdct_fast.cpp and the PR that
+    // introduced this flag for the quality evidence at several bitrates).
+    // Only the long transform accelerates today - a block-switched channel's
+    // short transforms always take the direct path regardless of this flag.
+    bool fast_mdct = false;
+
     // TS 103 420 §8.3. An object-audio stream sets flag_ec3_extension_type_a in
     // the addbsi field of whichever substream carries the EMDF container, and
     // follows it with the number of bed, ISF and dynamic objects (§8.3.2.2 caps

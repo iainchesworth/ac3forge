@@ -51,8 +51,9 @@ struct Result {
     double ms_per_frame = 0.0;
 };
 
-Result bench_plain_51() {
-    ac3::FrameEncoder encoder{{.bitrate_kbps = 448, .acmod = ac3::Acmod::k3_2, .lfe = true}};
+Result bench_plain_51(bool fast_mdct = false) {
+    ac3::FrameEncoder encoder{
+        {.bitrate_kbps = 448, .acmod = ac3::Acmod::k3_2, .lfe = true, .fast_mdct = fast_mdct}};
     std::uint64_t n = 0;
     const std::vector<float> samples = tone_frame(n, 440.0, 0.3);
     const std::vector<std::span<const float>> views(
@@ -68,13 +69,13 @@ Result bench_plain_51() {
     }
     const auto elapsed_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - start);
-    return {.name = "plain_51", .frames = kFrames, .total_ms = elapsed_ms.count(),
-            .ms_per_frame = elapsed_ms.count() / kFrames};
+    return {.name = fast_mdct ? "plain_51_fast_mdct" : "plain_51", .frames = kFrames,
+            .total_ms = elapsed_ms.count(), .ms_per_frame = elapsed_ms.count() / kFrames};
 }
 
-Result bench_atmos_4obj() {
+Result bench_atmos_4obj(bool fast_mdct = false) {
     constexpr int kObjects = 4;
-    ac3::oba::AtmosEncoder encoder{{.bitrate_kbps = 448}, kObjects};
+    ac3::oba::AtmosEncoder encoder{{.bitrate_kbps = 448, .fast_mdct = fast_mdct}, kObjects};
 
     std::uint64_t n = 0;
     std::vector<std::vector<float>> sources;
@@ -103,8 +104,8 @@ Result bench_atmos_4obj() {
     }
     const auto elapsed_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - start);
-    return {.name = "atmos_4obj", .frames = kFrames, .total_ms = elapsed_ms.count(),
-            .ms_per_frame = elapsed_ms.count() / kFrames};
+    return {.name = fast_mdct ? "atmos_4obj_fast_mdct" : "atmos_4obj", .frames = kFrames,
+            .total_ms = elapsed_ms.count(), .ms_per_frame = elapsed_ms.count() / kFrames};
 }
 
 void write_json(const std::vector<Result>& results, const std::string& path) {
@@ -131,7 +132,8 @@ int main(int argc, char** argv) {
         }
     }
 
-    const std::vector<Result> results{bench_plain_51(), bench_atmos_4obj()};
+    const std::vector<Result> results{bench_plain_51(), bench_plain_51(/*fast_mdct=*/true),
+                                      bench_atmos_4obj(), bench_atmos_4obj(/*fast_mdct=*/true)};
 
     for (const auto& r : results) {
         std::printf("%-12s %5d frames  %8.3f ms total  %6.3f ms/frame  (budget %.3f ms/frame)\n",
