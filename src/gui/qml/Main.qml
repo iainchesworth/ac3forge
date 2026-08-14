@@ -69,6 +69,9 @@ ApplicationWindow {
         id: appSettings
         category: "workbench"
         property string theme: "system"
+        // Which palette draws the app: "signal" (the design system's red),
+        // "ink", "console", or "system" (the desktop's own accent colour).
+        property string palette: "signal"
         property string controlsOnOpen: "guided"
         property string lastTier: "guided"
         property string meterMode: "coded"
@@ -123,6 +126,7 @@ ApplicationWindow {
 
     Component.onCompleted: {
         Theme.preference = appSettings.theme;
+        Theme.paletteChoice = appSettings.palette;
         meterMode = appSettings.meterMode;
         tier = appSettings.controlsOnOpen === "last"
                ? appSettings.lastTier : appSettings.controlsOnOpen;
@@ -308,6 +312,22 @@ ApplicationWindow {
     // StackLayout here) in one automatically, and that wrapper IS what
     // contentItem resolves to in that case, so this needs no id on the
     // Flickable itself, only on the ScrollView.
+    // --smoke-shot's palette/theme controls, same prop=value convention as
+    // smokeScrollY below - Theme is a singleton the harness cannot reach
+    // directly, so the window forwards.
+    property string smokePalette: ""
+    onSmokePaletteChanged: {
+        if (smokePalette.length > 0) {
+            Theme.paletteChoice = smokePalette;
+        }
+    }
+    property string smokeTheme: ""
+    onSmokeThemeChanged: {
+        if (smokeTheme.length > 0) {
+            Theme.preference = smokeTheme;
+        }
+    }
+
     property real smokeScrollY: 0
     onSmokeScrollYChanged: {
         // Guided owns its own scroll now (the wizard's step content scrolls
@@ -908,6 +928,7 @@ ApplicationWindow {
         // guarantee the guided contract gives Loudness/Metadata.
         onApplied: {
             Theme.preference = appSettings.theme;
+            Theme.paletteChoice = appSettings.palette;
             window.meterMode = appSettings.meterMode;
             EncoderController.keepPartialOutput = appSettings.keepPartial;
             if (!EncoderController.formatDefaultsTouched) {
