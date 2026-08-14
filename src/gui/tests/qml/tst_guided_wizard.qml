@@ -315,4 +315,136 @@ TestCase {
         mouseClick(stayCard);
         compare(EncoderController.atmosEnabled, false);
     }
+
+    function test_wizardBitrateFloorAdvisoryShowsForAWideRoomOnGood() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        EncoderController.atmosEnabled = false;
+        EncoderController.codecIndex = 1;  // E-AC-3 - 7.1's extras need it
+        EncoderController.applyChannelPreset("7.1");
+        EncoderController.bitrateKbps = 192;  // "Good"
+        const wizard = waitForWizardLayout(win);
+        verify(wizard !== null);
+        wizard.currentStepKey = "quality";
+        wait(50);
+
+        let advisory = null;
+        tryVerify(() => {
+            advisory = findChild(win.contentItem, "wizardBitrateFloorAdvisory");
+            return advisory !== null;
+        });
+        compare(advisory.visible, true);
+
+        const card448 = findChild(win.contentItem, "wizardRate-448");
+        verify(card448 !== null);
+        mouseClick(card448);
+        compare(advisory.visible, false);
+
+        EncoderController.applyChannelPreset("stereo");
+        EncoderController.codecIndex = 0;
+        EncoderController.bitrateKbps = 192;
+    }
+
+    // --- the loudness contract (bundle D, item 26) --------------------------
+
+    function test_guidedContractMeasuresLoudnessAndAppliesFilmStandardDrc() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        EncoderController.atmosEnabled = false;
+        EncoderController.applyChannelPreset("5.1");
+        EncoderController.loudnessTouched = false;
+        EncoderController.measureDialnorm = false;
+        EncoderController.drcIndex = 0;
+        if (!EncoderController.sourceReady) {
+            EncoderController.loadSourceFile(stereoUrl);
+            tryCompare(EncoderController, "sourceReady", true);
+        }
+        win.tier = "guided";
+        const wizard = waitForWizardLayout(win);
+        verify(wizard !== null);
+
+        compare(EncoderController.measureDialnorm, false);
+        compare(EncoderController.drcIndex, 0);
+
+        // Reaching the summary step already applies the contract - the
+        // "What you are about to make" line has to be honest before Encode
+        // is ever pressed, not just once it is (see onCurrentStepKeyChanged
+        // in GuidedWizard.qml).
+        wizard.currentStepKey = "output";
+        wait(50);
+
+        compare(EncoderController.measureDialnorm, true);
+        compare(EncoderController.drcIndex, 1);  // film-standard
+
+        EncoderController.loudnessTouched = false;
+        EncoderController.measureDialnorm = false;
+        EncoderController.drcIndex = 0;
+    }
+
+    function test_guidedContractNeverClobbersAnExplicitLoudnessEdit() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        EncoderController.atmosEnabled = false;
+        EncoderController.applyChannelPreset("5.1");
+        if (!EncoderController.sourceReady) {
+            EncoderController.loadSourceFile(stereoUrl);
+            tryCompare(EncoderController, "sourceReady", true);
+        }
+        win.tier = "guided";
+
+        // A real interactive edit - "speech" (index 5), deliberately not
+        // what the contract would have chosen (film-standard, index 1), so
+        // a clobber would be visible. loudnessTouched is what
+        // LoudnessGroup.qml's own DRC combo sets alongside drcIndex; setting
+        // both here stands in for the real click without needing to drive
+        // the Advanced tab's UI from this test.
+        EncoderController.drcIndex = 5;
+        EncoderController.loudnessTouched = true;
+        EncoderController.measureDialnorm = false;
+
+        const wizard = waitForWizardLayout(win);
+        verify(wizard !== null);
+        wizard.currentStepKey = "output";
+        wait(50);
+
+        compare(EncoderController.drcIndex, 5);
+        compare(EncoderController.measureDialnorm, false);
+
+        EncoderController.loudnessTouched = false;
+        EncoderController.drcIndex = 0;
+    }
+
+    function test_guidedContractAppliesDrcOnlyForDualMonoWithoutRefusing() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        EncoderController.atmosEnabled = false;
+        EncoderController.bedIndex = 0;  // 1+1
+        compare(EncoderController.dualMono, true);
+        EncoderController.loudnessTouched = false;
+        EncoderController.measureDialnorm = false;
+        EncoderController.measureDialnorm2 = false;
+        EncoderController.drcIndex = 0;
+        EncoderController.drc2Index = 0;
+        win.tier = "guided";
+
+        const wizard = waitForWizardLayout(win);
+        verify(wizard !== null);
+        wizard.currentStepKey = "output";
+        wait(50);
+
+        // The DRC half of the contract applies to BOTH programmes...
+        compare(EncoderController.drcIndex, 1);
+        compare(EncoderController.drc2Index, 1);
+        // ...but measurement is never turned on for dual mono - it would
+        // trip encodeChannels' hard refusal (measure_dialnorm(2) set under
+        // acmod kDualMono), which is exactly the broken-encode outcome this
+        // contract must never create.
+        compare(EncoderController.measureDialnorm, false);
+        compare(EncoderController.measureDialnorm2, false);
+
+        EncoderController.loudnessTouched = false;
+        EncoderController.drcIndex = 0;
+        EncoderController.drc2Index = 0;
+        EncoderController.applyChannelPreset("5.1");
+    }
 }

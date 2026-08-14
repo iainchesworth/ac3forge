@@ -100,4 +100,31 @@ std::expected<std::optional<std::vector<std::byte>>, WrapError> Eac3BurstPacker:
     return std::optional<std::vector<std::byte>>{std::move(burst)};
 }
 
+std::expected<std::vector<std::byte>, WrapError> wrap_stream(
+    std::span<const std::span<const std::byte>> units, bool eac3) {
+    std::vector<std::byte> payload;
+    if (eac3) {
+        Eac3BurstPacker packer;
+        for (const auto& unit : units) {
+            const auto burst = packer.push(unit);
+            if (!burst) {
+                return std::unexpected(burst.error());
+            }
+            if (*burst) {
+                payload.insert(payload.end(), (**burst).begin(), (**burst).end());
+            }
+        }
+        return payload;
+    }
+    payload.reserve(units.size() * kBurstBytes);
+    for (const auto& unit : units) {
+        const auto burst = wrap_frame(unit);
+        if (!burst) {
+            return std::unexpected(burst.error());
+        }
+        payload.insert(payload.end(), burst->begin(), burst->end());
+    }
+    return payload;
+}
+
 }  // namespace ac3::iec61937

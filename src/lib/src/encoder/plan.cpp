@@ -893,6 +893,12 @@ EncoderConfig ac3_config(const Plan& plan) {
             .cplbegf = plan.tools.cplbegf,
             .drc = plan.meta.drc,
             .heavy = plan.meta.heavy,
+            .drc2 = cp.bed_acmod == Acmod::kDualMono
+                        ? plan.meta.drc2
+                        : std::optional<meta::Profile>(std::nullopt),
+            .heavy2 = cp.bed_acmod == Acmod::kDualMono
+                          ? plan.meta.heavy2
+                          : std::optional<meta::HeavyConfig>(std::nullopt),
             .cmixlev = plan.meta.cmixlev,
             .surmixlev = plan.meta.surmixlev};
 }
@@ -945,6 +951,10 @@ eac3::AccessUnitConfig eac3_config(const Plan& plan) {
     }
     independent.drc = plan.meta.drc;
     independent.heavy = plan.meta.heavy;
+    if (cp.bed_acmod == Acmod::kDualMono) {
+        independent.drc2 = plan.meta.drc2;
+        independent.heavy2 = plan.meta.heavy2;
+    }
     if (plan.meta.mixmeta) {
         independent.mixing = mix_metadata(plan.meta);
     }

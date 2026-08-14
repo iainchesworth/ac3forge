@@ -149,6 +149,70 @@ TestCase {
         verify(win.cliLine.indexOf("&& ac3cli mkv") < 0);
     }
 
+    function test_spdifIsHonestlyTwoCommandsToo() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        EncoderController.atmosEnabled = false;
+
+        EncoderController.loadSourceFile(stereoUrl);
+        tryCompare(EncoderController, "sourceReady", true);
+        win.inputMode = "file";
+
+        verify(EncoderController.containerNames.length === 3);
+        compare(EncoderController.containerNames[2], "S/PDIF (.wav)");
+
+        EncoderController.containerIndex = 2;
+        verify(win.cliLine.indexOf("&& ac3cli spdif out.ac3 out.wav") >= 0);
+        compare(EncoderController.outputSuffix(), "wav");
+        // mkv and spdif are mutually exclusive container choices - never both
+        // in the same command line.
+        verify(win.cliLine.indexOf("&& ac3cli mkv") < 0);
+        EncoderController.containerIndex = 0;
+        verify(win.cliLine.indexOf("&& ac3cli spdif") < 0);
+    }
+
+    function test_bitrateFloorAdvisoryTracksCodedChannelsAndFloor() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        EncoderController.atmosEnabled = false;
+        // The whole workbench (Format tab included) stays behind the
+        // first-run screen until a source has ever been chosen - without
+        // this, everything below reads .visible false regardless of tier.
+        win.everHadSource = true;
+        // The advisory lives on the Format tab, Advanced/Expert only - a
+        // fresh window defaults to Guided, where the tab content is not the
+        // current page and reads .visible false regardless of its own
+        // binding (Qt Quick Test's effective-visibility rule for anything
+        // off the current StackLayout page).
+        win.tier = "advanced";
+        // Established explicitly rather than assumed: currentTab persists
+        // via QSettings, which is process-wide across this whole test
+        // binary run - an earlier test (or a stale settings file) could
+        // leave it on something other than "format".
+        win.currentTab = "format";
+        wait(50);
+        EncoderController.codecIndex = 1;  // E-AC-3 - 7.1's extras need it
+        EncoderController.applyChannelPreset("7.1");
+        // 7 full-bandwidth channels (LFE excluded) * 77 kbps/channel = 539,
+        // comfortably above 192 - the advisory must show.
+        EncoderController.bitrateKbps = 192;
+        compare(EncoderController.fullBandwidthCodedChannelCount, 7);
+        verify(EncoderController.fullBandwidthCodedChannelCount
+               * EncoderController.kbpsPerChannelFloor > EncoderController.bitrateKbps);
+
+        let advisory = null;
+        tryVerify(() => {
+            advisory = findChild(win.contentItem, "bitrateFloorAdvisory");
+            return advisory !== null && advisory.visible;
+        });
+
+        // A rate comfortably above the floor for the same layout hides it
+        // again - this is a hint, not a hard-refusing gate, so it has to
+        // track the bitrate live rather than latch on.
+        EncoderController.bitrateKbps = 768;
+        compare(advisory.visible, false);
+    }
+
     readonly property url refusalUrl:
         Qt.resolvedUrl("_test_output/tst_sweep_refused.ec3")
 

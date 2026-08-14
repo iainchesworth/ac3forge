@@ -83,6 +83,22 @@ Switching tiers never discards anything already set — it only changes what's v
 Guided, how it's presented: one question at a time instead of a page of controls). Leaving Expert
 while a tab only it shows is current falls back to Format rather than showing an empty panel.
 
+## The loudness contract
+
+The app's own defaults are spec-neutral — dialnorm 31, no DRC, no measurement — the same values a
+plan carries if nothing here ever touched it. Guided, while it is driving, layers a stronger
+default on top: measured loudness and film-standard DRC, applied automatically once the flow
+reaches its "What you are about to make" summary, so the summary already tells the truth before
+Encode is ever pressed. This never overwrites an actual edit — the moment Loudness/Metadata is set
+by hand (in Guided itself, or in Advanced/Expert during the same session), the contract steps aside
+for good, this session, and dialnorm/DRC stay exactly what was set.
+
+Dual mono (`1+1`) gets the honest, partial version: automatic loudness measurement is refused
+outright for dual mono (see [Format & channels](format-and-channels.md#dual-mono)), so the contract
+never turns it on there — it applies film-standard DRC to both programmes instead (Ch2's own
+`drc2`, not inherited from Ch1's — see [Metadata](metadata.md#loudness)) and leaves dialnorm to be
+set by hand, the way it always has been for `1+1`.
+
 ## Preferences
 
 A real dialog, persisted across sessions (QSettings), three columns — every row wired to real

@@ -155,6 +155,10 @@ std::vector<std::vector<float>> apply_channel_offsets(std::vector<std::vector<fl
 // Where the container choice sits in the combo box; index 0 is the bare
 // elementary stream, which is everything this is not.
 constexpr int kContainerMatroska = 1;
+constexpr int kContainerSpdif = 2;
+
+// See kbpsPerChannelFloor()'s own Q_PROPERTY comment for the derivation.
+constexpr int kMinKbpsPerFullBandwidthChannel = 77;
 
 // The order drcNames() lists the profiles in, after its "none" entry.
 constexpr std::array<ac3::meta::ProfileId, 5> kDrcProfiles = {
@@ -513,7 +517,8 @@ QStringList EncoderController::codecNames() const {
 }
 
 QStringList EncoderController::containerNames() const {
-    return {QStringLiteral("Elementary stream"), QStringLiteral("Matroska (.mkv)")};
+    return {QStringLiteral("Elementary stream"), QStringLiteral("Matroska (.mkv)"),
+            QStringLiteral("S/PDIF (.wav)")};
 }
 
 int EncoderController::bedIndex() const {
@@ -777,6 +782,21 @@ int EncoderController::renderedChannelCount() const {
     return plan::rendered_channel_count(cp);
 }
 
+int EncoderController::fullBandwidthCodedChannelCount() const {
+    // Only meaningful outside object mode - codedChannelCount() ignores
+    // bed_lfe_/extras_mask_ under Atmos (it reports the fixed 5.1 bed
+    // instead), so subtracting them here would not track what it actually
+    // counted. Callers gate the advisory this feeds on !atmosEnabled, which
+    // already has its own 384 kbps precedent.
+    int lfe_count = bed_lfe_ ? 1 : 0;
+    if (extras_mask_ & ac3::eac3::chanmap::kLfe2Bit) {
+        lfe_count += 1;
+    }
+    return std::max(codedChannelCount() - lfe_count, 0);
+}
+
+int EncoderController::kbpsPerChannelFloor() const { return kMinKbpsPerFullBandwidthChannel; }
+
 QString EncoderController::mapToken() const {
     if (!has_explicit_assignment_ || !source_) {
         return {};
@@ -812,6 +832,19 @@ QString EncoderController::metaTokens() const {
         tokens.append(QStringLiteral("dialnorm=%1").arg(meta_.dialnorm));
     }
     if (isDualMono() && !atmos_enabled_) {
+        if (drc2_index_ > 0) {
+            tokens.append(QStringLiteral("drc2=%1").arg(to_qstring(ac3::meta::profile_name(
+                kDrcProfiles[static_cast<std::size_t>(drc2_index_ - 1)]))));
+        }
+        if (meta_.heavy2) {
+            tokens.append(QStringLiteral("heavy2"));
+            if (ceiling2_db_ != -0.5) {
+                tokens.append(QStringLiteral("ceiling2=%1").arg(ceiling2_db_));
+            }
+            if (dialogue2_db_ != -20.0) {
+                tokens.append(QStringLiteral("dialogue2=%1").arg(dialogue2_db_));
+            }
+        }
         if (meta_.measure_dialnorm2) {
             tokens.append(QStringLiteral("dialnorm2=auto"));
         } else if (meta_.dialnorm2 != defaults.dialnorm2) {
@@ -1224,6 +1257,54 @@ void EncoderController::setDialogueDb(double db) {
     dialogue_db_ = db;
     if (meta_.heavy) {
         meta_.heavy->dialogue_target_dbfs = db;
+    }
+    emit planChanged();
+}
+
+void EncoderController::setDrc2Index(int index) {
+    const int clamped = std::clamp(index, 0, static_cast<int>(kDrcProfiles.size()));
+    if (clamped == drc2_index_) {
+        return;
+    }
+    drc2_index_ = clamped;
+    meta_.drc2 = clamped == 0
+                     ? std::nullopt
+                     : std::optional{ac3::meta::profile(
+                           kDrcProfiles[static_cast<std::size_t>(clamped - 1)])};
+    emit planChanged();
+}
+
+void EncoderController::setHeavy2(bool on) {
+    if (on == meta_.heavy2.has_value()) {
+        return;
+    }
+    if (on) {
+        meta_.heavy2 = ac3::meta::HeavyConfig{.dialogue_target_dbfs = dialogue2_db_,
+                                              .peak_ceiling_dbfs = ceiling2_db_};
+    } else {
+        meta_.heavy2.reset();
+    }
+    emit planChanged();
+}
+
+void EncoderController::setCeiling2Db(double db) {
+    if (db == ceiling2_db_) {
+        return;
+    }
+    ceiling2_db_ = db;
+    if (meta_.heavy2) {
+        meta_.heavy2->peak_ceiling_dbfs = db;
+    }
+    emit planChanged();
+}
+
+void EncoderController::setDialogue2Db(double db) {
+    if (db == dialogue2_db_) {
+        return;
+    }
+    dialogue2_db_ = db;
+    if (meta_.heavy2) {
+        meta_.heavy2->dialogue_target_dbfs = db;
     }
     emit planChanged();
 }
@@ -2336,6 +2417,9 @@ QString EncoderController::outputSuffix() const {
     if (container_index_ == kContainerMatroska) {
         return QStringLiteral("mkv");
     }
+    if (container_index_ == kContainerSpdif) {
+        return QStringLiteral("wav");
+    }
     // Object mode is E-AC-3 whatever the codec box says, so the suffix follows
     // the plan rather than the control.
     return to_qstring(plan::codec_suffix(atmos_enabled_ ? plan::Codec::kEac3 : codec_));
@@ -2485,6 +2569,14 @@ void EncoderController::setStatus(const QString& text) {
     }
     status_ = text;
     emit statusChanged();
+}
+
+void EncoderController::setLoudnessTouched(bool touched) {
+    if (touched == loudness_touched_) {
+        return;
+    }
+    loudness_touched_ = touched;
+    emit loudnessTouchedChanged();
 }
 
 void EncoderController::setBusy(bool busy) {
@@ -5233,6 +5325,32 @@ QString EncoderController::writeOutput(const QString& path,
         out.write(reinterpret_cast<const char*>(file->data()),
                   static_cast<std::streamsize>(file->size()));
         return out ? QString() : QStringLiteral("Writing the Matroska file failed.");
+    }
+    if (container_index_ == kContainerSpdif) {
+        // Same one-shot, whole-buffer shape as the Matroska branch above,
+        // for the same reason: a live session's frames only exist complete
+        // at a clean stop, and ac3::io::WavStreamWriter (the GUI's other WAV
+        // writer, used for the live safety take) is hardcoded to 32-bit
+        // float - it has no PCM16 mode to reuse here, so this goes straight
+        // to write_wav_pcm16_raw the same way ac3cli's own `spdif` command
+        // does, rather than inventing an incremental PCM16 writer nothing
+        // else in the codebase needs yet.
+        const bool eac3 = atmos_enabled_ || codec_ == plan::Codec::kEac3;
+        std::vector<std::span<const std::byte>> units;
+        units.reserve(frames.size());
+        for (const auto& frame : frames) {
+            units.emplace_back(frame);
+        }
+        const auto payload = ac3::iec61937::wrap_stream(units, eac3);
+        if (!payload) {
+            return QStringLiteral("Could not wrap the stream into IEC 61937 bursts.");
+        }
+        // The carrier runs at 4x the content rate for E-AC-3 - see
+        // ac3cli's own run_spdif (main.cpp) for the citation.
+        const auto carrier_rate = eac3 ? sample_rate * 4 : sample_rate;
+        const auto written =
+            ac3::io::write_wav_pcm16_raw(path.toStdString(), *payload, carrier_rate, 2);
+        return written ? QString() : to_qstring(ac3::io::describe(written.error()));
     }
 
     std::ofstream out{path.toStdString(), std::ios::binary};

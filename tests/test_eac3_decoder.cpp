@@ -475,13 +475,17 @@ TEST_CASE("E-AC-3 dual mono codes two independent programmes, never one into the
     // any cross-talk - coupling switched on by mistake, a shared downmix
     // measurement, Ch1 and Ch2 swapped - shows up directly rather than
     // needing a correlation check to notice.
+    // heavy2 is set explicitly alongside heavy - compre2 is Ch2's own flag,
+    // not inherited from Ch1's, so leaving it unset here would (correctly)
+    // silence compr2 and defeat the compr2.has_value() check below.
     const ac3::eac3::AccessUnitConfig config{
         .independent = {.bitrate_kbps = 192,
                         .acmod = Acmod::kDualMono,
                         .dialnorm = 27,
                         .dialnorm2 = 18,
                         .drc = ac3::meta::profile(ac3::meta::ProfileId::kFilmStandard),
-                        .heavy = ac3::meta::HeavyConfig{}}};
+                        .heavy = ac3::meta::HeavyConfig{},
+                        .heavy2 = ac3::meta::HeavyConfig{}}};
     ac3::eac3::AccessUnitEncoder encoder{config};
     REQUIRE(encoder.channel_count() == 2);
 
@@ -547,6 +551,109 @@ TEST_CASE("E-AC-3 dual mono codes two independent programmes, never one into the
     CHECK((*au)->acmod == Acmod::kDualMono);
     CHECK((*au)->layout.count == 0);
     REQUIRE((*au)->channels.size() == 2);
+}
+
+TEST_CASE("E-AC-3 dual mono: Ch2's own heavy compression is not Ch1's, and is not assumed",
+          "[eac3][decoder][dual-mono]") {
+    using ac3::Acmod;
+    // Eac3Decoder never applies compr/compr2 to the reconstructed audio (no
+    // heavy_compression toggle exists on it - see the class comment), and
+    // DecodedSubstream exposes only compr2, not Ch1's own compr (see the
+    // struct - there is nothing to compare compr2 against directly the way
+    // the sibling AC-3 test in test_drc.cpp compares decoded peaks). So
+    // divergence is shown by comparing Ch2's OWN compr2 word across two
+    // encodes that differ only in heavy2's ceiling: if Ch2's controller
+    // were still built from `heavy` instead of `heavy2`, both encodes would
+    // produce the identical word regardless of what heavy2 says.
+    constexpr double kLooseCeiling = -1.0;
+    constexpr double kTightCeiling = -6.0;
+
+    auto encode_and_get_compr2 = [](double heavy2_ceiling) -> std::uint8_t {
+        const ac3::eac3::AccessUnitConfig config{
+            .independent = {.bitrate_kbps = 192,
+                            .acmod = Acmod::kDualMono,
+                            .dialnorm = 24,
+                            .dialnorm2 = 24,
+                            .heavy = ac3::meta::HeavyConfig{.peak_ceiling_dbfs = kLooseCeiling},
+                            .heavy2 = ac3::meta::HeavyConfig{.peak_ceiling_dbfs = heavy2_ceiling}}};
+        ac3::eac3::AccessUnitEncoder encoder{config};
+        REQUIRE(encoder.channel_count() == 2);
+
+        std::vector<float> loud(ac3::kSamplesPerFrame);
+        std::uint64_t n0 = 0;
+        std::vector<std::byte> stream;
+        for (int f = 0; f < 4; ++f) {
+            for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+                const double t = static_cast<double>(n0 + static_cast<std::uint64_t>(i)) / 48000.0;
+                loud[static_cast<std::size_t>(i)] =
+                    static_cast<float>(0.95 * std::sin(2.0 * std::numbers::pi * 1200.0 * t));
+            }
+            n0 += ac3::kSamplesPerFrame;
+            const std::vector<std::span<const float>> views{loud, loud};
+            auto unit = encoder.encode_access_unit(views);
+            REQUIRE(unit.has_value());
+            stream.insert(stream.end(), unit->bytes.begin(), unit->bytes.end());
+        }
+
+        const auto units = ac3::split_access_units(stream);
+        REQUIRE(units.has_value());
+        ac3::Eac3Decoder decoder;
+        ac3::DecodedSubstream last_substream{};
+        for (const auto& unit : *units) {
+            const auto frames = ac3::split_frames(unit);
+            REQUIRE(frames.has_value());
+            const auto decoded = decoder.decode_substream(frames->front());
+            REQUIRE(decoded.has_value());
+            REQUIRE(decoded->has_value());
+            last_substream = **decoded;
+        }
+        REQUIRE(last_substream.compr2.has_value());
+        return *last_substream.compr2;
+    };
+
+    const auto loose_word = encode_and_get_compr2(kLooseCeiling);
+    const auto tight_word = encode_and_get_compr2(kTightCeiling);
+    const double loose_db = 20.0 * std::log10(ac3::meta::compr_gain(loose_word));
+    const double tight_db = 20.0 * std::log10(ac3::meta::compr_gain(tight_word));
+    // The same loud signal, on the same programme 2 channel, needs
+    // meaningfully more gain reduction under the tighter ceiling.
+    CHECK(loose_db > tight_db + 3.0);
+
+    // And the literal regression: heavy alone (no heavy2) must not carry
+    // Ch1's compr as Ch2's compr2 too.
+    const ac3::eac3::AccessUnitConfig heavy_only_config{
+        .independent = {.bitrate_kbps = 192,
+                        .acmod = Acmod::kDualMono,
+                        .dialnorm = 24,
+                        .dialnorm2 = 24,
+                        .heavy = ac3::meta::HeavyConfig{.peak_ceiling_dbfs = kLooseCeiling}}};
+    ac3::eac3::AccessUnitEncoder heavy_only_encoder{heavy_only_config};
+    std::vector<float> loud(ac3::kSamplesPerFrame);
+    std::uint64_t n0 = 0;
+    std::vector<std::byte> heavy_only_stream;
+    for (int f = 0; f < 4; ++f) {
+        for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+            const double t = static_cast<double>(n0 + static_cast<std::uint64_t>(i)) / 48000.0;
+            loud[static_cast<std::size_t>(i)] =
+                static_cast<float>(0.95 * std::sin(2.0 * std::numbers::pi * 1200.0 * t));
+        }
+        n0 += ac3::kSamplesPerFrame;
+        const std::vector<std::span<const float>> views{loud, loud};
+        auto unit = heavy_only_encoder.encode_access_unit(views);
+        REQUIRE(unit.has_value());
+        heavy_only_stream.insert(heavy_only_stream.end(), unit->bytes.begin(), unit->bytes.end());
+    }
+    const auto heavy_only_units = ac3::split_access_units(heavy_only_stream);
+    REQUIRE(heavy_only_units.has_value());
+    ac3::Eac3Decoder heavy_only_decoder;
+    for (const auto& unit : *heavy_only_units) {
+        const auto frames = ac3::split_frames(unit);
+        REQUIRE(frames.has_value());
+        const auto decoded = heavy_only_decoder.decode_substream(frames->front());
+        REQUIRE(decoded.has_value());
+        REQUIRE(decoded->has_value());
+        CHECK_FALSE((*decoded)->compr2.has_value());
+    }
 }
 
 TEST_CASE("bsid at bit 40 picks the framing", "[eac3][decoder]") {

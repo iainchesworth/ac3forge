@@ -20,6 +20,15 @@ ColumnLayout {
     // 'source' | 'setup' | 'quality' | 'motion' | 'output' — the prototype's
     // own step keys.
     property string currentStepKey: "source"
+    // Applied here (not just in startEncodeFlow) so the "What you are about
+    // to make" summary on the output step already tells the truth before
+    // Encode is ever pressed - see applyGuidedLoudnessContract's own comment
+    // for why tier-entry itself is too early to do this.
+    onCurrentStepKeyChanged: {
+        if (currentStepKey === "output" && appWindow) {
+            appWindow.applyGuidedLoudnessContract();
+        }
+    }
 
     // The enclosing ApplicationWindow, resolved once the tree exists — for
     // tier/tab jumps and for reading window state (input mode, plan line)
@@ -985,6 +994,22 @@ ColumnLayout {
                 font.pixelSize: 12
                 color: Theme.accent700
             }
+
+            // The Main.qml advisory's plain-language cousin: a wide room (more
+            // full-bandwidth channels than a plain 5.1 bed) can make even
+            // "Good" too little for what it is being asked to carry.
+            Text {
+                objectName: "wizardBitrateFloorAdvisory"
+                visible: !EncoderController.atmosEnabled
+                         && EncoderController.bitrateKbps === 192
+                         && EncoderController.fullBandwidthCodedChannelCount
+                            * EncoderController.kbpsPerChannelFloor > 192
+                Layout.fillWidth: true
+                text: qsTr("A wide room asks more of Good than 192 kbps can give it — the encoder will refuse outright long before it sounds right.")
+                wrapMode: Text.WordWrap
+                font.pixelSize: 12
+                color: Theme.accent700
+            }
         }
 
         // ================= 4 · Movement =================
@@ -1463,6 +1488,28 @@ ColumnLayout {
                         }
                     }
                 }
+            }
+
+            // The loudness contract's own promise, spelled out - the LOUDNESS
+            // cell above already shows the number this produces, but not why
+            // it moved from the app's spec-neutral defaults. Two versions:
+            // dual mono gets the honest, partial one, since measurement is
+            // refused there and only the DRC half of the contract applies.
+            Text {
+                Layout.fillWidth: true
+                visible: !EncoderController.dualMono && !EncoderController.loudnessTouched
+                text: qsTr("Loudness is measured from the programme and film-standard compression applied — Guided handles this for you.")
+                wrapMode: Text.WordWrap
+                font.pixelSize: 11
+                color: Theme.textMuted
+            }
+            Text {
+                Layout.fillWidth: true
+                visible: EncoderController.dualMono && !EncoderController.loudnessTouched
+                text: qsTr("Film-standard compression is applied to both programmes — loudness measurement isn't offered for dual mono, so set dialnorm by hand if the defaults aren't right.")
+                wrapMode: Text.WordWrap
+                font.pixelSize: 11
+                color: Theme.textMuted
             }
 
             // The unassigned warnings, restated at the door — the same

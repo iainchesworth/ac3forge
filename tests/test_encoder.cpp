@@ -521,12 +521,16 @@ TEST_CASE("dual mono codes two independent programmes, never one into the other"
     // level or Ch2 picking some of it up, neither of which real dual mono
     // permits (§7.7.2.2: compr bounds Ch1's own signal, compr2 Ch2's, never a
     // mix of the two).
+    // heavy2 is set explicitly alongside heavy - compr2e is Ch2's own flag,
+    // not inherited from Ch1's, so leaving it unset here would (correctly)
+    // silence compr2 and defeat the compr2.has_value() check below.
     const ac3::EncoderConfig config{.bitrate_kbps = 192,
                                     .dialnorm = 27,
                                     .dialnorm2 = 18,
                                     .acmod = Acmod::kDualMono,
                                     .drc = ac3::meta::profile(ac3::meta::ProfileId::kFilmStandard),
-                                    .heavy = ac3::meta::HeavyConfig{}};
+                                    .heavy = ac3::meta::HeavyConfig{},
+                                    .heavy2 = ac3::meta::HeavyConfig{}};
     ac3::FrameEncoder encoder{config};
     ac3::FrameDecoder decoder;
     std::uint64_t n = 0;

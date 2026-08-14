@@ -609,6 +609,139 @@ TEST_CASE("AC-3 compr holds its ceiling through the decoder", "[drc][encoder][de
     CHECK(would_have_breached);
 }
 
+TEST_CASE("AC-3 dual mono: Ch2's own DRC profile is not Ch1's, and is not assumed",
+          "[drc][encoder][decoder][dual-mono]") {
+    // Same audio on both channels (stepped_tone fills every channel
+    // identically), so any difference between the decoded dynrng and
+    // dynrng2 words is attributable only to the profile, never to the input
+    // differing between programmes.
+    constexpr int kLoudFrames = 4;
+    const auto audio = stepped_tone(8, 2, 0.5, 0.0004, kLoudFrames);
+    auto film = ac3::meta::profile(ac3::meta::ProfileId::kFilmStandard);
+    film.attack_ms = 5.0;
+    film.release_ms = 40.0;
+    auto speech = ac3::meta::profile(ac3::meta::ProfileId::kSpeech);
+    speech.attack_ms = 5.0;
+    speech.release_ms = 40.0;
+
+    ac3::FrameEncoder both{{.bitrate_kbps = 448,
+                            .dialnorm = 24,
+                            .dialnorm2 = 24,
+                            .acmod = ac3::Acmod::kDualMono,
+                            .drc = film,
+                            .drc2 = speech}};
+    ac3::FrameDecoder reader;
+    std::array<std::uint8_t, ac3::kBlocksPerFrame> last_dynrng{};
+    std::array<std::uint8_t, ac3::kBlocksPerFrame> last_dynrng2{};
+    for (int frame = 0; frame < 8; ++frame) {
+        auto encoded = both.encode_frame(frame_views(audio, frame));
+        REQUIRE(encoded.has_value());
+        const auto decoded = reader.decode_frame(*encoded);
+        REQUIRE(decoded.has_value());
+        last_dynrng = decoded->dynrng;
+        last_dynrng2 = decoded->dynrng2;
+    }
+    // Settled on the last (quiet) frame: at this level film-standard's 6 dB
+    // ceiling has already clamped while speech's gentler 5:1 ratio has not
+    // yet reached its own 15 dB ceiling, so the two curves must read
+    // differently even though Ch1 and Ch2 heard the identical signal.
+    const double film_gain_db = 20.0 * std::log10(dynrng_gain(last_dynrng[5]));
+    const double speech_gain_db = 20.0 * std::log10(dynrng_gain(last_dynrng2[5]));
+    CHECK(speech_gain_db > film_gain_db + 2.0);
+
+    // And the regression this bundle actually fixes: drc alone (no drc2)
+    // must NOT silently compress Ch2 with Ch1's curve - it must leave Ch2
+    // uncompressed. dialnorm2 already establishes that a dual-mono field
+    // with no explicit value is an error, never an inherited one; drc2
+    // follows the same rule, just without dialnorm2's hard failure since
+    // "no DRC on Ch2" is a legal, meaningful answer where "no dialnorm" is
+    // not.
+    ac3::FrameEncoder drc_only{{.bitrate_kbps = 448,
+                                .dialnorm = 24,
+                                .dialnorm2 = 24,
+                                .acmod = ac3::Acmod::kDualMono,
+                                .drc = film}};
+    ac3::FrameDecoder reader2;
+    for (int frame = 0; frame < 8; ++frame) {
+        auto encoded = drc_only.encode_frame(frame_views(audio, frame));
+        REQUIRE(encoded.has_value());
+        const auto decoded = reader2.decode_frame(*encoded);
+        REQUIRE(decoded.has_value());
+        for (const auto word : decoded->dynrng2) {
+            CHECK(word == ac3::meta::kDynrngUnity);
+        }
+    }
+}
+
+TEST_CASE("AC-3 dual mono: Ch2's own heavy compression is not Ch1's, and is not assumed",
+          "[drc][encoder][decoder][dual-mono]") {
+    // Loud on both channels, identical signal, so both ceilings actually
+    // bind - only then does a difference in the DECODED audio prove each
+    // programme's own ceiling is being enforced, rather than merely present.
+    const auto audio = stepped_tone(6, 2, 0.95, 0.95, 6);
+    constexpr double kLooseCeiling = -1.0;
+    constexpr double kTightCeiling = -6.0;
+    ac3::FrameEncoder encoder{
+        {.bitrate_kbps = 448,
+         .dialnorm = 24,
+         .dialnorm2 = 24,
+         .acmod = ac3::Acmod::kDualMono,
+         .heavy = ac3::meta::HeavyConfig{.peak_ceiling_dbfs = kLooseCeiling},
+         .heavy2 = ac3::meta::HeavyConfig{.peak_ceiling_dbfs = kTightCeiling}}};
+    std::vector<std::vector<std::byte>> frames;
+    for (int frame = 0; frame < 6; ++frame) {
+        auto encoded = encoder.encode_frame(frame_views(audio, frame));
+        REQUIRE(encoded.has_value());
+        frames.push_back(std::move(*encoded));
+    }
+
+    ac3::FrameDecoder heavy{{.heavy_compression = true}};
+    // Looser than the sibling "AC-3 compr holds its ceiling" test's 0.1 dB:
+    // that test alternates loud/quiet, where this one holds a steady
+    // near-full-scale tone across every checked frame, so std::max below is
+    // more likely to catch a genuine inter-sample reconstruction peak a
+    // touch above the nominal target - still tight enough that a channel
+    // landing near the OTHER programme's ceiling (a ~5 dB gap) would fail
+    // it outright.
+    constexpr double kCodingSlack = 0.3;
+    double ch1_peak = -200.0;
+    double ch2_peak = -200.0;
+    for (std::size_t i = 1; i < frames.size(); ++i) {  // skip the fade-in frame
+        const auto decoded = heavy.decode_frame(frames[i]);
+        REQUIRE(decoded.has_value());
+        REQUIRE(decoded->compr.has_value());
+        REQUIRE(decoded->compr2.has_value());
+        ch1_peak = std::max(ch1_peak, peak_db(decoded->channels[0]));
+        ch2_peak = std::max(ch2_peak, peak_db(decoded->channels[1]));
+    }
+    // Each programme kept ITS OWN ceiling - if Ch2's controller had been
+    // built from `heavy` instead of `heavy2` (the bug this bundle fixes),
+    // both channels would land near the loose -1 dBFS ceiling instead.
+    CHECK(ch1_peak <= kLooseCeiling + kCodingSlack);
+    CHECK(ch2_peak <= kTightCeiling + kCodingSlack);
+    CHECK(ch1_peak > ch2_peak + 3.0);
+
+    // And the literal regression: heavy alone (no heavy2) must clear
+    // compr2e, not silently carry Ch1's compr as Ch2's too - this is the
+    // exact bsi bit that used to read `config_.heavy ? 1 : 0` instead of
+    // `config_.heavy2 ? 1 : 0`.
+    ac3::FrameEncoder heavy_only{
+        {.bitrate_kbps = 448,
+         .dialnorm = 24,
+         .dialnorm2 = 24,
+         .acmod = ac3::Acmod::kDualMono,
+         .heavy = ac3::meta::HeavyConfig{.peak_ceiling_dbfs = kLooseCeiling}}};
+    ac3::FrameDecoder plain;
+    for (int frame = 0; frame < 6; ++frame) {
+        auto encoded = heavy_only.encode_frame(frame_views(audio, frame));
+        REQUIRE(encoded.has_value());
+        const auto decoded = plain.decode_frame(*encoded);
+        REQUIRE(decoded.has_value());
+        REQUIRE(decoded->compr.has_value());
+        CHECK_FALSE(decoded->compr2.has_value());
+    }
+}
+
 TEST_CASE("AC-3 carries the configured downmix levels in bsi", "[mixing][encoder]") {
     // 3/2 is the only layout with both fields, and they sit at fixed offsets:
     // syncinfo is 40 bits, then bsid(5) bsmod(3) acmod(3) puts cmixlev at 51.

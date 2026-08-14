@@ -114,6 +114,11 @@ class EncoderController : public QObject {
                    NOTIFY keepPartialOutputChanged)
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
+    // See loudnessTouchedChanged()'s own comment. Written by LoudnessGroup.qml's
+    // interactive handlers only - never by the setters those handlers call,
+    // and never by guided's own contract application.
+    Q_PROPERTY(bool loudnessTouched READ loudnessTouched WRITE setLoudnessTouched NOTIFY
+                   loudnessTouchedChanged)
     Q_PROPERTY(double progress READ progress NOTIFY progressChanged)
     // Encoding is a job with a history, not a modal moment: one entry per
     // file encode, recording, and real live session (one with a take on
@@ -221,6 +226,21 @@ class EncoderController : public QObject {
     // bed. Derived from the same resolve() every other display reads.
     Q_PROPERTY(int codedChannelCount READ codedChannelCount NOTIFY planChanged)
     Q_PROPERTY(int renderedChannelCount READ renderedChannelCount NOTIFY planChanged)
+    // codedChannelCount minus whichever LFE channel(s) it counts - the
+    // advisory floor below is stated per full-bandwidth channel because that
+    // is where the bits actually go (§7.2.2 never spends a bandwidth budget
+    // on the LFE band the way it does on a full-bandwidth one). Only
+    // meaningful outside object mode; see the getter.
+    Q_PROPERTY(int fullBandwidthCodedChannelCount READ fullBandwidthCodedChannelCount NOTIFY
+                   planChanged)
+    // A field-level hint, not a hard floor - deliberate stress-test encodes
+    // below this stay perfectly legal, and the frame's own hard minimum is a
+    // separate, harder line enforced at encode time regardless of this
+    // value. Derived from the existing object-mode precedent: 384 kbps is
+    // judged right for a 5.1 bed carrying objects (objects-and-motion.md),
+    // which is 384/5 ≈ 77 kbps per full-bandwidth channel - the same rate,
+    // generalised from "objects over 5.1" to any layout.
+    Q_PROPERTY(int kbpsPerChannelFloor READ kbpsPerChannelFloor CONSTANT)
     Q_PROPERTY(int containerIndex READ containerIndex WRITE setContainerIndex NOTIFY planChanged)
     Q_PROPERTY(QStringList containerNames READ containerNames CONSTANT)
 
@@ -295,6 +315,13 @@ class EncoderController : public QObject {
     Q_PROPERTY(bool heavy READ heavy WRITE setHeavy NOTIFY planChanged)
     Q_PROPERTY(double ceilingDb READ ceilingDb WRITE setCeilingDb NOTIFY planChanged)
     Q_PROPERTY(double dialogueDb READ dialogueDb WRITE setDialogueDb NOTIFY planChanged)
+    // Ch2's own DRC/heavy - dual mono only, and not a fallback from the
+    // fields above (plan::Metadata::drc2's comment explains why): a plan
+    // that wants both programmes compressed alike sets both explicitly.
+    Q_PROPERTY(int drc2Index READ drc2Index WRITE setDrc2Index NOTIFY planChanged)
+    Q_PROPERTY(bool heavy2 READ heavy2 WRITE setHeavy2 NOTIFY planChanged)
+    Q_PROPERTY(double ceiling2Db READ ceiling2Db WRITE setCeiling2Db NOTIFY planChanged)
+    Q_PROPERTY(double dialogue2Db READ dialogue2Db WRITE setDialogue2Db NOTIFY planChanged)
     Q_PROPERTY(int dialnorm READ dialnorm WRITE setDialnorm NOTIFY planChanged)
     Q_PROPERTY(bool measureDialnorm READ measureDialnorm WRITE setMeasureDialnorm NOTIFY planChanged)
     // Programme 2's own dialnorm (§5.4.2.16) - meaningless outside dual mono,
@@ -522,6 +549,8 @@ public:
     void setKeepPartialOutput(bool keep);
     [[nodiscard]] QString status() const { return status_; }
     [[nodiscard]] bool busy() const { return busy_; }
+    [[nodiscard]] bool loudnessTouched() const { return loudness_touched_; }
+    void setLoudnessTouched(bool touched);
     [[nodiscard]] double progress() const { return progress_; }
     [[nodiscard]] QVariantList runs() const { return runs_; }
     [[nodiscard]] int bitrateKbps() const { return bitrate_kbps_; }
@@ -557,6 +586,8 @@ public:
     [[nodiscard]] QString layoutDetail() const;
     [[nodiscard]] int codedChannelCount() const;
     [[nodiscard]] int renderedChannelCount() const;
+    [[nodiscard]] int fullBandwidthCodedChannelCount() const;
+    [[nodiscard]] int kbpsPerChannelFloor() const;
     [[nodiscard]] int containerIndex() const { return container_index_; }
     [[nodiscard]] QStringList containerNames() const;
 
@@ -596,6 +627,10 @@ public:
     [[nodiscard]] bool heavy() const { return meta_.heavy.has_value(); }
     [[nodiscard]] double ceilingDb() const { return ceiling_db_; }
     [[nodiscard]] double dialogueDb() const { return dialogue_db_; }
+    [[nodiscard]] int drc2Index() const { return drc2_index_; }
+    [[nodiscard]] bool heavy2() const { return meta_.heavy2.has_value(); }
+    [[nodiscard]] double ceiling2Db() const { return ceiling2_db_; }
+    [[nodiscard]] double dialogue2Db() const { return dialogue2_db_; }
     [[nodiscard]] int dialnorm() const { return meta_.dialnorm; }
     [[nodiscard]] bool measureDialnorm() const { return meta_.measure_dialnorm; }
     [[nodiscard]] int dialnorm2() const { return meta_.dialnorm2; }
@@ -690,6 +725,10 @@ public:
     void setHeavy(bool on);
     void setCeilingDb(double db);
     void setDialogueDb(double db);
+    void setDrc2Index(int index);
+    void setHeavy2(bool on);
+    void setCeiling2Db(double db);
+    void setDialogue2Db(double db);
     void setDialnorm(int value);
     void setMeasureDialnorm(bool on);
     void setDialnorm2(int value);
@@ -962,6 +1001,14 @@ signals:
     void busyChanged();
     void progressChanged();
     void runsChanged();
+    // Session-only, not part of the plan: whether the user has made a real,
+    // interactive edit to Loudness/Metadata this session. Guided's loudness
+    // contract (see Main.qml) reads this before applying itself and never
+    // sets it - only the actual control handlers in LoudnessGroup.qml do -
+    // so the contract's own writes can never look like a user edit and
+    // block themselves from re-applying, and a genuine user edit is never
+    // silently overwritten.
+    void loudnessTouchedChanged();
     // One signal for every encoding decision. They are read together by the
     // summary lines and gate each other besides - the codec decides which
     // layouts exist, which decides whether the tools apply - so splitting them
@@ -1323,6 +1370,8 @@ private:
     QString routing_summary_;
     bool source_ready_ = false;
     bool busy_ = false;
+    // See loudnessTouchedChanged()'s own comment.
+    bool loudness_touched_ = false;
     bool recording_ = false;
     double progress_ = 0.0;
     double recorded_seconds_ = 0.0;
@@ -1352,6 +1401,11 @@ private:
     int drc_index_ = 0;
     double ceiling_db_ = -0.5;
     double dialogue_db_ = -20.0;
+    // Ch2's own DRC/heavy state, same shape and same reason held apart from
+    // meta_.drc2/meta_.heavy2 as the programme-1 fields above.
+    int drc2_index_ = 0;
+    double ceiling2_db_ = -0.5;
+    double dialogue2_db_ = -20.0;
 
     bool atmos_enabled_ = false;
     int object_count_ = 0;
