@@ -447,4 +447,236 @@ TestCase {
         EncoderController.drc2Index = 0;
         EncoderController.applyChannelPreset("5.1");
     }
+
+    // --- item 28: "what should move" -----------------------------------------
+
+    function test_whatMovesAllRewritesEveryChannelToAnObject() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        // A known starting point regardless of what an earlier test left
+        // loaded - the exact channel count matters here, so this cannot
+        // just reuse whatever source happens to already be loaded.
+        EncoderController.atmosEnabled = false;
+        EncoderController.removeSource(0);
+        EncoderController.loadSourceFile(surroundUrl);
+        tryCompare(EncoderController, "sourceReady", true);
+        compare(EncoderController.sourceModel[0].channels, 6);
+        EncoderController.applyChannelPreset("5.1");
+        EncoderController.setAssignment(0, 0, "C");  // one explicit bed position
+
+        win.tier = "guided";
+        const wizard = waitForWizardLayout(win);
+        verify(wizard !== null);
+        // objectCount stays 0 here - channel 0 is pinned to the bed and the
+        // other five are still unassigned, so nothing is a dynamic object
+        // until the card tap below assigns them (an explicit assignment
+        // means an untouched channel is silent, not automatically an
+        // object - see dynamicObjectChannels' own has_explicit_assignment_
+        // branch).
+        EncoderController.atmosEnabled = true;
+        wizard.currentStepKey = "motion";
+        wait(50);
+
+        const allCard = findChild(win.contentItem, "wizardWhatMoves-all");
+        verify(allCard !== null);
+        mouseClick(allCard);
+
+        compare(wizard.whatMoves, "all");
+        const rows = EncoderController.assignmentRows;
+        compare(rows.length, 6);
+        for (let i = 0; i < rows.length; i++) {
+            compare(rows[i].destToken, "obj");
+        }
+        // No bed position survives - every dynamic object is its own flat
+        // channel, one per row.
+        compare(EncoderController.pinnedObjectCount, 0);
+        compare(EncoderController.objectCount, 6);
+
+        EncoderController.atmosEnabled = false;
+        EncoderController.clearAssignment();
+    }
+
+    function test_whatMovesPickedKeepsTheBedAndOnlyClaimsUnassignedChannels() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        EncoderController.atmosEnabled = false;
+        EncoderController.removeSource(0);
+        EncoderController.loadSourceFile(surroundUrl);
+        tryCompare(EncoderController, "sourceReady", true);
+        EncoderController.applyChannelPreset("5.1");
+        // Channel 0 gets a real bed position; every other channel is left
+        // exactly as loadSourceFile/applyChannelPreset leaves it - untouched,
+        // reading "none" - standing in for "a file added since" step 1's own
+        // assignment table did not otherwise touch.
+        EncoderController.setAssignment(0, 0, "C");
+
+        win.tier = "guided";
+        const wizard = waitForWizardLayout(win);
+        verify(wizard !== null);
+        // objectCount stays 0 until the card tap below - see the "all" card
+        // test's identical comment.
+        EncoderController.atmosEnabled = true;
+        wizard.currentStepKey = "motion";
+        wait(50);
+
+        const pickedCard = findChild(win.contentItem, "wizardWhatMoves-picked");
+        verify(pickedCard !== null);
+        mouseClick(pickedCard);
+
+        compare(wizard.whatMoves, "picked");
+        const rows = EncoderController.assignmentRows;
+        // Channel 0's explicit bed position is untouched...
+        compare(rows[0].destToken, "C");
+        // ...every other (previously unassigned) channel became an object.
+        for (let i = 1; i < rows.length; i++) {
+            compare(rows[i].destToken, "obj");
+        }
+        compare(EncoderController.pinnedObjectCount, 1);
+        compare(EncoderController.objectCount, 5);
+
+        EncoderController.atmosEnabled = false;
+        EncoderController.clearAssignment();
+    }
+
+    function test_stayPutClearsWhatMoves() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        EncoderController.atmosEnabled = false;
+        if (!EncoderController.sourceReady) {
+            EncoderController.loadSourceFile(stereoUrl);
+            tryCompare(EncoderController, "sourceReady", true);
+        }
+        win.tier = "guided";
+        const wizard = waitForWizardLayout(win);
+        verify(wizard !== null);
+        wizard.whatMoves = "all";
+        wizard.currentStepKey = "motion";
+        wait(50);
+
+        const stayCard = findChild(win.contentItem, "wizardMotion-off");
+        verify(stayCard !== null);
+        mouseClick(stayCard);
+        compare(EncoderController.atmosEnabled, false);
+        compare(wizard.whatMoves, "");
+    }
+
+    // --- item 29: Good/Better/Best -> VBR quality when VBR is "in force" ----
+
+    function test_qualityCardsSetVbrQualityInsteadOfBitrateWhenVbrIsAlreadyOn() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        EncoderController.atmosEnabled = false;
+        EncoderController.codecIndex = 1;  // E-AC-3 - VBR needs it
+        EncoderController.vbrEnabled = true;
+        EncoderController.vbrQuality = 10;
+        const wizard = waitForWizardLayout(win);
+        verify(wizard !== null);
+        verify(EncoderController.vbrAvailable);
+        compare(wizard.vbrQualityMode, true);
+        wizard.currentStepKey = "quality";
+        wait(50);
+
+        const card448 = findChild(win.contentItem, "wizardRate-448");
+        verify(card448 !== null);
+        mouseClick(card448);
+
+        // "Better" set VBR quality 75, not a fixed 448 kbps CBR target - the
+        // rate mode itself stays on, and bitrateKbps still moves (it keeps
+        // feeding the coupling/spx band-edge defaults either way).
+        compare(EncoderController.vbrEnabled, true);
+        compare(EncoderController.vbrQuality, 75);
+        compare(EncoderController.bitrateKbps, 448);
+        compare(card448.active, true);
+
+        EncoderController.vbrEnabled = false;
+        EncoderController.codecIndex = 0;
+        EncoderController.bitrateKbps = 192;
+    }
+
+    function test_qualityCardsStayOnCbrWhenVbrIsNotInForce() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        EncoderController.atmosEnabled = false;
+        EncoderController.codecIndex = 0;  // AC-3 - vbrAvailable is false
+        EncoderController.vbrEnabled = false;
+        const wizard = waitForWizardLayout(win);
+        verify(wizard !== null);
+        compare(wizard.vbrQualityMode, false);
+        wizard.currentStepKey = "quality";
+        wait(50);
+
+        const card768 = findChild(win.contentItem, "wizardRate-768");
+        verify(card768 !== null);
+        mouseClick(card768);
+
+        compare(EncoderController.vbrEnabled, false);
+        compare(EncoderController.bitrateKbps, 768);
+
+        EncoderController.bitrateKbps = 192;
+    }
+
+    // --- item 30: Guided auto-picks a bitstream-capable endpoint ------------
+
+    function test_ampAutoPickDefaultsToTheAutoPickAndAStaleOverrideFallsBack() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        const wizard = waitForWizardLayout(win);
+        verify(wizard !== null);
+
+        // Whatever this machine's own output hardware happens to be
+        // (possibly none at all) - the point under test is the WIRING, not
+        // a specific device count, so nothing here assumes either way.
+        wizard.ampDeviceOverride = -1;
+        compare(wizard.ampDeviceIndex, wizard.autoAmpDeviceIndex);
+
+        // A real override sticks, whatever the auto-pick would have chosen.
+        if (EncoderController.outputDevices.length > 0) {
+            wizard.ampDeviceOverride = 0;
+            compare(wizard.ampDeviceIndex, 0);
+        }
+
+        // An override that no longer names a real device (out of range,
+        // however many devices actually exist) falls back to the auto-pick
+        // rather than sticking - a stale index must never silently survive
+        // past the devices it was chosen from.
+        wizard.ampDeviceOverride = EncoderController.outputDevices.length + 100;
+        compare(wizard.ampDeviceIndex, wizard.autoAmpDeviceIndex);
+
+        wizard.ampDeviceOverride = -1;
+    }
+
+    // --- item 27: the guided amp destination flows through Play -------------
+
+    function test_ampDestinationEncodesDirectlyAndThreadsItsDevicePick() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        EncoderController.atmosEnabled = false;
+        if (!EncoderController.sourceReady) {
+            EncoderController.loadSourceFile(stereoUrl);
+            tryCompare(EncoderController, "sourceReady", true);
+        }
+        win.tier = "guided";
+        const wizard = waitForWizardLayout(win);
+        verify(wizard !== null);
+        wizard.dest = "amp";
+
+        const before = EncoderController.runs.length;
+        // The amp card's own promise: "Encodes the same file, then
+        // bitstreams it" - no save dialog, straight to encodeTo() with the
+        // planned name, exactly what startEncodeFlow's amp branch does.
+        win.startEncodeFlow();
+        tryCompare(EncoderController, "busy", false, 10000);
+
+        compare(EncoderController.runs.length, before + 1);
+        const run = EncoderController.runs[0];
+        compare(run.status, "done");
+        // Guided's own auto-pick (or lack of one, with no real hardware
+        // here) rode along on the run rather than needing a fresh pick.
+        compare(run.playDeviceIndex, wizard.ampDeviceIndex);
+        // The command line was snapshotted at start, not left empty.
+        verify(run.cliLine.length > 0);
+        compare(run.eac3, EncoderController.codecIndex === 1 || EncoderController.atmosEnabled);
+
+        wizard.dest = "file";
+    }
 }

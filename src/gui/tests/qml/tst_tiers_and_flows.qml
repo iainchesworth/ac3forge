@@ -228,6 +228,54 @@ TestCase {
         win.settings.showCli = true;
     }
 
+    // Item 31: Preferences' "defaults for a new encode" apply on Save the
+    // same way loudnessTouched already gates DRC/measure-loudness -
+    // generalised via EncoderController.formatDefaultsTouched rather than a
+    // second mechanism (see its own doc comment).
+    function test_preferencesDefaultsApplyOnSaveOnlyToUntouchedFields() {
+        const win = makeWindow();
+
+        // Untouched this session: a changed default applies on Save.
+        EncoderController.formatDefaultsTouched = false;
+        EncoderController.bitrateKbps = 192;
+        EncoderController.containerIndex = 0;
+        win.settings.defaultBitrateKbps = 256;
+        win.settings.defaultContainerIndex = 1;
+
+        win.prefsDialog.open();
+        let saveButton = null;
+        tryVerify(() => {
+            saveButton = findChild(win.contentItem, "prefsSaveButton");
+            return saveButton !== null && saveButton.visible;
+        });
+        saveButton.clicked();
+
+        compare(EncoderController.bitrateKbps, 256);
+        compare(EncoderController.containerIndex, 1);
+
+        // Touched this session: an explicit edit is never clobbered by a
+        // LATER Preferences Save, the identical guarantee loudnessTouched
+        // already gives Loudness/Metadata.
+        EncoderController.formatDefaultsTouched = true;
+        EncoderController.bitrateKbps = 448;
+        win.settings.defaultBitrateKbps = 320;
+
+        win.prefsDialog.open();
+        tryVerify(() => {
+            saveButton = findChild(win.contentItem, "prefsSaveButton");
+            return saveButton !== null && saveButton.visible;
+        });
+        saveButton.clicked();
+
+        compare(EncoderController.bitrateKbps, 448);
+
+        EncoderController.formatDefaultsTouched = false;
+        EncoderController.bitrateKbps = 192;
+        EncoderController.containerIndex = 0;
+        win.settings.defaultBitrateKbps = 192;
+        win.settings.defaultContainerIndex = 0;
+    }
+
     function test_sessionSaveAndRestoreRoundTripsSourcesAndAssignments() {
         const win = makeWindow();
         EncoderController.atmosEnabled = false;
@@ -253,5 +301,13 @@ TestCase {
         compare(EncoderController.assignmentRows[1].destToken, "none");
         compare(EncoderController.assignmentRows[1].touched, true);
         compare(EncoderController.unassignedWarnings.length, 0);
+
+        // appSettings' backing store is shared across every Settings{}
+        // instance this process creates even with no organization/
+        // application name set (see this file's own top-of-file comment) -
+        // left with a real source path in sessionSources, the very next
+        // window created anywhere in the suite would have its own
+        // Component.onCompleted -> restoreSession() silently reload it.
+        win.settings.sessionSources = "[]";
     }
 }
