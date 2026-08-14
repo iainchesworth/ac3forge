@@ -52,7 +52,14 @@ def load_leg_results(results_dir: Path):
     """results_dir holds one subdirectory per leg (an artifact named
     'gold-reference-<preset>', downloaded with the prefix stripped back off by
     the caller - see the workflow step), each holding one JSON file per
-    codec."""
+    check - verify-gold-reference.sh's check_one writes one
+    <label>.json per (codec, tool-set, fixture) combination it runs (e.g.
+    eac3.json, eac3_cpl.json, eac3_cplbndstrce0.json), not one per codec:
+    two checks can share a codec while comparing fundamentally different
+    things (this project's own encoder round-tripped through two decodes,
+    vs. a real third-party bitstream decoded by both) with deliberately
+    different SNR floors. The filename stem is the only thing that reliably
+    tells those apart, so it rides along as "check"."""
     for leg_dir in sorted(results_dir.iterdir()):
         if not leg_dir.is_dir():
             continue
@@ -60,10 +67,22 @@ def load_leg_results(results_dir: Path):
         for json_file in sorted(leg_dir.glob("*.json")):
             record = json.loads(json_file.read_text())
             record["leg"] = leg
+            record["check"] = json_file.stem
             yield record
 
 
-def trailing_mean(history_path: Path, leg: str, codec: str, window: int):
+def trailing_mean(history_path: Path, leg: str, codec: str, check: str, window: int):
+    """Matches on (leg, codec, check), not just (leg, codec): see
+    load_leg_results's docstring for why codec alone can conflate two
+    checks with unrelated SNR floors (e.g. eac3's tools=none/tools=cpl
+    round-trip checks, ~55 dB floor, vs. eac3_cplbndstrce0's real-bitstream
+    interop check, ~15 dB floor - averaging the latter into the former's
+    trailing mean makes an always-passing, unmoving check look like a
+    ~25 dB hard regression against a mean it was never part of). Older
+    history entries recorded before this field existed have no "check" key
+    and so never match a current (non-None) check - they simply age out of
+    the trailing window rather than being mismatched to the wrong series.
+    """
     if not history_path.exists():
         return None
     matches = []
@@ -71,7 +90,7 @@ def trailing_mean(history_path: Path, leg: str, codec: str, window: int):
         if not line.strip():
             continue
         rec = json.loads(line)
-        if rec.get("leg") == leg and rec.get("codec") == codec:
+        if rec.get("leg") == leg and rec.get("codec") == codec and rec.get("check") == check:
             matches.append(rec["worst_db"])
     if not matches:
         return None
@@ -109,13 +128,15 @@ def main() -> int:
     lines = []
     hard_regression = False
     for rec in records:
-        baseline = trailing_mean(history_path, rec["leg"], rec["codec"], REGRESSION_TRAILING_WINDOW)
+        baseline = trailing_mean(history_path, rec["leg"], rec["codec"], rec["check"],
+                                  REGRESSION_TRAILING_WINDOW)
         entry = {
             "commit": args.commit,
             "branch": args.branch,
             "commit_date": args.commit_date,
             "leg": rec["leg"],
             "codec": rec["codec"],
+            "check": rec["check"],
             "bitrate_kbps": rec["bitrate_kbps"],
             "worst_db": rec["worst_db"],
             "channels_db": rec["channels_db"],
@@ -125,7 +146,7 @@ def main() -> int:
         drop = None if baseline is None else baseline - rec["worst_db"]
         if drop is not None and drop >= HARD_REGRESSION_DROP_DB:
             hard_regression = True
-            print(f"::error title=Quality trend hard regression::{rec['leg']}/{rec['codec']}: "
+            print(f"::error title=Quality trend hard regression::{rec['leg']}/{rec['check']}: "
                   f"worst-channel SNR {rec['worst_db']:.2f} dB is "
                   f"{drop:.2f} dB below the trailing {REGRESSION_TRAILING_WINDOW}-run mean "
                   f"({baseline:.2f} dB) on {args.branch} - more than the "
@@ -133,7 +154,7 @@ def main() -> int:
                   "below; the run this came from is failed separately so this doesn't go "
                   "unnoticed.")
         elif drop is not None and drop >= REGRESSION_DROP_DB:
-            print(f"::warning title=Quality trend regression::{rec['leg']}/{rec['codec']}: "
+            print(f"::warning title=Quality trend regression::{rec['leg']}/{rec['check']}: "
                   f"worst-channel SNR {rec['worst_db']:.2f} dB is "
                   f"{drop:.2f} dB below the trailing "
                   f"{REGRESSION_TRAILING_WINDOW}-run mean ({baseline:.2f} dB) on {args.branch}. "
