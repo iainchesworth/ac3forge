@@ -299,4 +299,96 @@ TestCase {
         win.inputMode = "file";
         tryVerify(() => !win.visibleTabs.some(tab => tab.key === "session"));
     }
+
+    function test_guidedFooterStaysOnScreen() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        EncoderController.atmosEnabled = false;
+
+        EncoderController.loadSourceFile(stereoUrl);
+        tryCompare(EncoderController, "sourceReady", true);
+        win.tier = "guided";
+        wait(300);   // layout polish, same rule the wizard tests document
+
+        // The Back/Next footer is PINNED: whatever the step content's
+        // height, the way forward is on screen - it used to sit at the
+        // bottom of the whole page's scroll range, a screenful of blank
+        // space below short content (the StackLayout inherited the tallest
+        // tab's height).
+        const nextButton = findChild(win.contentItem, "wizardNextButton");
+        verify(nextButton !== null);
+        tryVerify(() => {
+            const bottom = nextButton.mapToItem(null, 0, nextButton.height).y;
+            return nextButton.visible && bottom > 0 && bottom <= win.height;
+        });
+
+        // And the step content scrolls on its own, between the pinned bars.
+        verify(findChild(win.contentItem, "wizardScroll") !== null);
+    }
+
+    function test_tabPagesFollowTheCurrentPagesHeight() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        EncoderController.atmosEnabled = false;
+
+        EncoderController.loadSourceFile(stereoUrl);
+        tryCompare(EncoderController, "sourceReady", true);
+        win.tier = "expert";
+        win.currentTab = "meta";
+        wait(300);
+
+        // The scroll range follows the CURRENT page, not the union of every
+        // page - the Metadata tab must not inherit the Format tab's much
+        // larger height as trailing blank space.
+        const pages = findChild(win.contentItem, "tabPages");
+        const scroll = findChild(win.contentItem, "tabScroll");
+        verify(pages !== null);
+        verify(scroll !== null);
+        tryVerify(() => {
+            const current = pages.children[pages.currentIndex];
+            return current !== undefined
+                   && Math.abs(scroll.contentHeight - current.implicitHeight) < 1;
+        });
+
+        win.currentTab = "format";
+        tryVerify(() => {
+            const current = pages.children[pages.currentIndex];
+            return current !== undefined
+                   && Math.abs(scroll.contentHeight - current.implicitHeight) < 1;
+        });
+    }
+
+    function test_cliChipOpensThePopoverWithTheLiveLine() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        EncoderController.atmosEnabled = false;
+
+        EncoderController.loadSourceFile(stereoUrl);
+        tryCompare(EncoderController, "sourceReady", true);
+        win.tier = "advanced";
+        wait(300);
+
+        // The chip still follows the showCli preference (the contract
+        // tst_tiers_and_flows pins), and clicking it opens the popover
+        // carrying the LIVE line - the same window.cliLine property the
+        // command-line parity tests already exercise.
+        const chip = findChild(win.contentItem, "commandBar");
+        verify(chip !== null);
+        verify(chip.visible);
+
+        const popup = findChild(win, "cliPopup");
+        verify(popup !== null);
+        compare(popup.opened, false);
+
+        mouseClick(chip);
+        tryVerify(() => popup.opened);
+
+        const line = findChild(popup.contentItem, "cliPopupLine");
+        verify(line !== null);
+        compare(line.text, win.cliLine);
+        verify(findChild(popup.contentItem, "cliPopupCopy") !== null);
+
+        popup.close();
+        tryVerify(() => !popup.opened);
+    }
 }

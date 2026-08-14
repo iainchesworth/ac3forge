@@ -310,7 +310,12 @@ ApplicationWindow {
     // Flickable itself, only on the ScrollView.
     property real smokeScrollY: 0
     onSmokeScrollYChanged: {
-        if (tabScrollView.contentItem) {
+        // Guided owns its own scroll now (the wizard's step content scrolls
+        // between a pinned step bar and a pinned footer), so the control
+        // reaches whichever surface is actually on screen.
+        if (tier === "guided" && guidedWizard.contentFlickable) {
+            guidedWizard.contentFlickable.contentY = smokeScrollY;
+        } else if (tabScrollView.contentItem) {
             tabScrollView.contentItem.contentY = smokeScrollY;
         }
     }
@@ -398,6 +403,19 @@ ApplicationWindow {
     }
     onTierChanged: {
         appSettings.lastTier = tier;
+        resetPanelScroll();
+    }
+    onCurrentTabChanged: resetPanelScroll()
+    // Landing on a new surface starts at ITS top: without this, clicking a
+    // tab (or arriving in a tier) kept the previous page's scroll offset,
+    // showing the new page somewhere in its middle.
+    function resetPanelScroll() {
+        if (tabScrollView.contentItem) {
+            tabScrollView.contentItem.contentY = 0;
+        }
+        if (guidedWizard.contentFlickable) {
+            guidedWizard.contentFlickable.contentY = 0;
+        }
     }
     // Whatever removed the current tab from the bar (a tier change, the live
     // source going away) sends focus back to Format - one rule instead of a
@@ -2353,20 +2371,35 @@ ApplicationWindow {
                 }
 
                 // ---- tab content ------------------------------------------
+                // Guided lives OUTSIDE this scroll (below) with its own
+                // pinned step bar and footer; only the tabbed tiers scroll
+                // the whole page.
                 ScrollView {
                     id: tabScrollView
                     objectName: "tabScroll"
+                    visible: window.tier !== "guided"
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     contentWidth: availableWidth
+                    // A StackLayout's implicit height is the MAX over ALL its
+                    // pages, so every tab inherited the tallest one's scroll
+                    // range - a page-sized blank void under the shorter tabs
+                    // (and, before the wizard moved out of this stack
+                    // entirely, the reason Guided's Next button sat a full
+                    // screen below its content). Clamp the scroll range to
+                    // the CURRENT page here rather than fighting the layout
+                    // engine's own implicit-size writes on the stack itself.
+                    contentHeight: tabPages.currentIndex >= 0
+                                   && tabPages.currentIndex < tabPages.children.length
+                                   && tabPages.children[tabPages.currentIndex]
+                                   ? tabPages.children[tabPages.currentIndex].implicitHeight
+                                   : tabPages.implicitHeight
 
                     StackLayout {
+                        id: tabPages
+                        objectName: "tabPages"
                         width: parent ? parent.width : 0
-                        // Guided shows its wizard page (the last one) instead
-                        // of whichever tab is current.
-                        currentIndex: window.tier === "guided"
-                                      ? window.tabOrder.length
-                                      : window.tabOrder.indexOf(window.currentTab)
+                        currentIndex: Math.max(0, window.tabOrder.indexOf(window.currentTab))
 
                         // =====================================================
                         // Format
@@ -6109,15 +6142,20 @@ ApplicationWindow {
 
                             Item { Layout.fillHeight: true }
                         }
-
-                        // =====================================================
-                        // Guided wizard — one more page, not a fourth tab.
-                        // =====================================================
-                        GuidedWizard {
-                            id: guidedWizard
-                            Layout.fillWidth: true
-                        }
                     }
+                }
+
+                // =====================================================
+                // Guided wizard — its own surface, not a stack page: the
+                // step bar and the Back/Next footer stay pinned while only
+                // the step content scrolls, so "where do I go next" is
+                // never a screenful of blank space away.
+                // =====================================================
+                GuidedWizard {
+                    id: guidedWizard
+                    visible: window.tier === "guided"
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
                 }
 
                 Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 2; color: Theme.divider }
@@ -6142,6 +6180,12 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         contentWidth: runStrip.implicitWidth
+                        // Pin the content to the viewport's own height so the
+                        // strip's rows genuinely centre in the 34 px lane -
+                        // without this the wrapper Flickable sized itself to
+                        // the content's implicit height and everything sat
+                        // along the top edge.
+                        contentHeight: availableHeight
                         ScrollBar.vertical.policy: ScrollBar.AlwaysOff
 
                         RowLayout {
@@ -6294,6 +6338,8 @@ ApplicationWindow {
                             Text {
                                 visible: EncoderController.runs.length === 0
                                 Layout.leftMargin: 16
+                                Layout.alignment: Qt.AlignVCenter
+                                verticalAlignment: Text.AlignVCenter
                                 text: EncoderController.status
                                 font.family: Theme.monoFamily
                                 font.pixelSize: 12
@@ -6305,6 +6351,12 @@ ApplicationWindow {
                 Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.divider }
 
                 // ---- command bar -------------------------------------------
+                // The Encode button runs the encoder in-process, so the full
+                // ac3cli line is reference material, not the primary act: a
+                // compact chip opens it in a popover (wrapped, with Copy)
+                // instead of spending a whole lane of the window on a line
+                // that mostly ends elided anyway. The showCli preference
+                // still governs whether the chip exists at all.
                 RowLayout {
                     Layout.fillWidth: true
                     Layout.leftMargin: 20
@@ -6314,11 +6366,13 @@ ApplicationWindow {
                     spacing: 16
 
                     Rectangle {
+                        id: cliChip
                         objectName: "commandBar"
-                        Layout.fillWidth: true
                         visible: appSettings.showCli
                         implicitHeight: 38
-                        color: Theme.neutral100
+                        implicitWidth: cliChipRow.implicitWidth + 26
+                        color: cliChipArea.containsMouse || cliPopup.opened
+                               ? Theme.neutral200 : Theme.neutral100
 
                         Rectangle {
                             anchors.left: parent.left
@@ -6329,30 +6383,93 @@ ApplicationWindow {
                         }
 
                         RowLayout {
-                            anchors.fill: parent
-                            anchors.leftMargin: 12
-                            anchors.rightMargin: 8
-                            spacing: 10
+                            id: cliChipRow
+                            anchors.centerIn: parent
+                            spacing: 8
 
                             Text {
-                                Layout.fillWidth: true
-                                text: window.cliLine
+                                text: qsTr("ac3cli")
                                 font.family: Theme.monoFamily
                                 font.pixelSize: 12
+                                font.weight: Font.DemiBold
                                 color: Theme.text
-                                elide: Text.ElideRight
                             }
-                            Button {
-                                text: qsTr("Copy")
-                                flat: true
-                                onClicked: clipboardProxy.copyText(window.cliLine)
+                            Text {
+                                text: qsTr("command line ↗")
+                                font.pixelSize: 11
+                                color: Theme.textMuted
+                            }
+                        }
+
+                        // Text+MouseArea by house rule (a native Button here
+                        // would be fine, but the chip look is the point).
+                        MouseArea {
+                            id: cliChipArea
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: cliPopup.opened ? cliPopup.close() : cliPopup.open()
+                        }
+
+                        Popup {
+                            id: cliPopup
+                            objectName: "cliPopup"
+                            // Above the chip, left-aligned with it - the
+                            // popover belongs to the thing that opened it.
+                            // 760 keeps the right edge inside even a
+                            // minimum-width window with the chip at the
+                            // panel's left margin.
+                            x: 0
+                            y: -height - 8
+                            width: Math.min(window.width - 48, 760)
+                            padding: Theme.space3
+                            closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+                            background: Rectangle {
+                                color: Theme.bg
+                                border.color: Theme.divider
+                                border.width: 1
+                            }
+
+                            contentItem: ColumnLayout {
+                                spacing: Theme.space2
+
+                                Text {
+                                    text: qsTr("THE COMMAND LINE — REPRODUCES THIS ENCODE")
+                                    font.pixelSize: 10
+                                    font.letterSpacing: 1
+                                    color: Theme.textMuted
+                                }
+                                Text {
+                                    objectName: "cliPopupLine"
+                                    Layout.fillWidth: true
+                                    text: window.cliLine
+                                    wrapMode: Text.WrapAnywhere
+                                    font.family: Theme.monoFamily
+                                    font.pixelSize: 12
+                                    color: Theme.text
+                                }
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: Theme.space3
+
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: qsTr("Encode runs the encoder in-process — this is the exact ac3cli equivalent, quoting and all.")
+                                        wrapMode: Text.WordWrap
+                                        font.pixelSize: 11
+                                        color: Theme.textMuted
+                                    }
+                                    Button {
+                                        objectName: "cliPopupCopy"
+                                        text: qsTr("Copy")
+                                        flat: true
+                                        onClicked: clipboardProxy.copyText(window.cliLine)
+                                    }
+                                }
                             }
                         }
                     }
-                    Item {
-                        Layout.fillWidth: true
-                        visible: !appSettings.showCli
-                    }
+                    Item { Layout.fillWidth: true }
 
                     Button {
                         objectName: "encodeButton"

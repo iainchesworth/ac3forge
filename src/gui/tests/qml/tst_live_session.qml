@@ -115,6 +115,11 @@ TestCase {
         const win = createTemporaryObject(mainWindowComponent, testCase);
         verify(win !== null);
         openLiveSessionTab(win);
+        // The real mouseClick below needs REAL geometry: without the polish
+        // wait the whole column overlaps at y≈0 offscreen (the same rule
+        // tst_guided_wizard documents), and this test only ever passed on
+        // the accident of what the un-laid-out soup put under the click.
+        wait(300);
 
         let writeCheck = null;
         let safetyCheck = null;

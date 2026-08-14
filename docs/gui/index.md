@@ -40,9 +40,12 @@ Minimum size 1280×900. Two panes, divided by a vertical rule:
   Guided, which fills the panel with its own steps) — tabs carry a badge counting their
   non-default settings, so a collapsed panel still declares itself.
 - **Run strip** (bottom): past and in-flight runs — file encodes, recordings, and real live
-  sessions alike — a live-generated `ac3cli` command line with a Copy button, and the primary
-  Encode button. Present in every tier, including Guided — a codec developer must always be able
-  to get back to a command line from what the UI shows. The line is genuinely complete: extra
+  sessions alike — a compact **`ac3cli` command-line chip**, and the primary Encode button.
+  Encode runs the encoder in-process, so the full command line is reference material rather
+  than the primary act: clicking the chip opens a popover with the complete live-generated
+  line (wrapped, with Copy). Present in every tier, including Guided — a codec developer must
+  always be able to get back to a command line from what the UI shows, and the popover is one
+  click away. The line is genuinely complete: extra
   sources ride as `src=`, the assignment as `map=`, non-default metadata in `print_meta_usage`'s
   own grammar, AC-3's bare `couple`, quoting where names carry spaces; a live source renders the
   `live` subcommand, and a Matroska container is honestly *two* commands (`… && ac3cli mkv …`),
@@ -69,7 +72,9 @@ Minimum size 1280×900. Two panes, divided by a vertical rule:
   sequence — **Audio**, **Speakers**, **Quality**, **Movement**, **Where it goes** — that reads
   and writes the exact same state Advanced and Expert do. There is no separate "wizard draft":
   switch tiers mid-session and whatever guided set is exactly what Advanced or Expert already
-  show for the same field, and vice versa.
+  show for the same field, and vice versa. The step bar and the assistant/Back/**Next** footer
+  stay pinned; only the step content scrolls between them, and each new step opens at its own
+  top — the way forward is never below the fold.
 
   ![Guided step 1 — Audio, with "What each sound does"](screenshots/guided-wizard-source.png)
 

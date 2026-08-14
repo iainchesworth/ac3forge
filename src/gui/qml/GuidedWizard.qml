@@ -28,6 +28,9 @@ ColumnLayout {
         if (currentStepKey === "output" && appWindow) {
             appWindow.applyGuidedLoudnessContract();
         }
+        // A new step starts reading from ITS top - scrolling down to finish
+        // one step must never leave the next one opened mid-page.
+        resetContentScroll();
     }
 
     // The enclosing ApplicationWindow, resolved once the tree exists — for
@@ -35,6 +38,21 @@ ColumnLayout {
     // in bindings.
     property var appWindow: null
     Component.onCompleted: appWindow = requestWindow()
+
+    // The step-content scroll's underlying Flickable, for Main.qml's
+    // --smoke-shot scroll control (smokeScrollY) — the wizard owns its own
+    // scroll now that its step bar and footer are pinned.
+    readonly property var contentFlickable: wizardScroll.contentItem
+
+    // Entering/leaving the room picker is a step change in everything but
+    // key, so it resets the reading position the same way (the step-change
+    // reset lives in onCurrentStepKeyChanged above).
+    function resetContentScroll() {
+        if (contentFlickable) {
+            contentFlickable.contentY = 0;
+        }
+    }
+    onRoomPickerChanged: resetContentScroll()
 
     readonly property var steps: [
         { key: "source", label: qsTr("Audio"),
@@ -387,6 +405,22 @@ ColumnLayout {
         }
     }
     Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 2; color: Theme.divider }
+
+    // ---- step content, in its own scroll --------------------------------------
+    // Only THIS scrolls. The step bar above and the assistant/Back/Next
+    // footer below stay pinned, so the way forward is always on screen -
+    // the footer used to live at the bottom of the whole page's scroll
+    // range and could sit a full screen below short step content.
+    ScrollView {
+        id: wizardScroll
+        objectName: "wizardScroll"
+        Layout.fillWidth: true
+        Layout.fillHeight: true
+        contentWidth: availableWidth
+
+        ColumnLayout {
+            width: parent ? parent.width : 0
+            spacing: 0
 
     // ---- step content ---------------------------------------------------------
     ColumnLayout {
@@ -1820,7 +1854,11 @@ ColumnLayout {
         }
     }
 
-    Item { Layout.fillHeight: true }
+            // Breathing room at the end of the scroll range, so the last
+            // control never kisses the pinned footer's divider.
+            Item { Layout.preferredHeight: Theme.space4 }
+        }
+    }
 
     // ---- assistant line + back/next -------------------------------------------
     Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.divider }
