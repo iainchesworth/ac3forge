@@ -39,6 +39,13 @@ assignments — send a sound to 'an object' and it appears here with a place in 
 an **Open assignments** button; **Add an object** and **Change what feeds them →** on the tab
 itself jump to the same table.
 
+Guided's own Movement step offers two one-click ways to fill this table once object mode is on,
+rather than requiring a trip to the full assignment table first: **Everything moves** sends every
+loaded channel to a new object (no bed position survives), and **Keep the bed, add movers** leaves
+whatever is already assigned alone and only sends still-unassigned channels — typically a file
+added since — to an object. Both write through `setAssignment` exactly as a hand edit in the table
+above would, so either is a starting point, not a locked-in mode.
+
 ## Sounds available, room plan, elevation, object list
 
 - **Sounds available** (top): one chip per loaded source (`orbit51.wav · 6 ch · in use`) with
