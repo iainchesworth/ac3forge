@@ -369,15 +369,15 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                 const std::span<const double, 512> full(windowed);
                 auto& first = half1_scratch_;
                 auto& second = half2_scratch_;
-                mdct256_forward_first(full.first<256>(), first);
-                mdct256_forward_second(full.last<256>(), second);
+                mdct256_forward_first(full.first<256>(), first, config_.fast_mdct);
+                mdct256_forward_second(full.last<256>(), second, config_.fast_mdct);
                 auto& out = coeffs_at(ch, block);
                 for (int k = 0; k < 128; ++k) {
                     out[static_cast<std::size_t>(2 * k)] = first[static_cast<std::size_t>(k)];
                     out[static_cast<std::size_t>(2 * k + 1)] = second[static_cast<std::size_t>(k)];
                 }
             } else {
-                mdct512_forward(windowed, coeffs_at(ch, block));
+                mdct512_forward(windowed, coeffs_at(ch, block), config_.fast_mdct);
             }
         }
         for (int n = 0; n < 256; ++n) {

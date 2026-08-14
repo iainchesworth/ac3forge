@@ -225,14 +225,21 @@ struct Tools {
     // rather than a second detector, so enabling it only has an effect on
     // channels/frames that also switch blocks.
     bool transient_prenoise = false;
+    // §7.9.4 fast N/4-FFT forward MDCT - a performance opt-in, not a coding
+    // tool that changes the bitstream's syntax the way the others do, but it
+    // lives here because this is the shared surface both codecs' CLI paths
+    // already read from. See EncoderConfig::fast_mdct / eac3::FrameConfig::
+    // fast_mdct for what it actually does.
+    bool fast_mdct = false;
 
     [[nodiscard]] bool any() const { return coupling || spx || aht || transient_prenoise; }
 };
 
 inline constexpr std::string_view kToolsSyntax =
-    "none | cpl | spx | aht | tpn | all (cpl:N / spx:N pin a band edge, aht:N the gain mode, "
-    "ecpl selects enhanced coupling instead of standard, tpn selects transient pre-noise "
-    "processing)";
+    "none | cpl | spx | aht | tpn | fastmdct | all (cpl:N / spx:N pin a band edge, aht:N the "
+    "gain mode, ecpl selects enhanced coupling instead of standard, tpn selects transient "
+    "pre-noise processing, fastmdct opts into the §7.9.4 fast forward MDCT - not part of "
+    "'all', which selects only the coding tools whose contribution 'all' is meant to measure)";
 
 // The '+'-joined token: "none", "cpl", "cpl+spx", "all", "cpl:4+spx:5",
 // "aht:0", "spx+noatten", "atten:12". Returns false on anything unrecognised

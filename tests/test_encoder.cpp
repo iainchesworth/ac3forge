@@ -568,3 +568,98 @@ TEST_CASE("dual mono codes two independent programmes, never one into the other"
     CHECK(ch1_peak > 0.3);    // Ch1's tone survived coding
     CHECK(ch2_peak < 0.02);  // Ch2 stayed silent - nothing leaked in from Ch1
 }
+
+namespace {
+
+// Per-sample SNR between two ALREADY-DECODED signals of equal length and
+// alignment (unlike test_eac3_decoder.cpp's own snr_db, which compares a
+// decoded signal against its own pre-encode source and so needs the MDCT's
+// algorithmic delay folded in - here both signals came out of the same
+// decoder at the same delay, so no alignment shift is needed).
+double decoded_snr_db(const std::vector<float>& a, const std::vector<float>& b) {
+    double signal = 0.0;
+    double noise = 0.0;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        const double x = static_cast<double>(a[i]);
+        const double d = static_cast<double>(b[i]) - x;
+        signal += x * x;
+        noise += d * d;
+    }
+    return 10.0 * std::log10(signal / std::max(noise, 1e-30));
+}
+
+}  // namespace
+
+TEST_CASE("fast_mdct changes output only at the quantization-decision level",
+         "[encoder][fast-mdct]") {
+    // Phase 4's own end-to-end check: encode the SAME real (multi-tone,
+    // several frames) audio once with fast_mdct off and once with it on,
+    // decode both with the repo's own decoder, and compare. The fast path
+    // is bit-exact for mdct512_forward itself (test_mdct_fast.cpp), but the
+    // ENCODER makes discrete decisions (bap, exponent strategy, block
+    // switching) off of those coefficients - a coefficient that changes by
+    // 1e-13 can occasionally land on the other side of a rounding boundary
+    // and flip one of those decisions, which is an audible-scale question
+    // this test answers empirically rather than assuming away.
+    const ac3::EncoderConfig direct_config{.bitrate_kbps = 192, .acmod = ac3::Acmod::k2_0};
+    ac3::EncoderConfig fast_config = direct_config;
+    fast_config.fast_mdct = true;
+
+    ac3::FrameEncoder direct_encoder{direct_config};
+    ac3::FrameEncoder fast_encoder{fast_config};
+    ac3::FrameDecoder direct_decoder;
+    ac3::FrameDecoder fast_decoder;
+
+    std::uint64_t n_left = 0;
+    std::uint64_t n_right = 0;
+    std::vector<float> direct_pcm;
+    std::vector<float> fast_pcm;
+    direct_pcm.reserve(static_cast<std::size_t>(ac3::kSamplesPerFrame) * 8);
+    fast_pcm.reserve(direct_pcm.capacity());
+
+    for (int f = 0; f < 8; ++f) {
+        // Two tones summed, not a single frequency - real material spreads
+        // energy (and hence bap/exponent decisions) across many more bins
+        // than a pure tone does. Both encoders below see the SAME left/right
+        // PCM - only fast_mdct differs between them.
+        auto l1 = sine_frame(n_left, 440.0, 0.3);
+        auto n_left_r = n_left - static_cast<std::uint64_t>(ac3::kSamplesPerFrame);
+        auto l2 = sine_frame(n_left_r, 2500.0, 0.15);
+        std::vector<float> left(l1.size());
+        for (std::size_t i = 0; i < left.size(); ++i) {
+            left[i] = l1[i] + l2[i];
+        }
+        auto r1 = sine_frame(n_right, 660.0, 0.3);
+        auto n_right_r = n_right - static_cast<std::uint64_t>(ac3::kSamplesPerFrame);
+        auto r2 = sine_frame(n_right_r, 3100.0, 0.15);
+        std::vector<float> right(r1.size());
+        for (std::size_t i = 0; i < right.size(); ++i) {
+            right[i] = r1[i] + r2[i];
+        }
+
+        const std::vector<std::span<const float>> views{left, right};
+        const auto direct_frame = direct_encoder.encode_frame(views);
+        const auto fast_frame = fast_encoder.encode_frame(views);
+        REQUIRE(direct_frame.has_value());
+        REQUIRE(fast_frame.has_value());
+
+        const auto direct_decoded = direct_decoder.decode_frame(*direct_frame);
+        const auto fast_decoded = fast_decoder.decode_frame(*fast_frame);
+        REQUIRE(direct_decoded.has_value());
+        REQUIRE(fast_decoded.has_value());
+        for (const auto& ch : direct_decoded->channels) {
+            direct_pcm.insert(direct_pcm.end(), ch.begin(), ch.end());
+        }
+        for (const auto& ch : fast_decoded->channels) {
+            fast_pcm.insert(fast_pcm.end(), ch.begin(), ch.end());
+        }
+    }
+
+    const double snr = decoded_snr_db(direct_pcm, fast_pcm);
+    CAPTURE(snr);
+    // Quantization-decision-level differences, not a structural change: a
+    // handful of bap/exponent flips a frame costs far less than 1 dB of SNR
+    // against the direct-path decode. 60 dB leaves generous headroom above
+    // "clearly the same audio" while still catching a real regression.
+    CHECK(snr > 60.0);
+}

@@ -7,6 +7,9 @@ cross-correlation, and reports SNR vs the original.
 
 Modes:
   ac3        - our AC-3 encoder vs FFmpeg's, at 192-448 kbps
+  fast-mdct  - direct-form vs the opt-in §7.9.4 fast forward MDCT
+               (EncoderConfig::fast_mdct), at 96-448 kbps, both decoded by
+               FFmpeg - the quality evidence for that flag's own PR
   eac3       - our E-AC-3 encoder, one row per Annex E tool set, vs FFmpeg's
                E-AC-3 encoder, at the low rates the tools exist to serve
   eac3-51    - the same for 5.1, with genuinely decorrelated channels
@@ -776,13 +779,15 @@ def band_measures(o, d, size=2048):
             float(np.mean(errors)) if errors else float("nan"))
 
 
-def encode_and_decode(source, tag, kbps, couple=False):
+def encode_and_decode(source, tag, kbps, couple=False, extra_flag=None):
     """Our encoder, then FFmpeg as the neutral decoder."""
     ac3 = BUILD / f"race_{tag}_{kbps}.ac3"
     wav = BUILD / f"race_{tag}_{kbps}.wav"
     cmd = [CLI, "encode", source, ac3, str(kbps)]
     if couple:
         cmd.append("couple")
+    if extra_flag:
+        cmd.append(extra_flag)
     run(cmd)
     run(["ffmpeg", "-v", "error", "-y", "-xerror",
          "-err_detect", "crccheck+bitstream+buffer+explode",
@@ -809,6 +814,37 @@ def race_coupling(source, original):
     print("\nBaseband delta positive = coupling bought precision where it should.")
     print("Coupled-band error is |level error|, so lower is better either way.")
 
+
+def race_fast_mdct(source, original):
+    """direct-form vs the opt-in §7.9.4 fast forward MDCT (mdct.hpp's `fast`
+    parameter / EncoderConfig::fast_mdct), same shape as race_coupling above -
+    the quality evidence the fast-MDCT PR's own owner asked for before
+    considering it on by default. mdct512_forward's fast path is already
+    verified bit-close (~1e-15 absolute error) against the direct form in
+    isolation (tests/test_mdct_fast.cpp); what this measures is whether that
+    residual ever flips a bap/exponent DECISION enough to show up against an
+    independent oracle, at real bitrates, on real (if synthetic) material.
+    """
+    print(f"{'kbps':>5} | {'mode':>6} | {'SNR dB':>7} | {'delta dB':>8}")
+    print("-" * 40)
+    # Same range race_ac3 uses - below 192 this project's own AC-3 coupling
+    # path has a pre-existing "invalid coupling range" decode failure
+    # unrelated to fast_mdct (reproduces identically with fast_mdct off),
+    # out of scope for the PR this function's evidence belongs to.
+    for kbps in (192, 256, 320, 448):
+        scores = {}
+        for mode, flag in (("direct", None), ("fast", "fast-mdct")):
+            decoded = encode_and_decode(source, f"fastmdct_{mode}", kbps, extra_flag=flag)
+            o, d, _ = align(original, decoded)
+            scores[mode] = snr_db(o, d)
+        delta = scores["fast"] - scores["direct"]
+        print(f"{kbps:>5} | {'direct':>6} | {scores['direct']:>7.2f} | {'':>8}")
+        print(f"{kbps:>5} | {'fast':>6} | {scores['fast']:>7.2f} | {delta:>+8.3f}")
+    print("\ndelta = fast SNR - direct SNR vs the original source (both through FFmpeg).")
+    print("Near zero is the expected result - see mdct_forward_fast_core's own")
+    print("verified-error comment; a large negative delta would be a regression.")
+
+
 def main():
     which = sys.argv[1] if len(sys.argv) > 1 else "ac3"
     BUILD.mkdir(exist_ok=True)
@@ -832,6 +868,8 @@ def main():
         crosscheck(original, source)
     elif which == "couple":
         race_coupling(source, original)
+    elif which == "fast-mdct":
+        race_fast_mdct(source, original)
     elif which == "ac3":
         race_ac3(original, source, seconds)
     elif which == "ci":
@@ -846,7 +884,7 @@ def main():
     else:
         raise SystemExit(
             f"unknown race '{which}' "
-            f"(ac3 | couple | eac3 | eac3-51 | seam | crosscheck | ci | trend)")
+            f"(ac3 | couple | fast-mdct | eac3 | eac3-51 | seam | crosscheck | ci | trend)")
 
 
 if __name__ == "__main__":

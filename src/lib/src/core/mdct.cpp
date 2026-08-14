@@ -2,7 +2,9 @@
 
 #include <array>
 #include <cmath>
+#include <complex>
 #include <numbers>
+#include <utility>
 
 #include "ac3/core/window.hpp"
 
@@ -171,6 +173,114 @@ void mdct_forward_core(std::span<const double> windowed, const ForwardCosTable<N
     }
 }
 
+// --- §7.9.4 fast N/4-FFT structure (opt-in, see mdct512_forward's own doc
+// comment and FrameConfig::fast_mdct / eac3::FrameConfig::fast_mdct) --------
+//
+// Long transform (alpha = 0) ONLY. The direct-form phase is
+// theta_k(n) + phi_k(alpha), phi_k(alpha) = (pi/4)(2k+1)(1+alpha) - a shift
+// that depends on k but never n - and phi_k(0) = (pi/4)(2k+1) is exactly the
+// "+ N/4" term folded into the standard MDCT formula this fold computes
+// (X[k] = (-2/N) sum x[n] cos(2pi/N (n+1/2+N/4)(k+1/2))). That term is NOT
+// zero, so it does not vanish for alpha = 0 - a fact worth stating plainly
+// because an earlier version of this comment claimed alpha = -1 (phi_k = 0,
+// the BARE cosine sum with no N/4 shift at all) was "the same formula" as
+// alpha = 0 "just at a different NLen". It is not: phi_k(0) != phi_k(-1), so
+// X_0 and X_{-1} are two different transforms of the same data, and a
+// standalone numerical check (comparing this exact fold against a hand
+// reference implementing each phase separately) confirmed the fold below
+// reproduces X_0 to ~1e-15 but is off by 100%+ against X_{-1}. Both
+// mdct256_forward_first (alpha = -1) and mdct256_forward_second (alpha = +1)
+// therefore have NO accelerated path today - each needs its own fold,
+// independently derived and verified against ITS OWN direct-form table,
+// which is future work. Their `fast` parameters exist for interface
+// symmetry with mdct512_forward's but currently always take the direct
+// (already table-cached, already bit-exact) path.
+//
+// The fold below computes DCT-IV(u) - u the length-M "folded" input built
+// from the four quarters of the windowed NLen-sample block - via one
+// P = M/2-point complex FFT, the standard trick for a real-input DCT-IV.
+// Verified 2026-08-14 against ForwardCosTable (this file's own direct-form
+// ground truth) to max relative error ~3e-12 on both random data and real
+// audio; see tests/test_mdct_fast.cpp, which asserts a 1e-10 bound.
+
+// Iterative radix-2 decimation-in-time FFT, in place: on return `a` holds
+// A[k] = sum_m a[m] * exp(-2*pi*i*m*k/P) for k = 0..P-1 (unnormalized forward
+// transform). `a.size()` must be a power of two - true of every P this file
+// calls it with (128 for the long transform, 64 for the first short one).
+void fft_forward_pow2(std::span<std::complex<double>> a) {
+    const std::size_t n = a.size();
+    for (std::size_t i = 1, j = 0; i < n; ++i) {
+        std::size_t bit = n >> 1;
+        for (; (j & bit) != 0; bit >>= 1) {
+            j ^= bit;
+        }
+        j ^= bit;
+        if (i < j) {
+            std::swap(a[i], a[j]);
+        }
+    }
+    for (std::size_t len = 2; len <= n; len <<= 1) {
+        const double ang = -2.0 * kPi / static_cast<double>(len);
+        const std::complex<double> wlen(std::cos(ang), std::sin(ang));
+        for (std::size_t i = 0; i < n; i += len) {
+            std::complex<double> w(1.0, 0.0);
+            for (std::size_t j = 0; j < len / 2; ++j) {
+                const auto u = a[i + j];
+                const auto v = a[i + j + len / 2] * w;
+                a[i + j] = u + v;
+                a[i + j + len / 2] = u - v;
+                w *= wlen;
+            }
+        }
+    }
+}
+
+// DCT-IV-via-FFT fast path for alpha in {0, -1} (see the block comment
+// above): NLen is the transform's own length (512 long, 256 first-short),
+// M = NLen/2, Q = NLen/4, P = M/2. Quarters of `windowed`: a = [0,Q),
+// b = [Q,2Q), c = [2Q,3Q), d = [3Q,4Q). u = concat(-c_R - d, a - b_R),
+// R = reversed, length M. z[m] = (u[2m] + i*u[M-1-2m]) * exp(-i*pi*m/M);
+// Z = FFT_P(z); w[k] = Z[k] * exp(-i*pi*(4k+1)/(4M)); X[2k] = Re(w[k]),
+// X[M-1-2k] = -Im(w[k]); coeffs = (-2/NLen) * X.
+template <int NLen>
+void mdct_forward_fast_core(std::span<const double> windowed, std::span<double> coeffs) {
+    constexpr int Q = NLen / 4;
+    constexpr int M = NLen / 2;
+    constexpr int P = M / 2;
+
+    std::array<double, static_cast<std::size_t>(M)> u{};
+    for (int i = 0; i < Q; ++i) {
+        // -c_R[i] - d[i] = -windowed[3Q-1-i] - windowed[3Q+i]
+        u[static_cast<std::size_t>(i)] = -windowed[static_cast<std::size_t>(3 * Q - 1 - i)] -
+                                         windowed[static_cast<std::size_t>(3 * Q + i)];
+    }
+    for (int j = 0; j < Q; ++j) {
+        // a[j] - b_R[j] = windowed[j] - windowed[2Q-1-j]
+        u[static_cast<std::size_t>(Q + j)] = windowed[static_cast<std::size_t>(j)] -
+                                             windowed[static_cast<std::size_t>(2 * Q - 1 - j)];
+    }
+
+    std::array<std::complex<double>, static_cast<std::size_t>(P)> z{};
+    for (int m = 0; m < P; ++m) {
+        const double ang = -kPi * static_cast<double>(m) / static_cast<double>(M);
+        const std::complex<double> tw(std::cos(ang), std::sin(ang));
+        z[static_cast<std::size_t>(m)] =
+            std::complex<double>(u[static_cast<std::size_t>(2 * m)],
+                                 u[static_cast<std::size_t>(M - 1 - 2 * m)]) *
+            tw;
+    }
+    fft_forward_pow2(z);
+
+    for (int k = 0; k < P; ++k) {
+        const double ang2 =
+            -kPi * (4.0 * k + 1.0) / (4.0 * static_cast<double>(M));
+        const std::complex<double> tw2(std::cos(ang2), std::sin(ang2));
+        const auto w = z[static_cast<std::size_t>(k)] * tw2;
+        coeffs[static_cast<std::size_t>(2 * k)] = (-2.0 / NLen) * w.real();
+        coeffs[static_cast<std::size_t>(M - 1 - 2 * k)] = (-2.0 / NLen) * (-w.imag());
+    }
+}
+
 }  // namespace
 
 void apply_analysis_window(std::span<const double, 512> x, std::span<double, 512> windowed) {
@@ -180,15 +290,39 @@ void apply_analysis_window(std::span<const double, 512> x, std::span<double, 512
     }
 }
 
-void mdct512_forward(std::span<const double, 512> windowed, std::span<double, 256> coeffs) {
-    mdct_forward_core<512>(windowed, forward_cos_table_long(), coeffs);
+void mdct512_forward(std::span<const double, 512> windowed, std::span<double, 256> coeffs,
+                     bool fast) {
+    if (fast) {
+        mdct_forward_fast_core<512>(windowed, coeffs);
+    } else {
+        mdct_forward_core<512>(windowed, forward_cos_table_long(), coeffs);
+    }
 }
 
-void mdct256_forward_first(std::span<const double, 256> windowed, std::span<double, 128> coeffs) {
+void mdct256_forward_first(std::span<const double, 256> windowed, std::span<double, 128> coeffs,
+                           bool fast) {
+    // alpha = -1 is the BARE cosine sum (phi_k = 0, no "+N/4" phase shift at
+    // all) - a genuinely different transform from alpha = 0's, which
+    // mdct_forward_fast_core computes (see its own comment for why an
+    // earlier version of this file wrongly treated the two as identical).
+    // Its fast fold is independently-derived future work; `fast` is accepted
+    // for interface symmetry with mdct512_forward's but always takes the
+    // direct, already-cached, already-bit-exact path today.
+    (void)fast;
     mdct_forward_core<256>(windowed, forward_cos_table_first(), coeffs);
 }
 
-void mdct256_forward_second(std::span<const double, 256> windowed, std::span<double, 128> coeffs) {
+void mdct256_forward_second(std::span<const double, 256> windowed, std::span<double, 128> coeffs,
+                            bool fast) {
+    // alpha = +1's phase shift is a genuine sine-kernel (DST-IV-shaped) sum,
+    // not a phase-shifted copy of the cosine one mdct_forward_fast_core
+    // computes - see mdct_forward_fast_core's own comment. Its fast fold is
+    // future work, independently derived and verified the same way the
+    // long transform's was; `fast` is accepted here for interface symmetry
+    // with its two siblings (all three take the SAME parameter, so a caller
+    // does not need to know which transform actually accelerates) but
+    // always takes the direct, already-cached, already-bit-exact path today.
+    (void)fast;
     mdct_forward_core<256>(windowed, forward_cos_table_second(), coeffs);
 }
 

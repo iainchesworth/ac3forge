@@ -66,6 +66,11 @@ struct AtmosConfig {
     // the mantissas, so the bed here is encoded at slightly higher fidelity.
     // See encode_frame().
     bool emit_object_metadata = true;
+    // §7.9.4 fast N/4-FFT forward MDCT (see mdct.hpp's mdct512_forward),
+    // opt-in and off by default - see eac3::FrameConfig::fast_mdct, which is
+    // what the bed's own independent substream actually reads; this just
+    // carries the same choice through AtmosEncoder's higher-level config.
+    bool fast_mdct = false;
 };
 
 // One object's placement for one frame. Positions are room-anchored per
