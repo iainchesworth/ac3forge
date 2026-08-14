@@ -4,6 +4,8 @@
 #include <QQmlApplicationEngine>
 #include <QQuickStyle>
 #include <QQuickWindow>
+#include <QSettings>
+#include <QTemporaryDir>
 #include <QTimer>
 #include <QUrl>
 #include <QVariantList>
@@ -11,6 +13,7 @@
 #include <algorithm>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <print>
 #include <vector>
 
@@ -507,6 +510,22 @@ int main(int argc, char* argv[]) {
     QGuiApplication app(argc, argv);
     QGuiApplication::setApplicationName(QStringLiteral("ac3forge"));
     QGuiApplication::setOrganizationName(QStringLiteral("ac3forge"));
+
+    // A smoke run must neither INHERIT the user's saved session (session
+    // restore runs at window creation - a restored object-mode session under
+    // a screenshot's own props made "reproducible" screenshots depend on
+    // whatever ran last) nor CLOBBER that session on close (saveSession
+    // fires for every window, smoke windows included). The same scratch-
+    // store recipe the QML test binary uses keeps every smoke mode hermetic;
+    // the temporary directory lives to the end of main and evaporates.
+    std::optional<QTemporaryDir> smoke_settings_scratch;
+    if (argc > 1
+        && QString::fromLocal8Bit(argv[1]).startsWith(QLatin1String("--smoke"))) {
+        smoke_settings_scratch.emplace();
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope,
+                           smoke_settings_scratch->path());
+    }
 
     // The handoff's typeface ("Archivo throughout; headings weight 800,
     // body 400/500/600"), bundled as resources so the design renders as
