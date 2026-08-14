@@ -77,6 +77,7 @@ Full program: [`examples/atmos_objects.cpp`](https://github.com/iainchesworth/ac
 | `bitrate_kbps` | 448 | Per substream, as everywhere else. |
 | `num_bands_idx` | 4 | Index into `joc::kNumBands` (Table 50). More bands cost codewords without giving the matrix anything new to say. |
 | `fine_quant` | `false` | §6.3.3.7's half-step quantizer, roughly one more bit per coefficient. Worth it when objects are nearly degenerate. |
+| `fast_mdct` | `true` | The §7.9.4 fast forward MDCT for the whole object encode: the bed's substream (via `eac3::FrameConfig::fast_mdct`) **and** the per-object `band_energy` transforms feeding the reconstruction-matrix solve. `false` forces the direct §8.2.3.2 reference form everywhere, for validation — the CLI spells that `fast-mdct=off` on the `atmos*` commands. |
 
 At most 16 objects (`joc::kMaxObjects`, per TS 103 420 §8.3.2.2). `encoder.bed()` returns the
 5.1 bed the last frame encoded — what a legacy decoder hears, and the thing most worth

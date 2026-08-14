@@ -96,8 +96,11 @@ void print_meta_usage() {
                  "keep whatever frames were already encoded (named beside the intended output as "
                  "<name>.partial.<ext>) instead of discarding them - off by default, matching the "
                  "GUI's own keep-partial-output preference");
-    std::println("  fast-mdct         encode/sine: opt into the §7.9.4 fast forward MDCT - off "
-                 "by default; eac3-encode/eac3-sine reach the same flag via tools=fastmdct");
+    std::println("  fast-mdct=off     force the direct §8.2.3.2 forward MDCT instead of the "
+                 "default §7.9.4 fast path (identical streams to within ~1e-12 coefficient "
+                 "error; the direct form is the validation oracle) - applies wherever this "
+                 "command encodes, incl. atmos/record/live; eac3-encode/eac3-sine use "
+                 "tools=nofastmdct instead; bare fast-mdct (the old opt-in) is a no-op");
     std::println();
     std::println("source options (encode/eac3-encode; any order, after the positional "
                  "arguments):");
@@ -164,12 +167,18 @@ struct Options {
     // per invocation rather than as a standing preference - see
     // write_partial_output.
     bool keep_partial = false;
-    // encode/sine: opts into the §7.9.4 fast forward MDCT (plan::Tools::
-    // fast_mdct), off by default. E-AC-3's own tools= string already has a
-    // "fastmdct" token that reaches the same field (plan::parse_tools) - AC-3
-    // has no tools= string to extend, so this bare word is its equivalent,
-    // the same relationship 'couple' has to cpl/cpl:N.
-    bool fast_mdct = false;
+    // The §7.9.4 fast forward MDCT (plan::Tools::fast_mdct), on by default
+    // like the library configs it feeds; fast-mdct=off forces the direct
+    // §8.2.3.2 reference form wherever this command encodes (encode/sine and
+    // the atmos/record/live session builders), the same key=off shape
+    // surmixlev=/lfemix= already use. E-AC-3's own tools= string reaches the
+    // same field with its own tokens ("nofastmdct" to force direct, matching
+    // "noatten"; the old opt-in "fastmdct" parses as a no-op) - AC-3 has no
+    // tools= string to extend, so this option is its equivalent, the same
+    // relationship 'couple' has to cpl/cpl:N. The bare word 'fast-mdct'
+    // (the opt-in spelling from when this defaulted off) stays accepted and
+    // now names what already happens.
+    bool fast_mdct = true;
 };
 
 bool parse_double(std::string_view text, double& out) {
@@ -207,6 +216,20 @@ bool parse_options(std::span<char*> tokens, Options& out) {
         if (token == "sign-objects") {
             out.sign_objects = true;
             continue;
+        }
+        if (key == "fast-mdct") {
+            // The bare word (handled above) is the historical opt-in; with
+            // the fast path now the default, the value form exists for the
+            // direction that still needs saying.
+            if (value == "off") {
+                out.fast_mdct = false;
+                continue;
+            }
+            std::println(stderr,
+                         "error: the fast MDCT is the default; 'fast-mdct=off' forces the "
+                         "direct §8.2.3.2 transform (got '{}')",
+                         token);
+            return false;
         }
         if (key == "drc") {
             // On the decode side drc= is a scale factor (§7.7.1 partial
@@ -1521,7 +1544,8 @@ int run_atmos(std::string_view out_path, std::uint32_t seconds, std::uint32_t bi
     ac3::oba::AtmosEncoder encoder{{.bitrate_kbps = bitrate,
                                     .dialnorm = meta.p.dialnorm,
                                     .num_bands_idx = 4,
-                                    .emit_object_metadata = emit_objects},
+                                    .emit_object_metadata = emit_objects,
+                                    .fast_mdct = meta.fast_mdct},
                                    static_cast<int>(objects)};
 
     // Distinct tones so the objects are separable in the first place, and a
@@ -1695,7 +1719,8 @@ int run_atmos_path(std::string_view out_path, std::string_view paths_path, std::
     }
 
     ac3::oba::AtmosEncoder encoder{
-        {.bitrate_kbps = bitrate, .dialnorm = meta.p.dialnorm, .num_bands_idx = 4},
+        {.bitrate_kbps = bitrate, .dialnorm = meta.p.dialnorm, .num_bands_idx = 4,
+         .fast_mdct = meta.fast_mdct},
         static_cast<int>(objects)};
 
     // Distinct tones purely for audibility, same as 'atmos'.
@@ -1786,7 +1811,8 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
     }
 
     ac3::oba::AtmosEncoder encoder{
-        {.sample_rate = *sr, .bitrate_kbps = bitrate, .dialnorm = dialnorm, .num_bands_idx = 4},
+        {.sample_rate = *sr, .bitrate_kbps = bitrate, .dialnorm = dialnorm, .num_bands_idx = 4,
+         .fast_mdct = meta.fast_mdct},
         static_cast<int>(count)};
 
     // Objects that reach the bed by the same route are exactly the ones JOC
@@ -1921,6 +1947,7 @@ int run_orbit(std::string_view out_path, std::uint32_t seconds, std::uint32_t bi
     const plan::Plan p{.codec = plan::Codec::kAc3,
                        .layout = plan::LayoutId::k51,
                        .bitrate_kbps = bitrate,
+                       .tools = {.fast_mdct = meta.fast_mdct},
                        .meta = meta.p};
     // Heap-allocated: FrameEncoder carries several KB of MDCT scratch/history
     // state, and this function only constructs it once (PREfast's C6262).
@@ -2008,7 +2035,7 @@ int run_devices() {
 // Capture live audio and encode it straight to AC-3. The capture thread fills
 // a lock-free ring; this thread drains it a frame at a time.
 int run_record(std::string_view out_path, std::uint32_t seconds, std::uint32_t bitrate,
-               int device_index) {
+               int device_index, const Options& meta) {
     const auto devices = ac3::capture::enumerate_devices();
     if (!devices) {
         std::println(stderr, "error: {}", ac3::capture::describe(devices.error()));
@@ -2050,8 +2077,8 @@ int run_record(std::string_view out_path, std::uint32_t seconds, std::uint32_t b
 
     // Heap-allocated: FrameEncoder carries several KB of MDCT scratch/history
     // state, and this function only constructs it once (PREfast's C6262).
-    auto encoder = std::make_unique<ac3::FrameEncoder>(
-        ac3::EncoderConfig{.sample_rate = sr, .bitrate_kbps = bitrate});
+    auto encoder = std::make_unique<ac3::FrameEncoder>(ac3::EncoderConfig{
+        .sample_rate = sr, .bitrate_kbps = bitrate, .fast_mdct = meta.fast_mdct});
     // Meters what the encoder is fed, not what the endpoint delivers: a
     // needle that moves on a channel the stream never carries would be a lie.
     ac3::analysis::LevelMeter meter{ac3::Acmod::k2_0, false, capture.sample_rate()};
@@ -3385,12 +3412,13 @@ int run_live(std::string_view out_path, int capture_device, std::uint32_t second
     // and this function only constructs them once, at session start, not per
     // audio frame (PREfast's C6262) - same pattern as EncoderController's
     // runLiveSession, the GUI's equivalent of this function.
-    auto ac3_encoder = std::make_unique<ac3::FrameEncoder>(
-        ac3::EncoderConfig{.sample_rate = sr, .bitrate_kbps = bitrate});
+    auto ac3_encoder = std::make_unique<ac3::FrameEncoder>(ac3::EncoderConfig{
+        .sample_rate = sr, .bitrate_kbps = bitrate, .fast_mdct = meta.fast_mdct});
     std::unique_ptr<ac3::oba::AtmosEncoder> atmos_encoder;
     if (atmos) {
         atmos_encoder = std::make_unique<ac3::oba::AtmosEncoder>(
-            ac3::oba::AtmosConfig{.sample_rate = sr, .bitrate_kbps = bitrate, .num_bands_idx = 4},
+            ac3::oba::AtmosConfig{.sample_rate = sr, .bitrate_kbps = bitrate,
+                                  .num_bands_idx = 4, .fast_mdct = meta.fast_mdct},
             static_cast<int>(nobjects));
     }
     auto ac3_monitor_decoder = std::make_unique<ac3::FrameDecoder>();
@@ -3751,7 +3779,7 @@ constexpr std::array<Command, 21> kCommands{{
      }},
     {"record", 2, "<out.ac3> [seconds] [bitrate_kbps] [device_index]", "", Needs::kCapture,
      [](const Args& x) {
-         return run_record(x.str(1), x.u32(2, 5), x.u32(3, 192), x.i32(4, 0));
+         return run_record(x.str(1), x.u32(2, 5), x.u32(3, 192), x.i32(4, 0), x.meta);
      }},
     {"live", 3,
      "<out.ac3|out.ec3> <capture_device> [seconds] [bitrate_kbps] [monitor_device] "

@@ -108,7 +108,7 @@ constexpr double kAbsoluteFloor = 1e-20;
 // object-encoding API AtmosEncoder exposes and no caller outside this
 // library should need it directly.
 void band_energy(std::span<const float> signal, std::span<const std::uint8_t, 64> mapping,
-                 std::span<double> out) {
+                 std::span<double> out, bool fast) {
     AC3_ZONE_SCOPED_N("band_energy");
     std::ranges::fill(out, 0.0);
     // The frame's own six blocks, without the previous frame's overlap: this
@@ -124,7 +124,7 @@ void band_energy(std::span<const float> signal, std::span<const std::uint8_t, 64
         std::array<double, 512> windowed{};
         apply_analysis_window(time, windowed);
         std::array<double, 256> coeffs{};
-        mdct512_forward(windowed, coeffs);
+        mdct512_forward(windowed, coeffs, fast);
         for (int bin = 0; bin < 256; ++bin) {
             const auto band = mapping[static_cast<std::size_t>(bin / 4)];
             out[band] += coeffs[static_cast<std::size_t>(bin)] *
@@ -249,7 +249,7 @@ std::expected<eac3::AccessUnit, FrameError> AtmosEncoder::encode_frame(
     for (std::size_t object = 0; object < count; ++object) {
         const auto slot = std::span{power}.subspan(
             object * static_cast<std::size_t>(bands), static_cast<std::size_t>(bands));
-        band_energy(objects[object], mapping, slot);
+        band_energy(objects[object], mapping, slot, config_.fast_mdct);
         // The signal being reconstructed is the object AT ITS GAIN, so its
         // power carries the gain squared and the geometry stays in `pan`.
         const double squared = scale[object] * scale[object];

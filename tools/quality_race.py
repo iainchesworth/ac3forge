@@ -7,9 +7,9 @@ cross-correlation, and reports SNR vs the original.
 
 Modes:
   ac3        - our AC-3 encoder vs FFmpeg's, at 192-448 kbps
-  fast-mdct  - direct-form vs the opt-in §7.9.4 fast forward MDCT
-               (EncoderConfig::fast_mdct), at 96-448 kbps, both decoded by
-               FFmpeg - the quality evidence for that flag's own PR
+  fast-mdct  - direct-form (fast-mdct=off) vs the default §7.9.4 fast
+               forward MDCT (EncoderConfig::fast_mdct), both decoded by
+               FFmpeg - the quality evidence that made fast the default
   eac3       - our E-AC-3 encoder, one row per Annex E tool set, vs FFmpeg's
                E-AC-3 encoder, at the low rates the tools exist to serve
   eac3-51    - the same for 5.1, with genuinely decorrelated channels
@@ -816,14 +816,16 @@ def race_coupling(source, original):
 
 
 def race_fast_mdct(source, original):
-    """direct-form vs the opt-in §7.9.4 fast forward MDCT (mdct.hpp's `fast`
-    parameter / EncoderConfig::fast_mdct), same shape as race_coupling above -
-    the quality evidence the fast-MDCT PR's own owner asked for before
-    considering it on by default. mdct512_forward's fast path is already
-    verified bit-close (~1e-15 absolute error) against the direct form in
-    isolation (tests/test_mdct_fast.cpp); what this measures is whether that
-    residual ever flips a bap/exponent DECISION enough to show up against an
-    independent oracle, at real bitrates, on real (if synthetic) material.
+    """direct-form (fast-mdct=off) vs the default §7.9.4 fast forward MDCT
+    (mdct.hpp's `fast` parameter / EncoderConfig::fast_mdct), same shape as
+    race_coupling above - originally the quality evidence the fast-MDCT PR's
+    owner asked for before making fast the default, kept as the standing
+    check that the two paths still agree. mdct512_forward's fast path is
+    already verified bit-close (~1e-15 absolute error) against the direct
+    form in isolation (tests/test_mdct_fast.cpp); what this measures is
+    whether that residual ever flips a bap/exponent DECISION enough to show
+    up against an independent oracle, at real bitrates, on real (if
+    synthetic) material.
     """
     print(f"{'kbps':>5} | {'mode':>6} | {'SNR dB':>7} | {'delta dB':>8}")
     print("-" * 40)
@@ -833,7 +835,9 @@ def race_fast_mdct(source, original):
     # out of scope for the PR this function's evidence belongs to.
     for kbps in (192, 256, 320, 448):
         scores = {}
-        for mode, flag in (("direct", None), ("fast", "fast-mdct")):
+        # The default IS the fast path now, so it is the direct leg that
+        # needs a flag - the inverse of how this table was first gathered.
+        for mode, flag in (("direct", "fast-mdct=off"), ("fast", None)):
             decoded = encode_and_decode(source, f"fastmdct_{mode}", kbps, extra_flag=flag)
             o, d, _ = align(original, decoded)
             scores[mode] = snr_db(o, d)

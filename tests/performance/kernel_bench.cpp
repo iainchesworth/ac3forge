@@ -214,8 +214,9 @@ int main(int argc, char** argv) {
         g_sink += coeffs[64];
     }));
 
-    // --- mdct512_forward, fast path (opt-in §7.9.4 N/4-FFT structure,
-    // EncoderConfig::fast_mdct / eac3::FrameConfig::fast_mdct) - the number
+    // --- mdct512_forward, fast path (§7.9.4 N/4-FFT structure - what
+    // EncoderConfig::fast_mdct / eac3::FrameConfig::fast_mdct, default on,
+    // actually run; the direct row above is the reference form) - the number
     // this kernel's own fast/direct comparison exists to produce.
     results.push_back(time_kernel("mdct512_forward_fast", [&] {
         std::array<double, 256> coeffs{};
@@ -321,7 +322,14 @@ int main(int argc, char** argv) {
     const auto& mapping = ac3::joc::kSubbandToBand[4];  // idx 4 -> 9 bands, AtmosConfig's default
     results.push_back(time_kernel("band_energy", [&] {
         std::array<double, 9> energy{};
-        ac3::oba::band_energy(frame0, mapping, energy);
+        ac3::oba::band_energy(frame0, mapping, energy, /*fast=*/false);
+        g_sink += energy[0];
+    }));
+    // The same frame down the §7.9.4 fast path - what AtmosConfig::fast_mdct
+    // (default on) actually runs; the direct row above is the reference form.
+    results.push_back(time_kernel("band_energy_fast", [&] {
+        std::array<double, 9> energy{};
+        ac3::oba::band_energy(frame0, mapping, energy, /*fast=*/true);
         g_sink += energy[0];
     }));
 

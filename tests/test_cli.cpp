@@ -170,6 +170,66 @@ TEST_CASE("offset= rejects malformed tokens", "[cli][offset]") {
     }
 }
 
+TEST_CASE("fast-mdct is default-on with =off as the negation", "[cli][fast-mdct]") {
+    const auto dir = scratch_dir();
+    const auto wav_path = dir / "fastmdct_in.wav";
+    const auto channels = make_tone_channels(2, 4000, 48000);
+    REQUIRE(ac3::io::write_wav_f32(wav_path.string(), channels, 48000).has_value());
+
+    SECTION("fast-mdct=off encodes down the direct path") {
+        const auto out_path = dir / "fastmdct_off.ac3";
+        const auto log = dir / "fastmdct_off.log";
+        fs::remove(out_path);
+        const auto rc = run_cli("encode \"" + wav_path.string() + "\" \"" + out_path.string() +
+                                    "\" 192 stereo fast-mdct=off",
+                                log);
+        CHECK(rc == 0);
+        CHECK(fs::exists(out_path));
+    }
+
+    SECTION("the bare opt-in word from the default-off era still parses") {
+        const auto out_path = dir / "fastmdct_bare.ac3";
+        const auto log = dir / "fastmdct_bare.log";
+        fs::remove(out_path);
+        const auto rc = run_cli("encode \"" + wav_path.string() + "\" \"" + out_path.string() +
+                                    "\" 192 stereo fast-mdct",
+                                log);
+        CHECK(rc == 0);
+        CHECK(fs::exists(out_path));
+    }
+
+    SECTION("any value other than off is refused, not ignored") {
+        const auto out_path = dir / "fastmdct_bad.ac3";
+        const auto log = dir / "fastmdct_bad.log";
+        fs::remove(out_path);
+        const auto rc = run_cli("encode \"" + wav_path.string() + "\" \"" + out_path.string() +
+                                    "\" 192 stereo fast-mdct=fast",
+                                log);
+        CHECK(rc != 0);
+        CHECK_FALSE(fs::exists(out_path));
+        CHECK(read_log(log).find("fast-mdct") != std::string::npos);
+    }
+
+    SECTION("eac3 spells it tools=nofastmdct, and the old fastmdct token is a no-op") {
+        const auto off_path = dir / "fastmdct_eac3_off.ec3";
+        const auto log = dir / "fastmdct_eac3.log";
+        fs::remove(off_path);
+        const auto rc = run_cli("eac3-encode \"" + wav_path.string() + "\" \"" +
+                                    off_path.string() + "\" 192 nofastmdct stereo",
+                                log);
+        CHECK(rc == 0);
+        CHECK(fs::exists(off_path));
+
+        const auto legacy_path = dir / "fastmdct_eac3_legacy.ec3";
+        fs::remove(legacy_path);
+        const auto rc2 = run_cli("eac3-encode \"" + wav_path.string() + "\" \"" +
+                                     legacy_path.string() + "\" 192 fastmdct stereo",
+                                 log);
+        CHECK(rc2 == 0);
+        CHECK(fs::exists(legacy_path));
+    }
+}
+
 // capture2= is 'live'-only, but its rejection happens in parse_options,
 // before Needs::kCapture is even checked (see run_main: parse_options runs
 // on the whole trailing-options span before the per-command needs gate) -
