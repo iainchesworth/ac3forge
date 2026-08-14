@@ -51,6 +51,63 @@ const Twiddles2& twiddles2() {
     return t;
 }
 
+// §7.9.4.1 step 3: the N/4-point complex "IFFT" direct-form sum needs
+// cos(8*pi*k*n/N) and sin(8*pi*k*n/N) for every (k, n) pair in the
+// kQuarter x kQuarter grid below. This depends only on (k, n), never on the
+// coefficients being transformed, so - like Twiddles/Twiddles2 above - it's
+// the same fixed matrix on every call and can be computed once instead of
+// (kQuarter^2 =) 16,384 fresh cos+sin pairs per transform.
+//
+// This is deliberately a full matrix, not a period-128 table indexed by
+// (k*n) % 128 (the trick fft.cpp's dft512 uses for its own twiddles):
+// std::cos(8*pi*k*n/N) reaches an UN-reduced angle of ~792 radians at
+// k=n=127, and empirically std::cos of that large angle differs from
+// std::cos of the small angle it's congruent to mod 2*pi by ~1.3e-13 -
+// nowhere near bit-identical, just close enough to hide under this file's
+// existing 1e-10 golden tolerances. Storing the exact expression this loop
+// already evaluated, just once instead of every call, has no such gap.
+struct InnerSumTable {
+    static constexpr int kDim = kN / 4;  // 128
+    std::array<std::array<double, kDim>, kDim> cos{};
+    std::array<std::array<double, kDim>, kDim> sin{};
+    InnerSumTable() {
+        for (int n = 0; n < kDim; ++n) {
+            for (int k = 0; k < kDim; ++k) {
+                const double angle = 8.0 * kPi * k * n / kN;
+                cos[static_cast<std::size_t>(n)][static_cast<std::size_t>(k)] = std::cos(angle);
+                sin[static_cast<std::size_t>(n)][static_cast<std::size_t>(k)] = std::sin(angle);
+            }
+        }
+    }
+};
+
+const InnerSumTable& inner_sum_table() {
+    static const InnerSumTable t;
+    return t;
+}
+
+// §7.9.4.2 step 3: the same idea, for the two independent N/8-point "IFFT"
+// sums (angle = 16*pi*k*n/N over the kEighth x kEighth grid).
+struct InnerSumPairTable {
+    static constexpr int kDim = kN / 8;  // 64
+    std::array<std::array<double, kDim>, kDim> cos{};
+    std::array<std::array<double, kDim>, kDim> sin{};
+    InnerSumPairTable() {
+        for (int n = 0; n < kDim; ++n) {
+            for (int k = 0; k < kDim; ++k) {
+                const double angle = 16.0 * kPi * k * n / kN;
+                cos[static_cast<std::size_t>(n)][static_cast<std::size_t>(k)] = std::cos(angle);
+                sin[static_cast<std::size_t>(n)][static_cast<std::size_t>(k)] = std::sin(angle);
+            }
+        }
+    }
+};
+
+const InnerSumPairTable& inner_sum_pair_table() {
+    static const InnerSumPairTable t;
+    return t;
+}
+
 // §8.2.3.2 direct form, generalized over the transform length and alpha:
 // alpha = 0/N=512 is the long transform; alpha = -1/+1 at N=256 are the two
 // halves of a block-switched block.
@@ -155,15 +212,17 @@ void imdct512_windowed(std::span<const double, 256> coeffs, std::span<double, 51
 
     // Step 3: N/4-point complex "IFFT" exactly as the pseudocode sums it:
     // z[n] = sum_k Z[k] * (cos(8*pi*k*n/N) + j*sin(8*pi*k*n/N)), no scaling.
+    const auto& s3 = inner_sum_table();
     std::array<double, kQuarter> t_re{};
     std::array<double, kQuarter> t_im{};
     for (int n = 0; n < kQuarter; ++n) {
         double re = 0.0;
         double im = 0.0;
+        const auto& row_c = s3.cos[static_cast<std::size_t>(n)];
+        const auto& row_s = s3.sin[static_cast<std::size_t>(n)];
         for (int k = 0; k < kQuarter; ++k) {
-            const double angle = 8.0 * kPi * k * n / kN;
-            const double c = std::cos(angle);
-            const double s = std::sin(angle);
+            const double c = row_c[static_cast<std::size_t>(k)];
+            const double s = row_s[static_cast<std::size_t>(k)];
             re += z_re[static_cast<std::size_t>(k)] * c - z_im[static_cast<std::size_t>(k)] * s;
             im += z_re[static_cast<std::size_t>(k)] * s + z_im[static_cast<std::size_t>(k)] * c;
         }
@@ -239,6 +298,7 @@ void imdct256_pair_windowed(std::span<const double, 256> coeffs, std::span<doubl
     }
 
     // Step 3: two independent N/8-point complex "IFFT" sums, unscaled.
+    const auto& s3 = inner_sum_pair_table();
     std::array<double, kEighth> t1_re{};
     std::array<double, kEighth> t1_im{};
     std::array<double, kEighth> t2_re{};
@@ -248,10 +308,11 @@ void imdct256_pair_windowed(std::span<const double, 256> coeffs, std::span<doubl
         double im1 = 0.0;
         double re2 = 0.0;
         double im2 = 0.0;
+        const auto& row_c = s3.cos[static_cast<std::size_t>(n)];
+        const auto& row_s = s3.sin[static_cast<std::size_t>(n)];
         for (int k = 0; k < kEighth; ++k) {
-            const double angle = 16.0 * kPi * k * n / kN;
-            const double c = std::cos(angle);
-            const double s = std::sin(angle);
+            const double c = row_c[static_cast<std::size_t>(k)];
+            const double s = row_s[static_cast<std::size_t>(k)];
             re1 += z1_re[static_cast<std::size_t>(k)] * c - z1_im[static_cast<std::size_t>(k)] * s;
             im1 += z1_re[static_cast<std::size_t>(k)] * s + z1_im[static_cast<std::size_t>(k)] * c;
             re2 += z2_re[static_cast<std::size_t>(k)] * c - z2_im[static_cast<std::size_t>(k)] * s;
