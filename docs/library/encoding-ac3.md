@@ -45,6 +45,7 @@ Full program: [`examples/encode_ac3.cpp`](https://github.com/iainchesworth/ac3fo
 | `lfe` | `false` | Adds one channel, coded last. |
 | `coupling` | `false` | §7.4. Needs ≥ 2 full-bandwidth channels. |
 | `cplbegf`, `cplendf` | -1, -1 | Sub-band indices; -1 lets the encoder choose from the per-channel rate. |
+| `fast_mdct` | `true` | The §7.9.4 fast N/4-FFT forward MDCT instead of the direct §8.2.3.2 evaluation (~25× on the long-transform kernel, identical streams to within ~3e-12 coefficient error). `false` forces the direct reference form, kept as the validation oracle — the CLI spells that `fast-mdct=off`. |
 | `drc` | none | `std::optional<meta::Profile>`. Absent leaves `dynrnge` clear in every block. |
 | `heavy` | none | `std::optional<meta::HeavyConfig>`. Independent of `drc`. |
 | `cmixlev`, `surmixlev` | −4.5 dB, −6 dB | Tables 5.9/5.10. Always define the §7.8 downmix, whatever `acmod` is. |

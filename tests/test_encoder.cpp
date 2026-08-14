@@ -601,7 +601,12 @@ TEST_CASE("fast_mdct changes output only at the quantization-decision level",
     // 1e-13 can occasionally land on the other side of a rounding boundary
     // and flip one of those decisions, which is an audible-scale question
     // this test answers empirically rather than assuming away.
-    const ac3::EncoderConfig direct_config{.bitrate_kbps = 192, .acmod = ac3::Acmod::k2_0};
+    // Pinned explicitly on BOTH sides: this test's whole point is the
+    // direct-vs-fast comparison, so neither leg may drift with the config
+    // default (which flipped to fast once the owner accepted the evidence -
+    // an unpinned "direct" leg would silently compare fast against fast).
+    ac3::EncoderConfig direct_config{.bitrate_kbps = 192, .acmod = ac3::Acmod::k2_0};
+    direct_config.fast_mdct = false;
     ac3::EncoderConfig fast_config = direct_config;
     fast_config.fast_mdct = true;
 

@@ -9,14 +9,17 @@
 // Forward (encoder side, informative A/52 §8.2.3.2, alpha = 0):
 //   XD[k] = (-2/N) * sum_{n=0}^{N-1} x[n] * cos((2pi/4N)(2n+1)(2k+1)
 //                                              + (pi/4)(2k+1))
-// evaluated in direct form by default — correctness first. `fast`, default
-// false, opts into the §7.9.4 fast N/4-FFT structure behind this same
+// evaluated in direct form by default — at THIS level the reference form
+// stays the default, because the direct evaluation is the spec's own
+// statement of the transform and the oracle every fast-path test validates
+// against. `fast` selects the §7.9.4 fast N/4-FFT structure behind this same
 // interface: verified max relative error ~3e-12 against the direct form on
-// random data and real audio (tests/test_mdct_fast.cpp), but off by default
-// until the owner is comfortable with the output-quality change it implies
-// (see FrameConfig::fast_mdct / eac3::FrameConfig::fast_mdct, which is what
-// an encoder actually reads to decide). Only THIS transform (alpha = 0) has
-// an accelerated path today - mdct256_forward_first/second's `fast` currently
+// random data and real audio (tests/test_mdct_fast.cpp), and since the owner
+// accepted that evidence it is what every encoder config defaults to
+// (EncoderConfig::fast_mdct / eac3::FrameConfig::fast_mdct default true and
+// are what an encoder actually reads to decide - a caller of THIS function
+// still opts in explicitly). Only THIS transform (alpha = 0) has an
+// accelerated path today - mdct256_forward_first/second's `fast` currently
 // has no effect; see their own doc comment for why.
 //
 // Inverse (decoder side, NORMATIVE §7.9.4.1): the N/4-point complex

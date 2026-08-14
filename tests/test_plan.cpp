@@ -214,7 +214,8 @@ TEST_CASE("Table E2.5 location lists parse and format symmetrically") {
 TEST_CASE("tool tokens survive a round trip") {
     const std::vector<std::string> tokens = {"none",    "cpl",     "spx",       "aht",
                                              "cpl:4",   "spx:5",   "aht:0",     "cpl+spx",
-                                             "cpl+spx+aht", "cpl:4+spx:5+aht:2"};
+                                             "cpl+spx+aht", "cpl:4+spx:5+aht:2",
+                                             "nofastmdct", "cpl+nofastmdct"};
     for (const auto& token : tokens) {
         ac3::plan::Tools tools{};
         INFO("token " << token);
@@ -225,6 +226,34 @@ TEST_CASE("tool tokens survive a round trip") {
     ac3::plan::Tools all{};
     REQUIRE(ac3::plan::parse_tools("all", all));
     CHECK(ac3::plan::format_tools(all) == "cpl+spx+aht");
+}
+
+TEST_CASE("the fast MDCT is on by default and negated like noatten") {
+    // Default-on since the owner accepted the fast path's quality evidence;
+    // the direct §8.2.3.2 form stays reachable because it is the validation
+    // oracle, and "nofastmdct" is its spelling - the same shape "noatten"
+    // gives default-on spx_atten.
+    CHECK(ac3::plan::Tools{}.fast_mdct);
+
+    ac3::plan::Tools off{};
+    REQUIRE(ac3::plan::parse_tools("nofastmdct", off));
+    CHECK_FALSE(off.fast_mdct);
+    // Not a coding tool: forcing the direct transform never claims the
+    // stream "used a tool".
+    CHECK_FALSE(off.any());
+
+    // The opt-in spelling from the default-off era still parses, and now
+    // formats as nothing at all - it names the default.
+    ac3::plan::Tools legacy{};
+    REQUIRE(ac3::plan::parse_tools("fastmdct", legacy));
+    CHECK(legacy.fast_mdct);
+    CHECK(ac3::plan::format_tools(legacy) == "none");
+
+    // "none" means no CODING tools; it does not drag the transform choice
+    // back to the reference form.
+    ac3::plan::Tools none{};
+    REQUIRE(ac3::plan::parse_tools("none", none));
+    CHECK(none.fast_mdct);
 }
 
 TEST_CASE("a tool token out of range is rejected rather than clamped") {

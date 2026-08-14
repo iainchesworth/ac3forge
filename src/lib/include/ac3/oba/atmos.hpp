@@ -66,11 +66,13 @@ struct AtmosConfig {
     // the mantissas, so the bed here is encoded at slightly higher fidelity.
     // See encode_frame().
     bool emit_object_metadata = true;
-    // §7.9.4 fast N/4-FFT forward MDCT (see mdct.hpp's mdct512_forward),
-    // opt-in and off by default - see eac3::FrameConfig::fast_mdct, which is
-    // what the bed's own independent substream actually reads; this just
-    // carries the same choice through AtmosEncoder's higher-level config.
-    bool fast_mdct = false;
+    // §7.9.4 fast N/4-FFT forward MDCT (see mdct.hpp's mdct512_forward), on
+    // by default - see eac3::FrameConfig::fast_mdct, which is what the bed's
+    // own independent substream actually reads; this also drives the
+    // band_energy transforms behind the JOC reconstruction-matrix solve, so
+    // the whole object encode rides one transform path. false forces the
+    // direct §8.2.3.2 reference form everywhere, for validation.
+    bool fast_mdct = true;
 };
 
 // One object's placement for one frame. Positions are room-anchored per
@@ -132,11 +134,15 @@ class AC3FORGE_EXPORT AtmosEncoder {
 // per-object input AtmosEncoder::encode_frame's reconstruction-matrix solve
 // consumes. `mapping` is joc::kSubbandToBand's row for the active band count
 // (Table 54); `out` receives one energy value per band and must outlive the
-// call. Declared here purely for kernel-level benchmarking - it is not part
-// of the object-encoding API above and no caller outside this library should
-// need it directly.
+// call. `fast` selects the §7.9.4 fast forward MDCT for the internal
+// transforms, the same parameter mdct512_forward itself takes and defaulted
+// the same way (direct/reference); AtmosEncoder::encode_frame passes its
+// AtmosConfig::fast_mdct through here, so an object stream's band energies
+// ride the same transform path as its bed. Declared here purely for
+// kernel-level benchmarking - it is not part of the object-encoding API
+// above and no caller outside this library should need it directly.
 AC3FORGE_EXPORT void band_energy(std::span<const float> signal,
                                  std::span<const std::uint8_t, 64> mapping,
-                                 std::span<double> out);
+                                 std::span<double> out, bool fast = false);
 
 }  // namespace ac3::oba

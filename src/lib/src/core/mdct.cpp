@@ -173,8 +173,9 @@ void mdct_forward_core(std::span<const double> windowed, const ForwardCosTable<N
     }
 }
 
-// --- §7.9.4 fast N/4-FFT structure (opt-in, see mdct512_forward's own doc
-// comment and FrameConfig::fast_mdct / eac3::FrameConfig::fast_mdct) --------
+// --- §7.9.4 fast N/4-FFT structure (the encoder-config default; see
+// mdct512_forward's own doc comment and EncoderConfig::fast_mdct /
+// eac3::FrameConfig::fast_mdct) ---------------------------------------------
 //
 // Long transform (alpha = 0) ONLY. The direct-form phase is
 // theta_k(n) + phi_k(alpha), phi_k(alpha) = (pi/4)(2k+1)(1+alpha) - a shift

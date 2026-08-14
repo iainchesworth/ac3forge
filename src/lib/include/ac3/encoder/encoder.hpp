@@ -48,14 +48,17 @@ struct EncoderConfig {
     bool coupling = false;
     int cplbegf = -1;
     int cplendf = -1;
-    // §7.9.4 fast N/4-FFT forward MDCT (see mdct.hpp's mdct512_forward),
-    // opt-in and off by default until the owner is comfortable with the
-    // output-quality change it implies (verified max relative error ~3e-12
-    // against the direct form; see tests/test_mdct_fast.cpp and the PR that
-    // introduced this flag for the quality evidence at several bitrates).
-    // Only the long transform accelerates today - a block-switched channel's
-    // short transforms always take the direct path regardless of this flag.
-    bool fast_mdct = false;
+    // §7.9.4 fast N/4-FFT forward MDCT (see mdct.hpp's mdct512_forward), on
+    // by default since the owner accepted its quality evidence (verified max
+    // relative error ~3e-12 against the direct form on random data and real
+    // audio, 331 dB direct-vs-fast end-to-end SNR, 0.000 dB delta against an
+    // independent oracle at 192-448 kbps; see tests/test_mdct_fast.cpp and
+    // `tools/quality_race.py fast-mdct`). false forces the direct §8.2.3.2
+    // reference form, which stays maintained as the oracle the fast path is
+    // validated against. Only the long transform accelerates today - a
+    // block-switched channel's short transforms always take the direct path
+    // regardless of this flag.
+    bool fast_mdct = true;
 
     // --- dynamic range and downmix metadata (§7.7, §7.8) -------------------
     // Dynamic range control. std::nullopt leaves dynrnge clear in every block,
