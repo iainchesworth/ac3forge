@@ -660,6 +660,15 @@ TestCase {
         verify(wizard !== null);
         wizard.dest = "amp";
 
+        // The amp branch writes straight to the output-folder preference,
+        // whose default is "beside the first source" (outputFolderUrl) -
+        // and the source here is a checked-in fuzz seed, so the default
+        // would drop roundtrip-stereo.ac3 into fuzz/seeds/. Point the
+        // preference at the tests' gitignored scratch dir for the encode;
+        // restored below because the settings store is shared by every
+        // window this process creates.
+        win.settings.outputFolder = Qt.resolvedUrl("_test_output");
+
         const before = EncoderController.runs.length;
         // The amp card's own promise: "Encodes the same file, then
         // bitstreams it" - no save dialog, straight to encodeTo() with the
@@ -670,6 +679,8 @@ TestCase {
         compare(EncoderController.runs.length, before + 1);
         const run = EncoderController.runs[0];
         compare(run.status, "done");
+        // The artifact landed in the scratch dir, not beside the seed .wav.
+        verify(run.path.indexOf("_test_output") >= 0);
         // Guided's own auto-pick (or lack of one, with no real hardware
         // here) rode along on the run rather than needing a fresh pick.
         compare(run.playDeviceIndex, wizard.ampDeviceIndex);
@@ -677,6 +688,7 @@ TestCase {
         verify(run.cliLine.length > 0);
         compare(run.eac3, EncoderController.codecIndex === 1 || EncoderController.atmosEnabled);
 
+        win.settings.outputFolder = "";
         wizard.dest = "file";
     }
 }
