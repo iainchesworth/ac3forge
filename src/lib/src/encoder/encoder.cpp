@@ -12,6 +12,7 @@
 #include "ac3/core/mdct.hpp"
 #include "ac3/encoder/coupling.hpp"
 #include "ac3/encoder/transient.hpp"
+#include "ac3/internal/profiling.hpp"
 
 namespace ac3 {
 
@@ -136,6 +137,7 @@ FrameEncoder::FrameEncoder(const EncoderConfig& config) : config_(config) {
 
 std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     std::span<const std::span<const float>> channels) {
+    AC3_ZONE_SCOPED_N("ac3::FrameEncoder::encode_frame");
     const auto index = bitrate_index(config_.bitrate_kbps);
     if (!index) {
         return std::unexpected(FrameError::kInvalidBitrate);
@@ -338,6 +340,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     const BitAllocCodes codes{};  // §8.2.12 basic-encoder defaults
 
     // --- 1. MDCT per channel per block -------------------------------------
+    AC3_ZONE_BEGIN(zone_mdct, "step1_mdct");
     std::vector<std::array<double, 256>> coeffs(
         static_cast<std::size_t>(streams) * kBlocksPerFrame);
     const auto coeffs_at = [&](int s, int block) -> std::array<double, 256>& {
@@ -383,6 +386,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                     channels[static_cast<std::size_t>(ch)][static_cast<std::size_t>(1280 + n)]);
         }
     }
+    AC3_ZONE_END(zone_mdct);
 
     // --- 2. Coupling: form the shared channel and its coordinates ----------
     // Coordinates are sent in blocks 0, 2 and 4 and reused in between
@@ -987,6 +991,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     const std::uint32_t budget = total_bits - side_bits - detail::kTailBits;
 
     // --- 9. SNR-offset search ----------------------------------------------
+    AC3_ZONE_BEGIN(zone_snr_search, "step9_snr_search");
     std::vector<std::vector<std::vector<std::uint8_t>>> run_bap(
         static_cast<std::size_t>(streams));
     for (int s = 0; s < streams; ++s) {
@@ -996,6 +1001,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     std::vector<std::span<const std::uint8_t>> bap_views(static_cast<std::size_t>(streams));
 
     const auto bits_at = [&](int composite) {
+        AC3_ZONE_SCOPED_N("bits_at");
         for (int s = 0; s < streams; ++s) {
             auto& p = plan[static_cast<std::size_t>(s)];
             // Every stream shares one fsnroffst here, so the frame-wide
@@ -1043,8 +1049,10 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     fsnroffst = lo & 15;
     const std::uint32_t mantissa_bits = bits_at(lo);
     assert(mantissa_bits <= budget);
+    AC3_ZONE_END(zone_snr_search);
 
     // --- 10. Mantissa tokens per block -------------------------------------
+    AC3_ZONE_BEGIN(zone_mantissa_tokens, "step10_mantissa_tokens");
     // §5.3.3 ordering: each fbw channel's mantissas, with the coupling
     // channel's inserted right after the FIRST coupled channel, then the LFE.
     std::array<std::vector<MantissaToken>, kBlocksPerFrame> block_tokens;
@@ -1083,8 +1091,10 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         block_tokens[static_cast<std::size_t>(block)] = writer.tokens();
     }
     assert(token_bits_total == mantissa_bits);
+    AC3_ZONE_END(zone_mantissa_tokens);
 
     // --- 11. Pack ----------------------------------------------------------
+    AC3_ZONE_BEGIN(zone_pack, "step11_pack_bitstream_mux");
     const auto plan_pad = detail::plan_padding(budget - mantissa_bits);
 
     BitWriter w;
@@ -1169,6 +1179,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     }
     frame[total_bytes - 2] = static_cast<std::byte>(crc2 >> 8);
     frame[total_bytes - 1] = static_cast<std::byte>(crc2 & 0xFF);
+    AC3_ZONE_END(zone_pack);
     return frame;
 }
 

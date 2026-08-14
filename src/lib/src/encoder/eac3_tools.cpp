@@ -11,6 +11,7 @@
 #include "ac3/core/fft.hpp"
 #include "ac3/core/mdct.hpp"
 #include "ac3/core/window.hpp"
+#include "ac3/internal/profiling.hpp"
 
 namespace ac3::eac3 {
 
@@ -254,6 +255,7 @@ int aht_bin_gaq_bits(std::span<const double, kBlocksPerFrameSize> values,
 
 int aht_choose_gain(std::span<const double, kBlocksPerFrameSize> values,
                     int mantissa_bits, int gaqmod) {
+    AC3_ZONE_SCOPED_N("aht_choose_gain");
     int best = 1;
     int best_bits = std::numeric_limits<int>::max();
     for (const int gain : aht_gaq_gains(gaqmod)) {
@@ -277,6 +279,7 @@ int aht_choose_gain(std::span<const double, kBlocksPerFrameSize> values,
 }
 
 int aht_vector_quantize(std::span<double, kBlocksPerFrameSize> values, int hebap) {
+    AC3_ZONE_SCOPED_N("aht_vector_quantize");
     assert(hebap >= 1 && hebap <= 7);
     const auto book = tables::aht_vq_table(hebap);
     int best = 0;
@@ -420,12 +423,37 @@ const EcplYTable& ecpl_y() {
     return t;
 }
 
+// §3.5.5.4 step 3: xcos3[i] = cos(pi*i/512), xsin3[i] = -sin(pi*i/512) for
+// i = 0..511 - the windowing loop below reads index i = n for the first
+// half and i = n+256 for the second, both landing in this one table. This
+// depends only on i, never on the PCM being windowed, so it's the same
+// fixed pair of arrays on every call: tabulated once here instead of
+// std::cos/std::sin (x4 per sample) inside the 256-iteration loop.
+struct Xcos3Table {
+    std::array<double, 512> cos{};
+    std::array<double, 512> sin{};
+    Xcos3Table() {
+        constexpr double kPi = std::numbers::pi;
+        for (int i = 0; i < 512; ++i) {
+            const double angle = kPi * static_cast<double>(i) / 512.0;
+            cos[static_cast<std::size_t>(i)] = std::cos(angle);
+            sin[static_cast<std::size_t>(i)] = -std::sin(angle);
+        }
+    }
+};
+
+const Xcos3Table& xcos3_table() {
+    static const Xcos3Table t;
+    return t;
+}
+
 }  // namespace
 
 void ecpl_channel_spectrum(std::span<const double, 256> prev_mant,
                            std::span<const double, 256> curr_mant,
                            std::span<const double, 256> next_mant, std::span<double, 256> real_out,
                            std::span<double, 256> imag_out) {
+    AC3_ZONE_SCOPED_N("ecpl_channel_spectrum");
     // Step 1: three independent 512-sample normative IMDCTs (§7.9.4.1
     // steps 1-5, the exact machinery every other coefficient set in this
     // decoder already goes through).
@@ -452,14 +480,14 @@ void ecpl_channel_spectrum(std::span<const double, 256> prev_mant,
     // w[n] does for the first half - not the same value as w[n] itself.
     std::array<double, 512> pcm_real{};
     std::array<double, 512> pcm_imag{};
-    constexpr double kPi = std::numbers::pi;
+    const auto& xcos3 = xcos3_table();
     for (int n = 0; n < 256; ++n) {
         const auto un = static_cast<std::size_t>(n);
         const std::size_t un2 = un + 256;
-        const double xcos3_n = std::cos(kPi * static_cast<double>(n) / 512.0);
-        const double xsin3_n = -std::sin(kPi * static_cast<double>(n) / 512.0);
-        const double xcos3_n2 = std::cos(kPi * static_cast<double>(n + 256) / 512.0);
-        const double xsin3_n2 = -std::sin(kPi * static_cast<double>(n + 256) / 512.0);
+        const double xcos3_n = xcos3.cos[un];
+        const double xsin3_n = xcos3.sin[un];
+        const double xcos3_n2 = xcos3.cos[un2];
+        const double xsin3_n2 = xcos3.sin[un2];
         pcm_real[un] = pcm[un] * kAnalysisWindow[un] * xcos3_n;
         pcm_imag[un] = pcm[un] * kAnalysisWindow[un] * xsin3_n;
         pcm_real[un2] = pcm[un2] * kAnalysisWindow[255 - un] * xcos3_n2;
