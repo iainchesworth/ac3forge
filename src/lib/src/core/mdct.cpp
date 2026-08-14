@@ -58,17 +58,18 @@ const Twiddles2& twiddles2() {
 // cos(phase) depends only on (k, n, alpha), never on the windowed signal
 // itself, and alpha only ever takes the three values above - so it is the
 // same fixed N_len x (N_len/2) matrix on every call. This used to compute
-// std::cos(phase) fresh inside the loop below, exactly like the inverse
-// transform's own step 3 does NOT (imdct512_windowed/imdct256_pair_windowed
-// precompute their twiddle factors via Twiddles/Twiddles2 above and reuse
-// them). Measured with Tracy (docs/platforms/android.md's performance
-// investigation): that recomputation was ~79% of the ENTIRE encoder's
-// per-frame cost - 131,072 std::cos() calls per 512-point transform, 36
-// transforms a frame (6 channels x 6 blocks). Precomputing the matrix once,
-// the same way the inverse transform already does, produces bit-identical
+// std::cos(phase) fresh inside the loop below. Measured with Tracy
+// (docs/platforms/android.md's performance investigation): that
+// recomputation was ~79% of the ENTIRE encoder's per-frame cost - 131,072
+// std::cos() calls per 512-point transform, 36 transforms a frame (6
+// channels x 6 blocks). Precomputing the matrix once produces bit-identical
 // coefficients (same phase formula, same std::cos(), same accumulation
 // order - only WHEN it runs changes) while removing that cost from the hot
-// path entirely.
+// path entirely. Twiddles/Twiddles2 above cover the INVERSE transform's own
+// steps 2 and 4 (one complex multiply per k, not an O(N^2) sum), but its
+// step 3 carried the identical defect this table fixes here - see
+// Step3Kernel below, which applies the same fix to imdct512_windowed and
+// imdct256_pair_windowed.
 template <int NLen>
 struct ForwardCosTable {
     static constexpr int kHalf = NLen / 2;
@@ -98,6 +99,44 @@ const ForwardCosTable<256>& forward_cos_table_first() {
 
 const ForwardCosTable<256>& forward_cos_table_second() {
     static const ForwardCosTable<256> t(1.0);
+    return t;
+}
+
+// §7.9.4.1/§7.9.4.2 step 3 kernel: cos(8*pi*k*n/N) and sin(8*pi*k*n/N) - the
+// long transform's N/4-point "IFFT" sum's own trig factor - for every (n, k)
+// pair the sum below visits. Depends only on (n, k), never on the coefficient
+// data, so it is the same fixed matrix on every call - exactly the forward
+// transform's own ForwardCosTable reasoning above, and unlike that table's
+// reduction-by-symmetry trick, this caches the IDENTICAL angle expression
+// the loop used to evaluate fresh (not a period-reduced one): std::cos() and
+// std::sin() see the exact same double argument either way, so the result is
+// bit-identical to the un-cached computation - only WHEN it runs changes.
+template <int NLen>
+struct Step3Kernel {
+    std::array<std::array<double, NLen>, NLen> cos{};
+    std::array<std::array<double, NLen>, NLen> sin{};
+    explicit Step3Kernel(double angle_scale) {
+        for (int n = 0; n < NLen; ++n) {
+            for (int k = 0; k < NLen; ++k) {
+                const double angle = angle_scale * kPi * k * n / kN;
+                cos[static_cast<std::size_t>(n)][static_cast<std::size_t>(k)] = std::cos(angle);
+                sin[static_cast<std::size_t>(n)][static_cast<std::size_t>(k)] = std::sin(angle);
+            }
+        }
+    }
+};
+
+// imdct512_windowed's own step 3: angle_scale = 8 (kN / 4 = 128 points).
+const Step3Kernel<kN / 4>& step3_kernel_long() {
+    static const Step3Kernel<kN / 4> t(8.0);
+    return t;
+}
+
+// imdct256_pair_windowed's own step 3: angle_scale = 16 (kN / 8 = 64 points),
+// shared by both halves' independent sums - z1 and z2 multiply the same
+// (k, n) trig factor against their own inputs.
+const Step3Kernel<kN / 8>& step3_kernel_short() {
+    static const Step3Kernel<kN / 8> t(16.0);
     return t;
 }
 
@@ -155,15 +194,17 @@ void imdct512_windowed(std::span<const double, 256> coeffs, std::span<double, 51
 
     // Step 3: N/4-point complex "IFFT" exactly as the pseudocode sums it:
     // z[n] = sum_k Z[k] * (cos(8*pi*k*n/N) + j*sin(8*pi*k*n/N)), no scaling.
+    const auto& k3 = step3_kernel_long();
     std::array<double, kQuarter> t_re{};
     std::array<double, kQuarter> t_im{};
     for (int n = 0; n < kQuarter; ++n) {
         double re = 0.0;
         double im = 0.0;
+        const auto& cos_row = k3.cos[static_cast<std::size_t>(n)];
+        const auto& sin_row = k3.sin[static_cast<std::size_t>(n)];
         for (int k = 0; k < kQuarter; ++k) {
-            const double angle = 8.0 * kPi * k * n / kN;
-            const double c = std::cos(angle);
-            const double s = std::sin(angle);
+            const double c = cos_row[static_cast<std::size_t>(k)];
+            const double s = sin_row[static_cast<std::size_t>(k)];
             re += z_re[static_cast<std::size_t>(k)] * c - z_im[static_cast<std::size_t>(k)] * s;
             im += z_re[static_cast<std::size_t>(k)] * s + z_im[static_cast<std::size_t>(k)] * c;
         }
@@ -239,6 +280,7 @@ void imdct256_pair_windowed(std::span<const double, 256> coeffs, std::span<doubl
     }
 
     // Step 3: two independent N/8-point complex "IFFT" sums, unscaled.
+    const auto& k3 = step3_kernel_short();
     std::array<double, kEighth> t1_re{};
     std::array<double, kEighth> t1_im{};
     std::array<double, kEighth> t2_re{};
@@ -248,10 +290,11 @@ void imdct256_pair_windowed(std::span<const double, 256> coeffs, std::span<doubl
         double im1 = 0.0;
         double re2 = 0.0;
         double im2 = 0.0;
+        const auto& cos_row = k3.cos[static_cast<std::size_t>(n)];
+        const auto& sin_row = k3.sin[static_cast<std::size_t>(n)];
         for (int k = 0; k < kEighth; ++k) {
-            const double angle = 16.0 * kPi * k * n / kN;
-            const double c = std::cos(angle);
-            const double s = std::sin(angle);
+            const double c = cos_row[static_cast<std::size_t>(k)];
+            const double s = sin_row[static_cast<std::size_t>(k)];
             re1 += z1_re[static_cast<std::size_t>(k)] * c - z1_im[static_cast<std::size_t>(k)] * s;
             im1 += z1_re[static_cast<std::size_t>(k)] * s + z1_im[static_cast<std::size_t>(k)] * c;
             re2 += z2_re[static_cast<std::size_t>(k)] * c - z2_im[static_cast<std::size_t>(k)] * s;

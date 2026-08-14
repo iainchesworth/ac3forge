@@ -36,3 +36,15 @@ catch_discover_tests(ac3perf
 add_executable(ac3bench bench_encoder.cpp)
 
 target_link_libraries(ac3bench PRIVATE ac3::forge ac3::warnings)
+
+# ---------------------------------------------------------------------------
+# ac3kernelbench - per-kernel micro-benchmarks (Phase 2 of the performance-
+# observability programme this trio of targets belongs to): the individual
+# DSP/bitstream kernels Tracy's frame-level zones name, timed in isolation
+# rather than as part of a whole encode_frame() call. Same non-gating,
+# --json-out {name, iters, ns_per_call} shape as ac3bench above - see
+# bench_kernels.cpp's own header comment.
+# ---------------------------------------------------------------------------
+add_executable(ac3kernelbench bench_kernels.cpp)
+
+target_link_libraries(ac3kernelbench PRIVATE ac3::forge ac3::warnings)

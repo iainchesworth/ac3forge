@@ -11,6 +11,7 @@
 #include "ac3/core/fft.hpp"
 #include "ac3/core/mdct.hpp"
 #include "ac3/core/window.hpp"
+#include "ac3/internal/profiling.hpp"
 
 namespace ac3::eac3 {
 
@@ -254,6 +255,7 @@ int aht_bin_gaq_bits(std::span<const double, kBlocksPerFrameSize> values,
 
 int aht_choose_gain(std::span<const double, kBlocksPerFrameSize> values,
                     int mantissa_bits, int gaqmod) {
+    AC3_ZONE_SCOPED_N("aht_choose_gain");
     int best = 1;
     int best_bits = std::numeric_limits<int>::max();
     for (const int gain : aht_gaq_gains(gaqmod)) {
@@ -277,6 +279,7 @@ int aht_choose_gain(std::span<const double, kBlocksPerFrameSize> values,
 }
 
 int aht_vector_quantize(std::span<double, kBlocksPerFrameSize> values, int hebap) {
+    AC3_ZONE_SCOPED_N("aht_vector_quantize");
     assert(hebap >= 1 && hebap <= 7);
     const auto book = tables::aht_vq_table(hebap);
     int best = 0;
@@ -420,12 +423,41 @@ const EcplYTable& ecpl_y() {
     return t;
 }
 
+// ecpl_channel_spectrum's own step 3 twiddle (§3.5.5.4): xcos3[n]/xsin3[n]
+// for n = 0..255, and their (n+256) companions - fixed values depending only
+// on the sample index, recomputed with 4 trig calls every call until this
+// table cached them once. Same bit-exactness reasoning as mdct.cpp's own
+// ForwardCosTable/Step3Kernel: the argument to std::cos()/std::sin() is
+// unchanged, only WHEN it runs does.
+struct Ecpl3Twiddles {
+    std::array<double, 256> cos_n{};
+    std::array<double, 256> sin_n{};
+    std::array<double, 256> cos_n2{};
+    std::array<double, 256> sin_n2{};
+    Ecpl3Twiddles() {
+        constexpr double kPi = std::numbers::pi;
+        for (int n = 0; n < 256; ++n) {
+            const auto un = static_cast<std::size_t>(n);
+            cos_n[un] = std::cos(kPi * static_cast<double>(n) / 512.0);
+            sin_n[un] = -std::sin(kPi * static_cast<double>(n) / 512.0);
+            cos_n2[un] = std::cos(kPi * static_cast<double>(n + 256) / 512.0);
+            sin_n2[un] = -std::sin(kPi * static_cast<double>(n + 256) / 512.0);
+        }
+    }
+};
+
+const Ecpl3Twiddles& ecpl3_twiddles() {
+    static const Ecpl3Twiddles t;
+    return t;
+}
+
 }  // namespace
 
 void ecpl_channel_spectrum(std::span<const double, 256> prev_mant,
                            std::span<const double, 256> curr_mant,
                            std::span<const double, 256> next_mant, std::span<double, 256> real_out,
                            std::span<double, 256> imag_out) {
+    AC3_ZONE_SCOPED_N("ecpl_channel_spectrum");
     // Step 1: three independent 512-sample normative IMDCTs (§7.9.4.1
     // steps 1-5, the exact machinery every other coefficient set in this
     // decoder already goes through).
@@ -452,18 +484,14 @@ void ecpl_channel_spectrum(std::span<const double, 256> prev_mant,
     // w[n] does for the first half - not the same value as w[n] itself.
     std::array<double, 512> pcm_real{};
     std::array<double, 512> pcm_imag{};
-    constexpr double kPi = std::numbers::pi;
+    const auto& tw3 = ecpl3_twiddles();
     for (int n = 0; n < 256; ++n) {
         const auto un = static_cast<std::size_t>(n);
         const std::size_t un2 = un + 256;
-        const double xcos3_n = std::cos(kPi * static_cast<double>(n) / 512.0);
-        const double xsin3_n = -std::sin(kPi * static_cast<double>(n) / 512.0);
-        const double xcos3_n2 = std::cos(kPi * static_cast<double>(n + 256) / 512.0);
-        const double xsin3_n2 = -std::sin(kPi * static_cast<double>(n + 256) / 512.0);
-        pcm_real[un] = pcm[un] * kAnalysisWindow[un] * xcos3_n;
-        pcm_imag[un] = pcm[un] * kAnalysisWindow[un] * xsin3_n;
-        pcm_real[un2] = pcm[un2] * kAnalysisWindow[255 - un] * xcos3_n2;
-        pcm_imag[un2] = pcm[un2] * kAnalysisWindow[255 - un] * xsin3_n2;
+        pcm_real[un] = pcm[un] * kAnalysisWindow[un] * tw3.cos_n[un];
+        pcm_imag[un] = pcm[un] * kAnalysisWindow[un] * tw3.sin_n[un];
+        pcm_real[un2] = pcm[un2] * kAnalysisWindow[255 - un] * tw3.cos_n2[un];
+        pcm_imag[un2] = pcm[un2] * kAnalysisWindow[255 - un] * tw3.sin_n2[un];
     }
 
     // Step 4: the full complex DFT. Only bins 0..255 are ever consumed

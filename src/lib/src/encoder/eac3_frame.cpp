@@ -153,6 +153,7 @@ struct ChannelPlan {
 // rate search therefore does exactly that on every iteration, and the packer
 // reuses the gains left here so the two cannot disagree.
 [[nodiscard]] std::uint32_t aht_stream_bits(ChannelPlan& plan, int gaqmod) {
+    AC3_ZONE_SCOPED_N("aht_stream_bits");
     std::uint32_t bits = 2;  // chgaqmod itself, which is part of the element
     int active = 0;
     for (int bin = plan.start; bin < plan.endmant; ++bin) {
@@ -354,6 +355,7 @@ struct EcplBandFit {
                                         std::span<const double> baseline_b,
                                         std::span<const double, 256> zr,
                                         std::span<const double, 256> zi, int ch, int low) {
+    AC3_ZONE_SCOPED_N("fit_ecpl_band");
     const std::size_t n = channel.size();
     double saa = 0.0;
     double sab = 0.0;

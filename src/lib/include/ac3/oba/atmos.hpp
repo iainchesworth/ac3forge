@@ -123,4 +123,13 @@ class AC3FORGE_EXPORT AtmosEncoder {
     std::uint64_t frames_ = 0;
 };
 
+// Energy of one signal per JOC parameter band, over one frame's six blocks
+// (§7's QMF re-expressed as the encoder's own 512-sample MDCT - see the
+// definition's own comment for why that substitution is legitimate). Not
+// part of AtmosEncoder's own public surface; exported so it can be measured
+// in isolation (tests/performance/ac3kernelbench), the same reason
+// eac3_tools.hpp exports ecpl_channel_spectrum and the AHT tools.
+AC3FORGE_EXPORT void band_energy(std::span<const float> signal,
+                                 std::span<const std::uint8_t, 64> mapping, std::span<double> out);
+
 }  // namespace ac3::oba
