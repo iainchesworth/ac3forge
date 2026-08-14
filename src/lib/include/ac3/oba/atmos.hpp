@@ -123,4 +123,15 @@ class AC3FORGE_EXPORT AtmosEncoder {
     std::uint64_t frames_ = 0;
 };
 
+// Energy of one object per JOC parameter band, over the whole frame - the
+// per-object input AtmosEncoder::encode_frame's reconstruction-matrix solve
+// consumes. `mapping` is joc::kSubbandToBand's row for the active band count
+// (Table 54); `out` receives one energy value per band and must outlive the
+// call. Declared here purely for kernel-level benchmarking - it is not part
+// of the object-encoding API above and no caller outside this library should
+// need it directly.
+AC3FORGE_EXPORT void band_energy(std::span<const float> signal,
+                                 std::span<const std::uint8_t, 64> mapping,
+                                 std::span<double> out);
+
 }  // namespace ac3::oba

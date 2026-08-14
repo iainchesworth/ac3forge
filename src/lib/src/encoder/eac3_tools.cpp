@@ -11,6 +11,7 @@
 #include "ac3/core/fft.hpp"
 #include "ac3/core/mdct.hpp"
 #include "ac3/core/window.hpp"
+#include "ac3/internal/profiling.hpp"
 
 namespace ac3::eac3 {
 
@@ -254,6 +255,7 @@ int aht_bin_gaq_bits(std::span<const double, kBlocksPerFrameSize> values,
 
 int aht_choose_gain(std::span<const double, kBlocksPerFrameSize> values,
                     int mantissa_bits, int gaqmod) {
+    AC3_ZONE_SCOPED_N("aht_choose_gain");
     int best = 1;
     int best_bits = std::numeric_limits<int>::max();
     for (const int gain : aht_gaq_gains(gaqmod)) {
@@ -277,6 +279,7 @@ int aht_choose_gain(std::span<const double, kBlocksPerFrameSize> values,
 }
 
 int aht_vector_quantize(std::span<double, kBlocksPerFrameSize> values, int hebap) {
+    AC3_ZONE_SCOPED_N("aht_vector_quantize");
     assert(hebap >= 1 && hebap <= 7);
     const auto book = tables::aht_vq_table(hebap);
     int best = 0;
@@ -426,6 +429,7 @@ void ecpl_channel_spectrum(std::span<const double, 256> prev_mant,
                            std::span<const double, 256> curr_mant,
                            std::span<const double, 256> next_mant, std::span<double, 256> real_out,
                            std::span<double, 256> imag_out) {
+    AC3_ZONE_SCOPED_N("ecpl_channel_spectrum");
     // Step 1: three independent 512-sample normative IMDCTs (§7.9.4.1
     // steps 1-5, the exact machinery every other coefficient set in this
     // decoder already goes through).

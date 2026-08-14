@@ -90,6 +90,8 @@ constexpr double kAbsoluteFloor = 1e-20;
     return true;
 }
 
+}  // namespace
+
 // Energy of one object per JOC parameter band, over the whole frame.
 //
 // Nothing about this is normative. TS 103 420 specifies the bitstream and what
@@ -99,6 +101,12 @@ constexpr double kAbsoluteFloor = 1e-20;
 // channel: the 512-sample MDCT gives 256 bins across the same band the QMF
 // splits into 64 subbands, so four bins fall in each subband exactly, and
 // Table 54 groups the subbands into parameter bands from there.
+//
+// Given external linkage (declared in atmos.hpp) rather than staying
+// anonymous-namespace-local like `invert` above it: kernel-level
+// benchmarking needs to call this in isolation. It is not part of the
+// object-encoding API AtmosEncoder exposes and no caller outside this
+// library should need it directly.
 void band_energy(std::span<const float> signal, std::span<const std::uint8_t, 64> mapping,
                  std::span<double> out) {
     AC3_ZONE_SCOPED_N("band_energy");
@@ -124,8 +132,6 @@ void band_energy(std::span<const float> signal, std::span<const std::uint8_t, 64
         }
     }
 }
-
-}  // namespace
 
 AtmosEncoder::AtmosEncoder(const AtmosConfig& config, int objects)
     : config_(config),
@@ -203,6 +209,7 @@ std::expected<eac3::AccessUnit, FrameError> AtmosEncoder::encode_frame(
     // the previous frame's across every QMF timeslot in this one. A bed that
     // moved on a different schedule from the matrix that inverts it would
     // leave the reconstruction chasing the downmix.
+    AC3_ZONE_BEGIN(zone_bed, "step2_bed_render");
     for (auto& channel : bed_) {
         std::ranges::fill(channel, 0.0f);
     }
@@ -234,6 +241,7 @@ std::expected<eac3::AccessUnit, FrameError> AtmosEncoder::encode_frame(
             }
         }
     }
+    AC3_ZONE_END(zone_bed);
 
     // --- 3. Per-band object energy -----------------------------------------
     std::vector<double> power(count * static_cast<std::size_t>(bands));
@@ -257,6 +265,7 @@ std::expected<eac3::AccessUnit, FrameError> AtmosEncoder::encode_frame(
     // which for well-separated objects is just D's left inverse - exact, not
     // approximate, because this encoder built the downmix and knows D exactly
     // rather than having to estimate it from the signals.
+    AC3_ZONE_BEGIN(zone_joc_invert, "step4_joc_covariance_invert");
     for (int band = 0; band < bands; ++band) {
         std::array<std::array<double, kChannels>, kChannels> covariance{};
         for (std::size_t object = 0; object < count; ++object) {
@@ -309,6 +318,7 @@ std::expected<eac3::AccessUnit, FrameError> AtmosEncoder::encode_frame(
             }
         }
     }
+    AC3_ZONE_END(zone_joc_invert);
 
     // --- 5. Metadata --------------------------------------------------------
     std::vector<DynamicObject> described(count);

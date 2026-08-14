@@ -281,6 +281,7 @@ void compute_bit_allocation(std::span<const std::uint8_t> exps, SampleRate sampl
 
 DeltaSegments choose_delta_segments(std::span<const double> coefficients,
                                     std::span<const std::uint8_t> exps, int start) {
+    AC3_ZONE_SCOPED_N("choose_delta_segments");
     assert(coefficients.size() == exps.size());
     const int end = static_cast<int>(exps.size());
     assert(end >= 1 && end <= 253);
