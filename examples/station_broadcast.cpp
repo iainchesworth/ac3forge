@@ -59,6 +59,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <initializer_list>
+#include <memory>
 #include <numbers>
 #include <span>
 #include <string>
@@ -1680,15 +1681,19 @@ int main(int argc, char** argv) {
 
     // Object metadata competes with the mantissas for the same frame; ten
     // objects want more headroom than atmos_objects.cpp's three.
+    // Heap-allocated: AtmosEncoder carries an eac3::AccessUnitEncoder (the
+    // same MDCT scratch/history state as ac3::eac3::FrameEncoder), and two
+    // of them stack-declared here pushed main() over PREfast's C6262
+    // threshold - the same fix applied to FrameEncoder in PR #50.
     constexpr std::uint32_t kBitrateKbps = 640;
-    ac3::oba::AtmosEncoder objects_encoder{{.bitrate_kbps = kBitrateKbps},
-                                           static_cast<int>(kObjectCount)};
+    auto objects_encoder = std::make_unique<ac3::oba::AtmosEncoder>(
+        ac3::oba::AtmosConfig{.bitrate_kbps = kBitrateKbps}, static_cast<int>(kObjectCount));
     // Same scene with the EMDF container omitted: the fallback for decoders
     // that validate emdf_protection (see ac3/oba/atmos.hpp for why this is
     // objects-or-nothing, never both).
-    ac3::oba::AtmosEncoder bed51_encoder{
-        {.bitrate_kbps = kBitrateKbps, .emit_object_metadata = false},
-        static_cast<int>(kObjectCount)};
+    auto bed51_encoder = std::make_unique<ac3::oba::AtmosEncoder>(
+        ac3::oba::AtmosConfig{.bitrate_kbps = kBitrateKbps, .emit_object_metadata = false},
+        static_cast<int>(kObjectCount));
 
     const auto paths = build_paths();
     MusicSynth anthem{compose_cover()};
@@ -1708,8 +1713,12 @@ int main(int argc, char** argv) {
     std::vector<std::vector<float>> essences(kObjectCount,
                                              std::vector<float>(ac3::kSamplesPerFrame));
     std::vector<std::span<const float>> views(kObjectCount);
-    std::array<double, ac3::kSamplesPerFrame> music_scratch{};
-    std::array<double, ac3::kSamplesPerFrame> send_scratch{};
+    // Heap-allocated (PREfast's C6262, alert #66): each is 1536 doubles
+    // (12KB), declared once here and reused every frame - the earlier fix
+    // for this alert heap-allocated the two AtmosEncoders above but missed
+    // these, which turned out to be the larger contributor.
+    std::vector<double> music_scratch(ac3::kSamplesPerFrame, 0.0);
+    std::vector<double> send_scratch(ac3::kSamplesPerFrame, 0.0);
 
     const auto total_frames = static_cast<std::uint64_t>(
         (render_until * kRate + (ac3::kSamplesPerFrame - 1)) / ac3::kSamplesPerFrame);
@@ -1842,7 +1851,7 @@ int main(int argc, char** argv) {
             views[obj] = essences[obj];
         }
 
-        const auto unit = objects_encoder.encode_frame(views, placement);
+        const auto unit = objects_encoder->encode_frame(views, placement);
         if (!unit) {
             std::printf("atmos encode failed at %.1f s: %d\n", t_start,
                         std::to_underlying(unit.error()));
@@ -1851,7 +1860,7 @@ int main(int argc, char** argv) {
         objects_stream.insert(objects_stream.end(), unit->bytes.begin(),
                               unit->bytes.end());
         if (!smoke_test) {
-            const auto bed_unit = bed51_encoder.encode_frame(views, placement);
+            const auto bed_unit = bed51_encoder->encode_frame(views, placement);
             if (!bed_unit) {
                 std::printf("bed51 encode failed at %.1f s: %d\n", t_start,
                             std::to_underlying(bed_unit.error()));
@@ -1859,7 +1868,7 @@ int main(int argc, char** argv) {
             }
             bed51_stream.insert(bed51_stream.end(), bed_unit->bytes.begin(),
                                 bed_unit->bytes.end());
-            const auto bed = objects_encoder.bed();
+            const auto bed = objects_encoder->bed();
             for (std::size_t ch = 0; ch < bed_out.size(); ++ch) {
                 bed_out[ch].insert(bed_out[ch].end(), bed[ch].begin(),
                                    bed[ch].end());
@@ -1870,7 +1879,7 @@ int main(int argc, char** argv) {
     const auto encoded_frames = total_frames - first_encoded_frame;
     std::printf("%llu access units, %zu bytes of DD+ with %d objects over a 5.1 bed\n",
                 static_cast<unsigned long long>(encoded_frames),
-                objects_stream.size(), objects_encoder.dynamic_object_count());
+                objects_stream.size(), objects_encoder->dynamic_object_count());
     if (smoke_test) {
         return 0;
     }

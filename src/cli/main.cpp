@@ -3137,10 +3137,14 @@ int run_monitor(std::string_view in_path, int device_index) {
             std::println(stderr, "error: {} is not a valid E-AC-3 stream", in_path);
             return 1;
         }
-        ac3::Eac3Decoder decoder;
+        // Heap-allocated (PREfast's C6262, alert #9): Eac3Decoder grew
+        // several KB of per-block scratch members (alert #63's fix), which
+        // pushed this one-shot stack declaration over the threshold - same
+        // pattern as PR #50.
+        auto decoder = std::make_unique<ac3::Eac3Decoder>();
         std::vector<std::size_t> order;
         for (const auto& unit : *units) {
-            const auto decoded = decoder.decode_access_unit(unit);
+            const auto decoded = decoder->decode_access_unit(unit);
             if (!decoded) {
                 std::println(stderr, "error: decode failed (code {})",
                              static_cast<int>(decoded.error()));

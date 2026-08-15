@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <memory>
 #include <numbers>
 #include <span>
 #include <utility>
@@ -33,7 +34,10 @@ constexpr int kFrames = 31;  // one second
 // the assembled stream plus the last frame's decoded 5.1 bed.
 std::pair<std::vector<std::byte>, ac3::DecodedAccessUnit> run(const ac3::oba::AtmosConfig& config) {
     ac3::oba::AtmosEncoder encoder{config, kObjects};
-    ac3::Eac3Decoder decoder;
+    // Heap-allocated (PREfast's C6262, alert #69): Eac3Decoder grew several
+    // KB of per-block scratch members (alert #63's fix), which pushed this
+    // one-shot stack declaration over the threshold - same pattern as PR #50.
+    auto decoder = std::make_unique<ac3::Eac3Decoder>();
 
     std::vector<std::vector<float>> sources(kObjects, std::vector<float>(ac3::kSamplesPerFrame));
     std::vector<std::span<const float>> views;
@@ -65,7 +69,7 @@ std::pair<std::vector<std::byte>, ac3::DecodedAccessUnit> run(const ac3::oba::At
 
         // Every frame here decodes immediately - this encoder never sets
         // transient pre-noise, the one thing that would hold a result back.
-        const auto decoded = decoder.decode_access_unit(unit->bytes);
+        const auto decoded = decoder->decode_access_unit(unit->bytes);
         if (decoded && decoded->has_value()) {
             bed = **decoded;
         }
