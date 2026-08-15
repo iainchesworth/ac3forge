@@ -105,4 +105,65 @@ publishes.
 
 ## Verified configuration
 
-*To be filled in from real hardware validation on a Raspberry Pi 4B.*
+Run for real, over SSH, on:
+
+| | |
+|---|---|
+| Board | Raspberry Pi 4 Model B rev 1.1 (2GB) |
+| OS | Raspberry Pi OS 13 "Trixie" (Debian 13.6 base), kernel 6.18.34+rpt-rpi-v8 |
+| Compilers | GCC 14.2.0 and Clang 19.1.7 (Trixie's apt archive; Trixie has no `gcc-15`/`clang-21` yet - the toolchain files' fallback `find_program` list picked these up automatically, no configuration needed) |
+| CMake | 3.31.6, Ninja 1.12.1 |
+| Qt | 6.8.2, apt-packaged (`qt6-base-dev`, `qt6-declarative-dev`) |
+| ALSA | `libasound2-dev` 1.2.14 |
+| vcpkg | checkout at `/opt/vcpkg` |
+
+Both `config-linux-gcc-arm64[-debug]` and `config-linux-llvm-arm64[-debug]` configure, build and
+`ctest` all clean: **440/440 tests passing on both compilers**, including the `Performance` label
+(`ac3perf`'s hard real-time encode gate) - both the Atmos/JOC and plain 5.1 encoders stay comfortably
+inside their real-time budget on this hardware, and the Qt Quick Test GUI harness
+(`ac3gui_qmltests`) passes headless. `ac3gui --smoke` (`QT_QPA_PLATFORM=offscreen`) also runs clean,
+encoding real audio and instantiating real QML channel meters. A full Release build (`config-linux-gcc-arm64`)
+and `cpack --preset pack-linux-gcc-arm64` were also run for real, producing a `.deb` with
+`Architecture: arm64` and a correctly auto-resolved Qt runtime `Depends:` list (`libqt6core6t64`,
+`libqt6gui6`, `libqt6qml6`, `libqt6quick6`, `libqt6quickcontrols2-6`, plus `libasound2t64`) - this Pi's
+Qt6 came from apt, confirming for the first time on real hardware that `cmake/Packaging.cmake`'s "a
+system Qt6 install resolves fine through `dpkg-shlibdeps` alone" note holds in practice, not just in
+theory.
+
+Builds are slow on this hardware and RAM-constrained (2GB, 4 cores) - a full `-j2` build (CLI, GUI,
+tests, all examples) takes roughly 17-22 minutes depending on Debug/Release and compiler; `-j4`
+wasn't tried, to leave headroom against OOM.
+
+**Two real, compiler/distro-specific issues were found and fixed by this validation, not
+hypothetical:**
+
+1. GCC 14.2.0 at `-O2`/`-O3` (Release only - not seen at Debug) emits a false-positive
+   `-Wnull-dereference` inside libstdc++'s own `<streambuf>`/`<bits/stl_construct.h>` internals,
+   promoted to a hard error by this project's `-Werror` policy. Not seen on CI's pinned GCC 15.
+   Fixed in `cmake/CompilerWarnings.cmake`, scoped to `GCC < 15` only, so the CI-pinned toolchain
+   (both x64 and arm64) is unaffected.
+2. CMake's Ninja generator shells out to `clang-scan-deps` for every C++20/23 translation unit's
+   module-dependency scan (not just files using `import`/`export`) - without it, every
+   `find_package`-driven `try_compile` (Qt6, Threads, ALSA) fails the same way, which reads as
+   broken dependency detection rather than a missing package. `clang-scan-deps-<N>` lives in
+   `clang-tools-<N>`, a package neither `clang-<N>` nor `llvm-<N>` pull in. Fixed by adding
+   `clang-tools-${LLVM_VERSION}` to `.github/toolchain/03-llvm-toolchain.sh`'s package list -
+   unconditionally, since every Linux LLVM leg configures the same way regardless of which distro's
+   package split happens to be exercising the gap.
+
+**Real ALSA/HDMI device names found**, confirming the generic device-naming logic resolves
+correctly against actual Pi hardware:
+
+```
+hdmi:CARD=vc4hdmi0,DEV=0   # HDMI port 0
+hdmi:CARD=vc4hdmi1,DEV=0   # HDMI port 1 (the 4B has two micro-HDMI outputs)
+hw:CARD=Headphones,DEV=0   # bcm2835 analogue out, not HDMI
+```
+
+**Not yet verified: live HDMI passthrough to a real receiver.** This Pi's HDMI ports both report
+`disconnected` at the DRM level (nothing plugged in during this validation pass), so `ac3cli
+outputs` correctly reports no active render endpoints - the ALSA card names above exist and are
+correctly classified as HDMI, but no bitstream has actually been sent to a receiver yet, and no
+lock-on has been confirmed. This is the same category of gap [Linux](linux.md#what-has-and-has-not-been-verified)
+already documents for x64 - real hardware, still no downstream receiver in the loop. Revisit once a
+TV/AVR is connected.
