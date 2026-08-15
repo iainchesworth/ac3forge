@@ -12,6 +12,18 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 
 ## [Unreleased]
 
+### Delivery
+
+- **MP4/ISOBMFF muxer** (`mp4::mp4`, `ac3cli mp4 <in.ac3|in.ec3> <out.mp4>`) — a second
+  standalone container writer alongside `matroska::matroska`, same shape: no dependency on
+  `ac3::forge`, frames taken as opaque bytes. The `ec-3`/`ac-3` sample entry's `dec3`/`dac3`
+  configuration box (ETSI TS 102 366 Annex F) is built straight off the bitstream by a new
+  `ac3::io::build_codec_config_box`, Dolby Atmos signalling included —
+  `flag_ec3_extension_type_a`/`complexity_index_type_a` (TS 103 420 §8.3) are set whenever
+  `ac3::io::scan` finds the marker in the stream's own `addbsi`, which is exactly the signal
+  FFmpeg's own MKV→MP4 remux path is documented to drop or mis-signal
+  ([jellyfin-ffmpeg#584](https://github.com/jellyfin/jellyfin-ffmpeg/issues/584)).
+
 ## [0.5.0-beta.1] - 2026-08-15
 
 Fourth tagged release. The main change is a fast-transform performance initiative: an opt-in

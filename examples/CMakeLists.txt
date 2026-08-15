@@ -17,6 +17,7 @@ set(AC3FORGE_EXAMPLES
     atmos_objects
     station_broadcast
     mux_mkv
+    mux_mp4
     wav_roundtrip
     custom_layout
     multi_source_assignment
@@ -34,26 +35,28 @@ foreach(example IN LISTS AC3FORGE_EXAMPLES)
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/examples")
 endforeach()
 
-# Only this one needs the container writer.
+# Only these two need a container writer.
 target_link_libraries(mux_mkv PRIVATE matroska::matroska)
+target_link_libraries(mux_mp4 PRIVATE mp4::mp4)
 
 # Only this one needs the object signer.
 target_link_libraries(object_signing PRIVATE ac3::signing)
 
-# A shared ac3::forge/matroska::matroska (-DBUILD_SHARED_LIBS=ON) lands its
-# .dll in ${CMAKE_BINARY_DIR}/bin, one level up from where the loop above
-# puts every example - Windows' same-directory DLL search never finds it
-# there, and there is no rpath-equivalent to point at a parent directory
-# instead. Copy the runtime DLLs once, from mux_mkv's own TARGET_RUNTIME_DLLS
-# specifically - it's the one example that links both ac3::forge and
-# matroska::matroska, a strict superset of what every other example needs,
-# so this single copy covers all of them. (Giving each of the 7 examples its
-# own POST_BUILD copy into the same shared bin/examples/ directory was tried
-# first and failed intermittently with "permission denied": ninja runs
-# several examples' links in parallel, and multiple processes copying the
-# identical destination file at once race under Windows' file locking. A
-# single custom target every other example depends on avoids that without
-# serializing the examples' own compiles against each other.)
+# A shared ac3::forge/matroska::matroska/mp4::mp4 (-DBUILD_SHARED_LIBS=ON)
+# lands its .dll in ${CMAKE_BINARY_DIR}/bin, one level up from where the loop
+# above puts every example - Windows' same-directory DLL search never finds
+# it there, and there is no rpath-equivalent to point at a parent directory
+# instead. Copy the runtime DLLs once, from mux_mkv's and mux_mp4's own
+# TARGET_RUNTIME_DLLS - together they're a strict superset of what every
+# other example needs (mux_mkv covers ac3::forge/matroska::matroska, mux_mp4
+# adds mp4::mp4), so this single copy covers all of them. (Giving each
+# example its own POST_BUILD copy into the same shared bin/examples/
+# directory was tried first and failed intermittently with "permission
+# denied": ninja runs several examples' links in parallel, and multiple
+# processes copying the identical destination file at once race under
+# Windows' file locking. A single custom target every other example depends
+# on avoids that without serializing the examples' own compiles against each
+# other.)
 #
 # Gated on BUILD_SHARED_LIBS AND WIN32, not left unconditional and relying
 # on TARGET_RUNTIME_DLLS expanding to nothing when it doesn't apply:
@@ -76,24 +79,27 @@ if(BUILD_SHARED_LIBS AND WIN32)
     add_custom_target(examples_copy_runtime_dlls
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "$<TARGET_RUNTIME_DLLS:mux_mkv>"
+            "$<TARGET_RUNTIME_DLLS:mux_mp4>"
             "${CMAKE_BINARY_DIR}/bin/examples"
         COMMAND_EXPAND_LISTS
         # TARGET_RUNTIME_DLLS in a *custom command*'s own COMMAND line does
         # not imply a build-order dependency on the DLLs it names the way it
         # does when used inside a target's own link/compile step - without
         # this, the copy has run before ac3forge.dll exists at all ("No such
-        # file or directory"). Depending on mux_mkv itself is sufficient:
-        # linking it already requires ac3forge_shared/matroska_shared to
-        # exist first.
-        DEPENDS mux_mkv)
-    # Every other example also depends on the copy - not mux_mkv itself,
-    # which would make it depend on examples_copy_runtime_dlls depend on
-    # mux_mkv depend on examples_copy_runtime_dlls, a cycle. Whether
-    # mux_mkv's own .exe existing waits on the copy or not doesn't matter:
-    # both are ordinary members of the default ALL target, so a plain
-    # `cmake --build .` builds both before ctest ever runs anything either way.
+        # file or directory"). Depending on mux_mkv/mux_mp4 themselves is
+        # sufficient: linking them already requires
+        # ac3forge_shared/matroska_shared/mp4_shared to exist first.
+        DEPENDS mux_mkv mux_mp4)
+    # Every other example also depends on the copy - not mux_mkv/mux_mp4
+    # themselves, which would make them depend on
+    # examples_copy_runtime_dlls depend on mux_mkv/mux_mp4 depend on
+    # examples_copy_runtime_dlls, a cycle. Whether mux_mkv/mux_mp4's own
+    # .exe existing waits on the copy or not doesn't matter: all are
+    # ordinary members of the default ALL target, so a plain
+    # `cmake --build .` builds everything before ctest ever runs anything
+    # either way.
     foreach(example IN LISTS AC3FORGE_EXAMPLES)
-        if(NOT example STREQUAL "mux_mkv")
+        if(NOT example STREQUAL "mux_mkv" AND NOT example STREQUAL "mux_mp4")
             add_dependencies(${example} examples_copy_runtime_dlls)
         endif()
     endforeach()
