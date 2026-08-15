@@ -193,9 +193,13 @@ works with a single source too — `ac3cli encode in.wav out.ac3 384 5.1 offset=
 `src=`/`map=` at all. Omitting `offset=` for a source (or giving it `0` seconds) behaves exactly as
 it always has.
 
-`dialnorm=auto`/`dialnorm2=auto` are not yet supported alongside `src=`/`map=` — pass an explicit
-`dialnorm=<1..31>` (and `dialnorm2=` for `1+1`) instead; measuring loudness per source is a later
-extension, not a hole in the routing itself.
+`dialnorm=auto`/`dialnorm2=auto` work alongside `src=`/`map=`: the whole programme is routed once
+as a measurement pre-pass — the same BS.1770-4 gated pass the single-file path runs, over what
+`map=` actually assembles (post-routing, post-trim), not each source's own raw channels — before
+the real encode loop routes it again to encode it. A `1+1` target measures Ch1/Ch2 independently,
+same as the single-file case; every other target gets one whole-programme measurement over the
+routed bed. A trim on `map=` (e.g. `L@-6`) is measured on the trimmed signal, since that is what
+actually reaches the stream.
 
 A full-bandwidth channel explicitly mapped onto `LFE`/`LFE2` (e.g. `1.3:LFE` above) is sent through
 a 120 Hz low-pass rather than passed through untouched — an explicit `map=` entry states raw

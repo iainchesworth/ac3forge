@@ -74,6 +74,18 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   CRT defaults both to text mode, which otherwise corrupts compressed audio). With `-` as the
   output path, the usual per-run status text (frame count, routing, per-channel levels) prints to
   stderr instead of stdout, so it never lands inside the piped stream.
+- **`dialnorm=auto`/`dialnorm2=auto` now work with `src=`/`map=` multi-source encodes**
+  (`encode`/`eac3-encode`), instead of being unconditionally refused the moment more than one
+  source was in play. The whole programme is routed once as a BS.1770-4 measurement pre-pass —
+  over what `map=` actually assembles (post-routing, post-trim), not each source's own raw file —
+  before the real per-frame encode loop routes it again to encode it, mirroring the two-pass
+  measure-then-encode shape the single-file path already used. Along the way, a real bug in that
+  single-file path was found and fixed: `dialnorm` (Ch1) under a `1+1` dual-mono bed was silently
+  measuring the COMBINED BS.1770 loudness of both channels together (as if Ch1/Ch2 were a coherent
+  stereo pair) rather than Ch1's own channel alone, while `dialnorm2` (Ch2) was already correct —
+  both now measure their own programme independently, as §E1.3 requires (no downmix between the
+  two). The GUI still asks for both dual-mono dialnorm values by hand; its own encoder controller
+  does not yet call the per-programme measurement this fixes at the CLI/library level.
 
 ### Raspberry Pi (arm64 Linux) — new platform
 
