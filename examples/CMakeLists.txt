@@ -27,7 +27,8 @@ set(AC3FORGE_EXAMPLES
     object_signing
     level_metering
     decode_robustness
-    atmos_fallback)
+    atmos_fallback
+    qc_report)
 
 foreach(example IN LISTS AC3FORGE_EXAMPLES)
     add_executable(${example} "${example}.cpp")

@@ -291,6 +291,20 @@ run levels bootstrap_51.wav
 run levels enc_stereo.ac3
 run levels eac3enc_none.ec3
 run loudness bootstrap_51.wav
+# qc (roadmap C2): bitstream-aware loudness QC over an already-encoded
+# stream. Measure-only (no preset=) always exits 0 on a clean decode, same
+# as every other `run` call in this script. preset=/preset=all additionally
+# gate the measurement against a named delivery spec - a real PASS/FAIL
+# verdict this synthetic 440 Hz test tone has no reason to hit (it was never
+# mastered to -23/-24/-27 LKFS), so its exit code is captured rather than
+# trusted the way `run` trusts a clean 0 everywhere else here; this still
+# proves the option parses and the whole measure-then-gate path runs to
+# completion on both AC-3 and E-AC-3, which is what this script checks.
+run qc bootstrap_51.ac3
+run qc eac3enc_none.ec3
+count=$((count + 1))
+echo "[$count] qc bootstrap_51.ac3 preset=all (verdict not asserted - see comment above)"
+"$CLI" qc bootstrap_51.ac3 preset=all >/dev/null || true
 run spdif ac3_stereo.ac3 spdif_out.wav
 run mkv enc_51.ac3 enc_51.mkv
 run mkv eac3enc_none.ec3 eac3enc_none.mkv

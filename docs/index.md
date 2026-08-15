@@ -103,6 +103,7 @@ misaligning them against the one still catching up.
 | `ac3::sinks::PassthroughSink` | Exclusive-mode/direct bitstream output, AC-3 or E-AC-3 — WASAPI on Windows, ALSA on Linux, JNI-bridged `AudioTrack` on Android. See the caveats below (Windows and Android hardware-confirmed; the ALSA backend is not). |
 | `ac3::sinks::MonitorSink` | Shared-mode PCM playback — WASAPI or ALSA: a non-bitstreamed preview/monitor path that decodes what is being encoded and plays it back on an ordinary output. Confirmed against real Windows hardware. |
 | `ac3::analysis` | Peak/RMS metering with console ballistics, and the Gerzon energy vector over the BS.775 ring. |
+| `ac3::meta::qc` | Bitstream-aware loudness QC (roadmap C2, `ac3cli qc`): decodes a stream, measures it with the real BS.1770-4/EBU Tech 3342 meter, and compares against the stream's own embedded `dialnorm`/`compr` and, optionally, a named delivery-spec gate — EBU R 128 s2, ATSC A/85, or Netflix's Sound Mix Specifications, each preset's target/tolerance/true-peak ceiling cited from its own primary source. |
 
 ## What it does not do
 
@@ -151,5 +152,5 @@ it has no equivalent and stays CBR.
 - **Validation** — [how output is checked](verification.md): quality numbers, oracle coverage,
   and exactly where it runs out.
 - **Library** — [Conventions](library/index.md): the public C++ API, with compiled examples.
-- **CLI reference** — [Overview](cli/index.md): `ac3cli`'s twenty-four commands.
+- **CLI reference** — [Overview](cli/index.md): `ac3cli`'s twenty-five commands.
 - **GUI guide** — [Window layout](gui/index.md): `ac3gui`, the Qt Quick front end.

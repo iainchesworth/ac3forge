@@ -38,6 +38,7 @@
 #include "ac3/meta/drc.hpp"
 #include "ac3/meta/loudness.hpp"
 #include "ac3/meta/mixing.hpp"
+#include "ac3/meta/qc.hpp"
 #include "ac3/oba/atmos.hpp"
 #include "ac3/oba/motion.hpp"
 #include "ac3/platform/audio_backend.hpp"
@@ -132,6 +133,12 @@ void print_meta_usage() {
     std::println("live options (live; any order, after the positional arguments):");
     std::println("  capture2=<index>  a second capture device, clock-conformed to the first "
                  "(see 'devices')");
+    std::println();
+    std::println("qc options (qc; any order, after the positional arguments):");
+    std::println("  preset=<name>     gate the measurement against a named delivery spec");
+    std::println("                    {}", ac3::meta::kQcPresetNames);
+    std::println("  preset=all        gate against every preset above");
+    std::println("                    omitted: measure and report only, no gate");
 }
 
 // Everything a command accepts after its positional arguments, in any order.
@@ -202,6 +209,11 @@ struct Options {
     // (the opt-in spelling from when this defaulted off) stays accepted and
     // now names what already happens.
     bool fast_mdct = true;
+    // 'qc' only: which delivery gate(s) to check the measurement against -
+    // one of ac3::meta::kQcPresetNames, or "all" to check every preset.
+    // Unset (measure-only, no gate) is the default - a plain
+    // 'ac3cli qc <file>' just reports the numbers, no pass/fail verdict.
+    std::optional<std::string> qc_preset;
 };
 
 bool parse_double(std::string_view text, double& out) {
@@ -458,6 +470,18 @@ bool parse_options(std::span<char*> tokens, Options& out) {
                 std::println(stderr, "error: container must be raw or mkv (got '{}')", token);
                 return false;
             }
+            continue;
+        }
+        if (key == "preset") {
+            if (value != "all") {
+                ac3::meta::QcPresetId id{};
+                if (!ac3::meta::parse_qc_preset(value, id)) {
+                    std::println(stderr, "error: unknown qc preset '{}' ({} | all)", value,
+                                 ac3::meta::kQcPresetNames);
+                    return false;
+                }
+            }
+            out.qc_preset = std::string{value};
             continue;
         }
         if (key == "signing-key") {
@@ -3246,6 +3270,374 @@ int run_decode(std::string_view in_path, std::string_view out_path,
     return 0;
 }
 
+// --- qc (roadmap C2) --------------------------------------------------------
+// Bitstream-aware loudness QC: decode a whole stream, measure it with the
+// real BS.1770-4/EBU Tech 3342 meter (the same ac3::meta::LoudnessMeter
+// dialnorm=auto already uses), and compare the result against what the
+// stream's own dialnorm/compr claim and, optionally, a named delivery-spec
+// gate (ac3::meta::qc_preset - see ac3/meta/qc.hpp for the cited sources).
+
+// One decoded programme this command measures and reports on - the whole
+// soundfield for every layout except 1+1 dual mono, which is two of these
+// (Ch1, Ch2): §E1.3 makes them unrelated, unmixed programmes sharing one
+// syncframe rather than a single soundfield BS.1770 could measure as one, the
+// same reason measured_dialnorm_channel exists alongside measured_dialnorm
+// above.
+struct QcProgrammeResult {
+    std::string_view label = {};  // "" (whole programme) or "Ch1"/"Ch2" for 1+1
+    // Every field below has an explicit default member initializer, even the
+    // ones std::optional's own default constructor would already give -
+    // every construction of this type in this file is a PARTIAL designated
+    // initializer (only the fields relevant at that call site named), and
+    // GCC's -Wmissing-field-initializers (on under -Wextra, and this project
+    // builds -Werror) fires on any member without one, regardless of what
+    // its type's own default constructor would produce.
+    std::optional<double> integrated_lkfs = std::nullopt;
+    std::optional<double> lra_lu = std::nullopt;
+    std::optional<double> true_peak_dbtp = std::nullopt;
+    int dialnorm = 31;
+    std::optional<std::uint8_t> compr = std::nullopt;
+};
+
+struct QcResult {
+    std::string_view codec_label;  // "AC-3" / "E-AC-3"
+    std::string_view unit_label;   // "frame(s)" / "access unit(s)"
+    std::string layout_label;
+    std::uint32_t sample_rate_hz = 0;
+    std::size_t unit_count = 0;
+    double seconds = 0.0;
+    std::vector<QcProgrammeResult> programmes;
+};
+
+// AC-3 (bsid <= 8): straightforward per-frame decode, same loop shape as
+// run_decode above, feeding ac3::meta::LoudnessMeter instead of accumulating
+// PCM - qc never writes audio out, so there is nothing to buffer.
+std::optional<QcResult> measure_qc_ac3(std::span<const std::byte> stream) {
+    const auto frames = ac3::split_frames(stream);
+    if (!frames || frames->empty()) {
+        std::println(stderr, "error: not a valid AC-3 stream");
+        return std::nullopt;
+    }
+    ac3::FrameDecoder decoder;
+    QcResult result;
+    result.codec_label = "AC-3";
+    result.unit_label = "frame(s)";
+    result.unit_count = frames->size();
+
+    bool have_first = false;
+    bool dual_mono = false;
+    std::optional<ac3::meta::LoudnessMeter> meter;      // whole programme
+    std::optional<ac3::meta::LoudnessMeter> meter_ch1;  // dual mono only
+    std::optional<ac3::meta::LoudnessMeter> meter_ch2;
+
+    for (const auto& frame : *frames) {
+        const auto decoded = decoder.decode_frame(frame);
+        if (!decoded) {
+            std::println(stderr, "error: {}", ac3::describe(decoded.error()));
+            return std::nullopt;
+        }
+        if (!have_first) {
+            have_first = true;
+            dual_mono = decoded->acmod == ac3::Acmod::kDualMono;
+            result.sample_rate_hz = sample_rate_hz(decoded->sample_rate);
+            if (dual_mono) {
+                result.layout_label = "1+1 dual mono";
+                meter_ch1.emplace(decoded->sample_rate, ac3::Acmod::k1_0, false);
+                meter_ch2.emplace(decoded->sample_rate, ac3::Acmod::k1_0, false);
+                result.programmes.push_back(
+                    QcProgrammeResult{.label = "Ch1", .dialnorm = decoded->dialnorm,
+                                      .compr = decoded->compr});
+                result.programmes.push_back(QcProgrammeResult{
+                    .label = "Ch2", .dialnorm = decoded->dialnorm2.value_or(31),
+                    .compr = decoded->compr2});
+            } else {
+                result.layout_label =
+                    std::string{ac3::analysis::layout_name(decoded->acmod, decoded->lfe)};
+                meter.emplace(decoded->sample_rate, decoded->acmod, decoded->lfe);
+                result.programmes.push_back(
+                    QcProgrammeResult{.dialnorm = decoded->dialnorm, .compr = decoded->compr});
+            }
+        }
+        if (dual_mono) {
+            const std::array<std::span<const float>, 1> ch1{decoded->channels[0]};
+            const std::array<std::span<const float>, 1> ch2{decoded->channels[1]};
+            meter_ch1->push(ch1);
+            meter_ch2->push(ch2);
+        } else {
+            std::vector<std::span<const float>> views;
+            views.reserve(decoded->channels.size());
+            for (const auto& channel : decoded->channels) {
+                views.emplace_back(channel);
+            }
+            meter->push(views);
+        }
+    }
+    if (dual_mono) {
+        result.programmes[0].integrated_lkfs = meter_ch1->integrated_lkfs();
+        result.programmes[0].lra_lu = meter_ch1->loudness_range();
+        result.programmes[0].true_peak_dbtp = meter_ch1->true_peak_dbtp();
+        result.programmes[1].integrated_lkfs = meter_ch2->integrated_lkfs();
+        result.programmes[1].lra_lu = meter_ch2->loudness_range();
+        result.programmes[1].true_peak_dbtp = meter_ch2->true_peak_dbtp();
+    } else {
+        result.programmes[0].integrated_lkfs = meter->integrated_lkfs();
+        result.programmes[0].lra_lu = meter->loudness_range();
+        result.programmes[0].true_peak_dbtp = meter->true_peak_dbtp();
+    }
+    result.seconds = static_cast<double>(result.unit_count) *
+                     static_cast<double>(ac3::kSamplesPerFrame) /
+                     static_cast<double>(result.sample_rate_hz);
+    return result;
+}
+
+// E-AC-3 (bsid 11-16): measures the INDEPENDENT substream's own bed audio
+// only, never a dependent's - the same "bed acmod/lfe, never the wider
+// rendered layout" scope run_encode/run_eac3_encode's own pre-encode
+// measured_dialnorm(cp.bed_acmod, cp.bed_lfe, ...) pass already uses (see
+// above). BS.1770's channel weighting is defined over Table 5.8 acmod/lfe,
+// which a dependent substream's own extension channels (height, wide, Ts,
+// etc.) are not members of - the bed is always a Table 5.8 layout, so
+// measuring it is what makes this comparable to the encoder's own dialnorm
+// derivation for the identical programme. Dual mono (1+1) is always a lone
+// independent substream with no dependents (decoder.hpp's own doc comment on
+// DecodedAccessUnit), so the same independent-substream-only filtering
+// naturally covers it too, exactly like the AC-3 path above.
+//
+// Walked at the raw-syncframe level (ac3::split_frames, NOT split_access_units
+// - decoder.hpp's own doc comment on split_frames says it "handles both
+// generations"), calling Eac3Decoder::decode_substream directly on every
+// frame so dependent-substream frames are still decoded (consuming their own
+// overlap-add state and catching any parse error) even though this only ever
+// measures what comes back independent.
+std::optional<QcResult> measure_qc_eac3(std::span<const std::byte> stream) {
+    const auto frames = ac3::split_frames(stream);
+    if (!frames || frames->empty()) {
+        std::println(stderr, "error: not a valid E-AC-3 stream");
+        return std::nullopt;
+    }
+    ac3::Eac3Decoder decoder;
+    QcResult result;
+    result.codec_label = "E-AC-3";
+    result.unit_label = "access unit(s)";
+
+    bool have_first = false;
+    bool dual_mono = false;
+    std::optional<ac3::meta::LoudnessMeter> meter;
+    std::optional<ac3::meta::LoudnessMeter> meter_ch1;
+    std::optional<ac3::meta::LoudnessMeter> meter_ch2;
+
+    // Shared by the main decode loop below and the end-of-stream flush() -
+    // both hand this a released, independent-or-dependent DecodedSubstream;
+    // only an independent one is ever measured (see this function's own
+    // comment above).
+    auto ingest = [&](const ac3::DecodedSubstream& sub) {
+        if (sub.strmtyp == ac3::eac3::StreamType::kDependent) {
+            return;
+        }
+        if (!have_first) {
+            have_first = true;
+            dual_mono = sub.acmod == ac3::Acmod::kDualMono;
+            result.sample_rate_hz = sample_rate_hz(sub.sample_rate);
+            if (dual_mono) {
+                result.layout_label = "1+1 dual mono";
+                meter_ch1.emplace(sub.sample_rate, ac3::Acmod::k1_0, false);
+                meter_ch2.emplace(sub.sample_rate, ac3::Acmod::k1_0, false);
+                result.programmes.push_back(QcProgrammeResult{
+                    .label = "Ch1", .dialnorm = sub.dialnorm, .compr = sub.compr});
+                result.programmes.push_back(QcProgrammeResult{
+                    .label = "Ch2", .dialnorm = sub.dialnorm2.value_or(31), .compr = sub.compr2});
+            } else {
+                result.layout_label = std::string{ac3::analysis::layout_name(sub.acmod, sub.lfe)};
+                meter.emplace(sub.sample_rate, sub.acmod, sub.lfe);
+                result.programmes.push_back(
+                    QcProgrammeResult{.dialnorm = sub.dialnorm, .compr = sub.compr});
+            }
+        }
+        ++result.unit_count;
+        if (dual_mono) {
+            const std::array<std::span<const float>, 1> ch1{sub.channels[0]};
+            const std::array<std::span<const float>, 1> ch2{sub.channels[1]};
+            meter_ch1->push(ch1);
+            meter_ch2->push(ch2);
+        } else {
+            std::vector<std::span<const float>> views;
+            views.reserve(sub.channels.size());
+            for (const auto& channel : sub.channels) {
+                views.emplace_back(channel);
+            }
+            meter->push(views);
+        }
+    };
+
+    for (const auto& frame : *frames) {
+        const auto decoded = decoder.decode_substream(frame);
+        if (!decoded) {
+            std::println(stderr, "error: decode failed (code {})",
+                         static_cast<int>(decoded.error()));
+            return std::nullopt;
+        }
+        // §3.7: this substream's frame is being held back pending transient
+        // pre-noise processing (Eac3Decoder::decode_substream's own doc
+        // comment) - nothing new to ingest yet, not an error.
+        if (decoded->has_value()) {
+            ingest(**decoded);
+        }
+    }
+    // Whatever transient pre-noise processing was still holding back at
+    // end-of-stream, same convention run_decode_eac3 follows.
+    for (const auto& sub : decoder.flush()) {
+        ingest(sub);
+    }
+
+    if (!have_first) {
+        std::println(stderr, "error: no independent substream frames");
+        return std::nullopt;
+    }
+    if (dual_mono) {
+        result.programmes[0].integrated_lkfs = meter_ch1->integrated_lkfs();
+        result.programmes[0].lra_lu = meter_ch1->loudness_range();
+        result.programmes[0].true_peak_dbtp = meter_ch1->true_peak_dbtp();
+        result.programmes[1].integrated_lkfs = meter_ch2->integrated_lkfs();
+        result.programmes[1].lra_lu = meter_ch2->loudness_range();
+        result.programmes[1].true_peak_dbtp = meter_ch2->true_peak_dbtp();
+    } else {
+        result.programmes[0].integrated_lkfs = meter->integrated_lkfs();
+        result.programmes[0].lra_lu = meter->loudness_range();
+        result.programmes[0].true_peak_dbtp = meter->true_peak_dbtp();
+    }
+    result.seconds = static_cast<double>(result.unit_count) *
+                     static_cast<double>(ac3::kSamplesPerFrame) /
+                     static_cast<double>(result.sample_rate_hz);
+    return result;
+}
+
+// Prints one programme's measurement (the empty-label whole-programme case,
+// or "Ch1"/"Ch2" for 1+1 dual mono) and, if `preset_arg` names one (or
+// "all"), checks it against the requested preset(s). Returns true iff every
+// requested gate passed (or none was requested at all) - run_qc's own exit
+// code is exactly this, ANDed across every programme it reports.
+bool report_qc_programme(const QcProgrammeResult& p, const std::optional<std::string>& preset_arg) {
+    const std::string heading = p.label.empty() ? std::string{} : std::format("{}: ", p.label);
+    std::println("{}measured (BS.1770-4 gated / EBU Tech 3342 / BS.1770-4 Annex 2):", heading);
+    if (p.integrated_lkfs) {
+        std::println("  integrated loudness  {:>+8.2f} LKFS", *p.integrated_lkfs);
+        std::println("  loudness range       {}", p.lra_lu ? std::format("{:>7.2f} LU", *p.lra_lu)
+                                                             : std::string{"n/a"});
+    } else {
+        std::println("  integrated loudness  no audio above the -70 LKFS absolute gate");
+        std::println("  loudness range       n/a");
+    }
+    std::println("  true peak            {}",
+                 p.true_peak_dbtp ? std::format("{:>+8.2f} dBTP", *p.true_peak_dbtp)
+                                   : std::string{"n/a"});
+    std::println("{}embedded metadata:", heading);
+    std::println("  dialnorm             {:>3}  (claims dialogue at {:.2f} LKFS)", p.dialnorm,
+                 -static_cast<double>(p.dialnorm));
+    if (p.compr) {
+        std::println("  compr                present, {:+.2f} dB",
+                     ac3::meta::to_db(ac3::meta::compr_gain(*p.compr)));
+    } else {
+        std::println("  compr                absent");
+    }
+    if (p.integrated_lkfs) {
+        // §5.4.2.8: dialnorm states how far dialogue sits below digital
+        // 100%, so the stream's own claimed programme level is simply its
+        // negation - delta is measured minus that claim, positive meaning
+        // the real programme is louder than dialnorm says.
+        const double claimed_lkfs = -static_cast<double>(p.dialnorm);
+        const double delta = *p.integrated_lkfs - claimed_lkfs;
+        const int implied = ac3::meta::dialnorm_from_lkfs(*p.integrated_lkfs);
+        std::println("{}dialnorm check:", heading);
+        std::println("  claimed              {:>+8.2f} LKFS  (from dialnorm {})", claimed_lkfs,
+                     p.dialnorm);
+        std::println("  delta                {:>+8.2f} dB    (measured - claimed; positive = "
+                     "measured is louder)",
+                     delta);
+        std::println("  measurement-derived dialnorm would be {}{}", implied,
+                     implied == p.dialnorm ? " (matches)" : std::format(", not {}", p.dialnorm));
+    }
+
+    if (!preset_arg) {
+        return true;
+    }
+    bool all_pass = true;
+    std::println("{}gates:", heading);
+    const auto check_one = [&](ac3::meta::QcPresetId id) {
+        const auto preset = ac3::meta::qc_preset(id);
+        const auto name = ac3::meta::qc_preset_name(id);
+        const auto verdict = ac3::meta::evaluate_qc_gate(preset, p.integrated_lkfs, p.true_peak_dbtp);
+        std::println("  {}:", name);
+        if (p.integrated_lkfs) {
+            std::println("    loudness   target {:+.1f} +/-{:.1f} LKFS   measured {:+.2f} LKFS   "
+                         "delta {:+.2f} LU   {}",
+                         preset.target_lkfs, preset.tolerance_lu, *p.integrated_lkfs,
+                         *verdict.loudness_delta_lu, verdict.loudness_pass ? "PASS" : "FAIL");
+        } else {
+            std::println("    loudness   target {:+.1f} +/-{:.1f} LKFS   measured n/a   FAIL",
+                         preset.target_lkfs, preset.tolerance_lu);
+        }
+        if (p.true_peak_dbtp) {
+            std::println("    true peak  limit  <= {:+.1f} dBTP        measured {:+.2f} dBTP        "
+                         "{}",
+                         preset.max_true_peak_dbtp, *p.true_peak_dbtp,
+                         verdict.true_peak_pass ? "PASS" : "FAIL");
+        } else {
+            std::println("    true peak  limit  <= {:+.1f} dBTP        measured n/a   FAIL",
+                         preset.max_true_peak_dbtp);
+        }
+        std::println("    verdict: {}", verdict.pass() ? "PASS" : "FAIL");
+        if (!verdict.pass()) {
+            all_pass = false;
+        }
+    };
+    if (*preset_arg == "all") {
+        for (const auto id : ac3::meta::kQcPresetIds) {
+            check_one(id);
+        }
+    } else {
+        ac3::meta::QcPresetId id{};
+        if (ac3::meta::parse_qc_preset(*preset_arg, id)) {
+            check_one(id);
+        } else {
+            // parse_options already validates preset= against
+            // kQcPresetNames/"all" before dispatch ever reaches here (see
+            // its own "preset" handling) - kept as a defensive fallback
+            // rather than an assert, since main.cpp has no
+            // exception-based unreachable() convention of its own.
+            std::println(stderr, "error: unknown qc preset '{}'", *preset_arg);
+            all_pass = false;
+        }
+    }
+    return all_pass;
+}
+
+int run_qc(std::string_view in_path, const std::optional<std::string>& preset_arg) {
+    const auto stream = read_all(in_path);
+    if (stream.empty()) {
+        std::println(stderr, "error: cannot read {}", in_path);
+        return 1;
+    }
+    const auto bsid = ac3::stream_bsid(stream);
+    if (!bsid) {
+        std::println(stderr, "error: {} is too short to hold a syncframe", in_path);
+        return 1;
+    }
+    const auto result = *bsid > 8 ? measure_qc_eac3(stream) : measure_qc_ac3(stream);
+    if (!result) {
+        return 1;
+    }
+    std::println("qc: {} ({}, {}, {} Hz, {} {}, {:.2f} s)", in_path, result->codec_label,
+                 result->layout_label, result->sample_rate_hz, result->unit_count,
+                 result->unit_label, result->seconds);
+    bool all_pass = true;
+    for (const auto& programme : result->programmes) {
+        if (!report_qc_programme(programme, preset_arg)) {
+            all_pass = false;
+        }
+    }
+    return all_pass ? 0 : 1;
+}
+
 // E-AC-3's own level report. The rendered layout is a chanmap rather than an
 // acmod, so it cannot go through LevelMeter's Table 5.8 naming; the figures
 // still come from ac3::analysis, so a level reads the same here as anywhere.
@@ -4394,7 +4786,7 @@ struct Command {
     int (*run)(const Args&);
 };
 
-constexpr std::array<Command, 24> kCommands{{
+constexpr std::array<Command, 25> kCommands{{
     {"silence", 2, "<out.ac3> [seconds] [bitrate_kbps]", "", Needs::kNothing,
      [](const Args& x) { return run_silence(x.str(1), x.u32(2, 5), x.u32(3, 192)); }},
     {"sine", 2, "<out.ac3> [seconds] [bitrate_kbps] [freq_hz] [amp_pct] [layout]", "",
@@ -4474,6 +4866,10 @@ constexpr std::array<Command, 24> kCommands{{
      [](const Args& x) { return run_levels(x.str(1)); }},
     {"loudness", 2, "<in.wav>", "BS.1770-4 loudness -> dialnorm", Needs::kNothing,
      [](const Args& x) { return run_loudness(x.str(1)); }},
+    {"qc", 2, "<in.ac3|in.ec3> [preset=<name>|all]",
+     "bitstream-aware loudness QC: measured loudness vs. embedded dialnorm/compr, optional "
+     "preset gate",
+     Needs::kNothing, [](const Args& x) { return run_qc(x.str(1), x.meta.qc_preset); }},
     {"spdif", 3, "<in.ac3> <out.wav>", "IEC 61937 wrap as playable PCM16 WAV", Needs::kNothing,
      [](const Args& x) { return run_spdif(x.str(1), x.str(2)); }},
     {"mkv", 3, "<in.ac3|in.ec3> <out.mkv>", "wrap as a playable Matroska file", Needs::kNothing,
@@ -4644,6 +5040,13 @@ void print_usage() {
     std::println("");
     std::println("For decode, drc=<scale> applies §7.7.1 partial compression (0 = ignore,");
     std::println("1 = as encoded) and 'heavy' prefers compr where the stream carries it.");
+    std::println("");
+    std::println("qc measures a stream's real BS.1770-4/EBU Tech 3342 loudness and compares it");
+    std::println("       against the dialnorm/compr it embeds - preset=<name> also gates that");
+    std::println("       measurement against a named delivery spec ({}),", ac3::meta::kQcPresetNames);
+    std::println("       or preset=all checks every one; omitting preset= just measures and");
+    std::println("       reports, with no pass/fail verdict. Exit code is 0 only when every");
+    std::println("       requested gate passes (or none was requested and decode succeeded).");
 }
 
 }  // namespace

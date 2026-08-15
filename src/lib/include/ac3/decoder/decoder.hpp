@@ -135,6 +135,12 @@ struct DecodedSubstream {
     Acmod acmod = Acmod::k2_0;
     bool lfe = false;
     int dialnorm = 31;
+    // §5.4.2.9/§E3.8.5: std::nullopt when compre was clear OR this substream
+    // is a dependent one - a dependent's compre bit is repurposed to mark the
+    // LAST dependent of the program rather than announce a compression word
+    // (see parse_bsi's own comment), so there is no meaningful compr value to
+    // report there even though the 8 bits are still present on the wire.
+    std::optional<std::uint8_t> compr = std::nullopt;
     // Ch2's own dialnorm/compr, present only when acmod is kDualMono (1+1) -
     // the second of the two independent programmes 1+1 codes.
     std::optional<int> dialnorm2 = std::nullopt;
@@ -171,6 +177,11 @@ struct DecodedAccessUnit {
     SampleRate sample_rate = SampleRate::k48000;
     Acmod acmod = Acmod::k2_0;
     int dialnorm = 31;
+    // The independent substream's own compr, when it carries one - see
+    // DecodedSubstream::compr's own comment; a dependent substream's compre
+    // bit means something else entirely, so only the independent (bed)
+    // substream's word is ever meaningful at the access-unit level.
+    std::optional<std::uint8_t> compr = std::nullopt;
     int substream_count = 0;
     eac3::chanmap::Layout layout;
     std::vector<std::vector<float>> channels;  // parallel to layout, except dual mono

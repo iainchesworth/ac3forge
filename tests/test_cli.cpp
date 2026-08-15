@@ -1,12 +1,17 @@
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <cctype>
+#include <charconv>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <numbers>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "ac3/core/tables.hpp"
@@ -164,6 +169,70 @@ std::optional<int> reported_value(const std::string& log, std::string_view field
         return std::nullopt;
     }
     return std::stoi(log.substr(pos + needle.size()));
+}
+
+// Finds `label` in `log` and parses the (possibly signed, possibly
+// fractional) number immediately following it, skipping whitespace in
+// between - `ac3cli qc`'s own report lines are "label<spaces>value...", laid
+// out with std::format field widths this deliberately does not need to know:
+// skipping runs of whitespace instead of a fixed offset means a column-width
+// tweak in main.cpp can never silently break these tests the way a
+// fixed-offset substring slice would.
+std::optional<double> value_after(const std::string& log, std::string_view label) {
+    const auto pos = log.find(label);
+    if (pos == std::string::npos) {
+        return std::nullopt;
+    }
+    std::size_t i = pos + label.size();
+    while (i < log.size() && std::isspace(static_cast<unsigned char>(log[i])) != 0) {
+        ++i;
+    }
+    // std::from_chars for floating point does not accept a leading '+' (only
+    // '-' is part of its grammar) - qc's own report uses {:+.2f} throughout
+    // so every positive number is printed with one, and it has to be
+    // skipped here rather than included in the range handed to from_chars
+    // below, unlike '-' which from_chars parses directly.
+    if (i < log.size() && log[i] == '+') {
+        ++i;
+    }
+    const std::size_t start = i;
+    if (i < log.size() && log[i] == '-') {
+        ++i;
+    }
+    while (i < log.size() &&
+          (std::isdigit(static_cast<unsigned char>(log[i])) != 0 || log[i] == '.')) {
+        ++i;
+    }
+    if (i == start) {
+        return std::nullopt;
+    }
+    double value = 0.0;
+    const auto [ptr, ec] = std::from_chars(log.data() + static_cast<std::ptrdiff_t>(start),
+                                           log.data() + static_cast<std::ptrdiff_t>(i), value);
+    (void)ptr;
+    return ec == std::errc{} ? std::optional<double>(value) : std::nullopt;
+}
+
+// The PASS/FAIL of the first "verdict: " line at or after `from` - qc's own
+// per-preset overall verdict (as opposed to its two sub-verdicts, loudness
+// and true peak, which this deliberately does not match on).
+std::optional<bool> gate_verdict_after(const std::string& log, std::size_t from) {
+    if (from == std::string::npos) {
+        return std::nullopt;
+    }
+    constexpr std::string_view kNeedle = "verdict: ";
+    const auto pos = log.find(kNeedle, from);
+    if (pos == std::string::npos) {
+        return std::nullopt;
+    }
+    const auto value_pos = pos + kNeedle.size();
+    if (log.compare(value_pos, 4, "PASS") == 0) {
+        return true;
+    }
+    if (log.compare(value_pos, 4, "FAIL") == 0) {
+        return false;
+    }
+    return std::nullopt;
 }
 
 }  // namespace
@@ -957,4 +1026,266 @@ TEST_CASE("dialnorm=auto for 1+1 dual mono measures each programme's own channel
         CHECK(*ch1 == *ch1_solo);
         CHECK(*ch2 == *ch2_solo);
     }
+}
+
+// Roadmap C2: `ac3cli qc` - decode a stream, measure it with the real
+// BS.1770-4 meter, and compare against the embedded dialnorm/compr and,
+// optionally, a named delivery-spec gate. See main.cpp's run_qc/
+// report_qc_programme and ac3/meta/qc.hpp for the implementation these tests
+// exercise through the real, built binary (this file's own top comment on
+// why: main.cpp has no library surface to link against directly).
+
+TEST_CASE("qc preset= rejects an unknown name and accepts every real one", "[cli][qc]") {
+    const auto dir = scratch_dir();
+    const auto wav_path = dir / "qc_preset_parse_in.wav";
+    const auto channels =
+        make_tone_channels(6, 4 * static_cast<std::size_t>(ac3::kSamplesPerFrame), 48000);
+    REQUIRE(ac3::io::write_wav_f32(wav_path.string(), channels, 48000).has_value());
+    const auto ac3_path = dir / "qc_preset_parse.ac3";
+    REQUIRE(run_cli("encode \"" + wav_path.string() + "\" \"" + ac3_path.string() + "\" 192 51",
+                    dir / "qc_preset_parse_encode.log") == 0);
+
+    SECTION("an unrecognised value is refused, not silently ignored") {
+        const auto log = dir / "qc_preset_bad.log";
+        const auto rc = run_cli("qc \"" + ac3_path.string() + "\" preset=bogus", log);
+        CHECK(rc != 0);
+        CHECK(read_log(log).find("preset") != std::string::npos);
+    }
+
+    SECTION("preset=ebu-r128-s2 parses and runs a gate check") {
+        const auto log = dir / "qc_preset_ebu.log";
+        const auto rc = run_cli("qc \"" + ac3_path.string() + "\" preset=ebu-r128-s2", log);
+        const auto text = read_log(log);
+        INFO(text);
+        (void)rc;  // reflects the gate verdict here, not a parse failure - see below instead
+        CHECK(text.find("unknown qc preset") == std::string::npos);
+        CHECK(text.find("ebu-r128-s2:") != std::string::npos);
+        CHECK(text.find("gates:") != std::string::npos);
+    }
+
+    SECTION("preset=atsc-a85 parses and runs a gate check") {
+        const auto log = dir / "qc_preset_atsc.log";
+        run_cli("qc \"" + ac3_path.string() + "\" preset=atsc-a85", log);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(text.find("unknown qc preset") == std::string::npos);
+        CHECK(text.find("atsc-a85:") != std::string::npos);
+    }
+
+    SECTION("preset=netflix parses and runs a gate check") {
+        const auto log = dir / "qc_preset_netflix.log";
+        run_cli("qc \"" + ac3_path.string() + "\" preset=netflix", log);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(text.find("unknown qc preset") == std::string::npos);
+        CHECK(text.find("netflix:") != std::string::npos);
+    }
+
+    SECTION("preset=all checks every preset") {
+        const auto log = dir / "qc_preset_all.log";
+        run_cli("qc \"" + ac3_path.string() + "\" preset=all", log);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(text.find("ebu-r128-s2:") != std::string::npos);
+        CHECK(text.find("atsc-a85:") != std::string::npos);
+        CHECK(text.find("netflix:") != std::string::npos);
+    }
+
+    SECTION("no preset at all just measures - no 'gates:' section, exit 0") {
+        const auto log = dir / "qc_preset_none.log";
+        const auto rc = run_cli("qc \"" + ac3_path.string() + "\"", log);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(rc == 0);
+        CHECK(text.find("gates:") == std::string::npos);
+    }
+}
+
+TEST_CASE("qc reports the embedded dialnorm and a sane, self-consistent measured loudness",
+          "[cli][qc]") {
+    const auto dir = scratch_dir();
+    const auto wav_path = dir / "qc_measure_in.wav";
+    constexpr std::uint32_t kSampleRate = 48000;
+    // 96000 samples = 2 s: BS.1770's absolute gate needs a full 400 ms
+    // block before integrated_lkfs() reports anything at all (LoudnessMeter's
+    // own doc comment) - a handful of AC-3 frames is not enough, the same
+    // reason the dialnorm=auto tests above all use this same duration.
+    constexpr std::size_t kFrames = 96000;
+    const auto channels = make_tone_channels(6, kFrames, kSampleRate);
+    REQUIRE(ac3::io::write_wav_f32(wav_path.string(), channels, kSampleRate).has_value());
+
+    const auto ac3_path = dir / "qc_measure.ac3";
+    constexpr int kDialnorm = 17;
+    REQUIRE(run_cli("encode \"" + wav_path.string() + "\" \"" + ac3_path.string() +
+                        "\" 256 51 dialnorm=" + std::to_string(kDialnorm),
+                    dir / "qc_measure_encode.log") == 0);
+
+    const auto log = dir / "qc_measure.log";
+    const auto rc = run_cli("qc \"" + ac3_path.string() + "\"", log);
+    const auto text = read_log(log);
+    INFO(text);
+    // Measure-only (no preset=) never gates - a successful decode always
+    // exits 0, whatever the numbers turn out to be.
+    CHECK(rc == 0);
+
+    const auto dialnorm = value_after(text, "dialnorm");
+    REQUIRE(dialnorm.has_value());
+    CHECK(*dialnorm == Catch::Approx(kDialnorm));
+
+    const auto measured = value_after(text, "integrated loudness");
+    REQUIRE(measured.has_value());
+    // Real, non-silent, non-clipping multichannel content: comfortably
+    // inside BS.1770's legal range, nowhere near the -70 LKFS "no
+    // meaningful loudness" floor and never above digital 0 dBFS.
+    CHECK(*measured > -70.0);
+    CHECK(*measured < 0.0);
+
+    const auto claimed = value_after(text, "claimed");
+    REQUIRE(claimed.has_value());
+    CHECK(*claimed == Catch::Approx(-static_cast<double>(kDialnorm)));
+
+    const auto delta = value_after(text, "delta");
+    REQUIRE(delta.has_value());
+    // Self-consistency: the printed delta must be exactly measured -
+    // claimed - the same arithmetic report_qc_programme performs internally
+    // to produce it, and exactly what a sign or operand-order bug there
+    // would break.
+    CHECK(*delta == Catch::Approx(*measured - *claimed).margin(0.01));
+}
+
+// Roadmap C2's own explicit ask: a case where the embedded dialnorm and the
+// measured loudness deliberately disagree, so the delta-reporting path is
+// genuinely exercised rather than merely the agreement case above. dialnorm=1
+// claims the loudest legal dialogue level (-1 LKFS) against a deliberately
+// quiet (0.05 amplitude, well under make_tone_channels' own 0.5) real 5.1 mix
+// - measured loudness cannot plausibly reach anywhere near -1 LKFS for
+// content this quiet, so the mismatch is large and its sign (measured is
+// quieter than claimed) is guaranteed by construction, not a coincidence of
+// whatever the codec happened to produce.
+TEST_CASE("qc's dialnorm-vs-measured delta is genuinely exercised when they deliberately disagree",
+          "[cli][qc][dialnorm]") {
+    const auto dir = scratch_dir();
+    const auto wav_path = dir / "qc_mismatch_in.wav";
+    constexpr std::uint32_t kSampleRate = 48000;
+    // 96000 samples = 2 s: BS.1770's absolute gate needs a full 400 ms
+    // block before integrated_lkfs() reports anything at all (LoudnessMeter's
+    // own doc comment) - a handful of AC-3 frames is not enough, the same
+    // reason the dialnorm=auto tests above all use this same duration.
+    constexpr std::size_t kFrames = 96000;
+    std::vector<std::vector<float>> quiet_channels;
+    quiet_channels.reserve(6);
+    for (int ch = 0; ch < 6; ++ch) {
+        quiet_channels.push_back(
+            make_tone(0.05, 200.0 + 137.0 * static_cast<double>(ch), kFrames, kSampleRate));
+    }
+    REQUIRE(write_wav(wav_path, quiet_channels, kSampleRate));
+
+    const auto ec3_path = dir / "qc_mismatch.ec3";
+    constexpr int kWrongDialnorm = 1;  // claims -1 LKFS - as loud as dialnorm can say
+    REQUIRE(run_cli("eac3-encode \"" + wav_path.string() + "\" \"" + ec3_path.string() +
+                        "\" 192 none 51 dialnorm=" + std::to_string(kWrongDialnorm),
+                    dir / "qc_mismatch_encode.log") == 0);
+
+    const auto log = dir / "qc_mismatch.log";
+    run_cli("qc \"" + ec3_path.string() + "\" preset=atsc-a85", log);
+    const auto text = read_log(log);
+    INFO(text);
+
+    const auto dialnorm = value_after(text, "dialnorm");
+    REQUIRE(dialnorm.has_value());
+    CHECK(*dialnorm == Catch::Approx(kWrongDialnorm));
+
+    const auto measured = value_after(text, "integrated loudness");
+    REQUIRE(measured.has_value());
+
+    const auto delta = value_after(text, "delta");
+    REQUIRE(delta.has_value());
+    // Deliberately, substantially negative - measured is far quieter than
+    // the -1 LKFS dialnorm=1 claims, by construction (see this test's own
+    // comment above), not a rounding nuance a correct-but-tiny delta could
+    // also produce.
+    CHECK(*delta < -5.0);
+
+    // The measurement-derived dialnorm this mismatch implies is nowhere near
+    // the wrong embedded value - the disagreement is real, not cosmetic.
+    const auto implied_pos = text.find("measurement-derived dialnorm would be");
+    REQUIRE(implied_pos != std::string::npos);
+    const auto implied = value_after(text.substr(implied_pos), "would be");
+    REQUIRE(implied.has_value());
+    CHECK(*implied != kWrongDialnorm);
+    CHECK(*implied > kWrongDialnorm + 10);  // a much quieter (larger) dialnorm code
+
+    // The gate line's own arithmetic is self-consistent too: ATSC A/85's
+    // published target/tolerance/ceiling (Sec.6: -24 LKFS +/-2 dB, true peak
+    // <= -2 dBTP - see ac3/meta/qc.hpp's own citation) reproduced here as
+    // literals to check the CLI's printed numbers against, not derived from
+    // them. This does not assume which way the verdict lands (a quiet
+    // dialnorm=1 mismatch says nothing about where -22-ish LKFS content
+    // happens to sit relative to a -24 LKFS target, and it turns out to
+    // land inside tolerance here) - only that the printed verdict is exactly
+    // what evaluate_qc_gate's own |delta| <= tolerance / measured <= ceiling
+    // rule would produce from the printed numbers.
+    constexpr double kAtscTargetLkfs = -24.0;
+    constexpr double kAtscToleranceLu = 2.0;
+    constexpr double kAtscMaxTruePeakDbtp = -2.0;
+    const auto gate_pos = text.find("atsc-a85:");
+    REQUIRE(gate_pos != std::string::npos);
+    const auto gate_text = text.substr(gate_pos);
+    const auto gate_delta = value_after(gate_text, "delta");
+    REQUIRE(gate_delta.has_value());
+    CHECK(*gate_delta == Catch::Approx(*measured - kAtscTargetLkfs).margin(0.01));
+    const auto expect_loudness_pass = std::abs(*gate_delta) <= kAtscToleranceLu;
+
+    const auto peak_section = gate_text.substr(gate_text.find("true peak"));
+    const auto gate_peak_measured = value_after(peak_section, "measured");
+    REQUIRE(gate_peak_measured.has_value());
+    const auto expect_peak_pass = *gate_peak_measured <= kAtscMaxTruePeakDbtp;
+
+    const auto overall = gate_verdict_after(text, gate_pos);
+    REQUIRE(overall.has_value());
+    CHECK(*overall == (expect_loudness_pass && expect_peak_pass));
+}
+
+TEST_CASE(
+    "qc preset=all checks every preset, and the exit code matches whether every verdict passed",
+    "[cli][qc]") {
+    const auto dir = scratch_dir();
+    const auto wav_path = dir / "qc_all_in.wav";
+    constexpr std::uint32_t kSampleRate = 48000;
+    // 96000 samples = 2 s: BS.1770's absolute gate needs a full 400 ms
+    // block before integrated_lkfs() reports anything at all (LoudnessMeter's
+    // own doc comment) - a handful of AC-3 frames is not enough, the same
+    // reason the dialnorm=auto tests above all use this same duration.
+    constexpr std::size_t kFrames = 96000;
+    const auto channels = make_tone_channels(6, kFrames, kSampleRate);
+    REQUIRE(ac3::io::write_wav_f32(wav_path.string(), channels, kSampleRate).has_value());
+    const auto ec3_path = dir / "qc_all.ec3";
+    REQUIRE(run_cli("eac3-encode \"" + wav_path.string() + "\" \"" + ec3_path.string() +
+                        "\" 256 cpl 51 dialnorm=auto",
+                    dir / "qc_all_encode.log") == 0);
+
+    const auto log = dir / "qc_all.log";
+    const auto rc = run_cli("qc \"" + ec3_path.string() + "\" preset=all", log);
+    const auto text = read_log(log);
+    INFO(text);
+
+    for (const std::string_view name : {"ebu-r128-s2:", "atsc-a85:", "netflix:"}) {
+        CHECK(text.find(name) != std::string::npos);
+    }
+
+    const auto ebu_pass = gate_verdict_after(text, text.find("ebu-r128-s2:"));
+    const auto atsc_pass = gate_verdict_after(text, text.find("atsc-a85:"));
+    const auto netflix_pass = gate_verdict_after(text, text.find("netflix:"));
+    REQUIRE(ebu_pass.has_value());
+    REQUIRE(atsc_pass.has_value());
+    REQUIRE(netflix_pass.has_value());
+
+    // The exit code (this project's own binary 0/1 convention - see this
+    // file's own run_cli comment) must match "every requested gate passed",
+    // recomputed from the same three verdicts the log itself printed -
+    // whichever way the real BS.1770 numbers actually land, a bug that ORs
+    // instead of ANDs the per-preset verdicts (or ignores one preset
+    // entirely) shows up here as rc disagreeing with this recomputation.
+    const bool expect_success = *ebu_pass && *atsc_pass && *netflix_pass;
+    CHECK((rc == 0) == expect_success);
 }

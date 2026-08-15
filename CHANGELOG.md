@@ -79,6 +79,23 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   one measure of the four that does not exclude the LFE channel or apply the surround
   weighting — it is about physical overload headroom, not perceived loudness. All four share the
   existing K-weighting/channel-summing machinery rather than duplicating it.
+- **`ac3cli qc` (roadmap C2), bitstream-aware loudness QC** — decodes a whole AC-3/E-AC-3 stream,
+  measures it with the real BS.1770-4/EBU Tech 3342 meter (the same `ac3::meta::LoudnessMeter`
+  `dialnorm=auto` already uses), and reports it against the stream's own embedded `dialnorm`/
+  `compr` — for E-AC-3, against the independent substream's own bed audio only, never a
+  dependent's, matching the scope the encoder's own pre-encode `measured_dialnorm` pass already
+  uses for the same programme. A new `ac3::meta::qc.hpp` names three delivery gates
+  (`preset=ebu-r128-s2 | atsc-a85 | netflix`, or `preset=all` for every one), each preset's
+  target loudness, tolerance and true-peak ceiling cited from its own primary source rather than
+  recalled from memory: EBU R 128 s2 "Loudness in Streaming" (Nov 2023 v3) plus EBU R 128 (Nov
+  2023 v5) for the tolerance/ceiling it defers to, ATSC A/85:2013 §6, and Netflix's Sound Mix
+  Specifications & Best Practices v1.6. Exit code is 0 only when the stream decodes cleanly and
+  (if a preset was given) every requested gate passes — the whole point being a usable CI/pipeline
+  QC step. Along the way, the E-AC-3 decoder gained a genuinely missing piece its own bitstream
+  parsing already walked past: the independent/convertible substream's own `compr` word was
+  parsed (to keep the bit count right) but discarded rather than exposed on `DecodedSubstream`/
+  `DecodedAccessUnit` — `qc` needed it, so it is now reported like AC-3's decoder already reports
+  its own `compr`.
 
 ### CLI
 

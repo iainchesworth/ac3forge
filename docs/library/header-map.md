@@ -19,7 +19,7 @@
 | `ac3/io/elementary.hpp` | `scan`, `ScannedStream`. |
 | `ac3/io/dec3.hpp` | `build_codec_config_box` — the ISOBMFF `dac3`/`dec3` sample-entry payload (ETSI TS 102 366 Annex F), Dolby Atmos extension included, built from a `ScannedStream`. What `mp4::AudioTrack::codec_config` is filled in with. |
 | `ac3/io/wav.hpp` | WAV read/write (PCM16 and float32) and the WAV↔Table 5.8 permutation. |
-| `ac3/meta/drc.hpp`, `loudness.hpp`, `mixing.hpp` | `dynrng`, `compr`, BS.1770, downmix levels. |
+| `ac3/meta/drc.hpp`, `loudness.hpp`, `mixing.hpp`, `qc.hpp` | `dynrng`, `compr`, BS.1770, downmix levels, named QC delivery-gate presets. |
 | `ac3/spatial/spatial.hpp` | `BedRenderer`, `pan_azimuth`, `pan_room`. |
 | `ac3/oba/atmos.hpp`, `joc.hpp`, `oamd.hpp` | The object layer. |
 | `ac3/oba/motion.hpp` | `Keyframe`, `KeyframePath`, `OrbitPath`, `ObjectPath` (a `std::variant` of the two), `evaluate_placements`. Turns authored keyframes or a closed-form orbit into the `ObjectPlacement` span `AtmosEncoder::encode_frame` already took per-frame — a placement-generation layer in front of the existing API, not a change to it. Backs `ac3cli atmos-path` and `live`'s `atmos` mode. |

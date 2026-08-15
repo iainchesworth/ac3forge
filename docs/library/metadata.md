@@ -84,6 +84,28 @@ AC-3, `MixMetadata` for the E-AC-3 `mixmdate` group. In `MixMetadata`, an absent
 `lfemixlevcod` means LFE mixing is *disabled*, which per §E2.3.1.10 is a decision in its own
 right and not the same as sending code 31.
 
+`ac3/meta/qc.hpp` (roadmap C2) is the QC-side counterpart: named loudness/true-peak delivery
+gates a decoded stream's measurement can be checked against, mirroring `meta::Profile`/
+`meta::ProfileId`'s own shape:
+
+```cpp
+const auto preset = ac3::meta::qc_preset(ac3::meta::QcPresetId::kEbuR128S2);
+const auto verdict = ac3::meta::evaluate_qc_gate(preset, meter.integrated_lkfs(),
+                                                 meter.true_peak_dbtp());
+if (!verdict.pass()) { /* ... */ }
+```
+
+`QcPresetId` names three delivery specs — `kEbuR128S2`, `kAtscA85`, `kNetflix` — each carrying a
+target integrated loudness, a symmetric tolerance (LU) and a true-peak ceiling (dBTP, a one-sided
+limit) read from its own primary source (EBU R 128 s2 + EBU R 128, ATSC A/85:2013 §6, and
+Netflix's Sound Mix Specifications & Best Practices, respectively — see `qc_preset()`'s own
+comment for the exact clause cited per preset). `evaluate_qc_gate()` is the pure comparison:
+`QcVerdict::loudness_delta_lu`/`true_peak_margin_dbtp` report signed distance from the target/
+ceiling, and `pass()` is both halves together. `ac3cli qc` is this same API driven end to end over
+a real, already-encoded file — see [`examples/qc_report.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/qc_report.cpp)
+for the library-only version: encode with a dialnorm that does not match the real level, decode,
+measure, and see the mismatch and the gate verdicts it produces.
+
 ---
 
 See also: [Encoding AC-3](encoding-ac3.md) and [Encoding E-AC-3](encoding-eac3.md) — where
