@@ -14,6 +14,8 @@
 #include "ac3/encoder/transient.hpp"
 #include "ac3/internal/profiling.hpp"
 
+#include "snr_search.hpp"
+
 namespace ac3 {
 
 namespace {
@@ -1066,19 +1068,20 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         return total;
     };
 
-    int lo = 0;
-    int hi = 1023;
-    while (lo < hi) {
-        const int mid = (lo + hi + 1) / 2;
-        if (bits_at(mid) <= budget) {
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
-    }
+    int last_eval = -1;
+    std::uint32_t last_bits = 0;
+    const int lo =
+        internal::search_max_fitting(1023, snr_search_hint_, [&](int composite) {
+            last_eval = composite;
+            last_bits = bits_at(composite);
+            return last_bits <= budget;
+        });
+    snr_search_hint_ = lo;
     csnroffst = lo >> 4;
     fsnroffst = lo & 15;
-    const std::uint32_t mantissa_bits = bits_at(lo);
+    // run_bap must hold lo's own allocation for step 10 below, so re-evaluate
+    // unless the search's last probe already was lo.
+    const std::uint32_t mantissa_bits = last_eval == lo ? last_bits : bits_at(lo);
     assert(mantissa_bits <= budget);
     AC3_ZONE_END(zone_snr_search);
 

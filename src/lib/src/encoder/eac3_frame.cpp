@@ -16,6 +16,8 @@
 #include "ac3/encoder/eac3_tools.hpp"
 #include "ac3/internal/profiling.hpp"
 
+#include "snr_search.hpp"
+
 namespace ac3::eac3 {
 
 namespace {
@@ -2190,8 +2192,15 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
 
     std::vector<std::span<const std::uint8_t>> bap_views;
     bap_views.reserve(static_cast<std::size_t>(streams));
+    // Which composite the allocation state (payload.bap, AHT gain modes'
+    // costs) currently reflects, and what it cost - so the final "leave the
+    // allocation at lo" evaluation below can be skipped when the search's
+    // last probe already was lo.
+    int last_eval = -1;
+    std::uint32_t last_bits = 0;
     const auto bits_at = [&](int composite) {
         AC3_ZONE_SCOPED_N("bits_at");
+        last_eval = composite;
         bap_views.clear();
         std::uint32_t aht_bits = 0;
         for (int s = 0; s < streams; ++s) {
@@ -2219,28 +2228,26 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                 std::span{plan.bap}.subspan(static_cast<std::size_t>(plan.start)));
         }
         // Every block reuses the same exponents, hence the same allocation.
-        return static_cast<std::uint32_t>(mantissa_bits_per_block(bap_views)) *
-                   kBlocksPerFrame +
-               aht_bits;
+        last_bits = static_cast<std::uint32_t>(mantissa_bits_per_block(bap_views)) *
+                        kBlocksPerFrame +
+                    aht_bits;
+        return last_bits;
     };
 
-    // Binary-searches the largest composite SNR offset (best quality) whose
-    // mantissa cost still fits `budget`. This is the whole of CBR's rate
-    // control; VBR reuses it only as a fallback, for when a quality target
-    // would need more words than an explicit max_kbps bound allows.
+    // Finds the largest composite SNR offset (best quality) whose mantissa
+    // cost still fits `budget`. This is the whole of CBR's rate control; VBR
+    // reuses it only as a fallback, for when a quality target would need
+    // more words than an explicit max_kbps bound allows. Warm-started from
+    // the previous converged offset (this frame's provisional one on the
+    // AHT re-search, the previous frame's otherwise) - which changes how
+    // fast it converges, never where; see snr_search.hpp.
     const auto search = [&](std::uint32_t budget) {
         AC3_ZONE_SCOPED_N("search");
-        int lo = 0;
-        int hi = 1023;
-        while (lo < hi) {
-            const int mid = (lo + hi + 1) / 2;
-            if (bits_at(mid) <= budget) {
-                lo = mid;
-            } else {
-                hi = mid - 1;
-            }
-        }
-        return lo;
+        const int found = internal::search_max_fitting(
+            1023, snr_search_hint_,
+            [&](int composite) { return bits_at(composite) <= budget; });
+        snr_search_hint_ = found;
+        return found;
     };
 
     // What a quality-driven mantissa cost turns into: either a direct word
@@ -2397,16 +2404,23 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
             }
         }
     }
-    // The call is not optional: it is what leaves payload.bap holding the
-    // allocation for `lo`, which every mantissa below is quantised against.
-    // Only its RESULT is debug-only - checked here and against the tokens
-    // actually written at the end of the function - so the variable is
-    // unreferenced under NDEBUG while the call still has to happen. Folding it
-    // into the assert would delete the allocation along with the check.
-    [[maybe_unused]] const std::uint32_t mantissa_bits = bits_at(lo);
+    // The evaluation is not optional: it is what leaves payload.bap holding
+    // the allocation for `lo`, which every mantissa below is quantised
+    // against - skippable exactly when the last evaluation already was lo
+    // (last_eval tracks this). Only its RESULT is debug-only - checked here
+    // and against the tokens actually written at the end of the function -
+    // so the variable is unreferenced under NDEBUG while the evaluation
+    // still has to happen. Folding it into the assert would delete the
+    // allocation along with the check.
+    [[maybe_unused]] const std::uint32_t mantissa_bits =
+        last_eval == lo ? last_bits : bits_at(lo);
     assert(side_bits + mantissa_bits + kTailBits <= words * 16);
     payload.csnroffst = lo >> 4;
     payload.fsnroffst = lo & 15;
+    // VBR's quality-driven path picks lo without a search; recording it here
+    // unconditionally keeps the hint fresh for whichever path the next frame
+    // takes.
+    snr_search_hint_ = lo;
 
     // --- 9. Mantissa tokens per block --------------------------------------
     AC3_ZONE_BEGIN(zone_mantissas, "step8_mantissa_tokens");
