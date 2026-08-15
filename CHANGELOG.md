@@ -12,6 +12,101 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 
 ## [Unreleased]
 
+## [0.5.0-beta.1] - 2026-08-15
+
+Fourth tagged release. The headline is a full fast-transform performance initiative: an opt-in
+FFT-based MDCT was introduced, taken default-on, and then progressively hardware-optimized down
+through every transform kernel the encoder touches — the long transform, both block-switched
+short transforms, and the opt-in enhanced-coupling tool's DFT — alongside an algorithmic
+warm-start for the bit-allocation rate-control search. Measured on the same 5950X release build
+throughout, default 5.1 encoding drops from 0.4.0-beta.1's ~3.0 ms/frame to ~0.47 ms/frame (about
+6.4×) and 8-object Atmos from ~4.8 ms/frame to ~0.43 ms/frame (about 11×), with SNR held at
++0.000 dB against an independent FFmpeg oracle at every step along the way. Alongside the
+performance work: two GUI fixes (object-drag losing its mouse grab mid-gesture, and ambiguous
+plan/elevation axis labeling), a quality-trend dashboard fix, and Linux packaging now ships real
+`libFOO`/`libFOO-dev`-style system packages instead of one `.deb`/`.rpm` silently bundling the
+CLI together with the entire library SDK.
+
+### Performance: fast transforms, default-on and hardware-optimized
+
+- **A new FFT-based fast forward MDCT**, landed opt-in behind `fast_mdct` (off by default): the
+  §7.9.4 N/4-FFT structure replaces the direct §8.2.3.2 O(N²) evaluation for the long transform,
+  ~25× faster at the kernel level (76.8 µs → 3.1 µs/call) with the direct form kept in-tree as
+  the permanent reference/validation oracle. Verified bit-identical-class agreement (peak-relative
+  ~3e-15) against the direct form on goldens, random data and real audio, plus **+0.000 dB**
+  through an independent FFmpeg oracle at 192–448 kbps.
+- **The inverse transform and enhanced coupling's windowing step got the equivalent fix**: `std::cos`/
+  `std::sin` calls inside `imdct512_windowed`, `imdct256_pair_windowed` and `ecpl_channel_spectrum`'s
+  windowing loop, previously recomputed fresh every call, are now one-time tables. Bit-exact by
+  construction (the naive periodic-index shortcut is provably *not* bit-exact for the IMDCT's
+  un-reduced angles — documented as a trap so it isn't re-attempted). A real 5.1 E-AC-3 decode
+  drops from ~640 ms to ~145 ms (~4.4×).
+- **The fast MDCT is now the default everywhere**, with `band_energy` (Atmos's JOC reconstruction
+  solve) wired through the same flag — the gap that had capped Atmos's win at ~2.0×. Whole-frame:
+  plain 5.1 3.0 → 0.67 ms/frame (~4.5×), 8-object Atmos 4.8 → 0.64 ms/frame (**~7.6×**, up from
+  ~2.0× before `band_energy` rode the flag). `fast-mdct=off` (AC-3 commands) / `tools=nofastmdct`
+  (E-AC-3) force the direct form back; the old opt-in spellings still parse as no-ops so existing
+  run history keeps working.
+- **The fast MDCT kernel itself closed to its standalone-prototype speed** (3.09 µs → 903 ns/call,
+  a further 3.4×) by moving every angle-dependent value in the §7.9.4 fold — pre/post twiddles and
+  the FFT's own butterfly twiddles/bit-reversal — into one-time tables, and switching the FFT to
+  split real/imaginary arrays so the auto-vectorizer can see the butterfly's independent
+  multiply-add chains.
+- **Both block-switched short transforms get their own fast folds**, closing the last kernels still
+  running direct-form O(N²) sums under the default `fast_mdct`. Each derives to the same scaled
+  DCT-IV core the long transform already uses (877 ns/call vs. 35.8 µs direct — ~41×), removing the
+  worst-case real-time hazard on transient-heavy material: a fully block-switched 5.1 frame's
+  transform stage drops from ~1.3 ms-class to ~32 µs-class.
+- **The opt-in enhanced-coupling tool's `dft512` gets the same FFT treatment** as the long MDCT
+  (both now share one `fft_radix2.hpp` core): `ecpl_channel_spectrum`, still the single most
+  expensive kernel measured, drops from 277 µs to 47 µs/call (~5.9×). Not run by any default
+  encode, but a real-time hazard whenever `ecpl` is enabled.
+- **The bit-allocation rate-control search now warm-starts from the previous frame's converged
+  offset** instead of a fixed bracket, exploiting that consecutive frames of real material converge
+  to the same or a neighbouring value. A stationary frame's ~11 full bit-allocation evaluations
+  drop to 2–3; whole-frame time falls a further 18% (5.1) / 11% (Atmos) on top of the kernel work
+  above. Brute-force verified against the plain binary search over 4,355 monotone-predicate cases
+  with zero mismatches; outputs are byte-identical on every monotone path, and the one path where
+  they can legitimately differ (AHT's locally non-monotone cost function) was already
+  probe-order-dependent before this change — decoded PCM agrees at 102–115 dB SNR per channel.
+- **New observability to keep the above honest going forward**: Tracy zones across every previously
+  unzoned encoder stage, a standalone `ac3kernelbench` micro-benchmark harness timing kernels in
+  isolation against real audio, and a per-kernel trend history (non-gating, `::warning::`-only)
+  alongside the existing whole-frame performance trend — see
+  [docs/performance-trend.md](docs/performance-trend.md).
+
+### Packaging
+
+- **Linux `.deb`/`.rpm` now ship a real `libFOO`/`libFOO-dev` split** instead of one package
+  silently bundling `ac3cli` together with the entire library SDK (headers, static archives, the
+  CMake package config — confirmed against real `dpkg-deb -c` output, not assumed). `libac3forge0`
+  carries just the versioned shared library a linked binary loads at runtime; `libac3forge-dev`/
+  `ac3forge-devel` carries everything a builder needs, version-pinned to its exact matching
+  `libac3forge0`. Installable with a plain `apt install`/`dnf install` rather than a manual archive
+  download — see [docs/releasing.md](docs/releasing.md#what-gets-published). ZIP/TGZ downloads are
+  unaffected: `library`+`libruntime` still merge into one `ac3forge-dev-*` archive, exactly as
+  before.
+
+### GUI fixes
+
+- **Object-drag no longer loses the mouse grab mid-gesture.** The Objects tab's plan/elevation/
+  live-session `MouseArea`s sit inside a `Flickable`-based `ScrollView`, which could steal the grab
+  from a child `MouseArea` once movement looked flick-like — most reproducible on the elevation
+  view's vertical drag, the same axis `Flickable` watches for scrolling. `preventStealing: true`
+  on all five affected `MouseArea`s holds the grab for the whole gesture.
+- **The plan and elevation views in the Objects tab are now labeled as what they are** — "(top-down)"
+  / "(side-on)" headers, a one-line caption naming which screen axis maps to which room axis, and a
+  corrected elevation hint ("drag: depth + height" rather than "drag for height", since the plan
+  view's marker moves too during an elevation drag — correct behaviour, previously unexplained).
+
+### Developer tooling
+
+- **The quality-trend dashboard's table no longer conflates unrelated checks.** The chart already
+  scoped rows by codec and `isPrimaryCheck`; the table below it rendered the raw, unfiltered record
+  list, which let a steady ~25 dB interop fixture read as a crash relative to an unrelated ~68 dB
+  series. The table now follows the same Codec scoping as the chart, with a `Check` column and a
+  tooltipped `†` marker on non-primary checks.
+
 ## [0.4.0-beta.1] - 2026-08-14
 
 Third tagged release. The GUI is rebuilt to the canon design handoff — a numbered-rail workflow,
