@@ -83,13 +83,13 @@ std::vector<TsPacket> parse_packets(std::span<const std::byte> ts) {
                 p.pcr_present = (flags & 0x10u) != 0;
                 if (p.pcr_present) {
                     std::uint64_t word = 0;
-                    for (int i = 0; i < 6; ++i) {
+                    for (std::size_t i = 0; i < 6; ++i) {
                         word = (word << 8) | std::to_integer<std::uint8_t>(pkt[6 + i]);
                     }
                     p.pcr_base = (word >> 15) & 0x1'FFFF'FFFFull;
                 }
             }
-            offset += 1 + adapt_len;
+            offset += 1 + static_cast<std::size_t>(adapt_len);
         }
         if (p.has_payload) {
             REQUIRE(offset <= pkt.size());
@@ -106,7 +106,7 @@ Bytes section_from_psi_packet(const TsPacket& pkt) {
     REQUIRE(pkt.pusi);
     REQUIRE(pkt.has_payload);
     const auto pointer_field = std::to_integer<std::uint8_t>(pkt.payload[0]);
-    const auto section_start = pkt.payload.subspan(1 + pointer_field);
+    const auto section_start = pkt.payload.subspan(1 + static_cast<std::size_t>(pointer_field));
     // section_length is the low 12 bits of bytes[1..2]; the section runs
     // from table_id through CRC_32 inclusive, i.e. 3 + section_length bytes.
     const auto len_hi = std::to_integer<std::uint8_t>(section_start[1]);
