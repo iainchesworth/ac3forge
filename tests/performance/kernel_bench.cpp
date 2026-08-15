@@ -236,6 +236,17 @@ int main(int argc, char** argv) {
         ac3::mdct256_forward_second(full.last<256>(), second);
         g_sink += first[32] + second[32];
     }));
+    // The same pair down their own DCT-IV folds - what a block-switched
+    // frame actually runs under the default fast_mdct; the direct row above
+    // is the reference form.
+    results.push_back(time_kernel("mdct256_pair_fast", [&] {
+        const std::span<const double, 512> full(windowed_block);
+        std::array<double, 128> first{};
+        std::array<double, 128> second{};
+        ac3::mdct256_forward_first(full.first<256>(), first, /*fast=*/true);
+        ac3::mdct256_forward_second(full.last<256>(), second, /*fast=*/true);
+        g_sink += first[32] + second[32];
+    }));
 
     // --- imdct512_windowed ----------------------------------------------------
     results.push_back(time_kernel("imdct512_windowed", [&] {
