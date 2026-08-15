@@ -6,8 +6,10 @@
 #include <exception>
 #include <cstdint>
 #include <cstdio>
+#include <expected>
 #include <format>
 #include <fstream>
+#include <iostream>
 #include <iterator>
 #include <memory>
 #include <numbers>
@@ -46,6 +48,7 @@
 #include "ac3/signing/signing_key.hpp"
 #include "matroska/matroska.hpp"
 #include "mpegts/mpegts.hpp"
+#include "platform/stdio_binary.hpp"
 
 namespace {
 
@@ -534,7 +537,49 @@ bool prepare_dual_mono_source(ac3::io::WavData& wav, std::string_view layout,
     return true;
 }
 
+// The conventional Unix "-" file argument: a lone dash means stdin for an
+// input path or stdout for an output path, the same convention ffmpeg, sox
+// and most other Unix tools use for pipe-based workflows (e.g.
+// `ac3cli encode - - 448 couple < in.wav > out.ac3`). Checked by exact
+// string match only - a path that merely starts with '-' is an ordinary
+// (if oddly named) filename, not this convention.
+bool is_stdio_path(std::string_view path) { return path == "-"; }
+
+// Where a command's human-readable status report goes, once out_path's own
+// destination is settled: stdout as always, unless out_path IS "-" - the
+// binary payload itself is going to stdout then, and a status line like
+// "encoded N frames..." landing in the middle of that stream would corrupt
+// whatever is reading it downstream. The same split ffmpeg and friends make
+// between their progress/log output and the media they actually pipe.
+FILE* status_stream(std::string_view out_path) { return is_stdio_path(out_path) ? stderr : stdout; }
+
+std::vector<std::byte> to_bytes(std::span<const char> raw) {
+    std::vector<std::byte> bytes(raw.size());
+    for (std::size_t i = 0; i < raw.size(); ++i) {
+        bytes[i] = static_cast<std::byte>(static_cast<unsigned char>(raw[i]));
+    }
+    return bytes;
+}
+
 bool write_frames(std::string_view path, std::span<const std::vector<std::byte>> frames) {
+    if (is_stdio_path(path)) {
+        // set_stdio_binary() before the first byte, not once at startup: a
+        // command that never touches "-" (the overwhelming majority of
+        // invocations) should not pay for it, and calling it more than once
+        // in the rare case both the input and output of one command are "-"
+        // is harmless - see platform/stdio_binary.hpp for what it fixes.
+        ac3::cli::platform::set_stdio_binary();
+        for (const auto& frame : frames) {
+            std::cout.write(reinterpret_cast<const char*>(frame.data()),
+                            static_cast<std::streamsize>(frame.size()));
+        }
+        std::cout.flush();
+        if (!std::cout) {
+            std::println(stderr, "error: cannot write to stdout");
+            return false;
+        }
+        return true;
+    }
     std::ofstream out{std::string{path}, std::ios::binary};
     if (!out) {
         std::println(stderr, "error: cannot open {} for writing", path);
@@ -573,6 +618,18 @@ void write_partial_output(std::string_view out_path, bool keep_partial,
     if (!keep_partial || frames.empty()) {
         return;
     }
+    if (is_stdio_path(out_path)) {
+        // "beside the intended output" (partial_output_path's naming below)
+        // has no meaning for a pipe - stdout IS the intended output, and a
+        // literal file called "-.partial" is not what keep-partial means
+        // here. So the frames already encoded go straight to stdout instead,
+        // the closest equivalent a single output stream can offer.
+        if (write_frames(out_path, frames)) {
+            std::println(stderr, "note: the {} frames already encoded were written to stdout",
+                         frames.size());
+        }
+        return;
+    }
     const auto partial = partial_output_path(out_path);
     if (write_frames(partial, frames)) {
         std::println(stderr, "note: the {} frames already encoded are kept at {}", frames.size(),
@@ -599,17 +656,47 @@ std::vector<float> interleave_reordered(std::span<const std::vector<float>> chan
 }
 
 std::vector<std::byte> read_all(std::string_view path) {
+    if (is_stdio_path(path)) {
+        ac3::cli::platform::set_stdio_binary();
+        const std::vector<char> raw{std::istreambuf_iterator<char>(std::cin),
+                                    std::istreambuf_iterator<char>()};
+        return to_bytes(raw);
+    }
     std::ifstream in{std::string{path}, std::ios::binary};
     if (!in) {
         return {};
     }
     const std::vector<char> raw{std::istreambuf_iterator<char>(in),
                                 std::istreambuf_iterator<char>()};
-    std::vector<std::byte> bytes(raw.size());
-    for (std::size_t i = 0; i < raw.size(); ++i) {
-        bytes[i] = static_cast<std::byte>(static_cast<unsigned char>(raw[i]));
+    return to_bytes(raw);
+}
+
+// Wraps ac3::io::read_wav to honor the "-" stdin convention (is_stdio_path
+// above): "-" reads the WAV from stdin, binary mode set first, instead of
+// opening a file with that literal name.
+std::expected<ac3::io::WavData, ac3::io::WavError> read_wav_arg(std::string_view path) {
+    if (is_stdio_path(path)) {
+        ac3::cli::platform::set_stdio_binary();
+        return ac3::io::read_wav(std::cin);
     }
-    return bytes;
+    return ac3::io::read_wav(std::string{path});
+}
+
+// Wraps ac3::io::write_wav_f32 to honor the "-" stdout convention: "-"
+// writes the WAV to stdout, binary mode set first, instead of opening a file
+// with that literal name. ac3::io::write_wav_f32(std::ostream&, ...) never
+// seeks (see its own comment), so this is exactly as safe on the unseekable
+// pipe stdout usually is as the path overload is on a plain file.
+std::expected<void, ac3::io::WavError> write_wav_f32_arg(
+        std::string_view path, std::span<const std::vector<float>> channels,
+        std::uint32_t sample_rate, std::span<const std::size_t> channel_order = {}) {
+    if (is_stdio_path(path)) {
+        ac3::cli::platform::set_stdio_binary();
+        auto result = ac3::io::write_wav_f32(std::cout, channels, sample_rate, channel_order);
+        std::cout.flush();
+        return result;
+    }
+    return ac3::io::write_wav_f32(std::string{path}, channels, sample_rate, channel_order);
 }
 
 // ---------------------------------------------------------------------------
@@ -632,16 +719,21 @@ std::string meter_bar(double db, int width) {
 // The exact figures for a finished run. Peak and RMS here are unweighted over
 // the whole signal — ballistics exist to make a moving display readable, and
 // would only blur a question that has a right answer.
-void print_channel_summary(const ac3::analysis::LevelMeter& meter) {
+// `out` defaults to stdout for every existing caller; the only ones that
+// pass anything else are the "-" stdout-output commands (encode/eac3-encode/
+// atmos-encode/decode), which redirect it to stderr so this human-readable
+// report doesn't land in the middle of the binary stream those commands may
+// be writing to the very same stdout - see status_stream()'s own comment.
+void print_channel_summary(const ac3::analysis::LevelMeter& meter, FILE* out = stdout) {
     const auto acmod = meter.acmod();
     const bool lfe = meter.lfe();
-    std::println("");
-    std::println("per-channel levels ({}):", ac3::analysis::layout_name(acmod, lfe));
-    std::println("  {:<4} {:>8} {:>8}  {:<20} {}", "ch", "peak", "rms", "peak (-60..0 dBFS)",
-                 "clipped");
+    std::println(out, "");
+    std::println(out, "per-channel levels ({}):", ac3::analysis::layout_name(acmod, lfe));
+    std::println(out, "  {:<4} {:>8} {:>8}  {:<20} {}", "ch", "peak", "rms",
+                "peak (-60..0 dBFS)", "clipped");
     for (int ch = 0; ch < meter.channel_count(); ++ch) {
         const auto& stats = meter.summary()[static_cast<std::size_t>(ch)];
-        std::println("  {:<4} {:>8.2f} {:>8.2f}  [{}] {}",
+        std::println(out, "  {:<4} {:>8.2f} {:>8.2f}  [{}] {}",
                      ac3::analysis::channel_name(acmod, lfe, ch), stats.peak_db(),
                      stats.rms_db(), meter_bar(stats.peak_db(), 18),
                      stats.clipped_samples > 0 ? std::to_string(stats.clipped_samples) : "-");
@@ -659,7 +751,7 @@ void print_channel_summary(const ac3::analysis::LevelMeter& meter) {
         // A perfectly centred image leaves a vanishing negative y, which
         // rounds to a correct but ridiculous "-0°".
         const double azimuth = std::round(field.azimuth_deg);
-        std::println("  soundfield: {:.0f}° azimuth, focus {:.2f} (1.0 = a single speaker)",
+        std::println(out, "  soundfield: {:.0f}° azimuth, focus {:.2f} (1.0 = a single speaker)",
                      azimuth == 0.0 ? 0.0 : azimuth, field.magnitude);
     }
 }
@@ -1234,9 +1326,12 @@ void gather_frame(const LoadedSources& sources, std::size_t start,
 // is visible rather than something to be discovered later on the meters.
 // `label` is whatever resolve_layout printed for this plan - a named
 // layout's label, or the channel list a custom selection was parsed from.
-void print_routing(const plan::Plan& p, const plan::Routing& routing, std::string_view label) {
+// `out` defaults to stdout; see print_channel_summary's comment just above -
+// the same reasoning applies here.
+void print_routing(const plan::Plan& p, const plan::Routing& routing, std::string_view label,
+                   FILE* out = stdout) {
     if (routing.is_permutation()) {
-        std::println("  source carried directly into {}", label);
+        std::println(out, "  source carried directly into {}", label);
         return;
     }
     const auto names = plan::coded_channel_names(plan::resolve(p));
@@ -1251,9 +1346,9 @@ void print_routing(const plan::Plan& p, const plan::Routing& routing, std::strin
             silent += names[static_cast<std::size_t>(c)];
         }
     }
-    std::println("  {} source channels rendered onto {}", routing.source_channels, label);
+    std::println(out, "  {} source channels rendered onto {}", routing.source_channels, label);
     if (!silent.empty()) {
-        std::println("  silent (the source carries nothing that belongs there): {}", silent);
+        std::println(out, "  silent (the source carries nothing that belongs there): {}", silent);
     }
 }
 
@@ -1396,7 +1491,7 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
         }
         return run_eac3_encode_multi(in_path, out_path, bitrate, tools, layout, vbr, meta);
     }
-    auto wav = ac3::io::read_wav(std::string{in_path});
+    auto wav = read_wav_arg(in_path);
     if (!wav) {
         std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(wav.error()));
         return 1;
@@ -1513,6 +1608,10 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
     if (!write_frames(out_path, frames)) {
         return 1;
     }
+    // See run_encode's identical status_stream() comment: out_path == "-"
+    // means the E-AC-3 bytes just written own stdout, so this report goes to
+    // stderr instead.
+    const auto status = status_stream(out_path);
     if (p.vbr) {
         // bitrate_kbps is only the nominal reference vbr's tool heuristics
         // used, not a target - what a VBR run actually spent is the sizes it
@@ -1530,19 +1629,22 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
                                                         static_cast<double>(frames.size());
         const double mean_kbps = mean_bytes * 8.0 * static_cast<double>(wav->sample_rate) /
                                  (1000.0 * ac3::kSamplesPerFrame);
-        std::println("encoded {} E-AC-3 access units (vbr {}, {} Hz, {}, {} coded channels, "
+        std::println(status,
+                     "encoded {} E-AC-3 access units (vbr {}, {} Hz, {}, {} coded channels, "
                      "tools: {}) to {}",
                      frames.size(), plan::format_vbr(p.vbr), wav->sample_rate, label, nchans,
                      plan::format_tools(p.tools), out_path);
-        std::println("  access unit size: {}-{} bytes, {:.0f} bytes mean (~{:.0f} kbps mean)",
+        std::println(status,
+                     "  access unit size: {}-{} bytes, {:.0f} bytes mean (~{:.0f} kbps mean)",
                      min_bytes, max_bytes, mean_bytes, mean_kbps);
     } else {
-        std::println("encoded {} E-AC-3 access units ({} kbps, {} Hz, {}, {} coded channels, "
+        std::println(status,
+                     "encoded {} E-AC-3 access units ({} kbps, {} Hz, {}, {} coded channels, "
                      "tools: {}) to {}",
                      frames.size(), bitrate, wav->sample_rate, label, nchans,
                      plan::format_tools(p.tools), out_path);
     }
-    print_routing(p, *routing, label);
+    print_routing(p, *routing, label, status);
     return 0;
 }
 
@@ -1833,7 +1935,7 @@ int run_atmos_path(std::string_view out_path, std::string_view paths_path, std::
 int run_atmos_encode(std::string_view in_path, std::string_view out_path,
                      std::uint32_t bitrate, std::uint32_t objects,
                      const Options& meta, std::string_view paths_path = {}) {
-    const auto wav = ac3::io::read_wav(std::string{in_path});
+    const auto wav = read_wav_arg(in_path);
     if (!wav) {
         std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(wav.error()));
         return 1;
@@ -1987,12 +2089,17 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
     if (!write_frames(out_path, out)) {
         return 1;
     }
-    std::println("encoded {} E-AC-3 access units ({} kbps, {} Hz) to {}", out.size(), bitrate,
-                 wav->sample_rate, out_path);
-    std::println("  {} objects from {} source channels + the bed's LFE = {} objects, "
+    // See run_encode's identical status_stream() comment: out_path == "-"
+    // means the E-AC-3 bytes just written own stdout, so this report goes to
+    // stderr instead.
+    const auto status = status_stream(out_path);
+    std::println(status, "encoded {} E-AC-3 access units ({} kbps, {} Hz) to {}", out.size(),
+                bitrate, wav->sample_rate, out_path);
+    std::println(status,
+                 "  {} objects from {} source channels + the bed's LFE = {} objects, "
                  "JOC over a 5.1 downmix",
                  count, wav->channels.size(), ac3::oba::object_count(encoder.program()));
-    print_channel_summary(meter);
+    print_channel_summary(meter, status);
     return 0;
 }
 
@@ -2310,7 +2417,7 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
         }
         return run_encode_multi(in_path, out_path, bitrate, couple, layout, meta);
     }
-    auto wav = ac3::io::read_wav(std::string{in_path});
+    auto wav = read_wav_arg(in_path);
     if (!wav) {
         std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(wav.error()));
         return 1;
@@ -2451,11 +2558,14 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
     if (!write_frames(out_path, frames)) {
         return 1;
     }
-    std::println("encoded {} frames ({} kbps, {} Hz, {}) to {}", frames.size(), bitrate,
-                 wav->sample_rate, ac3::analysis::layout_name(config.acmod, config.lfe),
-                 out_path);
-    print_routing(p, *routing, label);
-    print_channel_summary(meter);
+    // status_stream(out_path): stderr instead of stdout when out_path is "-"
+    // - the AC-3 bytes just written above already own stdout in that case,
+    // and this report must not land in the middle of them.
+    const auto status = status_stream(out_path);
+    std::println(status, "encoded {} frames ({} kbps, {} Hz, {}) to {}", frames.size(), bitrate,
+                wav->sample_rate, ac3::analysis::layout_name(config.acmod, config.lfe), out_path);
+    print_routing(p, *routing, label, status);
+    print_channel_summary(meter, status);
     return 0;
 }
 
@@ -2523,16 +2633,20 @@ int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path
     // Dual mono has no Table E2.5 location to order by - decode_access_unit
     // leaves `layout` empty for exactly this case - so Ch1 and Ch2 go out in
     // coded order, the same identity write_wav_f32 falls back to itself.
+    // status_stream(out_path): stderr instead of stdout when out_path is "-"
+    // - the WAV bytes the write below produces already own stdout in that
+    // case, and this report must not land in the middle of them.
+    const auto status = status_stream(out_path);
     if (first.acmod == ac3::Acmod::kDualMono) {
-        const auto written = ac3::io::write_wav_f32(std::string{out_path}, pcm,
-                                                    sample_rate_hz(first.sample_rate));
+        const auto written = write_wav_f32_arg(out_path, pcm, sample_rate_hz(first.sample_rate));
         if (!written) {
             std::println(stderr, "error: {}", ac3::io::describe(written.error()));
             return 1;
         }
-        std::println("decoded {} E-AC-3 access units ({} substreams each) -> {}", units->size(),
-                     first.substream_count, out_path);
-        std::println("  {} channels, {} Hz: Ch1 Ch2 (1+1 dual mono - two programmes, not a "
+        std::println(status, "decoded {} E-AC-3 access units ({} substreams each) -> {}",
+                     units->size(), first.substream_count, out_path);
+        std::println(status,
+                     "  {} channels, {} Hz: Ch1 Ch2 (1+1 dual mono - two programmes, not a "
                      "soundfield)",
                      pcm.size(), sample_rate_hz(first.sample_rate));
         return 0;
@@ -2541,8 +2655,7 @@ int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path
     // decoded here and re-encoded lands every channel back where it started.
     const auto map = plan::wav_order(
         std::span{first.layout.items}.first(static_cast<std::size_t>(first.layout.count)));
-    const auto written = ac3::io::write_wav_f32(std::string{out_path}, pcm,
-                                                sample_rate_hz(first.sample_rate), map);
+    const auto written = write_wav_f32_arg(out_path, pcm, sample_rate_hz(first.sample_rate), map);
     if (!written) {
         std::println(stderr, "error: {}", ac3::io::describe(written.error()));
         return 1;
@@ -2552,9 +2665,9 @@ int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path
         speakers += ac3::eac3::chanmap::name(first.layout[static_cast<int>(index)]);
         speakers += ' ';
     }
-    std::println("decoded {} E-AC-3 access units ({} substreams each) -> {}", units->size(),
-                 first.substream_count, out_path);
-    std::println("  {} channels, {} Hz: {}", map.size(), sample_rate_hz(first.sample_rate),
+    std::println(status, "decoded {} E-AC-3 access units ({} substreams each) -> {}",
+                 units->size(), first.substream_count, out_path);
+    std::println(status, "  {} channels, {} Hz: {}", map.size(), sample_rate_hz(first.sample_rate),
                  speakers);
     return 0;
 }
@@ -2635,35 +2748,38 @@ int run_decode(std::string_view in_path, std::string_view out_path,
         return 1;
     }
     const auto map = ac3::io::wav_channel_order(first.acmod, first.lfe);
-    const auto written = ac3::io::write_wav_f32(std::string{out_path}, pcm,
-                                                sample_rate_hz(first.sample_rate), map);
+    const auto written = write_wav_f32_arg(out_path, pcm, sample_rate_hz(first.sample_rate), map);
     if (!written) {
         std::println(stderr, "error: {}", ac3::io::describe(written.error()));
         return 1;
     }
-    std::println("decoded {} frames -> {} ({}, {} Hz)", frames->size(), out_path,
+    // status_stream(out_path): stderr instead of stdout when out_path is "-"
+    // - the WAV bytes just written above already own stdout in that case,
+    // and this report must not land in the middle of them.
+    const auto status = status_stream(out_path);
+    std::println(status, "decoded {} frames -> {} ({}, {} Hz)", frames->size(), out_path,
                  ac3::analysis::layout_name(first.acmod, first.lfe),
                  sample_rate_hz(first.sample_rate));
-    std::println("metadata: dialnorm {} (dialogue at -{} dBFS)", first.dialnorm,
+    std::println(status, "metadata: dialnorm {} (dialogue at -{} dBFS)", first.dialnorm,
                  first.dialnorm);
     if (first.dialnorm2) {
-        std::println("          dialnorm2 {} (Ch2, dialogue at -{} dBFS){}", *first.dialnorm2,
-                     *first.dialnorm2, first.compr2 ? ", compr2 present" : "");
+        std::println(status, "          dialnorm2 {} (Ch2, dialogue at -{} dBFS){}",
+                     *first.dialnorm2, *first.dialnorm2, first.compr2 ? ", compr2 present" : "");
     }
-    std::println("          dynrng {:+.2f} .. {:+.2f} dB{}", dynrng_min_db, dynrng_max_db,
+    std::println(status, "          dynrng {:+.2f} .. {:+.2f} dB{}", dynrng_min_db, dynrng_max_db,
                  meta.drc_scale != 0.0 ? std::format(", applied at scale {}", meta.drc_scale)
                                        : ", not applied");
     if (compr_frames > 0) {
-        std::println("          compr  {:+.2f} .. {:+.2f} dB over {} frames{}", compr_min_db,
-                     compr_max_db, compr_frames,
+        std::println(status, "          compr  {:+.2f} .. {:+.2f} dB over {} frames{}",
+                     compr_min_db, compr_max_db, compr_frames,
                      meta.p.heavy ? ", applied" : ", not applied");
     } else {
-        std::println("          compr  absent");
+        std::println(status, "          compr  absent");
     }
     // The have_first check above already returned if the frame loop never
     // ran, and it is that same loop's first iteration that emplaces meter.
     // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
-    print_channel_summary(*meter);
+    print_channel_summary(*meter, status);
     return 0;
 }
 
@@ -3194,10 +3310,14 @@ int run_monitor(std::string_view in_path, int device_index) {
             std::println(stderr, "error: {} is not a valid E-AC-3 stream", in_path);
             return 1;
         }
-        ac3::Eac3Decoder decoder;
+        // Heap-allocated (PREfast's C6262, alert #9): Eac3Decoder grew
+        // several KB of per-block scratch members (alert #63's fix), which
+        // pushed this one-shot stack declaration over the threshold - same
+        // pattern as PR #50.
+        auto decoder = std::make_unique<ac3::Eac3Decoder>();
         std::vector<std::size_t> order;
         for (const auto& unit : *units) {
-            const auto decoded = decoder.decode_access_unit(unit);
+            const auto decoded = decoder->decode_access_unit(unit);
             if (!decoded) {
                 std::println(stderr, "error: decode failed (code {})",
                              static_cast<int>(decoded.error()));
@@ -3941,6 +4061,11 @@ void print_usage() {
         std::println("Everything else is file I/O and behaves identically on every platform;");
         std::println("'spdif' in particular reaches a receiver without any audio backend at all.");
     }
+    std::println("");
+    std::println("'-' in place of <in.wav>, <out.ac3>, <out.ec3>, <in.ac3|in.ec3> or <out.wav>");
+    std::println("       means stdin (an input path) or stdout (an output path) - encode,");
+    std::println("       eac3-encode, atmos-encode and decode only. e.g.:");
+    std::println("       ac3cli encode - - 448 couple < in.wav > out.ac3");
     std::println("");
     std::println("live monitor_device/passthrough_device: -2 (default) leaves that leg off,");
     std::println("       -1 is the default render endpoint, N picks one from 'outputs'.");

@@ -79,6 +79,17 @@ ac3cli encode narration_en.wav out.ac3 192 1+1 narration_fr.wav  # Ch1, Ch2 as s
 See [Metadata options](metadata-options.md) for `dialnorm2=` — Ch2's own dialnorm, alongside the
 usual `dialnorm=`.
 
+`encode`, `eac3-encode` and `atmos-encode` all take `-` in place of `<in.wav>` or the output path
+to mean stdin or stdout, so a pipeline never has to touch a temporary file:
+
+```bash
+ac3cli encode - - 448 couple < in.wav > out.ac3
+```
+
+The status text these commands normally print (frame count, routing, per-channel levels) goes to
+stderr instead of stdout whenever the output side is `-`, so it never ends up inside the piped
+stream.
+
 ### Decoding & inspection
 
 | Command | What it does |
@@ -89,6 +100,12 @@ usual `dialnorm=`.
 
 ```bash
 ac3cli decode out.ec3 out.wav
+```
+
+`decode` takes `-` for either path too, the same convention the encoding commands above use:
+
+```bash
+ac3cli decode - - < out.ac3 > out.wav
 ```
 
 ### Containers

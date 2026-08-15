@@ -1713,8 +1713,12 @@ int main(int argc, char** argv) {
     std::vector<std::vector<float>> essences(kObjectCount,
                                              std::vector<float>(ac3::kSamplesPerFrame));
     std::vector<std::span<const float>> views(kObjectCount);
-    std::array<double, ac3::kSamplesPerFrame> music_scratch{};
-    std::array<double, ac3::kSamplesPerFrame> send_scratch{};
+    // Heap-allocated (PREfast's C6262, alert #66): each is 1536 doubles
+    // (12KB), declared once here and reused every frame - the earlier fix
+    // for this alert heap-allocated the two AtmosEncoders above but missed
+    // these, which turned out to be the larger contributor.
+    std::vector<double> music_scratch(ac3::kSamplesPerFrame, 0.0);
+    std::vector<double> send_scratch(ac3::kSamplesPerFrame, 0.0);
 
     const auto total_frames = static_cast<std::uint64_t>(
         (render_until * kRate + (ac3::kSamplesPerFrame - 1)) / ac3::kSamplesPerFrame);
