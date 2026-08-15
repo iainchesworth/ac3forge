@@ -11,8 +11,24 @@ name: MSVC Code Analysis
 on:
   push:
     branches: [ main, develop ]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - "LICENSE"
+      - "mkdocs.yml"
+      - "requirements-docs.in"
+      - "requirements-docs.txt"
+      - ".github/workflows/docs.yml"
   pull_request:
     branches: [ main, develop ]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - "LICENSE"
+      - "mkdocs.yml"
+      - "requirements-docs.in"
+      - "requirements-docs.txt"
+      - ".github/workflows/docs.yml"
   schedule:
     # Weekly, offset from the CodeQL cron (Mon 03:17) to avoid runner
     # contention at the same minute.
