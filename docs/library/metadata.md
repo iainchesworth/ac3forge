@@ -23,6 +23,30 @@ const auto lkfs = meter.integrated_lkfs();
 const int dialnorm = lkfs ? ac3::meta::dialnorm_from_lkfs(*lkfs) : 31;
 ```
 
+The same pass also gives the rest of an R128 meter, off the same K-weighted, channel-summed
+signal `integrated_lkfs()` already builds:
+
+```cpp
+// Momentary (400 ms) and short-term (3 s) loudness: the same un-gated block
+// power integrated_lkfs() gates internally, read directly instead. nullopt
+// until the respective window has elapsed.
+const auto momentary = meter.momentary_lkfs();
+const auto short_term = meter.short_term_lkfs();
+
+// EBU Tech 3342 §3.1 Loudness Range: the 95th minus 10th percentile of
+// short-term loudness values, gated at -70 LUFS absolute and -20 LU relative
+// to their own gated mean - a different relative gate to integrated
+// loudness's -10 LU, and over a different (short-term) population.
+const auto lra = meter.loudness_range();
+
+// ITU-R BS.1770-4 Annex 2: the highest sample found in a 4x-oversampled
+// reconstruction of every pushed channel, LFE included - true peak is about
+// physical overload headroom, not perceived loudness, so it is the one
+// measure here that does not drop the LFE channel or apply the surround
+// weighting.
+const auto true_peak = meter.true_peak_dbtp();
+```
+
 ```cpp
 // Heap-allocated: FrameEncoder carries several KB of MDCT scratch/history
 // state (PREfast's C6262).

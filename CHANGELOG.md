@@ -64,6 +64,22 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   companion file. `matroska::mux()` (the existing whole-file API `ac3cli mkv` and file-based GUI
   encodes use) is unchanged.
 
+### Loudness and QC
+
+- **Full R128 metering in `ac3::meta::LoudnessMeter`** (roadmap C1): momentary (400 ms) and
+  short-term (3 s) loudness — BS.1770-4 §2's own un-gated block power, read directly instead of
+  gated the way `integrated_lkfs()` already was; Loudness Range (`loudness_range()`) — EBU Tech
+  3342 §3.1's cascaded gate (-70 LUFS absolute, then -20 LU relative to what survives it, a
+  *different* relative threshold to integrated loudness's own -10 LU) over the short-term series,
+  reported as the 95th minus 10th percentile of what is left; and true peak (`true_peak_dbtp()`)
+  — ITU-R BS.1770-4 Annex 2's 4x-oversampled peak estimator, built from the Annex's own tabulated
+  order-48/4-phase FIR rather than the project's general-purpose offline `dsp::resampler` (that
+  one allocates and designs its own kernel; this is a fixed, tiny, allocation-free per-sample
+  filter, and Annex 2 gives no formula to redesign it from in the first place). True peak is the
+  one measure of the four that does not exclude the LFE channel or apply the surround
+  weighting — it is about physical overload headroom, not perceived loudness. All four share the
+  existing K-weighting/channel-summing machinery rather than duplicating it.
+
 ### CLI
 
 - **`-` as a file argument means stdin/stdout**, the conventional Unix pipe convention, for
