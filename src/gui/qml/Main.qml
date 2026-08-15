@@ -839,17 +839,18 @@ ApplicationWindow {
     // guided still nominally owns the tier. Idempotent both times - every
     // write below is a no-op once already at its target value.
     //
-    // Dual mono: measurement is refused outright at encode time (see
-    // LoudnessGroup.qml's own tooltip and encodeChannels' hard refusal), so
-    // the contract must never set measureDialnorm/measureDialnorm2 there -
-    // only its DRC half applies, and to BOTH programmes, since there is no
-    // reason guided should give one dual-mono programme its sensible
-    // default and leave the other at none.
+    // Dual mono: measurement now applies to BOTH programmes, same as the
+    // single-programme case below - each one is measured on its own coded
+    // channel (encodeChannels no longer refuses it), so there is no reason
+    // guided should give one dual-mono programme its sensible default and
+    // leave the other at none.
     function applyGuidedLoudnessContract() {
         if (tier !== "guided" || EncoderController.loudnessTouched) {
             return;
         }
         if (EncoderController.dualMono) {
+            EncoderController.measureDialnorm = true;
+            EncoderController.measureDialnorm2 = true;
             EncoderController.drcIndex = 1;   // film-standard
             EncoderController.drc2Index = 1;  // film-standard, Ch2's own
         } else {

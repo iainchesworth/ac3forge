@@ -1773,8 +1773,7 @@ ColumnLayout {
             // The loudness contract's own promise, spelled out - the LOUDNESS
             // cell above already shows the number this produces, but not why
             // it moved from the app's spec-neutral defaults. Two versions:
-            // dual mono gets the honest, partial one, since measurement is
-            // refused there and only the DRC half of the contract applies.
+            // dual mono measures and compresses each programme on its own.
             Text {
                 Layout.fillWidth: true
                 visible: !EncoderController.dualMono && !EncoderController.loudnessTouched
@@ -1786,7 +1785,7 @@ ColumnLayout {
             Text {
                 Layout.fillWidth: true
                 visible: EncoderController.dualMono && !EncoderController.loudnessTouched
-                text: qsTr("Film-standard compression is applied to both programmes — loudness measurement isn't offered for dual mono, so set dialnorm by hand if the defaults aren't right.")
+                text: qsTr("Loudness is measured from each programme on its own and film-standard compression applied to both — Guided handles this for you.")
                 wrapMode: Text.WordWrap
                 font.pixelSize: 11
                 color: Theme.textMuted

@@ -5557,28 +5557,71 @@ void EncoderController::encodeChannels(const QString& path,
     // routingForSources - this function cannot silently disagree with what
     // the pre-encode preview already showed.
 
-    // Dual mono has no "whole programme" for the block below to gate-measure
-    // over - Ch1 and Ch2 are unrelated (§E1.3, no downmix between them), so
-    // a single BS.1770 pass across both would measure a blend of two
-    // different things rather than either one. ac3cli's own dual-mono path
-    // measures each programme independently instead (measured_dialnorm_channel
-    // in main.cpp); this controller does not have that machinery yet, so -
-    // matching the same scope cut Part 3 already made for src=/map= - it
-    // asks for both values explicitly rather than measuring one of them
-    // wrong.
-    if (isDualMono() && (p.meta.measure_dialnorm || p.meta.measure_dialnorm2)) {
-        setBusy(false);
-        setStatus(QStringLiteral("dialnorm=auto is not yet supported for 1+1 dual mono - set "
-                                 "both programmes' dialnorm by hand."));
-        emit encodeFinished(false, status());
-        return;
-    }
+    // Dual mono has no "whole programme" for a single BS.1770 pass to gate-
+    // measure over - Ch1 and Ch2 are unrelated (§E1.3, no downmix between
+    // them), so each programme gets its own k1_0 LoudnessMeter instead, fed
+    // its own coded channel: routing's coded channel 0 is programme 1,
+    // channel 1 is programme 2 (see ac3::plan::dual_mono_routing). render()
+    // is a stateless per-sample gain mix, not a streaming transform like the
+    // frame encoder below - there is no MDCT/overlap state to carry between
+    // calls, so one call over the whole buffer stands in for a frame loop.
+    if (isDualMono()) {
+        if (p.meta.measure_dialnorm || p.meta.measure_dialnorm2) {
+            std::size_t total = 0;
+            for (const auto& channel : planes) {
+                total = std::max(total, channel.size());
+            }
+            std::vector<std::vector<float>> programmes(2, std::vector<float>(total));
+            std::vector<std::span<const float>> in;
+            for (const auto& channel : planes) {
+                in.emplace_back(channel);
+            }
+            std::vector<std::span<float>> out;
+            for (auto& channel : programmes) {
+                out.emplace_back(channel);
+            }
+            plan::render(routing, in, out, total);
 
-    // §5.4.2.8 wants dialogue level below full scale, and measuring it needs
-    // the whole programme (the BS.1770 relative gate does), so it happens once
-    // here rather than per frame. The layout it measures is the OUTPUT's,
-    // because the channel weighting depends on which positions are surrounds.
-    if (p.meta.measure_dialnorm) {
+            const auto measure_one = [&](const std::vector<float>& channel) -> std::optional<int> {
+                ac3::meta::LoudnessMeter meter{p.sample_rate, ac3::Acmod::k1_0, false};
+                const std::array<std::span<const float>, 1> views{channel};
+                meter.push(views);
+                if (const auto lkfs = meter.integrated_lkfs()) {
+                    return ac3::meta::dialnorm_from_lkfs(*lkfs);
+                }
+                return std::nullopt;
+            };
+            if (p.meta.measure_dialnorm) {
+                if (const auto measured = measure_one(programmes[0])) {
+                    p.meta.dialnorm = *measured;
+                } else {
+                    setBusy(false);
+                    setStatus(QStringLiteral("Program 1 has no audio above the -70 LKFS gate, "
+                                             "so dialnorm cannot be measured. Set it by hand "
+                                             "instead."));
+                    emit encodeFinished(false, status());
+                    return;
+                }
+            }
+            if (p.meta.measure_dialnorm2) {
+                if (const auto measured = measure_one(programmes[1])) {
+                    p.meta.dialnorm2 = *measured;
+                } else {
+                    setBusy(false);
+                    setStatus(QStringLiteral("Program 2 has no audio above the -70 LKFS gate, "
+                                             "so dialnorm2 cannot be measured. Set it by hand "
+                                             "instead."));
+                    emit encodeFinished(false, status());
+                    return;
+                }
+            }
+        }
+    } else if (p.meta.measure_dialnorm) {
+        // §5.4.2.8 wants dialogue level below full scale, and measuring it
+        // needs the whole programme (the BS.1770 relative gate does), so it
+        // happens once here rather than per frame. The layout it measures is
+        // the OUTPUT's, because the channel weighting depends on which
+        // positions are surrounds.
         ac3::meta::LoudnessMeter loudness{p.sample_rate, cp.bed_acmod, cp.bed_lfe};
         std::vector<std::span<const float>> views;
         for (const auto& channel : planes) {
