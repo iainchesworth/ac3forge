@@ -298,5 +298,8 @@ run mkv atmos_4.ec3 atmos_4.mkv
 run mp4 enc_51.ac3 enc_51.mp4
 run mp4 eac3enc_none.ec3 eac3enc_none.mp4
 run mp4 atmos_4.ec3 atmos_4.mp4
+run ts enc_51.ac3 enc_51.ts
+run ts eac3enc_none.ec3 eac3enc_none.ts
+run ts atmos_4.ec3 atmos_4.ts
 
 echo "codec matrix: $count commands completed cleanly in $WORKDIR"

@@ -23,6 +23,11 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   `ac3::io::scan` finds the marker in the stream's own `addbsi`, which is exactly the signal
   FFmpeg's own MKV→MP4 remux path is documented to drop or mis-signal
   ([jellyfin-ffmpeg#584](https://github.com/jellyfin/jellyfin-ffmpeg/issues/584)).
+- **`mpegts::mpegts`**, a third standalone container writer alongside `matroska::matroska` and
+  `mp4::mp4` — PAT + PMT + one PES-wrapped AC-3/E-AC-3 elementary stream, PCR stamped
+  every access unit, identified per the DVB profile (`stream_type` 0x06 plus the
+  `AC3_descriptor`/`Enhanced_AC3_descriptor` ETSI EN 300 468 Annex D defines, not ATSC's). New
+  `ac3cli ts` command and `examples/mux_ts.cpp`, same shape as `mkv`/`mux_mkv.cpp`.
 
 ### Added
 

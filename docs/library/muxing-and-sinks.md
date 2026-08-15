@@ -84,6 +84,53 @@ is documented to silently drop or mis-signal the Atmos extension
 from `ac3::io::scan`'s own read of the bitstream, rather than by copying another tool's output,
 is what this module avoids that bug by construction rather than by patching it after the fact.
 
+## Muxing: `mpegts::mux`
+
+`mpegts/mpegts.hpp`, library `mpegts::mpegts`. Same shape as `matroska::mux` above — it links
+nothing from `ac3::forge` beyond the AC-3/E-AC-3 choice it is told, and takes access units as
+opaque bytes.
+
+```cpp
+// One PES-wrapped access unit per TS access unit. For E-AC-3 an access
+// unit is the independent substream plus its dependents, which is
+// exactly what scan groups — a player must receive them together.
+std::vector<std::vector<std::byte>> frames;
+frames.reserve(scanned->access_units.size());
+for (const auto unit : scanned->access_units) {
+    frames.emplace_back(unit.begin(), unit.end());
+}
+
+const mpegts::AudioTrack track{
+    .codec = scanned->kind == ac3::io::StreamKind::kAc3 ? mpegts::AudioCodec::kAc3
+                                                         : mpegts::AudioCodec::kEac3,
+    .sample_rate = ac3::sample_rate_hz(scanned->sample_rate),
+    .channels = scanned->channels,
+    .samples_per_frame = ac3::kSamplesPerFrame,
+};
+
+const auto file = mpegts::mux(track, frames);
+```
+
+Full program: [`examples/mux_ts.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/mux_ts.cpp).
+
+`mux` returns the whole 188-byte-aligned Transport Stream as bytes, no file I/O, same testability
+reasoning as `matroska::mux`. It writes a single program — one PAT, one PMT (repeated
+periodically so a receiver tuning in mid-stream doesn't wait for byte zero), and one PES-wrapped
+elementary stream carrying PCR every access unit. No video, no other elementary streams, no PID
+remapping: a general-purpose multiplexer is out of scope, this is enough for a player or
+`ffprobe` to recognize one AC-3/E-AC-3 programme.
+
+**Broadcast profile.** Two standards register AC-3/E-AC-3 for MPEG-TS carriage — ATSC and DVB —
+with different, non-interoperable signalling. This module implements DVB only: `stream_type` 0x06
+(audio carried as PES private data) plus the `AC3_descriptor` (tag `0x6A`) or
+`Enhanced_AC3_descriptor` (tag `0x7A`) DVB defines in ETSI EN 300 468 Annex D.3/D.5, chosen per
+this project's clean-room sourcing rules as the more completely specified of the two registries.
+Every optional identification field in either descriptor (`component_type`/`bsid`/`mainid`/`asvc`
+and, for the enhanced form, `substream1`-`3`) is left unset — `ac3::io::scan` doesn't expose the
+bsmod/full-service/associated-service granularity those fields carry, and a guessed value would
+be actively misleading where an absent optional field is not; a decoder still gets everything it
+needs to play the stream from the AC-3/E-AC-3 bitstream's own `bsmod`/`acmod`.
+
 ## Bitstream sinks (`ac3::sinks`)
 
 The pieces below are audio-hardware-facing rather than example-driven, so there's no compiled
