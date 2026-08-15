@@ -14,7 +14,7 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 
 ## [0.5.0-beta.1] - 2026-08-15
 
-Fourth tagged release. The headline is a full fast-transform performance initiative: an opt-in
+Fourth tagged release. The main change is a fast-transform performance initiative: an opt-in
 FFT-based MDCT was introduced, taken default-on, and then progressively hardware-optimized down
 through every transform kernel the encoder touches — the long transform, both block-switched
 short transforms, and the opt-in enhanced-coupling tool's DFT — alongside an algorithmic
@@ -69,7 +69,7 @@ CLI together with the entire library SDK.
   with zero mismatches; outputs are byte-identical on every monotone path, and the one path where
   they can legitimately differ (AHT's locally non-monotone cost function) was already
   probe-order-dependent before this change — decoded PCM agrees at 102–115 dB SNR per channel.
-- **New observability to keep the above honest going forward**: Tracy zones across every previously
+- **New performance observability**: Tracy zones across every previously
   unzoned encoder stage, a standalone `ac3kernelbench` micro-benchmark harness timing kernels in
   isolation against real audio, and a per-kernel trend history (non-gating, `::warning::`-only)
   alongside the existing whole-frame performance trend — see
