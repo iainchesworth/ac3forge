@@ -9,79 +9,74 @@
 
 namespace {
 
-// Non-overlapping 512-sample windows of a steady tone/silence: the biquad
-// and peak-tree history only care about a continuous signal flowing
-// through, not the encoder's own overlapping-window convention, so this is
-// enough to exercise the detector on its own terms.
-std::vector<std::array<double, 512>> windows_of(const std::vector<double>& signal) {
-    std::vector<std::array<double, 512>> out;
-    for (std::size_t i = 0; i + 512 <= signal.size(); i += 512) {
-        std::array<double, 512> w{};
-        for (std::size_t n = 0; n < 512; ++n) {
-            w[n] = signal[i + n];
+// Consecutive 256-sample segments of a continuous signal, in stream order -
+// the detector's own calling convention (one call per channel per block
+// period, each carrying that period's NEW samples; the previous segment is
+// the comparison baseline via the persistent filter/tree state).
+std::vector<std::array<float, 256>> segments_of(const std::vector<float>& signal) {
+    std::vector<std::array<float, 256>> out;
+    for (std::size_t i = 0; i + 256 <= signal.size(); i += 256) {
+        std::array<float, 256> s{};
+        for (std::size_t n = 0; n < 256; ++n) {
+            s[n] = signal[i + n];
         }
-        out.push_back(w);
+        out.push_back(s);
     }
     return out;
+}
+
+std::vector<float> tone(std::size_t from, std::size_t count, double amplitude) {
+    std::vector<float> signal(from + count, 0.0F);
+    for (std::size_t n = from; n < signal.size(); ++n) {
+        signal[n] = static_cast<float>(
+            amplitude *
+            std::sin(2.0 * std::numbers::pi * 1000.0 / 48000.0 * static_cast<double>(n)));
+    }
+    return signal;
 }
 
 }  // namespace
 
 TEST_CASE("a steady tone never trips the transient detector", "[transient]") {
-    std::vector<double> signal(512 * 8);
-    for (std::size_t n = 0; n < signal.size(); ++n) {
-        signal[n] = 0.5 * std::sin(2.0 * std::numbers::pi * 1000.0 / 48000.0 *
-                                   static_cast<double>(n));
-    }
     ac3::TransientDetector detector(ac3::SampleRate::k48000);
-    for (const auto& w : windows_of(signal)) {
-        CHECK_FALSE(detector.detect(w));
+    for (const auto& s : segments_of(tone(0, 256 * 16, 0.5))) {
+        CHECK_FALSE(detector.detect(s));
     }
 }
 
 TEST_CASE("digital silence never trips the transient detector", "[transient]") {
-    std::vector<double> signal(512 * 4, 0.0);
+    std::vector<float> signal(256 * 8, 0.0F);
     ac3::TransientDetector detector(ac3::SampleRate::k48000);
-    for (const auto& w : windows_of(signal)) {
-        CHECK_FALSE(detector.detect(w));
+    for (const auto& s : segments_of(signal)) {
+        CHECK_FALSE(detector.detect(s));
     }
 }
 
-TEST_CASE("a sudden loud onset in a block's second half trips the detector",
+TEST_CASE("a sudden loud onset trips the detector in the onset's own segment",
          "[transient]") {
-    // Three windows of silence to settle history and clear the first-pass
-    // guard, then a fourth window that is silent in its first half and a
-    // loud 1 kHz tone in its second half - exactly the case §8.2.2 defines
-    // blksw for.
-    std::vector<double> signal(512 * 3, 0.0);
-    signal.resize(512 * 4, 0.0);
-    for (std::size_t n = 512 * 3 + 256; n < signal.size(); ++n) {
-        signal[n] = 0.9 * std::sin(2.0 * std::numbers::pi * 1000.0 / 48000.0 *
-                                   static_cast<double>(n));
-    }
+    // Seven segments of silence to settle history and clear the first-call
+    // guard, then a loud 1 kHz tone from segment 7's own first sample -
+    // exactly the case §8.2.2 defines blksw for: a transient in the 256 new
+    // samples of one block period.
+    const auto segments = segments_of(tone(256 * 7, 256 * 2, 0.9));
     ac3::TransientDetector detector(ac3::SampleRate::k48000);
-    const auto windows = windows_of(signal);
-    for (std::size_t i = 0; i + 1 < windows.size(); ++i) {
-        CHECK_FALSE(detector.detect(windows[i]));
+    for (std::size_t i = 0; i < 7; ++i) {
+        CHECK_FALSE(detector.detect(segments[i]));
     }
-    CHECK(detector.detect(windows.back()));
+    CHECK(detector.detect(segments[7]));
+    // The segment after the onset holds the tone steady at its new level -
+    // no ratio jump against its own (now-loud) predecessor, so no switch.
+    CHECK_FALSE(detector.detect(segments[8]));
 }
 
-TEST_CASE("an onset in the first half alone does not trip blksw", "[transient]") {
-    // The mirror case: loud tone starts at the very beginning of a block
-    // (its FIRST half) and holds steady through the second half. §8.2.2
-    // defines blksw from the SECOND half only, and a steady second half
-    // relative to its own (now-loud) first half is not a transient.
-    std::vector<double> signal(512 * 3, 0.0);
-    signal.resize(512 * 4, 0.0);
-    for (std::size_t n = 512 * 3; n < signal.size(); ++n) {
-        signal[n] = 0.9 * std::sin(2.0 * std::numbers::pi * 1000.0 / 48000.0 *
-                                   static_cast<double>(n));
-    }
+TEST_CASE("the very first segment a detector sees never trips it", "[transient]") {
+    // A fresh detector's only baseline is synthetic silence; §8.2.2's
+    // comparisons against it would flag any non-silent opening - so the
+    // first call's result is suppressed even for a full-scale onset. The
+    // SECOND segment, steady at the same level, must not trip either (the
+    // suppressed pass still primed real history).
+    const auto segments = segments_of(tone(0, 256 * 2, 0.9));
     ac3::TransientDetector detector(ac3::SampleRate::k48000);
-    const auto windows = windows_of(signal);
-    for (std::size_t i = 0; i + 1 < windows.size(); ++i) {
-        CHECK_FALSE(detector.detect(windows[i]));
-    }
-    CHECK_FALSE(detector.detect(windows.back()));
+    CHECK_FALSE(detector.detect(segments[0]));
+    CHECK_FALSE(detector.detect(segments[1]));
 }

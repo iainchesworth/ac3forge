@@ -53,25 +53,27 @@ TransientDetector::TransientDetector(SampleRate sample_rate) {
     stages_.fill(stage);
 }
 
-bool TransientDetector::run_pass(std::span<const double, 256> half) {
+bool TransientDetector::run_pass(std::span<const float, 256> half) {
     std::array<double, 256> filtered{};
     for (std::size_t n = 0; n < half.size(); ++n) {
-        double x = half[n];
+        double x = static_cast<double>(half[n]);
         for (auto& stage : stages_) {
             x = stage.process(x);
         }
         filtered[n] = x;
     }
 
-    const double p1 = peak_abs(filtered);
-    const std::array<double, 2> p2{peak_abs(std::span{filtered}.subspan(0, 128)),
-                                   peak_abs(std::span{filtered}.subspan(128, 128))};
+    // One sweep of the array, at the tree's finest level - the coarser
+    // levels are maxima of it (bit-identical to sweeping each level's own
+    // span: max over the same values, just associated differently).
     const std::array<double, 4> p3{
         peak_abs(std::span{filtered}.subspan(0, 64)),
         peak_abs(std::span{filtered}.subspan(64, 64)),
         peak_abs(std::span{filtered}.subspan(128, 64)),
         peak_abs(std::span{filtered}.subspan(192, 64)),
     };
+    const std::array<double, 2> p2{std::max(p3[0], p3[1]), std::max(p3[2], p3[3])};
+    const double p1 = std::max(p2[0], p2[1]);
 
     // §8.2.2 step 4's silence gate forces a long block regardless of the
     // ratio comparisons below. Whether this pass's OWN result is trusted at
@@ -104,23 +106,21 @@ bool TransientDetector::run_pass(std::span<const double, 256> half) {
     return transient;
 }
 
-bool TransientDetector::detect(std::span<const double, 512> time) {
-    // The very first 512-sample block this instance ever sees has no real
-    // "immediately prior tree" for EITHER of its two passes to compare
-    // against: the first pass's own baseline is the default-constructed
-    // 0.0, and - less obviously - the second pass's baseline is the first
-    // pass's own result, which for a freshly constructed encoder was
-    // computed from zero-filled history (silence), not real prior audio.
-    // Letting the second pass's real content flag against that synthetic
-    // silence would report a spurious transient on literally any
-    // non-silent stream's opening block. Both passes still run normally
-    // (so the tree history is real by the time block 1 arrives), only the
-    // reported result is suppressed.
+bool TransientDetector::detect(std::span<const float, 256> pcm) {
+    // The very first segment this instance ever sees has no real
+    // "immediately prior tree" to compare against - its baseline is the
+    // default-constructed 0.0, i.e. synthetic silence, and letting real
+    // content flag against that would report a spurious transient on
+    // literally any non-silent stream's opening block. The pass still runs
+    // normally (so the tree history is real by the time the next segment
+    // arrives), only the reported result is suppressed. Identical in effect
+    // to the old full-window form's first-block suppression: that form's
+    // extra first-half pass was over zero-filled history, which leaves a
+    // zero-state biquad and zero peak levels exactly as constructed.
     const bool suppress = first_block_;
     first_block_ = false;
-    (void)run_pass(time.first<256>());
-    const bool second_half = run_pass(time.last<256>());
-    return !suppress && second_half;
+    const bool hit = run_pass(pcm);
+    return !suppress && hit;
 }
 
 }  // namespace ac3
