@@ -11,7 +11,7 @@ assignment table.
 A row of layout **presets** (5.1, 7.1, 5.1.4, 7.1.4, 5.2, 7.2.4 — starting points, not the
 model: they set the bed, LFE count and extras together, but the channel picker below is what the
 encode plan actually reads), then **Codec**, **Bit rate**, and **Container** (elementary stream,
-Matroska, or S/PDIF — see below):
+Matroska, S/PDIF, MP4, fragmented MP4/CMAF, or MPEG-TS — see below):
 
 ![E-AC-3, 7.1.4 preset, rear + ceiling extras on](screenshots/format-eac3-714.png)
 
@@ -55,6 +55,37 @@ expected, if unusual for a plain PCM16 file. Like Matroska, this container is no
 encoder itself writes in one step — the copyable command line is honestly two commands
 (`ac3cli encode … out.ac3 && ac3cli spdif out.ac3 out.wav`), because pasting one command would
 otherwise write a raw elementary stream into a file the receiver expects to be a WAV.
+
+**Container**'s fourth option, **MP4 (.mp4)**, wraps the stream in a spec-correct ISOBMFF file —
+exactly what `ac3cli mp4` produces from a finished file — with a `dac3`/`dec3` sample-entry box
+built straight off the bitstream (ETSI TS 102 366 Annex F): fscod, bsid, bsmod, acmod and lfeon,
+plus, for a stream carrying Dolby Atmos objects, the `flag_ec3_extension_type_a` extension TS
+103 420 §8.3.2.2 defines. Works for both codecs. Like Matroska and S/PDIF, this is honestly two
+commands (`ac3cli encode … out.ac3 && ac3cli mp4 out.ac3 out.mp4`).
+
+**Container**'s fifth option, **fragmented MP4/CMAF**, is different in kind from the other five:
+it writes a *folder*, not a file, so the save dialog switches to a folder picker for this one
+choice. Exactly what `ac3cli fmp4` produces — an initialization segment (`init.mp4`), one CMAF
+media segment per fragment (`segment1.m4s`, `segment2.m4s`, …, 1.536 s each at 48 kHz), an HLS
+media and master playlist pair (`audio.m3u8`/`master.m3u8`, RFC 8216), and a DASH MPD
+(`manifest.mpd`, ISO/IEC 23009-1) — ready for a packager or CDN origin to point at directly. An
+Atmos stream's HLS playlist carries `CHANNELS="<N>/JOC"` rather than a bare channel count
+automatically, the same object-count TS 103 420 already gives the dec3 box above. Still honestly
+two commands (`ac3cli encode … out.ac3 && ac3cli fmp4 out.ac3 out_dir`), for the same reason as
+every other container here.
+
+**Container**'s sixth option, **MPEG-TS (.ts)**, wraps the stream as a DVB-profile MPEG-2
+Transport Stream — exactly what `ac3cli ts` produces — stream_type 0x06 plus the
+AC3_descriptor/Enhanced_AC3_descriptor ETSI EN 300 468 Annex D.3/D.5 defines. Works for both
+codecs; there is no Atmos-specific signaling on this path — DVB's descriptors carry no JOC
+marker, unlike MP4's dec3 box or fMP4's HLS playlist above. Honestly two commands here too
+(`ac3cli encode … out.ac3 && ac3cli ts out.ac3 out.ts`).
+
+None of the last three containers carry over to a **live session** the way Matroska does — see
+[Live capture & session → Take durability](live-session.md#take-durability) for why (in short:
+`mp4::mux`/`mp4::fragment`/`mpegts::mux` are batch APIs with no incremental writer, unlike
+`matroska::Writer`). Selecting one and starting a live session still writes the plain elementary
+stream, the same file Elementary stream itself would produce live.
 
 ## Rate mode: Constant or Variable
 

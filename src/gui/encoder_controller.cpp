@@ -14,6 +14,9 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <expected>
+#include <filesystem>
+#include <format>
 #include <fstream>
 #include <limits>
 #include <memory>
@@ -30,12 +33,18 @@
 #include "ac3/dsp/resampler.hpp"
 #include "ac3/encoder/eac3_frame.hpp"
 #include "ac3/encoder/encoder.hpp"
+#include "ac3/io/dec3.hpp"
+#include "ac3/io/elementary.hpp"
 #include "ac3/io/wav.hpp"
 #include "ac3/meta/loudness.hpp"
 #include "ac3/oba/atmos.hpp"
 #include "ac3/sinks/iec61937.hpp"
 #include "ac3/spatial/spatial.hpp"
 #include "matroska/matroska.hpp"
+#include "mp4/dash.hpp"
+#include "mp4/hls.hpp"
+#include "mp4/mp4.hpp"
+#include "mpegts/mpegts.hpp"
 
 namespace plan = ac3::plan;
 
@@ -156,6 +165,89 @@ std::vector<std::vector<float>> apply_channel_offsets(std::vector<std::vector<fl
 // elementary stream, which is everything this is not.
 constexpr int kContainerMatroska = 1;
 constexpr int kContainerSpdif = 2;
+constexpr int kContainerMp4 = 3;
+constexpr int kContainerFmp4 = 4;
+constexpr int kContainerMpegts = 5;
+
+// The result of scanning a just-written frame buffer for MP4/fMP4 purposes:
+// the AudioTrack (with its dec3/dac3 codec_config already built) plus the
+// one extra field fMP4's HLS CHANNELS="<N>/JOC" attribute needs. Deliberately
+// NOT the whole ac3::io::ScannedStream - its access_units are spans into
+// scan_for_mp4()'s local `raw` buffer and would dangle the moment this
+// function returns; oba_complexity_index is a plain value, so it is the one
+// field worth carrying out.
+struct Mp4Scan {
+    mp4::AudioTrack track;
+    std::optional<int> oba_complexity_index;
+};
+
+// mp4::AudioTrack::codec_config (the dec3/dac3 box, including the Atmos
+// flag_ec3_extension_type_a/complexity_index_type_a extension) can only be
+// built from a real ac3::io::ScannedStream - bsid/bsmod/the Atmos marker are
+// bitstream syntax this controller does not otherwise track. So MP4 and
+// fMP4 both re-scan the frames they are about to write, the same way
+// ac3cli's own run_mp4/run_fmp4 (src/cli/main.cpp) re-scan an already-
+// encoded file before wrapping it. Returns the QString writeOutput() already
+// uses for its error contract on failure.
+std::expected<Mp4Scan, QString> scan_for_mp4(const std::vector<std::vector<std::byte>>& frames) {
+    std::vector<std::byte> raw;
+    for (const auto& frame : frames) {
+        raw.insert(raw.end(), frame.begin(), frame.end());
+    }
+    const auto scanned = ac3::io::scan(raw);
+    if (!scanned) {
+        return std::unexpected(to_qstring(ac3::io::describe(scanned.error())));
+    }
+    const bool eac3 = scanned->kind == ac3::io::StreamKind::kEac3;
+    mp4::AudioTrack track{
+        .codec_id = std::string{eac3 ? mp4::kCodecEac3 : mp4::kCodecAc3},
+        .sample_rate = ac3::sample_rate_hz(scanned->sample_rate),
+        .channels = scanned->channels,
+        .samples_per_frame = ac3::kSamplesPerFrame,
+        .codec_config = ac3::io::build_codec_config_box(*scanned)};
+    return Mp4Scan{std::move(track), scanned->oba_complexity_index};
+}
+
+bool write_bytes_to_path(const std::filesystem::path& path, std::span<const std::byte> bytes) {
+    std::ofstream out{path, std::ios::binary};
+    if (!out) {
+        return false;
+    }
+    out.write(reinterpret_cast<const char*>(bytes.data()),
+              static_cast<std::streamsize>(bytes.size()));
+    return static_cast<bool>(out);
+}
+
+bool write_text_to_path(const std::filesystem::path& path, std::string_view text) {
+    return write_bytes_to_path(
+        path, std::as_bytes(std::span{reinterpret_cast<const char*>(text.data()), text.size()}));
+}
+
+// A minimal but complete DASH MPD document wrapped around
+// mp4::build_dash_adaptation_set()'s <AdaptationSet> snippet, ported from
+// ac3cli's own build_dash_mpd (src/cli/main.cpp): that helper is CLI-side
+// glue, not part of mp4:: (mp4/dash.hpp deliberately stops at the
+// <AdaptationSet> snippet - see its own header comment), so the GUI needs
+// the identical wrapper.
+QString build_dash_mpd(const mp4::AudioTrack& track, std::span<const mp4::MediaSegment> segments,
+                       std::string_view adaptation_set) {
+    std::uint64_t total_samples = 0;
+    for (const auto& segment : segments) {
+        total_samples += segment.duration_samples;
+    }
+    const double total_seconds =
+        static_cast<double>(total_samples) / static_cast<double>(track.sample_rate);
+    return QString::fromStdString(std::format(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        "<MPD xmlns=\"urn:mpeg:dash:schema:mpd:2011\" type=\"static\" "
+        "mediaPresentationDuration=\"PT{:.3f}S\" minBufferTime=\"PT2S\" "
+        "profiles=\"urn:mpeg:dash:profile:isoff-live:2011\">\n"
+        "  <Period>\n"
+        "{}"
+        "  </Period>\n"
+        "</MPD>\n",
+        total_seconds, adaptation_set));
+}
 
 // See kbpsPerChannelFloor()'s own Q_PROPERTY comment for the derivation.
 constexpr int kMinKbpsPerFullBandwidthChannel = 77;
@@ -509,8 +601,12 @@ QStringList EncoderController::codecNames() const {
 }
 
 QStringList EncoderController::containerNames() const {
-    return {QStringLiteral("Elementary stream"), QStringLiteral("Matroska (.mkv)"),
-            QStringLiteral("S/PDIF (.wav)")};
+    return {QStringLiteral("Elementary stream"),
+            QStringLiteral("Matroska (.mkv)"),
+            QStringLiteral("S/PDIF (.wav)"),
+            QStringLiteral("MP4 (.mp4)"),
+            QStringLiteral("Fragmented MP4/CMAF (folder)"),
+            QStringLiteral("MPEG-TS (.ts)")};
 }
 
 int EncoderController::bedIndex() const {
@@ -2416,18 +2512,37 @@ QString EncoderController::outputSuffix() const {
     if (container_index_ == kContainerSpdif) {
         return QStringLiteral("wav");
     }
+    if (container_index_ == kContainerMp4) {
+        return QStringLiteral("mp4");
+    }
+    if (container_index_ == kContainerMpegts) {
+        return QStringLiteral("ts");
+    }
+    if (container_index_ == kContainerFmp4) {
+        // fMP4/CMAF writes a FOLDER of files (init.mp4, segment*.m4s, an
+        // HLS media+master playlist pair, a DASH MPD) - there is no single
+        // extension to name it by. outputIsFolder() is what callers (the
+        // save dialog, the "Encode to .%1" button) branch on instead.
+        return QString();
+    }
     // Object mode is E-AC-3 whatever the codec box says, so the suffix follows
     // the plan rather than the control.
     return to_qstring(plan::codec_suffix(atmos_enabled_ ? plan::Codec::kEac3 : codec_));
 }
 
 QString EncoderController::suggestedOutputName() const {
+    if (container_index_ == kContainerFmp4) {
+        return source_path_.isEmpty() ? QStringLiteral("output")
+                                       : QFileInfo(source_path_).completeBaseName();
+    }
     const QString suffix = QStringLiteral(".") + outputSuffix();
     if (source_path_.isEmpty()) {
         return QStringLiteral("output") + suffix;
     }
     return QFileInfo(source_path_).completeBaseName() + suffix;
 }
+
+bool EncoderController::outputIsFolder() const { return container_index_ == kContainerFmp4; }
 
 void EncoderController::refreshCaptureDevices() {
     QStringList names;
@@ -3535,6 +3650,14 @@ std::unique_ptr<EncoderController::LiveOutputWriters> EncoderController::openLiv
     auto writers = std::make_unique<LiveOutputWriters>();
     writers->path = path;
     writers->matroska = container_index_ == kContainerMatroska;
+    // Only Matroska is special-cased for a live session: matroska::Writer is
+    // the only INCREMENTAL muxer this codebase has. mp4::mux/mp4::fragment
+    // and mpegts::mux are batch APIs - every frame has to be known up front
+    // (see mp4.hpp/mpegts.hpp's own header comments) - so there is no
+    // equivalent live writer for MP4/fMP4/MPEG-TS to build here. Selecting
+    // one of those three containers for a live session therefore falls
+    // through to the same plain elementary-stream write S/PDIF already
+    // falls through to today, rather than gaining a new failure mode.
     // Matroska's own track/writer construction needs the CODED channel count
     // (routing/atmos bed), which is not resolved yet at this point - see
     // runLiveSession, which constructs `writers->writer` and writes its
@@ -5434,6 +5557,102 @@ QString EncoderController::writeOutput(const QString& path,
         const auto written =
             ac3::io::write_wav_pcm16_raw(path.toStdString(), *payload, carrier_rate, 2);
         return written ? QString() : to_qstring(ac3::io::describe(written.error()));
+    }
+    if (container_index_ == kContainerMpegts) {
+        // Same shape as the Matroska branch above: mpegts::AudioTrack needs
+        // no codec-config box (DVB's AC3_descriptor/Enhanced_AC3_descriptor
+        // is built entirely from track.codec), so no bitstream scan is
+        // needed here, matching ac3cli's own run_ts (main.cpp).
+        const bool eac3 = atmos_enabled_ || codec_ == plan::Codec::kEac3;
+        const mpegts::AudioTrack track{
+            .codec = eac3 ? mpegts::AudioCodec::kEac3 : mpegts::AudioCodec::kAc3,
+            .sample_rate = sample_rate,
+            .channels = channels,
+            .samples_per_frame = ac3::kSamplesPerFrame};
+        const auto file = mpegts::mux(track, frames);
+        if (!file) {
+            return to_qstring(mpegts::describe(file.error()));
+        }
+        std::ofstream out{path.toStdString(), std::ios::binary};
+        if (!out) {
+            return QStringLiteral("Could not open the output file for writing.");
+        }
+        out.write(reinterpret_cast<const char*>(file->data()),
+                  static_cast<std::streamsize>(file->size()));
+        return out ? QString() : QStringLiteral("Writing the MPEG-TS file failed.");
+    }
+    if (container_index_ == kContainerMp4) {
+        const auto built = scan_for_mp4(frames);
+        if (!built) {
+            return built.error();
+        }
+        const auto file = mp4::mux(built->track, frames);
+        if (!file) {
+            return to_qstring(mp4::describe(file.error()));
+        }
+        std::ofstream out{path.toStdString(), std::ios::binary};
+        if (!out) {
+            return QStringLiteral("Could not open the output file for writing.");
+        }
+        out.write(reinterpret_cast<const char*>(file->data()),
+                  static_cast<std::streamsize>(file->size()));
+        return out ? QString() : QStringLiteral("Writing the MP4 file failed.");
+    }
+    if (container_index_ == kContainerFmp4) {
+        // Writes a FOLDER of files (init segment, one media segment per
+        // fragment, an HLS media+master playlist pair, a DASH MPD) rather
+        // than one file - `path` names the folder, the same way it names a
+        // file for every other container. Mirrors ac3cli's own run_fmp4
+        // (main.cpp) exactly, including its default 48-frame fragment
+        // length (no GUI control for it yet).
+        const auto built = scan_for_mp4(frames);
+        if (!built) {
+            return built.error();
+        }
+        const auto fragmented = mp4::fragment(built->track, frames);
+        if (!fragmented) {
+            return to_qstring(mp4::describe(fragmented.error()));
+        }
+        std::error_code ec;
+        const std::filesystem::path dir{path.toStdString()};
+        std::filesystem::create_directories(dir, ec);
+        if (ec) {
+            return QStringLiteral("Could not create the output folder \"%1\": %2")
+                .arg(path, QString::fromStdString(ec.message()));
+        }
+        if (!write_bytes_to_path(dir / "init.mp4", fragmented->init_segment)) {
+            return QStringLiteral("Could not write init.mp4 to \"%1\".").arg(path);
+        }
+        for (const auto& segment : fragmented->media_segments) {
+            const auto name = std::format("segment{}.m4s", segment.sequence_number);
+            if (!write_bytes_to_path(dir / name, segment.bytes)) {
+                return QStringLiteral("Could not write %1 to \"%2\".")
+                    .arg(QString::fromStdString(name), path);
+            }
+        }
+        // Dolby Digital Plus with Atmos objects needs CHANNELS="<N>/JOC"
+        // instead of a plain channel count - see mp4/hls.hpp's own
+        // citations, and run_fmp4 (src/cli/main.cpp) for the CLI's
+        // identical construction.
+        const mp4::HlsOptions hls_options{
+            .channels_attribute = built->oba_complexity_index
+                                      ? std::format("{}/JOC", *built->oba_complexity_index)
+                                      : std::string{}};
+        const auto media_playlist =
+            mp4::build_hls_media_playlist(built->track, fragmented->media_segments, hls_options);
+        const auto master_playlist = mp4::build_hls_master_playlist(
+            built->track, fragmented->media_segments, "audio.m3u8", hls_options);
+        if (!write_text_to_path(dir / "audio.m3u8", media_playlist) ||
+            !write_text_to_path(dir / "master.m3u8", master_playlist)) {
+            return QStringLiteral("Could not write the HLS playlists to \"%1\".").arg(path);
+        }
+        const auto adaptation_set =
+            mp4::build_dash_adaptation_set(built->track, fragmented->media_segments);
+        const auto mpd = build_dash_mpd(built->track, fragmented->media_segments, adaptation_set);
+        if (!write_text_to_path(dir / "manifest.mpd", mpd.toStdString())) {
+            return QStringLiteral("Could not write manifest.mpd to \"%1\".").arg(path);
+        }
+        return QString();
     }
 
     std::ofstream out{path.toStdString(), std::ios::binary};

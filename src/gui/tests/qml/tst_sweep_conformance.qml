@@ -158,7 +158,7 @@ TestCase {
         tryCompare(EncoderController, "sourceReady", true);
         win.inputMode = "file";
 
-        verify(EncoderController.containerNames.length === 3);
+        verify(EncoderController.containerNames.length === 6);
         compare(EncoderController.containerNames[2], "S/PDIF (.wav)");
 
         EncoderController.containerIndex = 2;
@@ -169,6 +169,81 @@ TestCase {
         verify(win.cliLine.indexOf("&& ac3cli mkv") < 0);
         EncoderController.containerIndex = 0;
         verify(win.cliLine.indexOf("&& ac3cli spdif") < 0);
+    }
+
+    function test_mp4IsHonestlyTwoCommands() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        EncoderController.atmosEnabled = false;
+
+        EncoderController.loadSourceFile(stereoUrl);
+        tryCompare(EncoderController, "sourceReady", true);
+        win.inputMode = "file";
+
+        compare(EncoderController.containerNames[3], "MP4 (.mp4)");
+
+        EncoderController.containerIndex = 3;
+        verify(win.cliLine.indexOf("&& ac3cli mp4 out.ac3 out.mp4") >= 0);
+        compare(EncoderController.outputSuffix(), "mp4");
+        verify(!EncoderController.outputIsFolder());
+        // mkv, spdif, fmp4 and ts are mutually exclusive container choices -
+        // never more than one in the same command line.
+        verify(win.cliLine.indexOf("&& ac3cli mkv") < 0);
+        verify(win.cliLine.indexOf("&& ac3cli spdif") < 0);
+        verify(win.cliLine.indexOf("&& ac3cli fmp4") < 0);
+        verify(win.cliLine.indexOf("&& ac3cli ts") < 0);
+        EncoderController.containerIndex = 0;
+        verify(win.cliLine.indexOf("&& ac3cli mp4") < 0);
+    }
+
+    function test_fmp4IsHonestlyTwoCommandsAndNeedsAFolder() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        EncoderController.atmosEnabled = false;
+
+        EncoderController.loadSourceFile(stereoUrl);
+        tryCompare(EncoderController, "sourceReady", true);
+        win.inputMode = "file";
+
+        compare(EncoderController.containerNames[4], "Fragmented MP4/CMAF (folder)");
+
+        EncoderController.containerIndex = 4;
+        verify(win.cliLine.indexOf("&& ac3cli fmp4 out.ac3 out_dir") >= 0);
+        // fMP4/CMAF writes a FOLDER of files, not one file with a single
+        // extension - outputSuffix() is empty and outputIsFolder() is true,
+        // the signal the save dialog and the Encode button both act on.
+        compare(EncoderController.outputSuffix(), "");
+        verify(EncoderController.outputIsFolder());
+        verify(win.cliLine.indexOf("&& ac3cli mkv") < 0);
+        verify(win.cliLine.indexOf("&& ac3cli spdif") < 0);
+        verify(win.cliLine.indexOf("&& ac3cli mp4 ") < 0);
+        verify(win.cliLine.indexOf("&& ac3cli ts") < 0);
+        EncoderController.containerIndex = 0;
+        verify(win.cliLine.indexOf("&& ac3cli fmp4") < 0);
+        verify(!EncoderController.outputIsFolder());
+    }
+
+    function test_mpegTsIsHonestlyTwoCommands() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        EncoderController.atmosEnabled = false;
+
+        EncoderController.loadSourceFile(stereoUrl);
+        tryCompare(EncoderController, "sourceReady", true);
+        win.inputMode = "file";
+
+        compare(EncoderController.containerNames[5], "MPEG-TS (.ts)");
+
+        EncoderController.containerIndex = 5;
+        verify(win.cliLine.indexOf("&& ac3cli ts out.ac3 out.ts") >= 0);
+        compare(EncoderController.outputSuffix(), "ts");
+        verify(!EncoderController.outputIsFolder());
+        verify(win.cliLine.indexOf("&& ac3cli mkv") < 0);
+        verify(win.cliLine.indexOf("&& ac3cli spdif") < 0);
+        verify(win.cliLine.indexOf("&& ac3cli mp4 ") < 0);
+        verify(win.cliLine.indexOf("&& ac3cli fmp4") < 0);
+        EncoderController.containerIndex = 0;
+        verify(win.cliLine.indexOf("&& ac3cli ts") < 0);
     }
 
     function test_bitrateFloorAdvisoryTracksCodedChannelsAndFloor() {

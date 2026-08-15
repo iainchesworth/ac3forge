@@ -74,6 +74,8 @@ target_link_libraries(ac3gui_qmltests
         ac3::forge
         ac3::audio
         matroska::matroska
+        mp4::mp4
+        mpegts::mpegts
         ac3::warnings
         Qt6::Core
         Qt6::Gui
