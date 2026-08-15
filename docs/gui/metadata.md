@@ -20,11 +20,9 @@ every tier.
   [`1+1` dual-mono bed](format-and-channels.md#dual-mono) selected. Ch1 and Ch2 are two unrelated
   programmes with no shared downmix to average anything across (§7.7.2.2), so each states its own
   DRC curve and dialogue level — programme 2's DRC is **not** inherited from programme 1's; a plan
-  that wants both programmes compressed alike sets both explicitly. Both **measure** checkboxes are
-  disabled for dual mono — `ac3cli` itself measures Ch1/Ch2 independently for
-  `dialnorm=auto`/`dialnorm2=auto` (see [Dual mono](format-and-channels.md#dual-mono)), but this
-  controller does not yet call that per-programme measurement, so both dialnorm values have to be
-  set by hand here.
+  that wants both programmes compressed alike sets both explicitly. dialnorm2's **measure**
+  checkbox works the same as dialnorm's — `dialnorm=auto`/`dialnorm2=auto` each measure their own
+  programme's coded channel independently, never a blend of the two.
 
 ## Downmix
 

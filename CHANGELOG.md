@@ -100,8 +100,9 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   measuring the COMBINED BS.1770 loudness of both channels together (as if Ch1/Ch2 were a coherent
   stereo pair) rather than Ch1's own channel alone, while `dialnorm2` (Ch2) was already correct —
   both now measure their own programme independently, as §E1.3 requires (no downmix between the
-  two). The GUI still asks for both dual-mono dialnorm values by hand; its own encoder controller
-  does not yet call the per-programme measurement this fixes at the CLI/library level.
+  two). The GUI's own encoder controller now does the same — `dialnorm=auto`/`dialnorm2=auto`
+  measure each dual-mono programme's own coded channel independently there too, and the
+  Metadata tab's Programme 2 **measure** checkbox is enabled accordingly.
 
 ### Raspberry Pi (arm64 Linux) — new platform
 

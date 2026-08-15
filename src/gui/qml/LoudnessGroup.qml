@@ -60,20 +60,15 @@ ColumnLayout {
             Layout.columnSpan: 2
             Layout.fillWidth: true
             text: qsTr("Measure it from the programme")
-            // Auto-measurement needs each programme measured on its own
-            // (see the Programme 2 block below) - encodeChannels refuses
-            // it for dual mono rather than measuring the wrong thing, so
-            // the control is disabled here instead of offering something
-            // that would fail at encode time.
-            enabled: !EncoderController.busy && !EncoderController.dualMono
+            // Dual mono measures this on Ch1's own coded channel alone (see
+            // the Programme 2 block below for Ch2) - encodeChannels no
+            // longer needs both given by hand.
+            enabled: !EncoderController.busy
             checked: EncoderController.measureDialnorm
             onToggled: {
                 EncoderController.measureDialnorm = checked;
                 EncoderController.loudnessTouched = true;
             }
-
-            ToolTip.visible: !enabled && hovered
-            ToolTip.text: qsTr("Not yet supported for dual mono — set both programmes' dialnorm by hand.")
         }
     }
 
@@ -132,15 +127,12 @@ ColumnLayout {
             Layout.columnSpan: 2
             Layout.fillWidth: true
             text: qsTr("Measure it from the programme")
-            enabled: false
+            enabled: !EncoderController.busy
             checked: EncoderController.measureDialnorm2
             onToggled: {
                 EncoderController.measureDialnorm2 = checked;
                 EncoderController.loudnessTouched = true;
             }
-
-            ToolTip.visible: hovered
-            ToolTip.text: qsTr("Not yet supported for dual mono — set both programmes' dialnorm by hand.")
         }
     }
 }
