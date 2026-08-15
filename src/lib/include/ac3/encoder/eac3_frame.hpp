@@ -318,6 +318,11 @@ class AC3FORGE_EXPORT FrameEncoder {
     std::array<double, 512> windowed_scratch_{};
     std::array<double, 128> half1_scratch_{};
     std::array<double, 128> half2_scratch_{};
+    // The previous frame's converged SNR-offset composite, warm-starting the
+    // next frame's search (src/lib/src/encoder/snr_search.hpp). Performance
+    // state only: it changes how fast the search converges, never which
+    // offset it converges to. Negative until a frame has been encoded.
+    int snr_search_hint_ = -1;
     // Smoothed across frames: see the AC-3 FrameEncoder for why they cannot be
     // per-frame objects.
     std::optional<meta::RangeController> range_;
