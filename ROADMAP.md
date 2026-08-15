@@ -12,7 +12,7 @@ rather than half-checked. Sizes are rough guesses: **S** (an afternoon), **M** (
 Matroska is currently the only container; `docs/project/history.md` names MP4 and MPEG-TS as
 the step the decoder was meant to lead toward.
 
-- [ ] **A1 (L)** — MP4/ISOBMFF muxer with a correct `dec3` box. A standalone module in the
+- [x] **A1 (L)** — MP4/ISOBMFF muxer with a correct `dec3` box. A standalone module in the
   `matroska::` mould: E-AC-3 (and AC-3) into MP4 with spec-correct `dec3` generation, including
   the Atmos extension fields (`flag_ec3_extension_type_a`, `complexity_index`) derived from the
   bitstream. FFmpeg remuxes are known to drop Atmos signaling
@@ -21,9 +21,9 @@ the step the decoder was meant to lead toward.
   ([HandBrake #1085](https://github.com/HandBrake/HandBrake/issues/1085)).
 - [ ] **A2 (M)** — fMP4/CMAF segmenting plus HLS/DASH signaling helpers. Depends on A1.
 - [ ] **A3 (M)** — MPEG-TS muxing with AC-3/E-AC-3 descriptors per ATSC/DVB.
-- [ ] **A4 (S)** — stdin/stdout streaming in `ac3cli`: the `-` filename convention for
+- [x] **A4 (S)** — stdin/stdout streaming in `ac3cli`: the `-` filename convention for
   pipe-based workflows. Everything today is whole-file.
-- [ ] **A5 (S)** — Live sessions mux straight to Matroska. Live captures currently write
+- [x] **A5 (S)** — Live sessions mux straight to Matroska. Live captures currently write
   elementary streams only; `docs/gui/live-session.md` flags containerised output as pending.
 
 ## B. Production ingest
