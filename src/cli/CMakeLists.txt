@@ -3,6 +3,18 @@
 # ---------------------------------------------------------------------------
 add_executable(ac3cli main.cpp)
 
+# ac3cli's one piece of platform-specific code: putting stdin/stdout into
+# binary mode for the "-" stdin/stdout file-argument convention (see
+# platform/stdio_binary.hpp for why Windows needs a real call and POSIX
+# doesn't). Selected here rather than behind an #ifdef in main.cpp, the same
+# platform-tree pattern ac3::audio uses for WASAPI/ALSA (src/audio/CMakeLists.txt)
+# - scripts/check-platform-macros.ps1 enforces there being no third option.
+if(WIN32)
+    target_sources(ac3cli PRIVATE platform/windows/stdio_binary.cpp)
+else()
+    target_sources(ac3cli PRIVATE platform/posix/stdio_binary.cpp)
+endif()
+
 target_link_libraries(ac3cli
     PRIVATE
         ac3::forge

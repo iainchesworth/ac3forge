@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <cstring>
 #include <fstream>
+#include <istream>
 #include <iterator>
+#include <ostream>
 
 namespace ac3::io {
 
@@ -19,11 +21,14 @@ std::uint32_t read_u32(std::span<const char> data, std::size_t at) {
            (static_cast<std::uint32_t>(read_u16(data, at + 2)) << 16);
 }
 
-void put_u16(std::ofstream& out, std::uint16_t value) {
+// std::ostream rather than std::ofstream specifically: the same header-
+// writing code below now runs against either a real file or an in-memory/
+// stdout stream (see the write_wav_f32(std::ostream&, ...) overload).
+void put_u16(std::ostream& out, std::uint16_t value) {
     out.write(reinterpret_cast<const char*>(&value), 2);
 }
 
-void put_u32(std::ofstream& out, std::uint32_t value) {
+void put_u32(std::ostream& out, std::uint32_t value) {
     out.write(reinterpret_cast<const char*>(&value), 4);
 }
 
@@ -31,25 +36,10 @@ std::size_t find_chunk(std::string_view view, std::string_view tag) {
     return view.find(tag);
 }
 
-}  // namespace
-
-std::string_view describe(WavError error) {
-    switch (error) {
-        case WavError::kCannotOpen: return "cannot open file";
-        case WavError::kNotRiffWave: return "not a RIFF/WAVE file";
-        case WavError::kUnsupportedFormat: return "unsupported WAV format (need PCM16 or float32)";
-        case WavError::kTruncated: return "truncated WAV data";
-    }
-    return "unknown error";
-}
-
-std::expected<WavData, WavError> read_wav(const std::string& path) {
-    std::ifstream in{path, std::ios::binary};
-    if (!in) {
-        return std::unexpected(WavError::kCannotOpen);
-    }
-    const std::vector<char> raw{std::istreambuf_iterator<char>(in),
-                                std::istreambuf_iterator<char>()};
+// The parse itself, shared by the path and istream overloads below - both
+// read their whole source into memory first (see either overload's own
+// comment for why), so this is the one place that actually walks the bytes.
+std::expected<WavData, WavError> parse_wav(const std::vector<char>& raw) {
     const std::string_view view{raw.data(), raw.size()};
     if (raw.size() < 44 || view.substr(0, 4) != "RIFF" || view.substr(8, 4) != "WAVE") {
         return std::unexpected(WavError::kNotRiffWave);
@@ -105,6 +95,35 @@ std::expected<WavData, WavError> read_wav(const std::string& path) {
     return result;
 }
 
+}  // namespace
+
+std::string_view describe(WavError error) {
+    switch (error) {
+        case WavError::kCannotOpen: return "cannot open file";
+        case WavError::kNotRiffWave: return "not a RIFF/WAVE file";
+        case WavError::kUnsupportedFormat: return "unsupported WAV format (need PCM16 or float32)";
+        case WavError::kTruncated: return "truncated WAV data";
+    }
+    return "unknown error";
+}
+
+std::expected<WavData, WavError> read_wav(const std::string& path) {
+    std::ifstream in{path, std::ios::binary};
+    if (!in) {
+        return std::unexpected(WavError::kCannotOpen);
+    }
+    return read_wav(in);
+}
+
+std::expected<WavData, WavError> read_wav(std::istream& in) {
+    if (!in) {
+        return std::unexpected(WavError::kCannotOpen);
+    }
+    const std::vector<char> raw{std::istreambuf_iterator<char>(in),
+                                std::istreambuf_iterator<char>()};
+    return parse_wav(raw);
+}
+
 std::optional<Ac3Layout> ac3_layout_for(std::size_t wav_channels) {
     // WAV order per channel count, mapped onto the A/52 Table 5.8 array. Only
     // the counts an acmod can express appear; 5.1 is the interesting one,
@@ -149,8 +168,30 @@ std::expected<void, WavError> write_wav_f32(const std::string& path,
                                             std::span<const std::vector<float>> channels,
                                             std::uint32_t sample_rate,
                                             std::span<const std::size_t> channel_order) {
+    // Checked here too, rather than left solely to the std::ostream& overload
+    // below: an empty `channels` must not touch the filesystem at all (no
+    // truncated file left behind at `path`), so this has to fail before
+    // ofstream's constructor - which opens (and truncates) the file - ever
+    // runs.
     if (channels.empty()) {
         return std::unexpected(WavError::kTruncated);
+    }
+    std::ofstream out{path, std::ios::binary};
+    if (!out) {
+        return std::unexpected(WavError::kCannotOpen);
+    }
+    return write_wav_f32(out, channels, sample_rate, channel_order);
+}
+
+std::expected<void, WavError> write_wav_f32(std::ostream& out,
+                                            std::span<const std::vector<float>> channels,
+                                            std::uint32_t sample_rate,
+                                            std::span<const std::size_t> channel_order) {
+    if (channels.empty()) {
+        return std::unexpected(WavError::kTruncated);
+    }
+    if (!out) {
+        return std::unexpected(WavError::kCannotOpen);
     }
     std::vector<std::size_t> order;
     if (channel_order.empty()) {
@@ -162,14 +203,16 @@ std::expected<void, WavError> write_wav_f32(const std::string& path,
         order.assign(channel_order.begin(), channel_order.end());
     }
 
-    std::ofstream out{path, std::ios::binary};
-    if (!out) {
-        return std::unexpected(WavError::kCannotOpen);
-    }
     const auto count = static_cast<std::uint16_t>(order.size());
     const auto frames = static_cast<std::uint32_t>(channels.front().size());
     const std::uint32_t data_bytes = frames * count * 4;
 
+    // data_bytes is computed above, from `channels` alone, before a single
+    // byte goes out - so unlike ac3::io::WavStreamWriter (built for a live
+    // capture whose length isn't known until the session ends), this never
+    // needs to seek back and patch the header once the truth is known. That
+    // makes it exactly as safe on an unseekable stream (a pipe to `-`) as it
+    // is on a plain file - see docs/cli/commands.md's "-" convention.
     out.write("RIFF", 4);
     put_u32(out, 36 + data_bytes);
     out.write("WAVE", 4);
@@ -188,6 +231,9 @@ std::expected<void, WavError> write_wav_f32(const std::string& path,
             const float value = channels[source][frame];
             out.write(reinterpret_cast<const char*>(&value), 4);
         }
+    }
+    if (!out) {
+        return std::unexpected(WavError::kCannotOpen);
     }
     return {};
 }

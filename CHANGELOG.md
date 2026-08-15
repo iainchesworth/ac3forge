@@ -24,6 +24,17 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   FFmpeg's own MKV→MP4 remux path is documented to drop or mis-signal
   ([jellyfin-ffmpeg#584](https://github.com/jellyfin/jellyfin-ffmpeg/issues/584)).
 
+### CLI
+
+- **`-` as a file argument means stdin/stdout**, the conventional Unix pipe convention, for
+  `encode`/`eac3-encode`/`atmos-encode`'s WAV input and AC-3/E-AC-3 output and for `decode`'s
+  stream input and WAV output — e.g. `ac3cli encode - - 448 couple < in.wav > out.ac3` and
+  `ac3cli decode - - < out.ac3 > out.wav`. Windows needs no special handling from the caller:
+  ac3cli puts stdin/stdout into binary mode itself before the first byte crosses either one (the
+  CRT defaults both to text mode, which otherwise corrupts compressed audio). With `-` as the
+  output path, the usual per-run status text (frame count, routing, per-channel levels) prints to
+  stderr instead of stdout, so it never lands inside the piped stream.
+
 ## [0.5.0-beta.1] - 2026-08-15
 
 Fourth tagged release. The main change is a fast-transform performance initiative: an opt-in
