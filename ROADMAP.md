@@ -53,7 +53,7 @@ AC-3/E-AC-3 bitstream and verifies its loudness metadata against measurement.
   Depends on C1.
 - [ ] **C3 (M)** — The same verification in the GUI: meters against gate lines, dialnorm
   delta, per-preset verdicts. Depends on C2.
-- [ ] **C4 (S)** — Finish `dialnorm=auto`: currently unsupported with `src=`/`map=`
+- [x] **C4 (S)** — Finish `dialnorm=auto`: currently unsupported with `src=`/`map=`
   multi-source, and for dual mono.
 
 ## D. Codec depth
