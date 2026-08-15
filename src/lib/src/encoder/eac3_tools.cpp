@@ -447,6 +447,29 @@ const Xcos3Table& xcos3_table() {
     return t;
 }
 
+// ecpl_channel_spectrum's eight 512-sample double arrays (PREfast's C6262,
+// alert #64) are all fully overwritten before being read, so there's no
+// state to carry between calls - unlike FrameEncoder's MDCT scratch
+// members (PR #49), this doesn't need to live on a per-instance object.
+// It's called from both the encoder and decoder's hot paths though, so
+// heap-allocating per call would trade the stack-size warning for real
+// allocation churn; a thread_local reused buffer avoids both.
+struct EcplSpectrumScratch {
+    std::array<double, 512> x_prev{};
+    std::array<double, 512> x_curr{};
+    std::array<double, 512> x_next{};
+    std::array<double, 512> pcm{};
+    std::array<double, 512> pcm_real{};
+    std::array<double, 512> pcm_imag{};
+    std::array<double, 512> zr{};
+    std::array<double, 512> zi{};
+};
+
+EcplSpectrumScratch& ecpl_spectrum_scratch() {
+    static thread_local EcplSpectrumScratch scratch;
+    return scratch;
+}
+
 }  // namespace
 
 void ecpl_channel_spectrum(std::span<const double, 256> prev_mant,
@@ -454,32 +477,27 @@ void ecpl_channel_spectrum(std::span<const double, 256> prev_mant,
                            std::span<const double, 256> next_mant, std::span<double, 256> real_out,
                            std::span<double, 256> imag_out) {
     AC3_ZONE_SCOPED_N("ecpl_channel_spectrum");
+    auto& s = ecpl_spectrum_scratch();
     // Step 1: three independent 512-sample normative IMDCTs (§7.9.4.1
     // steps 1-5, the exact machinery every other coefficient set in this
     // decoder already goes through).
-    std::array<double, 512> x_prev{};
-    std::array<double, 512> x_curr{};
-    std::array<double, 512> x_next{};
-    imdct512_windowed(prev_mant, x_prev);
-    imdct512_windowed(curr_mant, x_curr);
-    imdct512_windowed(next_mant, x_next);
+    imdct512_windowed(prev_mant, s.x_prev);
+    imdct512_windowed(curr_mant, s.x_curr);
+    imdct512_windowed(next_mant, s.x_next);
 
     // Step 2: overlap the second half of the previous block and the first
     // half of the next block with the current one.
-    std::array<double, 512> pcm{};
     for (int n = 0; n < 256; ++n) {
-        pcm[static_cast<std::size_t>(n)] =
-            x_prev[static_cast<std::size_t>(n) + 256] + x_curr[static_cast<std::size_t>(n)];
-        pcm[static_cast<std::size_t>(n) + 256] =
-            x_curr[static_cast<std::size_t>(n) + 256] + x_next[static_cast<std::size_t>(n)];
+        s.pcm[static_cast<std::size_t>(n)] =
+            s.x_prev[static_cast<std::size_t>(n) + 256] + s.x_curr[static_cast<std::size_t>(n)];
+        s.pcm[static_cast<std::size_t>(n) + 256] =
+            s.x_curr[static_cast<std::size_t>(n) + 256] + s.x_next[static_cast<std::size_t>(n)];
     }
 
     // Step 3: window again and apply the xcos3/xsin3 twiddle so the
     // subsequent DFT lands as an oddly-stacked filterbank, matching the
     // MDCT. w[N/2-n-1] mirrors from the OPPOSITE end of the window than
     // w[n] does for the first half - not the same value as w[n] itself.
-    std::array<double, 512> pcm_real{};
-    std::array<double, 512> pcm_imag{};
     const auto& xcos3 = xcos3_table();
     for (int n = 0; n < 256; ++n) {
         const auto un = static_cast<std::size_t>(n);
@@ -488,20 +506,18 @@ void ecpl_channel_spectrum(std::span<const double, 256> prev_mant,
         const double xsin3_n = xcos3.sin[un];
         const double xcos3_n2 = xcos3.cos[un2];
         const double xsin3_n2 = xcos3.sin[un2];
-        pcm_real[un] = pcm[un] * kAnalysisWindow[un] * xcos3_n;
-        pcm_imag[un] = pcm[un] * kAnalysisWindow[un] * xsin3_n;
-        pcm_real[un2] = pcm[un2] * kAnalysisWindow[255 - un] * xcos3_n2;
-        pcm_imag[un2] = pcm[un2] * kAnalysisWindow[255 - un] * xsin3_n2;
+        s.pcm_real[un] = s.pcm[un] * kAnalysisWindow[un] * xcos3_n;
+        s.pcm_imag[un] = s.pcm[un] * kAnalysisWindow[un] * xsin3_n;
+        s.pcm_real[un2] = s.pcm[un2] * kAnalysisWindow[255 - un] * xcos3_n2;
+        s.pcm_imag[un2] = s.pcm[un2] * kAnalysisWindow[255 - un] * xsin3_n2;
     }
 
     // Step 4: the full complex DFT. Only bins 0..255 are ever consumed
     // downstream (§3.5.5.4), so only those are copied out.
-    std::array<double, 512> zr{};
-    std::array<double, 512> zi{};
-    dft512(pcm_real, pcm_imag, zr, zi);
+    dft512(s.pcm_real, s.pcm_imag, s.zr, s.zi);
     for (int k = 0; k < 256; ++k) {
-        real_out[static_cast<std::size_t>(k)] = zr[static_cast<std::size_t>(k)];
-        imag_out[static_cast<std::size_t>(k)] = zi[static_cast<std::size_t>(k)];
+        real_out[static_cast<std::size_t>(k)] = s.zr[static_cast<std::size_t>(k)];
+        imag_out[static_cast<std::size_t>(k)] = s.zi[static_cast<std::size_t>(k)];
     }
 }
 
