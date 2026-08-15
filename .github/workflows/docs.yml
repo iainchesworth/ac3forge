@@ -9,6 +9,11 @@ on:
       - "requirements-docs.in"
       - "requirements-docs.txt"
       - ".github/workflows/docs.yml"
+      # Root files the site includes verbatim via pymdownx.snippets
+      # (docs/contributing.md and docs/roadmap.md) - an edit to either must
+      # rebuild the site or the published copy goes stale.
+      - "CONTRIBUTING.md"
+      - "ROADMAP.md"
   push:
     branches: [main]
     paths:
@@ -17,6 +22,8 @@ on:
       - "requirements-docs.in"
       - "requirements-docs.txt"
       - ".github/workflows/docs.yml"
+      - "CONTRIBUTING.md"
+      - "ROADMAP.md"
   workflow_dispatch: {}
 
 permissions:

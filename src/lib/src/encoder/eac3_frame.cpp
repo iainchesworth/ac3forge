@@ -1833,11 +1833,11 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                 const auto& curr = coeffs_at(cpl_stream, blk);
                 const auto& next =
                     blk + 1 < kBlocksPerFrame ? coeffs_at(cpl_stream, blk + 1) : kZero;
-                std::array<double, 256> zr{};
-                std::array<double, 256> zi{};
+                auto& zr = ecpl_zr_scratch_;
+                auto& zi = ecpl_zi_scratch_;
                 ecpl_channel_spectrum(prev, curr, next, zr, zi);
-                std::array<double, 256> baseline_a{};
-                std::array<double, 256> baseline_b{};
+                auto& baseline_a = ecpl_baseline_a_scratch_;
+                auto& baseline_b = ecpl_baseline_b_scratch_;
                 ecpl_channel_coefficients(zr, zi, unity_amp, zero_angle, cpl.strtmant,
                                           cpl.endmant, baseline_a);
                 ecpl_channel_coefficients(zr, zi, unity_amp, half_angle, cpl.strtmant,
@@ -2631,19 +2631,18 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                     // zero: outside this frame, or a block that did not
                     // itself couple.
                     static constexpr std::array<double, 256> kZero{};
-                    const auto neighbor = [&](int b) {
-                        std::array<double, 256> dst{};
+                    const auto neighbor = [&](int b, std::array<double, 256>& dst) -> auto& {
                         if (b < 0 || b >= kBlocksPerFrame) {
-                            return dst;
+                            return kZero;
                         }
                         rebuild(cpl_stream, b, cpl.strtmant, cpl.endmant, dst);
-                        return dst;
+                        return static_cast<const std::array<double, 256>&>(dst);
                     };
-                    const auto prev = blk > 0 ? neighbor(blk - 1) : kZero;
-                    const auto curr = neighbor(blk);
-                    const auto next = blk + 1 < kBlocksPerFrame ? neighbor(blk + 1) : kZero;
-                    std::array<double, 256> zr{};
-                    std::array<double, 256> zi{};
+                    const auto& prev = neighbor(blk - 1, ecpl_prev_scratch_);
+                    const auto& curr = neighbor(blk, ecpl_curr_scratch_);
+                    const auto& next = neighbor(blk + 1, ecpl_next_scratch_);
+                    auto& zr = ecpl_zr_scratch_;
+                    auto& zi = ecpl_zi_scratch_;
                     ecpl_channel_spectrum(prev, curr, next, zr, zi);
 
                     const int bins = cpl.endmant - cpl.strtmant;
@@ -2668,7 +2667,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                     // already has natively); `recon` is sized to spx.startmant
                     // instead, so the result is copied back into it rather
                     // than passed directly.
-                    std::array<double, 256> recon_scratch{};
+                    auto& recon_scratch = ecpl_recon_scratch_;
                     ecpl_channel_coefficients(zr, zi, amp_bin, angle_bin, cpl.strtmant,
                                               cpl.endmant, recon_scratch);
                     std::copy(recon_scratch.begin() + cpl.strtmant,
