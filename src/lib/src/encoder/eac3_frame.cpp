@@ -1107,6 +1107,7 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
 std::expected<std::vector<std::byte>, FrameError> finish_frame(
     const FrameConfig& config, std::uint32_t words, const Payload& payload,
     std::span<const std::byte> aux) {
+    AC3_ZONE_SCOPED_N("finish_frame_pack_mux");
     const std::uint32_t total_bytes = words * 2;
     const std::uint32_t total_bits = total_bytes * 8;
 
@@ -1482,27 +1483,30 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     // inventing bitstream machinery this phase has no room for is to leave
     // coupling (and, below, AHT) off for the WHOLE frame whenever any
     // eligible channel switches, rather than just that one channel.
+    AC3_ZONE_BEGIN(zone_transients, "step1_transient_detect");
     std::vector<std::array<bool, kBlocksPerFrame>> blksw(static_cast<std::size_t>(nfchans));
     std::vector<bool> channel_switched(static_cast<std::size_t>(nfchans), false);
     bool any_switched = false;
     for (int ch = 0; ch < nfchans; ++ch) {
         const auto& pcm = channels[static_cast<std::size_t>(ch)];
-        auto& hist = history_[static_cast<std::size_t>(ch)];
         for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
-            auto& time = time_scratch_;
-            for (int n = 0; n < 512; ++n) {
-                const int pos = blk * 256 - 256 + n;
-                time[static_cast<std::size_t>(n)] =
-                    pos < 0 ? hist[static_cast<std::size_t>(pos + 256)]
-                            : static_cast<double>(pcm[static_cast<std::size_t>(pos)]);
-            }
-            const bool sw = transient_detectors_[static_cast<std::size_t>(ch)].detect(time);
+            // §8.2.2 defines blksw from the analysis window's SECOND half -
+            // exactly this block period's 256 NEW samples, a contiguous
+            // slice of the frame's own PCM. The window's first half was last
+            // call's segment; the detector's persistent state carries it, so
+            // no history splice (and no 512-sample gather) is needed here at
+            // all - see TransientDetector::detect.
+            const std::span<const float, kSamplesPerBlock> segment{
+                pcm.data() + static_cast<std::size_t>(blk) * kSamplesPerBlock,
+                kSamplesPerBlock};
+            const bool sw = transient_detectors_[static_cast<std::size_t>(ch)].detect(segment);
             blksw[static_cast<std::size_t>(ch)][static_cast<std::size_t>(blk)] = sw;
             channel_switched[static_cast<std::size_t>(ch)] =
                 channel_switched[static_cast<std::size_t>(ch)] || sw;
             any_switched = any_switched || sw;
         }
     }
+    AC3_ZONE_END(zone_transients);
 
     // §3.7: transient pre-noise processing. Reuses the block-switch decision
     // above rather than a second, independent transient detector - a channel
@@ -1638,14 +1642,18 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         auto& hist = history_[static_cast<std::size_t>(ch)];
         for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
             auto& time = time_scratch_;
+            AC3_ZONE_BEGIN(zone_gather, "step2_gather");
             for (int n = 0; n < 512; ++n) {
                 const int pos = blk * 256 - 256 + n;
                 time[static_cast<std::size_t>(n)] =
                     pos < 0 ? hist[static_cast<std::size_t>(pos + 256)]
                             : static_cast<double>(pcm[static_cast<std::size_t>(pos)]);
             }
+            AC3_ZONE_END(zone_gather);
             auto& windowed = windowed_scratch_;
+            AC3_ZONE_BEGIN(zone_window, "step2_window");
             apply_analysis_window(time, windowed);
+            AC3_ZONE_END(zone_window);
             if (ch < nfchans && blksw[static_cast<std::size_t>(ch)][static_cast<std::size_t>(blk)]) {
                 // §7.9.2: the two half-block transforms are interleaved
                 // bin-by-bin into one ordinary 256-coefficient set - from
@@ -1680,6 +1688,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                static_cast<std::size_t>(ch);
     };
     if (cpl.in_use) {
+        AC3_ZONE_SCOPED_N("step3_coupling");
         cpl.master.assign(static_cast<std::size_t>(kBlocksPerFrame) *
                               static_cast<std::size_t>(nfchans),
                           0);
@@ -1897,6 +1906,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     // AC-3's - clamps its last active band to fbw_endmant - 1 and never
     // touches a bin coupling or spectral extension will overwrite anyway.
     if (config_.acmod == Acmod::k2_0) {
+        AC3_ZONE_SCOPED_N("step4_rematrix");
         const int nrematbd = rematrix_band_count(cpl, spx);
         for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
             auto& left = coeffs_at(0, blk);
@@ -1945,6 +1955,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     for (int ch = 0; ch < nfchans; ++ch) {
         payload.chans[static_cast<std::size_t>(ch)].blksw = blksw[static_cast<std::size_t>(ch)];
     }
+    AC3_ZONE_BEGIN(zone_aht_select, "step4b_aht_select");
     for (int s = 0; s < streams && config_.aht; ++s) {
         auto& plan = payload.chans[static_cast<std::size_t>(s)];
         // A block-switched channel's transform already varies within the
@@ -1968,6 +1979,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         plan.aht = !(peak > 0.0) || peak <= kAhtStationaryRatio * quietest;
         payload.ahte = payload.ahte || plan.aht;
     }
+    AC3_ZONE_END(zone_aht_select);
 
     // --- 6. Fixed point and one frame-constant exponent set per stream -----
     AC3_ZONE_BEGIN(zone_exponents, "step5_exponents");
@@ -2004,6 +2016,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         std::vector<std::uint8_t> axis_exps(span, 0);
 
         if (plan.aht) {
+            AC3_ZONE_SCOPED_N("step5_aht_transform");
             plan.aht_fixed.assign(static_cast<std::size_t>(plan.endmant), {});
             plan.aht_coeffs.assign(static_cast<std::size_t>(plan.endmant), {});
             std::vector<std::int32_t> column(span);
@@ -2033,6 +2046,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                 }
             }
         } else {
+            AC3_ZONE_SCOPED_N("step5_fixed_extract");
             for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
                 const auto& source = coeffs_at(s, blk);
                 auto& out = fixed_at(s, blk);
@@ -2100,6 +2114,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         }
         plan.bap.assign(static_cast<std::size_t>(plan.endmant), 0);
         if (plan.aht) {
+            AC3_ZONE_SCOPED_N("step5_aht_normalize");
             // The mantissas the quantizers see, normalised by each bin's own
             // exponent. They have to exist before the rate search, because
             // under GAQ the search cannot size the frame without quantizing.
@@ -2511,6 +2526,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     // scale silence. Nothing about the frame's SIZE depends on these values,
     // only on how many there are, so computing them here is free.
     if (spx.in_use) {
+        AC3_ZONE_SCOPED_N("step9_spx_coords");
         const auto spx_nbnd = static_cast<std::size_t>(spx.bands.count);
         std::vector<double> recon(static_cast<std::size_t>(spx.startmant), 0.0);
         std::vector<double> gains(spx_nbnd, 0.0);

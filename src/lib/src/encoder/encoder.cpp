@@ -173,6 +173,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     // multi-channel layout's channels are (§7.7.2.2 for compr; the same
     // reasoning applies to dynrng, which has no channel-combining rule to
     // begin with once there is no single soundfield to describe a level for).
+    AC3_ZONE_BEGIN(zone_metadata, "step0_metadata");
     std::array<std::uint8_t, kBlocksPerFrame> dynrng{};
     dynrng.fill(meta::kDynrngUnity);
     std::array<std::uint8_t, kBlocksPerFrame> dynrng2{};
@@ -226,6 +227,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         const double peak2 = meta::channel_peak_dbfs(std::span{history_[1]}, channels[1]);
         compr2 = heavy2_->next(peak2, *config_.dialnorm2);
     }
+    AC3_ZONE_END(zone_metadata);
 
     // Bandwidth: explicit config, or a bitrate-aware default. This comes
     // before the coupling decision because coupling inherits it - see
@@ -248,25 +250,27 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     // that exclusion without inventing bitstream machinery this phase has no
     // room for is to leave coupling off for the WHOLE frame whenever any
     // eligible channel switches, rather than just that one channel.
+    AC3_ZONE_BEGIN(zone_transients, "step0_transient_detect");
     std::vector<std::array<bool, kBlocksPerFrame>> blksw(static_cast<std::size_t>(nfchans));
     bool any_switched = false;
     for (int ch = 0; ch < nfchans; ++ch) {
+        const auto& pcm = channels[static_cast<std::size_t>(ch)];
         for (int block = 0; block < kBlocksPerFrame; ++block) {
-            auto& time = time_scratch_;
-            for (int n = 0; n < 512; ++n) {
-                const int pos = block * 256 - 256 + n;
-                time[static_cast<std::size_t>(n)] =
-                    pos < 0 ? history_[static_cast<std::size_t>(ch)]
-                                      [static_cast<std::size_t>(pos + 256)]
-                            : static_cast<double>(
-                                  channels[static_cast<std::size_t>(ch)]
-                                          [static_cast<std::size_t>(pos)]);
-            }
-            const bool sw = transient_detectors_[static_cast<std::size_t>(ch)].detect(time);
+            // §8.2.2 defines blksw from the analysis window's SECOND half -
+            // exactly this block period's 256 NEW samples, a contiguous
+            // slice of the frame's own PCM. The window's first half was last
+            // call's segment; the detector's persistent state carries it, so
+            // no history splice (and no 512-sample gather) is needed here at
+            // all - see TransientDetector::detect.
+            const std::span<const float, kSamplesPerBlock> segment{
+                pcm.data() + static_cast<std::size_t>(block) * kSamplesPerBlock,
+                kSamplesPerBlock};
+            const bool sw = transient_detectors_[static_cast<std::size_t>(ch)].detect(segment);
             blksw[static_cast<std::size_t>(ch)][static_cast<std::size_t>(block)] = sw;
             any_switched = any_switched || sw;
         }
     }
+    AC3_ZONE_END(zone_transients);
 
     // --- Coupling decision -------------------------------------------------
     // Coupling needs at least two full-bandwidth channels to share anything -
@@ -350,6 +354,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     for (int ch = 0; ch < nchans; ++ch) {
         for (int block = 0; block < kBlocksPerFrame; ++block) {
             auto& time = time_scratch_;
+            AC3_ZONE_BEGIN(zone_gather, "step1_gather");
             for (int n = 0; n < 512; ++n) {
                 const int pos = block * 256 - 256 + n;
                 time[static_cast<std::size_t>(n)] =
@@ -359,8 +364,11 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                                   channels[static_cast<std::size_t>(ch)]
                                           [static_cast<std::size_t>(pos)]);
             }
+            AC3_ZONE_END(zone_gather);
             auto& windowed = windowed_scratch_;
+            AC3_ZONE_BEGIN(zone_window, "step1_window");
             apply_analysis_window(time, windowed);
+            AC3_ZONE_END(zone_window);
             if (ch < nfchans && blksw[static_cast<std::size_t>(ch)][static_cast<std::size_t>(block)]) {
                 // §7.9.2: the two half-block transforms are interleaved
                 // bin-by-bin into one ordinary 256-coefficient set - from
@@ -412,6 +420,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     };
 
     if (cplinu) {
+        AC3_ZONE_SCOPED_N("step2_coupling");
         std::vector<double> values(static_cast<std::size_t>(cplbands.count));
 
         // The decoder computes
@@ -513,6 +522,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     const bool rematrixing = config_.acmod == Acmod::k2_0;
     const int nrematbd = rematrix_band_count(cplinu, cplbegf);
     if (rematrixing) {
+        AC3_ZONE_SCOPED_N("step3_rematrix");
         for (int block = 0; block < kBlocksPerFrame; ++block) {
             auto& left = coeffs_at(0, block);
             auto& right = coeffs_at(1, block);
@@ -550,7 +560,20 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     }
 
     // --- 4. Fixed point + per-block raw exponents --------------------------
+    AC3_ZONE_BEGIN(zone_fixed, "step4_fixed_exponents");
     std::vector<std::int32_t> fixed;
+    {
+        // One reservation instead of push_back growth across ~10k bins - the
+        // exact total is knowable up front, and the phase-5 Tracy zones put
+        // this stage second only to transient detection in the former
+        // unzoned remainder.
+        std::size_t total = 0;
+        for (int s = 0; s < streams; ++s) {
+            total += static_cast<std::size_t>(stream_end(s) - stream_start(s)) *
+                     kBlocksPerFrame;
+        }
+        fixed.reserve(total);
+    }
     std::vector<std::size_t> fixed_base(static_cast<std::size_t>(streams) * kBlocksPerFrame);
     std::vector<std::vector<std::uint8_t>> block_exps(
         static_cast<std::size_t>(streams) * kBlocksPerFrame);
@@ -571,6 +594,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
             }
         }
     }
+    AC3_ZONE_END(zone_fixed);
     // Indexed from the stream's own start bin.
     const auto fixed_at = [&](int s, int block, int offset) {
         return fixed[fixed_base[static_cast<std::size_t>(s) * kBlocksPerFrame +
@@ -579,6 +603,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     };
 
     // --- 5. Exponent strategy plan per stream (§8.2.8) ---------------------
+    AC3_ZONE_BEGIN(zone_strategy, "step5_exp_strategy");
     std::vector<StreamPlan> plan(static_cast<std::size_t>(streams));
     for (int s = 0; s < streams; ++s) {
         auto& p = plan[static_cast<std::size_t>(s)];
@@ -688,6 +713,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
             p.runs.push_back(std::move(entry));
         }
     }
+    AC3_ZONE_END(zone_strategy);
 
     // --- 6. Coupling leak seeds --------------------------------------------
     // The transmitted leaks continue the masking decay across the coupling
@@ -961,6 +987,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         bits += static_cast<std::uint32_t>(counter.bit_count());
         return bits;
     };
+    AC3_ZONE_BEGIN(zone_side_bits, "step8_side_bits");
     std::uint32_t side_bits = measure_side_bits();
 
     // §7.2.2.6: delta bit allocation is a pure quality refinement, never
@@ -984,6 +1011,10 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
             side_bits = measure_side_bits();
         }
     }
+    // Ended before the fit check below rather than after `budget`: the
+    // check's failure path returns out of encode_frame, and a manual
+    // TracyCZone must not be left open across a return.
+    AC3_ZONE_END(zone_side_bits);
     if (side_bits + detail::kTailBits > total_bits) {
         // The chosen configuration cannot fit its own headers at this rate.
         return std::unexpected(FrameError::kInvalidBitrate);
