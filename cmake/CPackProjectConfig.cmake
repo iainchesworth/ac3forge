@@ -20,3 +20,16 @@
 if(CPACK_GENERATOR STREQUAL "DragNDrop")
     set(CPACK_MONOLITHIC_INSTALL ON)
 endif()
+
+# DEB/RPM: the opposite override from DragNDrop above. Packaging.cmake's
+# CPACK_COMPONENT_LIBRARY_GROUP/CPACK_COMPONENT_LIBRUNTIME_GROUP "dev" merges
+# library+libruntime into one archive for ZIP/TGZ - correct there, but DEB/
+# RPM want those same two components to stay three independent .deb/.rpm
+# files (runtime, libac3forge0, libac3forge-dev/ac3forge-devel), which is the
+# entire reason they're split into their own CPack components in the first
+# place (see cmake/InstallLibrary.cmake). IGNORE - one package per component,
+# not per group - restores that for exactly these two generators' own passes,
+# without touching the group-based merge every other generator still uses.
+if(CPACK_GENERATOR STREQUAL "DEB" OR CPACK_GENERATOR STREQUAL "RPM")
+    set(CPACK_COMPONENTS_GROUPING IGNORE)
+endif()

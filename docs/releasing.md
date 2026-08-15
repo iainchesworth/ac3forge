@@ -118,7 +118,7 @@ canonical zip that a downloader would have no way to choose between.
 | Platform | Leg | End-user packages | Library (`ac3forge-dev-*`) |
 |---|---|---|---|
 | Windows | windows-msvc | `.zip`, `.exe` (NSIS, if `makensis` is on the runner) | `.zip` |
-| Linux | linux-gcc | `.tar.gz`, `.deb`, `.rpm` | `.tar.gz` |
+| Linux | linux-gcc | `.tar.gz`, `.deb`, `.rpm` | `.tar.gz`, plus real system packages: `libac3forge0`/`ac3forge-devel` (RPM) and `libac3forge0`/`libac3forge-dev` (DEB) |
 | macOS | macos-llvm | `.tar.gz`, `.dmg` | `.tar.gz` |
 | Android (Shield) | build-android | `.apk` | none - Shield links `ac3::forge`/`ac3::audio` in-tree, it isn't a `find_package(ac3forge)` consumer |
 
@@ -127,12 +127,29 @@ Shield app's `.apk` on Android. The library packages are a second, independent d
 third party consuming `ac3::forge`/`matroska::matroska` via `find_package(ac3forge)` (see
 [docs/library/index.md](library/index.md)) - headers, static and shared libraries, and the
 CMake package config, but neither `ac3cli`/`ac3gui` nor `ac3::audio` (live capture/monitor/
-passthrough stays a CLI/GUI-internal detail, not part of what's installed here). Archive-only
-(ZIP/TGZ) for now, one per platform regardless of compiler leg, same reasoning as the end-user
-package above - not NSIS (a component installer can't also produce a second standalone
-download), not DEB/RPM (a correct runtime/`-dev` split needs per-component `Depends` metadata,
-a separate initiative if ever wanted), not DragNDrop (no macOS host to build or verify it
-against at all).
+passthrough stays a CLI/GUI-internal detail, not part of what's installed here).
+
+Archive downloads (ZIP/TGZ) bundle everything above into one `ac3forge-dev-*` file, one per
+platform regardless of compiler leg, same reasoning as the end-user package above - not NSIS (a
+component installer can't also produce a second standalone download), not DragNDrop (no macOS
+host to build or verify it against at all).
+
+Linux additionally gets a **real runtime/`-dev` split** as proper system packages, not just an
+archive: `cmake/InstallLibrary.cmake` files the shared libraries' versioned `.so` under its own
+CPack component (`libruntime`, split out via `NAMELINK_COMPONENT` - see that file's comment),
+separate from headers/static-archives/CMake-config/namelink-symlink (`library`). DEB/RPM's own
+component-install switches turn that into three independent packages - `ac3forge` (the CLI/GUI),
+`libac3forge0` (just the `.so` a linked binary loads), and `libac3forge-dev`/`ac3forge-devel`
+(everything a builder needs, version-pinned to depend on the exact matching `libac3forge0`) -
+the same `libFOO`/`libFOO-dev` shape as any other Linux C library, installable with a plain
+`apt install`/`dnf install` rather than a manual archive download. ZIP/TGZ still produce one
+merged `ac3forge-dev-*` archive as before (`cmake/Packaging.cmake` groups `library`+`libruntime`
+together for the archive generators; `cmake/CPackProjectConfig.cmake` overrides that back apart
+for DEB/RPM specifically). Confirmed against real `dpkg-deb -c`/`-I` and `rpm -qlp`/`-qRp` output
+in a Linux build, not just a CMake reading - the pre-split `.deb` was, on inspection, a single
+package silently bundling `ac3cli` together with the *entire* SDK (headers, static archives, and
+the CMake package config all thrown in beside the binary), which this split also fixes as a
+side effect.
 
 The Shield `.apk` is signed with a real release keystore when one is provisioned (see
 "Provisioning the Android release keystore" below), and falls back to AGP's default debug
