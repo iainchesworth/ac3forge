@@ -8,9 +8,16 @@
 # docs/library/index.md.
 #
 # include()'d from the root CMakeLists.txt after add_subdirectory(src/lib)
-# and add_subdirectory(src/matroska), before include(Packaging) - CPack's
-# own library component (cmake/Packaging.cmake) packages exactly what gets
-# install()'d here.
+# and (if AC3FORGE_BUILD_MATROSKA) add_subdirectory(src/matroska), before
+# include(Packaging) - CPack's own library component (cmake/Packaging.cmake)
+# packages exactly what gets install()'d here.
+#
+# matroska::matroska is an optional component, off-able via
+# AC3FORGE_BUILD_MATROSKA (root CMakeLists.txt) - this is the framework a
+# future optional component (e.g. mp4::mp4) would reuse: its own
+# AC3FORGE_BUILD_<NAME> option, its own guarded add_subdirectory(), and its
+# own guarded block below. See packaging/vcpkg-port/ac3forge/vcpkg.json's
+# "matroska" feature, which maps onto this option for a vcpkg install.
 #
 # Every install() rule below carries COMPONENT library: without one, CPack
 # files it under its own "Unspecified" component, inconsistent once
@@ -42,6 +49,25 @@
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
+# OFF is what a vcpkg port needs: vcpkg's per-triplet linkage policy (and its post-build lint)
+# expects a port to ship only the variant matching that triplet's VCPKG_LIBRARY_LINKAGE, not
+# both. ON (the default) keeps today's direct-build/CPack SDK behaviour unchanged - both
+# variants installed and exported, same as before this option existed. Both forge_static and
+# forge_shared (and their matroska equivalents) still get *built* either way - only what gets
+# install()'d/exported is filtered by this option, so nothing above this point in the tree
+# needs touching for it to take effect.
+option(AC3FORGE_INSTALL_BOTH_LINKAGES "Install/export both static and shared library variants (OFF installs only the BUILD_SHARED_LIBS-selected one)" ON)
+if(AC3FORGE_INSTALL_BOTH_LINKAGES)
+    set(_ac3forge_forge_install_targets forge_objects forge_static forge_shared)
+    set(_ac3forge_matroska_install_targets matroska_objects matroska_static matroska_shared)
+elseif(BUILD_SHARED_LIBS)
+    set(_ac3forge_forge_install_targets forge_objects forge_shared)
+    set(_ac3forge_matroska_install_targets matroska_objects matroska_shared)
+else()
+    set(_ac3forge_forge_install_targets forge_objects forge_static)
+    set(_ac3forge_matroska_install_targets matroska_objects matroska_static)
+endif()
+
 # Two separate EXPORT sets, not the one combined set an earlier draft of this
 # plan sketched: install(EXPORT ... NAMESPACE X) applies X uniformly to
 # every target in that export set, and ac3::forge_static/ac3::forge_shared
@@ -55,41 +81,50 @@ include(CMakePackageConfigHelpers)
 # installed .lib/.dll) - install(EXPORT) otherwise refuses to generate,
 # since it can't resolve a usage-requirement dependency that isn't itself
 # part of any export set.
-install(TARGETS forge_objects forge_static forge_shared
+install(TARGETS ${_ac3forge_forge_install_targets}
     EXPORT ac3forgeTargets
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT library
     LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT libruntime NAMELINK_COMPONENT library
     ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT library)
 
-install(TARGETS matroska_objects matroska_static matroska_shared
-    EXPORT matroskaTargets
-    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT library
-    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT libruntime NAMELINK_COMPONENT library
-    ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT library)
-
-# Source headers, from both libraries' include/ trees.
+# Source headers, from ac3::forge's include/ tree.
 install(DIRECTORY "${PROJECT_SOURCE_DIR}/src/lib/include/"
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
     COMPONENT library)
-install(DIRECTORY "${PROJECT_SOURCE_DIR}/src/matroska/include/"
-    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
-    COMPONENT library)
 
-# Generated headers - ac3/version.hpp (from ac3/version.hpp.in) and the two
-# generate_export_header() outputs - live in each library's own binary dir,
-# not its source tree (see src/lib/CMakeLists.txt, src/matroska/CMakeLists.txt),
-# so the install(DIRECTORY .../include/) calls above never see them. A
-# consumer's #include <ac3/version.hpp>/<ac3/export.hpp>/<matroska/export.hpp>
-# needs all three installed at the same relative paths the in-tree
-# BUILD_INTERFACE include dirs already use.
+# Generated headers - ac3/version.hpp (from ac3/version.hpp.in) and the
+# generate_export_header() output - live in the library's own binary dir, not
+# its source tree (see src/lib/CMakeLists.txt), so the install(DIRECTORY
+# .../include/) call above never sees them. A consumer's
+# #include <ac3/version.hpp>/<ac3/export.hpp> needs both installed at the
+# same relative paths the in-tree BUILD_INTERFACE include dirs already use.
 install(FILES
         "${CMAKE_BINARY_DIR}/src/lib/generated/ac3/version.hpp"
         "${CMAKE_BINARY_DIR}/src/lib/generated/ac3/export.hpp"
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/ac3"
     COMPONENT library)
-install(FILES "${CMAKE_BINARY_DIR}/src/matroska/generated/matroska/export.hpp"
-    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/matroska"
-    COMPONENT library)
+
+# matroska::matroska is an optional component (AC3FORGE_BUILD_MATROSKA, see the root
+# CMakeLists.txt) - a vcpkg port maps this straight to its own "matroska" feature. Its
+# targets/headers/export set only exist to install when the component was actually built;
+# ac3forgeConfig.cmake.in's include() of matroskaTargets.cmake is itself conditional
+# (if(EXISTS)) to match. Any future optional component (e.g. mp4) follows this same shape:
+# its own AC3FORGE_BUILD_<NAME> option, its own guarded block here, its own EXPORT set name.
+if(AC3FORGE_BUILD_MATROSKA)
+    install(TARGETS ${_ac3forge_matroska_install_targets}
+        EXPORT matroskaTargets
+        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT library
+        LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT libruntime NAMELINK_COMPONENT library
+        ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT library)
+
+    install(DIRECTORY "${PROJECT_SOURCE_DIR}/src/matroska/include/"
+        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+        COMPONENT library)
+
+    install(FILES "${CMAKE_BINARY_DIR}/src/matroska/generated/matroska/export.hpp"
+        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/matroska"
+        COMPONENT library)
+endif()
 
 # The config file find_package(ac3forge) actually loads. No find_dependency()
 # calls needed in ac3forgeConfig.cmake.in: with the platform-audio code
@@ -125,8 +160,10 @@ install(EXPORT ac3forgeTargets
     DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/ac3forge"
     COMPONENT library)
 
-install(EXPORT matroskaTargets
-    FILE matroskaTargets.cmake
-    NAMESPACE matroska::
-    DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/ac3forge"
-    COMPONENT library)
+if(AC3FORGE_BUILD_MATROSKA)
+    install(EXPORT matroskaTargets
+        FILE matroskaTargets.cmake
+        NAMESPACE matroska::
+        DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/ac3forge"
+        COMPONENT library)
+endif()
