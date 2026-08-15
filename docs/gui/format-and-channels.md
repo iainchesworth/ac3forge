@@ -133,8 +133,11 @@ ch 2 → programme 2) or any loaded channels assigned `Programme 1` / `Programme
 profile**, and (Expert) **heavy compression** on the [Metadata tab](metadata.md#loudness)
 (`dialnorm2`/`drc2`/`heavy2` for programme 2) — the two programmes are unrelated, so programme 2's
 curve is never inherited from programme 1's; a plan that wants both compressed alike sets both
-explicitly. Automatic `dialnorm=auto` measurement is not yet supported for dual mono, so dialnorm
-has to be set by hand on both — DRC and heavy compression have no such restriction.
+explicitly. `ac3cli`'s own dual-mono path measures each programme independently for
+`dialnorm=auto`/`dialnorm2=auto` (Ch1 and Ch2 each get their own BS.1770-4 pass — never a blended
+measurement across both, since they share no downmix); this controller does not call that
+per-programme measurement yet, so the **measure** checkbox stays disabled here and dialnorm has to
+be set by hand on both — DRC and heavy compression have no such restriction.
 
 ## Routing — what happens to this source
 

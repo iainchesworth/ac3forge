@@ -475,7 +475,39 @@ bool parse_options(std::span<char*> tokens, Options& out) {
     return true;
 }
 
+// Reads a loudness measurement someone else already pushed every sample
+// into, reports it the same way every dialnorm=auto path does, and returns
+// the dialnorm it implies. Factored out of measured_dialnorm/
+// measured_dialnorm_channel below so a measurement built incrementally
+// across many frames (the src=/map= routed-programme pre-pass) reports
+// itself identically to one built from a single whole-buffer push - same
+// text, same rounding, one place either could go wrong. `programme` is the
+// println's leading label ("Ch1"/"Ch2"), empty for a whole-programme
+// measurement that is not about one dual-mono channel; `field` is the
+// bitstream field this measurement feeds ("dialnorm"/"dialnorm2").
+std::optional<int> finish_measurement(const ac3::meta::LoudnessMeter& meter,
+                                      std::string_view programme, std::string_view field) {
+    const auto lkfs = meter.integrated_lkfs();
+    if (!lkfs) {
+        return std::nullopt;
+    }
+    const int dialnorm = ac3::meta::dialnorm_from_lkfs(*lkfs);
+    if (programme.empty()) {
+        std::println("measured {:.2f} LKFS (BS.1770-4, gated) -> {} {}", *lkfs, field, dialnorm);
+    } else {
+        std::println("{} measured {:.2f} LKFS (BS.1770-4, gated) -> {} {}", programme, *lkfs,
+                     field, dialnorm);
+    }
+    return dialnorm;
+}
+
 // BS.1770 integrated loudness of a whole WAV, and the dialnorm it implies.
+// Never meaningful for a dual-mono (1+1) target - Ch1 and Ch2 are two
+// unrelated programmes sharing one syncframe (§E1.3, no downmix between
+// them), so a single BS.1770 pass across both channels would measure a
+// blend of two different things rather than either programme's own level;
+// callers route dual mono through measured_dialnorm_channel on each
+// programme's own channel alone instead.
 std::optional<int> measured_dialnorm(const ac3::io::WavData& wav, ac3::SampleRate rate,
                                      ac3::Acmod acmod, bool lfe) {
     ac3::meta::LoudnessMeter meter{rate, acmod, lfe};
@@ -485,30 +517,20 @@ std::optional<int> measured_dialnorm(const ac3::io::WavData& wav, ac3::SampleRat
         views.emplace_back(channel);
     }
     meter.push(views);
-    const auto lkfs = meter.integrated_lkfs();
-    if (!lkfs) {
-        return std::nullopt;
-    }
-    const int dialnorm = ac3::meta::dialnorm_from_lkfs(*lkfs);
-    std::println("measured {:.2f} LKFS (BS.1770-4, gated) -> dialnorm {}", *lkfs, dialnorm);
-    return dialnorm;
+    return finish_measurement(meter, {}, "dialnorm");
 }
 
 // Same measurement, for one dual-mono programme's own channel alone - never a
 // programme's worth of BS.1770 surround weighting, since a 1+1 channel is not
-// part of a soundfield.
-std::optional<int> measured_dialnorm_channel(std::span<const float> channel,
-                                             ac3::SampleRate rate) {
+// part of a soundfield. `programme`/`field` are finish_measurement's own
+// labels above - "Ch1"/"dialnorm" or "Ch2"/"dialnorm2", the two programmes
+// sharing this one function since the measurement itself does not differ.
+std::optional<int> measured_dialnorm_channel(std::span<const float> channel, ac3::SampleRate rate,
+                                             std::string_view programme, std::string_view field) {
     ac3::meta::LoudnessMeter meter{rate, ac3::Acmod::k1_0, false};
     const std::array<std::span<const float>, 1> views{channel};
     meter.push(views);
-    const auto lkfs = meter.integrated_lkfs();
-    if (!lkfs) {
-        return std::nullopt;
-    }
-    const int dialnorm = ac3::meta::dialnorm_from_lkfs(*lkfs);
-    std::println("Ch2 measured {:.2f} LKFS (BS.1770-4, gated) -> dialnorm2 {}", *lkfs, dialnorm);
-    return dialnorm;
+    return finish_measurement(meter, programme, field);
 }
 
 // Dual mono's Ch1/Ch2 arrive as either one two-channel file or two mono ones;
@@ -1631,11 +1653,14 @@ void print_routing(const plan::Plan& p, const plan::Routing& routing, std::strin
 // exercise field placement; only recorded-style material exercises the coding
 // decisions, which is what the Annex E tools are judged on.
 // The same encode as run_eac3_encode below, but for a possibly multi-source
-// run (src=/map= given). Loudness auto-measurement is not supported here
-// yet - measuring the right audio needs the RENDERED bed/programme content,
-// not raw per-source channels, since which channel is "L" or "Ls" now
-// depends on the assignment rather than file order; dialnorm/dialnorm2 must
-// be given explicitly until that lands.
+// run (src=/map= given). dialnorm=auto/dialnorm2=auto measure the RENDERED
+// bed/programme content (post map=/routing, in coded-channel order) rather
+// than raw per-source channels, since which channel is "L"/"Ls" - or, for
+// 1+1, which is Ch1/Ch2 - depends on the assignment rather than file order.
+// So the whole programme is routed once as a measurement pre-pass before the
+// loop below routes it again to actually encode it - see route_frame's own
+// comment for why sharing that one lambda keeps the two passes from ever
+// disagreeing about what "routed" means.
 int run_eac3_encode_multi(std::string_view in_path, std::string_view out_path,
                           std::uint32_t bitrate, std::string_view tools,
                           std::string_view layout, std::string_view vbr, const Options& meta) {
@@ -1675,21 +1700,13 @@ int run_eac3_encode_multi(std::string_view in_path, std::string_view out_path,
     if (!vbr_or_error(vbr, p.vbr)) {
         return 1;
     }
-    if (p.meta.measure_dialnorm || p.meta.measure_dialnorm2) {
-        std::println(stderr,
-                     "error: dialnorm=auto/dialnorm2=auto are not yet supported with src=/"
-                     "map= - pass dialnorm=<1..31> (and dialnorm2=<1..31> for 1+1) explicitly");
-        return 1;
-    }
 
     const auto routing = routing_for_sources(p, *sources, meta.map_spec);
     if (!routing) {
         return 1;
     }
 
-    ac3::eac3::AccessUnitEncoder encoder{plan::eac3_config(p)};
     const auto nchans = static_cast<std::size_t>(routing->coded_channels);
-    assert(static_cast<int>(nchans) == encoder.channel_count());
     const std::size_t total = sources->total_frames;
     const auto source_channels = static_cast<std::size_t>(routing->source_channels);
 
@@ -1703,13 +1720,88 @@ int run_eac3_encode_multi(std::string_view in_path, std::string_view out_path,
         out[c] = block[c];
         views[c] = block[c];
     }
-    std::vector<std::vector<std::byte>> frames;
-    for (std::size_t start = 0; start < total; start += ac3::kSamplesPerFrame) {
+    // Renders one frame's worth of every source's samples onto the coded
+    // channels `out`/`views` alias - shared by the measurement pre-pass below
+    // and the real encode loop after it, so the two can never render this
+    // programme two different ways.
+    auto route_frame = [&](std::size_t start) {
         gather_frame(*sources, start, source);
         for (std::size_t c = 0; c < source_channels; ++c) {
             in[c] = source[c];
         }
         plan::render(*routing, in, out, ac3::kSamplesPerFrame);
+    };
+
+    const auto cp = plan::resolve(p);
+    const bool dual_mono = cp.bed_acmod == ac3::Acmod::kDualMono;
+    const bool want_dialnorm = p.meta.measure_dialnorm;
+    // dialnorm2 only means anything under 1+1 - silently inert otherwise,
+    // exactly like run_eac3_encode's identical check for its one file.
+    const bool want_dialnorm2 = dual_mono && p.meta.measure_dialnorm2;
+    if (want_dialnorm || want_dialnorm2) {
+        // §5.4.2.8's BS.1770 pass has to measure what the encoder actually
+        // receives - the routed/rendered coded channels, not each source's
+        // own raw layout, since map= can permute, trim or fold several
+        // sources onto them - so this renders the entire programme once
+        // purely to measure it. Dual mono gets one single-channel meter per
+        // programme (Ch1/Ch2 are unrelated, §E1.3 - see
+        // measured_dialnorm_channel's own comment); every other target gets
+        // one whole-programme meter, the same BS.1770 channel weighting
+        // measured_dialnorm uses for the single-file case.
+        std::optional<ac3::meta::LoudnessMeter> whole;
+        std::optional<ac3::meta::LoudnessMeter> ch1;
+        std::optional<ac3::meta::LoudnessMeter> ch2;
+        if (dual_mono) {
+            if (want_dialnorm) {
+                ch1.emplace(*sr, ac3::Acmod::k1_0, false);
+            }
+            if (want_dialnorm2) {
+                ch2.emplace(*sr, ac3::Acmod::k1_0, false);
+            }
+        } else if (want_dialnorm) {
+            whole.emplace(*sr, cp.bed_acmod, cp.bed_lfe);
+        }
+        for (std::size_t start = 0; start < total; start += ac3::kSamplesPerFrame) {
+            route_frame(start);
+            if (whole) {
+                whole->push(views);
+            }
+            if (ch1) {
+                const std::array<std::span<const float>, 1> v{views[0]};
+                ch1->push(v);
+            }
+            if (ch2) {
+                const std::array<std::span<const float>, 1> v{views[1]};
+                ch2->push(v);
+            }
+        }
+        if (want_dialnorm) {
+            const auto measured = dual_mono ? finish_measurement(*ch1, "Ch1", "dialnorm")
+                                            : finish_measurement(*whole, {}, "dialnorm");
+            if (!measured) {
+                std::println(stderr, "error: {}no audio above the -70 LKFS absolute gate; "
+                                     "pass dialnorm=<1..31> explicitly",
+                             dual_mono ? "Ch1 has " : "");
+                return 1;
+            }
+            p.meta.dialnorm = *measured;
+        }
+        if (want_dialnorm2) {
+            const auto measured2 = finish_measurement(*ch2, "Ch2", "dialnorm2");
+            if (!measured2) {
+                std::println(stderr, "error: Ch2 has no audio above the -70 LKFS absolute gate; "
+                                     "pass dialnorm2=<1..31> explicitly");
+                return 1;
+            }
+            p.meta.dialnorm2 = *measured2;
+        }
+    }
+
+    ac3::eac3::AccessUnitEncoder encoder{plan::eac3_config(p)};
+    assert(static_cast<int>(nchans) == encoder.channel_count());
+    std::vector<std::vector<std::byte>> frames;
+    for (std::size_t start = 0; start < total; start += ac3::kSamplesPerFrame) {
+        route_frame(start);
         auto unit = encoder.encode_access_unit(views);
         if (!unit) {
             std::println(stderr, "error: the encoder cannot express this configuration");
@@ -1805,17 +1897,27 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
         return 1;
     }
     const auto cp = plan::resolve(p);
+    const bool dual_mono = cp.bed_acmod == ac3::Acmod::kDualMono;
     if (p.meta.measure_dialnorm) {
-        const auto measured = measured_dialnorm(*wav, *sr, cp.bed_acmod, cp.bed_lfe);
+        // Dual mono has no "whole programme" a single BS.1770 pass can mean -
+        // Ch1 and Ch2 are unrelated (§E1.3, no downmix between them), so this
+        // measures Ch1's own channel alone, exactly like Ch2 just below,
+        // rather than folding both into one measured_dialnorm() call the way
+        // every other layout can.
+        const auto measured = dual_mono
+                                  ? measured_dialnorm_channel(wav->channels[0], *sr, "Ch1",
+                                                              "dialnorm")
+                                  : measured_dialnorm(*wav, *sr, cp.bed_acmod, cp.bed_lfe);
         if (!measured) {
-            std::println(stderr, "error: no audio above the -70 LKFS absolute gate; "
-                                 "pass dialnorm=<1..31> explicitly");
+            std::println(stderr, "error: {}no audio above the -70 LKFS absolute gate; "
+                                 "pass dialnorm=<1..31> explicitly",
+                         dual_mono ? "Ch1 has " : "");
             return 1;
         }
         p.meta.dialnorm = *measured;
     }
-    if (cp.bed_acmod == ac3::Acmod::kDualMono && p.meta.measure_dialnorm2) {
-        const auto measured2 = measured_dialnorm_channel(wav->channels[1], *sr);
+    if (dual_mono && p.meta.measure_dialnorm2) {
+        const auto measured2 = measured_dialnorm_channel(wav->channels[1], *sr, "Ch2", "dialnorm2");
         if (!measured2) {
             std::println(stderr, "error: Ch2 has no audio above the -70 LKFS absolute gate; "
                                  "pass dialnorm2=<1..31> explicitly");
@@ -2588,7 +2690,8 @@ int run_record(std::string_view out_path, std::uint32_t seconds, std::uint32_t b
 // The same encode as run_encode below, but for a possibly multi-source run
 // (src=/map= given) - see run_eac3_encode_multi for why this is a separate
 // function rather than a shared path with the classic single-file one, and
-// why loudness auto-measurement is not supported here yet.
+// for the shape of its dialnorm=auto/dialnorm2=auto measurement pre-pass,
+// which this mirrors exactly.
 int run_encode_multi(std::string_view in_path, std::string_view out_path, std::uint32_t bitrate,
                      bool couple, std::string_view layout, const Options& meta) {
     auto sources = load_sources(in_path, meta.sources, meta.offsets);
@@ -2628,21 +2731,12 @@ int run_encode_multi(std::string_view in_path, std::string_view out_path, std::u
         std::println(stderr, "error: {}", plan::describe(*bad));
         return 1;
     }
-    if (p.meta.measure_dialnorm || p.meta.measure_dialnorm2) {
-        std::println(stderr,
-                     "error: dialnorm=auto/dialnorm2=auto are not yet supported with src=/"
-                     "map= - pass dialnorm=<1..31> (and dialnorm2=<1..31> for 1+1) explicitly");
-        return 1;
-    }
 
     const auto routing = routing_for_sources(p, *sources, meta.map_spec);
     if (!routing) {
         return 1;
     }
 
-    const auto config = plan::ac3_config(p);
-    auto encoder = std::make_unique<ac3::FrameEncoder>(config);
-    ac3::analysis::LevelMeter meter{config.acmod, config.lfe, sources->sample_rate};
     const auto nchans = static_cast<std::size_t>(routing->coded_channels);
     const std::size_t total = sources->total_frames;
     const auto source_channels = static_cast<std::size_t>(routing->source_channels);
@@ -2658,14 +2752,90 @@ int run_encode_multi(std::string_view in_path, std::string_view out_path, std::u
         out[c] = block[c];
         views[c] = block[c];
     }
-    std::vector<std::vector<std::byte>> frames;
-    for (std::size_t start = 0; start < total; start += ac3::kSamplesPerFrame) {
-        const auto valid = std::min<std::size_t>(ac3::kSamplesPerFrame, total - start);
+    // Renders one frame's worth of every source's samples onto the coded
+    // channels `out`/`views` alias - shared by the measurement pre-pass below
+    // and the real encode loop after it, so the two can never render this
+    // programme two different ways.
+    auto route_frame = [&](std::size_t start) {
         gather_frame(*sources, start, source);
         for (std::size_t c = 0; c < source_channels; ++c) {
             in[c] = source[c];
         }
         plan::render(*routing, in, out, ac3::kSamplesPerFrame);
+    };
+
+    const auto cp = plan::resolve(p);
+    const bool dual_mono = cp.bed_acmod == ac3::Acmod::kDualMono;
+    const bool want_dialnorm = p.meta.measure_dialnorm;
+    // dialnorm2 only means anything under 1+1 - silently inert otherwise,
+    // exactly like run_encode's identical check for its one file.
+    const bool want_dialnorm2 = dual_mono && p.meta.measure_dialnorm2;
+    if (want_dialnorm || want_dialnorm2) {
+        // §5.4.2.8's BS.1770 pass has to measure what the encoder actually
+        // receives - the routed/rendered coded channels, not each source's
+        // own raw layout, since map= can permute, trim or fold several
+        // sources onto them - so this renders the entire programme once
+        // purely to measure it. Dual mono gets one single-channel meter per
+        // programme (Ch1/Ch2 are unrelated, §E1.3 - see
+        // measured_dialnorm_channel's own comment); every other target gets
+        // one whole-programme meter, the same BS.1770 channel weighting
+        // measured_dialnorm uses for the single-file case.
+        std::optional<ac3::meta::LoudnessMeter> whole;
+        std::optional<ac3::meta::LoudnessMeter> ch1;
+        std::optional<ac3::meta::LoudnessMeter> ch2;
+        if (dual_mono) {
+            if (want_dialnorm) {
+                ch1.emplace(*sr, ac3::Acmod::k1_0, false);
+            }
+            if (want_dialnorm2) {
+                ch2.emplace(*sr, ac3::Acmod::k1_0, false);
+            }
+        } else if (want_dialnorm) {
+            whole.emplace(*sr, cp.bed_acmod, cp.bed_lfe);
+        }
+        for (std::size_t start = 0; start < total; start += ac3::kSamplesPerFrame) {
+            route_frame(start);
+            if (whole) {
+                whole->push(views);
+            }
+            if (ch1) {
+                const std::array<std::span<const float>, 1> v{views[0]};
+                ch1->push(v);
+            }
+            if (ch2) {
+                const std::array<std::span<const float>, 1> v{views[1]};
+                ch2->push(v);
+            }
+        }
+        if (want_dialnorm) {
+            const auto measured = dual_mono ? finish_measurement(*ch1, "Ch1", "dialnorm")
+                                            : finish_measurement(*whole, {}, "dialnorm");
+            if (!measured) {
+                std::println(stderr, "error: {}no audio above the -70 LKFS absolute gate; "
+                                     "pass dialnorm=<1..31> explicitly",
+                             dual_mono ? "Ch1 has " : "");
+                return 1;
+            }
+            p.meta.dialnorm = *measured;
+        }
+        if (want_dialnorm2) {
+            const auto measured2 = finish_measurement(*ch2, "Ch2", "dialnorm2");
+            if (!measured2) {
+                std::println(stderr, "error: Ch2 has no audio above the -70 LKFS absolute gate; "
+                                     "pass dialnorm2=<1..31> explicitly");
+                return 1;
+            }
+            p.meta.dialnorm2 = *measured2;
+        }
+    }
+
+    const auto config = plan::ac3_config(p);
+    auto encoder = std::make_unique<ac3::FrameEncoder>(config);
+    ac3::analysis::LevelMeter meter{config.acmod, config.lfe, sources->sample_rate};
+    std::vector<std::vector<std::byte>> frames;
+    for (std::size_t start = 0; start < total; start += ac3::kSamplesPerFrame) {
+        const auto valid = std::min<std::size_t>(ac3::kSamplesPerFrame, total - start);
+        route_frame(start);
         for (std::size_t c = 0; c < nchans; ++c) {
             metered[c] = std::span{block[c]}.first(valid);
         }
@@ -2748,19 +2918,29 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
     // which is why it happens here rather than inside the frame encoder. It
     // gets the OUTPUT layout, because the BS.1770 channel weighting depends on
     // which coded positions are surrounds.
+    const auto cp = plan::resolve(p);
+    const bool dual_mono = cp.bed_acmod == ac3::Acmod::kDualMono;
     if (p.meta.measure_dialnorm) {
-        const auto cp = plan::resolve(p);
-        const auto measured = measured_dialnorm(*wav, *sr, cp.bed_acmod, cp.bed_lfe);
+        // Dual mono has no "whole programme" a single BS.1770 pass can mean -
+        // Ch1 and Ch2 are unrelated (§E1.3, no downmix between them), so this
+        // measures Ch1's own channel alone, exactly like Ch2 just below,
+        // rather than folding both into one measured_dialnorm() call the way
+        // every other layout can.
+        const auto measured = dual_mono
+                                  ? measured_dialnorm_channel(wav->channels[0], *sr, "Ch1",
+                                                              "dialnorm")
+                                  : measured_dialnorm(*wav, *sr, cp.bed_acmod, cp.bed_lfe);
         if (!measured) {
             std::println(stderr,
-                         "error: no audio above the -70 LKFS absolute gate; "
-                         "pass dialnorm=<1..31> explicitly");
+                         "error: {}no audio above the -70 LKFS absolute gate; "
+                         "pass dialnorm=<1..31> explicitly",
+                         dual_mono ? "Ch1 has " : "");
             return 1;
         }
         p.meta.dialnorm = *measured;
     }
-    if (plan::resolve(p).bed_acmod == ac3::Acmod::kDualMono && p.meta.measure_dialnorm2) {
-        const auto measured2 = measured_dialnorm_channel(wav->channels[1], *sr);
+    if (dual_mono && p.meta.measure_dialnorm2) {
+        const auto measured2 = measured_dialnorm_channel(wav->channels[1], *sr, "Ch2", "dialnorm2");
         if (!measured2) {
             std::println(stderr,
                          "error: Ch2 has no audio above the -70 LKFS absolute gate; "

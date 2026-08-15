@@ -123,6 +123,49 @@ double rms(const std::vector<float>& channel, std::size_t from, std::size_t coun
     return std::sqrt(sum_sq / static_cast<double>(n));
 }
 
+// A single mono channel at a chosen amplitude/frequency - unlike
+// make_tone_channels above (which ladders frequency across the channels of
+// ONE file), the dialnorm=auto tests below need independently-controlled,
+// separately-loud tracks: two whole files for src=/map=, or the two channels
+// of a hand-built dual-mono WAV, with levels deliberately far enough apart
+// that a wrong (blended, swapped, or unrouted) measurement reads as a
+// distinctly different number rather than a rounding nuance.
+std::vector<float> make_tone(double amp, double hz, std::size_t frames, std::uint32_t sample_rate) {
+    std::vector<float> out(frames);
+    for (std::size_t n = 0; n < frames; ++n) {
+        out[n] = static_cast<float>(
+            amp * std::sin(2.0 * std::numbers::pi * hz * static_cast<double>(n) /
+                          static_cast<double>(sample_rate)));
+    }
+    return out;
+}
+
+// write_wav_f32 takes a std::span<const std::vector<float>>, which (unlike
+// make_tone_channels' already-a-vector result above) a braced-init-list of
+// make_tone(...) calls does not implicitly convert to - this takes the list
+// as a real std::vector<std::vector<float>> parameter first so callers below
+// can still write the channels inline as a brace list.
+bool write_wav(const fs::path& path, std::vector<std::vector<float>> channels,
+               std::uint32_t sample_rate) {
+    return ac3::io::write_wav_f32(path.string(), channels, sample_rate).has_value();
+}
+
+// The integer dialnorm/dialnorm2 value the CLI's own "-> dialnorm N" /
+// "-> dialnorm2 N" report line prints, straight out of the log text - reads
+// the same reported number an operator would, rather than re-deriving one
+// from the logged LKFS float and risking a second place rounding could
+// disagree. The trailing space in `needle` matters: it is what keeps a
+// "dialnorm" search from also matching inside "dialnorm2 30" (the character
+// right after "dialnorm" there is '2', not a space).
+std::optional<int> reported_value(const std::string& log, std::string_view field) {
+    const std::string needle = std::string("-> ") + std::string(field) + " ";
+    const auto pos = log.find(needle);
+    if (pos == std::string::npos) {
+        return std::nullopt;
+    }
+    return std::stoi(log.substr(pos + needle.size()));
+}
+
 }  // namespace
 
 TEST_CASE("offset= rejects malformed tokens", "[cli][offset]") {
@@ -680,4 +723,238 @@ TEST_CASE("eac3-encode and atmos-encode accept '-' for input and output", "[cli]
     INFO(read_log(dir / "stdio_atmos.log"));
     CHECK(atmos_rc == 0);
     CHECK(fs::file_size(atmos_out) > 0);
+}
+
+// Roadmap C4: dialnorm=auto/dialnorm2=auto used to be unconditionally
+// rejected the moment src=/map= was in play (main.cpp's old "not yet
+// supported with src=/map=" error), regardless of whether the routing would
+// have made measurement ambiguous. The fix routes/renders the whole
+// programme once as a measurement pre-pass - the same BS.1770-4 gated pass
+// the single-file path already runs - before the real per-frame encode loop
+// renders it again to actually encode it. `loud`/`quiet` are two whole WAV
+// files, at clearly different levels, so a bug that measured the wrong
+// source (or blended both) reads as a clearly wrong number rather than a
+// coincidental match.
+TEST_CASE("dialnorm=auto/dialnorm2=auto measure the routed programme with src=/map=",
+          "[cli][dialnorm][src]") {
+    const auto dir = scratch_dir();
+    constexpr std::uint32_t kRate = 48000;
+    constexpr std::size_t kFrames = 96000;  // 2s: several full 400ms BS.1770 gate windows
+
+    const auto loud = dir / "dialnorm_src_loud.wav";
+    const auto quiet = dir / "dialnorm_src_quiet.wav";
+    REQUIRE(write_wav(loud, {make_tone(0.9, 220.0, kFrames, kRate)}, kRate));
+    REQUIRE(write_wav(quiet, {make_tone(0.5, 660.0, kFrames, kRate)}, kRate));
+
+    // Solo measurements: each source alone, through a plain mono target, is
+    // the ground truth every assertion below compares against.
+    const auto loud_solo_log = dir / "dialnorm_loud_solo.log";
+    REQUIRE(run_cli("eac3-encode \"" + loud.string() + "\" \"" +
+                        (dir / "loud_solo.ec3").string() + "\" 96 none mono dialnorm=auto",
+                    loud_solo_log) == 0);
+    const auto loud_solo = reported_value(read_log(loud_solo_log), "dialnorm");
+    REQUIRE(loud_solo.has_value());
+
+    const auto quiet_solo_log = dir / "dialnorm_quiet_solo.log";
+    REQUIRE(run_cli("eac3-encode \"" + quiet.string() + "\" \"" +
+                        (dir / "quiet_solo.ec3").string() + "\" 96 none mono dialnorm=auto",
+                    quiet_solo_log) == 0);
+    const auto quiet_solo = reported_value(read_log(quiet_solo_log), "dialnorm");
+    REQUIRE(quiet_solo.has_value());
+
+    // The two solo levels have to actually differ, or a blending bug and a
+    // correct per-source measurement could print the same number by
+    // accident and this test would prove nothing.
+    REQUIRE(*loud_solo != *quiet_solo);
+
+    SECTION("stereo target: matches an equivalent single-file measurement exactly") {
+        // Independent 2-channel equivalent of the src=/map= run below (same
+        // two tones, already in coded-channel order) - the strongest
+        // cross-check available: a straight L/R map= carries bit-identical
+        // audio, so the routed measurement must match this file's own
+        // single-file measurement exactly, not merely "some number".
+        const auto equiv = dir / "dialnorm_equiv_stereo.wav";
+        REQUIRE(write_wav(equiv,
+                          {make_tone(0.9, 220.0, kFrames, kRate),
+                           make_tone(0.5, 660.0, kFrames, kRate)},
+                          kRate));
+        const auto equiv_log = dir / "dialnorm_equiv_stereo.log";
+        REQUIRE(run_cli("eac3-encode \"" + equiv.string() + "\" \"" +
+                            (dir / "equiv_stereo.ec3").string() +
+                            "\" 192 none stereo dialnorm=auto",
+                        equiv_log) == 0);
+        const auto equiv_measured = reported_value(read_log(equiv_log), "dialnorm");
+        REQUIRE(equiv_measured.has_value());
+
+        const auto out = dir / "dialnorm_stereo.ec3";
+        const auto log = dir / "dialnorm_stereo.log";
+        const auto rc = run_cli("eac3-encode \"" + loud.string() + "\" \"" + out.string() +
+                                    "\" 192 none stereo src=\"" + quiet.string() +
+                                    "\" map=0.0:L,1.0:R dialnorm=auto",
+                                log);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(rc == 0);
+        CHECK(fs::exists(out));
+        // Was unconditionally rejected before this fix.
+        CHECK(text.find("not yet supported") == std::string::npos);
+        const auto measured = reported_value(text, "dialnorm");
+        REQUIRE(measured.has_value());
+        CHECK(*measured == *equiv_measured);
+    }
+
+    SECTION("map= trim is measured on the rendered programme, not the raw source levels") {
+        const auto trimmed_out = dir / "dialnorm_multi_trimmed.ec3";
+        const auto trimmed_log = dir / "dialnorm_multi_trimmed.log";
+        REQUIRE(run_cli("eac3-encode \"" + loud.string() + "\" \"" + trimmed_out.string() +
+                            "\" 192 none stereo src=\"" + quiet.string() +
+                            "\" map=0.0:L@-12,1.0:R dialnorm=auto",
+                        trimmed_log) == 0);
+        const auto trimmed = reported_value(read_log(trimmed_log), "dialnorm");
+        REQUIRE(trimmed.has_value());
+
+        const auto untrimmed_out = dir / "dialnorm_multi_untrimmed.ec3";
+        const auto untrimmed_log = dir / "dialnorm_multi_untrimmed.log";
+        REQUIRE(run_cli("eac3-encode \"" + loud.string() + "\" \"" + untrimmed_out.string() +
+                            "\" 192 none stereo src=\"" + quiet.string() +
+                            "\" map=0.0:L,1.0:R dialnorm=auto",
+                        untrimmed_log) == 0);
+        const auto untrimmed = reported_value(read_log(untrimmed_log), "dialnorm");
+        REQUIRE(untrimmed.has_value());
+
+        // Attenuating the dominant (loud) source by -12 dB before measuring
+        // must measurably quieten the programme (a bigger dialnorm number).
+        // If this measured the raw, unrouted source files instead of the
+        // rendered/trimmed ones, the trim would have no effect at all.
+        CHECK(*trimmed > *untrimmed);
+    }
+
+    SECTION("1+1 target via src=/map=: each source's channel is measured on its own") {
+        const auto out = dir / "dialnorm_dualmono_multi.ec3";
+        const auto log = dir / "dialnorm_dualmono_multi.log";
+        const auto rc = run_cli("eac3-encode \"" + loud.string() + "\" \"" + out.string() +
+                                    "\" 192 none 1+1 src=\"" + quiet.string() +
+                                    "\" map=0.0:p1,1.0:p2 dialnorm=auto dialnorm2=auto",
+                                log);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(rc == 0);
+        CHECK(fs::exists(out));
+        const auto ch1 = reported_value(text, "dialnorm");
+        const auto ch2 = reported_value(text, "dialnorm2");
+        REQUIRE(ch1.has_value());
+        REQUIRE(ch2.has_value());
+        // p1 came from `loud` alone, p2 from `quiet` alone - a correct,
+        // per-programme measurement matches each source's own solo number
+        // exactly; a blended or swapped measurement would not.
+        CHECK(*ch1 == *loud_solo);
+        CHECK(*ch2 == *quiet_solo);
+    }
+}
+
+// Same fix, plain AC-3 (run_encode_multi rather than run_eac3_encode_multi) -
+// a separate function in main.cpp with its own copy of the measurement
+// pre-pass, so it needs its own proof it was actually fixed too.
+TEST_CASE("dialnorm=auto works with src=/map= on the plain AC-3 encode path too",
+          "[cli][dialnorm][src]") {
+    const auto dir = scratch_dir();
+    constexpr std::uint32_t kRate = 48000;
+    constexpr std::size_t kFrames = 96000;
+    const auto loud = dir / "dialnorm_ac3_loud.wav";
+    const auto quiet = dir / "dialnorm_ac3_quiet.wav";
+    REQUIRE(write_wav(loud, {make_tone(0.9, 220.0, kFrames, kRate)}, kRate));
+    REQUIRE(write_wav(quiet, {make_tone(0.5, 660.0, kFrames, kRate)}, kRate));
+
+    const auto out = dir / "dialnorm_ac3_multi.ac3";
+    const auto log = dir / "dialnorm_ac3_multi.log";
+    const auto rc = run_cli("encode \"" + loud.string() + "\" \"" + out.string() +
+                                "\" 192 stereo src=\"" + quiet.string() +
+                                "\" map=0.0:L,1.0:R dialnorm=auto",
+                            log);
+    const auto text = read_log(log);
+    INFO(text);
+    CHECK(rc == 0);
+    CHECK(fs::exists(out));
+    CHECK(text.find("not yet supported") == std::string::npos);
+    CHECK(reported_value(text, "dialnorm").has_value());
+}
+
+// Roadmap C4's other half: dual mono (1+1) dialnorm=auto looked implemented
+// already (measured_dialnorm_channel existed for Ch2), but Ch1's own
+// measurement went through measured_dialnorm() with the target's acmod
+// (kDualMono) instead - which runs a normal multi-channel BS.1770 pass
+// across BOTH wav channels at once, silently reporting the combined loudness
+// of Ch1+Ch2 as if they were a coherent stereo pair, rather than Ch1's own
+// channel alone (§E1.3: the two programmes are unrelated and share no
+// downmix). Ch1 and Ch2 are given comparable levels here specifically so
+// that bug - a summed-power measurement roughly 3 dB louder than Ch1 alone -
+// would read as a clearly different, clearly wrong dialnorm rather than a
+// rounding nuance.
+TEST_CASE("dialnorm=auto for 1+1 dual mono measures each programme's own channel, "
+          "single-file path",
+          "[cli][dialnorm][dual-mono]") {
+    const auto dir = scratch_dir();
+    constexpr std::uint32_t kRate = 48000;
+    constexpr std::size_t kFrames = 96000;
+
+    const auto ch1_tone = make_tone(0.5, 220.0, kFrames, kRate);
+    const auto ch2_tone = make_tone(0.5, 660.0, kFrames, kRate);
+
+    const auto ch1_solo_path = dir / "dm_ch1_solo.wav";
+    REQUIRE(write_wav(ch1_solo_path, {ch1_tone}, kRate));
+    const auto ch1_log = dir / "dm_ch1_solo.log";
+    REQUIRE(run_cli("eac3-encode \"" + ch1_solo_path.string() + "\" \"" +
+                        (dir / "dm_ch1_solo.ec3").string() + "\" 96 none mono dialnorm=auto",
+                    ch1_log) == 0);
+    const auto ch1_solo = reported_value(read_log(ch1_log), "dialnorm");
+    REQUIRE(ch1_solo.has_value());
+
+    const auto ch2_solo_path = dir / "dm_ch2_solo.wav";
+    REQUIRE(write_wav(ch2_solo_path, {ch2_tone}, kRate));
+    const auto ch2_log = dir / "dm_ch2_solo.log";
+    REQUIRE(run_cli("eac3-encode \"" + ch2_solo_path.string() + "\" \"" +
+                        (dir / "dm_ch2_solo.ec3").string() + "\" 96 none mono dialnorm=auto",
+                    ch2_log) == 0);
+    const auto ch2_solo = reported_value(read_log(ch2_log), "dialnorm");
+    REQUIRE(ch2_solo.has_value());
+
+    const auto dualmono_path = dir / "dm_dualmono.wav";
+    REQUIRE(write_wav(dualmono_path, {ch1_tone, ch2_tone}, kRate));
+
+    SECTION("eac3-encode") {
+        const auto out = dir / "dm_eac3.ec3";
+        const auto log = dir / "dm_eac3.log";
+        const auto rc = run_cli("eac3-encode \"" + dualmono_path.string() + "\" \"" +
+                                    out.string() +
+                                    "\" 192 none 1+1 dialnorm=auto dialnorm2=auto",
+                                log);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(rc == 0);
+        CHECK(fs::exists(out));
+        const auto ch1 = reported_value(text, "dialnorm");
+        const auto ch2 = reported_value(text, "dialnorm2");
+        REQUIRE(ch1.has_value());
+        REQUIRE(ch2.has_value());
+        CHECK(*ch1 == *ch1_solo);
+        CHECK(*ch2 == *ch2_solo);
+    }
+
+    SECTION("encode (plain AC-3)") {
+        const auto out = dir / "dm_ac3.ac3";
+        const auto log = dir / "dm_ac3.log";
+        const auto rc = run_cli("encode \"" + dualmono_path.string() + "\" \"" + out.string() +
+                                    "\" 192 1+1 dialnorm=auto dialnorm2=auto",
+                                log);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(rc == 0);
+        CHECK(fs::exists(out));
+        const auto ch1 = reported_value(text, "dialnorm");
+        const auto ch2 = reported_value(text, "dialnorm2");
+        REQUIRE(ch1.has_value());
+        REQUIRE(ch2.has_value());
+        CHECK(*ch1 == *ch1_solo);
+        CHECK(*ch2 == *ch2_solo);
+    }
 }
