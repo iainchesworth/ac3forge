@@ -145,19 +145,24 @@ Check for a clean post-build lint (no "not used"/"missing usage" warnings) and t
 
 ## What gets published
 
-One package per OS, not one per compiler-toolchain leg: `_build.yml`'s matrix builds and tests
-both Windows toolchains (MSVC, clang-cl) and both Linux toolchains (GCC, Clang) on every push,
-but only the leg marked `release_package: true` per OS actually packages for a release -
-windows-msvc, linux-gcc and macos-llvm. windows-llvm and linux-llvm still catch
-compiler-specific bugs in full, every push; they just don't produce a second, redundantly
-canonical zip that a downloader would have no way to choose between.
+One package per OS **and architecture**, not one per compiler-toolchain leg: `_build.yml`'s matrix
+builds and tests both Windows toolchains (MSVC, clang-cl) and both Linux toolchains (GCC, Clang) - on
+both x64 and arm64 for Linux - on every push, but only the leg marked `release_package: true` per
+OS/arch actually packages for a release - windows-msvc, linux-gcc, linux-gcc-arm64 and macos-llvm.
+windows-llvm, linux-llvm and linux-llvm-arm64 still catch compiler-specific bugs in full, every push;
+they just don't produce a second, redundantly canonical archive that a downloader would have no way
+to choose between. `cmake/Packaging.cmake` arch-qualifies the Linux archive filename
+(`ac3forge-X.Y.Z-Linux-x86_64.tar.gz` vs. `...-Linux-aarch64.tar.gz`) specifically so the two Linux
+architectures' TGZ/ZIP downloads never collide; DEB/RPM already carry their arch in their own
+filenames.
 
-| Platform | Leg | End-user packages | Library (`ac3forge-dev-*`) |
-|---|---|---|---|
-| Windows | windows-msvc | `.zip`, `.exe` (NSIS, if `makensis` is on the runner) | `.zip` |
-| Linux | linux-gcc | `.tar.gz`, `.deb`, `.rpm` | `.tar.gz`, plus real system packages: `libac3forge0`/`ac3forge-devel` (RPM) and `libac3forge0`/`libac3forge-dev` (DEB) |
-| macOS | macos-llvm | `.tar.gz`, `.dmg` | `.tar.gz` |
-| Android (Shield) | build-android | `.apk` | none - Shield links `ac3::forge`/`ac3::audio` in-tree, it isn't a `find_package(ac3forge)` consumer |
+| Platform | Arch | Leg | End-user packages | Library (`ac3forge-dev-*`) |
+|---|---|---|---|---|
+| Windows | x64 | windows-msvc | `.zip`, `.exe` (NSIS, if `makensis` is on the runner) | `.zip` |
+| Linux | x86_64 | linux-gcc | `.tar.gz`, `.deb`, `.rpm` | `.tar.gz`, plus real system packages: `libac3forge0`/`ac3forge-devel` (RPM) and `libac3forge0`/`libac3forge-dev` (DEB) |
+| Linux | aarch64 (Raspberry Pi 4/5 and other arm64 targets) | linux-gcc-arm64 | `.tar.gz`, `.deb`, `.rpm` | same split as x86_64, above |
+| macOS | arm64 (Apple Silicon) | macos-llvm | `.tar.gz`, `.dmg` | `.tar.gz` |
+| Android (Shield) | arm64 (NDK) | build-android | `.apk` | none - Shield links `ac3::forge`/`ac3::audio` in-tree, it isn't a `find_package(ac3forge)` consumer |
 
 The end-user packages are `ac3cli`/`ac3gui` (CPack's `runtime` component) on desktop, or the
 Shield app's `.apk` on Android. The library packages are a second, independent download for a
@@ -196,7 +201,7 @@ which sideloading itself doesn't require. (Not to be confused with **object sign
 Atmos authenticity tag, provisioned separately via the `ATMOS_SIGNING_KEY` secret and
 unrelated to APK code-signing; see "Provisioning the Android object-signing key" below.)
 
-No leg is `experimental: true` any more (see `ci.yml`'s status table), so all four package
+No leg is `experimental: true` any more (see `ci.yml`'s status table), so all five package
 for real rather than best-effort - a packaging failure on any of them blocks the release the
 same as a build or test failure would. Every package - end-user or library - gets a `.sha512`
 (`CPACK_PACKAGE_CHECKSUM` in `cmake/Packaging.cmake`), an aggregate `SHA512SUMS` manifest,

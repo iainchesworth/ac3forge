@@ -35,6 +35,22 @@ PACKAGES=(
     # addresses back into file:line - without it a report is a stack of raw
     # addresses. It ships in llvm-${LLVM_VERSION}, not clang-${LLVM_VERSION}.
     "llvm-${LLVM_VERSION}"
+    # clang-scan-deps, which CMake's Ninja generator shells out to for every
+    # C++20/23 TU's P1689 module-dependency scan - not just files that
+    # actually use `import`/`export`, any C++20+ source. Without it every
+    # configure-time try_compile and every real compile fails with
+    # "CMAKE_CXX_COMPILER_CLANG_SCAN_DEPS-NOTFOUND: not found", which reads as
+    # a broken Qt6/Threads/ALSA detection (find_package's own try_compiles
+    # fail the same way) rather than what it actually is - found for real
+    # configuring config-linux-llvm-arm64 on a Raspberry Pi 4B (Debian 13
+    # "Trixie"), where clang-scan-deps-19 turned out to live in
+    # clang-tools-19, a package neither clang-${LLVM_VERSION} nor
+    # llvm-${LLVM_VERSION} pulls in as a dependency. Added unconditionally
+    # here rather than only for the arm64 legs: every Linux LLVM leg this
+    # script serves configures the same way, so this is a real gap regardless
+    # of which one happens to be exercising it on a given distro's package
+    # split.
+    "clang-tools-${LLVM_VERSION}"
 )
 
 # Ubuntu 26.04 LTS (resolute) and newer ship this exact set in the 'universe'
