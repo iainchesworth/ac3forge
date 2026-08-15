@@ -106,6 +106,43 @@ required step, not optional polish:
 4. Verify the release page has all expected artifacts, and that the curated notes render and
    read well.
 
+## vcpkg port
+
+A vcpkg port for `ac3forge` is staged in-tree at
+[`packaging/vcpkg-port/ac3forge/`](../packaging/vcpkg-port/ac3forge/) (`vcpkg.json`,
+`portfile.cmake`, `usage`) and is pending submission to the curated `microsoft/vcpkg` registry -
+see [docs/library/index.md](library/index.md) for how a consumer uses it either
+way. It installs the library only (`ac3::forge`, plus `matroska::matroska` behind the `matroska`
+feature - see `cmake/InstallLibrary.cmake`'s `AC3FORGE_BUILD_MATROSKA`/
+`AC3FORGE_INSTALL_BOTH_LINKAGES` options), never the CLI/GUI/tests/examples/fuzzers.
+
+**Every release tag, once the port has been merged upstream**, needs a follow-up PR to
+`microsoft/vcpkg` - the curated registry has no mechanism to track a moving `main`, so a new
+`ac3forge` release is invisible to `vcpkg install` until this happens:
+
+1. Bump `packaging/vcpkg-port/ac3forge/vcpkg.json`'s `version-semver` to the new tag, and
+   `portfile.cmake`'s `vcpkg_from_github()` `REF`/`SHA512` to match (`sha512sum` the tag's
+   release tarball, or let a first `vcpkg install` attempt report the correct hash).
+2. Validate locally first (see below) before touching the upstream fork - a portfile change
+   that fails vcpkg's own CI is slower to iterate on there than here.
+3. Copy the updated port files into the `microsoft/vcpkg` fork's `ports/ac3forge/`, run
+   `vcpkg x-add-version ac3forge` to regenerate `versions/baseline.json`/
+   `versions/a-/ac3forge.json` (don't hand-edit these), and open the version-bump PR.
+
+**Validating the port locally**, any time `packaging/vcpkg-port/ac3forge/` or the CMake options
+it drives change (whether or not a release is involved):
+
+```bash
+vcpkg install ac3forge --classic --overlay-ports=packaging/vcpkg-port --triplet x64-windows
+vcpkg install ac3forge --classic --overlay-ports=packaging/vcpkg-port --triplet x64-windows-static
+vcpkg install ac3forge[core] --classic --overlay-ports=packaging/vcpkg-port --triplet x64-windows
+```
+
+`--classic` is required from inside this repo - the root `vcpkg.json` (manifest mode, for this
+project's *own* build-time dependencies) would otherwise shadow the package-name argument.
+Check for a clean post-build lint (no "not used"/"missing usage" warnings) and that
+`ac3forge[core]` installs without `matroska::matroska` at all, not just unlinked.
+
 ## What gets published
 
 One package per OS, not one per compiler-toolchain leg: `_build.yml`'s matrix builds and tests

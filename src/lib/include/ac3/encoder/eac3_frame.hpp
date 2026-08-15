@@ -318,6 +318,19 @@ class AC3FORGE_EXPORT FrameEncoder {
     std::array<double, 512> windowed_scratch_{};
     std::array<double, 128> half1_scratch_{};
     std::array<double, 128> half2_scratch_{};
+    // Enhanced-coupling reconstruction scratch for encode_frame's ecpl
+    // coordinate search and its spx-blend re-decode check (PREfast's C6262,
+    // alert #25) - both run once per (channel, block) and never concurrently
+    // with each other, so this one set covers both call sites the same way
+    // the MDCT scratch above covers every (channel, block) MDCT call.
+    std::array<double, 256> ecpl_zr_scratch_{};
+    std::array<double, 256> ecpl_zi_scratch_{};
+    std::array<double, 256> ecpl_baseline_a_scratch_{};
+    std::array<double, 256> ecpl_baseline_b_scratch_{};
+    std::array<double, 256> ecpl_prev_scratch_{};
+    std::array<double, 256> ecpl_curr_scratch_{};
+    std::array<double, 256> ecpl_next_scratch_{};
+    std::array<double, 256> ecpl_recon_scratch_{};
     // The previous frame's converged SNR-offset composite, warm-starting the
     // next frame's search (src/lib/src/encoder/snr_search.hpp). Performance
     // state only: it changes how fast the search converges, never which

@@ -570,7 +570,12 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
     // syncframe this call was not given: a real, documented approximation,
     // not a bug - every interior block reconstructs with its true
     // neighbors.
-    std::array<std::array<double, 256>, kBlocksPerFrame> ecpl_all_coeffs{};
+    // Heap-allocated like aht_coeffs above (PREfast's C6262, alert #63): a
+    // fixed std::array here was the single largest contributor to
+    // decode_substream's oversized stack frame, and - same as aht_coeffs -
+    // it's produced once per call, not per (block, channel) iteration, so
+    // there's no hot-loop allocation cost to heap-allocating it.
+    std::vector<std::array<double, 256>> ecpl_all_coeffs(static_cast<std::size_t>(kBlocksPerFrame));
     std::array<bool, kBlocksPerFrame> ecpl_active{};
 
     // Everything the second pass below (spx synthesis, rematrixing, IMDCT
@@ -1489,8 +1494,8 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
                 (blk + 1 < nblks && ecpl_active[static_cast<std::size_t>(blk + 1)])
                     ? ecpl_all_coeffs[static_cast<std::size_t>(blk + 1)]
                     : kZero;
-            std::array<double, 256> zr{};
-            std::array<double, 256> zi{};
+            auto& zr = ecpl_spectrum_real_;
+            auto& zi = ecpl_spectrum_imag_;
             eac3::ecpl_channel_spectrum(
                 prev, ecpl_all_coeffs[static_cast<std::size_t>(blk)], next, zr, zi);
 
@@ -1608,7 +1613,7 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
 
         for (int ch = 0; ch < nchans; ++ch) {
             const auto index = static_cast<std::size_t>(ch);
-            std::array<double, 512> x{};
+            auto& x = imdct_scratch_;
             if (ch < nfchans && tail.blksw[static_cast<std::size_t>(ch)]) {
                 imdct256_pair_windowed(coeffs[index], x);
             } else {

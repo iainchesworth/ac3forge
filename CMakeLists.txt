@@ -72,6 +72,22 @@ option(AC3FORGE_BUILD_EXAMPLES "Build the documented library examples" ON)
 # directly - it configures a dedicated build/fuzz directory with the right
 # compiler.
 option(AC3FORGE_BUILD_FUZZERS "Build libFuzzer harnesses (Clang only; see fuzz/)" OFF)
+# Every other library component (matroska::matroska today; a future mp4:: would follow the
+# same shape) gets its own AC3FORGE_BUILD_<NAME> option, defaulting ON so nothing changes for
+# today's direct/CPack builds. This is what lets a vcpkg port expose the component as an
+# opt-in feature - see cmake/InstallLibrary.cmake's matching install()/export() gate.
+option(AC3FORGE_BUILD_MATROSKA "Build the standalone Matroska container writer (src/matroska)" ON)
+
+# src/cli, src/gui, tests/ and examples/ all link matroska::matroska unconditionally - none of
+# them are written to cope with it being absent. AC3FORGE_BUILD_MATROSKA=OFF only makes sense
+# with all four also OFF (this is the shape a vcpkg build without the "matroska" feature
+# actually uses); catch the unsupported combination here with a clear message rather than
+# letting it fail deep inside one of those subdirectories with a "target not found" error.
+if(NOT AC3FORGE_BUILD_MATROSKA AND (AC3FORGE_BUILD_CLI OR AC3FORGE_BUILD_GUI OR AC3FORGE_BUILD_TESTS OR AC3FORGE_BUILD_EXAMPLES))
+    message(FATAL_ERROR "AC3FORGE_BUILD_MATROSKA=OFF requires AC3FORGE_BUILD_CLI, "
+        "AC3FORGE_BUILD_GUI, AC3FORGE_BUILD_TESTS and AC3FORGE_BUILD_EXAMPLES to all be OFF too - "
+        "they all link matroska::matroska unconditionally.")
+endif()
 
 # enable_testing() has to run before ANY add_subdirectory() that might contain
 # an add_test() call, not merely before tests/ itself - CTest silently drops
@@ -105,8 +121,12 @@ add_subdirectory(src/audio)
 add_subdirectory(src/signing)
 
 # A standalone container writer, kept apart from the codec on purpose: it
-# depends on nothing of ac3::forge and knows nothing about AC-3.
-add_subdirectory(src/matroska)
+# depends on nothing of ac3::forge and knows nothing about AC-3. Gated by
+# AC3FORGE_BUILD_MATROSKA (default ON) so it can be opted out of - a vcpkg
+# port maps this straight to its own "matroska" feature.
+if(AC3FORGE_BUILD_MATROSKA)
+    add_subdirectory(src/matroska)
+endif()
 
 # install()/find_package(ac3forge) support for ac3::forge and
 # matroska::matroska - after both add_subdirectory() calls above (needs
