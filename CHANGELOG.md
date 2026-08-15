@@ -49,6 +49,20 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   output path, the usual per-run status text (frame count, routing, per-channel levels) prints to
   stderr instead of stdout, so it never lands inside the piped stream.
 
+### Raspberry Pi (arm64 Linux) — new platform
+
+- **Raspberry Pi 4/5 support**: a new `arm64-linux-{gcc,llvm}` vcpkg triplet pair and matching
+  `config-linux-{gcc,llvm}-arm64[-debug]` presets, backed by two new required CI legs on real ARM
+  hardware (GitHub's `ubuntu-24.04-arm` runner) and validated for real over SSH against a
+  Raspberry Pi 4B — full build, 440/440 tests, and the real-time encode gate all pass on both
+  compilers, and `cpack` produces a correctly arm64-labeled `.deb`. No platform-tree code changed:
+  Raspberry Pi OS hits the exact same `if(LINUX)`/ALSA/HDMI passthrough path any x86_64 Debian
+  box does. Pi 3 is explicitly not a supported target (real-time budget risk on its weaker CPU).
+- Two real, previously-latent bugs this validation found and fixed along the way: a GCC 14
+  `-Wnull-dereference` false positive at `-O2`/`-O3` inside libstdc++'s own headers, and a missing
+  `clang-tools` toolchain dependency (`clang-scan-deps`) that broke every `find_package` check
+  under Clang's Ninja module scan.
+
 ## [0.5.0-beta.1] - 2026-08-15
 
 Fourth tagged release. The main change is a fast-transform performance initiative: an opt-in
