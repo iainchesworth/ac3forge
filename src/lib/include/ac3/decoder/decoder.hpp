@@ -245,6 +245,17 @@ class AC3FORGE_EXPORT Eac3Decoder {
     // the same identity - that would silently splice two different points
     // in time into one access unit.
     std::map<int, std::deque<DecodedSubstream>> pending_au_parts_;
+
+    // decode_substream's own per-block IMDCT/enhanced-coupling scratch
+    // (PREfast's C6262, alert #63): reused across every (block, channel)
+    // iteration of a call instead of stack-declared per iteration, the same
+    // reasoning as FrameEncoder's MDCT scratch members. Each is fully
+    // overwritten before being read, so nothing needs to persist beyond one
+    // decode_substream call - unlike delay_ above, these don't need to be
+    // keyed by substream identity.
+    std::array<double, 512> imdct_scratch_{};
+    std::array<double, 256> ecpl_spectrum_real_{};
+    std::array<double, 256> ecpl_spectrum_imag_{};
 };
 
 // Split a raw elementary stream into syncframes by sync word and declared

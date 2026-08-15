@@ -4,6 +4,31 @@
 # cmake/InstallLibrary.cmake for why they're separate EXPORT sets sharing
 # this one Config file rather than a single combined export.
 include("${CMAKE_CURRENT_LIST_DIR}/ac3forgeTargets.cmake")
-include("${CMAKE_CURRENT_LIST_DIR}/matroskaTargets.cmake")
+
+# matroska::matroska is an optional component (AC3FORGE_BUILD_MATROSKA) - its
+# Targets file only exists when that component was actually installed, e.g.
+# a vcpkg install() built without the "matroska" feature. Same shape applies
+# to any future optional component's own *Targets.cmake.
+if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/matroskaTargets.cmake")
+    include("${CMAKE_CURRENT_LIST_DIR}/matroskaTargets.cmake")
+endif()
+
+# A package built with the default AC3FORGE_INSTALL_BOTH_LINKAGES=ON (the direct-build/CPack
+# SDK) has both ac3::forge_static and ac3::forge_shared and deliberately gets no bare ac3::forge
+# here - there's no ambient BUILD_SHARED_LIBS to resolve against, so a consumer must pick one
+# explicitly (see docs/library/index.md). A package built with that option OFF (a vcpkg install,
+# which only ever installs one linkage per triplet - see cmake/InstallLibrary.cmake) has no such
+# ambiguity: recreate the same bare-name convenience the in-tree build gets, for whichever one
+# variant is actually present. Same treatment for matroska::matroska.
+if(TARGET ac3::forge_shared AND NOT TARGET ac3::forge_static)
+    add_library(ac3::forge ALIAS ac3::forge_shared)
+elseif(TARGET ac3::forge_static AND NOT TARGET ac3::forge_shared)
+    add_library(ac3::forge ALIAS ac3::forge_static)
+endif()
+if(TARGET matroska::matroska_shared AND NOT TARGET matroska::matroska_static)
+    add_library(matroska::matroska ALIAS matroska::matroska_shared)
+elseif(TARGET matroska::matroska_static AND NOT TARGET matroska::matroska_shared)
+    add_library(matroska::matroska ALIAS matroska::matroska_static)
+endif()
 
 check_required_components(ac3forge)

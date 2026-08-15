@@ -70,6 +70,27 @@ std::string read_log(const fs::path& log) {
     return {std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{}};
 }
 
+// Runs `ac3cli <args>` with stdin redirected from `in_file` and stdout
+// redirected to `out_file`, for exercising the "-" stdin/stdout convention
+// (main.cpp's is_stdio_path()) the same way a real shell pipeline would.
+// stderr goes to `log`, same diagnostic convention as run_cli above but kept
+// separate from stdout, which here is the command's real binary output, not
+// somewhere to also stash messages.
+int run_cli_stdio(const std::string& args, const fs::path& in_file, const fs::path& out_file,
+                  const fs::path& log) {
+    const std::string command = "\"" + std::string(AC3CLI_EXE) + "\" " + args + " < \"" +
+                                in_file.string() + "\" > \"" + out_file.string() + "\" 2> \"" +
+                                log.string() + "\"";
+#ifdef _WIN32
+    // Same double-quote-wrapping workaround run_cli uses above, and for the
+    // same reason - see its comment.
+    const std::string wrapped = "\"" + command + "\"";
+    return std::system(wrapped.c_str());
+#else
+    return std::system(command.c_str());
+#endif
+}
+
 // A short, genuinely non-silent multichannel WAV - per this project's own
 // testing convention (see memory: "Codec validation needs real audio"),
 // silence gives false passes a real tone does not: a silent leading region
@@ -560,4 +581,103 @@ TEST_CASE("bare heavy2 token turns on Ch2 heavy compression on a 1+1 encode",
     const auto heavy2_log = read_log(dir / "heavy2_token_heavy2_decode.log");
     INFO(heavy2_log);
     CHECK(heavy2_log.find("compr2 present") != std::string::npos);
+}
+
+// The "-" stdin/stdout convention (roadmap item A4): 'ac3cli encode - -'
+// reads the WAV from stdin and writes AC-3 to stdout instead of opening
+// files by those literal names, and 'decode - -' the same in reverse - see
+// is_stdio_path() in main.cpp. This is also the binary-safety proof
+// CONTRIBUTING's validation discipline asks for: on Windows, std::cin/
+// std::cout default to TEXT mode, which would either corrupt the compressed
+// stream (0x0A -> 0x0D 0x0A) or truncate it early (a stray 0x1A read back as
+// EOF) the moment either byte value appears - and in four frames of a real,
+// non-silent 5.1 tone at 448 kbps, both values appear many times over. So a
+// missing or wrong platform/stdio_binary.hpp call shows up here either as a
+// decode failure or as a byte mismatch against the file-based reference,
+// not as a subtle level difference.
+TEST_CASE("encode/decode round trip through '-' matches the file-based one", "[cli][stdio]") {
+    const auto dir = scratch_dir();
+    constexpr std::uint32_t kSampleRate = 48000;
+    constexpr std::size_t kFrames = 4 * static_cast<std::size_t>(ac3::kSamplesPerFrame);
+    const auto channels = make_tone_channels(6, kFrames, kSampleRate);
+    const auto wav_path = dir / "stdio_roundtrip_in.wav";
+    REQUIRE(ac3::io::write_wav_f32(wav_path.string(), channels, kSampleRate).has_value());
+
+    // Reference: the classic, all-file round trip.
+    const auto file_ac3 = dir / "stdio_roundtrip_file.ac3";
+    const auto file_wav = dir / "stdio_roundtrip_file_decoded.wav";
+    REQUIRE(run_cli("encode \"" + wav_path.string() + "\" \"" + file_ac3.string() +
+                        "\" 448 couple",
+                    dir / "stdio_roundtrip_file_encode.log") == 0);
+    REQUIRE(run_cli("decode \"" + file_ac3.string() + "\" \"" + file_wav.string() + "\"",
+                    dir / "stdio_roundtrip_file_decode.log") == 0);
+    const auto file_decoded = ac3::io::read_wav(file_wav.string());
+    REQUIRE(file_decoded.has_value());
+
+    // Same round trip, but '-' stands in for both paths at each step: the
+    // WAV goes in over stdin and the AC-3 comes out over stdout, then that
+    // AC-3 goes back in over stdin and the decoded WAV comes out over
+    // stdout.
+    const auto stdio_ac3 = dir / "stdio_roundtrip_stdio.ac3";
+    const auto stdio_wav = dir / "stdio_roundtrip_stdio_decoded.wav";
+    const auto encode_rc = run_cli_stdio("encode - - 448 couple", wav_path, stdio_ac3,
+                                         dir / "stdio_roundtrip_encode.log");
+    INFO(read_log(dir / "stdio_roundtrip_encode.log"));
+    REQUIRE(encode_rc == 0);
+    const auto decode_rc =
+        run_cli_stdio("decode - -", stdio_ac3, stdio_wav, dir / "stdio_roundtrip_decode.log");
+    INFO(read_log(dir / "stdio_roundtrip_decode.log"));
+    REQUIRE(decode_rc == 0);
+
+    // The elementary AC-3 stream must be byte-identical either way - "-" is
+    // a routing change at the argument-parsing layer, not a different
+    // encode path. Compared as a bool first, not the vectors themselves -
+    // see the atmos-encode test above for why (Catch2 stringifying a
+    // multi-KB mismatch for the diff message is slow and was observed to
+    // crash outright).
+    std::ifstream file_ac3_in{file_ac3, std::ios::binary};
+    std::ifstream stdio_ac3_in{stdio_ac3, std::ios::binary};
+    const std::vector<char> file_ac3_bytes{std::istreambuf_iterator<char>{file_ac3_in},
+                                           std::istreambuf_iterator<char>{}};
+    const std::vector<char> stdio_ac3_bytes{std::istreambuf_iterator<char>{stdio_ac3_in},
+                                            std::istreambuf_iterator<char>{}};
+    REQUIRE_FALSE(file_ac3_bytes.empty());
+    const bool ac3_matches = file_ac3_bytes == stdio_ac3_bytes;
+    CHECK(ac3_matches);
+
+    // And the decoded PCM must match too, sample for sample.
+    const auto stdio_decoded = ac3::io::read_wav(stdio_wav.string());
+    REQUIRE(stdio_decoded.has_value());
+    REQUIRE(stdio_decoded->channels.size() == file_decoded->channels.size());
+    CHECK(stdio_decoded->sample_rate == file_decoded->sample_rate);
+    const bool pcm_matches = stdio_decoded->channels == file_decoded->channels;
+    CHECK(pcm_matches);
+}
+
+// eac3-encode and atmos-encode share run_encode/run_decode's read_wav_arg/
+// write_frames helpers, so "-" reaches them too (see main.cpp's kCommands
+// table and this task's own scope note) - covered separately from the
+// encode/decode round trip above since each has its own positional argument
+// shape (tools/layout for eac3-encode, objects for atmos-encode).
+TEST_CASE("eac3-encode and atmos-encode accept '-' for input and output", "[cli][stdio]") {
+    const auto dir = scratch_dir();
+    constexpr std::uint32_t kSampleRate = 48000;
+    constexpr std::size_t kFrames = 3 * static_cast<std::size_t>(ac3::kSamplesPerFrame);
+    const auto channels = make_tone_channels(6, kFrames, kSampleRate);
+    const auto wav_path = dir / "stdio_eac3_atmos_in.wav";
+    REQUIRE(ac3::io::write_wav_f32(wav_path.string(), channels, kSampleRate).has_value());
+
+    const auto eac3_out = dir / "stdio_eac3_out.ec3";
+    const auto eac3_rc = run_cli_stdio("eac3-encode - - 384 cpl 51", wav_path, eac3_out,
+                                       dir / "stdio_eac3.log");
+    INFO(read_log(dir / "stdio_eac3.log"));
+    CHECK(eac3_rc == 0);
+    CHECK(fs::file_size(eac3_out) > 0);
+
+    const auto atmos_out = dir / "stdio_atmos_out.ec3";
+    const auto atmos_rc = run_cli_stdio("atmos-encode - - 448 6", wav_path, atmos_out,
+                                        dir / "stdio_atmos.log");
+    INFO(read_log(dir / "stdio_atmos.log"));
+    CHECK(atmos_rc == 0);
+    CHECK(fs::file_size(atmos_out) > 0);
 }

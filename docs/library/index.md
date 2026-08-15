@@ -25,6 +25,27 @@ exports both variants explicitly rather than a bare `ac3::forge` — pick the on
 Neither the package nor the codec itself has any dependency of its own to find: no
 `find_dependency()` calls, no system or third-party library, static or shared.
 
+**vcpkg.** A port lives in this repo at
+[`packaging/vcpkg-port/ac3forge/`](../../packaging/vcpkg-port/ac3forge/) and is pending
+submission to the curated `microsoft/vcpkg` registry (see
+[docs/releasing.md](../releasing.md#vcpkg-port)) — until that lands, point vcpkg at it directly
+with `--overlay-ports`/`VCPKG_OVERLAY_PORTS` (works from any clone of this repo, no waiting on
+the upstream PR):
+
+```bash
+vcpkg install ac3forge --overlay-ports=/path/to/ac3forge/packaging/vcpkg-port
+```
+
+```cmake
+find_package(ac3forge CONFIG REQUIRED)
+target_link_libraries(your_target PRIVATE ac3::forge)
+```
+
+The Matroska container writer is the port's `matroska` feature, on by default (`matroska::matroska`
+becomes available); leave it out with `vcpkg install ac3forge[core]` if you only want the codec.
+Once merged into `microsoft/vcpkg`, the same two snippets work with a plain
+`vcpkg install ac3forge` — no `--overlay-ports` needed.
+
 Live audio — capture, monitor playback, IEC 61937 passthrough — is `ac3::audio`
 (`src/audio/`), a separate target `ac3cli`/`ac3gui` link alongside `ac3::forge` for their own
 live-audio commands. It is **not** part of the distributed package: it isn't installed, isn't
