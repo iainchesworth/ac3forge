@@ -143,24 +143,31 @@ TEST_CASE("fast mdct512_forward agrees with the direct form on real audio", "[md
     }
 }
 
-TEST_CASE("mdct256_forward_first/second's fast flag has no effect yet", "[mdct][fast]") {
-    // Neither short transform has an accelerated path (see mdct.hpp for why:
-    // alpha = -1 is a genuinely different transform from alpha = 0's, not
-    // "the same formula at a different NLen"; alpha = +1 is a sine-kernel
-    // sum). `fast=true` and `fast=false` run the exact same code for both,
-    // so this checks bit-identical output, not merely close.
+TEST_CASE("fast mdct256_forward_first/second agree with their direct forms",
+         "[mdct][fast]") {
+    // Each short transform's fold is verified against ITS OWN direct-form
+    // table, separately - the lesson behind this file's whole existence: an
+    // earlier attempt reused the alpha = 0 fold for alpha = -1 on the
+    // reasoning that "phi_k(-1) = 0 makes them the same formula", and a
+    // numerical check exactly like this one is what caught the ~1.85
+    // relative error before it reached a bitstream. alpha = -1's fold is
+    // the DCT-IV of the antisymmetric half-fold; alpha = +1's reaches the
+    // same core through the DST-IV reversal identity - two different
+    // derivations, each of which must independently survive this bound.
     const auto check = [](const std::array<double, 512>& input) {
         const auto direct = forward256_pair(input, false);
         const auto fast = forward256_pair(input, true);
-        for (std::size_t i = 0; i < direct.first.size(); ++i) {
-            CHECK(fast.first[i] == direct.first[i]);
-        }
-        for (std::size_t i = 0; i < direct.second.size(); ++i) {
-            CHECK(fast.second[i] == direct.second[i]);
-        }
+        CHECK(max_rel_error(fast.first, direct.first) < kFastTolerance);
+        CHECK(max_rel_error(fast.second, direct.second) < kFastTolerance);
     };
     check(ac3::golden::kGoldenSineInput);
     check(ac3::golden::kGoldenRandomInput);
-    check(random_block(0x5ec00002U));
-    check(tone_block(1));
+    for (std::uint32_t seed = 0; seed < 8; ++seed) {
+        CAPTURE(seed);
+        check(random_block(0x5ec00000U + seed));
+    }
+    for (int block = 0; block < 6; ++block) {
+        CAPTURE(block);
+        check(tone_block(block));
+    }
 }

@@ -179,32 +179,34 @@ void mdct_forward_core(std::span<const double> windowed, const ForwardCosTable<N
 // mdct512_forward's own doc comment and EncoderConfig::fast_mdct /
 // eac3::FrameConfig::fast_mdct) ---------------------------------------------
 //
-// Long transform (alpha = 0) ONLY. The direct-form phase is
+// All three transforms now run fast paths, each with ITS OWN fold - a
+// distinction that matters because the direct-form phase is
 // theta_k(n) + phi_k(alpha), phi_k(alpha) = (pi/4)(2k+1)(1+alpha) - a shift
 // that depends on k but never n - and phi_k(0) = (pi/4)(2k+1) is exactly the
-// "+ N/4" term folded into the standard MDCT formula this fold computes
+// "+ N/4" term folded into the standard MDCT formula the LONG fold computes
 // (X[k] = (-2/N) sum x[n] cos(2pi/N (n+1/2+N/4)(k+1/2))). That term is NOT
 // zero, so it does not vanish for alpha = 0 - a fact worth stating plainly
 // because an earlier version of this comment claimed alpha = -1 (phi_k = 0,
 // the BARE cosine sum with no N/4 shift at all) was "the same formula" as
 // alpha = 0 "just at a different NLen". It is not: phi_k(0) != phi_k(-1), so
 // X_0 and X_{-1} are two different transforms of the same data, and a
-// standalone numerical check (comparing this exact fold against a hand
-// reference implementing each phase separately) confirmed the fold below
-// reproduces X_0 to ~1e-15 but is off by 100%+ against X_{-1}. Both
-// mdct256_forward_first (alpha = -1) and mdct256_forward_second (alpha = +1)
-// therefore have NO accelerated path today - each needs its own fold,
-// independently derived and verified against ITS OWN direct-form table,
-// which is future work. Their `fast` parameters exist for interface
-// symmetry with mdct512_forward's but currently always take the direct
-// (already table-cached, already bit-exact) path.
+// standalone numerical check (comparing the long fold against a hand
+// reference implementing each phase separately) confirmed it reproduces
+// X_0 to ~1e-15 but is off by 100%+ against X_{-1}. The short transforms'
+// own folds (derived independently, each verified against ITS OWN
+// direct-form table - see their function comments below) both land on the
+// same scaled-DCT-IV core at M = 128: alpha = -1 is the DCT-IV of an
+// antisymmetric half-fold, and alpha = +1's DST-IV-shaped sum is the
+// DCT-IV of the reversed symmetric half-fold, via
+// DST4(w)[k] = (-1)^k DCT4(w_R)[k].
 //
-// The fold below computes DCT-IV(u) - u the length-M "folded" input built
-// from the four quarters of the windowed NLen-sample block - via one
-// P = M/2-point complex FFT, the standard trick for a real-input DCT-IV.
-// Verified 2026-08-14 against ForwardCosTable (this file's own direct-form
-// ground truth) to max relative error ~3e-12 on both random data and real
-// audio; see tests/test_mdct_fast.cpp, which asserts a 1e-10 bound.
+// Every fold computes scale * DCT-IV(u) - u a length-M "folded" input -
+// via one P = M/2-point complex FFT, the standard trick for a real-input
+// DCT-IV. The long fold was verified 2026-08-14 against ForwardCosTable
+// (this file's own direct-form ground truth) to max relative error ~3e-12
+// on both random data and real audio, the short folds 2026-08-15 the same
+// way; see tests/test_mdct_fast.cpp, which asserts a 1e-10 bound on all
+// three.
 
 // Everything angle-dependent in the fold below, computed once per NLen -
 // the same treatment Twiddles/InnerSumTable/ForwardCosTable give every
@@ -257,30 +259,18 @@ const FastMdctTables<NLen>& fast_mdct_tables() {
     return t;
 }
 
-// DCT-IV-via-FFT fast path for alpha in {0, -1} (see the block comment
-// above): NLen is the transform's own length (512 long, 256 first-short),
-// M = NLen/2, Q = NLen/4, P = M/2. Quarters of `windowed`: a = [0,Q),
-// b = [Q,2Q), c = [2Q,3Q), d = [3Q,4Q). u = concat(-c_R - d, a - b_R),
-// R = reversed, length M. z[m] = (u[2m] + i*u[M-1-2m]) * exp(-i*pi*m/M);
-// Z = FFT_P(z); w[k] = Z[k] * exp(-i*pi*(4k+1)/(4M)); X[2k] = Re(w[k]),
-// X[M-1-2k] = -Im(w[k]); coeffs = (-2/NLen) * X.
+// The scaled DCT-IV every fold below lands on: out[j] = scale * DCT4_M(u)[j]
+// for the length-M input `u`, via one P = M/2-point complex FFT - the
+// standard real-input DCT-IV factorization. z[m] = (u[2m] + i*u[M-1-2m]) *
+// exp(-i*pi*m/M); Z = FFT_P(z); w[k] = Z[k] * exp(-i*pi*(4k+1)/(4M));
+// DCT4[2k] = Re(w[k]), DCT4[M-1-2k] = -Im(w[k]). NLen names the TRANSFORM
+// whose tables carry this DCT-IV's twiddles (M = NLen/2), so the long
+// transform runs it at M = 256 and both short transforms at M = 128.
 template <int NLen>
-void mdct_forward_fast_core(std::span<const double> windowed, std::span<double> coeffs) {
-    constexpr std::size_t Q = static_cast<std::size_t>(NLen) / 4;
+void dct4_scaled(const FastMdctTables<NLen>& t, std::span<const double> u,
+                 std::span<double> out, double scale) {
     constexpr std::size_t M = FastMdctTables<NLen>::kM;
     constexpr std::size_t P = FastMdctTables<NLen>::kP;
-    const auto& t = fast_mdct_tables<NLen>();
-
-    std::array<double, M> u{};
-    for (std::size_t i = 0; i < Q; ++i) {
-        // -c_R[i] - d[i] = -windowed[3Q-1-i] - windowed[3Q+i]
-        u[i] = -windowed[3 * Q - 1 - i] - windowed[3 * Q + i];
-    }
-    for (std::size_t j = 0; j < Q; ++j) {
-        // a[j] - b_R[j] = windowed[j] - windowed[2Q-1-j]
-        u[Q + j] = windowed[j] - windowed[2 * Q - 1 - j];
-    }
-
     std::array<double, P> z_re{};
     std::array<double, P> z_im{};
     for (std::size_t m = 0; m < P; ++m) {
@@ -294,9 +284,31 @@ void mdct_forward_fast_core(std::span<const double> windowed, std::span<double> 
     for (std::size_t k = 0; k < P; ++k) {
         const double wr = z_re[k] * t.post_re[k] - z_im[k] * t.post_im[k];
         const double wi = z_re[k] * t.post_im[k] + z_im[k] * t.post_re[k];
-        coeffs[2 * k] = (-2.0 / NLen) * wr;
-        coeffs[M - 1 - 2 * k] = (-2.0 / NLen) * (-wi);
+        out[2 * k] = scale * wr;
+        out[M - 1 - 2 * k] = scale * (-wi);
     }
+}
+
+// DCT-IV-via-FFT fast path for the LONG transform (alpha = 0; see the block
+// comment above): M = NLen/2, Q = NLen/4. Quarters of `windowed`: a = [0,Q),
+// b = [Q,2Q), c = [2Q,3Q), d = [3Q,4Q). u = concat(-c_R - d, a - b_R),
+// R = reversed, length M; coeffs = (-2/NLen) * DCT4_M(u).
+template <int NLen>
+void mdct_forward_fast_core(std::span<const double> windowed, std::span<double> coeffs) {
+    constexpr std::size_t Q = static_cast<std::size_t>(NLen) / 4;
+    constexpr std::size_t M = FastMdctTables<NLen>::kM;
+    const auto& t = fast_mdct_tables<NLen>();
+
+    std::array<double, M> u{};
+    for (std::size_t i = 0; i < Q; ++i) {
+        // -c_R[i] - d[i] = -windowed[3Q-1-i] - windowed[3Q+i]
+        u[i] = -windowed[3 * Q - 1 - i] - windowed[3 * Q + i];
+    }
+    for (std::size_t j = 0; j < Q; ++j) {
+        // a[j] - b_R[j] = windowed[j] - windowed[2Q-1-j]
+        u[Q + j] = windowed[j] - windowed[2 * Q - 1 - j];
+    }
+    dct4_scaled<NLen>(t, u, coeffs, -2.0 / NLen);
 }
 
 }  // namespace
@@ -320,27 +332,46 @@ void mdct512_forward(std::span<const double, 512> windowed, std::span<double, 25
 void mdct256_forward_first(std::span<const double, 256> windowed, std::span<double, 128> coeffs,
                            bool fast) {
     // alpha = -1 is the BARE cosine sum (phi_k = 0, no "+N/4" phase shift at
-    // all) - a genuinely different transform from alpha = 0's, which
-    // mdct_forward_fast_core computes (see its own comment for why an
-    // earlier version of this file wrongly treated the two as identical).
-    // Its fast fold is independently-derived future work; `fast` is accepted
-    // for interface symmetry with mdct512_forward's but always takes the
-    // direct, already-cached, already-bit-exact path today.
-    (void)fast;
+    // all) - a genuinely different transform from alpha = 0's, which is why
+    // reusing the long transform's quarter-fold for it was a math error an
+    // earlier version of this file made (see mdct_forward_fast_core's
+    // comment). Its OWN fold, derived from its own phase: with M = 128, the
+    // kernel cos(pi(2n+1)(2k+1)/512) at n' = 255-n is the n-kernel negated
+    // (cos(pi(2k+1) - phi) = -cos(phi)), so the upper half folds into the
+    // lower with a minus sign and the transform is exactly the M-point
+    // DCT-IV of v[n] = x[n] - x[255-n], scaled by -2/256. Verified against
+    // this file's direct-form table (tests/test_mdct_fast.cpp).
+    if (fast) {
+        std::array<double, 128> v{};
+        for (std::size_t n = 0; n < 128; ++n) {
+            v[n] = windowed[n] - windowed[255 - n];
+        }
+        dct4_scaled<256>(fast_mdct_tables<256>(), v, coeffs, -2.0 / 256);
+        return;
+    }
     mdct_forward_core<256>(windowed, forward_cos_table_first(), coeffs);
 }
 
 void mdct256_forward_second(std::span<const double, 256> windowed, std::span<double, 128> coeffs,
                             bool fast) {
-    // alpha = +1's phase shift is a genuine sine-kernel (DST-IV-shaped) sum,
-    // not a phase-shifted copy of the cosine one mdct_forward_fast_core
-    // computes - see mdct_forward_fast_core's own comment. Its fast fold is
-    // future work, independently derived and verified the same way the
-    // long transform's was; `fast` is accepted here for interface symmetry
-    // with its two siblings (all three take the SAME parameter, so a caller
-    // does not need to know which transform actually accelerates) but
-    // always takes the direct, already-cached, already-bit-exact path today.
-    (void)fast;
+    // alpha = +1's phase shift turns the kernel into a sine (DST-IV-shaped)
+    // sum: cos(phi + (pi/2)(2k+1)) = (-1)^(k+1) sin(phi). Folding the upper
+    // half (sin(pi(2k+1) - psi) = +sin(psi), so it ADDS: w[n] = x[n] +
+    // x[255-n]) gives (-2/256)(-1)^(k+1) DST4_128(w) - and DST-IV is the
+    // DCT-IV of the REVERSED input with alternating signs, DST4(w)[k] =
+    // (-1)^k DCT4(w_R)[k], so the two (-1)-factors cancel to exactly
+    // (+2/256) * DCT4_128(w_R), w_R[n] = x[127-n] + x[128+n]. The "harder,
+    // DST-IV-shaped" transform the phase-4 scoping deferred thus lands on
+    // the SAME core as its siblings, one reversal away. Verified against
+    // this file's direct-form table (tests/test_mdct_fast.cpp).
+    if (fast) {
+        std::array<double, 128> w_r{};
+        for (std::size_t n = 0; n < 128; ++n) {
+            w_r[n] = windowed[127 - n] + windowed[128 + n];
+        }
+        dct4_scaled<256>(fast_mdct_tables<256>(), w_r, coeffs, 2.0 / 256);
+        return;
+    }
     mdct_forward_core<256>(windowed, forward_cos_table_second(), coeffs);
 }
 
