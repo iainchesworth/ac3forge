@@ -34,6 +34,56 @@ disk. It writes one audio track, one SimpleBlock per frame, clusters closed on a
 and Info with TimestampScale and Duration. No SeekHead, no Cues, no chapters, no tags — those
 matter for seeking in large files, not for playing back what this project produces.
 
+## Muxing: `mp4::mux`
+
+`mp4/mp4.hpp`, library `mp4::mp4`. Same shape as `matroska::matroska`: it links nothing from
+`ac3::forge` and takes frames as opaque bytes. The one place MP4 needs codec-specific bytes that
+Matroska's plain CodecID string does not is the sample entry's `dac3`/`dec3` configuration box
+(ETSI TS 102 366 Annex F) — so `mp4::AudioTrack::codec_config` carries that box's payload as
+opaque bytes too, built by `ac3::io::build_codec_config_box` (`ac3/io/dec3.hpp`) straight off
+whatever `ac3::io::scan` read out of the bitstream, fscod/bsid/bsmod/acmod/lfeon and, when the
+stream carries Dolby Atmos objects, the `flag_ec3_extension_type_a`/`complexity_index_type_a`
+extension (TS 103 420 §8.3.1/§8.3.2.2) alike.
+
+```cpp
+// One MP4 sample per access unit. For E-AC-3 an access unit is the
+// independent substream plus its dependents, which is exactly what scan
+// groups — a player must receive them together.
+std::vector<std::vector<std::byte>> frames;
+frames.reserve(scanned->access_units.size());
+for (const auto unit : scanned->access_units) {
+    frames.emplace_back(unit.begin(), unit.end());
+}
+
+const mp4::AudioTrack track{
+    .codec_id = std::string{scanned->kind == ac3::io::StreamKind::kAc3 ? mp4::kCodecAc3
+                                                                        : mp4::kCodecEac3},
+    .sample_rate = ac3::sample_rate_hz(scanned->sample_rate),
+    .channels = scanned->channels,
+    .samples_per_frame = ac3::kSamplesPerFrame,
+    // The dac3/dec3 sample-entry box, built from the same scan result -
+    // see ac3/io/dec3.hpp for why this lives in ac3::io rather than in
+    // mp4::mp4 itself.
+    .codec_config = ac3::io::build_codec_config_box(*scanned),
+};
+
+const auto file = mp4::mux(track, frames);
+```
+
+Full program: [`examples/mux_mp4.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/mux_mp4.cpp).
+
+`mux` returns the whole file as bytes and does no file I/O, the same as `matroska::mux`. It
+writes `ftyp`/`moov`/`mdat` for one audio track, one sample per chunk, `stts`/`stsz`/`stco` built
+straight off the frame sizes handed in. No fragmentation, no edit lists, no multiple tracks —
+ROADMAP.md's A2 (fMP4/CMAF) is the deliberate follow-up for streaming delivery, not something
+this first cut tries to also be.
+
+Getting the `dec3`/`dac3` box right from the spec is the point: FFmpeg's own MKV→MP4 remux path
+is documented to silently drop or mis-signal the Atmos extension
+([jellyfin-ffmpeg#584](https://github.com/jellyfin/jellyfin-ffmpeg/issues/584)) — building it
+from `ac3::io::scan`'s own read of the bitstream, rather than by copying another tool's output,
+is what this module avoids that bug by construction rather than by patching it after the fact.
+
 ## Bitstream sinks (`ac3::sinks`)
 
 The pieces below are audio-hardware-facing rather than example-driven, so there's no compiled

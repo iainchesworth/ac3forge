@@ -31,6 +31,7 @@
 #include "ac3/encoder/encoder.hpp"
 #include "ac3/encoder/plan.hpp"
 #include "ac3/encoder/silent_frame.hpp"
+#include "ac3/io/dec3.hpp"
 #include "ac3/io/elementary.hpp"
 #include "ac3/io/wav.hpp"
 #include "ac3/meta/drc.hpp"
@@ -47,6 +48,7 @@
 #include "ac3/signing/emdf_atmos_signer.hpp"
 #include "ac3/signing/signing_key.hpp"
 #include "matroska/matroska.hpp"
+#include "mp4/mp4.hpp"
 #include "platform/stdio_binary.hpp"
 
 namespace {
@@ -1064,6 +1066,68 @@ int run_mkv(std::string_view in_path, std::string_view out_path) {
             : std::string{ac3::analysis::layout_name(scanned->acmod, scanned->lfe)};
     std::println("wrote {} {} access units ({}, {} channels, {} bytes) to {}",
                  units.size(), eac3 ? "E-AC-3" : "AC-3", shape, track.channels,
+                 file->size(), out_path);
+    return 0;
+}
+
+// Same shape as run_mkv above, wrapping mp4::mux() instead: ac3::io::scan()
+// still supplies everything the container needs to declare, and additionally
+// - via ac3::io::build_codec_config_box() - the exact dac3/dec3 sample-entry
+// payload (fscod/bsid/bsmod/acmod/lfeon and, when the stream carries Dolby
+// Atmos objects, the flag_ec3_extension_type_a/complexity_index_type_a
+// extension) straight off the bitstream. mp4::mux() never sees any of that
+// syntax itself - see src/mp4/include/mp4/mp4.hpp's own header comment.
+int run_mp4(std::string_view in_path, std::string_view out_path) {
+    const auto raw = read_all(in_path);
+    if (raw.empty()) {
+        std::println(stderr, "error: cannot open {}", in_path);
+        return 1;
+    }
+    const auto scanned = ac3::io::scan(raw);
+    if (!scanned) {
+        std::println(stderr, "error: {}", ac3::io::describe(scanned.error()));
+        return 1;
+    }
+    const bool eac3 = scanned->kind == ac3::io::StreamKind::kEac3;
+
+    std::vector<std::vector<std::byte>> units;
+    units.reserve(scanned->access_units.size());
+    for (const auto unit : scanned->access_units) {
+        units.emplace_back(unit.begin(), unit.end());
+    }
+
+    const mp4::AudioTrack track{
+        .codec_id = std::string{eac3 ? mp4::kCodecEac3 : mp4::kCodecAc3},
+        .sample_rate = ac3::sample_rate_hz(scanned->sample_rate),
+        .channels = scanned->channels,
+        .samples_per_frame = ac3::kSamplesPerFrame,
+        .codec_config = ac3::io::build_codec_config_box(*scanned)};
+    const auto file = mp4::mux(track, units);
+    if (!file) {
+        std::println(stderr, "error: {}", mp4::describe(file.error()));
+        return 1;
+    }
+    std::ofstream out{std::string{out_path}, std::ios::binary};
+    if (!out) {
+        std::println(stderr, "error: cannot write {}", out_path);
+        return 1;
+    }
+    out.write(reinterpret_cast<const char*>(file->data()),
+              static_cast<std::streamsize>(file->size()));
+    if (!out) {
+        std::println(stderr, "error: write failed");
+        return 1;
+    }
+    const std::string shape =
+        scanned->substreams_per_unit > 1
+            ? std::format("{} substreams", scanned->substreams_per_unit)
+            : std::string{ac3::analysis::layout_name(scanned->acmod, scanned->lfe)};
+    const std::string atmos =
+        scanned->oba_complexity_index
+            ? std::format(", Atmos complexity {}", *scanned->oba_complexity_index)
+            : std::string{};
+    std::println("wrote {} {} access units ({}, {} channels{}, {} bytes) to {}",
+                 units.size(), eac3 ? "E-AC-3" : "AC-3", shape, track.channels, atmos,
                  file->size(), out_path);
     return 0;
 }
@@ -3941,7 +4005,7 @@ struct Command {
     int (*run)(const Args&);
 };
 
-constexpr std::array<Command, 21> kCommands{{
+constexpr std::array<Command, 22> kCommands{{
     {"silence", 2, "<out.ac3> [seconds] [bitrate_kbps]", "", Needs::kNothing,
      [](const Args& x) { return run_silence(x.str(1), x.u32(2, 5), x.u32(3, 192)); }},
     {"sine", 2, "<out.ac3> [seconds] [bitrate_kbps] [freq_hz] [amp_pct] [layout]", "",
@@ -4025,6 +4089,9 @@ constexpr std::array<Command, 21> kCommands{{
      [](const Args& x) { return run_spdif(x.str(1), x.str(2)); }},
     {"mkv", 3, "<in.ac3|in.ec3> <out.mkv>", "wrap as a playable Matroska file", Needs::kNothing,
      [](const Args& x) { return run_mkv(x.str(1), x.str(2)); }},
+    {"mp4", 3, "<in.ac3|in.ec3> <out.mp4>",
+     "wrap as a playable MP4 with a spec-correct dac3/dec3 box", Needs::kNothing,
+     [](const Args& x) { return run_mp4(x.str(1), x.str(2)); }},
     {"devices", 1, "", "input and loopback capture endpoints", Needs::kCapture,
      [](const Args&) { return run_devices(); }},
     {"outputs", 1, "", "render endpoints + AC-3/E-AC-3 passthrough support", Needs::kPassthrough,
