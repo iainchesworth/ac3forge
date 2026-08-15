@@ -4077,7 +4077,7 @@ ApplicationWindow {
                                         RowLayout {
                                             Layout.fillWidth: true
                                             Text {
-                                                text: qsTr("ROOM — PLAN")
+                                                text: qsTr("ROOM — PLAN (top-down)")
                                                 color: Theme.neutral600
                                                 font.pixelSize: 10
                                             }
@@ -4088,6 +4088,13 @@ ApplicationWindow {
                                                 font.pixelSize: 10
                                                 font.family: Theme.monoFamily
                                             }
+                                        }
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: qsTr("Looking down on the room: left↔right is horizontal, front↔rear is vertical.")
+                                            wrapMode: Text.WordWrap
+                                            font.pixelSize: 10
+                                            color: Theme.neutral500
                                         }
 
                                         Rectangle {
@@ -4248,17 +4255,24 @@ ApplicationWindow {
                                             Layout.fillWidth: true
                                             Layout.topMargin: Theme.space2
                                             Text {
-                                                text: qsTr("ROOM — ELEVATION")
+                                                text: qsTr("ROOM — ELEVATION (side-on)")
                                                 color: Theme.neutral600
                                                 font.pixelSize: 10
                                             }
                                             Item { Layout.fillWidth: true }
                                             Text {
-                                                text: qsTr("drag for height")
+                                                text: qsTr("drag: depth + height")
                                                 color: Theme.neutral600
                                                 font.pixelSize: 10
                                                 font.family: Theme.monoFamily
                                             }
+                                        }
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: qsTr("Looking at the room from the side: front↔rear is horizontal, floor↔ceiling is vertical — not just up/down.")
+                                            wrapMode: Text.WordWrap
+                                            font.pixelSize: 10
+                                            color: Theme.neutral500
                                         }
                                         Rectangle {
                                             id: elevation
