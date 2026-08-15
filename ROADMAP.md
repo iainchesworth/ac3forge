@@ -51,7 +51,7 @@ AC-3/E-AC-3 bitstream and verifies its loudness metadata against measurement.
 - [x] **C2 (L)** — `ac3cli qc`: decode a stream, measure, and compare against its embedded
   dialnorm/DRC, with preset gates (EBU R128 s2, ATSC A/85, common platform specifications).
   Depends on C1.
-- [ ] **C3 (M)** — The same verification in the GUI: meters against gate lines, dialnorm
+- [x] **C3 (M)** — The same verification in the GUI: meters against gate lines, dialnorm
   delta, per-preset verdicts. Depends on C2.
 - [x] **C4 (S)** — Finish `dialnorm=auto`: now measures each programme/source independently
   for dual mono (CLI and GUI) and for `src=`/`map=` multi-source.

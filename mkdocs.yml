@@ -106,6 +106,7 @@ nav:
       - Metadata: gui/metadata.md
       - Objects & motion: gui/objects-and-motion.md
       - Live capture & session: gui/live-session.md
+      - QC a stream: gui/qc.md
   - Project:
       - Contributing: contributing.md
       - Releasing: releasing.md
