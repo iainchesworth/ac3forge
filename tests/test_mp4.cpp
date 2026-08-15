@@ -114,7 +114,9 @@ const Element* find(const std::vector<Element>& elements, const std::string& typ
 std::size_t count(const std::vector<Element>& elements, const std::string& type) {
     std::size_t n = 0;
     for (const auto& e : elements) {
-        n += e.type == type ? 1 : 0;
+        if (e.type == type) {
+            ++n;
+        }
     }
     return n;
 }
