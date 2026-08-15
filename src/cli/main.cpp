@@ -52,6 +52,7 @@
 #include "mp4/dash.hpp"
 #include "mp4/hls.hpp"
 #include "mp4/mp4.hpp"
+#include "mpegts/mpegts.hpp"
 #include "platform/stdio_binary.hpp"
 
 namespace {
@@ -1281,6 +1282,62 @@ int run_fmp4(std::string_view in_path, std::string_view out_dir,
         "(init.mp4, segment*.m4s, audio.m3u8, master.m3u8, manifest.mpd)",
         units.size(), eac3 ? "E-AC-3" : "AC-3", shape, track.channels, atmos,
         fragmented->media_segments.size(), out_dir);
+    return 0;
+}
+
+// Same shape as run_mkv above: everything mpegts::mux needs comes off the
+// bitstream via ac3::io::scan, not from a caller-supplied layout that could
+// disagree with what is actually in the file. See mpegts/mpegts.hpp's header
+// comment for the broadcast profile this wraps as (DVB stream_type 0x06 plus
+// the AC3_descriptor/Enhanced_AC3_descriptor ETSI EN 300 468 Annex D defines)
+// and why.
+int run_ts(std::string_view in_path, std::string_view out_path) {
+    const auto raw = read_all(in_path);
+    if (raw.empty()) {
+        std::println(stderr, "error: cannot open {}", in_path);
+        return 1;
+    }
+    const auto scanned = ac3::io::scan(raw);
+    if (!scanned) {
+        std::println(stderr, "error: {}", ac3::io::describe(scanned.error()));
+        return 1;
+    }
+    const bool eac3 = scanned->kind == ac3::io::StreamKind::kEac3;
+
+    std::vector<std::vector<std::byte>> units;
+    units.reserve(scanned->access_units.size());
+    for (const auto unit : scanned->access_units) {
+        units.emplace_back(unit.begin(), unit.end());
+    }
+
+    const mpegts::AudioTrack track{
+        .codec = eac3 ? mpegts::AudioCodec::kEac3 : mpegts::AudioCodec::kAc3,
+        .sample_rate = ac3::sample_rate_hz(scanned->sample_rate),
+        .channels = scanned->channels,
+        .samples_per_frame = ac3::kSamplesPerFrame};
+    const auto file = mpegts::mux(track, units);
+    if (!file) {
+        std::println(stderr, "error: {}", mpegts::describe(file.error()));
+        return 1;
+    }
+    std::ofstream out{std::string{out_path}, std::ios::binary};
+    if (!out) {
+        std::println(stderr, "error: cannot write {}", out_path);
+        return 1;
+    }
+    out.write(reinterpret_cast<const char*>(file->data()),
+              static_cast<std::streamsize>(file->size()));
+    if (!out) {
+        std::println(stderr, "error: write failed");
+        return 1;
+    }
+    const std::string shape =
+        scanned->substreams_per_unit > 1
+            ? std::format("{} substreams", scanned->substreams_per_unit)
+            : std::string{ac3::analysis::layout_name(scanned->acmod, scanned->lfe)};
+    std::println("wrote {} {} access units ({}, {} channels, {} bytes) to {}",
+                 units.size(), eac3 ? "E-AC-3" : "AC-3", shape, track.channels,
+                 file->size(), out_path);
     return 0;
 }
 
@@ -4157,7 +4214,7 @@ struct Command {
     int (*run)(const Args&);
 };
 
-constexpr std::array<Command, 23> kCommands{{
+constexpr std::array<Command, 24> kCommands{{
     {"silence", 2, "<out.ac3> [seconds] [bitrate_kbps]", "", Needs::kNothing,
      [](const Args& x) { return run_silence(x.str(1), x.u32(2, 5), x.u32(3, 192)); }},
     {"sine", 2, "<out.ac3> [seconds] [bitrate_kbps] [freq_hz] [amp_pct] [layout]", "",
@@ -4247,6 +4304,8 @@ constexpr std::array<Command, 23> kCommands{{
     {"fmp4", 3, "<in.ac3|in.ec3> <out_dir> [frames_per_fragment]",
      "fragmented MP4/CMAF + HLS/DASH manifests, ready for a packager", Needs::kNothing,
      [](const Args& x) { return run_fmp4(x.str(1), x.str(2), x.u32(3, 48)); }},
+    {"ts", 3, "<in.ac3|in.ec3> <out.ts>", "wrap as an MPEG-2 Transport Stream (DVB profile)",
+     Needs::kNothing, [](const Args& x) { return run_ts(x.str(1), x.str(2)); }},
     {"devices", 1, "", "input and loopback capture endpoints", Needs::kCapture,
      [](const Args&) { return run_devices(); }},
     {"outputs", 1, "", "render endpoints + AC-3/E-AC-3 passthrough support", Needs::kPassthrough,
@@ -4391,6 +4450,11 @@ void print_usage() {
     std::println("pointing at the same segments (CMAF's whole point) — ready for a real HLS/");
     std::println("DASH origin or packager. Dolby Atmos content signals CHANNELS=\"<N>/JOC\" in");
     std::println("the HLS playlists automatically, per Apple's HLS Authoring Specification.");
+    std::println("");
+    std::println("ts wraps the same elementary stream as an MPEG-2 Transport Stream (PAT + PMT");
+    std::println("+ one PES-wrapped audio PID), identified per the DVB profile — stream_type");
+    std::println("0x06 plus the AC3_descriptor or Enhanced_AC3_descriptor ETSI EN 300 468 Annex D");
+    std::println("defines, not ATSC's — with PCR stamped on the audio PID every access unit.");
     std::println("");
     std::println("Without a layout, encode and eac3-encode follow the source: 1 -> mono,");
     std::println("2 -> stereo, 3 to 6 -> 5.1, 8 -> 7.1, 10 -> 5.1.4, 12 -> 7.1.4. Commands");

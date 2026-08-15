@@ -318,5 +318,8 @@ run fmp4 atmos_4.ec3 fmp4_atmos 4
 cat fmp4_atmos/init.mp4 $(ls -v fmp4_atmos/segment*.m4s) > fmp4_atmos_combined.mp4
 run_ffmpeg_check fmp4_atmos_combined.mp4
 run_ffmpeg_check fmp4_atmos/audio.m3u8
+run ts enc_51.ac3 enc_51.ts
+run ts eac3enc_none.ec3 eac3enc_none.ts
+run ts atmos_4.ec3 atmos_4.ts
 
 echo "codec matrix: $count commands completed cleanly in $WORKDIR"
