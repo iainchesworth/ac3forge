@@ -48,6 +48,18 @@ set_target_properties(matroska_objects PROPERTIES
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON)
 
+# MSVC's C4251 ("class X needs to have dll-interface...") fires for every
+# PRIVATE STL-typed member of a MATROSKA_EXPORT class (matroska::Writer's own
+# std::vector<std::byte> buffers) - pure implementation detail, never touched
+# by a caller except through the class's own (exported) methods. Suppressed
+# here rather than by scattering non-portable #pragma warning(disable:)
+# through headers GCC/Clang also compile - see src/lib/CMakeLists.txt's
+# identical forge_objects treatment, including why this is PUBLIC rather than
+# PRIVATE (the warning fires wherever a translation unit parses the
+# dllexport/dllimport-decorated class definition, not only inside this
+# target's own compilation).
+target_compile_options(matroska_objects PUBLIC "$<$<CXX_COMPILER_ID:MSVC>:/wd4251>")
+
 include(GenerateExportHeader)
 set_target_properties(matroska_shared PROPERTIES DEFINE_SYMBOL "MATROSKA_BUILDING_SHARED")
 generate_export_header(matroska_shared

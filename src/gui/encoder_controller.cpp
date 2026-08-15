@@ -308,28 +308,13 @@ QString partial_output_path(const QString& path) {
 }
 
 // Splices a fixed suffix onto `path`'s stem, replacing whatever extension it
-// had - the shared "derive a sibling filename" logic live_stream_spool_path
-// and the raw-WAV safety copy's own path both need.
+// had - the raw-WAV safety copy's own path needs exactly this "derive a
+// sibling filename" logic.
 QString sibling_path(const QString& path, const QString& suffix) {
     const qsizetype dot = path.lastIndexOf(QLatin1Char('.'));
     const qsizetype slash = std::max(path.lastIndexOf(QLatin1Char('/')),
                                      path.lastIndexOf(QLatin1Char('\\')));
     return (dot > slash ? path.left(dot) : path) + suffix;
-}
-
-// Where a live session's Matroska take spools its elementary stream while it
-// grows - matroska::mux() only ever produces a complete file from the WHOLE
-// set of frames, so the real .mkv can only be written once, at a clean stop
-// (see EncoderController::LiveOutputWriters' own comment). Named with its
-// own honest extension beside the final path, deliberately NOT using
-// partial_output_path's ".partial" suffix above - that means "kept only
-// because a run failed"; this spool exists for the entire life of every
-// Matroska live session, failed or not, and is folded into the .mkv (then
-// removed) on success. A crash leaves exactly this file behind holding
-// everything captured up to that point - "the elementary take" the live
-// session docs page promises.
-QString live_stream_spool_path(const QString& mkv_path, bool eac3) {
-    return sibling_path(mkv_path, eac3 ? QStringLiteral(".live.ec3") : QStringLiteral(".live.ac3"));
 }
 
 // Whether the receiver leg should run the parallel 5.1 downmix instead of
@@ -468,19 +453,26 @@ struct EncoderController::Source {
 
 // What runLiveSession needs to keep writing a take incrementally once its
 // GUI-thread preamble hands off to the worker - see
-// EncoderController::openLiveOutputWriters. `stream` IS the final output for
-// an elementary-stream container (every byte written here is already the
-// take); for Matroska it is the spool at live_stream_spool_path(), and
-// `frame_sizes` is the lightweight (one uint32 per unit, not the audio
-// itself) index that lets the clean-stop path split the spool back into
-// frames for matroska::mux() without ever having kept the encoded bytes in
-// RAM during the run.
+// EncoderController::openLiveOutputWriters. `stream` is always the take's own
+// final destination now, byte for byte: an elementary-stream container writes
+// every unit straight into it (every byte written here already is the take),
+// and Matroska writes matroska::Writer's own header/cluster bytes into the
+// SAME file as they are produced - see `writer`'s own comment. There is no
+// separate spool for either container any more, and so nothing to fold
+// together at the end: finalize() below is the whole of what a clean stop
+// still has to do.
 struct EncoderController::LiveOutputWriters {
     std::ofstream stream;
-    QString stream_path;   // == the final path unless matroska
-    QString final_path;    // always the real destination the user chose
+    QString path;  // the real destination the user chose
     bool matroska = false;
-    std::vector<std::uint32_t> frame_sizes;
+    // Only engaged when matroska is set - constructed once the coded channel
+    // count is known (routing/atmos bed resolved), just after this struct is
+    // opened, back on the GUI thread in runLiveSession before the worker
+    // ever starts (see there). header() is written to `stream` at that same
+    // point; every push() return value is written to `stream` as the frame
+    // loop runs, and finalize()'s tail bytes at the end - see the "failure
+    // story" comment further down for exactly where.
+    std::optional<matroska::Writer> writer;
     std::unique_ptr<ac3::io::WavStreamWriter> wav_safety;  // null when not requested
 };
 
@@ -3541,14 +3533,19 @@ std::unique_ptr<EncoderController::LiveOutputWriters> EncoderController::openLiv
         return nullptr;
     }
     auto writers = std::make_unique<LiveOutputWriters>();
-    writers->final_path = path;
+    writers->path = path;
     writers->matroska = container_index_ == kContainerMatroska;
-    const bool eac3 = atmos_enabled_ || codec_ == plan::Codec::kEac3;
-    writers->stream_path = writers->matroska ? live_stream_spool_path(path, eac3) : path;
-    writers->stream.open(writers->stream_path.toStdString(), std::ios::binary);
+    // Matroska's own track/writer construction needs the CODED channel count
+    // (routing/atmos bed), which is not resolved yet at this point - see
+    // runLiveSession, which constructs `writers->writer` and writes its
+    // header the moment that count is known, still on the GUI thread before
+    // the worker starts. Only the file itself opens here: a bad destination
+    // path is refused now, exactly like a bad device choice already is, not
+    // discovered as a mid-take failure minutes in.
+    writers->stream.open(writers->path.toStdString(), std::ios::binary);
     if (!writers->stream) {
         setStatus(QStringLiteral("Could not open \"%1\" for writing.")
-                      .arg(QFileInfo(writers->stream_path).fileName()));
+                      .arg(QFileInfo(writers->path).fileName()));
         emit encodeRefused(status_);
         return nullptr;
     }
@@ -3913,6 +3910,40 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device,
     setMetering(true);
     clearClipLatches();
 
+    // Matroska needs the CODED channel count to declare a valid AudioTrack -
+    // atmos's bed is always 6 (5.1), channel mode is routing's own coded
+    // channel count, the identical formula the worker lambda below uses for
+    // its own coded_count. Both are known now, so the writer (and its header
+    // bytes) are built here, still on the GUI thread, before the worker ever
+    // starts - a track EBML/Matroska genuinely cannot describe (in practice
+    // unreachable: plan::validate() and the device checks in
+    // startLiveSession already rule out zero channels or an unsupported
+    // rate) is refused before the session goes live, the same "not a
+    // mid-take failure minutes in" promise openLiveOutputWriters' own file
+    // open already gives the destination path.
+    if (writers && writers->matroska) {
+        const int coded_for_track = atmos ? 6 : routing->coded_channels;
+        auto created = matroska::Writer::create(
+            {.codec_id = std::string{eac3 ? matroska::kCodecEac3 : matroska::kCodecAc3},
+             .sample_rate = device.sample_rate,
+             .channels = coded_for_track,
+             .samples_per_frame = ac3::kSamplesPerFrame});
+        if (!created) {
+            live_capture_.reset();
+            live_monitor_sink_.reset();
+            live_passthrough_sink_.reset();
+            live_active_ = false;
+            setBusy(false);
+            emit liveActiveChanged();
+            setStatus(to_qstring(matroska::describe(created.error())));
+            emit encodeFinished(false, status());
+            return;
+        }
+        writers->stream.write(reinterpret_cast<const char*>(created->header().data()),
+                              static_cast<std::streamsize>(created->header().size()));
+        writers->writer = std::move(*created);
+    }
+
     // The allocated slot BUDGET (see startLiveSession's own comment on why
     // this is no longer just device.channels), not recomputed here - it has
     // to match exactly what startLiveSession sized object_configs_/
@@ -4056,6 +4087,13 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device,
         // actual device that went quiet rather than always blaming the
         // master.
         bool lost_is_slave = false;
+        // Set if matroska::Writer::push() ever refuses a frame - see the
+        // write_to_disk block below. In practice unreachable (a SimpleBlock's
+        // own limit is 2^40 bytes; no real AC-3/E-AC-3 access unit comes
+        // close), but the muxer reports it as std::expected rather than
+        // asserting, per this project's "no exceptions for stream-level
+        // failure" rule, so this loop honours that instead of ignoring it.
+        std::optional<matroska::MuxError> mux_error;
         // The one-shot capture->monitor latency measurement: only attempted
         // once monitoring is on and the pipeline has run for about a second
         // (past whatever startup transient the first few frames carry), and
@@ -4373,16 +4411,30 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device,
             }
 
             if (write_to_disk && writers) {
-                writers->stream.write(reinterpret_cast<const char*>(unit_bytes.data()),
-                                      static_cast<std::streamsize>(unit_bytes.size()));
-                if (writers->matroska) {
-                    // The lightweight index the clean-stop mux step splits
-                    // the spool back into frames with - a few bytes per
-                    // unit, not the audio itself, which is exactly what
-                    // keeps this incremental instead of the old
-                    // frames.push_back(unit_bytes) that held the WHOLE take
-                    // in RAM for as long as the session ran.
-                    writers->frame_sizes.push_back(static_cast<std::uint32_t>(unit_bytes.size()));
+                if (writers->matroska && writers->writer) {
+                    // Push straight into the writer's current cluster and
+                    // write back whatever it hands back - empty on most
+                    // calls (a cluster spans about a second), the just-closed
+                    // cluster's bytes when one closes. Nothing here holds the
+                    // take in RAM: at most one cluster's worth of frames is
+                    // ever buffered inside `writer` itself, so memory stays
+                    // bounded for a session of any length, the same property
+                    // the old ec3-spool design existed to give - this design
+                    // gives it AND leaves a genuinely playable (if a clean
+                    // stop never comes) .mkv behind, which the spool never
+                    // could.
+                    auto pushed = writers->writer->push(unit_bytes);
+                    if (!pushed) {
+                        mux_error = pushed.error();
+                        break;
+                    }
+                    if (!pushed->empty()) {
+                        writers->stream.write(reinterpret_cast<const char*>(pushed->data()),
+                                              static_cast<std::streamsize>(pushed->size()));
+                    }
+                } else {
+                    writers->stream.write(reinterpret_cast<const char*>(unit_bytes.data()),
+                                          static_cast<std::streamsize>(unit_bytes.size()));
                 }
                 ++frames_written;
                 if (writers->wav_safety) {
@@ -4430,10 +4482,9 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device,
 
         // The failure story, in priority order: a device that stopped
         // delivering audio is the interesting cause even if the disk side
-        // finishes cleanly; a disk-side problem (only reachable for
-        // Matroska - an elementary-stream take is already fully written by
-        // the time the loop above exits) only replaces it when there was
-        // nothing more specific to say.
+        // finishes cleanly; a mux problem (only reachable for Matroska, and
+        // in practice never - see mux_error's own comment) only replaces it
+        // when there was nothing more specific to say.
         QString problem;
         if (device_lost) {
             problem = QStringLiteral(
@@ -4442,52 +4493,37 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device,
                           .arg(lost_is_slave ? device2_name : device_name)
                           .arg(frames_written);
         }
+        if (problem.isEmpty() && mux_error) {
+            const auto why = matroska::describe(*mux_error);
+            problem = QStringLiteral("Matroska muxing failed: %1")
+                          .arg(QString::fromUtf8(why.data(), static_cast<qsizetype>(why.size())));
+        }
         if (write_to_disk && writers) {
+            if (writers->matroska && writers->writer) {
+                // The trailing partial cluster - whatever the loop above
+                // never reached the time budget to close on its own. Nothing
+                // else needs closing: Segment's size was written unknown by
+                // design (see matroska::Writer's own comment), so there is
+                // no length field left to go back and patch, the way the old
+                // spool-and-remux design needed a clean stop to even attempt.
+                // A device-lost or otherwise interrupted session still
+                // reaches this (the loop's every `break` falls through to
+                // here), so whatever was captured is flushed either way -
+                // only an outright process crash leaves anything behind
+                // unflushed, and even then every cluster already written to
+                // `stream` earlier is already a complete, valid Matroska
+                // Cluster on disk: a crash truncates the take, it does not
+                // corrupt it.
+                const auto tail = writers->writer->finalize();
+                if (!tail.empty()) {
+                    writers->stream.write(reinterpret_cast<const char*>(tail.data()),
+                                          static_cast<std::streamsize>(tail.size()));
+                }
+            }
             writers->stream.flush();
             writers->stream.close();
             if (writers->wav_safety) {
                 writers->wav_safety->close();
-            }
-            if (writers->matroska) {
-                // matroska::mux() only ever produces a complete file from
-                // the WHOLE set of frames, so the spool this session has
-                // been growing incrementally is read back and muxed HERE,
-                // once, at a clean stop - not per frame, which is the whole
-                // point of spooling instead of holding every frame in RAM
-                // for the run's whole duration (see LiveOutputWriters' own
-                // comment). A device-lost or otherwise interrupted session
-                // still reaches this (the loop's every `break` falls
-                // through to here), so the spool is folded into the .mkv
-                // whenever there is anything to fold; only an outright
-                // process crash leaves it behind unmuxed.
-                std::ifstream spool_in{writers->stream_path.toStdString(), std::ios::binary};
-                std::vector<std::vector<std::byte>> mux_frames;
-                mux_frames.reserve(writers->frame_sizes.size());
-                bool read_ok = static_cast<bool>(spool_in);
-                for (const auto size : writers->frame_sizes) {
-                    std::vector<std::byte> frame(size);
-                    spool_in.read(reinterpret_cast<char*>(frame.data()),
-                                 static_cast<std::streamsize>(size));
-                    if (!spool_in) {
-                        read_ok = false;
-                        break;
-                    }
-                    mux_frames.push_back(std::move(frame));
-                }
-                spool_in.close();
-                QString mux_problem = read_ok
-                    ? writeOutput(writers->final_path, mux_frames, sample_rate,
-                                 static_cast<int>(coded_count))
-                    : QStringLiteral("Could not read back the elementary stream to mux it.");
-                if (!mux_problem.isEmpty()) {
-                    mux_problem += QStringLiteral(" The elementary stream is kept at \"%1\".")
-                                       .arg(QFileInfo(writers->stream_path).fileName());
-                    if (problem.isEmpty()) {
-                        problem = mux_problem;
-                    }
-                } else {
-                    QFile::remove(writers->stream_path);
-                }
             }
         }
 
