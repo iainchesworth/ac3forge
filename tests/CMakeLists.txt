@@ -69,6 +69,7 @@ add_executable(ac3tests
     test_frame.cpp
     test_iec61937.cpp
     test_live_downmix.cpp
+    test_loudness.cpp
     test_mantissas.cpp
     test_matroska.cpp
     test_mdct.cpp
