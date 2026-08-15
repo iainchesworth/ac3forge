@@ -24,6 +24,8 @@ qt_add_executable(ac3gui_qmltests
     tests/qml_test_main.cpp
     encoder_controller.cpp
     encoder_controller.hpp
+    qc_controller.cpp
+    qc_controller.hpp
     system_theme.cpp
     system_theme.hpp)
 

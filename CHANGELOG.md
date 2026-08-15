@@ -96,6 +96,22 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   parsed (to keep the bit count right) but discarded rather than exposed on `DecodedSubstream`/
   `DecodedAccessUnit` — `qc` needed it, so it is now reported like AC-3's decoder already reports
   its own `compr`.
+- **`ac3gui`'s own QC surface (roadmap C3), completing Theme C** — a **QC a stream…** button in
+  the header opens a new dialog that runs the exact measurement `ac3cli qc` does (decode, BS.1770-4
+  measure, compare against the stream's own embedded `dialnorm`/`compr`) against a chosen
+  `.ac3`/`.ec3` file, off the GUI thread the same way every encode already is. It is a standalone
+  dialog rather than a sixth tab beside Format/Coding tools/Metadata/Objects/Live session
+  deliberately — QC opens and verifies a file that already exists, with no source, plan or encoder
+  involved anywhere in the path, so it has nothing in common with the five tabs beside it, which
+  are all pages of controls for a plan still to come; see docs/gui/qc.md for the full reasoning.
+  The report shows integrated loudness, loudness range and true peak as filled meters (the same
+  track/fill shape the channel meters already use), a `1+1` dual-mono stream reported as its two
+  independent programmes, the dialnorm-vs-measured delta `ac3cli qc` already prints, and a
+  pass/fail verdict per delivery preset (`EBU R 128 s2`/`ATSC A/85`/`Netflix`, or all three at
+  once) — picking a single preset also draws its target tolerance band / true-peak ceiling as
+  lines on the meters, so a failing gate shows why. A new `QcController` singleton carries this
+  state rather than `EncoderController`, which stays exactly what it already was: encode-workflow
+  state only.
 
 ### CLI
 

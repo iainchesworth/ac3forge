@@ -123,6 +123,8 @@ ApplicationWindow {
     // Same reason as prefsDialog above - item 33's run details popover also
     // lives on the Overlay.
     readonly property alias runDetailsPopup: runDetailsDialog
+    // Same reason again - roadmap C3's QC report dialog.
+    readonly property alias qcDialogRef: qcDialog
 
     Component.onCompleted: {
         Theme.preference = appSettings.theme;
@@ -1026,6 +1028,14 @@ ApplicationWindow {
         }
     }
 
+    // Roadmap C3 — see docs/gui/qc.md and QcDialog.qml's own header comment
+    // for why this is a standalone dialog rather than a tab: opening and
+    // verifying an already-encoded file is a different workflow shape to
+    // every tab beside it, which all configure an encode still to come.
+    QcDialog {
+        id: qcDialog
+    }
+
     Dialog {
         id: codecWarnDialog
         modal: true
@@ -1314,6 +1324,11 @@ ApplicationWindow {
                 ]
                 currentValue: window.tier
                 onSelected: (value) => window.tier = value
+            }
+            Button {
+                objectName: "qcOpenButton"
+                text: qsTr("QC a stream…")
+                onClicked: qcDialog.open()
             }
             Button {
                 text: qsTr("Preferences")
