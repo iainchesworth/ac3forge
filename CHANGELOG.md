@@ -12,13 +12,36 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 
 ## [Unreleased]
 
-### Containers
+### Delivery
 
-- **`mpegts::mpegts`**, a new standalone MPEG-2 Transport Stream muxer alongside
-  `matroska::matroska` — PAT + PMT + one PES-wrapped AC-3/E-AC-3 elementary stream, PCR stamped
+- **MP4/ISOBMFF muxer** (`mp4::mp4`, `ac3cli mp4 <in.ac3|in.ec3> <out.mp4>`) — a second
+  standalone container writer alongside `matroska::matroska`, same shape: no dependency on
+  `ac3::forge`, frames taken as opaque bytes. The `ec-3`/`ac-3` sample entry's `dec3`/`dac3`
+  configuration box (ETSI TS 102 366 Annex F) is built straight off the bitstream by a new
+  `ac3::io::build_codec_config_box`, Dolby Atmos signalling included —
+  `flag_ec3_extension_type_a`/`complexity_index_type_a` (TS 103 420 §8.3) are set whenever
+  `ac3::io::scan` finds the marker in the stream's own `addbsi`, which is exactly the signal
+  FFmpeg's own MKV→MP4 remux path is documented to drop or mis-signal
+  ([jellyfin-ffmpeg#584](https://github.com/jellyfin/jellyfin-ffmpeg/issues/584)).
+- **`mpegts::mpegts`**, a third standalone container writer alongside `matroska::matroska` and
+  `mp4::mp4` — PAT + PMT + one PES-wrapped AC-3/E-AC-3 elementary stream, PCR stamped
   every access unit, identified per the DVB profile (`stream_type` 0x06 plus the
   `AC3_descriptor`/`Enhanced_AC3_descriptor` ETSI EN 300 468 Annex D defines, not ATSC's). New
   `ac3cli ts` command and `examples/mux_ts.cpp`, same shape as `mkv`/`mux_mkv.cpp`.
+
+### Added
+
+- **Live sessions mux straight to Matroska.** `ac3cli record`/`ac3cli live` take a new
+  `container=mkv` trailing token, writing the take directly to `.mkv` in the one command instead of
+  needing a separate `ac3cli mkv` wrap afterward. The GUI's Live session tab already offers the same
+  choice through its existing Container combo (Format tab) — its own live write path is rebuilt on
+  top of a new incremental API, `matroska::Writer`, so a Matroska take is now written straight to
+  its real destination as it is captured rather than spooled as an elementary stream and muxed only
+  at a clean stop: Segment is written with EBML's reserved "unknown size" pattern (the standard way
+  a streamed Matroska declares a length it cannot know yet), so a crash mid-session now leaves a
+  genuinely playable, if truncated, `.mkv` behind instead of a recoverable elementary-stream
+  companion file. `matroska::mux()` (the existing whole-file API `ac3cli mkv` and file-based GUI
+  encodes use) is unchanged.
 
 ### CLI
 

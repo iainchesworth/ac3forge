@@ -72,25 +72,31 @@ option(AC3FORGE_BUILD_EXAMPLES "Build the documented library examples" ON)
 # directly - it configures a dedicated build/fuzz directory with the right
 # compiler.
 option(AC3FORGE_BUILD_FUZZERS "Build libFuzzer harnesses (Clang only; see fuzz/)" OFF)
-# Every other library component (matroska::matroska and mpegts::mpegts today; a future mp4::
-# would follow the same shape) gets its own AC3FORGE_BUILD_<NAME> option, defaulting ON so
-# nothing changes for today's direct/CPack builds. This is what lets a vcpkg port expose a
-# component as an opt-in feature - see cmake/InstallLibrary.cmake's matching install()/export()
-# gate.
+# Every other library component (matroska::matroska, mp4::mp4, mpegts::mpegts) gets its own
+# AC3FORGE_BUILD_<NAME> option, defaulting ON so nothing changes for today's direct/CPack builds.
+# This is what lets a vcpkg port expose a component as an opt-in feature - see
+# cmake/InstallLibrary.cmake's matching install()/export() gate.
 option(AC3FORGE_BUILD_MATROSKA "Build the standalone Matroska container writer (src/matroska)" ON)
+option(AC3FORGE_BUILD_MP4 "Build the standalone MP4/ISOBMFF container writer (src/mp4)" ON)
 option(AC3FORGE_BUILD_MPEGTS "Build the standalone MPEG-TS container writer (src/mpegts)" ON)
 
-# src/cli, src/gui, tests/ and examples/ all link matroska::matroska and mpegts::mpegts
-# unconditionally - none of them are written to cope with either being absent.
-# AC3FORGE_BUILD_MATROSKA=OFF or AC3FORGE_BUILD_MPEGTS=OFF only make sense with all four also
-# OFF (this is the shape a vcpkg build without the "matroska" feature actually uses - mpegts has
-# no vcpkg feature of its own yet, see cmake/InstallLibrary.cmake); catch the unsupported
-# combination here with a clear message rather than letting it fail deep inside one of those
-# subdirectories with a "target not found" error.
+# src/cli, src/gui, tests/ and examples/ all link matroska::matroska, mp4::mp4 and
+# mpegts::mpegts unconditionally - none of them are written to cope with any of the three being
+# absent. AC3FORGE_BUILD_MATROSKA=OFF, AC3FORGE_BUILD_MP4=OFF or AC3FORGE_BUILD_MPEGTS=OFF only
+# make sense with all four also OFF (this is the shape a vcpkg build without the matching
+# feature actually uses - mp4/mpegts have no vcpkg feature of their own yet, see
+# cmake/InstallLibrary.cmake); catch the unsupported combination here with a clear message
+# rather than letting it fail deep inside one of those subdirectories with a "target not found"
+# error.
 if(NOT AC3FORGE_BUILD_MATROSKA AND (AC3FORGE_BUILD_CLI OR AC3FORGE_BUILD_GUI OR AC3FORGE_BUILD_TESTS OR AC3FORGE_BUILD_EXAMPLES))
     message(FATAL_ERROR "AC3FORGE_BUILD_MATROSKA=OFF requires AC3FORGE_BUILD_CLI, "
         "AC3FORGE_BUILD_GUI, AC3FORGE_BUILD_TESTS and AC3FORGE_BUILD_EXAMPLES to all be OFF too - "
         "they all link matroska::matroska unconditionally.")
+endif()
+if(NOT AC3FORGE_BUILD_MP4 AND (AC3FORGE_BUILD_CLI OR AC3FORGE_BUILD_GUI OR AC3FORGE_BUILD_TESTS OR AC3FORGE_BUILD_EXAMPLES))
+    message(FATAL_ERROR "AC3FORGE_BUILD_MP4=OFF requires AC3FORGE_BUILD_CLI, "
+        "AC3FORGE_BUILD_GUI, AC3FORGE_BUILD_TESTS and AC3FORGE_BUILD_EXAMPLES to all be OFF too - "
+        "they all link mp4::mp4 unconditionally.")
 endif()
 if(NOT AC3FORGE_BUILD_MPEGTS AND (AC3FORGE_BUILD_CLI OR AC3FORGE_BUILD_GUI OR
                                   AC3FORGE_BUILD_TESTS OR AC3FORGE_BUILD_EXAMPLES))
@@ -138,7 +144,14 @@ if(AC3FORGE_BUILD_MATROSKA)
     add_subdirectory(src/matroska)
 endif()
 
-# A second standalone container writer, same shape as src/matroska above but
+# A second standalone container writer, same shape and same reasoning as
+# src/matroska above - see src/mp4/CMakeLists.txt's own header. Gated by
+# AC3FORGE_BUILD_MP4 (default ON, see the FATAL_ERROR guard above).
+if(AC3FORGE_BUILD_MP4)
+    add_subdirectory(src/mp4)
+endif()
+
+# A third standalone container writer, same shape as src/matroska above but
 # for MPEG-2 Transport Stream rather than Matroska. Gated by AC3FORGE_BUILD_MPEGTS
 # (default ON, see the option() and its FATAL_ERROR guard above) so it can be
 # opted out of the same way matroska is expected to become opt-out-able too.
@@ -146,8 +159,8 @@ if(AC3FORGE_BUILD_MPEGTS)
     add_subdirectory(src/mpegts)
 endif()
 
-# install()/find_package(ac3forge) support for ac3::forge, matroska::matroska
-# and mpegts::mpegts - after every add_subdirectory() call above (needs their
+# install()/find_package(ac3forge) support for ac3::forge, matroska::matroska,
+# mp4::mp4 and mpegts::mpegts - after every add_subdirectory() call above (needs their
 # targets to exist), before include(Packaging) (CPack's library component
 # packages exactly what gets install()'d here). Deliberately not ac3::audio -
 # see cmake/InstallLibrary.cmake's own header comment.

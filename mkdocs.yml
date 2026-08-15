@@ -71,6 +71,7 @@ nav:
       - Platform notes:
           - Windows: platforms/windows.md
           - Linux: platforms/linux.md
+          - Raspberry Pi: platforms/raspberry-pi.md
           - macOS (TBD): platforms/macos.md
           - Android (NVIDIA Shield): platforms/android.md
   - Concepts:

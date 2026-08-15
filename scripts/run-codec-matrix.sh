@@ -6,7 +6,7 @@
 # encoder/decoder logic in isolation; this script covers the combinations a
 # real user's command line would hit - every layout, every Annex E tool
 # token, both Atmos container modes, and the metadata options - round-tripped
-# through encode -> decode -> levels/loudness/spdif/mkv.
+# through encode -> decode -> levels/loudness/spdif/mkv/mp4.
 #
 # Every stream this script produces also gets FFmpeg's independent strict
 # decode (CONTRIBUTING.md's "Oracles" list, #2) alongside the in-repo
@@ -295,6 +295,9 @@ run spdif ac3_stereo.ac3 spdif_out.wav
 run mkv enc_51.ac3 enc_51.mkv
 run mkv eac3enc_none.ec3 eac3enc_none.mkv
 run mkv atmos_4.ec3 atmos_4.mkv
+run mp4 enc_51.ac3 enc_51.mp4
+run mp4 eac3enc_none.ec3 eac3enc_none.mp4
+run mp4 atmos_4.ec3 atmos_4.mp4
 run ts enc_51.ac3 enc_51.ts
 run ts eac3enc_none.ec3 eac3enc_none.ts
 run ts atmos_4.ec3 atmos_4.ts

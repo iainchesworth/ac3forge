@@ -7,7 +7,7 @@ Every command here has been run on the configuration described under
 
 | | Version | Notes |
 |---|---|---|
-| A compiler | MSVC (VS 2026), clang-cl 21, GCC 15, or Clang 21 | C++23. `std::expected`, `std::print` and deducing-`this` are all used. One [preset](#presets) per compiler; all five platform/compiler legs are required, green CI (Clang 21 covers two of them — `linux-llvm` and `macos-llvm` — as separate legs) — see [Verified configuration](#verified-configuration). |
+| A compiler | MSVC (VS 2026), clang-cl 21, GCC 15, or Clang 21 | C++23. `std::expected`, `std::print` and deducing-`this` are all used. One [preset](#presets) per compiler; all seven platform/compiler legs are required, green CI (GCC 15 covers two of them — `linux-gcc` and `linux-gcc-arm64`; Clang 21 covers three — `linux-llvm`, `linux-llvm-arm64` and `macos-llvm` — each as a separate leg) — see [Verified configuration](#verified-configuration). |
 | CMake | ≥ 3.28 | `cmake_minimum_required(VERSION 3.28...4.3)`. |
 | Ninja | any recent | The presets hard-code the Ninja generator. |
 | vcpkg | any recent | Supplies Catch2, and nothing else. Needed only when tests are on. |
@@ -79,7 +79,7 @@ hidden fragments composed together, not a flat list:
   even appear. `AC3FORGE_BUILD_GUI` is `ON` for the two Windows ones and `OFF` for the rest — see
   [Verified configuration](#verified-configuration).
 
-Ten concrete `config-<platform>[-debug]` presets inherit `[ release|debug, <platform>, core ]`,
+Fourteen concrete `config-<platform>[-debug]` presets inherit `[ release|debug, <platform>, core ]`,
 each with a matching `build-<platform>[-debug]` and `test-<platform>[-debug]` preset:
 
 | Platform | Compiler | Configure preset | Build preset | Test preset |
@@ -88,19 +88,26 @@ each with a matching `build-<platform>[-debug]` and `test-<platform>[-debug]` pr
 | Windows | clang-cl | `config-windows-llvm[-debug]` | `build-windows-llvm[-debug]` | `test-windows-llvm[-debug]` |
 | Linux | GCC 15 | `config-linux-gcc[-debug]` | `build-linux-gcc[-debug]` | `test-linux-gcc[-debug]` |
 | Linux | Clang 21 | `config-linux-llvm[-debug]` | `build-linux-llvm[-debug]` | `test-linux-llvm[-debug]` |
+| Linux (arm64) | GCC 15 | `config-linux-gcc-arm64[-debug]` | `build-linux-gcc-arm64[-debug]` | `test-linux-gcc-arm64[-debug]` |
+| Linux (arm64) | Clang 21 | `config-linux-llvm-arm64[-debug]` | `build-linux-llvm-arm64[-debug]` | `test-linux-llvm-arm64[-debug]` |
 | macOS | Homebrew LLVM | `config-macos-llvm[-debug]` | `build-macos-llvm[-debug]` | `test-macos-llvm[-debug]` |
 
-There is an eleventh configure/build/test trio, Debug-only and not part of the table above
+The two `-arm64` rows are the same `linux.gcc.toolchain.cmake`/`linux.llvm.toolchain.cmake` files as
+their x64 counterparts — only the vcpkg triplet (`arm64-linux-gcc`/`arm64-linux-llvm`) differs; the
+toolchain files already resolve aarch64 vs x86_64 from `VCPKG_TARGET_ARCHITECTURE`. See
+[Raspberry Pi](platforms/raspberry-pi.md), the flagship hardware this target is validated against.
+
+There is a fifteenth configure/build/test trio, Debug-only and not part of the table above
 because it isn't a platform/compiler pair but an instrumented variant of `linux-llvm`:
 `config-linux-llvm-asan-ubsan` / `build-linux-llvm-asan-ubsan` / `test-linux-llvm-asan-ubsan`,
 which inherits `linux-llvm` plus a `sanitize-asan-ubsan` fragment setting
 `AC3FORGE_SANITIZERS=address,undefined` (see `cmake/Sanitizers.cmake`; MSVC is rejected outright,
 so this only exists for GCC/Clang). See [Verified configuration](#verified-configuration) for what CI says
-about all thirteen. There are also six `ci-<platform>` `workflowPresets` (Release except for the
+about all seventeen. There are also eight `ci-<platform>` `workflowPresets` (Release except for the
 asan-ubsan one, which is Debug-only) that chain configure→build→test in one
 `cmake --workflow --preset ci-windows-msvc` call; that is exactly what CI itself runs.
 
-There is a twelfth trio, `config-linux-gcc-coverage` / `build-linux-gcc-coverage` /
+There is a sixteenth trio, `config-linux-gcc-coverage` / `build-linux-gcc-coverage` /
 `test-linux-gcc-coverage`, the same shape as the asan-ubsan one: an instrumented variant of
 `linux-gcc`, Debug-only, not a platform/compiler pair. It inherits a `coverage` fragment setting
 `AC3FORGE_ENABLE_COVERAGE=ON` (see `cmake/Coverage.cmake`, GCC/Clang's `--coverage` gcov
@@ -112,7 +119,7 @@ coverage of anyway. `.github/workflows/ci.yml`'s `coverage` job runs `gcovr` ove
 after `ctest` and gates on line/branch percentage — see that job's own comment for the current
 thresholds and why they sit below the measured baseline.
 
-There is a thirteenth trio, `config-linux-llvm-shared` / `build-linux-llvm-shared` /
+There is a seventeenth trio, `config-linux-llvm-shared` / `build-linux-llvm-shared` /
 `test-linux-llvm-shared`, same shape again: an instrumented variant of `linux-llvm`, Debug-only.
 It inherits a `shared-libs` fragment setting `BUILD_SHARED_LIBS=ON`, proving `ac3::forge_shared`/
 `matroska::matroska_shared` actually work — not just that the CMake topology configures, but that
@@ -356,8 +363,9 @@ cpack --preset pack-windows-msvc
 ```
 
 The equivalent `pack-<platform>` preset exists for every entry in the platform matrix
-(`pack-windows-llvm`, `pack-linux-gcc`, `pack-linux-llvm`, `pack-macos-llvm`), though only the
-Windows ones have ever actually been run — see [Verified configuration](#verified-configuration)
+(`pack-windows-llvm`, `pack-linux-gcc`, `pack-linux-llvm`, `pack-linux-gcc-arm64`,
+`pack-linux-llvm-arm64`, `pack-macos-llvm`), though only the Windows ones have ever actually been
+run — see [Verified configuration](#verified-configuration)
 and the note in `cmake/Packaging.cmake` about Linux Qt packaging not applying yet, since
 `AC3FORGE_BUILD_GUI` still defaults off on every non-Windows preset even though Qt itself can be
 found there and CI now builds and smoke-tests it on both Linux legs — see
@@ -478,6 +486,13 @@ builds `ac3gui` on macOS yet) — so the codec and CLI paths are now verified en
 GUI and the three audio-hardware commands remain untested on macOS specifically, same as they
 are everywhere without real hardware or a Qt kit. See [Linux audio](#linux-audio) for the
 general shape of what "verified headless" does and does not prove.
+
+The `-arm64` presets are exercised in CI on GitHub's hosted `ubuntu-24.04-arm` runner (real ARM
+hardware, not QEMU) and, separately, on a real Raspberry Pi 4B — see
+[Raspberry Pi](platforms/raspberry-pi.md#verified-configuration) for the on-device numbers, which
+are tracked there rather than duplicated here since that page is the canonical source for
+Pi-specific hardware findings (real ALSA/HDMI device names, resolved compiler versions on Raspberry
+Pi OS, and so on).
 
 ## Gold-reference correctness gate
 

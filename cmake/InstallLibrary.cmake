@@ -1,26 +1,24 @@
 # ---------------------------------------------------------------------------
 # InstallLibrary.cmake
 #
-# install() rules + package config for distributing ac3::forge and
-# matroska::matroska independently, consumable via find_package(ac3forge).
-# ac3::audio (src/audio/) is deliberately NOT installed/exported here - it is
-# a CLI/GUI implementation detail, not part of the distributed package; see
-# docs/library/index.md.
+# install() rules + package config for distributing ac3::forge, matroska::matroska and mp4::mp4
+# independently, consumable via find_package(ac3forge). ac3::audio (src/audio/) is deliberately
+# NOT installed/exported here - it is a CLI/GUI implementation detail, not part of the
+# distributed package; see docs/library/index.md.
 #
-# include()'d from the root CMakeLists.txt after add_subdirectory(src/lib),
-# (if AC3FORGE_BUILD_MATROSKA) add_subdirectory(src/matroska) and (if
-# AC3FORGE_BUILD_MPEGTS) add_subdirectory(src/mpegts), before
-# include(Packaging) - CPack's own library component (cmake/Packaging.cmake)
-# packages exactly what gets install()'d here.
+# include()'d from the root CMakeLists.txt after add_subdirectory(src/lib) and, for each
+# optional component, its own guarded add_subdirectory(src/matroska|mp4|mpegts), before
+# include(Packaging) - CPack's own library component (cmake/Packaging.cmake) packages exactly
+# what gets install()'d here.
 #
-# matroska::matroska and mpegts::mpegts are both optional components, off-able
-# via their own AC3FORGE_BUILD_MATROSKA/AC3FORGE_BUILD_MPEGTS option (root
-# CMakeLists.txt) - matroska's is the framework mpegts's reuses, and any future
-# optional component (e.g. mp4::mp4) would too: its own AC3FORGE_BUILD_<NAME>
-# option, its own guarded add_subdirectory(), and its own guarded block below.
-# See packaging/vcpkg-port/ac3forge/vcpkg.json's "matroska" feature, which maps
-# onto AC3FORGE_BUILD_MATROSKA for a vcpkg install - mpegts is not exposed as
-# its own vcpkg feature yet, so a vcpkg install always gets it.
+# matroska::matroska, mp4::mp4 and mpegts::mpegts are all optional components, off-able via
+# their own AC3FORGE_BUILD_MATROSKA/AC3FORGE_BUILD_MP4/AC3FORGE_BUILD_MPEGTS option (root
+# CMakeLists.txt) - each its own AC3FORGE_BUILD_<NAME> option, its own guarded
+# add_subdirectory(), and its own guarded block below. See
+# packaging/vcpkg-port/ac3forge/vcpkg.json's "matroska" feature, which maps onto
+# AC3FORGE_BUILD_MATROSKA for a vcpkg install; mp4::mp4 and mpegts::mpegts do not have a vcpkg
+# feature of their own yet (a follow-up, not a gap in this install() treatment) - a vcpkg
+# install always gets them.
 #
 # Every install() rule below carries COMPONENT library: without one, CPack
 # files it under its own "Unspecified" component, inconsistent once
@@ -56,21 +54,24 @@ include(CMakePackageConfigHelpers)
 # expects a port to ship only the variant matching that triplet's VCPKG_LIBRARY_LINKAGE, not
 # both. ON (the default) keeps today's direct-build/CPack SDK behaviour unchanged - both
 # variants installed and exported, same as before this option existed. forge_static/forge_shared
-# and their matroska/mpegts equivalents still get *built* either way - only what gets
+# and their matroska/mp4/mpegts equivalents still get *built* either way - only what gets
 # install()'d/exported is filtered by this option, so nothing above this point in the tree
 # needs touching for it to take effect.
 option(AC3FORGE_INSTALL_BOTH_LINKAGES "Install/export both static and shared library variants (OFF installs only the BUILD_SHARED_LIBS-selected one)" ON)
 if(AC3FORGE_INSTALL_BOTH_LINKAGES)
     set(_ac3forge_forge_install_targets forge_objects forge_static forge_shared)
     set(_ac3forge_matroska_install_targets matroska_objects matroska_static matroska_shared)
+    set(_ac3forge_mp4_install_targets mp4_objects mp4_static mp4_shared)
     set(_ac3forge_mpegts_install_targets mpegts_objects mpegts_static mpegts_shared)
 elseif(BUILD_SHARED_LIBS)
     set(_ac3forge_forge_install_targets forge_objects forge_shared)
     set(_ac3forge_matroska_install_targets matroska_objects matroska_shared)
+    set(_ac3forge_mp4_install_targets mp4_objects mp4_shared)
     set(_ac3forge_mpegts_install_targets mpegts_objects mpegts_shared)
 else()
     set(_ac3forge_forge_install_targets forge_objects forge_static)
     set(_ac3forge_matroska_install_targets matroska_objects matroska_static)
+    set(_ac3forge_mp4_install_targets mp4_objects mp4_static)
     set(_ac3forge_mpegts_install_targets mpegts_objects mpegts_static)
 endif()
 
@@ -114,8 +115,8 @@ install(FILES
 # CMakeLists.txt) - a vcpkg port maps this straight to its own "matroska" feature. Its
 # targets/headers/export set only exist to install when the component was actually built;
 # ac3forgeConfig.cmake.in's include() of matroskaTargets.cmake is itself conditional
-# (if(EXISTS)) to match. Any future optional component (e.g. mp4) follows this same shape:
-# its own AC3FORGE_BUILD_<NAME> option, its own guarded block here, its own EXPORT set name.
+# (if(EXISTS)) to match. mp4::mp4 (below) follows this same shape: its own
+# AC3FORGE_BUILD_<NAME> option, its own guarded block, its own EXPORT set name.
 if(AC3FORGE_BUILD_MATROSKA)
     install(TARGETS ${_ac3forge_matroska_install_targets}
         EXPORT matroskaTargets
@@ -129,6 +130,29 @@ if(AC3FORGE_BUILD_MATROSKA)
 
     install(FILES "${CMAKE_BINARY_DIR}/src/matroska/generated/matroska/export.hpp"
         DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/matroska"
+        COMPONENT library)
+endif()
+
+# mp4::mp4 is an optional component (AC3FORGE_BUILD_MP4, see the root CMakeLists.txt), same
+# shape as matroska::matroska above including the AC3FORGE_INSTALL_BOTH_LINKAGES-selected
+# target list - its targets, headers and export set only exist to install when the component
+# was actually built. ac3forgeConfig.cmake.in's include() of mp4Targets.cmake is itself
+# conditional (if(EXISTS)) to match. mp4::mp4 has no vcpkg port feature of its own yet
+# (packaging/vcpkg-port/ac3forge/vcpkg.json only defines "matroska") - a follow-up, not a gap
+# in this install() treatment.
+if(AC3FORGE_BUILD_MP4)
+    install(TARGETS ${_ac3forge_mp4_install_targets}
+        EXPORT mp4Targets
+        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT library
+        LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT libruntime NAMELINK_COMPONENT library
+        ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT library)
+
+    install(DIRECTORY "${PROJECT_SOURCE_DIR}/src/mp4/include/"
+        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+        COMPONENT library)
+
+    install(FILES "${CMAKE_BINARY_DIR}/src/mp4/generated/mp4/export.hpp"
+        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/mp4"
         COMPONENT library)
 endif()
 
@@ -189,6 +213,14 @@ if(AC3FORGE_BUILD_MATROSKA)
     install(EXPORT matroskaTargets
         FILE matroskaTargets.cmake
         NAMESPACE matroska::
+        DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/ac3forge"
+        COMPONENT library)
+endif()
+
+if(AC3FORGE_BUILD_MP4)
+    install(EXPORT mp4Targets
+        FILE mp4Targets.cmake
+        NAMESPACE mp4::
         DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/ac3forge"
         COMPONENT library)
 endif()

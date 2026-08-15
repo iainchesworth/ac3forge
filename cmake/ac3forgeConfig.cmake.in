@@ -5,14 +5,17 @@
 # this one Config file rather than a single combined export.
 include("${CMAKE_CURRENT_LIST_DIR}/ac3forgeTargets.cmake")
 
-# matroska::matroska and mpegts::mpegts are both optional components
-# (AC3FORGE_BUILD_MATROSKA/AC3FORGE_BUILD_MPEGTS) - each Targets file only
-# exists when that component was actually installed, e.g. a vcpkg install()
-# built without the "matroska" feature (see cmake/InstallLibrary.cmake's
-# header comment). Same shape applies to any future optional component's own
-# *Targets.cmake.
+# matroska::matroska, mp4::mp4 and mpegts::mpegts are all optional components
+# (AC3FORGE_BUILD_MATROSKA/AC3FORGE_BUILD_MP4/AC3FORGE_BUILD_MPEGTS) - each Targets file only
+# exists when that component was actually installed, e.g. a vcpkg install() built without the
+# "matroska" feature (see cmake/InstallLibrary.cmake's header comment; mp4::mp4 and
+# mpegts::mpegts have no vcpkg feature of their own yet). Same shape applies to any future
+# optional component's own *Targets.cmake.
 if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/matroskaTargets.cmake")
     include("${CMAKE_CURRENT_LIST_DIR}/matroskaTargets.cmake")
+endif()
+if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/mp4Targets.cmake")
+    include("${CMAKE_CURRENT_LIST_DIR}/mp4Targets.cmake")
 endif()
 if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/mpegtsTargets.cmake")
     include("${CMAKE_CURRENT_LIST_DIR}/mpegtsTargets.cmake")
@@ -24,9 +27,9 @@ endif()
 # explicitly (see docs/library/index.md). A package built with that option OFF (a vcpkg install,
 # which only ever installs one linkage per triplet - see cmake/InstallLibrary.cmake) has no such
 # ambiguity: recreate the same bare-name convenience the in-tree build gets, for whichever one
-# variant is actually present. Same treatment for matroska::matroska and mpegts::mpegts - each
-# guarded on its own TARGET check, since either component may be entirely absent (its *Targets.cmake
-# never included above) rather than merely single-linkage.
+# variant is actually present. Same treatment for matroska::matroska, mp4::mp4 and
+# mpegts::mpegts - each guarded on its own TARGET check, since any of the three may be
+# entirely absent (its *Targets.cmake never included above) rather than merely single-linkage.
 if(TARGET ac3::forge_shared AND NOT TARGET ac3::forge_static)
     add_library(ac3::forge ALIAS ac3::forge_shared)
 elseif(TARGET ac3::forge_static AND NOT TARGET ac3::forge_shared)
@@ -36,6 +39,11 @@ if(TARGET matroska::matroska_shared AND NOT TARGET matroska::matroska_static)
     add_library(matroska::matroska ALIAS matroska::matroska_shared)
 elseif(TARGET matroska::matroska_static AND NOT TARGET matroska::matroska_shared)
     add_library(matroska::matroska ALIAS matroska::matroska_static)
+endif()
+if(TARGET mp4::mp4_shared AND NOT TARGET mp4::mp4_static)
+    add_library(mp4::mp4 ALIAS mp4::mp4_shared)
+elseif(TARGET mp4::mp4_static AND NOT TARGET mp4::mp4_shared)
+    add_library(mp4::mp4 ALIAS mp4::mp4_static)
 endif()
 if(TARGET mpegts::mpegts_shared AND NOT TARGET mpegts::mpegts_static)
     add_library(mpegts::mpegts ALIAS mpegts::mpegts_shared)

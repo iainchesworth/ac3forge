@@ -90,6 +90,32 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "^(Clang|AppleClang)$" AND
     target_compile_options(ac3_warnings INTERFACE -Wno-c2y-extensions)
 endif()
 
+# -Wnull-dereference false-positives inside libstdc++'s own headers under GCC
+# 14 at -O2/-O3 (Release) - not seen at Debug's lower optimization level, and
+# not seen on the project's CI-pinned GCC 15. Found for real building
+# config-linux-gcc-arm64 (Release) on a Raspberry Pi 4B running Raspberry Pi
+# OS 13/Trixie, whose apt archive tops out at GCC 14.2.0 - the toolchain
+# files' find_program fallback (see cmake/toolchains/linux.gcc.toolchain.cmake)
+# picks it up correctly, so this is a real, reachable configuration, not a
+# hypothetical one. Two genuine repros: tests/test_cli.cpp's read_log()
+# istreambuf_iterator-based std::string construction flags a "null pointer
+# dereference" inside <streambuf>'s gptr()/egptr(), and src/cli/main.cpp's
+# load_sources() std::vector<std::size_t>::resize() flags one inside
+# <bits/stl_construct.h> - both after GCC inlines several layers deep into
+# code this project does not own and cannot edit. This is GCC's own
+# documented false-positive category for this check (the analysis runs after
+# inlining/vectorization decisions the optimizer made, and misattributes an
+# "impossible" path those transformations introduced as a real null
+# dereference in the original source) - see gcc.gnu.org/bugzilla, e.g. PR
+# 108757 and neighbouring reports against std::vector/streambuf internals.
+# Scoped to GCC < 15 specifically: the pinned CI compiler (both x64 and
+# arm64) does not exhibit it, so this stays a no-op there rather than
+# quietly weakening the check on the toolchain this project actually gates
+# on - it only helps machines (like this Pi) resolving an older distro GCC.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 15)
+    target_compile_options(ac3_warnings INTERFACE -Wno-null-dereference)
+endif()
+
 # ---------------------------------------------------------------------------
 # AC3_WARNINGS_OFF_FLAG - switches every warning off for one source file.
 #
