@@ -12,6 +12,20 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 
 ## [Unreleased]
 
+### Added
+
+- **Live sessions mux straight to Matroska.** `ac3cli record`/`ac3cli live` take a new
+  `container=mkv` trailing token, writing the take directly to `.mkv` in the one command instead of
+  needing a separate `ac3cli mkv` wrap afterward. The GUI's Live session tab already offers the same
+  choice through its existing Container combo (Format tab) — its own live write path is rebuilt on
+  top of a new incremental API, `matroska::Writer`, so a Matroska take is now written straight to
+  its real destination as it is captured rather than spooled as an elementary stream and muxed only
+  at a clean stop: Segment is written with EBML's reserved "unknown size" pattern (the standard way
+  a streamed Matroska declares a length it cannot know yet), so a crash mid-session now leaves a
+  genuinely playable, if truncated, `.mkv` behind instead of a recoverable elementary-stream
+  companion file. `matroska::mux()` (the existing whole-file API `ac3cli mkv` and file-based GUI
+  encodes use) is unchanged.
+
 ## [0.5.0-beta.1] - 2026-08-15
 
 Fourth tagged release. The main change is a fast-transform performance initiative: an opt-in

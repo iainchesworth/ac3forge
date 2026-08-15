@@ -113,6 +113,13 @@ void print_meta_usage() {
     std::println("                    the programme is still as long as the longest one once "
                  "every offset is applied");
     std::println();
+    std::println("record/live options (record, live; any order, after the positional "
+                 "arguments):");
+    std::println("  container=mkv     write straight to Matroska instead of the bare elementary");
+    std::println("                    stream this writes by default - same shape of choice as");
+    std::println("                    the GUI's own Container setting");
+    std::println("  container=raw     the default, spelled out");
+    std::println();
     std::println("live options (live; any order, after the positional arguments):");
     std::println("  capture2=<index>  a second capture device, clock-conformed to the first "
                  "(see 'devices')");
@@ -158,6 +165,13 @@ struct Options {
     // positional already reads. Unset means the classic single-device
     // session, unchanged from before this option existed.
     std::optional<int> capture2 = std::nullopt;
+    // 'record'/'live' only: write straight to Matroska instead of the bare
+    // elementary stream they write by default - the same shape of choice the
+    // GUI's own Container combo offers (EncoderController::containerIndex ==
+    // kContainerMatroska), see write_frames_or_mux. Off by default, matching
+    // every bare-token/off-by-default field here: a plain invocation writes
+    // exactly the .ac3/.ec3 it always has.
+    bool matroska_container = false;
     // Off by default, matching every bare token here - keep whatever frames
     // a failed encode already produced, written beside the intended output
     // as <name>.partial.<ext> instead of discarded outright. The same
@@ -426,6 +440,17 @@ bool parse_options(std::span<char*> tokens, Options& out) {
             out.capture2 = index;
             continue;
         }
+        if (key == "container") {
+            if (value == "mkv" || value == "matroska") {
+                out.matroska_container = true;
+            } else if (value == "raw") {
+                out.matroska_container = false;
+            } else {
+                std::println(stderr, "error: container must be raw or mkv (got '{}')", token);
+                return false;
+            }
+            continue;
+        }
         if (key == "signing-key") {
             if (value.empty()) {
                 std::println(stderr, "error: signing-key= needs a key file path");
@@ -542,6 +567,40 @@ bool write_frames(std::string_view path, std::span<const std::vector<std::byte>>
     for (const auto& frame : frames) {
         out.write(reinterpret_cast<const char*>(frame.data()),
                   static_cast<std::streamsize>(frame.size()));
+    }
+    return true;
+}
+
+// Writes `frames` either as a bare elementary stream (write_frames above) or,
+// when `matroska` is set, muxed into Matroska - the choice 'record'/'live's
+// own container= token (and the GUI's Container combo) offer. `track` is
+// built by the caller from what it already knows about the session (codec,
+// sample rate, coded channel count) rather than scanned off the bitstream
+// the way 'mkv' reads an arbitrary already-encoded file: record/live just
+// finished constructing the encoder themselves, so there is nothing to
+// rediscover. Kept beside write_frames rather than folded into it - most
+// callers have no AudioTrack to give it, and 'mkv' itself stays separate too,
+// since ITS track comes from ac3::io::scan(), not a caller-supplied one.
+bool write_frames_or_mux(std::string_view path, bool matroska, const matroska::AudioTrack& track,
+                         std::span<const std::vector<std::byte>> frames) {
+    if (!matroska) {
+        return write_frames(path, frames);
+    }
+    const auto file = matroska::mux(track, frames);
+    if (!file) {
+        std::println(stderr, "error: {}", matroska::describe(file.error()));
+        return false;
+    }
+    std::ofstream out{std::string{path}, std::ios::binary};
+    if (!out) {
+        std::println(stderr, "error: cannot open {} for writing", path);
+        return false;
+    }
+    out.write(reinterpret_cast<const char*>(file->data()),
+             static_cast<std::streamsize>(file->size()));
+    if (!out) {
+        std::println(stderr, "error: write failed");
+        return false;
     }
     return true;
 }
@@ -2128,10 +2187,18 @@ int run_record(std::string_view out_path, std::uint32_t seconds, std::uint32_t b
 
     capture.stop();
     const auto stats = capture.stats();
-    if (!write_frames(out_path, frames)) {
+    // record is always plain AC-3 stereo (see the deinterleave above, which
+    // only ever fills `planar`'s two channels) - the same track shape 'mkv'
+    // would derive by scanning this file back, just already known here.
+    const matroska::AudioTrack track{.codec_id = std::string{matroska::kCodecAc3},
+                                     .sample_rate = capture.sample_rate(),
+                                     .channels = 2,
+                                     .samples_per_frame = ac3::kSamplesPerFrame};
+    if (!write_frames_or_mux(out_path, meta.matroska_container, track, frames)) {
         return 1;
     }
-    std::println("wrote {} frames ({} kbps) to {}", frames.size(), bitrate, out_path);
+    std::println("wrote {} frames ({} kbps) to {}{}", frames.size(), bitrate, out_path,
+                 meta.matroska_container ? " (Matroska)" : "");
     std::println("captured {} frames, {} silence-filled, {} dropped", stats.frames_captured,
                  stats.frames_silence_filled, stats.frames_dropped);
     print_channel_summary(meter);
@@ -3633,11 +3700,22 @@ int run_live(std::string_view out_path, int capture_device, std::uint32_t second
                      pstats.bursts_submitted, pstats.bursts_rendered, pstats.underruns);
     }
     const auto stats = capture.stats();
-    if (!write_frames(out_path, frames)) {
+    // Object mode's unit_bytes are the 5.1-bed access unit (matching what a
+    // legacy decoder hears, same as the meter above); channel mode is always
+    // plain 2-channel AC-3 (encode_frame above only ever sees
+    // views.first(2)) - the same track shape 'mkv' would derive by scanning
+    // this file back, just already known here.
+    const matroska::AudioTrack track{
+        .codec_id = std::string{atmos ? matroska::kCodecEac3 : matroska::kCodecAc3},
+        .sample_rate = rate_hz,
+        .channels = atmos ? 6 : 2,
+        .samples_per_frame = ac3::kSamplesPerFrame};
+    if (!write_frames_or_mux(out_path, meta.matroska_container, track, frames)) {
         return 1;
     }
-    std::println("wrote {} {} ({} kbps) to {}", frames.size(),
-                 atmos ? "E-AC-3 access units" : "AC-3 frames", bitrate, out_path);
+    std::println("wrote {} {} ({} kbps) to {}{}", frames.size(),
+                 atmos ? "E-AC-3 access units" : "AC-3 frames", bitrate, out_path,
+                 meta.matroska_container ? " (Matroska)" : "");
     std::println("captured {} frames, {} silence-filled, {} dropped", stats.frames_captured,
                  stats.frames_silence_filled, stats.frames_dropped);
     if (slave_drift.has_value()) {
@@ -3894,6 +3972,9 @@ void print_usage() {
     std::println("       clock master, paced exactly as it always has been; capture2= adds a");
     std::println("       second, independently-clocked device whose stream is resampled to");
     std::println("       track the master, with the measured drift printed at session end.");
+    std::println("record/live container=mkv: write straight to Matroska (a single command)");
+    std::println("       instead of the bare elementary stream both write by default; 'mkv'");
+    std::println("       remains the way to wrap an ALREADY-encoded file after the fact.");
     std::println("monitor/live --monitor play the 5.1 BED of an Atmos-mode stream: the in-repo");
     std::println("       decoder's E-AC-3 scope is A/52 Annex E syntax, not TS 103 420's object");
     std::println("       layer, so this is what a legacy decoder hears, not unmixed objects.");

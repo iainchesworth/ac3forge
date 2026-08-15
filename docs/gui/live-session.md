@@ -212,27 +212,31 @@ in the first place, and that was already true before this bundle — the watchdo
 the end — an hour-long session was unbounded memory, and a crash lost everything captured. It now
 writes each encoded unit to disk as it is produced.
 
-The output file (or files) opens before the session is marked live: a new private
-`openLiveOutputWriters` builds a `LiveOutputWriters` — the open `stream`, its `stream_path`, the
-real `final_path`, a `matroska` flag, a `frame_sizes` index, and an optional `wav_safety` writer —
-on the GUI thread, inside `startLiveSession`, so a bad destination path is refused there exactly
-like a bad device choice already is, not discovered as a mid-take failure minutes in.
+The output file opens before the session is marked live: a new private `openLiveOutputWriters`
+builds a `LiveOutputWriters` — the open `stream`, its `path`, a `matroska` flag, and an optional
+`wav_safety` writer — on the GUI thread, inside `startLiveSession`, so a bad destination path is
+refused there exactly like a bad device choice already is, not discovered as a mid-take failure
+minutes in.
 
-What "writing incrementally" means depends on the container:
+What "writing incrementally" means depends on the container, but both write straight into `path` —
+there is no separate spool file for either:
 
-- **Elementary stream** (`.ac3` / `.ec3`): `stream_path` and `final_path` are the same file. Every
-  byte `runLiveSession`'s loop writes *is* the take, from the first frame on — a crash leaves
-  exactly what was captured, playable up to that point.
-- **Matroska** (`.mkv`): `matroska::mux()` only ever produces a complete file from the whole set of
-  frames at once, so the real `.mkv` can only be written once, at a clean stop. The elementary
-  stream instead spools to a companion file next to the real path — same stem, extension replaced
-  with `.live.ec3` or `.live.ac3` depending on codec (`live_stream_spool_path`, in
-  `encoder_controller.cpp`) — while `frame_sizes` tracks a lightweight per-frame size index, not
-  the audio itself, so memory stays bounded for the run's whole duration. At a clean stop the spool
-  is read back, muxed into the real `.mkv`, and deleted. A crash (or any interruption that never
-  reaches the mux step) leaves the `.live.ec3` / `.live.ac3` spool behind as the recoverable
-  elementary take — worth knowing if a Matroska session ever ends badly: the audio survives next to
-  where the `.mkv` would have been, just not yet in a Matroska container.
+- **Elementary stream** (`.ac3` / `.ec3`): every byte `runLiveSession`'s loop writes *is* the take,
+  from the first frame on — a crash leaves exactly what was captured, playable up to that point.
+- **Matroska** (`.mkv`): `matroska::mux()` needs the whole frame list to compute anything, which a
+  live session never has until it decides to stop — so this container instead pushes each unit into
+  a `matroska::Writer` (`src/matroska`), the module's own incremental API for exactly this case.
+  Segment is written with EBML's reserved "unknown size" pattern, the standard way a streamed
+  Matroska declares a length it cannot know yet, and Duration is omitted for the same reason — real
+  players handle both the way they handle any other live-streamed Matroska. `writer->push()` returns
+  a just-closed cluster's bytes on the (roughly one-per-second) calls where the time budget closes
+  one, and empty otherwise, so `runLiveSession` never holds more than one cluster's worth of audio
+  in memory regardless of how long the session runs. `writer->finalize()` flushes the trailing
+  partial cluster at a clean stop; nothing else needs closing, since Segment's size was never
+  written as a real number to begin with. A crash truncates the take — whatever clusters had
+  already reached disk are already complete, valid Matroska, so the `.mkv` itself plays up to that
+  point, the same honest "playable up to where it stopped" guarantee the elementary-stream path
+  already gave, not a companion file to fold in by hand afterward.
 
 Both paths flush to disk roughly once a second (not per frame) rather than on every write.
 
@@ -367,8 +371,16 @@ passthrough, running continuously and still writing the file `record` always has
 `live mode` distinction between `channels` and `atmos` — the GUI's Atmos-mode live room is that
 same `atmos` mode, with the timeline replaced by real-time motion. **Two-device capture is at
 parity** — `capture2=<index>` (see [Two-device capture](#two-device-capture-clock-master-model))
-uses the same shared `DriftResampler`/`ClockDriftEstimator` pair on both sides. The rest of the
-parity gap remains, worth being honest about: `ac3cli live` (`run_live` in `src/cli/main.cpp`)
+uses the same shared `DriftResampler`/`ClockDriftEstimator` pair on both sides. **Container choice
+is at parity too** — `ac3cli record`/`ac3cli live` both take a `container=mkv` trailing token (see
+[CLI → Metadata
+options](../cli/metadata-options.md#recordlive-options-record-live-containermkv)) that writes
+straight to Matroska in the one command, the same choice this page's own [Take
+durability](#take-durability) section describes the GUI's Container combo making. The CLI reaches
+it with `matroska::mux()` rather than `matroska::Writer` — `record`/`live` already hold every frame
+in memory until the run ends (see the very next sentence), so there is nothing incremental to gain
+there the way there is for the GUI's own bounded-memory, mid-session-crash-safe take. The rest of
+the parity gap remains, worth being honest about: `ac3cli live` (`run_live` in `src/cli/main.cpp`)
 still reserves and fills a `frames` vector across the whole run and writes it once at the end, has
 no device-drop watchdog, still pans exactly one object per capture channel with no add/reassign,
 and has no parallel downmix leg of its own (an AC-3-only receiver during an `atmos`/E-AC-3 CLI
@@ -376,7 +388,7 @@ session still just gets the plain refusal) — none of this page's
 [take durability](#take-durability), [device-drop detection](#device-drop-detection), live
 object-slot budget, [receiver hot-swap](#receiver-hot-swap), or
 [parallel downmix leg](#parallel-downmix-receiver-leg) has reached the CLI's `live` command beyond
-the two-device clock model itself.
+the two-device clock model and container choice itself.
 
 ## Next
 

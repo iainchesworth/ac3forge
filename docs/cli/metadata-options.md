@@ -208,6 +208,31 @@ The GUI's own multi-source Format-tab table (**Add source…** plus a per-channe
 is a direct front end over this same grammar — see
 [GUI → Multi-source & assignment](../gui/source-assignment.md).
 
+## Record/live options (`record`, `live`): `container=mkv`
+
+```text
+record/live options (record, live; any order, after the positional arguments):
+  container=mkv     write straight to Matroska instead of the bare elementary
+                     stream this writes by default - same shape of choice as
+                     the GUI's own Container setting
+  container=raw     the default, spelled out
+```
+
+`container=mkv` writes the take straight to Matroska (`.mkv`) instead of a bare `.ac3`/`.ec3`
+elementary stream, in the one `record`/`live` command — unlike `mkv`, which wraps an
+*already-encoded* file after the fact (see [Command-specific notes](#command-specific-notes)
+below), there is no second command needed here. `container=raw` is the default spelled out
+explicitly; any other value is refused rather than silently ignored, the same rule every option on
+this page follows. This is the same choice the GUI's own Container combo offers on the Format tab
+(see [GUI → Format & channels](../gui/format-and-channels.md)) — see [GUI → Live capture &
+session](../gui/live-session.md#take-durability) for how a live session's own take durability
+differs slightly between the two front ends.
+
+```bash
+ac3cli record out.mkv 30 192 0 container=mkv
+ac3cli live out.mkv 0 30 448 -2 -2 atmos container=mkv
+```
+
 ## Live options (`live`): `capture2=`
 
 ```text

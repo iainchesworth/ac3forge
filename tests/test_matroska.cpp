@@ -98,6 +98,14 @@ constexpr std::uint32_t kTrackEntry = 0xAE;
 constexpr std::uint32_t kAudio = 0xE1;
 constexpr std::uint32_t kCluster = 0x1F43B675;
 constexpr std::uint32_t kEbmlHeader = 0x1A45DFA3;
+constexpr std::uint32_t kDuration = 0x4489;
+constexpr std::uint32_t kSimpleBlock = 0xA3;
+
+// EBML's reserved "unknown size" value, at the 8-byte width matroska::Writer
+// always writes it at (see that class's own comment) - an independent
+// re-derivation of the same reserved pattern, the same "do not trust the
+// muxer's own idea of what it wrote" spirit as the rest of this walker.
+constexpr std::uint64_t kUnknownSize = (std::uint64_t{1} << 56) - 1;
 
 bool is_master(std::uint32_t id) {
     return id == kSegment || id == kInfo || id == kTracks || id == kTrackEntry ||
@@ -107,11 +115,20 @@ bool is_master(std::uint32_t id) {
 void walk(Reader& r, std::size_t end, std::vector<Element>& out) {
     while (r.pos < end) {
         const auto id = r.id();
-        const auto length = r.size();
+        auto length = r.size();
         const auto payload = r.pos;
-        // A size that overruns its parent means the muxer wrote a bad length -
-        // exactly the failure this walker exists to catch.
-        REQUIRE(payload + length <= end);
+        if (length == kUnknownSize) {
+            // matroska::Writer's own Segment (see its class comment): an
+            // element with no length field to check, that instead runs until
+            // whatever bounds it from the outside - here always the parent's
+            // own end, since nothing this module ever writes follows an
+            // unknown-size element with a sibling.
+            length = end - payload;
+        } else {
+            // A size that overruns its parent means the muxer wrote a bad
+            // length - exactly the failure this walker exists to catch.
+            REQUIRE(payload + length <= end);
+        }
         out.push_back({id, payload, length});
         if (is_master(id)) {
             walk(r, payload + static_cast<std::size_t>(length), out);
@@ -245,4 +262,153 @@ TEST_CASE("Matroska muxer rejects what it cannot describe", "[matroska]") {
           matroska::MuxError::kInvalidTrack);
     CHECK(matroska::mux({.codec_id = "", .channels = 2}, one).error() ==
           matroska::MuxError::kInvalidTrack);
+}
+
+// --- matroska::Writer: the incremental API a live session pushes frames into
+// one at a time, with no total frame count known up front (see its own class
+// comment in matroska.hpp). Tested against the same independent EBML walker
+// as mux() above, plus a direct parity check against mux()'s own output for
+// a session whose full frame list happens to be available too - the only
+// difference between the two should be Segment's size (known vs. streamed
+// unknown) and Duration (present vs. omitted), never the track, the cluster
+// boundaries or a single SimpleBlock's content.
+
+TEST_CASE("Matroska Writer's assembled output matches mux()'s own track, framing and clusters",
+          "[matroska][writer]") {
+    // 40 frames of 1536 samples at 48 kHz (32 ms each) - past the default
+    // 1000 ms cluster budget by frame 32, so this exercises a real cluster
+    // boundary, not just a single one. Each frame's fill byte is its own
+    // 1-based index rather than a repeated constant, so a frame landing out
+    // of order, dropped or duplicated is a content mismatch below, not a
+    // count that happens to still add up.
+    constexpr std::size_t kFrameCount = 40;
+    constexpr std::size_t kFrameSize = 512;
+    std::vector<Bytes> frames;
+    frames.reserve(kFrameCount);
+    for (std::size_t i = 0; i < kFrameCount; ++i) {
+        frames.push_back(frame_of(kFrameSize, static_cast<std::uint8_t>(i + 1)));
+    }
+
+    const matroska::AudioTrack track{.codec_id = std::string{matroska::kCodecEac3},
+                                     .sample_rate = 48000,
+                                     .channels = 6,
+                                     .samples_per_frame = 1536};
+
+    const auto batch = matroska::mux(track, frames);
+    REQUIRE(batch.has_value());
+    const auto batch_elements = parse(*batch);
+    REQUIRE(count(batch_elements, kCluster) > 1);  // confirms the boundary above is real
+
+    auto writer = matroska::Writer::create(track);
+    REQUIRE(writer.has_value());
+
+    Bytes assembled = writer->header();
+    for (const auto& frame : frames) {
+        const auto pushed = writer->push(frame);
+        REQUIRE(pushed.has_value());
+        assembled.insert(assembled.end(), pushed->begin(), pushed->end());
+    }
+    const auto tail = writer->finalize();
+    assembled.insert(assembled.end(), tail.begin(), tail.end());
+    CHECK(writer->frames_written() == kFrameCount);
+
+    const auto elements = parse(assembled);
+    REQUIRE(find(elements, kEbmlHeader) != nullptr);
+    REQUIRE(find(elements, kSegment) != nullptr);
+    REQUIRE(find(elements, kTracks) != nullptr);
+    CHECK(count(elements, kTrackEntry) == 1);
+    // Streamed on purpose: the session's length is not known up front, so -
+    // unlike mux()'s own output above - there is nothing honest to put in
+    // Duration (see matroska::Writer's own class comment).
+    CHECK(find(elements, kDuration) == nullptr);
+    CHECK(count(elements, kCluster) == count(batch_elements, kCluster));
+    CHECK(count(elements, kSimpleBlock) == kFrameCount);
+
+    const auto* codec = find(elements, 0x86);
+    REQUIRE(codec != nullptr);
+    Reader cr{assembled, codec->payload};
+    CHECK(cr.string_value(codec->length) == "A_EAC3");
+
+    // Same content, same order: every SimpleBlock's own payload, after the
+    // 4-byte track/timestamp/flags header this module always writes, must be
+    // the frame whose fill byte equals its own position - in order.
+    std::size_t seen = 0;
+    for (const auto& e : elements) {
+        if (e.id != kSimpleBlock) {
+            continue;
+        }
+        CHECK(e.length == 4 + kFrameSize);
+        Reader br{assembled, e.payload};
+        CHECK(br.byte() == 0x81);  // track number 1, one-byte vint
+        const auto hi = static_cast<std::int16_t>(br.byte());
+        const auto lo = static_cast<std::int16_t>(br.byte());
+        const auto relative = static_cast<std::int16_t>((hi << 8) | lo);
+        CHECK(relative >= 0);
+        CHECK(br.byte() == 0x80);  // flags: keyframe bit, no lacing
+        CHECK(static_cast<std::size_t>(br.byte()) == seen + 1);
+        ++seen;
+    }
+    CHECK(seen == kFrameCount);
+}
+
+TEST_CASE("Matroska Writer buffers at most one cluster's worth of frames", "[matroska][writer]") {
+    // 1536 samples at 48 kHz is 32 ms/frame; a 100 ms cluster budget closes
+    // on the 5th frame (128 ms), keeping the first four (96 ms).
+    auto writer = matroska::Writer::create({.channels = 2}, {.cluster_ms = 100});
+    REQUIRE(writer.has_value());
+
+    for (int i = 0; i < 4; ++i) {
+        const auto pushed = writer->push(frame_of(64, static_cast<std::uint8_t>(i)));
+        REQUIRE(pushed.has_value());
+        // Still inside the same 100 ms cluster - nothing closes yet, so
+        // there is nothing to write. This is the whole point of the
+        // incremental API over mux(): a caller streaming these bytes
+        // straight to disk never holds more than one cluster's worth of
+        // audio in memory, whatever the session's total length turns out
+        // to be.
+        CHECK(pushed->empty());
+    }
+    const auto closing = writer->push(frame_of(64, 4));
+    REQUIRE(closing.has_value());
+    CHECK_FALSE(closing->empty());
+
+    const auto closed_elements = parse(*closing);
+    CHECK(count(closed_elements, kCluster) == 1);
+    CHECK(count(closed_elements, kSimpleBlock) == 4);
+}
+
+TEST_CASE("Matroska Writer::create() rejects an invalid track the same way mux() does",
+          "[matroska][writer]") {
+    CHECK(matroska::Writer::create({.channels = 0}).error() == matroska::MuxError::kInvalidTrack);
+    CHECK(matroska::Writer::create({.sample_rate = 0, .channels = 2}).error() ==
+          matroska::MuxError::kInvalidTrack);
+    CHECK(matroska::Writer::create({.codec_id = "", .channels = 2}).error() ==
+          matroska::MuxError::kInvalidTrack);
+}
+
+TEST_CASE("Matroska Writer's finalize() flushes a trailing partial cluster, and is a safe "
+         "no-op with nothing left to give back", "[matroska][writer]") {
+    auto empty_writer = matroska::Writer::create({.channels = 2});
+    REQUIRE(empty_writer.has_value());
+    CHECK(empty_writer->finalize().empty());
+    CHECK(empty_writer->frames_written() == 0);
+
+    auto writer = matroska::Writer::create({.channels = 2});
+    REQUIRE(writer.has_value());
+    for (int i = 0; i < 3; ++i) {
+        const auto pushed = writer->push(frame_of(48, static_cast<std::uint8_t>(i)));
+        REQUIRE(pushed.has_value());
+        CHECK(pushed->empty());  // default cluster_ms (1000 ms) never crossed by 3 frames
+    }
+    const auto tail = writer->finalize();
+    CHECK_FALSE(tail.empty());
+    const auto elements = parse(tail);
+    CHECK(count(elements, kCluster) == 1);
+    CHECK(count(elements, kSimpleBlock) == 3);
+    CHECK(writer->frames_written() == 3);
+
+    // A second finalize() after everything has already been flushed has
+    // nothing left to give back - documented as a one-shot call, but a
+    // caller that gets this wrong should get silence, not a corrupt file.
+    CHECK(writer->finalize().empty());
 }

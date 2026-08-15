@@ -279,6 +279,55 @@ TEST_CASE("capture2= rejects malformed tokens", "[cli][capture2]") {
     }
 }
 
+// container= is 'record'/'live'-only, but like capture2= above its rejection
+// happens in parse_options, before either command's own logic ever runs - so
+// 'encode' (Needs::kNothing) can exercise the parsing without a real capture
+// device, the same reasoning capture2='s own test comment gives.
+TEST_CASE("container= rejects malformed tokens and accepts the two real ones",
+          "[cli][container]") {
+    const auto dir = scratch_dir();
+    const auto wav_path = dir / "container_parse_in.wav";
+    const auto channels = make_tone_channels(2, 4000, 48000);
+    REQUIRE(ac3::io::write_wav_f32(wav_path.string(), channels, 48000).has_value());
+
+    SECTION("an unrecognised value is refused, not silently ignored") {
+        const auto out_path = dir / "container_parse_bad.ac3";
+        const auto log = dir / "container_parse_bad.log";
+        fs::remove(out_path);
+        const auto rc = run_cli("encode \"" + wav_path.string() + "\" \"" + out_path.string() +
+                                    "\" 192 stereo container=avi",
+                                log);
+        CHECK(rc != 0);
+        CHECK_FALSE(fs::exists(out_path));
+        CHECK(read_log(log).find("container") != std::string::npos);
+    }
+
+    SECTION("container=mkv parses (encode itself never reads it, so the run still succeeds "
+           "and writes the plain elementary stream)") {
+        const auto out_path = dir / "container_parse_mkv.ac3";
+        const auto log = dir / "container_parse_mkv.log";
+        fs::remove(out_path);
+        const auto rc = run_cli("encode \"" + wav_path.string() + "\" \"" + out_path.string() +
+                                    "\" 192 stereo container=mkv",
+                                log);
+        INFO(read_log(log));
+        CHECK(rc == 0);
+        CHECK(fs::exists(out_path));
+    }
+
+    SECTION("container=raw parses, spelling out the default") {
+        const auto out_path = dir / "container_parse_raw.ac3";
+        const auto log = dir / "container_parse_raw.log";
+        fs::remove(out_path);
+        const auto rc = run_cli("encode \"" + wav_path.string() + "\" \"" + out_path.string() +
+                                    "\" 192 stereo container=raw",
+                                log);
+        INFO(read_log(log));
+        CHECK(rc == 0);
+        CHECK(fs::exists(out_path));
+    }
+}
+
 TEST_CASE("offset= applies leading silence and grows the programme", "[cli][offset]") {
     const auto dir = scratch_dir();
     const auto wav_path = dir / "offset_apply_in.wav";
