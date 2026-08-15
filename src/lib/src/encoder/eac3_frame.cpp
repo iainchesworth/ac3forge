@@ -16,6 +16,8 @@
 #include "ac3/encoder/eac3_tools.hpp"
 #include "ac3/internal/profiling.hpp"
 
+#include "snr_search.hpp"
+
 namespace ac3::eac3 {
 
 namespace {
@@ -153,6 +155,7 @@ struct ChannelPlan {
 // rate search therefore does exactly that on every iteration, and the packer
 // reuses the gains left here so the two cannot disagree.
 [[nodiscard]] std::uint32_t aht_stream_bits(ChannelPlan& plan, int gaqmod) {
+    AC3_ZONE_SCOPED_N("aht_stream_bits");
     std::uint32_t bits = 2;  // chgaqmod itself, which is part of the element
     int active = 0;
     for (int bin = plan.start; bin < plan.endmant; ++bin) {
@@ -354,6 +357,7 @@ struct EcplBandFit {
                                         std::span<const double> baseline_b,
                                         std::span<const double, 256> zr,
                                         std::span<const double, 256> zi, int ch, int low) {
+    AC3_ZONE_SCOPED_N("fit_ecpl_band");
     const std::size_t n = channel.size();
     double saa = 0.0;
     double sab = 0.0;
@@ -1105,6 +1109,7 @@ void emit_frame(BitWriter& w, const FrameConfig& config, std::uint32_t words,
 std::expected<std::vector<std::byte>, FrameError> finish_frame(
     const FrameConfig& config, std::uint32_t words, const Payload& payload,
     std::span<const std::byte> aux) {
+    AC3_ZONE_SCOPED_N("finish_frame_pack_mux");
     const std::uint32_t total_bytes = words * 2;
     const std::uint32_t total_bits = total_bytes * 8;
 
@@ -1480,27 +1485,30 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     // inventing bitstream machinery this phase has no room for is to leave
     // coupling (and, below, AHT) off for the WHOLE frame whenever any
     // eligible channel switches, rather than just that one channel.
+    AC3_ZONE_BEGIN(zone_transients, "step1_transient_detect");
     std::vector<std::array<bool, kBlocksPerFrame>> blksw(static_cast<std::size_t>(nfchans));
     std::vector<bool> channel_switched(static_cast<std::size_t>(nfchans), false);
     bool any_switched = false;
     for (int ch = 0; ch < nfchans; ++ch) {
         const auto& pcm = channels[static_cast<std::size_t>(ch)];
-        auto& hist = history_[static_cast<std::size_t>(ch)];
         for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
-            auto& time = time_scratch_;
-            for (int n = 0; n < 512; ++n) {
-                const int pos = blk * 256 - 256 + n;
-                time[static_cast<std::size_t>(n)] =
-                    pos < 0 ? hist[static_cast<std::size_t>(pos + 256)]
-                            : static_cast<double>(pcm[static_cast<std::size_t>(pos)]);
-            }
-            const bool sw = transient_detectors_[static_cast<std::size_t>(ch)].detect(time);
+            // §8.2.2 defines blksw from the analysis window's SECOND half -
+            // exactly this block period's 256 NEW samples, a contiguous
+            // slice of the frame's own PCM. The window's first half was last
+            // call's segment; the detector's persistent state carries it, so
+            // no history splice (and no 512-sample gather) is needed here at
+            // all - see TransientDetector::detect.
+            const std::span<const float, kSamplesPerBlock> segment{
+                pcm.data() + static_cast<std::size_t>(blk) * kSamplesPerBlock,
+                kSamplesPerBlock};
+            const bool sw = transient_detectors_[static_cast<std::size_t>(ch)].detect(segment);
             blksw[static_cast<std::size_t>(ch)][static_cast<std::size_t>(blk)] = sw;
             channel_switched[static_cast<std::size_t>(ch)] =
                 channel_switched[static_cast<std::size_t>(ch)] || sw;
             any_switched = any_switched || sw;
         }
     }
+    AC3_ZONE_END(zone_transients);
 
     // §3.7: transient pre-noise processing. Reuses the block-switch decision
     // above rather than a second, independent transient detector - a channel
@@ -1636,14 +1644,18 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         auto& hist = history_[static_cast<std::size_t>(ch)];
         for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
             auto& time = time_scratch_;
+            AC3_ZONE_BEGIN(zone_gather, "step2_gather");
             for (int n = 0; n < 512; ++n) {
                 const int pos = blk * 256 - 256 + n;
                 time[static_cast<std::size_t>(n)] =
                     pos < 0 ? hist[static_cast<std::size_t>(pos + 256)]
                             : static_cast<double>(pcm[static_cast<std::size_t>(pos)]);
             }
+            AC3_ZONE_END(zone_gather);
             auto& windowed = windowed_scratch_;
+            AC3_ZONE_BEGIN(zone_window, "step2_window");
             apply_analysis_window(time, windowed);
+            AC3_ZONE_END(zone_window);
             if (ch < nfchans && blksw[static_cast<std::size_t>(ch)][static_cast<std::size_t>(blk)]) {
                 // §7.9.2: the two half-block transforms are interleaved
                 // bin-by-bin into one ordinary 256-coefficient set - from
@@ -1652,15 +1664,15 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                 const std::span<const double, 512> full(windowed);
                 auto& first = half1_scratch_;
                 auto& second = half2_scratch_;
-                mdct256_forward_first(full.first<256>(), first);
-                mdct256_forward_second(full.last<256>(), second);
+                mdct256_forward_first(full.first<256>(), first, config_.fast_mdct);
+                mdct256_forward_second(full.last<256>(), second, config_.fast_mdct);
                 auto& out = coeffs_at(ch, blk);
                 for (int k = 0; k < 128; ++k) {
                     out[static_cast<std::size_t>(2 * k)] = first[static_cast<std::size_t>(k)];
                     out[static_cast<std::size_t>(2 * k + 1)] = second[static_cast<std::size_t>(k)];
                 }
             } else {
-                mdct512_forward(windowed, coeffs_at(ch, blk));
+                mdct512_forward(windowed, coeffs_at(ch, blk), config_.fast_mdct);
             }
         }
         for (int n = 0; n < 256; ++n) {
@@ -1678,6 +1690,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                static_cast<std::size_t>(ch);
     };
     if (cpl.in_use) {
+        AC3_ZONE_SCOPED_N("step3_coupling");
         cpl.master.assign(static_cast<std::size_t>(kBlocksPerFrame) *
                               static_cast<std::size_t>(nfchans),
                           0);
@@ -1895,6 +1908,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     // AC-3's - clamps its last active band to fbw_endmant - 1 and never
     // touches a bin coupling or spectral extension will overwrite anyway.
     if (config_.acmod == Acmod::k2_0) {
+        AC3_ZONE_SCOPED_N("step4_rematrix");
         const int nrematbd = rematrix_band_count(cpl, spx);
         for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
             auto& left = coeffs_at(0, blk);
@@ -1943,6 +1957,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     for (int ch = 0; ch < nfchans; ++ch) {
         payload.chans[static_cast<std::size_t>(ch)].blksw = blksw[static_cast<std::size_t>(ch)];
     }
+    AC3_ZONE_BEGIN(zone_aht_select, "step4b_aht_select");
     for (int s = 0; s < streams && config_.aht; ++s) {
         auto& plan = payload.chans[static_cast<std::size_t>(s)];
         // A block-switched channel's transform already varies within the
@@ -1966,6 +1981,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         plan.aht = !(peak > 0.0) || peak <= kAhtStationaryRatio * quietest;
         payload.ahte = payload.ahte || plan.aht;
     }
+    AC3_ZONE_END(zone_aht_select);
 
     // --- 6. Fixed point and one frame-constant exponent set per stream -----
     AC3_ZONE_BEGIN(zone_exponents, "step5_exponents");
@@ -2002,6 +2018,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         std::vector<std::uint8_t> axis_exps(span, 0);
 
         if (plan.aht) {
+            AC3_ZONE_SCOPED_N("step5_aht_transform");
             plan.aht_fixed.assign(static_cast<std::size_t>(plan.endmant), {});
             plan.aht_coeffs.assign(static_cast<std::size_t>(plan.endmant), {});
             std::vector<std::int32_t> column(span);
@@ -2031,6 +2048,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                 }
             }
         } else {
+            AC3_ZONE_SCOPED_N("step5_fixed_extract");
             for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
                 const auto& source = coeffs_at(s, blk);
                 auto& out = fixed_at(s, blk);
@@ -2098,6 +2116,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         }
         plan.bap.assign(static_cast<std::size_t>(plan.endmant), 0);
         if (plan.aht) {
+            AC3_ZONE_SCOPED_N("step5_aht_normalize");
             // The mantissas the quantizers see, normalised by each bin's own
             // exponent. They have to exist before the rate search, because
             // under GAQ the search cannot size the frame without quantizing.
@@ -2173,8 +2192,15 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
 
     std::vector<std::span<const std::uint8_t>> bap_views;
     bap_views.reserve(static_cast<std::size_t>(streams));
+    // Which composite the allocation state (payload.bap, AHT gain modes'
+    // costs) currently reflects, and what it cost - so the final "leave the
+    // allocation at lo" evaluation below can be skipped when the search's
+    // last probe already was lo.
+    int last_eval = -1;
+    std::uint32_t last_bits = 0;
     const auto bits_at = [&](int composite) {
         AC3_ZONE_SCOPED_N("bits_at");
+        last_eval = composite;
         bap_views.clear();
         std::uint32_t aht_bits = 0;
         for (int s = 0; s < streams; ++s) {
@@ -2202,28 +2228,26 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                 std::span{plan.bap}.subspan(static_cast<std::size_t>(plan.start)));
         }
         // Every block reuses the same exponents, hence the same allocation.
-        return static_cast<std::uint32_t>(mantissa_bits_per_block(bap_views)) *
-                   kBlocksPerFrame +
-               aht_bits;
+        last_bits = static_cast<std::uint32_t>(mantissa_bits_per_block(bap_views)) *
+                        kBlocksPerFrame +
+                    aht_bits;
+        return last_bits;
     };
 
-    // Binary-searches the largest composite SNR offset (best quality) whose
-    // mantissa cost still fits `budget`. This is the whole of CBR's rate
-    // control; VBR reuses it only as a fallback, for when a quality target
-    // would need more words than an explicit max_kbps bound allows.
+    // Finds the largest composite SNR offset (best quality) whose mantissa
+    // cost still fits `budget`. This is the whole of CBR's rate control; VBR
+    // reuses it only as a fallback, for when a quality target would need
+    // more words than an explicit max_kbps bound allows. Warm-started from
+    // the previous converged offset (this frame's provisional one on the
+    // AHT re-search, the previous frame's otherwise) - which changes how
+    // fast it converges, never where; see snr_search.hpp.
     const auto search = [&](std::uint32_t budget) {
         AC3_ZONE_SCOPED_N("search");
-        int lo = 0;
-        int hi = 1023;
-        while (lo < hi) {
-            const int mid = (lo + hi + 1) / 2;
-            if (bits_at(mid) <= budget) {
-                lo = mid;
-            } else {
-                hi = mid - 1;
-            }
-        }
-        return lo;
+        const int found = internal::search_max_fitting(
+            1023, snr_search_hint_,
+            [&](int composite) { return bits_at(composite) <= budget; });
+        snr_search_hint_ = found;
+        return found;
     };
 
     // What a quality-driven mantissa cost turns into: either a direct word
@@ -2380,16 +2404,23 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
             }
         }
     }
-    // The call is not optional: it is what leaves payload.bap holding the
-    // allocation for `lo`, which every mantissa below is quantised against.
-    // Only its RESULT is debug-only - checked here and against the tokens
-    // actually written at the end of the function - so the variable is
-    // unreferenced under NDEBUG while the call still has to happen. Folding it
-    // into the assert would delete the allocation along with the check.
-    [[maybe_unused]] const std::uint32_t mantissa_bits = bits_at(lo);
+    // The evaluation is not optional: it is what leaves payload.bap holding
+    // the allocation for `lo`, which every mantissa below is quantised
+    // against - skippable exactly when the last evaluation already was lo
+    // (last_eval tracks this). Only its RESULT is debug-only - checked here
+    // and against the tokens actually written at the end of the function -
+    // so the variable is unreferenced under NDEBUG while the evaluation
+    // still has to happen. Folding it into the assert would delete the
+    // allocation along with the check.
+    [[maybe_unused]] const std::uint32_t mantissa_bits =
+        last_eval == lo ? last_bits : bits_at(lo);
     assert(side_bits + mantissa_bits + kTailBits <= words * 16);
     payload.csnroffst = lo >> 4;
     payload.fsnroffst = lo & 15;
+    // VBR's quality-driven path picks lo without a search; recording it here
+    // unconditionally keeps the hint fresh for whichever path the next frame
+    // takes.
+    snr_search_hint_ = lo;
 
     // --- 9. Mantissa tokens per block --------------------------------------
     AC3_ZONE_BEGIN(zone_mantissas, "step8_mantissa_tokens");
@@ -2509,6 +2540,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     // scale silence. Nothing about the frame's SIZE depends on these values,
     // only on how many there are, so computing them here is free.
     if (spx.in_use) {
+        AC3_ZONE_SCOPED_N("step9_spx_coords");
         const auto spx_nbnd = static_cast<std::size_t>(spx.bands.count);
         std::vector<double> recon(static_cast<std::size_t>(spx.startmant), 0.0);
         std::vector<double> gains(spx_nbnd, 0.0);

@@ -1,10 +1,12 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <complex>
 #include <cstddef>
+#include <cstdint>
 #include <numbers>
 #include <span>
 #include <vector>
@@ -232,6 +234,106 @@ TEST_CASE("objects sharing a direction split rather than blow up", "[atmos]") {
     }
     CHECK(loud > quiet);
     CHECK_THAT(loud / quiet, Catch::Matchers::WithinRel(4.0, 0.15));
+}
+
+TEST_CASE("band_energy consults its fast flag, and both paths agree", "[atmos][fast-mdct]") {
+    // AtmosConfig::fast_mdct reaches band_energy since the default-on
+    // rollout, so the JOC solve's inputs ride the same transform path as the
+    // bed. Two things have to hold, and they guard against different bugs:
+    // the paths must AGREE (quality - the fast fold is verified ~3e-12
+    // relative against the direct form), and they must not be IDENTICAL
+    // (wiring - if band_energy quietly ignored `fast` again, the way it did
+    // before the rollout, both legs would be the direct path and byte-equal,
+    // which is exactly what the REQUIRE below refuses).
+    //
+    // Broadband content on purpose: tones alone leave most of the nine bands
+    // only window leakage, whose relative error says nothing. A deterministic
+    // LCG keeps the "noise" reproducible, and two tones keep it real-ish.
+    const auto& mapping = ac3::joc::kSubbandToBand[4];  // 9 bands
+    std::uint32_t lcg = 0x2545F491u;
+    bool any_difference = false;
+    for (int frame = 0; frame < 3; ++frame) {
+        std::vector<float> signal(kFrame);
+        const auto start = static_cast<std::uint64_t>(frame) * kFrame;
+        for (int n = 0; n < kFrame; ++n) {
+            lcg = lcg * 1664525u + 1013904223u;
+            const double noise =
+                (static_cast<double>(lcg >> 8) / 8388608.0 - 1.0) * 0.05;
+            const double t =
+                static_cast<double>(start + static_cast<std::uint64_t>(n)) / 48000.0;
+            signal[static_cast<std::size_t>(n)] = static_cast<float>(
+                0.3 * std::sin(2.0 * std::numbers::pi * 440.0 * t) +
+                0.2 * std::sin(2.0 * std::numbers::pi * 3100.0 * t + 0.6) + noise);
+        }
+        std::array<double, 9> direct{};
+        std::array<double, 9> fast{};
+        ac3::oba::band_energy(signal, mapping, direct, /*fast=*/false);
+        ac3::oba::band_energy(signal, mapping, fast, /*fast=*/true);
+        for (int band = 0; band < 9; ++band) {
+            CAPTURE(frame, band);
+            REQUIRE(direct[static_cast<std::size_t>(band)] > 0.0);
+            CHECK_THAT(fast[static_cast<std::size_t>(band)],
+                       Catch::Matchers::WithinRel(direct[static_cast<std::size_t>(band)],
+                                                  1e-9));
+            any_difference = any_difference ||
+                             fast[static_cast<std::size_t>(band)] !=
+                                 direct[static_cast<std::size_t>(band)];
+        }
+    }
+    REQUIRE(any_difference);
+}
+
+TEST_CASE("the JOC matrix is indifferent to which MDCT path fed it", "[atmos][fast-mdct]") {
+    // The end-to-end half of the check above, at the surface a decoder
+    // actually consumes: two encoders differing ONLY in fast_mdct, on the
+    // shared-direction scenario where the per-band powers genuinely steer
+    // the solve (well-separated objects reduce to D's left inverse, where a
+    // uniform power wobble cancels and would prove nothing). The bed is
+    // rendered from panning gains before any transform runs, so the matrix
+    // is the entire surface band_energy can influence.
+    ac3::oba::AtmosEncoder direct_encoder{{.bitrate_kbps = 640, .fast_mdct = false}, 2};
+    ac3::oba::AtmosEncoder fast_encoder{{.bitrate_kbps = 640, .fast_mdct = true}, 2};
+    const std::array<ac3::oba::ObjectPlacement, 2> placement{{
+        {.position = {.x = 0.2, .y = 0.4, .z = 0.0}},
+        {.position = {.x = 0.2, .y = 0.4, .z = 1.0}},
+    }};
+
+    std::vector<std::span<const float>> views(2);
+    std::vector<std::vector<float>> essences;
+    for (int frame = 0; frame < 3; ++frame) {
+        const auto start = static_cast<std::uint64_t>(frame) * kFrame;
+        essences = {tone(2000.0, 0.40, 0.0, start), tone(2200.0, 0.20, 0.9, start)};
+        for (std::size_t i = 0; i < views.size(); ++i) {
+            views[i] = essences[i];
+        }
+        REQUIRE(direct_encoder.encode_frame(views, placement).has_value());
+        REQUIRE(fast_encoder.encode_frame(views, placement).has_value());
+    }
+
+    const auto& direct = direct_encoder.parameters().matrix;
+    const auto& fast = fast_encoder.parameters().matrix;
+    REQUIRE(direct.size() == fast.size());
+    for (std::size_t i = 0; i < direct.size(); ++i) {
+        CAPTURE(i);
+        // Absolute floor for entries near zero, relative everywhere else -
+        // the quantizer's own step is ~0.1 at its coarsest, so 1e-8 is many
+        // orders below anything the bitstream could ever carry.
+        CHECK(std::abs(fast[i] - direct[i]) <= 1e-8 * std::max(1.0, std::abs(direct[i])));
+    }
+
+    // And both paths still reconstruct: the same -20 dB bar the
+    // shared-direction test above holds the solve to.
+    const int band = band_of(2000.0, 4);
+    for (const auto* encoder : {&direct_encoder, &fast_encoder}) {
+        double loud = 0.0;
+        double quiet = 0.0;
+        for (int channel = 0; channel < 5; ++channel) {
+            loud += std::abs(encoder->parameters().at(0, channel, band));
+            quiet += std::abs(encoder->parameters().at(1, channel, band));
+        }
+        CHECK(loud > quiet);
+        CHECK_THAT(loud / quiet, Catch::Matchers::WithinRel(4.0, 0.15));
+    }
 }
 
 TEST_CASE("an Atmos frame is a plain 5.1 frame with metadata bolted on", "[atmos]") {

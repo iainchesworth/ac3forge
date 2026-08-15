@@ -28,6 +28,11 @@ metadata options (any order, after the positional arguments):
                     frames were already encoded (named beside the intended output as
                     <name>.partial.<ext>) instead of discarding them - off by default, matching
                     the GUI's own keep-partial-output preference
+  fast-mdct=off     force the direct §8.2.3.2 forward MDCT instead of the default §7.9.4 fast
+                    path (identical streams to within ~1e-12 coefficient error; the direct form
+                    is the validation oracle) - applies wherever this command encodes, incl.
+                    atmos/record/live; eac3-encode/eac3-sine use tools=nofastmdct instead;
+                    bare fast-mdct (the old opt-in) is a no-op
 ```
 
 For `decode`, `drc=<scale>` instead applies §7.7.1 partial compression (`0` = ignore, `1` = as
@@ -43,14 +48,20 @@ that page's config fields.
 Annex E coding tools, `+`-joined:
 
 ```text
-tools:  Annex E coding tools, '+'-joined — none | cpl | spx | aht | tpn | all
+tools:  Annex E coding tools, '+'-joined — none | cpl | spx | aht | tpn |
+        nofastmdct | all
         (cpl:N / spx:N pin a band edge, aht:N the gain mode, ecpl selects
         enhanced coupling instead of standard, tpn selects transient
         pre-noise processing)
         cpl:N / spx:N pin that tool's band edge (e.g. cpl:4+spx:5);
         aht:N pins the GAQ mode — aht:0 is AHT with GAQ switched off;
         atten:N pins the SPX notch depth, noatten removes it;
-        ecpl only takes effect alongside cpl (e.g. cpl+ecpl)
+        ecpl only takes effect alongside cpl (e.g. cpl+ecpl);
+        nofastmdct forces the direct-form forward MDCT instead of the
+        default §7.9.4 fast path — the fast MDCT is not a coding tool
+        (nothing in the bitstream's syntax changes), so 'none' and 'all'
+        both leave it alone, and the older opt-in spelling 'fastmdct'
+        still parses as a no-op
 ```
 
 Example: `tools=cpl+spx:5+aht:0` turns on coupling (auto band edge), spectral extension pinned
@@ -251,6 +262,15 @@ Captures 30 seconds of Atmos-mode E-AC-3 from device 0 (the clock master) plus d
   `AC3FORGE_SIGNING_KEY_FILE` / `AC3FORGE_SIGNING_KEY` instead of `signing-key=`. The key is never
   stored by the tool; the algorithm is in-tree but the key is yours to provision. Full details in
   [Object signing](../concepts/object-signing.md).
+- **`fast-mdct=off`**: every encode runs the §7.9.4 fast forward MDCT by default (the quality
+  evidence that made it the default: ~3e-12 max relative coefficient error against the direct
+  form, 331 dB direct-vs-fast end-to-end SNR, 0.000 dB SNR delta against an independent oracle
+  at 192–448 kbps — see `tools/quality_race.py fast-mdct`). `fast-mdct=off` forces the direct
+  §8.2.3.2 reference form — the validation oracle — wherever the command encodes, including the
+  `atmos*`, `record` and `live` session builders. `eac3-encode`/`eac3-sine` spell the same thing
+  `tools=nofastmdct` (the fast MDCT is not a coding tool, so `tools=none`/`all` leave it alone).
+  The bare `fast-mdct` word and `tools=fastmdct` token — the opt-in spellings from when this
+  defaulted off — still parse and now name what already happens.
 - **`keep-partial`**: `encode`, `eac3-encode` and `atmos-encode` refuse a frame that cannot fit the
   configuration mid-run just as they always have, but with `keep-partial` given, whatever frames
   were already encoded before that point are written to `<name>.partial.<ext>` (`out.ec3` →

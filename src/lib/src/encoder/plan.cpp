@@ -632,6 +632,13 @@ bool parse_tools(std::string_view text, Tools& out) {
             out.aht = true;
         } else if (token == "tpn") {
             out.transient_prenoise = true;
+        } else if (token == "fastmdct") {
+            // The opt-in spelling from when the fast path was off by default,
+            // kept so a recorded command line from that era still parses; it
+            // now names what already happens.
+            out.fast_mdct = true;
+        } else if (token == "nofastmdct") {
+            out.fast_mdct = false;  // the direct §8.2.3.2 reference form
         } else if (token == "all") {
             out.coupling = true;
             out.spx = true;
@@ -671,6 +678,12 @@ std::string format_tools(const Tools& tools) {
     }
     if (tools.transient_prenoise) {
         add("tpn");
+    }
+    // Like noatten above, only the non-default state is worth a token: the
+    // fast MDCT is what every stream does now, so formatting it would put
+    // "fastmdct" on every command line while saying nothing.
+    if (!tools.fast_mdct) {
+        add("nofastmdct");
     }
     return out.empty() ? std::string{"none"} : out;
 }
@@ -891,6 +904,7 @@ EncoderConfig ac3_config(const Plan& plan) {
             // (§7.4), so a mono programme has nothing to share it with.
             .coupling = plan.tools.coupling && fullbw_channel_count(cp.bed_acmod) >= 2,
             .cplbegf = plan.tools.cplbegf,
+            .fast_mdct = plan.tools.fast_mdct,
             .drc = plan.meta.drc,
             .heavy = plan.meta.heavy,
             .drc2 = cp.bed_acmod == Acmod::kDualMono
@@ -916,6 +930,7 @@ void apply_tools(const Tools& tools, eac3::FrameConfig& config) {
     config.aht = tools.aht;
     config.gaqmod = tools.gaqmod;
     config.transient_prenoise = tools.transient_prenoise;
+    config.fast_mdct = tools.fast_mdct;
 }
 
 // A dependent's share of the plan's VBR bounds, halved the same way its

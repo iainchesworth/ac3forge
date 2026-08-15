@@ -4077,7 +4077,7 @@ ApplicationWindow {
                                         RowLayout {
                                             Layout.fillWidth: true
                                             Text {
-                                                text: qsTr("ROOM — PLAN")
+                                                text: qsTr("ROOM — PLAN (top-down)")
                                                 color: Theme.neutral600
                                                 font.pixelSize: 10
                                             }
@@ -4088,6 +4088,13 @@ ApplicationWindow {
                                                 font.pixelSize: 10
                                                 font.family: Theme.monoFamily
                                             }
+                                        }
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: qsTr("Looking down on the room: left↔right is horizontal, front↔rear is vertical.")
+                                            wrapMode: Text.WordWrap
+                                            font.pixelSize: 10
+                                            color: Theme.neutral500
                                         }
 
                                         Rectangle {
@@ -4134,6 +4141,13 @@ ApplicationWindow {
                                                 enabled: !EncoderController.busy
                                                          && objectsTab.driveMode === "author"
                                                          && objectsTab.selectedObj !== null
+                                                // Without this, the enclosing
+                                                // tabScrollView's Flickable can
+                                                // steal the grab mid-drag (most
+                                                // visible on mostly-vertical
+                                                // gestures), which looks like a
+                                                // spurious release.
+                                                preventStealing: true
                                                 onPositionChanged: (mouse) => place(mouse)
                                                 onPressed: (mouse) => place(mouse)
                                                 function place(mouse) {
@@ -4201,6 +4215,12 @@ ApplicationWindow {
                                                         // marker itself - "drag to place"
                                                         // must not require starting the
                                                         // gesture beside the dot.
+                                                        //
+                                                        // preventStealing: without it, the
+                                                        // enclosing tabScrollView's Flickable
+                                                        // can steal the grab mid-drag, which
+                                                        // looks like a spurious release.
+                                                        preventStealing: true
                                                         onPressed: EncoderController.selectedObjectIndex = marker.index
                                                         onPositionChanged: (mouse) => {
                                                             if (!(mouse.buttons & Qt.LeftButton)
@@ -4235,17 +4255,24 @@ ApplicationWindow {
                                             Layout.fillWidth: true
                                             Layout.topMargin: Theme.space2
                                             Text {
-                                                text: qsTr("ROOM — ELEVATION")
+                                                text: qsTr("ROOM — ELEVATION (side-on)")
                                                 color: Theme.neutral600
                                                 font.pixelSize: 10
                                             }
                                             Item { Layout.fillWidth: true }
                                             Text {
-                                                text: qsTr("drag for height")
+                                                text: qsTr("drag: depth + height")
                                                 color: Theme.neutral600
                                                 font.pixelSize: 10
                                                 font.family: Theme.monoFamily
                                             }
+                                        }
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: qsTr("Looking at the room from the side: front↔rear is horizontal, floor↔ceiling is vertical — not just up/down.")
+                                            wrapMode: Text.WordWrap
+                                            font.pixelSize: 10
+                                            color: Theme.neutral500
                                         }
                                         Rectangle {
                                             id: elevation
@@ -4335,6 +4362,12 @@ ApplicationWindow {
                                                 enabled: !EncoderController.busy
                                                          && objectsTab.driveMode === "author"
                                                          && objectsTab.selectedObj !== null
+                                                // Height dragging is a mostly-vertical
+                                                // gesture - the same axis the enclosing
+                                                // tabScrollView's Flickable watches for
+                                                // scrolling, so without this it can
+                                                // steal the grab mid-drag.
+                                                preventStealing: true
                                                 onPositionChanged: (mouse) => place(mouse)
                                                 onPressed: (mouse) => place(mouse)
                                                 function place(mouse) {
@@ -5835,6 +5868,10 @@ ApplicationWindow {
                                         MouseArea {
                                             anchors.fill: parent
                                             enabled: EncoderController.liveActive
+                                            // Without this, the enclosing
+                                            // tabScrollView's Flickable can
+                                            // steal the grab mid-drag.
+                                            preventStealing: true
                                             onPositionChanged: (mouse) => place(mouse)
                                             onPressed: (mouse) => place(mouse)
                                             function place(mouse) {
@@ -5893,6 +5930,10 @@ ApplicationWindow {
 
                                                 MouseArea {
                                                     anchors.fill: parent
+                                                    // Without this, the enclosing
+                                                    // tabScrollView's Flickable can
+                                                    // steal the grab mid-drag.
+                                                    preventStealing: true
                                                     onPressed: EncoderController.selectedObjectIndex = liveMarker.index
                                                     onPositionChanged: (mouse) => {
                                                         if (!(mouse.buttons & Qt.LeftButton)

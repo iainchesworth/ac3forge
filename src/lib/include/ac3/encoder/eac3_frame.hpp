@@ -216,6 +216,18 @@ struct FrameConfig {
     // channels/frames that also block-switch (§8.2.2/§7.9).
     bool transient_prenoise = false;
 
+    // §7.9.4 fast N/4-FFT forward MDCT (see mdct.hpp's mdct512_forward), on
+    // by default since the owner accepted its quality evidence (verified max
+    // relative error ~3e-12 against the direct form on random data and real
+    // audio, 331 dB direct-vs-fast end-to-end SNR, 0.000 dB delta against an
+    // independent oracle at 192-448 kbps; see tests/test_mdct_fast.cpp and
+    // `tools/quality_race.py fast-mdct`). false forces the direct §8.2.3.2
+    // reference form, which stays maintained as the oracle the fast path is
+    // validated against. Only the long transform accelerates today - a
+    // block-switched channel's short transforms always take the direct path
+    // regardless of this flag.
+    bool fast_mdct = true;
+
     // TS 103 420 §8.3. An object-audio stream sets flag_ec3_extension_type_a in
     // the addbsi field of whichever substream carries the EMDF container, and
     // follows it with the number of bed, ISF and dynamic objects (§8.3.2.2 caps
@@ -306,6 +318,11 @@ class AC3FORGE_EXPORT FrameEncoder {
     std::array<double, 512> windowed_scratch_{};
     std::array<double, 128> half1_scratch_{};
     std::array<double, 128> half2_scratch_{};
+    // The previous frame's converged SNR-offset composite, warm-starting the
+    // next frame's search (src/lib/src/encoder/snr_search.hpp). Performance
+    // state only: it changes how fast the search converges, never which
+    // offset it converges to. Negative until a frame has been encoded.
+    int snr_search_hint_ = -1;
     // Smoothed across frames: see the AC-3 FrameEncoder for why they cannot be
     // per-frame objects.
     std::optional<meta::RangeController> range_;

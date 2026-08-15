@@ -87,6 +87,43 @@ elseif(UNIX)
         # this only applies if that Qt kit is NOT the distro's own apt
         # package; a system Qt6 install (e.g. via apt) resolves fine through
         # SHLIBDEPS alone, same as it does for every other shared library.
+
+        # Component-aware packaging, OFF by default for the DEB generator -
+        # without this, CPack ignores CPACK_COMPONENTS_ALL/GROUP entirely and
+        # bundles every install()'d file (ac3cli AND the full library SDK)
+        # into one monolithic .deb, confirmed empirically against a real
+        # `dpkg-deb -c` of this project's own pre-split output. Turning it on
+        # is what makes runtime/library/libruntime become three independent
+        # .deb files instead. CPACK_COMPONENTS_GROUPING's file-level default
+        # (below) merges library+libruntime into one "dev" archive for ZIP/
+        # TGZ - cmake/CPackProjectConfig.cmake overrides that back to IGNORE
+        # for exactly the DEB/RPM passes, so those two stay three separate
+        # packages instead of collapsing to the archives' two.
+        set(CPACK_DEB_COMPONENT_INSTALL ON)
+
+        # Package-name overrides: without these, CPack derives
+        # <name>-<component> for every component once component install is
+        # on (e.g. "ac3forge-runtime"), which both renames today's existing
+        # ac3cli package and ignores Debian's own libFOO/libFOO-dev naming
+        # convention for the library halves.
+        set(CPACK_DEBIAN_RUNTIME_PACKAGE_NAME "ac3forge")
+        set(CPACK_DEBIAN_LIBRUNTIME_PACKAGE_NAME "libac3forge0")
+        set(CPACK_DEBIAN_LIBRARY_PACKAGE_NAME "libac3forge-dev")
+
+        # The -dev package's headers/static-archives are useless without a
+        # matching runtime .so to actually link and load - and since this
+        # project makes no ABI-compatibility promise pre-1.0 (see
+        # src/lib/CMakeLists.txt's SOVERSION comment), the pin has to be
+        # exact, not a >= floor. libac3forge0 itself declares no such
+        # dependency the other way: it is a plain .so with no headers or
+        # symlink of its own, valid to have installed alone.
+        # PROJECT_VERSION, not CPACK_PACKAGE_VERSION: the latter is only
+        # computed by include(CPack) itself, further down this file - read
+        # here, before that point, it is still unset and silently renders
+        # this Depends line as "libac3forge0 (= )" with no version at all
+        # (confirmed empirically against a real dpkg-deb -I). See
+        # CPACK_SYSTEM_NAME's identical trap, documented below.
+        set(CPACK_DEBIAN_LIBRARY_PACKAGE_DEPENDS "libac3forge0 (= ${PROJECT_VERSION})")
     endif()
 
     find_program(AC3FORGE_RPMBUILD_EXECUTABLE rpmbuild)
@@ -95,11 +132,21 @@ elseif(UNIX)
         set(CPACK_RPM_PACKAGE_LICENSE "GPL-3.0-or-later")
         set(CPACK_RPM_PACKAGE_GROUP "Applications/Multimedia")
         set(CPACK_RPM_PACKAGE_AUTOREQPROV ON)
+
+        # Same reasoning and the same three-way split as the DEB block above,
+        # RPM's own equivalent switch and per-component variable names.
+        # "-devel" rather than "-dev": Fedora/RHEL/openSUSE package-naming
+        # convention for a development package, where Debian/Ubuntu use "-dev".
+        set(CPACK_RPM_COMPONENT_INSTALL ON)
+        set(CPACK_RPM_RUNTIME_PACKAGE_NAME "ac3forge")
+        set(CPACK_RPM_LIBRUNTIME_PACKAGE_NAME "libac3forge0")
+        set(CPACK_RPM_LIBRARY_PACKAGE_NAME "ac3forge-devel")
+        set(CPACK_RPM_LIBRARY_PACKAGE_REQUIRES "libac3forge0 = %{version}-%{release}")
     endif()
 endif()
 
 # ---------------------------------------------------------------------------
-# Library component: a second, separate download alongside the existing
+# Library component(s): a second, separate download alongside the existing
 # ac3cli/ac3gui package - headers + .lib/.dll/.a/.so + CMake package config
 # for a third party consuming ac3::forge/matroska::matroska via
 # find_package(ac3forge) (see cmake/InstallLibrary.cmake). Everything
@@ -107,38 +154,57 @@ endif()
 # "Unspecified" component, which is why ac3cli/ac3gui and every
 # InstallLibrary.cmake rule now carry one explicitly.
 #
+# Three components, not two: "runtime" (ac3cli/ac3gui, unchanged), "library"
+# (headers, static archives, CMake package config, and - on Unix - the
+# unversioned .so namelink symlink you link against), and "libruntime" (just
+# the versioned .so/.dylib a linked binary loads at runtime - see
+# cmake/InstallLibrary.cmake's NAMELINK_COMPONENT comment for why that file
+# alone is split out). library+libruntime are DELIBERATELY kept as one
+# archive download below (a "-dev" ZIP/TGZ downloader wants both without
+# knowing this split exists) but as three separate DEB/RPM packages
+# (cmake/CPackProjectConfig.cmake overrides the grouping back to IGNORE for
+# just those two generators) - that split is the entire point of shipping
+# them as .deb/.rpm at all: apt/dnf can then pull in "the .so a linked binary
+# needs" via libac3forge0 without the headers/static archives libac3forge-dev
+# carries, the same libFOO/libFOO-dev shape every other Linux C library uses.
+#
 # CPACK_ARCHIVE_COMPONENT_INSTALL is specifically the Archive generator
 # family's (ZIP/TGZ) own component-install switch - it does not affect
-# NSIS/DEB/RPM/DragNDrop, each of which has its own separate
+# NSIS/DragNDrop, each of which has its own separate
 # CPACK_<GENERATOR>_COMPONENT_INSTALL flag, left off here deliberately:
 #   - NSIS: a component installer can't also produce a second standalone
 #     download the way a second archive naturally can - splitting it would
 #     need an entirely different NSIS packaging shape, not a flag flip.
-#   - DEB/RPM: a correct runtime/-dev split needs NAMELINK_COMPONENT on the
-#     library install() rules plus per-component Depends metadata (the
-#     shared lib's .so needs to depend on the exact -dev package providing
-#     its headers) - real work, a separate initiative if ever wanted, not
-#     something to bolt on as a side effect of the archive split here.
 #   - DragNDrop: no macOS host to build or verify this against at all (see
-#     the DragNDrop branch above).
-# So today: ZIP (Windows/Linux) and TGZ (macOS/Linux) split into two
-# archives per platform; NSIS/DEB/RPM/DragNDrop stay exactly as they were,
-# one monolithic package bundling every component together.
-set(CPACK_COMPONENTS_ALL runtime library)
+#     the DragNDrop branch above); cmake/CPackProjectConfig.cmake already
+#     forces it monolithic regardless of the component/grouping state here.
+# DEB/RPM get their own *_COMPONENT_INSTALL switch, set inside their own
+# find_program() blocks above, now that the split is real work rather than
+# a placeholder.
+set(CPACK_COMPONENTS_ALL runtime library libruntime)
 set(CPACK_ARCHIVE_COMPONENT_INSTALL ON)
-# IGNORE, not the default (which nests each component under a per-group
-# subdirectory inside one archive): two components both wanting to be a
-# single independent top-level archive, not two directories inside one.
-set(CPACK_COMPONENTS_GROUPING IGNORE)
 
-# Per-component filename overrides so the existing ac3cli/ac3gui archive's
-# name doesn't change now that it is formally "the runtime component"
-# rather than "everything". Without an override, a component archive's
-# default name appends the component's own name (e.g. -runtime/-library) -
-# the runtime override below exists purely to suppress that suffix and keep
-# today's exact filename; the library override chooses the name explicitly
-# rather than accepting CPack's default "-library" suffix, matching the
-# ac3forge-dev-* convention docs/releasing.md documents.
+# Default grouping (CPack's own ONE_PER_GROUP): one archive/package per
+# CPACK_COMPONENT_<C>_GROUP, one per otherwise-ungrouped component. "runtime"
+# stays ungrouped (its own archive, as always); "library"+"libruntime" share
+# GROUP "dev" so the archive generators still merge them into the single
+# "-dev" download documented in docs/releasing.md - the DEB/RPM split above
+# is a per-generator override of this default, not a replacement for it.
+set(CPACK_COMPONENT_LIBRARY_GROUP "dev")
+set(CPACK_COMPONENT_LIBRUNTIME_GROUP "dev")
+
+# Per-component/per-group filename overrides so the existing ac3cli/ac3gui
+# and library archives' names don't change now that they are formally
+# "the runtime component"/"the dev group" rather than "everything". Without
+# an override, an archive's default name appends the component or group's own
+# name (e.g. -runtime/-dev) - the runtime override below exists purely to
+# suppress that suffix and keep today's exact filename; the dev-group
+# override chooses the name explicitly rather than accepting CPack's default
+# "-dev" suffix, matching the ac3forge-dev-* convention docs/releasing.md
+# documents. CPACK_ARCHIVE_<NAME>_FILE_NAME keys off the GROUP name once one
+# is assigned (library+libruntime share GROUP "dev" above), not the
+# individual component name - CPACK_ARCHIVE_LIBRARY_FILE_NAME /
+# CPACK_ARCHIVE_LIBRUNTIME_FILE_NAME would silently do nothing now.
 #
 # CPACK_SYSTEM_NAME and CPACK_PACKAGE_FILE_NAME are NOT usable here despite
 # looking already computed above - both are actually filled in by the
@@ -165,7 +231,7 @@ set(CPACK_PACKAGE_FILE_NAME
     "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION_MAJOR}.${CPACK_PACKAGE_VERSION_MINOR}.${CPACK_PACKAGE_VERSION_PATCH}-${CPACK_SYSTEM_NAME}")
 
 set(CPACK_ARCHIVE_RUNTIME_FILE_NAME "${CPACK_PACKAGE_FILE_NAME}")
-set(CPACK_ARCHIVE_LIBRARY_FILE_NAME "ac3forge-dev-${PROJECT_VERSION_FULL}-${CPACK_SYSTEM_NAME}")
+set(CPACK_ARCHIVE_DEV_FILE_NAME "ac3forge-dev-${PROJECT_VERSION_FULL}-${CPACK_SYSTEM_NAME}")
 
 include(CPack)
 

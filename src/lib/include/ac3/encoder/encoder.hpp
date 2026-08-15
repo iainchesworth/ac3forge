@@ -48,6 +48,17 @@ struct EncoderConfig {
     bool coupling = false;
     int cplbegf = -1;
     int cplendf = -1;
+    // §7.9.4 fast N/4-FFT forward MDCT (see mdct.hpp's mdct512_forward), on
+    // by default since the owner accepted its quality evidence (verified max
+    // relative error ~3e-12 against the direct form on random data and real
+    // audio, 331 dB direct-vs-fast end-to-end SNR, 0.000 dB delta against an
+    // independent oracle at 192-448 kbps; see tests/test_mdct_fast.cpp and
+    // `tools/quality_race.py fast-mdct`). false forces the direct §8.2.3.2
+    // reference form, which stays maintained as the oracle the fast path is
+    // validated against. Only the long transform accelerates today - a
+    // block-switched channel's short transforms always take the direct path
+    // regardless of this flag.
+    bool fast_mdct = true;
 
     // --- dynamic range and downmix metadata (§7.7, §7.8) -------------------
     // Dynamic range control. std::nullopt leaves dynrnge clear in every block,
@@ -105,6 +116,11 @@ class AC3FORGE_EXPORT FrameEncoder {
     std::array<double, 128> half2_scratch_{};
     std::uint64_t rate_accumulator_ = 0;  // ideal-bits Bresenham state
     std::uint64_t words_emitted_ = 0;
+    // The previous frame's converged SNR-offset composite, warm-starting the
+    // next frame's search (src/lib/src/encoder/snr_search.hpp). Performance
+    // state only: it changes how fast the search converges, never which
+    // offset it converges to. Negative until a frame has been encoded.
+    int snr_search_hint_ = -1;
     // Both controllers smooth their gain over time, so they have to outlive a
     // frame - a per-frame instance would restart the attack every 32 ms.
     std::optional<meta::RangeController> range_;

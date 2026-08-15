@@ -6,6 +6,8 @@
 #include <cmath>
 #include <cstdlib>
 
+#include "ac3/internal/profiling.hpp"
+
 namespace ac3 {
 
 std::int32_t to_fixed25(double c) {
@@ -38,6 +40,7 @@ void extract_exponents(std::span<const std::int32_t> fixed, std::span<std::uint8
 }
 
 EncodedExponents encode_exponents(std::span<const std::uint8_t> raw, ExpStrategy strategy) {
+    AC3_ZONE_SCOPED_N("encode_exponents");
     const int endmant = static_cast<int>(raw.size());
     const int group_size = exponent_group_size(strategy);
     const int group_count = exponent_group_count(strategy, endmant);

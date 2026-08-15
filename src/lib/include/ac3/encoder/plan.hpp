@@ -225,14 +225,26 @@ struct Tools {
     // rather than a second detector, so enabling it only has an effect on
     // channels/frames that also switch blocks.
     bool transient_prenoise = false;
+    // §7.9.4 fast N/4-FFT forward MDCT - a performance choice, not a coding
+    // tool that changes the bitstream's syntax the way the others do, but it
+    // lives here because this is the shared surface both codecs' CLI paths
+    // already read from. On by default like the config fields it feeds (see
+    // EncoderConfig::fast_mdct / eac3::FrameConfig::fast_mdct for the
+    // quality evidence); the "nofastmdct" token forces the direct §8.2.3.2
+    // reference form, the way "noatten" already negates default-on
+    // spx_atten above. Deliberately NOT part of any(): whether a stream
+    // used a coding tool is a bitstream question this flag never touches.
+    bool fast_mdct = true;
 
     [[nodiscard]] bool any() const { return coupling || spx || aht || transient_prenoise; }
 };
 
 inline constexpr std::string_view kToolsSyntax =
-    "none | cpl | spx | aht | tpn | all (cpl:N / spx:N pin a band edge, aht:N the gain mode, "
-    "ecpl selects enhanced coupling instead of standard, tpn selects transient pre-noise "
-    "processing)";
+    "none | cpl | spx | aht | tpn | nofastmdct | all (cpl:N / spx:N pin a band edge, aht:N the "
+    "gain mode, ecpl selects enhanced coupling instead of standard, tpn selects transient "
+    "pre-noise processing, nofastmdct forces the direct-form forward MDCT instead of the "
+    "default §7.9.4 fast path - the fast MDCT is not a coding tool, so 'none'/'all' leave it "
+    "alone and the older opt-in spelling 'fastmdct' is accepted as a no-op)";
 
 // The '+'-joined token: "none", "cpl", "cpl+spx", "all", "cpl:4+spx:5",
 // "aht:0", "spx+noatten", "atten:12". Returns false on anything unrecognised

@@ -16,6 +16,28 @@
 # files it under its own "Unspecified" component, inconsistent once
 # component-based packaging is on (see cmake/Packaging.cmake) - same reason
 # src/cli/CMakeLists.txt's ac3cli install() carries COMPONENT runtime.
+#
+# The LIBRARY DESTINATION rules below additionally carry NAMELINK_COMPONENT
+# library, splitting them from COMPONENT libruntime. On Unix, a versioned
+# shared library install produces two files - the real
+# libac3forge.so.<version> and an unversioned libac3forge.so symlink (the
+# "namelink") a linker resolves -l against - and NAMELINK_COMPONENT is CMake's
+# own mechanism for filing those two files under different CPack components:
+# COMPONENT names the real .so, NAMELINK_COMPONENT names the symlink. Confirmed
+# empirically (see cmake/Packaging.cmake's DEB/RPM comment) that today's
+# monolithic .deb bundles ac3cli together with the full SDK - headers, static
+# archives, CMake package config, .so and symlink alike - because CPack's DEB/
+# RPM generators ignore CPACK_COMPONENTS_ALL entirely unless *_COMPONENT_INSTALL
+# is explicitly turned on for them. This split is what makes a real
+# runtime/-dev separation possible there: libruntime becomes a small
+# "just the .so a linked binary needs at runtime" package, while library
+# keeps everything only a builder needs (headers, static archives, CMake
+# config, and the symlink you link against, -l style). RUNTIME/ARCHIVE (the
+# Windows .dll/.lib pair, and the static archives on every platform) stay
+# under COMPONENT library throughout: NAMELINK_COMPONENT only ever affects the
+# LIBRARY DESTINATION install, i.e. Unix .so installs - Windows has no
+# namelink concept at all, so this is a no-op there and the Windows dev ZIP is
+# unaffected.
 # ---------------------------------------------------------------------------
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
@@ -36,13 +58,13 @@ include(CMakePackageConfigHelpers)
 install(TARGETS forge_objects forge_static forge_shared
     EXPORT ac3forgeTargets
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT library
-    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT library
+    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT libruntime NAMELINK_COMPONENT library
     ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT library)
 
 install(TARGETS matroska_objects matroska_static matroska_shared
     EXPORT matroskaTargets
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT library
-    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT library
+    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT libruntime NAMELINK_COMPONENT library
     ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT library)
 
 # Source headers, from both libraries' include/ trees.

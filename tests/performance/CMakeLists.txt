@@ -36,3 +36,26 @@ catch_discover_tests(ac3perf
 add_executable(ac3bench bench_encoder.cpp)
 
 target_link_libraries(ac3bench PRIVATE ac3::forge ac3::warnings)
+
+# ---------------------------------------------------------------------------
+# ac3kernelbench - per-kernel micro-benchmarks, one level below ac3bench's
+# whole-frame numbers. Where ac3bench answers "how fast is a frame", this
+# answers "which stage of that frame" - the observability slice of the
+# performance programme these three both belong to (Tracy zones give the
+# real-time breakdown, this gives an offline one that needs no profiler
+# attached). Not ctest-registered, same reasoning as ac3bench above: nothing
+# here asserts anything, and its JSON feeds scripts/append-kernel-history.py
+# (docs/performance-trend.md's per-kernel tables) as a trend signal, never a
+# CI gate - see that script's docstring for why it is deliberately
+# non-gating.
+# ---------------------------------------------------------------------------
+add_executable(ac3kernelbench kernel_bench.cpp)
+
+target_link_libraries(ac3kernelbench PRIVATE ac3::forge ac3::warnings)
+
+# So the binary can find tests/golden/audio's real-audio fixtures regardless
+# of the working directory it is launched from - kernel inputs synthesized
+# from silence or a single tone give misleadingly tidy bit-allocation/
+# mantissa-cost numbers real program material never produces.
+target_compile_definitions(ac3kernelbench PRIVATE
+    "AC3FORGE_SOURCE_DIR=\"${CMAKE_SOURCE_DIR}\"")

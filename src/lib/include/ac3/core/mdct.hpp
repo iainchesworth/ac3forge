@@ -9,8 +9,18 @@
 // Forward (encoder side, informative A/52 §8.2.3.2, alpha = 0):
 //   XD[k] = (-2/N) * sum_{n=0}^{N-1} x[n] * cos((2pi/4N)(2n+1)(2k+1)
 //                                              + (pi/4)(2k+1))
-// evaluated in direct form — correctness first; the §7.9.4 fast N/4-FFT
-// structure comes later behind the same interface.
+// evaluated in direct form by default — at THIS level the reference form
+// stays the default, because the direct evaluation is the spec's own
+// statement of the transform and the oracle every fast-path test validates
+// against. `fast` selects the §7.9.4 fast N/4-FFT structure behind this same
+// interface: verified max relative error ~3e-12 against the direct form on
+// random data and real audio (tests/test_mdct_fast.cpp), and since the owner
+// accepted that evidence it is what every encoder config defaults to
+// (EncoderConfig::fast_mdct / eac3::FrameConfig::fast_mdct default true and
+// are what an encoder actually reads to decide - a caller of THIS function
+// still opts in explicitly). Only THIS transform (alpha = 0) has an
+// accelerated path today - mdct256_forward_first/second's `fast` currently
+// has no effect; see their own doc comment for why.
 //
 // Inverse (decoder side, NORMATIVE §7.9.4.1): the N/4-point complex
 // transform with xcos1/xsin1 pre/post twiddles and the windowing/
@@ -27,7 +37,7 @@ AC3FORGE_EXPORT void apply_analysis_window(std::span<const double, 512> x,
 
 // Forward MDCT of a pre-windowed block: 512 samples -> 256 coefficients.
 AC3FORGE_EXPORT void mdct512_forward(std::span<const double, 512> windowed,
-                                     std::span<double, 256> coeffs);
+                                     std::span<double, 256> coeffs, bool fast = false);
 
 // Normative inverse: 256 coefficients -> 512 WINDOWED time samples
 // (§7.9.4.1 steps 1-5; the window application is part of step 5).
@@ -42,10 +52,21 @@ AC3FORGE_EXPORT void imdct512_windowed(std::span<const double, 256> coeffs,
 // them bin-by-bin (X[2k] = first[k], X[2k+1] = second[k]) into an ordinary
 // 256-coefficient set before quantization — exponents/bitalloc/mantissa
 // never see a difference from the long-block path.
+//
+// Both halves accelerate behind the same `fast` parameter mdct512_forward
+// takes, each with its OWN independently-derived fold (alpha = -1 is the
+// BARE cosine sum - no "+N/4" phase shift at all, a different transform
+// from alpha = 0's, not the same formula "just at a different NLen" as an
+// earlier version of this comment wrongly claimed; alpha = +1 is a
+// sine-kernel sum that reaches the shared DCT-IV core through the DST-IV
+// reversal identity). Each fold is verified against its own direct-form
+// table to the same 1e-10 bound as the long transform's -
+// tests/test_mdct_fast.cpp. `fast = false` remains the spec's own
+// direct-form evaluation on all three.
 AC3FORGE_EXPORT void mdct256_forward_first(std::span<const double, 256> windowed,
-                                           std::span<double, 128> coeffs);
+                                           std::span<double, 128> coeffs, bool fast = false);
 AC3FORGE_EXPORT void mdct256_forward_second(std::span<const double, 256> windowed,
-                                            std::span<double, 128> coeffs);
+                                            std::span<double, 128> coeffs, bool fast = false);
 
 // Normative inverse for blksw = 1 (§7.9.4.2): takes the SAME 256-length
 // interleaved coefficient set a long block would carry and produces 512

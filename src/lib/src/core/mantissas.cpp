@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cassert>
 
+#include "ac3/internal/profiling.hpp"
+
 namespace ac3 {
 
 std::uint32_t quantize_mantissa(std::int32_t mantissa, int bap) {
@@ -115,6 +117,7 @@ void MantissaBlockWriter::finish_block() {
 
 std::size_t mantissa_bits_per_block(
     std::span<const std::span<const std::uint8_t>> channel_baps) {
+    AC3_ZONE_SCOPED_N("mantissa_bits_per_block");
     std::size_t direct = 0;
     std::size_t count1 = 0;
     std::size_t count2 = 0;
