@@ -157,6 +157,10 @@ target_link_libraries(ac3gui
         # The GUI can save straight to .mkv, so it needs the muxer the CLI's
         # 'mkv' command uses. It links nothing from ac3::forge itself.
         matroska::matroska
+        # Same reasoning as matroska::matroska above, for the CLI's 'mp4'/
+        # 'fmp4'/'ts' commands - see EncoderController::writeOutput().
+        mp4::mp4
+        mpegts::mpegts
         ac3::warnings
         Qt6::Core
         Qt6::Gui

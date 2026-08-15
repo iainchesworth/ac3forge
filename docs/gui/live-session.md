@@ -240,6 +240,15 @@ there is no separate spool file for either:
 
 Both paths flush to disk roughly once a second (not per frame) rather than on every write.
 
+The Container combo's other four choices — S/PDIF, MP4, fragmented MP4/CMAF, MPEG-TS — fall into
+the elementary-stream path above during a live session, not their own: `matroska::Writer` is the
+only incremental muxer this project has. `matroska::mux()`'s batch cousins for the other
+containers (`mp4::mux`, `mp4::fragment`, `mpegts::mux`) all need the whole frame list up front the
+same way `matroska::mux()` itself does — there is nothing to push a live unit into for any of
+them. So a live session with one of those four selected keeps writing the plain stream, exactly
+the file it would write with the combo left on Elementary stream; the container only changes what
+a *file* encode wraps it as afterward (see [Container](format-and-channels.md#presets-codec-bit-rate-container)).
+
 There is also an optional **raw-WAV safety copy**: the pre-flight "Raw-WAV safety copy" checkbox,
 bound to `EncoderController.liveWavSafetyCopy`, is only consulted once the take is also being
 written to disk. When on, it streams the raw captured PCM — device channel order, unencoded,

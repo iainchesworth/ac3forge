@@ -512,8 +512,11 @@ ApplicationWindow {
         return qsTr("%1 · %2 · %3")
             .arg(codec).arg(EncoderController.channelShapeName).arg(window.planRateText);
     }
-    readonly property string planLine: qsTr("%1 · .%2")
-        .arg(window.planLineCore).arg(EncoderController.outputSuffix())
+    // fMP4/CMAF has no single extension (outputIsFolder() is true there) -
+    // ".{suffix}" would otherwise read as a bare trailing dot.
+    readonly property string planLine: EncoderController.outputIsFolder()
+        ? qsTr("%1 · folder").arg(window.planLineCore)
+        : qsTr("%1 · .%2").arg(window.planLineCore).arg(EncoderController.outputSuffix())
     readonly property string planSubLine: {
         if (EncoderController.dualMono && !EncoderController.atmosEnabled) {
             return qsTr("acmod 0 · two independent programmes in one stream · no soundfield, no downmix");
@@ -587,9 +590,14 @@ ApplicationWindow {
     // writes straight to Matroska in that ONE command — a live session has no
     // already-encoded file for a second 'mkv' step to wrap. A file encode's
     // Matroska container is still honestly TWO commands, because pasting one
-    // would write a raw elementary stream into a file named .mkv — S/PDIF is
-    // the same shape there, one more ac3cli subcommand (spdif) over the same
-    // stream.
+    // would write a raw elementary stream into a file named .mkv — S/PDIF,
+    // MP4, fMP4/CMAF and MPEG-TS are the same shape there, one more ac3cli
+    // subcommand (spdif/mp4/fmp4/ts) over the same stream. Only Matroska
+    // gets a live container= token, though: mp4::mux/mp4::fragment/
+    // mpegts::mux are batch APIs with no incremental writer (see
+    // EncoderController::openLiveOutputWriters's own comment), so a live
+    // session with MP4/fMP4/MPEG-TS selected falls through to a plain
+    // elementary stream below, exactly like S/PDIF already does today.
     readonly property string cliLine: {
         const eac3Stream = EncoderController.atmosEnabled || EncoderController.codecIndex === 1;
         if (window.inputMode === "live") {
@@ -618,6 +626,9 @@ ApplicationWindow {
                        : "<source>";
         const mkv = EncoderController.containerIndex === 1;
         const spdif = EncoderController.containerIndex === 2;
+        const mp4 = EncoderController.containerIndex === 3;
+        const fmp4 = EncoderController.containerIndex === 4;
+        const mpegTs = EncoderController.containerIndex === 5;
         const streamOut = "out." + (eac3Stream ? "ec3" : "ac3");
         const rate = String(EncoderController.bitrateKbps);
         const meta = EncoderController.metaTokens;
@@ -686,6 +697,12 @@ ApplicationWindow {
             line += " && ac3cli mkv " + streamOut + " out.mkv";
         } else if (spdif) {
             line += " && ac3cli spdif " + streamOut + " out.wav";
+        } else if (mp4) {
+            line += " && ac3cli mp4 " + streamOut + " out.mp4";
+        } else if (fmp4) {
+            line += " && ac3cli fmp4 " + streamOut + " out_dir";
+        } else if (mpegTs) {
+            line += " && ac3cli ts " + streamOut + " out.ts";
         }
         return line;
     }
@@ -721,6 +738,21 @@ ApplicationWindow {
         }
     }
 
+    // fMP4/CMAF writes a FOLDER of files (init segment, media segments, HLS/
+    // DASH manifests), not one file - see EncoderController.outputIsFolder().
+    // A folder picker has no filename field the way FileDialog.SaveFile has,
+    // so this picks the PARENT folder and openSaveDialog() below appends the
+    // planned name (the same name the FileDialog branch would have used) to
+    // get the actual folder mp4::fragment's output is written into.
+    FolderDialog {
+        id: saveFolderDialog
+        title: qsTr("Choose a destination for the fMP4/CMAF output")
+        onAccepted: {
+            EncoderController.setPendingCliLine(window.cliLine);
+            EncoderController.encodeTo(selectedFolder + "/" + window.pendingOutputFolderName);
+        }
+    }
+
     FileDialog {
         id: recordDialog
         title: qsTr("Record to a file")
@@ -728,6 +760,20 @@ ApplicationWindow {
         onAccepted: {
             EncoderController.setPendingCliLine(window.cliLine);
             EncoderController.startRecording(window.liveMasterCaptureIndex, selectedFile);
+        }
+    }
+
+    // Same reasoning as saveFolderDialog above, for the "Record to a file"
+    // flow - recording still ends in one writeOutput() call (see
+    // EncoderController::startRecording), so it gets the same fMP4/CMAF
+    // folder treatment a file encode does.
+    FolderDialog {
+        id: recordFolderDialog
+        title: qsTr("Choose a destination for the fMP4/CMAF recording")
+        onAccepted: {
+            EncoderController.setPendingCliLine(window.cliLine);
+            EncoderController.startRecording(window.liveMasterCaptureIndex,
+                                             selectedFolder + "/" + window.pendingOutputFolderName);
         }
     }
 
@@ -768,6 +814,14 @@ ApplicationWindow {
                      : (EncoderController.sourcePath.length > 0
                         ? baseName(EncoderController.sourcePath).replace(/\.[^.]*$/, "")
                         : "output");
+        if (EncoderController.outputIsFolder()) {
+            // fMP4/CMAF names a FOLDER, not a file - the {source}.{ext}
+            // pattern is a file-extension convention with nothing to plug
+            // into its {ext} half here (outputSuffix() is empty), so this
+            // skips the pattern entirely rather than leaving a trailing "."
+            // in a folder name.
+            return stem;
+        }
         return appSettings.namePattern
             .replace("{source}", stem)
             .replace("{ext}", EncoderController.outputSuffix());
@@ -807,11 +861,28 @@ ApplicationWindow {
         return StandardPaths.writableLocation(StandardPaths.MusicLocation);
     }
 
-    function openSaveDialog(dialog, name) {
+    // The folder actually created once folderDialog accepts - see
+    // saveFolderDialog/recordFolderDialog's own onAccepted.
+    property string pendingOutputFolderName: ""
+
+    // folderDialog is only passed by callers that also have a folder
+    // variant ready (saveDialog/recordDialog do; liveSessionDialog does
+    // not, since a live session's fMP4/MP4/MPEG-TS selection falls through
+    // to a plain elementary-stream file - see window.cliLine's own comment)
+    // - omitting it always takes the FileDialog branch below, which is also
+    // what a live session with a folder-shaped container still wants.
+    function openSaveDialog(dialog, name, folderDialog) {
+        if (folderDialog && EncoderController.outputIsFolder()) {
+            pendingOutputFolderName = name;
+            folderDialog.currentFolder = outputFolderUrl();
+            folderDialog.open();
+            return;
+        }
         const suffix = EncoderController.outputSuffix();
         dialog.defaultSuffix = suffix;
-        dialog.nameFilters = [qsTr("%1 file (*.%2)").arg(suffix.toUpperCase()).arg(suffix),
-                              qsTr("All files (*)")];
+        dialog.nameFilters = suffix.length > 0
+            ? [qsTr("%1 file (*.%2)").arg(suffix.toUpperCase()).arg(suffix), qsTr("All files (*)")]
+            : [qsTr("All files (*)")];
         dialog.currentFolder = outputFolderUrl();
         dialog.selectedFile = name;
         dialog.open();
@@ -877,14 +948,14 @@ ApplicationWindow {
             EncoderController.encodeTo(outputFolderUrl() + "/" + plannedFileName());
             return;
         }
-        openSaveDialog(saveDialog, plannedFileName());
+        openSaveDialog(saveDialog, plannedFileName(), saveFolderDialog);
     }
     // Record honours the capture preference: ask for a filename, or write
     // straight to the output folder under a timestamped take name — the
     // status line and run strip always say where it went.
     function startRecordFlow() {
         if (appSettings.askRecordName) {
-            openSaveDialog(recordDialog, plannedFileName());
+            openSaveDialog(recordDialog, plannedFileName(), recordFolderDialog);
             return;
         }
         const now = new Date();
@@ -6603,8 +6674,13 @@ ApplicationWindow {
                             void EncoderController.codecIndex;
                             void EncoderController.containerIndex;
                             void EncoderController.atmosEnabled;
-                            return EncoderController.busy
-                                   ? qsTr("Encoding…")
+                            if (EncoderController.busy) {
+                                return qsTr("Encoding…");
+                            }
+                            // fMP4/CMAF has no single extension - see
+                            // EncoderController.outputIsFolder().
+                            return EncoderController.outputIsFolder()
+                                   ? qsTr("Encode to folder")
                                    : qsTr("Encode to .%1").arg(EncoderController.outputSuffix());
                         }
                         enabled: EncoderController.sourceReady && !EncoderController.busy
