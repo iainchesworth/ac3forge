@@ -28,7 +28,11 @@ namespace {
 
 constexpr ac3::Acmod kAcmod = ac3::Acmod::k3_2;
 constexpr bool kLfe = true;
-constexpr int kFrames = 62;  // two seconds
+// 250 frames * 1536 samples / 48000 Hz = 8 s: long enough for short-term
+// loudness's 3 s window and a non-trivial Loudness Range (the loud/quiet
+// split below gives it two clearly different levels to span), not just
+// integrated loudness's 400 ms floor.
+constexpr int kFrames = 250;
 constexpr std::array<double, 6> kTones{1000.0, 800.0, 1200.0, 600.0, 1400.0, 60.0};
 
 // Loud for the first half, quiet for the second, so the compressor has
@@ -65,6 +69,17 @@ int main() {
     const auto lkfs = meter.integrated_lkfs();
     const int dialnorm = lkfs ? ac3::meta::dialnorm_from_lkfs(*lkfs) : 31;
     std::printf("measured %.2f LKFS -> dialnorm %d\n", lkfs.value_or(0.0), dialnorm);
+
+    // The rest of an R128 meter, read off the same pass: momentary (400 ms)
+    // and short-term (3 s) are the un-gated windows integrated_lkfs() gates
+    // internally, reported directly; Loudness Range is EBU Tech 3342's own
+    // gated-percentile statistic; true peak (BS.1770-4 Annex 2) is the only
+    // one of the four that is not a loudness figure at all - it is an
+    // oversampled peak-sample estimate, and the only measure here that does
+    // NOT exclude the LFE channel.
+    std::printf("momentary %.2f LKFS, short-term %.2f LKFS, LRA %.2f LU, true peak %.2f dBTP\n",
+                meter.momentary_lkfs().value_or(0.0), meter.short_term_lkfs().value_or(0.0),
+                meter.loudness_range().value_or(0.0), meter.true_peak_dbtp().value_or(0.0));
 
     // --- pass two: encode with the metadata --------------------------------
     // Heap-allocated: FrameEncoder carries several KB of MDCT scratch/history
