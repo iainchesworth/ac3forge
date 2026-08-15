@@ -169,6 +169,7 @@ generators in `tools/`.
 | [docs/gui/](docs/gui/index.md) | Step-by-step `ac3gui` guide, with screenshots |
 | [docs/verification.md](docs/verification.md) | How output is checked, and where checking runs out |
 | [docs/project/history.md](docs/project/history.md) | How the implementation was built, milestone by milestone |
+| [ROADMAP.md](ROADMAP.md) | Where the project is headed: the candidate list from 0.6 to 1.0 |
 | [docs/quality-trend.md](docs/quality-trend.md) | Gold-reference SNR history by commit, develop vs. main - the FFmpeg-oracle gate's numbers, trended over time |
 | [docs/releasing.md](docs/releasing.md) | Cutting a release: versioning, the tag-triggered workflow, GPG signing |
 | [fuzz/README.md](fuzz/README.md) | The libFuzzer harnesses: what they cover, how to run them locally |
