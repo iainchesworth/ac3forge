@@ -686,6 +686,12 @@ jobs:
           persist-credentials: false
           fetch-depth: ${{ inputs.fetch_depth }}
 
+      # platform/android/gradle/wrapper/gradle-wrapper.jar is a committed
+      # binary (OpenSSF Scorecard's Binary-Artifacts check, alert #65) - it
+      # can't be dropped since gradlew needs it, so this verifies its
+      # checksum against Gradle's own known-good release hashes instead.
+      - uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+
       # ubuntu-latest ships several Temurin JDKs preinstalled, each with its
       # own JAVA_HOME_<version>_X64 env var (see actions/runner-images) -
       # selecting one this way needs no extra pinned action for a JDK AGP
