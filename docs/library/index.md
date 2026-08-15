@@ -66,7 +66,9 @@ stopped compiling would break the build rather than sit here being wrong.
 - [Spatial & Atmos objects](spatial-and-atmos.md) — the plain-AC-3 object layer and `ac3::oba::AtmosEncoder`.
 - [Channel plans & routing](channel-plans-and-routing.md) — custom channel selections and multi-source assignment.
 - [Metadata](metadata.md) — loudness, DRC and downmix metadata.
-- [Muxing & sinks](muxing-and-sinks.md) — `matroska::mux`, `mp4::mux`, metering, the IEC 61937/passthrough/monitor sinks, and capture.
+- [Muxing & sinks](muxing-and-sinks.md) — `matroska::mux`, `mp4::mux`, fMP4/CMAF + HLS/DASH
+  (`mp4::fragment`, `mp4/hls.hpp`, `mp4/dash.hpp`), metering, the IEC 61937/passthrough/monitor
+  sinks, and capture.
 - [File I/O](file-io.md) — reading and writing WAV.
 - [Object signing](signing.md) — `ac3::signing`, the EMDF protection tag.
 - [Header map](header-map.md) — every public header and what lives in it.

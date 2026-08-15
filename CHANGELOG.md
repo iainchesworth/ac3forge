@@ -24,6 +24,27 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   FFmpeg's own MKV→MP4 remux path is documented to drop or mis-signal
   ([jellyfin-ffmpeg#584](https://github.com/jellyfin/jellyfin-ffmpeg/issues/584)).
 
+- **Fragmented MP4/CMAF segmenting plus HLS/DASH signaling** (`mp4::fragment`, `mp4/hls.hpp`,
+  `mp4/dash.hpp`, `ac3cli fmp4 <in.ac3|in.ec3> <out_dir> [frames_per_fragment]`) — the streaming-
+  delivery follow-up `mp4::mux`'s own header comment deliberately left for later. `fragment()`
+  lays out an initialization segment (`ftyp`+`moov`, `mvex`/`trex` in place of a populated sample
+  table) and one CMAF media segment (`styp`+`moof`+`mdat`) per fragment (ISO/IEC 14496-12 §8.8,
+  ISO/IEC 23000-19), from the same batch AudioTrack/frame shape `mux()` already takes.
+  `build_hls_media_playlist`/`build_hls_master_playlist` emit a spec-correct HLS playlist pair
+  (RFC 8216) and `build_dash_adaptation_set` a DASH `AdaptationSet` snippet (ISO/IEC 23009-1) for
+  the identical segments — one CMAF segment format, two manifest flavors. Both get `CODECS`/
+  `codecs` right (the bare `ac-3`/`ec-3` sample-entry fourcc, RFC 6381 §3 — neither codec
+  registers a dot-separated profile suffix) and, for Dolby Digital Plus with Atmos objects, HLS's
+  `CHANNELS="<N>/JOC"` (Apple's HLS Authoring Specification for Apple Devices, reiterated with a
+  worked example by Dolby's own Online Delivery Kit docs and AWS MediaLive's HLS+Atmos
+  documentation) — exactly the category of packaging correctness this initiative's own `dec3` box
+  work already cared about, and the same category of bug Shaka Packager and jellyfin-ffmpeg#584
+  have both hit around E-AC-3/Atmos-in-HLS signaling. The DASH snippet uses an exact
+  `SegmentTemplate`/`SegmentTimeline` (ISO/IEC 23009-1 §5.3.9.6) rather than one nominal
+  `duration`, avoiding a real gap found against FFmpeg's own `dash` demuxer while writing this: a
+  flat nominal duration with a shorter final segment (the normal case) let it compute one too many
+  segments from `mediaPresentationDuration` and request a segment number past the end.
+
 ### Added
 
 - **Live sessions mux straight to Matroska.** `ac3cli record`/`ac3cli live` take a new

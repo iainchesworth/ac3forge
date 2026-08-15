@@ -298,5 +298,25 @@ run mkv atmos_4.ec3 atmos_4.mkv
 run mp4 enc_51.ac3 enc_51.mp4
 run mp4 eac3enc_none.ec3 eac3enc_none.mp4
 run mp4 atmos_4.ec3 atmos_4.mp4
+# fmp4 writes a directory (init segment + media segments + HLS/DASH
+# manifests) rather than one file - atmos_4.ec3 in particular exercises the
+# HLS CHANNELS="<N>/JOC" path (mp4/hls.hpp), since that stream carries Dolby
+# Atmos objects. Concatenating the init segment with every media segment and
+# strict-decoding the result, and strict-decoding the HLS media playlist
+# directly, both through FFmpeg's own demuxers, is a stronger check than the
+# plain exit-code one every other 'run' call gets here - exactly the
+# fragment-boundary/manifest-signaling logic a single-fragment or synthetic
+# test cannot exercise.
+run fmp4 enc_51.ac3 fmp4_51 4
+run fmp4 eac3enc_none.ec3 fmp4_eac3 4
+run fmp4 atmos_4.ec3 fmp4_atmos 4
+# ls -v (natural/version sort) matters here, not a plain glob: a plain
+# 'segment*.m4s' glob sorts lexicographically ("segment10.m4s" before
+# "segment2.m4s"), which would concatenate fragments out of sequence order -
+# every moof's mfhd sequence_number/tfdt needs to stay monotonic for a real
+# decoder to accept the result.
+cat fmp4_atmos/init.mp4 $(ls -v fmp4_atmos/segment*.m4s) > fmp4_atmos_combined.mp4
+run_ffmpeg_check fmp4_atmos_combined.mp4
+run_ffmpeg_check fmp4_atmos/audio.m3u8
 
 echo "codec matrix: $count commands completed cleanly in $WORKDIR"

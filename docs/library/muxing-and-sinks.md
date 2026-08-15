@@ -74,15 +74,78 @@ Full program: [`examples/mux_mp4.cpp`](https://github.com/iainchesworth/ac3forge
 
 `mux` returns the whole file as bytes and does no file I/O, the same as `matroska::mux`. It
 writes `ftyp`/`moov`/`mdat` for one audio track, one sample per chunk, `stts`/`stsz`/`stco` built
-straight off the frame sizes handed in. No fragmentation, no edit lists, no multiple tracks —
-ROADMAP.md's A2 (fMP4/CMAF) is the deliberate follow-up for streaming delivery, not something
-this first cut tries to also be.
+straight off the frame sizes handed in. No edit lists, no multiple tracks — those matter for
+large-file seeking and multi-track muxing, not for playing back what this project produces.
 
 Getting the `dec3`/`dac3` box right from the spec is the point: FFmpeg's own MKV→MP4 remux path
 is documented to silently drop or mis-signal the Atmos extension
 ([jellyfin-ffmpeg#584](https://github.com/jellyfin/jellyfin-ffmpeg/issues/584)) — building it
 from `ac3::io::scan`'s own read of the bitstream, rather than by copying another tool's output,
 is what this module avoids that bug by construction rather than by patching it after the fact.
+
+## Fragmented MP4/CMAF + HLS/DASH: `mp4::fragment`, `mp4/hls.hpp`, `mp4/dash.hpp`
+
+ROADMAP.md's A2, the streaming-delivery follow-up `mp4::mux`'s own header deliberately left for
+later: `mp4::fragment` lays out the same track and frames as `mux`, but as a fragmented movie
+(ISO/IEC 14496-12 §8.8's `moof`/`mfhd`/`traf`/`tfhd`/`tfdt`/`trun`) split into CMAF-shaped pieces
+(ISO/IEC 23000-19) — an initialization segment (`ftyp`+`moov`, whose one `trak` carries
+`mvex`/`trex` instead of a populated sample table, since a fragmented track's own `stbl`
+describes zero samples) plus one or more media segments (`styp`+`moof`+`mdat`, one per fragment).
+Same batch shape as `mux`: every frame is known up front, so real durations/timestamps are
+filled in throughout rather than the zero/unknown placeholders a true live fragmenter would need.
+
+```cpp
+const auto fragmented =
+    mp4::fragment(track, frames, mp4::FragmentOptions{.frames_per_fragment = 8});
+```
+
+`FragmentedOutput::init_segment` and `::media_segments` are exactly the files a packager or CDN
+origin wants (`init.mp4` plus `segment1.m4s`, `segment2.m4s`, ...) — see `ac3cli fmp4`, which
+writes them out that way alongside the manifests below.
+
+`mp4/hls.hpp` and `mp4/dash.hpp` build HLS/DASH signaling for those same segments — one CMAF
+segment format, two manifest flavors, the entire point of CMAF:
+
+```cpp
+const auto media_playlist =
+    mp4::build_hls_media_playlist(track, fragmented->media_segments, mp4::HlsOptions{});
+const auto master_playlist = mp4::build_hls_master_playlist(
+    track, fragmented->media_segments, "audio.m3u8", mp4::HlsOptions{});
+const auto dash_snippet = mp4::build_dash_adaptation_set(track, fragmented->media_segments);
+```
+
+Full program: [`examples/mux_fmp4.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/mux_fmp4.cpp).
+
+Both manifest flavors get the `CODECS`/`codecs` attribute right: `mp4::hls_codec_string` (and
+`build_dash_adaptation_set` internally) use the bare `ac-3`/`ec-3` sample-entry fourcc unmodified
+as the RFC 6381 `'Codecs'` parameter — neither AC-3 nor E-AC-3 registers any of the
+dot-separated profile/level fields RFC 6381 §3 makes room for (unlike e.g. `avc1.640028`), which
+is confirmed against every real HLS manifest example
+[Apple's HLS Authoring Specification for Apple
+Devices](https://developer.apple.com/documentation/http-live-streaming/hls-authoring-specification-for-apple-devices)
+shows. Dolby Digital Plus with Atmos objects additionally needs `CHANNELS="<N>/JOC"` on the HLS
+media rendition instead of a plain channel count, where N is the decodable object count
+(`ac3::io::ScannedStream::oba_complexity_index`, TS 103 420 §8.3.2's `complexity_index_type_a`)
+— reiterated, with a worked example (`CHANNELS="12/JOC"`), by [Dolby's own Online Delivery Kit
+documentation](https://ott.dolby.com/OnDelKits/DDP/Dolby_Digital_Plus_Online_Delivery_Kit_v1.5/Documentation/Content_Creation/SDM/help_files/topics/hls_c_hls_signal_atmos_ddp.html)
+and shown verbatim in a real manifest (`CODECS="avc1.64001f,ec-3"` / `CHANNELS="12/JOC"`) by
+[AWS MediaLive's own HLS+Atmos
+documentation](https://docs.aws.amazon.com/medialive/latest/ug/feature-dolbyatmos.html). `mp4::`
+itself never reads that TS 103 420 object-layer syntax — `HlsOptions::channels_attribute` is
+opaque to it, the same way `AudioTrack::codec_config` is; `ac3cli fmp4` is the caller that
+already has `oba_complexity_index` (it read it to build the `dec3` box) and supplies the string.
+
+The DASH snippet describes exact per-segment durations with a `SegmentTemplate`/`SegmentTimeline`
+(ISO/IEC 23009-1 §5.3.9.6) built from each segment's own duration, rather than one nominal
+`duration` attribute assumed constant — segments are constant-duration except (as usual) a
+possibly shorter final one, and a flat nominal duration is exactly what let a real player
+(FFmpeg's own `dash` demuxer, while writing this module) compute one too many segments from
+`mediaPresentationDuration` and request a segment number past the end.
+
+`mp4::fragment`'s ISOBMFF output and the HLS media playlist round-trip cleanly through FFmpeg's
+own strict decode (`ffmpeg -v error -xerror -err_detect crccheck+bitstream+buffer+explode`) —
+both the fragmented file (init segment concatenated with every media segment) and `audio.m3u8`
+read back the exact original frame count and duration.
 
 ## Bitstream sinks (`ac3::sinks`)
 
