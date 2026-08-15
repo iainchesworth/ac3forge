@@ -224,6 +224,14 @@ if(WIN32)
     else()
         set(CPACK_SYSTEM_NAME "win32")
     endif()
+elseif(LINUX)
+    # Arch-qualified so an x64 and an arm64 TGZ/ZIP built for the same release
+    # don't produce an identical filename - CMAKE_SYSTEM_PROCESSOR (x86_64 /
+    # aarch64) is already set correctly by cmake/toolchains/linux.*.toolchain.cmake.
+    # DEB/RPM don't need this: their own filenames already carry the arch.
+    # APPLE stays plain "Darwin" below - only one macOS arch (arm64) exists as
+    # a triplet today, so there is no collision to avoid there yet.
+    set(CPACK_SYSTEM_NAME "${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
 else()
     set(CPACK_SYSTEM_NAME "${CMAKE_SYSTEM_NAME}")
 endif()

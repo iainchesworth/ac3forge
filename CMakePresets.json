@@ -92,6 +92,36 @@
       }
     },
     {
+      "name": "linux-gcc-arm64",
+      "hidden": true,
+      "description": "Linux/GCC 15 toolchain selection, arm64 (Raspberry Pi 4/5 and any other aarch64 Debian/Ubuntu target). Same toolchain file as linux-gcc - cmake/toolchains/linux.gcc.toolchain.cmake already resolves aarch64 vs x86_64 from VCPKG_TARGET_ARCHITECTURE - only the vcpkg triplet differs. GUI off for the same reason as linux-gcc.",
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "arm64-linux-gcc",
+        "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/linux.gcc.toolchain.cmake",
+        "AC3FORGE_BUILD_GUI": "OFF"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
+      "name": "linux-llvm-arm64",
+      "hidden": true,
+      "description": "Linux/LLVM 21 toolchain selection, arm64 (Raspberry Pi 4/5 and any other aarch64 Debian/Ubuntu target). Same toolchain file as linux-llvm - cmake/toolchains/linux.llvm.toolchain.cmake already resolves aarch64 vs x86_64 from VCPKG_TARGET_ARCHITECTURE - only the vcpkg triplet differs. GUI off for the same reason as linux-gcc.",
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "arm64-linux-llvm",
+        "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/linux.llvm.toolchain.cmake",
+        "AC3FORGE_BUILD_GUI": "OFF"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
       "name": "macos-llvm",
       "hidden": true,
       "description": "macOS (Apple Silicon)/Homebrew LLVM toolchain selection. Verified via CI only (this project has no local macOS host) - see docs/BUILDING.md's Verified configuration section. GUI off for the same reason as linux-gcc.",
@@ -175,6 +205,26 @@
       "displayName": "Linux LLVM Debug"
     },
     {
+      "name": "config-linux-gcc-arm64",
+      "inherits": [ "release", "linux-gcc-arm64", "core" ],
+      "displayName": "Linux GCC Release (arm64)"
+    },
+    {
+      "name": "config-linux-gcc-arm64-debug",
+      "inherits": [ "debug", "linux-gcc-arm64", "core" ],
+      "displayName": "Linux GCC Debug (arm64)"
+    },
+    {
+      "name": "config-linux-llvm-arm64",
+      "inherits": [ "release", "linux-llvm-arm64", "core" ],
+      "displayName": "Linux LLVM Release (arm64)"
+    },
+    {
+      "name": "config-linux-llvm-arm64-debug",
+      "inherits": [ "debug", "linux-llvm-arm64", "core" ],
+      "displayName": "Linux LLVM Debug (arm64)"
+    },
+    {
       "name": "config-macos-llvm",
       "inherits": [ "release", "macos-llvm", "core" ],
       "displayName": "macOS LLVM Release"
@@ -241,6 +291,26 @@
       "name": "build-linux-llvm-debug",
       "configurePreset": "config-linux-llvm-debug",
       "displayName": "Linux LLVM Debug"
+    },
+    {
+      "name": "build-linux-gcc-arm64",
+      "configurePreset": "config-linux-gcc-arm64",
+      "displayName": "Linux GCC Release (arm64)"
+    },
+    {
+      "name": "build-linux-gcc-arm64-debug",
+      "configurePreset": "config-linux-gcc-arm64-debug",
+      "displayName": "Linux GCC Debug (arm64)"
+    },
+    {
+      "name": "build-linux-llvm-arm64",
+      "configurePreset": "config-linux-llvm-arm64",
+      "displayName": "Linux LLVM Release (arm64)"
+    },
+    {
+      "name": "build-linux-llvm-arm64-debug",
+      "configurePreset": "config-linux-llvm-arm64-debug",
+      "displayName": "Linux LLVM Debug (arm64)"
     },
     {
       "name": "build-macos-llvm",
@@ -327,6 +397,34 @@
       "execution": { "noTestsAction": "error", "stopOnFailure": false }
     },
     {
+      "name": "test-linux-gcc-arm64",
+      "configurePreset": "config-linux-gcc-arm64",
+      "displayName": "Linux GCC Release Tests (arm64)",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+    },
+    {
+      "name": "test-linux-gcc-arm64-debug",
+      "configurePreset": "config-linux-gcc-arm64-debug",
+      "displayName": "Linux GCC Debug Tests (arm64)",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+    },
+    {
+      "name": "test-linux-llvm-arm64",
+      "configurePreset": "config-linux-llvm-arm64",
+      "displayName": "Linux LLVM Release Tests (arm64)",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+    },
+    {
+      "name": "test-linux-llvm-arm64-debug",
+      "configurePreset": "config-linux-llvm-arm64-debug",
+      "displayName": "Linux LLVM Debug Tests (arm64)",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+    },
+    {
       "name": "test-macos-llvm",
       "configurePreset": "config-macos-llvm",
       "displayName": "macOS LLVM Release Tests",
@@ -398,6 +496,18 @@
       "packageDirectory": "${sourceDir}/packages"
     },
     {
+      "name": "pack-linux-gcc-arm64",
+      "displayName": "Linux GCC Package (arm64)",
+      "configurePreset": "config-linux-gcc-arm64",
+      "packageDirectory": "${sourceDir}/packages"
+    },
+    {
+      "name": "pack-linux-llvm-arm64",
+      "displayName": "Linux LLVM Package (arm64)",
+      "configurePreset": "config-linux-llvm-arm64",
+      "packageDirectory": "${sourceDir}/packages"
+    },
+    {
       "name": "pack-macos-llvm",
       "displayName": "macOS LLVM Package",
       "configurePreset": "config-macos-llvm",
@@ -440,6 +550,24 @@
         { "type": "configure", "name": "config-linux-llvm" },
         { "type": "build", "name": "build-linux-llvm" },
         { "type": "test", "name": "test-linux-llvm" }
+      ]
+    },
+    {
+      "name": "ci-linux-gcc-arm64",
+      "displayName": "Linux GCC arm64 CI (configure, build, test)",
+      "steps": [
+        { "type": "configure", "name": "config-linux-gcc-arm64" },
+        { "type": "build", "name": "build-linux-gcc-arm64" },
+        { "type": "test", "name": "test-linux-gcc-arm64" }
+      ]
+    },
+    {
+      "name": "ci-linux-llvm-arm64",
+      "displayName": "Linux LLVM arm64 CI (configure, build, test)",
+      "steps": [
+        { "type": "configure", "name": "config-linux-llvm-arm64" },
+        { "type": "build", "name": "build-linux-llvm-arm64" },
+        { "type": "test", "name": "test-linux-llvm-arm64" }
       ]
     },
     {
