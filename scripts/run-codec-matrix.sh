@@ -295,5 +295,8 @@ run spdif ac3_stereo.ac3 spdif_out.wav
 run mkv enc_51.ac3 enc_51.mkv
 run mkv eac3enc_none.ec3 eac3enc_none.mkv
 run mkv atmos_4.ec3 atmos_4.mkv
+run ts enc_51.ac3 enc_51.ts
+run ts eac3enc_none.ec3 eac3enc_none.ts
+run ts atmos_4.ec3 atmos_4.ts
 
 echo "codec matrix: $count commands completed cleanly in $WORKDIR"

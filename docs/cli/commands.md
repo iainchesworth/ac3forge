@@ -24,6 +24,7 @@ Usage:
   ac3cli loudness     <in.wav>                                (BS.1770-4 loudness -> dialnorm)
   ac3cli spdif        <in.ac3> <out.wav>                      (IEC 61937 wrap as playable PCM16 WAV)
   ac3cli mkv          <in.ac3|in.ec3> <out.mkv>               (wrap as a playable Matroska file)
+  ac3cli ts           <in.ac3|in.ec3> <out.ts>                (wrap as an MPEG-2 Transport Stream (DVB profile))
   ac3cli devices                                              (input and loopback capture endpoints)
   ac3cli outputs                                              (render endpoints + AC-3/E-AC-3 passthrough support)
   ac3cli play         <in.ac3|in.ec3> [device_index]          (exclusive-mode IEC 61937 passthrough; bsid decides AC-3 vs E-AC-3)
@@ -96,6 +97,7 @@ ac3cli decode out.ec3 out.wav
 |---|---|
 | `spdif` | Wraps AC-3 as IEC 61937 bursts inside a playable PCM16 WAV — for feeding a receiver through an ordinary audio path |
 | `mkv` | Wraps AC-3 or E-AC-3 as Matroska, reading format/packet boundaries/sample rate/channel count from the bitstream itself so the container can't be told the wrong ones |
+| `ts` | Wraps AC-3 or E-AC-3 as an MPEG-2 Transport Stream (PAT + PMT + one PES-wrapped audio PID), identified per the DVB profile — `stream_type` 0x06 plus the `AC3_descriptor`/`Enhanced_AC3_descriptor` ETSI EN 300 468 Annex D defines, not ATSC's |
 
 ### Live & hardware
 

@@ -9,12 +9,13 @@ target_link_libraries(ac3cli
         ac3::audio
         ac3::signing
         matroska::matroska
+        mpegts::mpegts
         ac3::warnings)
 
-# ac3::forge and matroska::matroska are link-only here, but installed and
-# packaged in their own right elsewhere - see cmake/InstallLibrary.cmake and
-# cmake/Packaging.cmake's `library` CPack component, and
-# docs/library/index.md for how a third party consumes them via
+# ac3::forge, matroska::matroska and mpegts::mpegts are link-only here, but
+# installed and packaged in their own right elsewhere - see
+# cmake/InstallLibrary.cmake and cmake/Packaging.cmake's `library` CPack
+# component, and docs/library/index.md for how a third party consumes them via
 # find_package(ac3forge). ac3::audio stays link-only and unpackaged always -
 # a CLI/GUI implementation detail, not part of the distributed library.
 include(GNUInstallDirs)

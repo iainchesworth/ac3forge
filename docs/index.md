@@ -95,6 +95,7 @@ misaligning them against the one still catching up.
 |---|---|
 | `ac3::io::scan` | Finds access-unit boundaries in a raw elementary stream and reports what it renders, without being told. |
 | `matroska::matroska` | A standalone MKV muxer. Links nothing from `ac3::forge` and knows nothing about AC-3. |
+| `mpegts::mpegts` | A standalone MPEG-2 Transport Stream muxer (PAT + PMT + one PES-wrapped elementary stream), identifying AC-3/E-AC-3 per DVB's ETSI EN 300 468 Annex D descriptors. Links nothing from `ac3::forge` beyond the AC-3/E-AC-3 choice it is told. |
 | `ac3::sinks::iec61937` | S/PDIF burst packing: AC-3 byte-exact against FFmpeg's `spdif` muxer; E-AC-3 (`Eac3BurstPacker`) verified against FFmpeg's `spdif_header_eac3` and Microsoft's own IEC 61937 documentation (both independently fetched, not recalled — see the caveats below). |
 | `ac3::capture` | Live input/loopback capture — WASAPI on Windows, ALSA on Linux — through a lock-free SPSC ring. |
 | `ac3::sinks::PassthroughSink` | Exclusive-mode/direct bitstream output, AC-3 or E-AC-3 — WASAPI on Windows, ALSA on Linux, JNI-bridged `AudioTrack` on Android. See the caveats below (Windows and Android hardware-confirmed; the ALSA backend is not). |
@@ -148,5 +149,5 @@ it has no equivalent and stays CBR.
 - **Validation** — [how output is checked](verification.md): quality numbers, oracle coverage,
   and exactly where it runs out.
 - **Library** — [Conventions](library/index.md): the public C++ API, with compiled examples.
-- **CLI reference** — [Overview](cli/index.md): `ac3cli`'s twenty-one commands.
+- **CLI reference** — [Overview](cli/index.md): `ac3cli`'s twenty-two commands.
 - **GUI guide** — [Window layout](gui/index.md): `ac3gui`, the Qt Quick front end.

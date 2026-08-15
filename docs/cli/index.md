@@ -1,6 +1,6 @@
 # ac3cli
 
-`ac3cli` is the command-line front end over `ac3::forge` — twenty-one commands covering
+`ac3cli` is the command-line front end over `ac3::forge` — twenty-two commands covering
 synthesis, file encoding/decoding, container wrapping, inspection, and live capture/playback.
 Every command it can run is backed by the same public library documented under
 [Library](../library/index.md); nothing in the CLI has logic the library doesn't also expose.
@@ -31,7 +31,7 @@ ac3forge 0.2.0
   target:  Windows x86_64 (MSVC 1951)
 ```
 
-`--version` is a flag, not one of the twenty-one commands — it's handled before argument parsing
+`--version` is a flag, not one of the twenty-two commands — it's handled before argument parsing
 and exits immediately.
 
 ## Conventions shared across commands
@@ -56,7 +56,7 @@ and exits immediately.
 
 ## Next
 
-- [Commands](commands.md) — all 21 commands, grouped and with real usage text.
+- [Commands](commands.md) — all 22 commands, grouped and with real usage text.
 - [Metadata options](metadata-options.md) — the `drc=`/`heavy`/`dialnorm=`/… options grammar,
   the `tools:` token grammar, and the full layout/location-list grammar.
 - [Concepts](../concepts/index.md) — if `bsid`, `syncframe`, or `JOC` aren't already familiar.
