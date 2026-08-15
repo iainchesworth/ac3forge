@@ -14,7 +14,7 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 
 ## [0.5.0-beta.1] - 2026-08-15
 
-Fourth tagged release. The headline is a full fast-transform performance initiative: an opt-in
+Fourth tagged release. The main change is a fast-transform performance initiative: an opt-in
 FFT-based MDCT was introduced, taken default-on, and then progressively hardware-optimized down
 through every transform kernel the encoder touches — the long transform, both block-switched
 short transforms, and the opt-in enhanced-coupling tool's DFT — alongside an algorithmic
@@ -69,7 +69,7 @@ CLI together with the entire library SDK.
   with zero mismatches; outputs are byte-identical on every monotone path, and the one path where
   they can legitimately differ (AHT's locally non-monotone cost function) was already
   probe-order-dependent before this change — decoded PCM agrees at 102–115 dB SNR per channel.
-- **New observability to keep the above honest going forward**: Tracy zones across every previously
+- **New performance observability**: Tracy zones across every previously
   unzoned encoder stage, a standalone `ac3kernelbench` micro-benchmark harness timing kernels in
   isolation against real audio, and a per-kernel trend history (non-gating, `::warning::`-only)
   alongside the existing whole-frame performance trend — see
@@ -106,6 +106,22 @@ CLI together with the entire library SDK.
   list, which let a steady ~25 dB interop fixture read as a crash relative to an unrelated ~68 dB
   series. The table now follows the same Codec scoping as the chart, with a `Check` column and a
   tooltipped `†` marker on non-primary checks.
+
+### Known gaps
+
+- Objects will not decode as *objects* in Dolby's own decoder: DD+ JOC gates that on an
+  authenticity tag keyed to a secret embedded in Dolby's decoder binaries, which this project
+  does not produce. The bed still decodes as plain 5.1 anywhere.
+- Exclusive-mode S/PDIF/HDMI passthrough has not been confirmed against real bitstreaming hardware
+  on either platform (no such endpoint was available during development).
+- `fscod2` audio content has no external decode oracle at all, not even Dolby's own Reference
+  Player — verified only by this project's own encoder/decoder round trip.
+- The external-encoder landscape comparison's Dolby DEE leg silently drops the Ls channel on
+  discrete 5.1 input — a limitation of the installed DEE build used as a comparison oracle, not of
+  this project's own encoder; affected rows are marked `unverified` rather than scored.
+
+See [Validation](docs/verification.md) for the full account of what is and isn't independently
+verified, and [docs/project/history.md](docs/project/history.md) for how this was built.
 
 ## [0.4.0-beta.1] - 2026-08-14
 
