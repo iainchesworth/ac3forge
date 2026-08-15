@@ -150,5 +150,5 @@ it has no equivalent and stays CBR.
 - **Validation** — [how output is checked](verification.md): quality numbers, oracle coverage,
   and exactly where it runs out.
 - **Library** — [Conventions](library/index.md): the public C++ API, with compiled examples.
-- **CLI reference** — [Overview](cli/index.md): `ac3cli`'s twenty-two commands.
+- **CLI reference** — [Overview](cli/index.md): `ac3cli`'s twenty-three commands.
 - **GUI guide** — [Window layout](gui/index.md): `ac3gui`, the Qt Quick front end.

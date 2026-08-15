@@ -4062,7 +4062,7 @@ struct Command {
     int (*run)(const Args&);
 };
 
-constexpr std::array<Command, 22> kCommands{{
+constexpr std::array<Command, 23> kCommands{{
     {"silence", 2, "<out.ac3> [seconds] [bitrate_kbps]", "", Needs::kNothing,
      [](const Args& x) { return run_silence(x.str(1), x.u32(2, 5), x.u32(3, 192)); }},
     {"sine", 2, "<out.ac3> [seconds] [bitrate_kbps] [freq_hz] [amp_pct] [layout]", "",

@@ -104,7 +104,7 @@ ac3cli encode in.wav out.ac3 448 couple
 ac3cli decode out.ec3 out.wav
 ```
 
-`ac3cli` has twenty-two commands; run it with no arguments for the full listing.
+`ac3cli` has twenty-three commands; run it with no arguments for the full listing.
 `ac3gui` is a Qt Quick front end over the same library: file and live-capture encoding, a plan
 view for placing objects, and channel-level metering. For the C++ API — two headers and about a
 dozen lines to encode a frame — see [Quick start](docs/quickstart.md) or
@@ -167,7 +167,7 @@ generators in `tools/`.
 | [docs/platforms/android.md](docs/platforms/android.md) | Shield Atmos Demo: the Android TV app, HDMI passthrough, controller input, screenshots |
 | [docs/concepts/](docs/concepts/index.md) | Beginner's guide to AC-3, E-AC-3, Atmos and JOC, with diagrams |
 | [docs/library/](docs/library/index.md) | The public API, with compiled examples |
-| [docs/cli/](docs/cli/index.md) | The `ac3cli` reference: all 22 commands, metadata options |
+| [docs/cli/](docs/cli/index.md) | The `ac3cli` reference: all 23 commands, metadata options |
 | [docs/gui/](docs/gui/index.md) | Step-by-step `ac3gui` guide, with screenshots |
 | [docs/verification.md](docs/verification.md) | How output is checked, and where checking runs out |
 | [docs/project/history.md](docs/project/history.md) | How the implementation was built, milestone by milestone |
