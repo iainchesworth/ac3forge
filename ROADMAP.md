@@ -19,7 +19,7 @@ the step the decoder was meant to lead toward.
   ([jellyfin-ffmpeg #584](https://github.com/jellyfin/jellyfin-ffmpeg/issues/584)), GPAC ships
   a repair option for it, and HandBrake has a long-open request for E-AC-3 7.1 in MP4
   ([HandBrake #1085](https://github.com/HandBrake/HandBrake/issues/1085)).
-- [ ] **A2 (M)** — fMP4/CMAF segmenting plus HLS/DASH signaling helpers. Depends on A1.
+- [x] **A2 (M)** — fMP4/CMAF segmenting plus HLS/DASH signaling helpers. Depends on A1.
 - [x] **A3 (M)** — MPEG-TS muxing with AC-3/E-AC-3 descriptors per ATSC/DVB.
 - [x] **A4 (S)** — stdin/stdout streaming in `ac3cli`: the `-` filename convention for
   pipe-based workflows. Everything today is whole-file.

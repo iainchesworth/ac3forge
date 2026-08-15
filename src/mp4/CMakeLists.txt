@@ -1,5 +1,6 @@
 # ---------------------------------------------------------------------------
-# mp4::mp4 - a minimal MP4 (ISOBMFF) container writer.
+# mp4::mp4 - a minimal MP4 (ISOBMFF) container writer, plus fragmented
+# MP4/CMAF segmenting and HLS/DASH signaling helpers.
 #
 # Deliberately standalone: it links nothing from ac3::forge and knows nothing
 # about AC-3. It nests ISOBMFF boxes and lays out one audio track's samples,
@@ -9,6 +10,13 @@
 # ac3::forge, but the codec library never reaches for the container and vice
 # versa. Mirrors src/matroska/CMakeLists.txt in every particular; see that
 # file's own header for the OBJECT/STATIC/SHARED shape's full rationale.
+#
+# mp4.cpp (mux()) and fragment.cpp (fragment()) share their ISOBMFF
+# box-writing plumbing through src/isobmff_detail.hpp; hls.cpp and dash.cpp
+# share their segment-duration/bandwidth arithmetic through
+# src/manifest_detail.hpp - neither is a public header, both are `inline`
+# functions included by more than one .cpp in this same target (see either
+# file's own comment).
 # ---------------------------------------------------------------------------
 add_library(mp4_objects OBJECT)
 add_library(mp4_static STATIC)
@@ -27,7 +35,10 @@ endif()
 
 target_sources(mp4_objects
     PRIVATE
-        src/mp4.cpp)
+        src/mp4.cpp
+        src/fragment.cpp
+        src/hls.cpp
+        src/dash.cpp)
 
 target_include_directories(mp4_objects
     PUBLIC

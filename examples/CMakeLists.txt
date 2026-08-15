@@ -18,6 +18,7 @@ set(AC3FORGE_EXAMPLES
     station_broadcast
     mux_mkv
     mux_mp4
+    mux_fmp4
     mux_ts
     wav_roundtrip
     custom_layout
@@ -36,9 +37,10 @@ foreach(example IN LISTS AC3FORGE_EXAMPLES)
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/examples")
 endforeach()
 
-# Only these three need a container writer, one each.
+# Only these need a container writer; mux_fmp4 reuses mp4::mp4 the same way mux_mp4 does.
 target_link_libraries(mux_mkv PRIVATE matroska::matroska)
 target_link_libraries(mux_mp4 PRIVATE mp4::mp4)
+target_link_libraries(mux_fmp4 PRIVATE mp4::mp4)
 target_link_libraries(mux_ts PRIVATE mpegts::mpegts)
 
 # Only this one needs the object signer.

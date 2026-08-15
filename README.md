@@ -49,7 +49,8 @@ those plus 7.1, 5.1.2, 5.1.4 and 7.1.4 through dependent substreams, spectral ex
 adaptive hybrid transform, and Dolby Atmos objects via JOC. The in-repo decoder shares the
 encoder's core and reads both formats back, including every Annex E coding tool at every layout.
 Also included: standalone MKV and MP4 muxers (the latter with a spec-correct `dec3`/`dac3` box,
-Dolby Atmos signalling included), S/PDIF (IEC 61937) burst packing, WASAPI/ALSA live
+Dolby Atmos signalling included), fragmented MP4/CMAF segmenting with HLS/DASH signaling helpers,
+S/PDIF (IEC 61937) burst packing, WASAPI/ALSA live
 capture and playback, peak/RMS/loudness metering, and **Shield Atmos Demo** — a small
 Android TV app (`platform/android/`) that streams live, controller-driven Atmos object motion
 out an NVIDIA Shield's HDMI passthrough to a real AV receiver, sideload-only. See
@@ -104,7 +105,7 @@ ac3cli encode in.wav out.ac3 448 couple
 ac3cli decode out.ec3 out.wav
 ```
 
-`ac3cli` has twenty-three commands; run it with no arguments for the full listing.
+`ac3cli` has twenty-four commands; run it with no arguments for the full listing.
 `ac3gui` is a Qt Quick front end over the same library: file and live-capture encoding, a plan
 view for placing objects, and channel-level metering. For the C++ API — two headers and about a
 dozen lines to encode a frame — see [Quick start](docs/quickstart.md) or
@@ -137,7 +138,7 @@ full test-suite counts — all in [Validation](docs/verification.md).
 cmake/          toolchains, Qt/CPack/sanitizer/coverage modules, vcpkg triplet overlays
 src/lib/        ac3::forge — the whole codec, GUI-free
 src/matroska/   matroska::matroska — a standalone MKV muxer, no ac3::forge dependency
-src/mp4/        mp4::mp4 — a standalone MP4/ISOBMFF muxer, no ac3::forge dependency
+src/mp4/        mp4::mp4 — a standalone MP4/ISOBMFF muxer plus fMP4/CMAF + HLS/DASH, no ac3::forge dependency
 src/cli/        ac3cli — command-line front end
 src/gui/        ac3gui — Qt Quick front end (QML module "Ac3Forge")
 platform/android/  Shield Atmos Demo — Android TV app, live Atmos object motion over HDMI
@@ -167,7 +168,7 @@ generators in `tools/`.
 | [docs/platforms/android.md](docs/platforms/android.md) | Shield Atmos Demo: the Android TV app, HDMI passthrough, controller input, screenshots |
 | [docs/concepts/](docs/concepts/index.md) | Beginner's guide to AC-3, E-AC-3, Atmos and JOC, with diagrams |
 | [docs/library/](docs/library/index.md) | The public API, with compiled examples |
-| [docs/cli/](docs/cli/index.md) | The `ac3cli` reference: all 23 commands, metadata options |
+| [docs/cli/](docs/cli/index.md) | The `ac3cli` reference: all 24 commands, metadata options |
 | [docs/gui/](docs/gui/index.md) | Step-by-step `ac3gui` guide, with screenshots |
 | [docs/verification.md](docs/verification.md) | How output is checked, and where checking runs out |
 | [docs/project/history.md](docs/project/history.md) | How the implementation was built, milestone by milestone |
