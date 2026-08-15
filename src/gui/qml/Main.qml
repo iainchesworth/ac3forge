@@ -581,14 +581,21 @@ ApplicationWindow {
     // "--bed/--extras" sketch (which does not match ac3cli's positional
     // subcommands). Everything the positionals cannot say rides as trailing
     // tokens: extra sources (src=), the assignment (map=), the metadata, and
-    // AC-3's bare `couple`. A live source renders the `live` subcommand; a
-    // Matroska container is honestly TWO commands, because pasting one would
-    // write a raw elementary stream into a file named .mkv - S/PDIF is the
-    // same shape, one more ac3cli subcommand (spdif) over the same stream.
+    // AC-3's bare `couple`. A live source renders the `live` subcommand, and
+    // its own container=mkv token (mirroring EncoderController.containerIndex
+    // the same way capture2= below already mirrors the rail's second device)
+    // writes straight to Matroska in that ONE command — a live session has no
+    // already-encoded file for a second 'mkv' step to wrap. A file encode's
+    // Matroska container is still honestly TWO commands, because pasting one
+    // would write a raw elementary stream into a file named .mkv — S/PDIF is
+    // the same shape there, one more ac3cli subcommand (spdif) over the same
+    // stream.
     readonly property string cliLine: {
         const eac3Stream = EncoderController.atmosEnabled || EncoderController.codecIndex === 1;
         if (window.inputMode === "live") {
-            const liveCmd = ["ac3cli", "live", "out." + (eac3Stream ? "ec3" : "ac3"),
+            const liveMkv = EncoderController.containerIndex === 1;
+            const liveOut = liveMkv ? "out.mkv" : "out." + (eac3Stream ? "ec3" : "ac3");
+            const liveCmd = ["ac3cli", "live", liveOut,
                              String(Math.max(window.liveMasterCaptureIndex, 0)), "10",
                              String(EncoderController.bitrateKbps),
                              liveMonitorCheck.checked ? "-1" : "-2",
@@ -600,6 +607,9 @@ ApplicationWindow {
             // command bar stays honest about a two-device session.
             if (EncoderController.captureDeviceRows.length > 1) {
                 liveCmd.push("capture2=" + EncoderController.captureDeviceRows[1].deviceIndex);
+            }
+            if (liveMkv) {
+                liveCmd.push("container=mkv");
             }
             return liveCmd.join(" ");
         }
