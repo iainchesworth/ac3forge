@@ -43,7 +43,12 @@ std::vector<std::byte> build_codec_config_box(const ScannedStream& stream) {
         return w.take();
     }
 
-    // ETSI TS 102 366 Annex F §F.6 EC3SpecificBox.
+    // ETSI TS 102 366 Annex F §F.6 EC3SpecificBox. Field layout cross-checked
+    // against Dolby's own Digital Plus Online Delivery Kit documentation -
+    // the EC3SpecificBox derivation guide for data_rate's semantics, and
+    // https://ott.dolby.com/OnDelKits/DDP/Dolby_Digital_Plus_Online_Delivery_Kit_v1.4.1/Documentation/Playback/SDM/help_files/topics/c_id_ddp_atmos_isobmff.html
+    // for the exact bit layout of the trailing Atmos extension (see the
+    // addbsi block below) - both fetched and read directly, not recalled.
     //
     // data_rate(13) + num_ind_sub(3) = 16 bits, byte-aligned. data_rate's own
     // semantics ("the data rate of the ... bitstream, or the maximum data
@@ -73,7 +78,13 @@ std::vector<std::byte> build_codec_config_box(const ScannedStream& stream) {
 
     w.put(box_fscod(stream.sample_rate), 2);             // fscod
     w.put(static_cast<std::uint32_t>(stream.bsid), 5);   // bsid
-    w.put(0, 2);                                         // reserved
+    w.put(0, 1);                                         // reserved
+    // asvc: the associated-service flag. This project has no concept of an
+    // associated service for the streams it produces - every stream here is
+    // a single, self-contained programme - so 0 is the objectively correct
+    // value, not a placeholder for a field ScannedStream simply doesn't
+    // carry yet.
+    w.put(0, 1);                                         // asvc
     w.put(static_cast<std::uint32_t>(stream.bsmod), 3);  // bsmod
     w.put(static_cast<std::uint32_t>(stream.acmod), 3);  // acmod
     w.put(stream.lfe ? 1U : 0U, 1);                       // lfeon
