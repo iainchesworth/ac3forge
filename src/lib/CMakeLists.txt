@@ -135,6 +135,7 @@ target_sources(forge_objects
         src/meta/drc.cpp
         src/meta/loudness.cpp
         src/meta/mixing.cpp
+        src/meta/qc.cpp
         src/oba/atmos.cpp
         src/oba/joc.cpp
         src/oba/motion.cpp

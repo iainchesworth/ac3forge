@@ -48,7 +48,7 @@ AC-3/E-AC-3 bitstream and verifies its loudness metadata against measurement.
 
 - [x] **C1 (M)** — Full R128 metering: momentary and short-term loudness, loudness range
   (LRA), and oversampled true peak in `ac3::meta::loudness`.
-- [ ] **C2 (L)** — `ac3cli qc`: decode a stream, measure, and compare against its embedded
+- [x] **C2 (L)** — `ac3cli qc`: decode a stream, measure, and compare against its embedded
   dialnorm/DRC, with preset gates (EBU R128 s2, ATSC A/85, common platform specifications).
   Depends on C1.
 - [ ] **C3 (M)** — The same verification in the GUI: meters against gate lines, dialnorm

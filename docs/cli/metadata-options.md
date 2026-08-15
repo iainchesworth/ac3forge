@@ -33,6 +33,12 @@ metadata options (any order, after the positional arguments):
                     is the validation oracle) - applies wherever this command encodes, incl.
                     atmos/record/live; eac3-encode/eac3-sine use tools=nofastmdct instead;
                     bare fast-mdct (the old opt-in) is a no-op
+
+qc options (qc; any order, after the positional arguments):
+  preset=<name>     gate the measurement against a named delivery spec
+                    ebu-r128-s2 | atsc-a85 | netflix
+  preset=all        gate against every preset above
+                    omitted: measure and report only, no gate
 ```
 
 For `decode`, `drc=<scale>` instead applies §7.7.1 partial compression (`0` = ignore, `1` = as
@@ -262,6 +268,33 @@ ac3cli live out.ec3 0 30 448 -2 -2 atmos capture2=1
 
 Captures 30 seconds of Atmos-mode E-AC-3 from device 0 (the clock master) plus device 1
 (clock-conformed to device 0), no monitor or passthrough, writing `out.ec3`.
+
+## Qc options (`qc`): `preset=`
+
+```text
+qc options (qc; any order, after the positional arguments):
+  preset=<name>     gate the measurement against a named delivery spec
+                    ebu-r128-s2 | atsc-a85 | netflix
+  preset=all        gate against every preset above
+                    omitted: measure and report only, no gate
+```
+
+`preset=<name>` checks `qc`'s BS.1770-4 measurement against one named delivery-loudness gate instead of just
+reporting it; `preset=all` checks every one below in a single run. Each preset states a target integrated
+loudness, a symmetric tolerance around it (in LU) and a true-peak ceiling (a one-sided limit, never exceeded —
+not a tolerance band). The numbers are defined in `ac3::meta::qc_preset()`
+([`ac3/meta/qc.hpp`](https://github.com/iainchesworth/ac3forge/blob/main/src/lib/include/ac3/meta/qc.hpp)), each
+read directly from its own primary source rather than recalled from memory:
+
+| Preset | Target | Tolerance | Max true peak | Source |
+|---|---|---|---|---|
+| `ebu-r128-s2` | −23.0 LUFS | ±1.0 LU | −1.0 dBTP | EBU R 128 s2 "Loudness in Streaming" (Geneva, November 2023, v3) recommendation (e) — programmes "should be streamed unchanged, that is at −23.0 LUFS" — which itself defers tolerance/true-peak to EBU R 128 (Geneva, November 2023, v5) recommendations (h) and (m) |
+| `atsc-a85` | −24.0 LKFS | ±2.0 dB | −2.0 dBTP | ATSC A/85:2013 (with Corrigendum No. 1, 11 February 2021) §6 "Target Loudness and True Peak Levels for Content Delivery or Exchange" |
+| `netflix` | −27.0 LKFS | ±2.0 LU | −2.0 dBTP | Netflix "Sound Mix Specifications & Best Practices" v1.6, Near-field Audio Prerequisites for Mix Facilities |
+
+Omitting `preset=` entirely leaves `qc` in measure-and-report mode — every number is still printed, there is
+just no PASS/FAIL verdict and nothing to gate on. See [Commands → `qc`](commands.md#decoding-inspection) for the
+full report format and the exit-code convention this drives.
 
 ## Command-specific notes
 

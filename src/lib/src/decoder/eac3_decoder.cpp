@@ -69,6 +69,10 @@ struct Bsi {
     bool lfe = false;
     int dialnorm = 31;
     bool compre = false;
+    // Only ever set for an independent/convertible substream - see
+    // parse_bsi's own comment on why a dependent's compre bit does not mean
+    // this.
+    std::optional<std::uint8_t> compr;
     std::optional<std::uint16_t> chanmap;
     // Ch2's own dialnorm/compr, present only when acmod is kDualMono (1+1).
     std::optional<int> dialnorm2;
@@ -195,10 +199,15 @@ std::expected<Bsi, DecodeError> parse_bsi(BitReader& r, std::size_t frame_bytes)
     bsi.dialnorm = static_cast<int>(r.read(5));
     // §E3.8.5: in a DEPENDENT substream compre marks the last dependent of the
     // program rather than announcing a compression word - though it still
-    // drags one in. Either way the 8 bits have to be consumed.
+    // drags one in. Either way the 8 bits have to be consumed; only stored
+    // into bsi.compr when this substream is independent/convertible, where
+    // the word is actually what it says it is.
     bsi.compre = r.read(1) != 0;
     if (bsi.compre) {
-        r.skip(8);  // compr
+        const auto compr = static_cast<std::uint8_t>(r.read(8));
+        if (bsi.strmtyp != StreamType::kDependent) {
+            bsi.compr = compr;
+        }
     }
     // Annex E Table E1.2: unconditional on strmtyp, mirroring the encoder's
     // own write side - even a dependent substream coding 1+1 would carry it,
@@ -464,6 +473,7 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
     out.acmod = bsi->acmod;
     out.lfe = bsi->lfe;
     out.dialnorm = bsi->dialnorm;
+    out.compr = bsi->compr;
     out.dialnorm2 = bsi->dialnorm2;
     out.compr2 = bsi->compr2;
     out.numblkscod = bsi->numblkscod;
@@ -1784,6 +1794,7 @@ std::expected<std::optional<DecodedAccessUnit>, DecodeError> Eac3Decoder::decode
     out.sample_rate = lead.sample_rate;
     out.acmod = lead.acmod;
     out.dialnorm = lead.dialnorm;
+    out.compr = lead.compr;
     out.substream_count = static_cast<int>(substreams.size());
 
     // Dual mono has no Table E2.5 location - Ch1 and Ch2 are unrelated

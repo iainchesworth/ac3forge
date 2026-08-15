@@ -74,6 +74,7 @@ add_executable(ac3tests
     test_matroska.cpp
     test_mdct.cpp
     test_mdct_fast.cpp
+    test_meta_qc.cpp
     test_mp4.cpp
     test_mpegts.cpp
     test_oba.cpp
