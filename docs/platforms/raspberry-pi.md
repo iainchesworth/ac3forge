@@ -45,6 +45,20 @@ sudo apt install build-essential cmake ninja-build pkg-config git \
     qt6-base-dev qt6-base-dev-tools qt6-declarative-dev qt6-declarative-dev-tools
 ```
 
+Building with the LLVM preset instead of GCC additionally needs `clang-<N>` and, less obviously,
+**`clang-tools-<N>`** (owns `clang-scan-deps-<N>`, which CMake's Ninja generator shells out to for
+every C++20/23 translation unit's module-dependency scan, not just files using `import`/`export`):
+
+```bash
+sudo apt install clang-19 lld-19 clang-tools-19
+```
+
+Without `clang-tools-<N>`, configure fails confusingly - every `find_package`-driven try_compile
+(Qt6, Threads, ALSA) fails too, since they all hit the same missing `clang-scan-deps` binary, which
+reads like broken dependency detection rather than a missing package. Substitute Trixie's actual
+`clang`/`lld`/`clang-tools` version for `19` if a future Raspberry Pi OS release ships something
+newer.
+
 ## Building
 
 Identical to [Building on Linux](../building.md#building-on-linux), with `-arm64` appended to the
