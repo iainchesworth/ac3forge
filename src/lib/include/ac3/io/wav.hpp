@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <iosfwd>
 #include <memory>
 #include <optional>
 #include <span>
@@ -40,6 +41,13 @@ struct WavData {
 
 [[nodiscard]] AC3FORGE_EXPORT std::expected<WavData, WavError> read_wav(const std::string& path);
 
+// Same parse, from an already-open stream rather than a path - e.g. stdin,
+// for a caller that has put it into binary mode itself (see ac3cli's "-"
+// convention for stdin/stdout in place of a file argument). Both overloads
+// read their whole source into memory before parsing anything, so neither
+// one needs its stream to be seekable.
+[[nodiscard]] AC3FORGE_EXPORT std::expected<WavData, WavError> read_wav(std::istream& in);
+
 // A WAV file's channel order (the WAVE_FORMAT_EXTENSIBLE convention: FL, FR,
 // FC, LFE, BL, BR) is not A/52 Table 5.8's (L, C, R, SL, SR, LFE), so the two
 // have to be reconciled before any multichannel file reaches the encoder.
@@ -62,6 +70,15 @@ struct Ac3Layout {
 [[nodiscard]] AC3FORGE_EXPORT std::expected<void, WavError> write_wav_f32(
     const std::string& path, std::span<const std::vector<float>> channels,
     std::uint32_t sample_rate, std::span<const std::size_t> channel_order = {});
+
+// Same write, to an already-open stream rather than a path - e.g. stdout for
+// ac3cli's "-" output convention. `channels` already carries every sample,
+// so the RIFF/data chunk sizes are known before the first byte goes out:
+// this writes strictly forward, once, and never seeks back to patch a
+// header - it works the same on a plain file and on an unseekable pipe.
+[[nodiscard]] AC3FORGE_EXPORT std::expected<void, WavError> write_wav_f32(
+    std::ostream& out, std::span<const std::vector<float>> channels, std::uint32_t sample_rate,
+    std::span<const std::size_t> channel_order = {});
 
 // PCM16 WAV wrapping already-formed little-endian 16-bit payload bytes. Used
 // for the IEC 61937 burst carrier, where the payload must pass through
