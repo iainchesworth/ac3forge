@@ -43,6 +43,7 @@ un-recorded just because it also failed. See `REGRESSION_DROP_DB` and
 #quality-trend-app table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
 #quality-trend-app th, #quality-trend-app td { padding: 0.35em 0.6em; text-align: left; border-bottom: 1px solid var(--md-default-fg-color--lightest); white-space: nowrap; }
 .quality-trend-regression { color: var(--md-typeset-mark-color, #c62828); font-weight: 600; }
+.quality-trend-secondary-check { color: var(--md-default-fg-color--light); cursor: help; }
 .quality-trend-release-row { background: color-mix(in srgb, var(--md-accent-fg-color, #7c4dff) 8%, transparent); }
 .quality-trend-release { text-decoration: none; font-weight: 600; }
 .quality-trend-release:hover { text-decoration: underline; }
@@ -343,6 +344,15 @@ un-recorded just because it also failed. See `REGRESSION_DROP_DB` and
     return `<div class="quality-trend-legend">${items.join("")}</div>`;
   }
 
+  // Every check for the row's codec, in a single dedicated column, so two
+  // checks that share a codec (and can carry very different SNR floors -
+  // see isPrimaryCheck above) are never left to be told apart only by
+  // eyeballing the bitrate or the worst-dB number. checkLabel falls back to
+  // the codec name for pre-"check" history, same reasoning as isPrimaryCheck.
+  function checkLabel(r) {
+    return r.check || r.codec;
+  }
+
   function buildTable(rows, allRecords, releasesBySha) {
     const trs = rows
       .slice()
@@ -358,12 +368,16 @@ un-recorded just because it also failed. See `REGRESSION_DROP_DB` and
         const releaseBadge = release
           ? `<a class="quality-trend-release" href="${release.url}" title="${release.prerelease ? "Prerelease" : "Release"} tagged at this commit">🏷 ${release.name}</a>`
           : "";
+        const check = isPrimaryCheck(r)
+          ? checkLabel(r)
+          : `${checkLabel(r)} <span class="quality-trend-secondary-check" title="Not ${r.codec}'s primary round-trip check - a separate fixture with its own SNR floor and its own trailing baseline, not comparable to the ${r.codec} row above it">†</span>`;
         return `<tr${release ? ' class="quality-trend-release-row"' : ""}>
           <td>${r.commit_date.slice(0, 10)}</td>
           <td>${r.branch}</td>
           <td><a href="${commitUrl(r.commit)}">${shortSha(r.commit)}</a></td>
           <td>${r.leg}</td>
           <td>${r.codec} @ ${r.bitrate_kbps} kbps</td>
+          <td>${check}</td>
           <td title="${channelBreakdownText(r)}">${worstChannelLabel(r)} ${r.worst_db.toFixed(2)} dB</td>
           <td>${releaseBadge}</td>
           <td>${flag}</td>
@@ -374,7 +388,7 @@ un-recorded just because it also failed. See `REGRESSION_DROP_DB` and
       return '<p class="quality-trend-status">No rows in the current view - try a different branch/codec combination.</p>';
     }
     return `<div class="quality-trend-table-wrap"><table>
-      <thead><tr><th>Date</th><th>Branch</th><th>Commit</th><th>Leg</th><th>Codec</th><th>Worst channel</th><th>Release</th><th></th></tr></thead>
+      <thead><tr><th>Date</th><th>Branch</th><th>Commit</th><th>Leg</th><th>Codec</th><th>Check</th><th>Worst channel</th><th>Release</th><th></th></tr></thead>
       <tbody>${trs}</tbody>
     </table></div>`;
   }
@@ -385,8 +399,8 @@ un-recorded just because it also failed. See `REGRESSION_DROP_DB` and
       <div class="quality-trend-controls">
         <label for="quality-trend-codec">Codec
           <select id="quality-trend-codec">
-            <option value="ac3" ${state.codec === "ac3" ? "selected" : ""}>AC-3 (448 kbps)</option>
-            <option value="eac3" ${state.codec === "eac3" ? "selected" : ""}>E-AC-3 (256 kbps)</option>
+            <option value="ac3" ${state.codec === "ac3" ? "selected" : ""}>AC-3</option>
+            <option value="eac3" ${state.codec === "eac3" ? "selected" : ""}>E-AC-3</option>
           </select>
         </label>
         <label for="quality-trend-view">Chart
@@ -481,11 +495,22 @@ un-recorded just because it also failed. See `REGRESSION_DROP_DB` and
       ? allRecords.filter((r) => r.branch === state.legBranch)
       : visibleRecords(allRecords);
     const tracks = buildTracks(visible);
+    // The table used to get the same `visible` list the chart starts from -
+    // every codec and every check, unfiltered - while only the chart applied
+    // state.codec and isPrimaryCheck. That let the table interleave rows the
+    // Codec control claimed to be scoping (even a different codec entirely)
+    // with no per-row way to tell them apart, which is exactly the
+    // conflation isPrimaryCheck exists to prevent in the chart. Scoping the
+    // table to the selected codec too - while still showing every check
+    // within it, distinguished by the Check column above - keeps secondary
+    // checks visible instead of hidden, but never unlabelled next to a
+    // codec's primary series.
+    const tableRows = visible.filter((r) => r.codec === state.codec);
     root.innerHTML = `
       ${buildControls()}
       <div class="quality-trend-chart-wrap">${buildChart(tracks, state.codec, releasesBySha)}</div>
       ${buildLegend(tracks, releasesBySha)}
-      ${buildTable(visible, allRecords, releasesBySha)}
+      ${buildTable(tableRows, allRecords, releasesBySha)}
     `;
     attachControlListeners(allRecords, releasesBySha);
   }
@@ -533,6 +558,22 @@ version of `develop`'s line, not a second independent series. By default
 five-leg fan-out would otherwise crowd `main`'s rows out of the table
 entirely) — use the "develop: show full history" control to expand it, or
 uncheck a branch's box to hide it from the chart and table.
+
+The **Codec** control scopes the table as well as the chart — picking
+`E-AC-3` shows only `eac3` rows, never an unrelated `ac3` row sorted in by
+date alone. Within that codec, the table still shows every **Check**:
+`verify-gold-reference.sh` can run more than one check per codec (e.g.
+`eac3`'s own baseline round-trip alongside `eac3_cplbndstrce0`, a real
+third-party FFmpeg bitstream used to regression-test an Annex E decode fix),
+and those checks compare fundamentally different things at deliberately
+different SNR floors — one is not a worse day for the other. A `†` marks
+any check that isn't that codec's primary, continuous series (the one the
+chart plots and the dropdown otherwise implies); hover it for why. Never
+read two different Check values as one continuous line, even when they
+share a Codec and a date range — a `†` row's own trailing baseline (used
+for the regression flag below) is computed only against its own check
+history, precisely so a steady 25 dB interop floor can't look like a crash
+relative to a steady 68 dB round-trip series, or vice versa.
 
 The **worst channel** column names which of the six channels was worst
 (`L R C LFE Ls Rs`, the golden reference's WAV channel order), and hovering
