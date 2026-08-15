@@ -8,6 +8,8 @@
 
 #include "ac3/core/window.hpp"
 
+#include "fft_radix2.hpp"
+
 namespace ac3 {
 
 namespace {
@@ -232,13 +234,10 @@ struct FastMdctTables {
     // w[k] post-twiddle exp(-i*pi*(4k+1)/(4M)), split re/im.
     std::array<double, kP> post_re{};
     std::array<double, kP> post_im{};
-    // Bit-reversal permutation of 0..P-1 for the decimation-in-time FFT.
-    std::array<std::uint16_t, kP> bitrev{};
-    // FFT stage twiddles exp(-2*pi*i*j/len) for len = 2, 4, ..., P and
-    // j < len/2, flattened at offset len/2 - 1: stage `len` holds len/2
-    // entries, so the stages pack exactly into P - 1 slots.
-    std::array<double, kP - 1> stage_re{};
-    std::array<double, kP - 1> stage_im{};
+    // The P-point FFT's own tables (bit-reversal + stage twiddles) - the
+    // shared radix-2 core's, hoisted to fft_radix2.hpp verbatim so dft512
+    // can run the identical machinery at P = 512; see that header.
+    internal::FftRadix2Tables<kP> fft{};
     FastMdctTables() {
         for (std::size_t m = 0; m < kP; ++m) {
             const double ang = -kPi * static_cast<double>(m) / static_cast<double>(kM);
@@ -249,19 +248,6 @@ struct FastMdctTables {
             post_re[m] = std::cos(ang2);
             post_im[m] = std::sin(ang2);
         }
-        for (std::size_t i = 1; i < kP; ++i) {
-            bitrev[i] = static_cast<std::uint16_t>(
-                (bitrev[i >> 1] >> 1) | ((i & 1) != 0 ? kP / 2 : 0));
-        }
-        for (std::size_t len = 2; len <= kP; len <<= 1) {
-            const std::size_t half = len / 2;
-            for (std::size_t j = 0; j < half; ++j) {
-                const double ang =
-                    -2.0 * kPi * static_cast<double>(j) / static_cast<double>(len);
-                stage_re[half - 1 + j] = std::cos(ang);
-                stage_im[half - 1 + j] = std::sin(ang);
-            }
-        }
     }
 };
 
@@ -269,45 +255,6 @@ template <int NLen>
 const FastMdctTables<NLen>& fast_mdct_tables() {
     static const FastMdctTables<NLen> t;
     return t;
-}
-
-// Iterative radix-2 decimation-in-time FFT, in place over separate re/im
-// arrays: on return (re, im) hold A[k] = sum_m a[m] * exp(-2*pi*i*m*k/P) for
-// k = 0..P-1 (unnormalized forward transform). Split arrays rather than
-// std::complex so the butterfly's four independent multiply-add chains stay
-// visible to the auto-vectorizer; twiddles and the bit-reversal permutation
-// come from FastMdctTables above instead of being regenerated per call.
-template <int NLen>
-void fft_forward_pow2(const FastMdctTables<NLen>& t,
-                      std::array<double, FastMdctTables<NLen>::kP>& re,
-                      std::array<double, FastMdctTables<NLen>::kP>& im) {
-    constexpr std::size_t P = FastMdctTables<NLen>::kP;
-    for (std::size_t i = 1; i < P; ++i) {
-        const std::size_t j = t.bitrev[i];
-        if (i < j) {
-            std::swap(re[i], re[j]);
-            std::swap(im[i], im[j]);
-        }
-    }
-    for (std::size_t len = 2; len <= P; len <<= 1) {
-        const std::size_t half = len / 2;
-        for (std::size_t i = 0; i < P; i += len) {
-            for (std::size_t j = 0; j < half; ++j) {
-                const double wr = t.stage_re[half - 1 + j];
-                const double wi = t.stage_im[half - 1 + j];
-                const double xr = re[i + j + half];
-                const double xi = im[i + j + half];
-                const double vr = xr * wr - xi * wi;
-                const double vi = xr * wi + xi * wr;
-                const double ur = re[i + j];
-                const double ui = im[i + j];
-                re[i + j] = ur + vr;
-                im[i + j] = ui + vi;
-                re[i + j + half] = ur - vr;
-                im[i + j + half] = ui - vi;
-            }
-        }
-    }
 }
 
 // DCT-IV-via-FFT fast path for alpha in {0, -1} (see the block comment
@@ -342,7 +289,7 @@ void mdct_forward_fast_core(std::span<const double> windowed, std::span<double> 
         z_re[m] = a * t.pre_re[m] - b * t.pre_im[m];
         z_im[m] = a * t.pre_im[m] + b * t.pre_re[m];
     }
-    fft_forward_pow2<NLen>(t, z_re, z_im);
+    internal::fft_radix2_forward<P>(t.fft, z_re, z_im);
 
     for (std::size_t k = 0; k < P; ++k) {
         const double wr = z_re[k] * t.post_re[k] - z_im[k] * t.post_im[k];
