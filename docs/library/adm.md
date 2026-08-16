@@ -8,8 +8,9 @@ JOC/Atmos object layer exist. It differs from those three in one way: they are c
 **writers**, this is a container **reader**, because that's the direction a professional master
 needs to travel to reach this project's own encoder in the first place.
 
-Mapping the graph this module parses onto `ac3::oba::AtmosEncoder` is a separate, later task
-(phase 2); a worked ADM → E-AC-3 pipeline example is phase 3. This page and
+Mapping the graph this module parses onto `ac3::oba::AtmosEncoder` is a separate module,
+[`ac3::admbridge`](adm-bridge.md) (phase 2, done); a worked ADM → E-AC-3 pipeline example tying
+the two together end to end is phase 3, still to come. This page and
 [`examples/read_adm.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/read_adm.cpp) only demonstrate this module's own API — opening a file and walking the
 parsed graph.
 
@@ -146,6 +147,7 @@ phase 1 — see [`ac3adm/model.hpp`](https://github.com/iainchesworth/ac3forge/b
 ---
 
 See also: [File I/O](file-io.md) — the plain-WAV reader this module's container-parsing
-deliberately does not share an implementation with, despite the family resemblance; [Spatial &
-Atmos objects](spatial-and-atmos.md) — the `ac3::oba::AtmosEncoder`/`ac3::oba::motion` surface a
-future phase 2 will map this graph onto.
+deliberately does not share an implementation with, despite the family resemblance;
+[ADM → Atmos bridging](adm-bridge.md) — `ac3::admbridge`, which maps this graph onto
+`ac3::oba::AtmosEncoder`; [Spatial & Atmos objects](spatial-and-atmos.md) — the
+`ac3::oba::AtmosEncoder`/`ac3::oba::motion` surface that bridge drives.

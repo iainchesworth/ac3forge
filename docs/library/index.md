@@ -79,6 +79,8 @@ stopped compiling would break the build rather than sit here being wrong.
 - [File I/O](file-io.md) — reading and writing WAV.
 - [ADM / BW64 reading](adm.md) — `ac3adm::ac3adm`, a standalone BW64/RF64 + Audio Definition Model
   parser (opt-in, `-DAC3FORGE_BUILD_ADM=ON`).
+- [ADM → Atmos bridging](adm-bridge.md) — `ac3::admbridge`, mapping the parsed ADM graph onto
+  `ac3::oba::AtmosEncoder` (same opt-in flag).
 - [Object signing](signing.md) — `ac3::signing`, the EMDF protection tag.
 - [Header map](header-map.md) — every public header and what lives in it.
 
