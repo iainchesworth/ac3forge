@@ -78,8 +78,9 @@ AC-3/E-AC-3 bitstream and verifies its loudness metadata against measurement.
   backend.
 - [ ] **E3 (S)** — Confirm exclusive-mode passthrough against real bitstreaming hardware —
   the standing "Known gaps" bullet from 0.5.0 — and update `docs/verification.md`.
-- [ ] **E4 (M)** — Linux aarch64 CI leg, keeping the hardware-tuned transforms honest off
-  x86.
+- [x] **E4 (M)** — Linux aarch64 CI leg, keeping the hardware-tuned transforms honest off
+  x86. Landed as part of Raspberry Pi platform support (#139): `ubuntu-24.04-arm` GCC and
+  LLVM legs in `_build.yml`.
 
 ## F. API reach and distribution
 
