@@ -35,19 +35,10 @@ so there's nothing object-level to show. Tracked as follow-up work.
 
 ## Source and how it's built
 
-Source: [`examples/wasm_decode_demo/`](https://github.com/iainchesworth/ac3forge/tree/develop/examples/wasm_decode_demo)
-— an Embind wrapper (`decoder_bindings.cpp`) around `ac3::forge`'s existing
-`FrameDecoder`/`Eac3Decoder` API, built via the `config-wasm-emscripten`
-CMake preset (needs [Emscripten](https://emscripten.org/) on `PATH`, see
-`cmake/toolchains/wasm.emscripten.toolchain.cmake`).
+Source: [`platform/wasm/`](https://github.com/iainchesworth/ac3forge/tree/develop/platform/wasm) —
+see [WebAssembly](platforms/wasm.md) for the build/toolchain details and what's reused vs. new.
 
-The files under `docs/assets/wasm-decode-demo/` embedded above are a
-**prebuilt copy** of that target's output, committed directly rather than
-rebuilt by CI: the docs-publishing workflow (`.github/workflows/docs.yml`)
-only runs `mkdocs build`, with no C++ toolchain or Emscripten SDK installed,
-so there is nowhere in the current pipeline for an `emcc` build to happen.
-Regenerate them by building the `ac3forge_wasm_decode` target with the
-`config-wasm-emscripten` preset and copying
-`build/config-wasm-emscripten/bin/wasm_decode_demo/` over this directory —
-teaching CI to do that automatically is tracked as follow-up work, not done
-as part of landing this page.
+The files under `docs/assets/wasm-decode-demo/` embedded above are a committed copy of that target's
+output, kept as a working fallback for local `mkdocs build`; see [WebAssembly](platforms/wasm.md#build-and-run)
+for how to regenerate it and [Release / CI](platforms/wasm.md) for how the published site gets a
+freshly-built copy.

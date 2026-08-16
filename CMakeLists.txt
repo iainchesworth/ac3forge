@@ -88,28 +88,18 @@ option(AC3FORGE_BUILD_MPEGTS "Build the standalone MPEG-TS container writer (src
 # cmake/InstallLibrary.cmake); catch the unsupported combination here with a clear message
 # rather than letting it fail deep inside one of those subdirectories with a "target not found"
 # error.
-# EMSCRIPTEN is excluded from all three guards below: under the WASM preset,
-# examples/CMakeLists.txt builds only examples/wasm_decode_demo (guarded by
-# EMSCRIPTEN itself, see that file), which links nothing but ac3::forge - none
-# of matroska::matroska/mp4::mp4/mpegts::mpegts are linked by anything a WASM
-# configure builds, so AC3FORGE_BUILD_EXAMPLES=ON with the three container
-# libraries OFF is a real, supported combination there, not the unsupported
-# one this guard exists to catch.
-if(NOT AC3FORGE_BUILD_MATROSKA AND NOT EMSCRIPTEN AND
-        (AC3FORGE_BUILD_CLI OR AC3FORGE_BUILD_GUI OR AC3FORGE_BUILD_TESTS OR AC3FORGE_BUILD_EXAMPLES))
+if(NOT AC3FORGE_BUILD_MATROSKA AND (AC3FORGE_BUILD_CLI OR AC3FORGE_BUILD_GUI OR AC3FORGE_BUILD_TESTS OR AC3FORGE_BUILD_EXAMPLES))
     message(FATAL_ERROR "AC3FORGE_BUILD_MATROSKA=OFF requires AC3FORGE_BUILD_CLI, "
         "AC3FORGE_BUILD_GUI, AC3FORGE_BUILD_TESTS and AC3FORGE_BUILD_EXAMPLES to all be OFF too - "
         "they all link matroska::matroska unconditionally.")
 endif()
-if(NOT AC3FORGE_BUILD_MP4 AND NOT EMSCRIPTEN AND
-        (AC3FORGE_BUILD_CLI OR AC3FORGE_BUILD_GUI OR AC3FORGE_BUILD_TESTS OR AC3FORGE_BUILD_EXAMPLES))
+if(NOT AC3FORGE_BUILD_MP4 AND (AC3FORGE_BUILD_CLI OR AC3FORGE_BUILD_GUI OR AC3FORGE_BUILD_TESTS OR AC3FORGE_BUILD_EXAMPLES))
     message(FATAL_ERROR "AC3FORGE_BUILD_MP4=OFF requires AC3FORGE_BUILD_CLI, "
         "AC3FORGE_BUILD_GUI, AC3FORGE_BUILD_TESTS and AC3FORGE_BUILD_EXAMPLES to all be OFF too - "
         "they all link mp4::mp4 unconditionally.")
 endif()
-if(NOT AC3FORGE_BUILD_MPEGTS AND NOT EMSCRIPTEN AND
-        (AC3FORGE_BUILD_CLI OR AC3FORGE_BUILD_GUI OR
-         AC3FORGE_BUILD_TESTS OR AC3FORGE_BUILD_EXAMPLES))
+if(NOT AC3FORGE_BUILD_MPEGTS AND (AC3FORGE_BUILD_CLI OR AC3FORGE_BUILD_GUI OR
+                                  AC3FORGE_BUILD_TESTS OR AC3FORGE_BUILD_EXAMPLES))
     message(FATAL_ERROR "AC3FORGE_BUILD_MPEGTS=OFF requires AC3FORGE_BUILD_CLI, "
         "AC3FORGE_BUILD_GUI, AC3FORGE_BUILD_TESTS and AC3FORGE_BUILD_EXAMPLES to all be OFF too - "
         "they all link mpegts::mpegts unconditionally.")
@@ -236,6 +226,21 @@ endif()
 
 if(AC3FORGE_BUILD_FUZZERS)
     add_subdirectory(fuzz)
+endif()
+
+# The browser decode demo (roadmap F3, docs/platforms/wasm.md) - a platform
+# app, same shape and reasoning as platform/android/'s Shield app: a small
+# demo consuming ac3::forge unmodified, kept out of both src/ (not library
+# code) and examples/ (not a single-API-call snippet backing a
+# docs/library/*.md page, see CONTRIBUTING.md). Unlike platform/android/,
+# which is a wholly separate Gradle/NDK build reached from the other
+# direction, this platform has no non-CMake build system to work around, so
+# it is a normal add_subdirectory() gated on EMSCRIPTEN (set by
+# cmake/toolchains/wasm.emscripten.toolchain.cmake) rather than an
+# AC3FORGE_BUILD_* option - there is nothing to opt in or out of on a host
+# that isn't targeting WASM in the first place.
+if(EMSCRIPTEN)
+    add_subdirectory(platform/wasm)
 endif()
 
 # After every target's install() rules (src/cli, src/gui) have been declared.

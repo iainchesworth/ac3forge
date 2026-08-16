@@ -23,14 +23,16 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   `src/audio` (the project's one genuinely platform-specific library — WASAPI/ALSA/AAudio) is
   skipped entirely under this preset; a browser build gets live audio from the Web Audio API in
   JS instead.
-- **A real browser demo**, `examples/wasm_decode_demo/`: an Embind wrapper
+- **A real browser demo**, `platform/wasm/` — a platform app in the same shape as
+  `platform/android/`'s Shield demo, not an `examples/` snippet: an Embind wrapper
   (`decoder_bindings.cpp`) around the existing `FrameDecoder`/`Eac3Decoder` API, plus a page
   (`index.html`/`demo.js`) that fetches a raw `.ec3`/`.ac3` elementary stream (bundled, or
   user-uploaded), decodes it entirely client-side, plays the decoded bed audio through the Web
-  Audio API, and visualizes real per-channel RMS energy on a speaker ring — the coordinate
-  model and screen-space transform ported from the desktop GUI's `SoundfieldView.qml`. The
-  bundled fixture is a real 8-second, 3-object Atmos-in-DD+ stream encoded with the existing
-  `AtmosEncoder`.
+  Audio API, and visualizes real per-channel RMS energy on two speaker rings (ear-level and
+  ceiling) — the coordinate model and screen-space transform ported from the desktop GUI's
+  `SoundfieldView.qml`. A seek bar lets a viewer scrub the real decoded timeline. The bundled
+  fixture is a real 8-second, 3-object Atmos-in-DD+ stream encoded with the existing
+  `AtmosEncoder`. See [docs/platforms/wasm.md](docs/platforms/wasm.md).
 - **Embedded live in the docs site** at `docs/wasm-demo.md` (nav: Project → "Live decode demo
   (WASM)") via an iframe over a prebuilt copy of the demo under `docs/assets/wasm-decode-demo/`.
   Committed rather than CI-built: `.github/workflows/docs.yml` only runs `mkdocs build`, with no

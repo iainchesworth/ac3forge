@@ -1,10 +1,15 @@
 # ---------------------------------------------------------------------------
+# The Shield app (platform/android) is a full Gradle/NDK project outside the
+# ac3forge CMake configure entirely, reached from the other direction (its own
+# CMakeLists.txt add_subdirectory()s the repo root). This platform doesn't
+# need that indirection - there's no non-CMake build system in the way, so
+# it's a normal add_subdirectory() from root CMakeLists.txt, gated on
+# EMSCRIPTEN there rather than needing a whole separate entry point.
+#
 # Roadmap F3: a browser demo that decodes a real E-AC-3/Atmos-in-DD+
 # elementary stream via ac3::forge compiled to WASM, plays the decoded bed
 # audio through the Web Audio API, and visualizes real per-channel energy in
-# time with playback. Only entered when EMSCRIPTEN is the active toolchain
-# (see the parent examples/CMakeLists.txt's own EMSCRIPTEN branch) - never
-# processed by a normal desktop configure.
+# time with playback. See docs/platforms/wasm.md.
 #
 # Produces a self-contained, servable directory at
 # ${CMAKE_BINARY_DIR}/bin/wasm_decode_demo/: the compiled .js/.wasm, the
