@@ -15,6 +15,7 @@
 #include "ac3/core/mantissas.hpp"
 #include "ac3/core/tables.hpp"
 #include "ac3/export.hpp"
+#include "ac3/oba/oamd.hpp"
 
 // The in-repo AC-3 / E-AC-3 decoder — the validation pyramid's strongest
 // correctness anchor (fully normative, shares tables/bit-allocation/exponents/
@@ -167,6 +168,16 @@ struct DecodedSubstream {
     // LFE and any coupling channel never switch, so they carry no entry.
     std::vector<std::array<bool, kBlocksPerFrame>> blksw;
     std::vector<std::vector<float>> channels;
+    // §H.1/TS 103 420 §5.5: the OAMD payload found in one of this substream's
+    // block skip fields, if any - std::nullopt for plain E-AC-3 with no
+    // object audio at all, and equally for a skip field this decoder found
+    // but declined to interpret (see oba::parse_payload's own comment on
+    // what it refuses). Which block actually carries the container is not
+    // fixed (emdf::build_container's own comment), so every block's skip
+    // field is a candidate; the first one that parses wins. JOC's own
+    // per-object reconstructed audio is not part of this yet - only the
+    // object positions/gains OAMD itself carries.
+    std::optional<oba::DecodedProgram> object_metadata = std::nullopt;
 
     // The Table E2.5 map this substream's channels occupy.
     [[nodiscard]] std::uint16_t location_map() const {
@@ -192,6 +203,12 @@ struct DecodedAccessUnit {
     // bit means something else entirely, so only the independent (bed)
     // substream's word is ever meaningful at the access-unit level.
     std::optional<std::uint8_t> compr = std::nullopt;
+    // The independent substream's own object_metadata - see
+    // DecodedSubstream::object_metadata's own comment. Object audio only
+    // ever rides in the bed (this project's own AtmosEncoder never sends a
+    // dependent substream at all), so there is nothing to union across
+    // substreams the way `layout` does below.
+    std::optional<oba::DecodedProgram> object_metadata = std::nullopt;
     int substream_count = 0;
     eac3::chanmap::Layout layout;
     std::vector<std::vector<float>> channels;  // parallel to layout, except dual mono

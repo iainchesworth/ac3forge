@@ -12,6 +12,23 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 
 ## [Unreleased]
 
+### Atmos object decode
+
+- **`Eac3Decoder` now reads OAMD, closing a real gap between what this library can encode and
+  what it can decode.** Until now the E-AC-3 decoder read the EMDF-bearing block skip field
+  (§5.4.3.58-60) and simply discarded it — every "object decode" claim about this project was
+  true for the encoder only. `ac3::emdf::parse_container` is the decode-side inverse of
+  `build_container` (ETSI TS 102 366 Annex H): it scans the skip field for the sync word, walks
+  the payload list into `{id, bytes}` pairs, and refuses (rather than mis-parses) an
+  `emdf_payload_config` outside the one shape TS 103 420 Table 56 mandates. `ac3::oba::parse_payload`
+  is the matching inverse of OAMD's `build_payload` (TS 103 420 §5.5), reconstructing the
+  `Program`/`DynamicObject`s a stream actually declared. `DecodedSubstream`/`DecodedAccessUnit`
+  gain a new `object_metadata` field — `std::nullopt` for plain E-AC-3 with no object audio, or a
+  skip field this decoder found but declined to interpret, so existing callers that only read
+  `.channels` are unaffected either way. JOC's own per-object audio reconstruction is not part of
+  this yet; OAMD alone already recovers each object's position and gain, verified end-to-end
+  against `AtmosEncoder`'s own output.
+
 ### Delivery
 
 - **MP4/ISOBMFF muxer** (`mp4::mp4`, `ac3cli mp4 <in.ac3|in.ec3> <out.mp4>`) — a second

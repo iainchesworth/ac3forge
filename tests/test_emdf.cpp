@@ -139,6 +139,123 @@ TEST_CASE("EMDF container carries its payloads verbatim", "[emdf]") {
     CHECK_FALSE(r.overflowed());
 }
 
+TEST_CASE("parse_container decodes back to the payloads it was given", "[emdf]") {
+    const std::vector<std::byte> oamd{std::byte{0xDE}, std::byte{0xAD}, std::byte{0x00}};
+    const std::vector<std::byte> joc{std::byte{0xBE}, std::byte{0xEF}, std::byte{0x01}, std::byte{0xFF}};
+    const std::array<ac3::emdf::Payload, 2> payloads{{
+        {.id = ac3::emdf::kPayloadIdOamd, .bytes = oamd},
+        {.id = ac3::emdf::kPayloadIdJoc, .bytes = joc},
+    }};
+    const auto container = ac3::emdf::build_container(payloads, 2);
+
+    const auto result = ac3::emdf::parse_container(container);
+    REQUIRE(result.has_value());
+    REQUIRE(result->has_value());
+    const auto& decoded = **result;
+    REQUIRE(decoded.size() == 2);
+    CHECK(decoded[0].id == ac3::emdf::kPayloadIdOamd);
+    CHECK(decoded[0].bytes == oamd);
+    CHECK(decoded[1].id == ac3::emdf::kPayloadIdJoc);
+    CHECK(decoded[1].bytes == joc);
+}
+
+TEST_CASE("parse_container decodes a container that does not start at bit 0", "[emdf]") {
+    // §H.2.2.1.1's own justification for scanning rather than a fixed offset:
+    // nothing says the container starts where a decoder might expect it to.
+    const std::vector<std::byte> oamd{std::byte{0x01}, std::byte{0x02}};
+    const std::array<ac3::emdf::Payload, 1> payloads{
+        {{.id = ac3::emdf::kPayloadIdOamd, .bytes = oamd}}};
+    const auto container = ac3::emdf::build_container(payloads);
+
+    ac3::BitWriter w;
+    w.put(0b0101101, 7);  // arbitrary, non-byte-aligned leading noise
+    for (const auto byte : container) {
+        w.put(std::to_integer<std::uint32_t>(byte), 8);
+    }
+    const auto data = w.take();
+
+    const auto result = ac3::emdf::parse_container(data);
+    REQUIRE(result.has_value());
+    REQUIRE(result->has_value());
+    REQUIRE((*result)->size() == 1);
+    CHECK((**result)[0].bytes == oamd);
+}
+
+TEST_CASE("parse_container tolerates data with no EMDF at all", "[emdf]") {
+    const std::vector<std::byte> silence(64, std::byte{0x00});
+    const auto result = ac3::emdf::parse_container(silence);
+    REQUIRE(result.has_value());
+    CHECK_FALSE(result->has_value());
+
+    // Not just zeros: the sync word genuinely absent from real content too.
+    std::vector<std::byte> noise(64);
+    for (std::size_t i = 0; i < noise.size(); ++i) {
+        noise[i] = static_cast<std::byte>((i * 37 + 11) & 0xFF);
+    }
+    const auto noise_result = ac3::emdf::parse_container(noise);
+    REQUIRE(noise_result.has_value());
+    CHECK_FALSE(noise_result->has_value());
+}
+
+TEST_CASE("parse_container rejects a container truncated after the sync word", "[emdf]") {
+    const std::vector<std::byte> oamd{std::byte{0xAA}, std::byte{0xBB}, std::byte{0xCC}};
+    const std::array<ac3::emdf::Payload, 1> payloads{
+        {{.id = ac3::emdf::kPayloadIdOamd, .bytes = oamd}}};
+    const auto container = ac3::emdf::build_container(payloads);
+
+    for (const std::size_t cut : {std::size_t{4}, container.size() / 2, container.size() - 1}) {
+        CAPTURE(cut);
+        const std::vector<std::byte> truncated(container.begin(),
+                                               container.begin() + static_cast<std::ptrdiff_t>(cut));
+        const auto result = ac3::emdf::parse_container(truncated);
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error() == ac3::emdf::ParseError::kTruncated);
+    }
+}
+
+TEST_CASE("parse_container refuses a payload config outside Table 56's shape", "[emdf]") {
+    // Hand-built, not through put_payload_config (private to emdf.cpp): a
+    // container whose smploffste is set, which no stream this project
+    // produces ever does and this decoder does not know how to follow past.
+    ac3::BitWriter body;
+    body.put(0, 2);  // emdf_version
+    body.put(0, 3);  // key_id
+    body.put(ac3::emdf::kPayloadIdOamd, 5);
+    body.put(1, 1);  // smploffste: the deviation under test
+    body.put(0, 1);  // duratione
+    body.put(1, 1);  // groupide
+    body.put(0, 2);  // groupid value: one group, no offset
+    body.put(0, 1);  // read_more: last (only) group
+    body.put(0, 1);  // codecdatae
+    body.put(0, 1);  // discard_unknown_payload
+    body.put(1, 1);  // payload_frame_aligned
+    body.put(0, 1);  // create_duplicate
+    body.put(0, 1);  // remove_duplicate
+    body.put(0, 5);  // priority
+    body.put(0, 2);  // proc_allowed
+    body.put(1, 8);  // emdf_payload_size value: one group, size 1
+    body.put(0, 1);  // read_more: last (only) group
+    body.put(0x42, 8);  // the one payload byte
+    body.put(0, 5);      // terminator
+    body.put(0b10, 2);
+    body.put(0b01, 2);
+    body.put(0, 32);
+    body.put(0, 8);
+    const auto payload_bytes = body.take();
+
+    ac3::BitWriter out;
+    out.put(ac3::emdf::kSyncWord, 16);
+    out.put(static_cast<std::uint32_t>(payload_bytes.size()), 16);
+    for (const auto byte : payload_bytes) {
+        out.put(std::to_integer<std::uint32_t>(byte), 8);
+    }
+    const auto data = out.take();
+
+    const auto result = ac3::emdf::parse_container(data);
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error() == ac3::emdf::ParseError::kUnsupportedConfig);
+}
+
 TEST_CASE("an EMDF container rides in a block skip field", "[emdf][eac3]") {
     const std::vector<std::byte> payload(6, std::byte{0x5A});
     const std::array<ac3::emdf::Payload, 1> payloads{

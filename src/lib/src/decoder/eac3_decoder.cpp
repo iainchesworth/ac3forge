@@ -14,8 +14,10 @@
 #include "ac3/core/mantissas.hpp"
 #include "ac3/core/mdct.hpp"
 #include "ac3/decoder/transient_prenoise.hpp"
+#include "ac3/emdf/emdf.hpp"
 #include "ac3/encoder/coupling.hpp"
 #include "ac3/encoder/eac3_tools.hpp"
+#include "ac3/oba/oamd.hpp"
 
 // E-AC-3 syncframe decoding, ATSC A/52:2018 Annex E Tables E1.2, E1.3 and E1.4.
 //
@@ -1202,7 +1204,36 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
         }
         if (frm->skipflde && r.read(1) != 0) {  // skiple
             const auto skipl = r.read(9);
-            r.skip(skipl * 8);
+            // Materialized rather than left as a view into `frame`: skipfld
+            // starts wherever the bits before it happened to end, not
+            // necessarily on a byte boundary, so its bytes have to be read
+            // out 8 bits at a time (matching exactly how eac3_frame.cpp's
+            // put_skip_field wrote them) before they mean anything as a
+            // self-contained EMDF container.
+            std::vector<std::byte> skip_bytes;
+            skip_bytes.reserve(skipl);
+            for (std::uint32_t i = 0; i < skipl; ++i) {
+                skip_bytes.push_back(static_cast<std::byte>(r.read(8)));
+            }
+            // Which block carries the container is not fixed
+            // (emdf::build_container's own comment), so every block's skip
+            // field is a candidate; stop looking once one has produced OAMD.
+            // A container that is present but fails to parse leaves
+            // object_metadata unset, same as no container at all - it never
+            // fails the surrounding frame decode, matching EMDF's whole
+            // reason for existing: a decoder that does not understand this
+            // data reads the rest of the frame exactly as it would without it.
+            if (!out.object_metadata) {
+                const auto container = emdf::parse_container(skip_bytes);
+                if (container.has_value() && container->has_value()) {
+                    for (const auto& payload : **container) {
+                        if (payload.id == emdf::kPayloadIdOamd) {
+                            out.object_metadata = oba::parse_payload(payload.bytes);
+                            break;
+                        }
+                    }
+                }
+            }
         }
 
         // §7.2.2.1.1 is frame-wide: csnroffst together with EVERY channel's
@@ -1827,6 +1858,7 @@ std::expected<std::optional<DecodedAccessUnit>, DecodeError> Eac3Decoder::decode
     out.acmod = lead.acmod;
     out.dialnorm = lead.dialnorm;
     out.compr = lead.compr;
+    out.object_metadata = lead.object_metadata;
     out.substream_count = static_cast<int>(substreams.size());
 
     // Dual mono has no Table E2.5 location - Ch1 and Ch2 are unrelated

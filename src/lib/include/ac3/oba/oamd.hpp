@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -141,5 +142,29 @@ struct Program {
 // (FrameError::kInvalidObjectAudio) before any of it reached a file.
 [[nodiscard]] AC3FORGE_EXPORT std::vector<std::byte> build_payload(
     const Program& program, std::span<const DynamicObject> objects);
+
+// --- Decode ------------------------------------------------------------
+
+// What one object_audio_metadata_payload actually describes: the program
+// shape build_payload was given, and its dynamic objects in the same
+// bed/ISF-then-dynamic order build_payload's own `objects` parameter takes -
+// so `objects.size() == program.dynamic_objects` always, matching the write
+// side's own precondition.
+struct DecodedProgram {
+    Program program;
+    std::vector<DynamicObject> objects;
+};
+
+// Decode-side inverse of build_payload(). Recognises exactly the shapes this
+// encoder (and the real Dolby reference streams checked against it, per this
+// file's own comments) ever produces - one md_update_info block at sample
+// offset 0, point-source objects with default priority and no distance/
+// screen-reference/snap/additional-table-data fields, a single bed instance
+// or none, no ISF objects, no alternate object data, exactly one
+// oa_element_md (the object_element). Anything else - real but unexercised
+// OAMD syntax - is refused (std::nullopt) rather than guessed at, the same
+// stance emdf::parse_container takes on its own unsupported configurations.
+[[nodiscard]] AC3FORGE_EXPORT std::optional<DecodedProgram> parse_payload(
+    std::span<const std::byte> payload);
 
 }  // namespace ac3::oba
