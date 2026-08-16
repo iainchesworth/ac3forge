@@ -3407,6 +3407,7 @@ int run_decode(std::string_view in_path, std::string_view out_path,
     // What the stream actually carried, reported whether or not it was applied.
     double dynrng_min_db = 0.0;
     double dynrng_max_db = 0.0;
+    std::size_t dynrng_words = 0;
     double compr_min_db = 0.0;
     double compr_max_db = 0.0;
     std::size_t compr_frames = 0;
@@ -3418,8 +3419,9 @@ int run_decode(std::string_view in_path, std::string_view out_path,
         }
         for (const auto word : decoded->dynrng) {
             const double db = ac3::meta::to_db(ac3::meta::dynrng_gain(word));
-            dynrng_min_db = std::min(dynrng_min_db, db);
-            dynrng_max_db = std::max(dynrng_max_db, db);
+            dynrng_min_db = dynrng_words == 0 ? db : std::min(dynrng_min_db, db);
+            dynrng_max_db = dynrng_words == 0 ? db : std::max(dynrng_max_db, db);
+            ++dynrng_words;
         }
         if (decoded->compr) {
             const double db = ac3::meta::to_db(ac3::meta::compr_gain(*decoded->compr));
