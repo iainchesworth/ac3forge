@@ -4,9 +4,9 @@ Encoding commands in [Commands](commands.md) take these after their positional a
 order. Not every command honors every option, though the parser accepts them anywhere: `silence`
 takes none at all; `record` and `live` honor only `fast-mdct=off`, `container=` and (`live`
 only) `capture2=`, and accept but ignore the metadata options (`drc=`, `dialnorm=`, `heavy`,
-`cmixlev=`, …); `atmos` and `atmos-path` apply only `dialnorm=<n>` and `fast-mdct=off` (plus,
-on `atmos` alone, the object-signing flags below), and `dialnorm=auto` is silently inert on
-both — of the three Atmos commands, only `atmos-encode` measures:
+`cmixlev=`, …); `atmos`, `atmos-path` and `atmos-encode` all apply `dialnorm=<n>`, `fast-mdct=off`
+and the object-signing flags below, and `dialnorm=auto` is silently inert on `atmos`/`atmos-path`
+— of the three Atmos commands, only `atmos-encode` measures:
 
 ```text
 metadata options (any order, after the positional arguments):
@@ -39,10 +39,9 @@ metadata options (any order, after the positional arguments):
   fast-mdct=off     force the direct §8.2.3.2 forward MDCT instead of the default §7.9.4 fast
                     path (identical streams to within ~3e-12 max relative coefficient error;
                     the direct form is the validation oracle) - applies wherever this command
-                    encodes, incl. atmos/record/live; eac3-encode spells it as the bare
-                    nofastmdct token in its [tools] argument, and eac3-sine has no [tools]
-                    argument so its fast path cannot be disabled; bare fast-mdct (the old
-                    opt-in) is a no-op
+                    encodes, incl. atmos/record/live/eac3-sine; eac3-encode alone has a [tools]
+                    positional argument whose bare nofastmdct token reaches the same field
+                    instead; bare fast-mdct (the old opt-in) is a no-op
 
 qc options (qc; any order, after the positional arguments):
   preset=<name>     gate the measurement against a named delivery spec
@@ -185,10 +184,12 @@ than one object per channel the way a plain `obj` range does. Two entries naming
 or more than one entry per dual-mono programme, is refused.
 
 The `obj`/`objm` destinations parse but currently do nothing in `ac3cli`: the routing behind
-`encode`/`eac3-encode` skips every non-location row, the CLI has no object assembly behind
-`map=`, and `atmos-encode` ignores `src=`/`map=` entirely — audio mapped onto an object
-destination is silently discarded. Object destinations need the object-capable front end, the
-GUI (see [GUI → Multi-source & assignment](../gui/source-assignment.md)).
+`encode`/`eac3-encode` skips every non-location row (also true of a stray `p1`/`p2` row on a
+target that isn't dual mono), the CLI has no object assembly behind `map=`, and `atmos-encode`
+ignores `src=`/`map=` entirely — audio mapped onto an object destination is still discarded, but
+no longer silently: `encode`/`eac3-encode` print a warning naming the source/channel and
+destination for each row that resolves to nothing. Object destinations need the object-capable
+front end, the GUI (see [GUI → Multi-source & assignment](../gui/source-assignment.md)).
 
 Any `<dest>` may carry an optional trailing `@<trim>` — a signed decibel gain in `[-24, 24]`,
 snapped to a tenth of a dB (`L@-3.5`, `obj@2`) — applied as linear gain wherever that channel's
@@ -367,10 +368,9 @@ Optional positional arguments, when omitted:
   validate, instead of falling back to the bed on its own. See
   [Atmos & JOC](../concepts/atmos-joc.md) for why a decoder can tell the difference at all.
 - **`sign-objects`** (with **`signing-key=<path>`**): signs the object container's EMDF protection
-  tag so a validating decoder reconstructs the objects instead of playing the bed. Honored by the
-  `atmos` command only — `atmos-path` and `atmos-encode` accept both flags and silently ignore
-  them. Off unless you pass both — `sign-objects` alone with no key is an error. The key may
-  also come from
+  tag so a validating decoder reconstructs the objects instead of playing the bed. Honored by all
+  three Atmos commands (`atmos`, `atmos-path`, `atmos-encode`). Off unless you pass both —
+  `sign-objects` alone with no key is an error. The key may also come from
   `AC3FORGE_SIGNING_KEY_FILE` / `AC3FORGE_SIGNING_KEY` instead of `signing-key=`. The key is never
   stored by the tool; the algorithm is in-tree but the key is yours to provision. Full details in
   [Object signing](../concepts/object-signing.md).
@@ -379,13 +379,15 @@ Optional positional arguments, when omitted:
   form, 331 dB direct-vs-fast end-to-end SNR, 0.000 dB SNR delta against an independent oracle
   at 192–448 kbps — see `tools/quality_race.py fast-mdct`). `fast-mdct=off` forces the direct
   §8.2.3.2 reference form — the validation oracle — wherever the command encodes, including the
-  `atmos*`, `record` and `live` session builders. `eac3-encode` spells the same thing as the bare
-  `nofastmdct` token inside its `[tools]` positional argument — the `tools=nofastmdct` spelling
-  the built-in usage text suggests does not parse, since any `=` token goes to the options
-  parser, which has no `tools` key. The fast MDCT is not a coding tool, so `none`/`all` leave it
-  alone; and `eac3-sine` has no `[tools]` argument and never reads `fast-mdct=`, so its fast
-  path cannot be disabled at all. The bare `fast-mdct` word and the `fastmdct` tool token — the
-  opt-in spellings from when this defaulted off — still parse and now name what already happens.
+  `atmos*`, `record`, `live` and `eac3-sine` session builders. `eac3-encode` alone spells the
+  same thing as the bare `nofastmdct` token inside its `[tools]` positional argument instead of
+  `fast-mdct=off` (that command's fourth positional IS the tools set, and `fast-mdct=off` itself
+  is not read there); typing `tools=nofastmdct` as if it were a trailing option does not parse,
+  since any `=` token goes to the options parser, which has no `tools` key. The fast MDCT is not
+  a coding tool, so `none`/`all` leave it alone. `eac3-silence` has no use for either spelling:
+  it builds a silent access unit directly, with no forward transform in the loop to choose a
+  path for. The bare `fast-mdct` word and the `fastmdct` tool token — the opt-in spellings from
+  when this defaulted off — still parse and now name what already happens.
 - **`keep-partial`**: `encode`, `eac3-encode` and `atmos-encode` refuse a frame that cannot fit the
   configuration mid-run just as they always have, but with `keep-partial` given, whatever frames
   were already encoded before that point are written to `<name>.partial.<ext>` (`out.ec3` →

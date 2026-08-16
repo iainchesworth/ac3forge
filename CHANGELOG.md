@@ -237,6 +237,25 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   two). The GUI's own encoder controller now does the same — `dialnorm=auto`/`dialnorm2=auto`
   measure each dual-mono programme's own coded channel independently there too, and the
   Metadata tab's Programme 2 **measure** checkbox is enabled accordingly.
+- Four small CLI/docs accuracy fixes found during the docs sweep above:
+  - **`sign-objects`/`signing-key=` now reach `atmos-path` and `atmos-encode`, not just `atmos`**:
+    all three commands parsed the flags (nothing in the trailing-options parser is
+    command-specific), but only `atmos`'s own run function called into the signer —
+    `atmos-path` and `atmos-encode` silently accepted and ignored both. All three sign
+    identically now.
+  - **`eac3-sine` now honors `fast-mdct=off`**: unlike `eac3-encode` it has no `[tools]`
+    positional to spell it through, and previously never read the option at all, so there was
+    no way to force the direct §8.2.3.2 transform for it. `eac3-silence` still has no use for
+    either spelling — it builds a silent access unit directly, with no forward transform in the
+    loop to choose a path for — so the built-in usage text no longer implies otherwise.
+  - **`map=` rows aimed at `obj`/`objm` (or `p1`/`p2` outside a dual-mono target) now warn
+    instead of silently vanishing**: this CLI has no object-assembly path of its own (that's
+    the GUI's), so `encode`/`eac3-encode` print a warning naming the source/channel and
+    destination for every row `route()` cannot carry, rather than that channel's audio just
+    disappearing with no diagnostic.
+  - Corrected the built-in usage text's wide-layout inference line (`8 -> 7.1`, `10 -> 5.1.4`,
+    `12 -> 7.1.4`), which read as if `encode` shared it with `eac3-encode` — `encode` refuses
+    anything wider than 3/2 + LFE, so the inference is `eac3-encode`-only.
 
 ### AC-3 encoding
 
