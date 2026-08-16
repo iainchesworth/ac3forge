@@ -48,10 +48,12 @@ find_package(ac3forge CONFIG REQUIRED)
 target_link_libraries(your_target PRIVATE ac3::forge)
 ```
 
-The Matroska container writer is the port's `matroska` feature, on by default (`matroska::matroska`
-becomes available); leave it out with `vcpkg install ac3forge[core]` if you only want the codec.
-Once merged into `microsoft/vcpkg`, the same two snippets work with a plain
-`vcpkg install ac3forge` — no `--overlay-ports` needed.
+The three container writers are the port's `matroska`/`mp4`/`mpegts` features, all on by default
+(`matroska::matroska`/`mp4::mp4`/`mpegts::mpegts` become available); leave any or all out with
+`vcpkg install ac3forge[core]` (none of them) or `ac3forge[core,mp4]` (just `mp4`) if you only
+want a subset, or only the codec. `ac3adm::ac3adm` has no vcpkg feature — see the note above,
+it isn't part of this installed package at all. Once merged into `microsoft/vcpkg`, the same two
+snippets work with a plain `vcpkg install ac3forge` — no `--overlay-ports` needed.
 
 Live audio — capture, monitor playback, IEC 61937 passthrough — is `ac3::audio`
 (`src/audio/`), a separate target `ac3cli`/`ac3gui` link alongside `ac3::forge` for their own
