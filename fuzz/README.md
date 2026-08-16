@@ -42,7 +42,7 @@ other legs had gone green in the meantime and taken the debt with them. The
 exemption was removed rather than re-justified, so `ac3forge` now compiles
 under one warning set in every configuration, this one included.
 
-The four harness executables link `ac3::warnings` too, and had no warnings of
+All harness executables link `ac3::warnings` too, and had no warnings of
 their own either. They need to name it explicitly: `ac3forge` links it
 `PRIVATE`, so the flags govern the library's own sources and do not propagate
 to anything downstream of it.
@@ -119,13 +119,24 @@ short version:
   Annex E tool combinations FFmpeg has no reading of at all (enhanced
   coupling, transient pre-noise processing, a second dependent substream/
   7.1.4 - see `docs/verification.md`'s "Where the oracles don't reach").
-- Where a comparison IS eligible, the floor is deliberately loose relative
-  to what a clean, non-fuzzed stream actually measures at (`docs/
-  verification.md`: float32-precision parity for the plain path, 98+ dB for
-  coupling/spectral extension, 62-89 dB for AHT) - it reuses
+- Where a comparison IS eligible, the floor - `kMinAgreementDb = 6.0` in
+  `fuzz/differential_oracle.hpp` - is deliberately loose relative to what a
+  clean, non-fuzzed stream actually measures at (`docs/verification.md`:
+  float32-precision parity for the plain path, 98+ dB for coupling/spectral
+  extension, 62-89 dB for AHT). It started from
   `scripts/verify-gold-reference.sh`'s own `CPLBNDSTRCE0_MIN_SNR_DB=15`
-  precedent, this project's one existing floor for "two decodes of a
-  bitstream neither side controls," rather than inventing a new number.
+  precedent - this project's one existing floor for "two decodes of a
+  bitstream neither side controls" - and was then calibrated down to 6 dB
+  after `fuzz/measure-agreement.sh` found committed seeds that legitimately
+  measure below 15 dB (real, unmutated content whose bap-0 reconstruction
+  FFmpeg dithers and this decoder zeros).
+- `fuzz/measure-agreement.sh` is the calibration method behind that floor:
+  it runs every committed seed through the differential harnesses in
+  measure-only mode and reports the worst-channel SNR each one lands on.
+  Re-run it after adding seed content, and after any change to
+  `compare_pcm`'s own alignment/silence-skip logic - a new corner of
+  legitimate decoder disagreement needs the floor reconsidered, not
+  assumed.
 
 Because every comparable input spawns a real FFmpeg process, these two
 harnesses are much slower per-exec than every other harness here and are

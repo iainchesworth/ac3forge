@@ -9,7 +9,6 @@ docs_dir: docs
 
 exclude_docs: |
   spec/
-  branch-protection.md
 
 theme:
   name: material
@@ -72,7 +71,7 @@ nav:
           - Windows: platforms/windows.md
           - Linux: platforms/linux.md
           - Raspberry Pi: platforms/raspberry-pi.md
-          - macOS (TBD): platforms/macos.md
+          - macOS: platforms/macos.md
           - Android (NVIDIA Shield): platforms/android.md
   - Concepts:
       - Overview: concepts/index.md
@@ -82,6 +81,7 @@ nav:
   - Validation: verification.md
   - Library:
       - Conventions: library/index.md
+      - Example programs: library/examples.md
       - Encoding AC-3: library/encoding-ac3.md
       - Encoding E-AC-3: library/encoding-eac3.md
       - Decoding: library/decoding.md
@@ -97,16 +97,16 @@ nav:
   - CLI reference:
       - Overview: cli/index.md
       - Commands: cli/commands.md
-      - Metadata options: cli/metadata-options.md
+      - Options & grammars: cli/metadata-options.md
   - GUI guide:
       - Window layout: gui/index.md
       - Loading a source: gui/loading-a-source.md
-      - Multi-source & assignment: gui/source-assignment.md
       - Format & channels: gui/format-and-channels.md
-      - Coding tools: gui/coding-tools.md
-      - Metadata: gui/metadata.md
       - Objects & motion: gui/objects-and-motion.md
       - Live capture & session: gui/live-session.md
+      - Multi-source & assignment: gui/source-assignment.md
+      - Coding tools: gui/coding-tools.md
+      - Metadata: gui/metadata.md
       - QC a stream: gui/qc.md
   - Project:
       - Contributing: contributing.md

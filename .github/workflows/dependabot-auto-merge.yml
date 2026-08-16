@@ -5,7 +5,7 @@
 # How it works: this job only flips the PR's auto-merge bit - GitHub itself
 # then merges (squash) once every REQUIRED status check passes. The required
 # checks on develop are "Branch Name" and "CI Status" (ci.yml) plus
-# "Scan dependency diff" (dependency-review.yml) - see docs/branch-protection.md.
+# "Scan dependency diff" (dependency-review.yml) - see .github/branch-protection.md.
 # Nothing merges without the full build/test matrix going green.
 #
 # codeql.yml, osv-scanner.yml, zizmor.yml and scorecard.yml are all

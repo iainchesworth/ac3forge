@@ -41,11 +41,14 @@
 // contents are used — plus dependent substreams, chanmap and the §E3.8.2
 // render. Every coding tool Annex E adds on top of AC-3 is implemented: AHT,
 // spectral extension, enhanced coupling (§E3.5) and transient pre-noise
-// processing (§3.7) - individually or all stacked together. Two syntax
-// corners inside those tools are still recognised and refused rather than
-// mis-decoded (enhanced coupling's angle-interpolation flag, Annex E's
-// default coupling band structure), because no stream this project's own
-// encoder produces exercises them. Transient pre-noise processing has one
+// processing (§3.7) - individually or all stacked together. Annex E's
+// default coupling band structures decode too: standard coupling falls back
+// to Table E2.12, enhanced coupling to Table E2.13. Two syntax corners are
+// still recognised and refused rather than mis-decoded - enhanced coupling's
+// angle-interpolation flag, and a transient pre-noise correction reaching
+// further back or forward than the one frame of history/lookahead buffered
+// here - because no stream this project's own encoder produces exercises
+// them. Transient pre-noise processing has one
 // consequence for this class's own API: see decode_substream and flush()
 // below. This is the only oracle 7.1.4 has: FFmpeg rejects any frame with
 // substreamid != 0, so a stream with two dependent substreams cannot be

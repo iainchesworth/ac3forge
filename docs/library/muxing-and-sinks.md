@@ -34,6 +34,19 @@ disk. It writes one audio track, one SimpleBlock per frame, clusters closed on a
 and Info with TimestampScale and Duration. No SeekHead, no Cues, no chapters, no tags — those
 matter for seeking in large files, not for playing back what this project produces.
 
+### Incremental muxing: `matroska::Writer`
+
+Same header. The incremental counterpart to `mux`, for a session whose length is not known up
+front — a live capture, where `mux` cannot help: it needs every frame before it can compute
+anything. `Writer::create(track, options)` validates the track the same way `mux` does.
+`header()` holds the EBML header through Tracks, written exactly once; each `push(frame)`
+buffers into the current cluster and returns the bytes of whichever cluster just closed (empty
+on most calls); `finalize()` flushes the last partial cluster. Segment is written with EBML's
+reserved unknown-size pattern and Duration is omitted — the standard streamed-Matroska shape,
+which real players already handle. No more than one cluster's worth of frames is ever held, so
+a caller streaming the returned bytes to disk keeps memory bounded for a session of any length.
+This is what the GUI's live session records through.
+
 ## Muxing: `mp4::mux`
 
 `mp4/mp4.hpp`, library `mp4::mp4`. Same shape as `matroska::matroska`: it links nothing from
@@ -194,6 +207,17 @@ own strict decode (`ffmpeg -v error -xerror -err_detect crccheck+bitstream+buffe
 both the fragmented file (init segment concatenated with every media segment) and `audio.m3u8`
 read back the exact original frame count and duration.
 
+## Muxer errors
+
+Every muxing entry point above returns `std::expected`, against a per-module `MuxError` enum
+with its own `describe()`:
+
+| Enum | Values |
+|---|---|
+| `matroska::MuxError` | `kNoFrames`; `kInvalidTrack` (zero/negative channels or sample rate, or an empty codec id); `kFrameTooLarge` (a single frame beyond what one SimpleBlock can carry). |
+| `mp4::MuxError` | `kNoFrames`; `kInvalidTrack` (here: an unrecognised codec id — only `ac-3`/`ec-3` are legal — or no `codec_config` payload, besides the zero-channel/rate cases); `kFileTooLarge` — `mdat` would need a 64-bit chunk offset (`co64`), which this module doesn't write, so whole-file offsets are 32-bit; `kInvalidOptions` (e.g. `FragmentOptions::frames_per_fragment == 0`). |
+| `mpegts::MuxError` | `kNoFrames` and `kInvalidTrack` as above; `kInvalidOptions` (PID collisions); `kFrameTooLarge` — one access unit too large for a PES packet's 16-bit length field. |
+
 ## Bitstream sinks (`ac3::sinks`)
 
 The pieces below are audio-hardware-facing rather than example-driven, so there's no compiled
@@ -220,24 +244,28 @@ framed bytes; getting them onto real hardware is `PassthroughSink`, below.
 ### `ac3::sinks::PassthroughSink` — exclusive-mode passthrough
 
 `ac3/sinks/passthrough.hpp`. Exclusive-mode/direct bitstream output, AC-3 or E-AC-3 — WASAPI on
-Windows, ALSA on Linux — the path an AV receiver needs to see the raw compressed bitstream
-rather than decoded PCM.
+Windows, ALSA on Linux, CoreAudio on macOS — the path an AV receiver needs to see the raw
+compressed bitstream rather than decoded PCM.
 
-Stated plainly, because this project's docs don't soften verification gaps: **exclusive-mode
-passthrough — AC-3 and E-AC-3 alike — has never been confirmed against real bitstreaming
-hardware.** The development machine has no S/PDIF or HDMI endpoint behind a real Dolby-capable
-AV receiver, and `IsFormatSupported` correctly rejects both Dolby IEC 61937 subtypes everywhere
-it has been tried. What *is* verified: the exclusive-mode path itself works (a Realtek endpoint
-accepts an exclusive-mode PCM format), and the burst framing it carries is verified as
-described above under `ac3::sinks::iec61937`. But no bitstream-capable receiver has been
-confirmed to lock onto output from this sink specifically — the one receiver-locking check that
-has been done used a different code path (bursts played as a PCM16 WAV through a passthrough
-output), not `PassthroughSink` itself, and that check has only been tried for AC-3, not E-AC-3.
+Stated plainly, because this project's docs don't soften verification gaps: **no desktop
+platform's passthrough — AC-3 and E-AC-3 alike — has been confirmed against real bitstreaming
+hardware.** The one platform with that confirmation is Android, whose backend has locked a real
+AV receiver onto real Atmos output over HDMI — see [Android](../platforms/android.md), and each
+platform page for its own status. On [Windows](../platforms/windows.md#audio-backend-wasapi)
+specifically: the development machine has no S/PDIF or HDMI endpoint behind a real
+Dolby-capable AV receiver, and WASAPI's `IsFormatSupported`
+correctly rejects both Dolby IEC 61937 subtypes everywhere it has been tried. What *is* verified
+there: the exclusive-mode path itself works (a Realtek endpoint accepts an exclusive-mode PCM
+format), and the burst framing it carries is verified as described above under
+`ac3::sinks::iec61937`. But no bitstream-capable receiver has been confirmed to lock onto output
+from this sink specifically — the one receiver-locking check that has been done used a different
+code path (bursts played as a PCM16 WAV through a passthrough output), not `PassthroughSink`
+itself, and that check has only been tried for AC-3, not E-AC-3.
 
 ### `ac3::sinks::MonitorSink` — shared-mode monitor playback
 
 `ac3/sinks/monitor.hpp`. The non-exclusive counterpart to `PassthroughSink`: shared-mode PCM
-playback — WASAPI or ALSA, resampled and mixed like any other app — that decodes what is being
+playback — WASAPI, ALSA or CoreAudio, resampled and mixed like any other app — that decodes what is being
 encoded and plays it back on an ordinary output, for previewing a decode without a
 bitstream-capable receiver. Backs `ac3cli monitor` and `live`'s monitor leg.
 
@@ -245,15 +273,18 @@ Unlike passthrough, **this one is confirmed against real hardware.** It has actu
 decoded AC-3 and E-AC-3 (including an Atmos stream's 5.1 bed) through real Windows (Realtek)
 hardware in real time, and a live microphone capture → encode → monitor session has run
 end-to-end. Building this path against real hardware surfaced two genuine bugs that neither
-unit tests nor silent/synthetic input would have caught — see the README's verification-gaps
-section for the details, and `src/audio/src/platform/windows/monitor.cpp` for the fixes.
+unit tests nor silent/synthetic input would have caught — see
+[Windows](../platforms/windows.md#audio-backend-wasapi) for the details, and
+`src/audio/src/platform/windows/monitor.cpp` for the fixes.
 
 ## Capture: `ac3::capture`
 
 `ac3/capture/capture.hpp`, `ring_buffer.hpp`. Live input/loopback capture — WASAPI on Windows,
-ALSA on Linux — through the lock-free SPSC ring in `ring_buffer.hpp`, which sits between the
-audio callback and whatever consumes the samples (an encoder, a monitor sink, or both). This is
-what backs `ac3cli record`/`live` and the GUI's live-session tab.
+ALSA on Linux, CoreAudio on macOS — through the lock-free SPSC ring in `ring_buffer.hpp`, which
+sits between the audio callback and whatever consumes the samples (an encoder, a monitor sink,
+or both). On macOS capture is input-only: no loopback endpoint is ever enumerated, and
+`start()` refuses `DeviceKind::kLoopback` outright rather than silently opening a microphone.
+This is what backs `ac3cli record`/`live` and the GUI's live-session tab.
 
 ## Metering: `ac3::analysis`
 

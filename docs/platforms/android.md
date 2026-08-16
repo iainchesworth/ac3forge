@@ -14,16 +14,32 @@ enabled, and that build (which carries the key) must never leave the user's own 
 
 ![Live dashboard: 3D trail view, top-down and elevation panels, speaker-activity meter](screenshots/android-dashboard.png)
 
+## Build and run
+
+An Android SDK with **NDK 26.1.10909125** and **CMake 3.31.6** installed (`local.properties` →
+`sdk.dir`), plus a Shield TV reachable over the network or USB:
+
+```bash
+cd platform/android
+./gradlew assembleDebug --no-daemon
+adb connect <shield-ip>:5555          # if not on USB
+adb -s <shield-ip>:5555 install -r app/build/outputs/apk/debug/app-debug.apk
+adb -s <shield-ip>:5555 shell am start -n com.ac3forge.shield/.MainActivity
+```
+
+[Building and running](#building-and-running) below covers the SDK setup and signed builds.
+
 ## What's reused, what's new
 
 `ac3::forge` (`src/lib/`) — the codec, `AtmosEncoder`, IEC 61937 framing — is fully
 platform-independent and is linked into the app **unmodified**, via a thin wrapper
 `CMakeLists.txt` (`platform/android/app/src/main/cpp/CMakeLists.txt`) that `add_subdirectory()`s
 the real repo root rather than duplicating its target definitions. `ac3::audio` (`src/audio/`)
-gains a fourth platform backend, `src/audio/src/platform/android/`, alongside `windows`/`alsa`/
-`posix`, selected by CMake's own `ANDROID` variable (set by the NDK toolchain file, a peer check
+gains a fifth platform backend, `src/audio/src/platform/android/`, alongside `windows`/`alsa`/
+`posix`/`macos`, selected by CMake's own `ANDROID` variable (set by the NDK toolchain file, a peer check
 to the existing `WIN32`/`LINUX`/`APPLE` blocks in `src/audio/CMakeLists.txt`) — no `#ifdef`
-anywhere, per the project's [platform-tree convention](../building.md).
+anywhere, per the project's
+[platform-tree convention](raspberry-pi.md#why-theres-no-raspberry-pi-specific-code).
 
 Everything else — the Gradle app shell, the JNI bridge, the live encode loop, input handling, the
 room visualization — is new and lives entirely under `platform/android/`, outside the CMake
@@ -38,6 +54,10 @@ repository to the root project's declared `3.28...4.3` range; there is no 3.28.x
 Android). `ANDROID_STL=c++_shared` — the app's `ac3::forge`/`ac3::audio` are static libraries
 linked into one shared object (`ac3forge_jni.so`), and a static STL would duplicate global state
 (locale, iostream init) if anything else in the process ever pulled in libc++ too.
+
+The r26 pin also reaches into the library itself: r26's bundled libc++ does not implement
+`<format>`, so shared library code avoids it outright — `src/lib/src/version.cpp` builds its
+version string by plain concatenation and cites this page for why.
 
 `minSdk = 26` (Oreo) is a hard floor, not a target: `monitor.cpp` depends on AAudio outright, which
 does not exist below API 26, and there is no fallback path. Real Shield TV hardware (2017 model
@@ -198,7 +218,7 @@ three separately-tuned screens):
   (signed)`, underruns only appended when actually nonzero) — real-time viability was a genuine,
   previously-hit problem on this SoC (see
   [Real-time performance](#real-time-performance-relwithdebinfo-and-a-real-mdct-bug-it-uncovered)
-  below), so showing the live number is worth more here than in most encode loops.
+  above), so showing the live number is worth more here than in most encode loops.
 - **Top-down (X/Y)** and **elevation (X/Z)** (right, side by side, not stacked — each gets the full
   panel height this way instead of half of it) — the selected (lead) object ringed, a white diamond
   marking the listener at the room's exact centre (both panels' (0.5, 0.5) — see

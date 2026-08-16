@@ -1,10 +1,9 @@
 # Reusable configure/build/test workflow — the single definition of how ac3forge
 # is built and tested on each platform. Called by ci.yml (do_package defaults
 # false: only windows-msvc packages, continuously, as a packaging smoke test)
-# and by release.yml (do_package: true: every packageable leg attempts to
-# package, best-effort — the experimental legs still run continue-on-error, so
-# a release ships whichever packages actually built). Modelled on
-# aqualink-automate's .github/workflows/_build.yml.
+# and by release.yml (do_package: true: the release_package legs — one
+# canonical leg per OS/arch — package, and a packaging failure there blocks
+# the release). Modelled on an earlier project's _build.yml.
 #
 # ---------------------------------------------------------------------------
 # On `experimental: true`
@@ -469,9 +468,11 @@ jobs:
         shell: bash
         run: ctest --preset test-${{ matrix.preset }}
 
-      # The gold-reference correctness gate (docs/RESEARCH.md's L3 FFmpeg-
-      # oracle + a lightweight L4 SNR check, wired into CI for the first time
-      # here - see scripts/verify-gold-reference.sh's own header). Proven on
+      # The gold-reference correctness gate (the L3 FFmpeg-oracle + a
+      # lightweight L4 SNR check from the project's original validation-
+      # pyramid design, now docs/verification.md - wired into CI for the
+      # first time here; see scripts/verify-gold-reference.sh's own header).
+      # Proven on
       # macOS alone first; now every leg has it except linux-llvm-asan-ubsan,
       # which stays diagnostic-only (same reasoning as its `packageable`
       # exclusion below - a sanitizer build's job is catching memory/UB
@@ -603,11 +604,12 @@ jobs:
           ctest --preset test-linux-llvm-shared -LE Performance
 
       # Packaging. windows-msvc always packages, on every push, as a
-      # continuous smoke test of the packaging path itself - it is the only
-      # leg that has ever actually been packaged and inspected end to end.
-      # For a real release (do_package set, from release.yml), only one leg
-      # per OS actually packages - `release_package: true` on windows-msvc,
-      # linux-gcc and macos-llvm - rather than every packageable leg. A
+      # continuous smoke test of the packaging path itself - the only leg
+      # packaged continuously rather than only at releases. For a real
+      # release (do_package set, from release.yml), only one leg per
+      # OS/arch actually packages - `release_package: true` on windows-msvc,
+      # linux-gcc, linux-gcc-arm64 and macos-llvm - rather than every
+      # packageable leg. A
       # release ships one canonical build per platform for people to
       # download, not a build per compiler-toolchain leg: windows-llvm and
       # linux-llvm exist to catch compiler-specific bugs in CI, which they

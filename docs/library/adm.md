@@ -1,8 +1,9 @@
 # ADM / BW64 reading: `ac3adm::ac3adm`
 
 `ac3adm/ac3adm.hpp`, library `ac3adm::ac3adm`. A standalone BW64/RF64 + Audio Definition Model
-(ADM) parser — roadmap item B1 phase 1 of 3 (see [ROADMAP.md](https://github.com/iainchesworth/ac3forge/blob/main/ROADMAP.md)): the professional delivery format
-Netflix's and Apple's own Atmos ingest pipelines require. Like `matroska::matroska`, `mp4::mp4`
+(ADM) parser: the professional delivery format Netflix's and Apple's own Atmos ingest pipelines
+require. Container and metadata parsing are done; mapping the parsed objects/beds onto
+`ac3::oba::AtmosEncoder` is not wired up yet (see [ROADMAP.md](https://github.com/iainchesworth/ac3forge/blob/main/ROADMAP.md)). Like `matroska::matroska`, `mp4::mp4`
 and `mpegts::mpegts`, it links nothing from `ac3::forge` — it has no idea AC-3, E-AC-3 or the
 JOC/Atmos object layer exist. It differs from those three in one way: they are container
 **writers**, this is a container **reader**, because that's the direction a professional master

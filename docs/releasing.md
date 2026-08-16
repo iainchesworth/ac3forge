@@ -1,9 +1,9 @@
 # Releasing ac3forge
 
 How to cut a release: what triggers `.github/workflows/release.yml`, what it produces, and how
-to set up the optional GPG signing key. Modelled on `R:\aqualink-automate`'s
-`docs/releasing.md`, with the parts that don't apply to ac3forge (APT/DNF repository
-publishing, a Docker image, a Home Assistant add-on) removed.
+to set up the optional GPG signing key. Modelled on an earlier project's release process, with
+the parts that don't apply to ac3forge (APT/DNF repository publishing, a Docker image, a Home
+Assistant add-on) removed.
 
 ## Versioning
 
@@ -12,8 +12,9 @@ ac3forge derives its version from git tags, the same way aqualink-automate does.
 `project()` in the top-level `CMakeLists.txt` and feeds the result straight into
 `project(ac3forge VERSION ...)` - the tag is the single source of truth. Nothing in the tree
 hardcodes a version to bump by hand: not `CMakeLists.txt`, and not `vcpkg.json`'s `"version"`
-field, which is a fixed placeholder never read for anything but satisfying vcpkg's manifest
-schema (see the comment beside it).
+field, which is a deliberate placeholder never read for anything but satisfying vcpkg's manifest
+schema (its own `$comment` says so; the staged port's `version-semver` is what tracks releases -
+see [vcpkg port](#vcpkg-port) below).
 
 So the order is just:
 
@@ -67,16 +68,15 @@ explicitly declared is a bigger surprise than a maintainer cleaning it up by han
 
 ## Dry run
 
-Builds and packages every platform (best-effort - see `_build.yml`'s `experimental` legs)
-without tagging, signing, or publishing anything. Exempt from the cut-from-main guard, so it can
+Builds and packages every platform without tagging, signing, or publishing anything. Exempt
+from the cut-from-main guard, so it can
 run from any branch - use it to validate a packaging change before merging.
 
 ## Post-release
 
 `gh release create --generate-notes` drafts release notes from merged PRs/commits since the
-previous tag - a first draft only. Modelled on aqualink-automate's own process
-(`R:\aqualink-automate\docs\releasing.md`), curating it to the established pattern is a
-required step, not optional polish:
+previous tag - a first draft only. Curating it to the established pattern is a required step,
+not optional polish:
 
 1. Update [CHANGELOG.md](https://github.com/iainchesworth/ac3forge/blob/main/CHANGELOG.md) first, if it isn't already current - a `## [x.y.z] -
    YYYY-MM-DD` section (moved down from `## [Unreleased]` if the changes were already logged
@@ -109,7 +109,8 @@ required step, not optional polish:
 ## vcpkg port
 
 A vcpkg port for `ac3forge` is staged in-tree at
-[`packaging/vcpkg-port/ac3forge/`](../packaging/vcpkg-port/ac3forge/) (`vcpkg.json`,
+[`packaging/vcpkg-port/ac3forge/`](https://github.com/iainchesworth/ac3forge/tree/main/packaging/vcpkg-port/ac3forge)
+(`vcpkg.json`,
 `portfile.cmake`, `usage`) and is pending submission to the curated `microsoft/vcpkg` registry -
 see [docs/library/index.md](library/index.md) for how a consumer uses it either
 way. It installs the library only (`ac3::forge`, plus `matroska::matroska` behind the `matroska`
@@ -341,5 +342,5 @@ not-yet-promoted leg - check the run's `build-packages` job.
 
 A tag-triggered release publishes signed, attested, SBOM'd packages and a GitHub Release. It does
 **not** publish an APT/DNF package repository, a Docker image, or anything Home Assistant-shaped -
-`R:\aqualink-automate`'s `.github/workflows/release.yml` / `publish-repos.yml` and
-`docs/releasing.md` are the precedent to copy from if any of those are ever wanted here.
+the earlier project this process was modelled on has release and repository-publishing workflows
+to copy from if any of those are ever wanted here.

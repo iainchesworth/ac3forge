@@ -3,8 +3,8 @@
 // ac3::signing computes the keyed EMDF-protection tag a licensed decoder
 // checks before it will decode a stream's OAMD/JOC container - see
 // docs/concepts/object-signing.md. The key is always the operator's own to
-// provision at runtime (an environment variable or a --signing-key file in
-// the CLI); the literal bytes below are a stand-in for that so this example
+// provision at runtime (an environment variable or a signing-key=<path> file
+// in the CLI); the literal bytes below are a stand-in for that so this example
 // needs nothing outside itself, not a real key for any real decoder.
 
 #include <array>

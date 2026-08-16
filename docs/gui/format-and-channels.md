@@ -21,19 +21,19 @@ confirmation first, if the [Explanations preference](index.md#preferences) asks 
 anything is forcing it, the field reads *Codec — follows the channels* (or *fixed by object
 mode*) and is disabled. With nothing forcing it — a plain bed, with or without its LFE — the
 choice is real (both codecs genuinely carry it, and VBR needs E-AC-3), so the field is live
-there. What never happens is the old circular gate, where extras were locked behind a codec the
-extras themselves change.
+there. What never happens is a circular gate where extras are locked behind a codec the extras
+themselves change.
 
 The plan strip above the tabs updates live: `E-AC-3 · 7.1.4 · 192 kbps · .ec3` (or
-`quality 75 · ≥192 ≤640` in VBR mode, bounds included), with a sub-line counting what differs
+`quality 75 · ≥192 · ≤640` in VBR mode, bounds included), with a sub-line counting what differs
 when it does (`12 speakers from 12 coded channels · 2 dependent substreams`; in object mode it
 counts the fed bed positions live — `4 of 6 bed positions fed · JOC + OAMD · objects carry the
 height` — even mid-drag). See
-[Metadata options](../cli/metadata-options.md#the-layout-grammar).
+[Options & grammars](../cli/metadata-options.md#the-layout-grammar).
 
-The **Bit rate** list carries the 19 nominal AC-3 rates plus a 768 kbps rung that exists for
-E-AC-3 only — E-AC-3 signals its frame size directly rather than indexing Table 5.18, and a wide
-object or 7.2.4 session genuinely wants it. Switching back to AC-3 clamps an over-table rate to
+The **Bit rate** list carries the nominal rates from 96 kbps up (thirteen rungs, 96 through 640)
+plus a 768 kbps rung that exists for E-AC-3 only — E-AC-3 signals its frame size directly rather
+than indexing Table 5.18, and a wide object or 7.2.4 session genuinely wants it. Switching back to AC-3 clamps an over-table rate to
 640 rather than leaving a plan `validate()` would refuse at encode time.
 
 A muted line can appear under the field itself: *"N coded channels at M kbps will audibly
@@ -90,8 +90,8 @@ stream, the same file Elementary stream itself would produce live.
 ## Rate mode: Constant or Variable
 
 E-AC-3 only, and file output only — the control disappears entirely for AC-3 (no free word count
-to vary; `frmsizecod` indexes a fixed table) and whenever the **live source is selected** (IEC
-61937 passthrough bursts are fixed-size per access unit — see
+to vary; `frmsizecod` indexes a fixed table), in object mode, and whenever the **live source is
+selected** (IEC 61937 passthrough bursts are fixed-size per access unit — see
 [Live capture & session](live-session.md#the-vbr-warning)):
 
 ![The rate-mode panel absent while a live source is selected](screenshots/format-vbr.png)
@@ -101,7 +101,8 @@ to vary; `frmsizecod` indexes a fixed table) and whenever the **live source is s
 linear in bit cost: cost rises steeply above roughly half the range, so a high quality with no
 upper bound will often refuse real programme material outright (`FrameError::kInvalidBitrate`)
 rather than silently producing an oversized frame. Two checkboxes, **Set a minimum bit rate**
-and **Set a maximum bit rate**, each reveal a kbps field when ticked — presence lives on the
+and **Set a maximum bit rate**, each enable the kbps field beside them when ticked (the field stays
+visible either way, just disabled) — presence lives on the
 checkbox, never a sentinel value: *"Bounds are optional — unticked means no bound at all, not a
 default one"*, as the line beneath says, before stating the current bounds in words. **Bit
 rate** above still matters in VBR mode — its label relabels itself *band-edge reference, not a
@@ -112,7 +113,7 @@ A finished VBR run reports what it actually spent, since it has no target: the r
 `VBR q75 · avg 512 kbps (384–704)` instead of a plain `NNN kbps` figure. At the foot of the
 panel, a monospace `ac3cli vbr token` readout shows the exact
 `q:<quality>[,min:<kbps>][,max:<kbps>]` string that reproduces the current setting — see
-[CLI → Metadata options](../cli/metadata-options.md#the-vbr-token-eac3-encode-only).
+[CLI → Options & grammars](../cli/metadata-options.md#the-vbr-token-eac3-encode-only).
 
 ## Channels — the two-tier picker
 
@@ -132,9 +133,11 @@ whole selection. Beneath it, the two tiers:
    ceiling rear — each a *pair* that toggles together (you can't add a left ceiling channel
    without its right pair), each printing the channel tokens it adds (`Lw Rw`) in the same
    Table E2.5 names the channel map uses. A row that can't currently be ticked says why in its
-   own right-hand column: `fixed by object mode`, `not part of dual mono`, `no budget left` at
-   the 16-position cap, or (when unticked under AC-3) `moves to Dolby Digital Plus` — the cost
-   stated only while it is actually true.
+   own right-hand column: `fixed by object mode`, `not part of dual mono`, the allocator's own
+   refusal at the 16-position cap (`a single programme can render at most 16 channels (A/52
+   Annex E, §E3.8.2)`), `another extra needs this one` on a ticked pair whose removal would
+   strand a channel depending on it, or (when unticked under AC-3) `moves to Dolby Digital
+   Plus` — the cost stated only while it is actually true.
 
     !!! note "No ceiling middle"
         The design handoff sketched a third ceiling pair ("ceiling middle"). A/52 Table E2.5 has
@@ -213,6 +216,7 @@ with it so Play there needs no fresh pick.
 ## Next
 
 - [Multi-source & assignment](source-assignment.md) — the table everything above derives from.
-- [Coding tools](coding-tools.md) — Annex E tools, Expert + E-AC-3 only.
+- [Coding tools](coding-tools.md) — the Annex E tools, always in Expert's tab bar; the tools
+  apply to E-AC-3 only.
 - [Metadata](metadata.md) — the rest of the loudness/downmix picture, Expert only.
 - [Objects & motion](objects-and-motion.md) — turning this same bed into an Atmos carrier.
