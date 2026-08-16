@@ -39,12 +39,30 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   C++/Emscripten toolchain installed, so there is currently nowhere in the pipeline for an
   `emcc` build to happen — teaching CI to rebuild and publish this automatically is a real gap,
   not addressed here.
-- **What this does *not* do yet, and why F3 stays unchecked**: `ac3::forge` has no decode-side
-  OAMD/JOC parser — the encoder can write Atmos object metadata, but nothing in the library can
-  read it back out of a stream (`eac3_decoder.cpp` reads the EMDF-bearing skip field and
-  discards it). The demo's visualization is therefore real decoded *bed* energy, not object
-  positions. Real OAMD/JOC decode is tracked as separate follow-up work; this demo will grow
-  object motion once that lands.
+- **What this does *not* do yet, and why F3 stays unchecked**: at the time this demo was built,
+  `ac3::forge` had no decode-side OAMD/JOC parser at all, so its visualization is real decoded
+  *bed* energy, not object positions. That gap has since narrowed — see "Atmos object decode"
+  below, landed in this same `[Unreleased]` section — but this demo has not yet been updated to
+  consume the new `object_metadata`/OAMD position API; it still only shows bed energy. Wiring
+  real object positions into the visualization, and picking up JOC audio reconstruction once
+  that lands too, is tracked as follow-up work.
+
+### Atmos object decode
+
+- **`Eac3Decoder` now reads OAMD, closing a real gap between what this library can encode and
+  what it can decode.** Until now the E-AC-3 decoder read the EMDF-bearing block skip field
+  (§5.4.3.58-60) and simply discarded it — every "object decode" claim about this project was
+  true for the encoder only. `ac3::emdf::parse_container` is the decode-side inverse of
+  `build_container` (ETSI TS 102 366 Annex H): it scans the skip field for the sync word, walks
+  the payload list into `{id, bytes}` pairs, and refuses (rather than mis-parses) an
+  `emdf_payload_config` outside the one shape TS 103 420 Table 56 mandates. `ac3::oba::parse_payload`
+  is the matching inverse of OAMD's `build_payload` (TS 103 420 §5.5), reconstructing the
+  `Program`/`DynamicObject`s a stream actually declared. `DecodedSubstream`/`DecodedAccessUnit`
+  gain a new `object_metadata` field — `std::nullopt` for plain E-AC-3 with no object audio, or a
+  skip field this decoder found but declined to interpret, so existing callers that only read
+  `.channels` are unaffected either way. JOC's own per-object audio reconstruction is not part of
+  this yet; OAMD alone already recovers each object's position and gain, verified end-to-end
+  against `AtmosEncoder`'s own output.
 
 ### Delivery
 

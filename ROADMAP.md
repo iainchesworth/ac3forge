@@ -116,10 +116,12 @@ decoded an AC-3/E-AC-3 bitstream and verified its loudness metadata against meas
   `ac3::forge`'s AC-3/E-AC-3 decode path builds under Emscripten (`config-wasm-emscripten`
   preset) and a real browser demo (`platform/wasm/`, embedded live at
   `docs/wasm-demo.md`) decodes a genuine Atmos-in-DD+ stream and plays the real 5.1 bed with
-  a per-channel energy visualization. Still open: `ac3::forge` has no decode-side OAMD/JOC
-  parser at all yet (only the encoder can write object metadata), so there is no object
-  motion to render — that gap is tracked separately, and this item stays unchecked until the
-  demo actually shows decoded object positions.
+  a per-channel energy visualization. `Eac3Decoder` itself gained a real decode-side OAMD
+  parser (object positions/gain, `DecodedSubstream::object_metadata`) separately from this
+  item — but the demo hasn't been updated to consume it yet, so it still only shows bed
+  energy, not object motion. JOC's own per-object *audio* reconstruction is a further, still
+  -open gap on top of that. This item stays unchecked until the demo actually renders decoded
+  object positions.
 - [ ] **F4 (M)** — Package-manager presence: a vcpkg port, a Homebrew formula, a winget
   manifest. **The vcpkg port is staged in-tree** — see
   [`packaging/vcpkg-port/ac3forge/`](https://github.com/iainchesworth/ac3forge/tree/main/packaging/vcpkg-port/ac3forge),

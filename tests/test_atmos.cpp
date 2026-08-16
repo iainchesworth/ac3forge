@@ -13,7 +13,9 @@
 
 #include "ac3/core/bitreader.hpp"
 #include "ac3/core/crc16.hpp"
+#include "ac3/decoder/decoder.hpp"
 #include "ac3/emdf/emdf.hpp"
+#include "ac3/encoder/eac3_frame.hpp"
 #include "ac3/oba/atmos.hpp"
 #include "ac3/oba/joc.hpp"
 #include "ac3/spatial/spatial.hpp"
@@ -392,6 +394,79 @@ TEST_CASE("an Atmos frame is a plain 5.1 frame with metadata bolted on", "[atmos
     REQUIRE(at != static_cast<std::size_t>(-1));
     r.skip(at + 16 + 16 + 2 + 3);  // sync, length, emdf_version, key_id
     CHECK(r.read(5) == ac3::emdf::kPayloadIdOamd);
+}
+
+TEST_CASE("Eac3Decoder recovers the object positions AtmosEncoder wrote", "[atmos][decoder]") {
+    ac3::oba::AtmosEncoder encoder{{.bitrate_kbps = 448}, 3};
+    const std::array<ac3::oba::ObjectPlacement, 3> placement{{
+        {.position = {.x = 0.1, .y = 0.2, .z = 0.5}},
+        {.position = {.x = 0.9, .y = 0.2, .z = 0.5}, .gain = 0.5},
+        {.position = {.x = 0.5, .y = 0.9, .z = -0.5}, .lfe_send = 0.3},
+    }};
+
+    // §5.6.1.1.8-11's own quantization, applied the same way build_payload's
+    // encode side does, so this asserts what the wire can actually carry
+    // rather than the pre-quantization placement values themselves.
+    const auto quantize_xy = [](double v) {
+        return static_cast<double>(std::lround(std::clamp(v, 0.0, 1.0) * 62.0)) / 62.0;
+    };
+    const auto quantize_z = [](double v) {
+        const double clamped = std::clamp(v, -1.0, 1.0);
+        return (clamped < 0.0 ? -1.0 : 1.0) *
+              static_cast<double>(std::lround(std::abs(clamped) * 15.0)) / 15.0;
+    };
+
+    std::vector<std::vector<float>> essences;
+    std::vector<std::span<const float>> views(3);
+    ac3::eac3::AccessUnit unit;
+    for (int frame = 0; frame < 3; ++frame) {
+        const auto start = static_cast<std::uint64_t>(frame) * kFrame;
+        essences = {tone(440.0, 0.3, 0.0, start), tone(880.0, 0.3, 0.5, start),
+                    tone(120.0, 0.3, 1.0, start)};
+        for (std::size_t i = 0; i < views.size(); ++i) {
+            views[i] = essences[i];
+        }
+        auto encoded = encoder.encode_frame(views, placement);
+        REQUIRE(encoded.has_value());
+        unit = *encoded;
+    }
+    REQUIRE(unit.substream_count() == 1);
+
+    ac3::Eac3Decoder decoder;
+    const auto decoded = decoder.decode_substream(unit.substream(0));
+    REQUIRE(decoded.has_value());
+    REQUIRE(decoded->has_value());
+    REQUIRE((*decoded)->object_metadata.has_value());
+
+    const auto& metadata = *(*decoded)->object_metadata;
+    CHECK(metadata.program.dynamic_only);
+    CHECK(metadata.program.lfe);
+    CHECK(metadata.program.dynamic_objects == 3);
+    REQUIRE(metadata.objects.size() == 3);
+    for (std::size_t i = 0; i < placement.size(); ++i) {
+        CAPTURE(i);
+        // AtmosEncoder folds each object's gain into the reconstructed
+        // essence itself (atmos.cpp step 1's own comment) and always
+        // declares 0 dB, so this is the one field decode should match
+        // exactly rather than through the position quantizer.
+        CHECK(metadata.objects[i].gain_db == 0.0);
+        CHECK(metadata.objects[i].position.x == quantize_xy(placement[i].position.x));
+        CHECK(metadata.objects[i].position.y == quantize_xy(placement[i].position.y));
+        CHECK(metadata.objects[i].position.z == quantize_z(placement[i].position.z));
+    }
+}
+
+TEST_CASE("Eac3Decoder reports no object metadata for a plain (non-Atmos) stream", "[atmos][decoder]") {
+    const ac3::eac3::FrameConfig config{
+        .bitrate_kbps = 448, .acmod = ac3::Acmod::k3_2, .lfe = true};
+    const auto frame = ac3::eac3::build_silent_frame(config);
+    REQUIRE(frame.has_value());
+
+    ac3::Eac3Decoder decoder;
+    const auto decoded = decoder.decode_substream(*frame);
+    REQUIRE(decoded.has_value());
+    REQUIRE(decoded->has_value());
+    CHECK_FALSE((*decoded)->object_metadata.has_value());
 }
 
 TEST_CASE("the splice counter starts at zero and wraps to one", "[atmos]") {

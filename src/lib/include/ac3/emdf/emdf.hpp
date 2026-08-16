@@ -2,6 +2,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <expected>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -60,5 +62,44 @@ struct Payload {
 // for both.
 [[nodiscard]] AC3FORGE_EXPORT std::vector<std::byte> build_container(
     std::span<const Payload> payloads, int groupid = 0);
+
+// --- Decode ------------------------------------------------------------
+
+// One payload as recovered from a container. `bytes` is freshly materialized
+// (not a view into the input), because a payload's bits are not generally
+// byte-aligned within the frame that carried them.
+struct DecodedPayload {
+    int id = 0;
+    std::vector<std::byte> bytes;
+};
+
+// A container found and parsed, but carrying syntax this reader declines to
+// interpret rather than guess at - mirroring the rest of this codebase's
+// stance on syntax corners no stream it produces (or has been checked
+// against) exercises. `kTruncated` covers a declared length or payload size
+// that runs past `data`; `kUnsupportedConfig` covers an `emdf_payload_config`
+// that is not the one shape TS 103 420 Table 56 mandates (see
+// put_payload_config's own comment) - the only shape this encoder, or any
+// real Dolby stream checked against it, has ever produced - or a payload id
+// of 0x1F (the size-extension escape, §H.2.2.2.2, never emitted here).
+enum class ParseError : std::uint8_t {
+    kTruncated,
+    kUnsupportedConfig,
+};
+
+// Decode-side inverse of build_container(). Scans `data` bit by bit for
+// kSyncWord (§H.2.2.1.1 - the container's position is not fixed, so a
+// decoder locates it the same way an encoder's reader would), then walks the
+// payload list into {id, bytes} pairs, stopping at the terminating 0 payload
+// id and ignoring the trailing protection bits (§H.2.2.4: their content is
+// implementation-defined and unverifiable by any decoder that does not share
+// the algorithm that produced them).
+//
+// std::nullopt means no sync word was found anywhere in `data` - the
+// ordinary shape of a skip field with no EMDF at all, not an error. A sync
+// word that IS found but whose container cannot be read cleanly reports
+// ParseError instead of a best-effort guess.
+[[nodiscard]] AC3FORGE_EXPORT std::expected<std::optional<std::vector<DecodedPayload>>, ParseError>
+parse_container(std::span<const std::byte> data);
 
 }  // namespace ac3::emdf

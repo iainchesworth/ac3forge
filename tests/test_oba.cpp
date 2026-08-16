@@ -324,3 +324,113 @@ TEST_CASE("OAMD carries a full 5.1 bed when asked", "[oba][oamd]") {
     // encoder writes for a 7.1.4 bed.
     CHECK(r.read(10) == 0b0000001111);
 }
+
+TEST_CASE("OAMD payload decodes back to the program and objects it described", "[oba][oamd]") {
+    const ac3::oba::Program program{
+        .dynamic_only = true, .lfe = true, .dynamic_objects = 3};
+    const std::array<ac3::oba::DynamicObject, 3> objects{{
+        {.position = {.x = 0.0, .y = 0.0, .z = 0.0}, .gain_db = 0.0},
+        {.position = {.x = 1.0, .y = 1.0, .z = 1.0}, .gain_db = -6.0},
+        {.position = {.x = 0.5, .y = 0.5, .z = -1.0}, .gain_db = 3.0},
+    }};
+    const auto payload = ac3::oba::build_payload(program, objects);
+
+    const auto decoded = ac3::oba::parse_payload(payload);
+    REQUIRE(decoded.has_value());
+    CHECK(decoded->program.dynamic_only == program.dynamic_only);
+    CHECK(decoded->program.lfe == program.lfe);
+    CHECK(decoded->program.dynamic_objects == program.dynamic_objects);
+    REQUIRE(decoded->objects.size() == objects.size());
+    for (std::size_t i = 0; i < objects.size(); ++i) {
+        CAPTURE(i);
+        // Positions/z round-trip exactly here because every input value sits
+        // exactly on the quantizer's grid (0, 0.5, 1 over 62nds; -1, 0, 1
+        // over 15ths) - the same reason test_oba's encode-side test above can
+        // assert exact codes rather than tolerances.
+        CHECK(decoded->objects[i].position.x == objects[i].position.x);
+        CHECK(decoded->objects[i].position.y == objects[i].position.y);
+        CHECK(decoded->objects[i].position.z == objects[i].position.z);
+        CHECK(decoded->objects[i].gain_db == objects[i].gain_db);
+    }
+}
+
+TEST_CASE("OAMD payload decodes a full 5.1 bed with no dynamic objects", "[oba][oamd]") {
+    const ac3::oba::Program program{
+        .dynamic_only = false, .bed = ac3::oba::bed::k51, .dynamic_objects = 0};
+    const auto payload = ac3::oba::build_payload(program, {});
+
+    const auto decoded = ac3::oba::parse_payload(payload);
+    REQUIRE(decoded.has_value());
+    CHECK_FALSE(decoded->program.dynamic_only);
+    CHECK(decoded->program.bed == ac3::oba::bed::k51);
+    CHECK(decoded->program.dynamic_objects == 0);
+    CHECK(decoded->objects.empty());
+}
+
+TEST_CASE("OAMD payload decodes a bed plus dynamic objects together", "[oba][oamd]") {
+    const ac3::oba::Program program{
+        .dynamic_only = false, .bed = ac3::oba::bed::kLfe, .dynamic_objects = 2};
+    const std::array<ac3::oba::DynamicObject, 2> objects{{
+        {.position = {.x = 0.25, .y = 0.75, .z = 0.5}, .gain_db = -20.0},
+        {.position = {.x = 1.0, .y = 0.0, .z = -0.5}, .gain_db = 10.0},
+    }};
+    const auto payload = ac3::oba::build_payload(program, objects);
+
+    const auto decoded = ac3::oba::parse_payload(payload);
+    REQUIRE(decoded.has_value());
+    CHECK_FALSE(decoded->program.dynamic_only);
+    CHECK(decoded->program.bed == ac3::oba::bed::kLfe);
+    REQUIRE(decoded->objects.size() == 2);
+    CHECK(decoded->objects[0].gain_db == -20.0);
+    CHECK(decoded->objects[1].gain_db == 10.0);
+}
+
+TEST_CASE("OAMD gain decodes at its boundary and mid-range values", "[oba][oamd]") {
+    // Table 19's two ends (+15, -49) plus a value from each range, and the
+    // unreachable-through-object_gain_bits 0 dB that forces the other index.
+    for (const double gain : {0.0, 15.0, -49.0, 7.0, -12.0, 1.0, -1.0}) {
+        CAPTURE(gain);
+        const ac3::oba::Program program{
+            .dynamic_only = true, .lfe = false, .dynamic_objects = 1};
+        const std::array<ac3::oba::DynamicObject, 1> objects{
+            {{.position = {.x = 0.5, .y = 0.5, .z = 0.0}, .gain_db = gain}}};
+        const auto payload = ac3::oba::build_payload(program, objects);
+        const auto decoded = ac3::oba::parse_payload(payload);
+        REQUIRE(decoded.has_value());
+        REQUIRE(decoded->objects.size() == 1);
+        CHECK(decoded->objects[0].gain_db == gain);
+    }
+}
+
+TEST_CASE("OAMD parse_payload rejects what it cannot cleanly interpret", "[oba][oamd]") {
+    const ac3::oba::Program program{
+        .dynamic_only = true, .lfe = true, .dynamic_objects = 2};
+    const std::array<ac3::oba::DynamicObject, 2> objects{{
+        {.position = {.x = 0.2, .y = 0.3, .z = 0.1}, .gain_db = 0.0},
+        {.position = {.x = 0.8, .y = 0.7, .z = -0.2}, .gain_db = -4.0},
+    }};
+    const auto payload = ac3::oba::build_payload(program, objects);
+    REQUIRE(ac3::oba::parse_payload(payload).has_value());  // the payload under test genuinely parses
+
+    SECTION("truncated payload") {
+        for (std::size_t cut : {std::size_t{1}, payload.size() / 2, payload.size() - 1}) {
+            CAPTURE(cut);
+            const std::vector<std::byte> truncated(payload.begin(),
+                                                   payload.begin() + static_cast<std::ptrdiff_t>(cut));
+            CHECK_FALSE(ac3::oba::parse_payload(truncated).has_value());
+        }
+    }
+
+    SECTION("object_count contradicts the program it describes") {
+        // Flip one bit of object_count_bits (bits 2..6 of byte 0): a
+        // consistency check this parser makes that a byte-for-byte inverse
+        // of build_payload alone would never exercise.
+        auto corrupt = payload;
+        corrupt[0] ^= std::byte{0b0000'0100};
+        CHECK_FALSE(ac3::oba::parse_payload(corrupt).has_value());
+    }
+
+    SECTION("an empty payload") {
+        CHECK_FALSE(ac3::oba::parse_payload({}).has_value());
+    }
+}
