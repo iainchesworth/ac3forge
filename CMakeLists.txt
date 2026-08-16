@@ -137,7 +137,16 @@ add_subdirectory(src/lib)
 # ac3::forge for the IEC 61937 framer); before src/cli/src/gui/tests, which
 # link it alongside ac3::forge for their live-audio commands/features. Not
 # linked by examples/ - none of them touch live audio.
-add_subdirectory(src/audio)
+#
+# Skipped entirely under Emscripten: src/audio/CMakeLists.txt hard-fails
+# configure when none of WIN32/LINUX/APPLE/ANDROID is set (it has no browser
+# platform directory, and never will - a WASM build gets live audio from the
+# Web Audio API in JS instead, not from this library), and nothing a WASM
+# configure builds needs it anyway (AC3FORGE_BUILD_CLI/GUI/TESTS are all OFF
+# there, and examples/wasm_decode_demo does not link ac3::audio).
+if(NOT EMSCRIPTEN)
+    add_subdirectory(src/audio)
+endif()
 
 # The EMDF Atmos object signer (ac3::signing). Clean-room and dependency-free:
 # the HMAC construction and authenticated-region layout are in-tree, and the
@@ -217,6 +226,21 @@ endif()
 
 if(AC3FORGE_BUILD_FUZZERS)
     add_subdirectory(fuzz)
+endif()
+
+# The browser decode demo (roadmap F3, docs/platforms/wasm.md) - a platform
+# app, same shape and reasoning as platform/android/'s Shield app: a small
+# demo consuming ac3::forge unmodified, kept out of both src/ (not library
+# code) and examples/ (not a single-API-call snippet backing a
+# docs/library/*.md page, see CONTRIBUTING.md). Unlike platform/android/,
+# which is a wholly separate Gradle/NDK build reached from the other
+# direction, this platform has no non-CMake build system to work around, so
+# it is a normal add_subdirectory() gated on EMSCRIPTEN (set by
+# cmake/toolchains/wasm.emscripten.toolchain.cmake) rather than an
+# AC3FORGE_BUILD_* option - there is nothing to opt in or out of on a host
+# that isn't targeting WASM in the first place.
+if(EMSCRIPTEN)
+    add_subdirectory(platform/wasm)
 endif()
 
 # After every target's install() rules (src/cli, src/gui) have been declared.

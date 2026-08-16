@@ -12,6 +12,42 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 
 ## [Unreleased]
 
+### WASM decode demo (roadmap F3)
+
+- **`ac3::forge`'s decode path now builds under Emscripten.** A new `config-wasm-emscripten`
+  CMake preset (`cmake/toolchains/wasm.emscripten.toolchain.cmake`) compiles `ac3::forge` to
+  WebAssembly. Unlike every other platform preset, this one does not chainload through vcpkg:
+  the codec's decode path has zero third-party dependencies (`vcpkg.json`'s own description
+  says so — catch2 is tests-only, and tests are off for this preset), so going through vcpkg's
+  community `wasm32-emscripten` triplet would only add cost for nothing it needs.
+  `src/audio` (the project's one genuinely platform-specific library — WASAPI/ALSA/AAudio) is
+  skipped entirely under this preset; a browser build gets live audio from the Web Audio API in
+  JS instead.
+- **A real browser demo**, `platform/wasm/` — a platform app in the same shape as
+  `platform/android/`'s Shield demo, not an `examples/` snippet: an Embind wrapper
+  (`decoder_bindings.cpp`) around the existing `FrameDecoder`/`Eac3Decoder` API, plus a page
+  (`index.html`/`demo.js`) that fetches a raw `.ec3`/`.ac3` elementary stream (bundled, or
+  user-uploaded), decodes it entirely client-side, plays the decoded bed audio through the Web
+  Audio API, and visualizes real per-channel RMS energy on two speaker rings (ear-level and
+  ceiling) — the coordinate model and screen-space transform ported from the desktop GUI's
+  `SoundfieldView.qml`. A seek bar lets a viewer scrub the real decoded timeline. The bundled
+  fixture is a real 8-second, 3-object Atmos-in-DD+ stream encoded with the existing
+  `AtmosEncoder`. See [docs/platforms/wasm.md](docs/platforms/wasm.md).
+- **Real object motion, not bed energy standing in for it.** With OAMD/JOC decode landed (see
+  "Atmos object decode" below), the demo grew a second visualization — a top-down/elevation room
+  view, the same layout as the desktop GUI's Objects tab — driven entirely by real decoded
+  positions (`DecodedAccessUnit::object_metadata`) read back out of the bitstream, not an
+  authored/preview model. A "solo object" control switches playback to that object's own real
+  JOC-reconstructed audio (`::object_audio`) — its actual isolated waveform, not a re-panned
+  approximation of its slice of the bed.
+- **Embedded live in the docs site** at `docs/wasm-demo.md` (nav: Project → "Live decode demo
+  (WASM)") via an iframe over a copy of the demo under `docs/assets/wasm-decode-demo/`. That copy
+  is committed (a working fallback for a plain local `mkdocs build`), but the *published* site
+  never ships it stale: `.github/workflows/docs.yml`'s `deploy` job installs Emscripten and
+  rebuilds `platform/wasm/` fresh from source before publishing. `_build.yml`'s `build-wasm` job
+  build-verifies the same target on every push, the same role `build-android`'s always-on debug
+  APK plays. Both share a new pinned composite action, `.github/actions/setup-emscripten`.
+
 ### Atmos object decode
 
 - **`Eac3Decoder` now reads OAMD, closing a real gap between what this library can encode and
