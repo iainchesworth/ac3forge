@@ -1,28 +1,50 @@
-# ac3forge fuzzing. Three jobs over the same libFuzzer harnesses in fuzz/:
+# ac3forge fuzzing. Four jobs over the same libFuzzer harnesses in fuzz/:
 #
-#   fuzz-regress   Replays fuzz/seeds/ and fuzz/regressions/ with -runs=0 (no
-#                  mutation) - a correctness gate: every regression corpus
-#                  entry must still not crash. Seconds, not minutes; runs on
-#                  every push/PR to main/develop and is NOT experimental - a
-#                  regression here means a fixed bug came back.
-#   fuzz-short     A bounded mutation budget (60s/target, ~4 minutes total),
-#                  push only, so pull requests are not slowed by it.
-#   fuzz-nightly   A longer bounded mutation budget (10 min/target by default)
-#                  on a daily schedule, plus workflow_dispatch for an
-#                  on-demand deeper run with a custom budget.
+#   fuzz-regress       Replays fuzz/seeds/ and fuzz/regressions/ with -runs=0
+#                      (no mutation) - a correctness gate: every regression
+#                      corpus entry must still not crash. Seconds, not
+#                      minutes; runs on every push/PR to main/develop and is
+#                      NOT experimental - a regression here means a fixed bug
+#                      came back.
+#   fuzz-short         A bounded mutation budget (60s/target, ~4 minutes
+#                      total), push only, so pull requests are not slowed by
+#                      it.
+#   fuzz-differential  Same mutation approach, over the two differential
+#                      harnesses only (fuzz_differential_ac3_decode,
+#                      fuzz_differential_eac3_decode - roadmap G3): decodes
+#                      each mutated frame with BOTH ac3forge's own decoder
+#                      and FFmpeg, and diffs the PCM, instead of only
+#                      checking for a crash. Push only, its own 60s/target
+#                      budget - see fuzz/differential_oracle.hpp for what
+#                      counts as a reportable divergence versus expected
+#                      disagreement on a malformed frame, and why this job is
+#                      separate rather than folded into fuzz-short (it needs
+#                      ffmpeg on PATH and is much slower per-exec, a real
+#                      FFmpeg process per comparable input).
+#   fuzz-nightly       A longer bounded mutation budget (10 min/target by
+#                      default) on a daily schedule, plus workflow_dispatch
+#                      for an on-demand deeper run with a custom budget. Does
+#                      NOT include the differential harnesses - see
+#                      fuzz-differential above.
 #
 # This is a bounded, time-boxed run, not continuous (OSS-Fuzz-style) fuzzing
 # infrastructure - see fuzz/README.md.
 #
-# All three run in the same ubuntu:26.04 + LLVM 21 container ci.yml's
+# All four run in the same ubuntu:26.04 + LLVM 21 container ci.yml's
 # linux-llvm leg uses. The harnesses build under the same strict `ac3::warnings`
 # set (-Werror included) as every other target - the fuzz build used to be the
 # one exception, on the assumption it carried a sign-conversion/double-promotion
 # debt, but a recount found zero such sites and the exemption was removed.
-# fuzz-short and fuzz-nightly stay marked experimental on their own merits:
-# neither has multiple clean fuzzing runs behind it yet, which is a question of
-# track record rather than of anything the compiler can check. Promote one by
-# deleting its `continue-on-error: true` line.
+# fuzz-short, fuzz-differential and fuzz-nightly stay marked experimental on
+# their own merits: none has multiple clean fuzzing runs behind it yet, which
+# is a question of track record rather than of anything the compiler can
+# check. Promote one by deleting its `continue-on-error: true` line.
+#
+# fuzz-differential additionally installs `ffmpeg` - the same package the
+# gold_reference/sanitizer legs of .github/workflows/_build.yml already
+# install on Linux, and for the same reason (an independent decode oracle).
+# The other three jobs have no such dependency: their harnesses only ever
+# call into ac3::forge itself.
 #
 # Deliberately its own workflow rather than folded into ci.yml's build-and-test
 # matrix or its ci-status gate: fuzz-regress is cheap enough to make required
@@ -124,6 +146,62 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: fuzz-short-artifacts
+          path: fuzz/artifacts/
+          if-no-files-found: ignore
+
+  fuzz-differential:
+    name: Fuzz Differential (ac3forge vs FFmpeg PCM diff, bounded mutation, push only)
+    if: github.event_name == 'push'
+    needs: fuzz-regress
+    runs-on: ubuntu-latest
+    container: ubuntu:26.04
+    continue-on-error: true  # experimental - see the header comment
+    env:
+      AC3FORGE_FUZZ_SECONDS: 60
+    steps:
+      - name: Bootstrap container
+        run: |
+          set -eu
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends \
+            build-essential ca-certificates cmake curl git gnupg lsb-release \
+            ninja-build pkg-config software-properties-common tar unzip wget zip
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install LLVM 21
+        run: bash .github/toolchain/03-llvm-toolchain.sh
+
+      # 03-llvm-toolchain.sh installs the compiler only - none of ci.yml's
+      # other Clang legs link a sanitizer or libFuzzer, so none of them have
+      # ever needed the runtime archives. This is fuzzing's own dependency.
+      - name: Install sanitizer + libFuzzer runtime archives
+        run: apt-get install -y -qq --no-install-recommends libclang-rt-21-dev
+
+      # The differential harnesses' own oracle (fuzz/differential_oracle.hpp
+      # shells out to it at run time) - the same package
+      # .github/workflows/_build.yml's gold_reference/sanitizer legs already
+      # install on Linux, for the same reason.
+      - name: Install ffmpeg
+        run: apt-get install -y -qq --no-install-recommends ffmpeg
+
+      # Cheap correctness gate first, same shape as fuzz-regress above: any
+      # divergence a past run minimized into fuzz/regressions/ must still
+      # not reproduce before spending the mutation budget below.
+      - name: Replay differential regression corpus (no mutation)
+        run: bash fuzz/run.sh regress fuzz_differential_ac3_decode fuzz_differential_eac3_decode
+
+      - name: Fuzz differential (bounded mutation budget)
+        run: bash fuzz/run.sh run fuzz_differential_ac3_decode fuzz_differential_eac3_decode
+
+      - name: Upload divergent/crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-differential-artifacts
           path: fuzz/artifacts/
           if-no-files-found: ignore
 

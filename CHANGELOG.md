@@ -196,6 +196,31 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   (`quality_race.py ci`) gains no new dependency or runtime cost — only the reporting tables and
   `trend`'s JSON output request a score at all.
 
+### Developer tooling
+
+- **Differential decoder fuzzing against FFmpeg** (roadmap G3): two new libFuzzer harnesses,
+  `fuzz_differential_ac3_decode`/`fuzz_differential_eac3_decode`, that drive the same
+  `split_frames`/`split_access_units` mutation surface `fuzz_ac3_decode`/`fuzz_eac3_decode`
+  already crash-fuzz, but additionally decode each mutated stream a second time with FFmpeg
+  (the same `-xerror -err_detect crccheck+bitstream+buffer+explode` strict-decode invocation
+  already used everywhere else this project treats FFmpeg as an oracle) and diff the PCM. A
+  mismatch is only reported when BOTH decoders accept the whole input and produce comparably-
+  shaped audio — FFmpeg's own error-concealment on a malformed frame legitimately differs from
+  this project's spec-strict decode, so declining a mutated frame is never itself a divergence
+  (`fuzz/differential_oracle.hpp` has the full reasoning). The agreement floor (6 dB) was
+  calibrated empirically, not guessed: a sweep of every currently-committed seed found real,
+  unmutated, already-shipping content — a panning source, and pure single-tone material — that
+  legitimately disagrees with FFmpeg by as much as 12–24 dB, traced to A/52 leaving bap-0
+  (unallocated) coefficient reconstruction implementation-defined ("any reasonably random
+  sequence"): this decoder always reconstructs zero there for deterministic parity, while
+  FFmpeg synthesizes real dither noise. Verified against a real, deliberately-introduced decode
+  bug (a dropped overlap-add term) before considering it done. New `fuzz-differential` CI job
+  in `.github/workflows/fuzz.yml`, its own 60-second-per-harness push-only budget and
+  `continue-on-error: true` (same experimental convention as `fuzz-short`/`fuzz-nightly`) — not
+  folded into either existing job, since it needs `ffmpeg` on PATH and is much slower per-exec
+  (a real FFmpeg process per comparable input). The two harnesses share their crash-only
+  siblings' seed corpora rather than duplicating them.
+
 ## [0.5.0-beta.1] - 2026-08-15
 
 Fourth tagged release. The main change is a fast-transform performance initiative: an opt-in
