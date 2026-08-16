@@ -91,6 +91,7 @@ nav:
       - Metadata: library/metadata.md
       - Muxing & sinks: library/muxing-and-sinks.md
       - File I/O: library/file-io.md
+      - ADM / BW64 reading: library/adm.md
       - Object signing: library/signing.md
       - Header map: library/header-map.md
   - CLI reference:

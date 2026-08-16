@@ -105,6 +105,17 @@ if(NOT AC3FORGE_BUILD_MPEGTS AND (AC3FORGE_BUILD_CLI OR AC3FORGE_BUILD_GUI OR
         "they all link mpegts::mpegts unconditionally.")
 endif()
 
+# ac3adm::ac3adm (src/ac3adm) is a READER, not a writer like the three container modules above -
+# roadmap item B1 phase 1 ("ADM BWF reader feeding the JOC encoder", see ROADMAP.md), parsing
+# BW64/RF64 + the Audio Definition Model rather than muxing a container. Unlike
+# matroska/mp4/mpegts, it defaults OFF rather than ON and is genuinely additive: nothing in
+# src/cli, src/gui, tests/ or examples/ links it unconditionally, so every one of those builds
+# identically whether this is on or off. The reason for the different default is its
+# dependency footprint - see src/ac3adm/CMakeLists.txt's own header comment - libadm needs
+# several Boost header libraries, resolved through a dedicated opt-in vcpkg feature
+# (-DVCPKG_MANIFEST_FEATURES=adm, see vcpkg.json) that a normal build never pulls in.
+option(AC3FORGE_BUILD_ADM "Build the standalone BW64/RF64 + ADM parser (src/ac3adm) - needs Boost, see vcpkg.json's \"adm\" feature" OFF)
+
 # enable_testing() has to run before ANY add_subdirectory() that might contain
 # an add_test() call, not merely before tests/ itself - CTest silently drops
 # an add_test() registered from a directory processed earlier in the same
@@ -159,11 +170,23 @@ if(AC3FORGE_BUILD_MPEGTS)
     add_subdirectory(src/mpegts)
 endif()
 
+# A standalone BW64/RF64 + Audio Definition Model parser - reader, not writer, but the same
+# "depends on nothing of ac3::forge" shape as the three container writers above. Gated by
+# AC3FORGE_BUILD_ADM (default OFF, unlike the three above - see the option() itself for why).
+if(AC3FORGE_BUILD_ADM)
+    add_subdirectory(src/ac3adm)
+endif()
+
 # install()/find_package(ac3forge) support for ac3::forge, matroska::matroska,
-# mp4::mp4 and mpegts::mpegts - after every add_subdirectory() call above (needs their
-# targets to exist), before include(Packaging) (CPack's library component
-# packages exactly what gets install()'d here). Deliberately not ac3::audio -
-# see cmake/InstallLibrary.cmake's own header comment.
+# mp4::mp4 and mpegts::mpegts - after every add_subdirectory() call above (needs their targets to
+# exist), before include(Packaging) (CPack's library component packages exactly what gets
+# install()'d here). Deliberately not ac3::audio, and deliberately not ac3adm::ac3adm either -
+# see cmake/InstallLibrary.cmake's own header comment for the former; ac3adm is left out of the
+# installed package for the same "FetchContent'd third-party code, not this project's own" reason
+# it stays out of docs/library/index.md's zero-dependency claim (see src/ac3adm/CMakeLists.txt's
+# header comment) plus the added complexity of re-exporting libbw64/libadm's own transitive
+# targets through this package - AC3FORGE_BUILD_ADM users consume ac3adm::ac3adm from an in-tree
+# add_subdirectory() build, not from a `find_package(ac3forge)` installed one, for now.
 include(InstallLibrary)
 
 if(AC3FORGE_BUILD_CLI)

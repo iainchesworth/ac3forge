@@ -50,6 +50,33 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   flat nominal duration with a shorter final segment (the normal case) let it compute one too many
   segments from `mediaPresentationDuration` and request a segment number past the end.
 
+### Production ingest
+
+- **BW64/RF64 + Audio Definition Model parser** (`ac3adm::ac3adm`, roadmap item B1, phase 1 of 3)
+  — a new standalone module reading the professional delivery format Netflix's and Apple's own
+  Atmos ingest pipelines require. Same shape as `matroska::matroska`/`mp4::mp4`/`mpegts::mpegts`
+  (no dependency on `ac3::forge`, codec-blind) except in the opposite direction — a reader, not a
+  writer. Parses the container (Recommendation ITU-R BS.2088-1: `<ds64>`/`<fmt >`/`<data>`/
+  `<chna>`/`<axml>`, RF64/BW64 64-bit chunk sizing and plain sub-4GB `RIFF` alike) and the ADM
+  object graph inside `<axml>` (Recommendation ITU-R BS.2076-2: `audioProgramme`/`audioContent`/
+  `audioObject`/`audioPackFormat`/`audioChannelFormat`/`audioBlockFormat`/`audioStreamFormat`/
+  `audioTrackFormat`/`audioTrackUID`, including per-block position/gain/width/height/depth,
+  `channelLock`, `jumpPosition` and HOA order/degree/normalization). Built on the EBU's own
+  reference implementations, vendored via CMake `FetchContent` — `libbw64` (header-only) for the
+  container layer and `libadm` for ADM XML parsing/validation — rather than a hand-rolled parser;
+  neither library's own types cross this module's public API (its own namespace is `ac3adm`, not
+  `adm`, specifically to avoid colliding with libadm's). `ac3adm::parse_bw64` returns the parsed
+  graph, the `<chna>` track↔ID join table and the decoded PCM together as one `AdmDocument`.
+  Unlike every other module in this project, this one is **opt-in**: `AC3FORGE_BUILD_ADM`
+  defaults off, since libadm needs several Boost header libraries resolved through a new,
+  also opt-in `adm` vcpkg feature (`-DVCPKG_MANIFEST_FEATURES=adm`) — the only third-party
+  dependency anywhere in this codebase. Every other target (`ac3cli`, `ac3gui`, tests, every
+  other example) builds identically whether it's on or off, and it is not wired into the
+  Android/NDK build or the installed `find_package(ac3forge)` package. Mapping this graph onto
+  `ac3::oba::AtmosEncoder` (phase 2) and a worked ADM→E-AC-3 pipeline example (phase 3) are not
+  part of this change — see [docs/library/adm.md](docs/library/adm.md) and
+  `examples/read_adm.cpp`.
+
 ### Added
 
 - **Live sessions mux straight to Matroska.** `ac3cli record`/`ac3cli live` take a new
