@@ -1,7 +1,9 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -83,5 +85,79 @@ struct FrameParameters {
 
 // One joc() payload (§6.2.1), padded to whole bytes for emdf_payload_size.
 [[nodiscard]] AC3FORGE_EXPORT std::vector<std::byte> build_payload(const FrameParameters& params);
+
+// --- Decode ------------------------------------------------------------
+
+// Decode-side inverse of build_payload(). Recognises exactly the shapes this
+// encoder ever produces: a 5.X downmix, no extensional configuration data,
+// unity clip gain, every object present every frame in whole-matrix (not
+// sparse) mode with a single smooth-interpolation data point, and the SAME
+// num_bands_idx/fine_quant for every object in the frame - the last because
+// FrameParameters itself has no room to represent them varying per object,
+// matching how AtmosEncoder only ever writes one shared value for both.
+// Anything else is refused (std::nullopt) rather than guessed at, the same
+// stance emdf::parse_container and oba::parse_payload take on their own
+// unsupported configurations. `matrix` comes back already dequantized
+// (§6.6.4's inverse) - the caller never sees the wire's Huffman codes.
+[[nodiscard]] AC3FORGE_EXPORT std::optional<FrameParameters> parse_payload(
+    std::span<const std::byte> payload);
+
+// --- Audio reconstruction -----------------------------------------------
+
+// §6.6.6's normative reconstruction runs in the complex QMF domain this
+// codebase has no filterbank for; nothing here needs one specifically,
+// because §6.6.6 is not normative about WHICH linear per-band transform
+// computes it, only about the operation once you're in one. This applies it
+// in the same 512-sample MDCT domain atmos.cpp's band_energy already uses to
+// derive the matrix in the first place (see that function's own comment on
+// why that substitution is legitimate for an encoder - here it is legitimate
+// for the matching decoder for the identical reason: consistency with how
+// the matrix was estimated matters far more than which linear transform a
+// parametric, already-lossy tool happens to run in.
+//
+// Carried frame to frame for one program's worth of reconstruction, the same
+// way Eac3Decoder's own overlap-add delay_ is: `bed_history` gives block 0 of
+// each frame real pre-roll instead of zero-padding across the frame seam,
+// and `object_history` is each object's own overlap-add tail. `previous_*`
+// is what §6.6.5's ramp interpolates FROM; a shape mismatch against the
+// frame just decoded (object count, band count) is treated exactly like
+// FrameParameters::seq_count == 0 - no ramp, this frame's matrix applies to
+// the whole frame outright - since there is nothing meaningful to ramp from.
+struct ReconstructionState {
+    std::array<std::array<double, 256>, kNumChannels5X> bed_history{};
+    std::vector<double> previous_matrix{};
+    int previous_objects = 0;
+    int previous_num_bands_idx = -1;
+    std::vector<std::array<double, 256>> object_history{};
+
+    // reconstruct()'s own per-call scratch (PREfast C6262: stack-declaring
+    // these inside the function put it at ~24 KB of stack per call). Reused
+    // across every (block, channel)/(block, object) iteration of a call
+    // instead, the same reasoning Eac3Decoder's own imdct_scratch_/
+    // ecpl_spectrum_*_ members already use - each is fully overwritten
+    // before being read, so nothing here needs to persist meaningfully
+    // BETWEEN calls the way bed_history/previous_matrix/object_history do.
+    std::array<std::array<double, 256>, kNumChannels5X> bed_mdct_scratch{};
+    std::array<double, 512> time_scratch{};
+    std::array<double, 512> windowed_scratch{};
+    std::array<double, 256> object_mdct_scratch{};
+    std::array<double, 512> synth_scratch{};
+};
+
+// Reconstructs each JOC object's time-domain audio for one frame from the
+// decoded downmix and this frame's parsed JOC parameters.
+//
+// `bed` must be exactly kNumChannels5X channels of kSamplesPerFrame samples
+// each, in Table 53's JOC channel order (L, R, C, Ls, Rs) - NOT AC-3's
+// Table 5.8 order (L, C, R, Ls, Rs); the caller permutes, the same
+// permutation atmos.cpp's AtmosEncoder applies on the way in (see its
+// kAc3FromJoc). Returns one waveform per object, `params.objects` of them,
+// each kSamplesPerFrame samples, in the SAME order build_payload's own
+// `objects`/matrix rows use - which, for a program this project's own
+// AtmosEncoder produces (dynamic-object-only with a bypassed LFE, no bed),
+// is exactly oba::DecodedProgram::objects' order too.
+[[nodiscard]] AC3FORGE_EXPORT std::vector<std::vector<float>> reconstruct(
+    std::span<const std::vector<float>> bed, const FrameParameters& params,
+    ReconstructionState& state, bool fast_mdct = false);
 
 }  // namespace ac3::joc

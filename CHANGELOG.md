@@ -63,6 +63,22 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   `.channels` are unaffected either way. JOC's own per-object audio reconstruction is not part of
   this yet; OAMD alone already recovers each object's position and gain, verified end-to-end
   against `AtmosEncoder`'s own output.
+- **`Eac3Decoder` now reads JOC too, and actually reconstructs each object's audio.**
+  `ac3::joc::parse_payload` is the decode-side inverse of JOC's `build_payload` (TS 103 420 §6.2):
+  the Huffman-coded, differentially-predicted coefficient matrix comes back dequantized and ready
+  to use. `ac3::joc::reconstruct` then applies §6.6.6's reconstruction — this codebase has no
+  complex QMF filterbank, so it runs the operation in the same 512-sample MDCT domain
+  `AtmosEncoder`'s own `band_energy` already uses to derive the matrix in the first place (see
+  that function's comment for why the substitution is legitimate), carrying real state
+  (`ac3::joc::ReconstructionState`) frame to frame so §6.6.5's matrix ramp and each object's own
+  overlap-add both have real continuity instead of restarting cold every frame. `DecodedSubstream`/
+  `DecodedAccessUnit` gain a new `object_audio` field, one waveform per object parallel to
+  `object_metadata->objects` — populated only for the dynamic-object-only (no bed) program shape
+  where the two orderings are guaranteed to line up, which is the only shape `AtmosEncoder` itself
+  ever produces. Verified against a genuinely moving three-object scene (`examples/atmos_objects.cpp`,
+  now decodes what it encodes): mean recovered position error of 0.02 room units — essentially the
+  quantizer's own step size — and 18-22 dB audio-tracking SNR per object across 59 frames of real
+  circular motion, not a single static frame.
 
 ### Delivery
 
