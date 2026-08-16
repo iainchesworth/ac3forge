@@ -103,7 +103,7 @@ AC-3/E-AC-3 bitstream and verifies its loudness metadata against measurement.
 
 ## G. Validation depth
 
-- [ ] **G1 (M)** — A perceptual-quality leg: a perceptual metric (ViSQOL or PEAQ) column on
+- [x] **G1 (M)** — A perceptual-quality leg: a perceptual metric (ViSQOL or PEAQ) column on
   the quality race and landscape pages alongside SNR.
 - [x] **G2 (M)** — Backfill thin test coverage. Resurveyed rather than trusting the original
   estimate (already stale): the WAV reader and `meta/mixing` genuinely had no dedicated test file

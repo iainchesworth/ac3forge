@@ -765,6 +765,19 @@ jobs:
       # requirements-ffmpeg-validate.txt is a pip-compile --generate-hashes
       # lock (see its own header for how to regenerate) so this install is
       # hash-pinned.
+      #
+      # Deliberately NOT installing `visqol-python` here (tools/quality_race.py's
+      # perceptual_score(), see its own docstring for why ViSQOL/why that
+      # package): this job's `ci` step is a hard fidelity gate and stays exactly
+      # as fast and as free of new supply-chain surface as it was before that
+      # column existed - quality_race.py's own graceful degradation (a "-" cell
+      # and one clear message, never a failure) already lets this job run
+      # unchanged. The `trend` step below feeds the quality-history branch that
+      # docs/landscape.md and docs/tool-comparison-trend.md read, so a real MOS
+      # column there needs `visqol-python` added to requirements-ffmpeg-
+      # validate.in and this lock regenerated - a deliberate later step once
+      # that dependency's own track record justifies pinning it into every CI
+      # run, not a default of this PR.
       - name: Install numpy
         run: pip install --quiet --break-system-packages --require-hashes -r requirements-ffmpeg-validate.txt
 

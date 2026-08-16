@@ -178,6 +178,24 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   `clang-tools` toolchain dependency (`clang-scan-deps`) that broke every `find_package` check
   under Clang's Ninja module scan.
 
+### Validation
+
+- **A perceptual-quality column alongside SNR** (roadmap G1) on `tools/quality_race.py`'s `ac3`/
+  `eac3`/`eac3-51`/`trend` tables and on the [docs/tool-comparison-trend.md](docs/tool-comparison-trend.md)
+  and [docs/landscape.md](docs/landscape.md) pages: MOS-LQO (Mean Opinion Score - Listening
+  Quality Objective) from [ViSQOL](https://github.com/google/visqol)'s audio mode, chosen over
+  PEAQ (ITU-R BS.1387) — PEAQ itself is FRAND-licensed ITU IP, not a dependency this clean-room
+  project wants, and the one credible open implementation (GstPEAQ) documents its own
+  non-conformance to the BS.1387-1 tolerance and has no Python surface at all. Google's own
+  `google/visqol` has no published PyPI wheel (its Python API needs a Bazel + TensorFlow source
+  build), so this uses `visqol-python`, a pure-Python Apache-2.0 reimplementation with prebuilt
+  wheels that scores within 0.0002 MOS-LQO of the reference C++ implementation on its own
+  conformance suite. Optional throughout, the same AUTO shape as `AC3FORGE_WITH_ALSA`
+  (`src/audio/CMakeLists.txt`): a missing `visqol-python` install skips the column with one clear
+  message rather than failing the run, and CI does not install it either, so the fidelity gate
+  (`quality_race.py ci`) gains no new dependency or runtime cost — only the reporting tables and
+  `trend`'s JSON output request a score at all.
+
 ## [0.5.0-beta.1] - 2026-08-15
 
 Fourth tagged release. The main change is a fast-transform performance initiative: an opt-in

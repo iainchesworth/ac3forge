@@ -31,6 +31,17 @@ develop/main pushes (mirrors persist_quality_trend's own gating) and only
 after tools/quality_race.py's `ci` gate has already passed on the same
 push, so what lands in history is never a broken run's numbers.
 
+Also carries through each row's "mos_lqo" (ViSQOL MOS-LQO, see
+quality_race.py's perceptual_score()) when the environment that produced
+trend.json had `visqol-python` installed - null otherwise, same graceful-
+degradation contract as everywhere else this project uses it, not a second
+regression-gated metric: no trailing-window/soft/hard-regression handling
+for it, mirroring lsd_db/hf_db's own read-only treatment here. vs_ffmpeg_
+mos_lqo/vs_dee_mos_lqo are added on `landscape` rows the same way vs_*_snr_db
+is, but only when *both* sides of the comparison have a real mos_lqo -
+tools/gen_external_baseline.py's manifest predates this column for every
+baseline generated before it, so most rows simply won't have the key yet.
+
 stdlib-only (json/argparse/pathlib), matching every other append-*.py
 script's no-new-CI-provisioning reasoning. Takes commit and commit-date as
 arguments rather than reading the clock itself - see this project's general
@@ -131,6 +142,7 @@ def main() -> int:
             "snr_db": row["snr_db"],
             "lsd_db": row["lsd_db"],
             "hf_db": row["hf_db"],
+            "mos_lqo": row.get("mos_lqo"),
         }
         leg_baseline = baselines.get(leg)
         if leg_baseline is not None:
@@ -140,6 +152,8 @@ def main() -> int:
                     score = leg_baseline["scores"][tool]
                     if score is not None:
                         entry[f"vs_{tool}_snr_db"] = row["snr_db"] - score["snr_db"]
+                        if entry["mos_lqo"] is not None and score.get("mos_lqo") is not None:
+                            entry[f"vs_{tool}_mos_lqo"] = entry["mos_lqo"] - score["mos_lqo"]
         lines.append(json.dumps(entry, sort_keys=True))
 
         drop = None if baseline is None else baseline - row["snr_db"]
