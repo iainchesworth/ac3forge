@@ -135,12 +135,13 @@ build — see `src/ac3adm/CMakeLists.txt`'s own header comment for both.
 
 ## Known limitation: float32 PCM
 
-Only integer PCM (8/16/24/32-bit) is currently supported. libbw64 does not distinguish
-IEEE-float (`WAVE_FORMAT_IEEE_FLOAT`, formatTag 3) sample data from integer PCM when decoding, so
-a float32 source file is currently misread. Virtually every real ADM BWF master is 16- or 24-bit
-integer PCM in practice (EBU Tech 3306/BS.2088-1 Annex 2 §2's own PCM-only framing), so this has
-not been worth patching upstream for phase 1 — see [`ac3adm/model.hpp`](https://github.com/iainchesworth/ac3forge/blob/main/src/ac3adm/include/ac3adm/model.hpp)'s own `PcmAudio`
-comment.
+Only integer PCM (8/16/24/32-bit) is currently supported. libbw64's own `<fmt >` parsing rejects
+any other `formatTag` outright — including IEEE-float (`WAVE_FORMAT_IEEE_FLOAT`, formatTag 3) —
+at open time (`"format unsupported: <tag>"`), which this module surfaces as `AdmError::
+kCannotOpen`. A float32 source file is rejected, not silently misread as integer PCM. Virtually
+every real ADM BWF master is 16- or 24-bit integer PCM in practice (EBU Tech 3306/BS.2088-1
+Annex 2 §2's own PCM-only framing), so adding float32 support has not been worth doing for
+phase 1 — see [`ac3adm/model.hpp`](https://github.com/iainchesworth/ac3forge/blob/main/src/ac3adm/include/ac3adm/model.hpp)'s own `PcmAudio` comment.
 
 ---
 

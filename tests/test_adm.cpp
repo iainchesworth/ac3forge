@@ -94,6 +94,21 @@ Bytes build_fmt_chunk(std::uint16_t channels, std::uint32_t sample_rate, std::ui
     return fmt;
 }
 
+// A WAVE_FORMAT_IEEE_FLOAT (formatTag 3) <fmt > chunk - used only by the "rejects float32"
+// test below. Not accepted by anything this project's own encoder/decoder writes or reads
+// elsewhere; exists purely to exercise libbw64's own format-tag rejection.
+Bytes build_float_fmt_chunk(std::uint16_t channels, std::uint32_t sample_rate, std::uint16_t bits_per_sample) {
+    Bytes fmt;
+    put_u16le(fmt, 3);  // WAVE_FORMAT_IEEE_FLOAT
+    put_u16le(fmt, channels);
+    put_u32le(fmt, sample_rate);
+    const auto block_align = static_cast<std::uint16_t>(channels * (bits_per_sample / 8));
+    put_u32le(fmt, sample_rate * block_align);
+    put_u16le(fmt, block_align);
+    put_u16le(fmt, bits_per_sample);
+    return fmt;
+}
+
 // One track, one UID - BS.2088-1 §8.3.1's "simple stereo" shape reduced to
 // mono, matching this fixture's one-channel <fmt>.
 Bytes build_chna_chunk() {
@@ -411,6 +426,25 @@ TEST_CASE("rejects a file that is not RIFF/RF64/BW64", "[adm]") {
     CHECK(doc.error() == ac3adm::AdmError::kCannotOpen);
 }
 
+TEST_CASE("rejects a float32 (IEEE-float) fmt chunk rather than misreading it", "[adm]") {
+    // libbw64's own parseFormatInfoChunk (parser.hpp) rejects any formatTag other than 1
+    // (PCM) or 0xFFFE (WAVE_FORMAT_EXTENSIBLE, itself further checked for a PCM subformat)
+    // outright, during bw64::readFile() - confirmed by reading it directly, not assumed - so
+    // a float32 source is rejected at open time rather than silently misread as integer PCM
+    // (see ac3adm/model.hpp's own PcmAudio comment and docs/library/adm.md's "Known
+    // limitation" section for the same point). AdmError::kUnsupportedFormat is therefore
+    // never actually produced by this exact path - like kNotRiff/kMissingFmt/kMissingData,
+    // it is reserved rather than currently reachable (see ac3adm.hpp's own doc comment).
+    const auto fmt = build_float_fmt_chunk(1, 48000, 32);
+    const auto chna = build_chna_chunk();
+    const Bytes axml(kCarAdmXml);
+    const auto data = build_pcm16_data(2);
+    std::istringstream stream(build_riff(fmt, chna, axml, data));
+    auto doc = ac3adm::parse_bw64(stream);
+    REQUIRE_FALSE(doc.has_value());
+    CHECK(doc.error() == ac3adm::AdmError::kCannotOpen);
+}
+
 TEST_CASE("malformed XML in axml surfaces as kMalformedXml", "[adm]") {
     const auto fmt = build_fmt_chunk(1, 48000, 16);
     const auto chna = build_chna_chunk();
@@ -507,6 +541,47 @@ TEST_CASE("chna rows with trackIndex 0 (unused placeholders, BS.2088-1 clause 8.
     CHECK(doc->chna[0].track_index == 1);
     CHECK(doc->chna[0].uid == "ATU_00000001");
     CHECK(doc->chna[1].track_index == 0);
+    // The placeholder row above is NUL-padded (BS.2088-1 §8.2: "null strings... N null
+    // characters (ASCII value zero)"), not space-padded, matching what a real unused chna slot
+    // actually looks like on disk - libbw64's own AudioId::uid()/trackRef()/packRef() return the
+    // raw file bytes verbatim on the read path (no read-side padding normalization; the
+    // space-memset in AudioId's constructor is a write-side default that a full-width read
+    // value, like this one, always overwrites completely). These three checks are what actually
+    // exercise trim_padding()'s NUL-trimming - without it, each field below comes back as its
+    // full fixed width (12/14/11 characters) full of embedded '\0' bytes instead of empty,
+    // silently contradicting ChnaEntry's own doc comment in model.hpp ("may be empty, §8.2").
+    CHECK(doc->chna[1].uid.empty());
+    CHECK(doc->chna[1].track_ref.empty());
+    CHECK(doc->chna[1].pack_ref.empty());
+}
+
+TEST_CASE("a chna row's NUL-padded packRef trims to empty even when the rest of the row is real",
+          "[adm]") {
+    // BS.2088-1 §8.3.2's own worked example: packRef is legitimately NUL-padded/absent on a
+    // populated, non-placeholder row too - not just on a wholly-unused trackIndex-0 slot - e.g.
+    // when a track's audioStreamFormat references a pack directly rather than the chna row
+    // itself naming one. This is a real trackIndex (not 0), a real uid and trackRef, but an
+    // all-NUL packRef.
+    Bytes chna;
+    put_u16le(chna, 1);  // numTracks
+    put_u16le(chna, 1);  // numUIDs
+    put_u16le(chna, 1);
+    put_fixed(chna, "ATU_00000001", 12);
+    put_fixed(chna, "AT_00031001_01", 14);
+    put_fixed(chna, std::string(11, '\0'), 11);  // packRef: not required here, NUL-padded
+    chna.push_back('\0');
+
+    const auto fmt = build_fmt_chunk(1, 48000, 16);
+    const Bytes axml(kCarAdmXml);
+    const auto data = build_pcm16_data(2);
+    std::istringstream stream(build_riff(fmt, chna, axml, data));
+    auto doc = ac3adm::parse_bw64(stream);
+    REQUIRE(doc.has_value());
+    REQUIRE(doc->chna.size() == 1);
+    CHECK(doc->chna[0].track_index == 1);
+    CHECK(doc->chna[0].uid == "ATU_00000001");
+    CHECK(doc->chna[0].track_ref == "AT_00031001_01");
+    CHECK(doc->chna[0].pack_ref.empty());
 }
 
 TEST_CASE("a file with no axml chunk still parses, with an empty ADM model", "[adm]") {

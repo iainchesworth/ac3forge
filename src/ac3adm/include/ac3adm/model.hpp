@@ -280,12 +280,14 @@ struct ChnaEntry {
 // order - the same shape ac3::io::WavData uses (see ac3/io/wav.hpp), so a
 // caller already familiar with that convention needs nothing new here.
 // Samples are normalized to [-1, 1). Only integer PCM (8/16/24/32-bit) is
-// supported - the vendored libbw64 does not distinguish IEEE-float (WAVE
-// formatTag 3) sample data from integer PCM when decoding, so a float32
-// source file would currently be misread; virtually every real ADM BWF
-// master is 16- or 24-bit integer PCM in practice (EBU Tech 3306/BS.2088-1
-// Annex 2 §2's own PCM-only framing), so this has not been worth patching
-// upstream for this phase.
+// supported - the vendored libbw64 rejects any other WAVE <fmt > formatTag
+// (IEEE-float/formatTag 3 included) outright at open time (parser.hpp's own
+// parseFormatInfoChunk: "format unsupported: <tag>"), which this module
+// surfaces as AdmError::kCannotOpen - see ac3adm.hpp's own doc comment on
+// that error. A float32 source is rejected, not silently misread; virtually
+// every real ADM BWF master is 16- or 24-bit integer PCM in practice (EBU
+// Tech 3306/BS.2088-1 Annex 2 §2's own PCM-only framing), so adding float32
+// support has not been worth doing for this phase.
 struct PcmAudio {
     std::uint32_t sample_rate = 0;
     std::uint16_t bits_per_sample = 0;

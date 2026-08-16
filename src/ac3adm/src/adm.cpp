@@ -9,6 +9,8 @@
 #include <iterator>
 #include <random>
 #include <sstream>
+#include <string>
+#include <string_view>
 #include <utility>
 
 #include <adm/errors.hpp>
@@ -66,12 +68,26 @@ std::filesystem::path make_temp_path() {
     return std::filesystem::temp_directory_path() / ("ac3adm_" + std::to_string(unique) + ".wav");
 }
 
-// Trims the trailing ASCII spaces libbw64's bw64::AudioId pads its
-// fixed-width uid()/trackRef()/packRef() fields with (see chunks.hpp:
-// "init arrays with whitespaces" - std::memset(..., ' ', ...)), matching
-// BS.2088-1 §8.2's own fixed-width UID[12]/trackRef[14]/packRef[11] fields.
-std::string trim_trailing_spaces(std::string field) {
-    const auto last = field.find_last_not_of(' ');
+// Trims the trailing padding libbw64's bw64::AudioId fixed-width uid()/trackRef()/packRef()
+// fields carry. NOT just ASCII space: BS.2088-1 §8.2 pads an unused chna slot's ID fields (and
+// any "not required" field, e.g. packRef when a stream references a pack directly - §8.3.2's own
+// worked example allocates 32 slots and only populates 4) with NUL characters ("null strings...
+// N null characters (ASCII value zero)"), and this is normal, spec-documented content, not a
+// degenerate edge case. An earlier version of this function only trimmed ' ' (0x20), reasoning
+// from AudioId's own constructor (chunks.hpp) memset-ing its buffers to spaces before copying -
+// but that memset is a write-side default for constructing an AudioId programmatically from a
+// shorter string; libbw64's own parseAudioId() (parser.hpp) never goes through a short string on
+// the read path - it reads exactly 12/14/11 raw bytes off the wire and passes them, already at
+// full width, straight into that same constructor, so the copy step overwrites the memset
+// completely and whatever padding byte was actually in the file (NUL, per the spec, for the
+// common unused-slot case) survives untouched into uid()/trackRef()/packRef(). Trimming only
+// space left a real, common-case file's unused chna slots coming back as fixed-width strings
+// full of embedded NUL bytes rather than the empty string this module's own model.hpp documents
+// ("may be empty, §8.2") - trimming both padding characters here covers the documented NUL case
+// and any space-padded content without weakening either.
+std::string trim_padding(std::string field) {
+    static constexpr std::string_view kPaddingChars(" \0", 2);
+    const auto last = field.find_last_not_of(kPaddingChars);
     field.resize(last == std::string::npos ? 0 : last + 1);
     return field;
 }
@@ -85,9 +101,9 @@ std::vector<ChnaEntry> read_chna(const bw64::Bw64Reader& reader) {
     for (const auto& audio_id : chna_chunk->audioIds()) {
         ChnaEntry entry;
         entry.track_index = audio_id.trackIndex();
-        entry.uid = trim_trailing_spaces(audio_id.uid());
-        entry.track_ref = trim_trailing_spaces(audio_id.trackRef());
-        entry.pack_ref = trim_trailing_spaces(audio_id.packRef());
+        entry.uid = trim_padding(audio_id.uid());
+        entry.track_ref = trim_padding(audio_id.trackRef());
+        entry.pack_ref = trim_padding(audio_id.packRef());
         entries.push_back(std::move(entry));
     }
     return entries;
@@ -173,13 +189,16 @@ std::expected<AdmDocument, AdmError> parse_bw64_path(const std::string& path) {
     try {
         reader = bw64::readFile(path);
     } catch (const std::exception&) {
-        // libbw64 reports both "could not open" and "malformed container"
-        // through the same std::runtime_error hierarchy (reader.hpp), with
-        // no distinguishing exception type - kCannotOpen covers the whole
-        // family here since a caller's next move (check the path) is the
-        // same either way, and libbw64 does not label a chunk it dislikes
-        // clearly enough to justify inventing a false-precision mapping to
-        // kMissingFmt/kMissingData/kNotRiff from the exception text alone.
+        // libbw64 reports "could not open", "malformed container" AND "unsupported <fmt >
+        // formatTag" (parser.hpp's parseFormatInfoChunk rejects anything but PCM/formatTag 1 or
+        // WAVE_FORMAT_EXTENSIBLE-wrapped PCM outright, during this same readFile() call - a
+        // float32/IEEE-float source is rejected here, not silently misread as integer PCM; see
+        // ac3adm/model.hpp's own PcmAudio comment) all through the same std::runtime_error
+        // hierarchy (reader.hpp), with no distinguishing exception type - kCannotOpen covers the
+        // whole family here since a caller's next move (check the path/format) is the same
+        // either way, and libbw64 does not label a chunk it dislikes clearly enough to justify
+        // inventing a false-precision mapping to kMissingFmt/kMissingData/kNotRiff/
+        // kUnsupportedFormat from the exception text alone.
         return std::unexpected(AdmError::kCannotOpen);
     }
 
