@@ -170,9 +170,13 @@ endif()
 # above this can't key off TARGET ac3adm::ac3adm existing, since that alias is only defined
 # inside src/ac3adm/CMakeLists.txt's own add_subdirectory(), which never runs unless
 # AC3FORGE_BUILD_ADM is already ON - so the option itself is what's checked here instead.
+#
+# test_adm_bridge.cpp (ac3::admbridge, roadmap B1 phase 2, src/adm_bridge) rides the same gate:
+# it depends on ac3adm::ac3adm too, and src/adm_bridge is only add_subdirectory()'d from inside
+# the same if(AC3FORGE_BUILD_ADM) block in the root CMakeLists.txt.
 if(AC3FORGE_BUILD_ADM)
-    target_sources(ac3tests PRIVATE test_adm.cpp)
-    target_link_libraries(ac3tests PRIVATE ac3adm::ac3adm)
+    target_sources(ac3tests PRIVATE test_adm.cpp test_adm_bridge.cpp)
+    target_link_libraries(ac3tests PRIVATE ac3adm::ac3adm ac3::admbridge)
 endif()
 
 target_include_directories(ac3tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
