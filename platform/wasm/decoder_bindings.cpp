@@ -1,17 +1,16 @@
 // Embind wrapper around ac3::forge's decode path, for the roadmap-F3 browser
-// demo (examples/wasm_decode_demo/index.html). One JS-visible class,
-// `Decoder`: feed it a raw AC-3/E-AC-3 elementary stream (a Uint8Array,
-// exactly what fetch().arrayBuffer() gives you - no container, no demux step,
-// see ac3::io::scan's own header comment), and it decodes every access unit
-// up front, exposing the concatenated PCM per channel plus a coarse per-block
-// RMS energy trace per channel that the page uses to drive its speaker-ring
-// visualization in sync with Web Audio playback.
-//
-// Scope note: this only surfaces the decoded BED (5.1/7.x) channels. Real
-// per-object position/audio decode (OAMD/JOC) does not exist in ac3::forge
-// yet - see the PR this file shipped in for the full explanation - so there
-// is deliberately no object-position API here. index.html's visualization is
-// therefore real per-channel bed energy, not object motion.
+// demo (platform/wasm/index.html). One JS-visible class, `Decoder`: feed it
+// a raw AC-3/E-AC-3 elementary stream (a Uint8Array, exactly what
+// fetch().arrayBuffer() gives you - no container, no demux step, see
+// ac3::io::scan's own header comment), and it decodes every access unit up
+// front, exposing:
+//   - the concatenated PCM per channel, plus a coarse per-block RMS energy
+//     trace per channel, driving the speaker-ring visualization;
+//   - real decoded Atmos object positions/gain per frame
+//     (DecodedAccessUnit::object_metadata, from OAMD) and each object's own
+//     reconstructed audio (::object_audio, from JOC) - both real decode-side
+//     capabilities, not present when this file was first written; see
+//     apply_objects()'s own comment for the exact API shape and its limits.
 
 #include <algorithm>
 #include <array>
@@ -68,6 +67,11 @@ class WasmDecoder {
         labels_.clear();
         stream_kind_.clear();
         sample_rate_ = 0;
+        object_count_ = 0;
+        object_start_frame_ = -1;
+        global_frame_index_ = 0;
+        object_positions_.clear();
+        object_audio_.clear();
 
         const std::vector<std::uint8_t> raw = emscripten::vecFromJSArray<std::uint8_t>(js_bytes);
         const std::span<const std::byte> bytes(reinterpret_cast<const std::byte*>(raw.data()),
@@ -104,6 +108,7 @@ class WasmDecoder {
                 }
                 if (decoded->has_value()) {
                     apply_layout(**decoded);
+                    apply_objects(**decoded);
                 }
             }
             for (const auto& flushed : decoder.flush()) {
@@ -150,6 +155,49 @@ class WasmDecoder {
         }
         const auto& blocks = energy_[static_cast<std::size_t>(channel)];
         return emscripten::val(emscripten::typed_memory_view(blocks.size(), blocks.data()));
+    }
+
+    // 0 when the stream carries no OAMD at all (an ordinary 5.1/7.x stream,
+    // or a bed+objects program shape - JOC line-up only works for the
+    // dynamic-object-only shape AtmosEncoder itself produces, see
+    // apply_objects()'s own comment).
+    [[nodiscard]] int objectCount() const { return object_count_; }
+    [[nodiscard]] int objectFrameSize() const { return ac3::kSamplesPerFrame; }
+    [[nodiscard]] int objectFrameCount() const {
+        return object_positions_.empty()
+                   ? 0
+                   : static_cast<int>(object_positions_[0].size() / kPositionStride);
+    }
+    // Playback offset (seconds) of object frame 0 - 0.0 for the overwhelmingly
+    // common case (objects present from the stream's first frame), nonzero
+    // only if a real stream's OAMD payload starts partway through.
+    [[nodiscard]] double objectStartSeconds() const {
+        if (object_start_frame_ < 0 || sample_rate_ == 0) {
+            return 0.0;
+        }
+        return static_cast<double>(object_start_frame_) *
+               static_cast<double>(ac3::kSamplesPerFrame) / static_cast<double>(sample_rate_);
+    }
+
+    // Flat [x, y, z, gain_db] per decoded object frame, room-anchored per
+    // §4.2.1 (oamd.hpp's own Position comment): x/y in [0,1], z in [-1,1].
+    [[nodiscard]] emscripten::val objectPositions(int object) const {
+        if (object < 0 || static_cast<std::size_t>(object) >= object_positions_.size()) {
+            return emscripten::val::null();
+        }
+        const auto& v = object_positions_[static_cast<std::size_t>(object)];
+        return emscripten::val(emscripten::typed_memory_view(v.size(), v.data()));
+    }
+
+    // This object's own reconstructed audio (JOC), concatenated the same way
+    // channelPcm() is - real isolated per-object audio, not that object's
+    // panned contribution to the bed.
+    [[nodiscard]] emscripten::val objectAudioPcm(int object) const {
+        if (object < 0 || static_cast<std::size_t>(object) >= object_audio_.size()) {
+            return emscripten::val::null();
+        }
+        const auto& v = object_audio_[static_cast<std::size_t>(object)];
+        return emscripten::val(emscripten::typed_memory_view(v.size(), v.data()));
     }
 
    private:
@@ -203,6 +251,68 @@ class WasmDecoder {
         append(sub.channels);
     }
 
+    // object_metadata (OAMD, PR #168) and object_audio (JOC, PR #169) are
+    // both real decode-side capabilities. object_audio is populated only for
+    // a dynamic-object-only program with no bed (see DecodedSubstream's own
+    // comment) - the only shape AtmosEncoder itself ever produces, so the
+    // bundled demo fixture always has it; an arbitrary uploaded stream might
+    // carry OAMD positions with no matching JOC audio, handled below by
+    // padding that object's audio with silence rather than desyncing it from
+    // its own position track.
+    //
+    // object_count_ is fixed at the first frame that carries any objects;
+    // object_start_frame_ records which global (channel-timeline) frame that
+    // was, so objectStartSeconds() can offset an all-frames-have-objects
+    // stream by exactly zero while still handling the rarer case where OAMD
+    // only starts partway through. A frame with metadata missing AFTER
+    // objects have started (a real gap, or a parse this decoder declined)
+    // freezes each object's last known position and pads its audio with
+    // silence, rather than shortening the arrays and silently desyncing
+    // every later frame against global playback time.
+    void apply_objects(const ac3::DecodedAccessUnit& unit) {
+        if (unit.object_metadata && !unit.object_metadata->objects.empty()) {
+            const auto& objects = unit.object_metadata->objects;
+            if (object_count_ == 0) {
+                object_count_ = static_cast<int>(objects.size());
+                object_positions_.assign(static_cast<std::size_t>(object_count_), {});
+                object_audio_.assign(static_cast<std::size_t>(object_count_), {});
+                object_start_frame_ = global_frame_index_;
+            }
+            const auto n =
+                std::min(objects.size(), static_cast<std::size_t>(object_count_));
+            for (std::size_t i = 0; i < n; ++i) {
+                auto& dst = object_positions_[i];
+                dst.push_back(static_cast<float>(objects[i].position.x));
+                dst.push_back(static_cast<float>(objects[i].position.y));
+                dst.push_back(static_cast<float>(objects[i].position.z));
+                dst.push_back(static_cast<float>(objects[i].gain_db));
+            }
+            if (unit.object_audio.size() == objects.size()) {
+                for (std::size_t i = 0; i < n; ++i) {
+                    const auto& src = unit.object_audio[i];
+                    object_audio_[i].insert(object_audio_[i].end(), src.begin(), src.end());
+                }
+            } else {
+                pad_object_audio_with_silence();
+            }
+        } else if (object_count_ > 0) {
+            for (auto& dst : object_positions_) {
+                if (dst.size() >= kPositionStride) {
+                    dst.insert(dst.end(), dst.end() - static_cast<std::ptrdiff_t>(kPositionStride),
+                               dst.end());
+                }
+            }
+            pad_object_audio_with_silence();
+        }
+        ++global_frame_index_;
+    }
+
+    void pad_object_audio_with_silence() {
+        for (auto& dst : object_audio_) {
+            dst.resize(dst.size() + static_cast<std::size_t>(ac3::kSamplesPerFrame), 0.0F);
+        }
+    }
+
     void append(const std::vector<std::vector<float>>& frame_channels) {
         if (channels_.size() < frame_channels.size()) {
             channels_.resize(frame_channels.size());
@@ -214,12 +324,20 @@ class WasmDecoder {
         }
     }
 
+    static constexpr std::size_t kPositionStride = 4;  // x, y, z, gain_db
+
     std::string error_;
     std::string stream_kind_;
     int sample_rate_ = 0;
     std::vector<std::string> labels_;
     std::vector<std::vector<float>> channels_;
     std::vector<std::vector<float>> energy_;
+
+    int object_count_ = 0;
+    int object_start_frame_ = -1;
+    int global_frame_index_ = 0;
+    std::vector<std::vector<float>> object_positions_;  // per object: [x,y,z,gain_db] * frames
+    std::vector<std::vector<float>> object_audio_;       // per object: concatenated PCM
 };
 
 EMSCRIPTEN_BINDINGS(ac3forge_wasm_decode) {
@@ -233,5 +351,11 @@ EMSCRIPTEN_BINDINGS(ac3forge_wasm_decode) {
         .function("channelLabels", &WasmDecoder::channelLabels)
         .function("channelPcm", &WasmDecoder::channelPcm)
         .function("channelEnergy", &WasmDecoder::channelEnergy)
-        .function("energyBlockSize", &WasmDecoder::energyBlockSize);
+        .function("energyBlockSize", &WasmDecoder::energyBlockSize)
+        .function("objectCount", &WasmDecoder::objectCount)
+        .function("objectFrameSize", &WasmDecoder::objectFrameSize)
+        .function("objectFrameCount", &WasmDecoder::objectFrameCount)
+        .function("objectStartSeconds", &WasmDecoder::objectStartSeconds)
+        .function("objectPositions", &WasmDecoder::objectPositions)
+        .function("objectAudioPcm", &WasmDecoder::objectAudioPcm);
 }

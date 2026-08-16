@@ -1,20 +1,16 @@
 // ac3forge WASM decode demo - glue between the Embind module (ac3forge_decode.js/.wasm,
 // built from decoder_bindings.cpp) and the page (index.html).
 //
-// What is real here: the decode. A fetched .ec3/.ac3 file is handed straight
-// to the WASM module's Decoder.decode() - the actual ac3::forge decoder,
-// compiled to WASM, doing real AC-3/E-AC-3 bitstream parsing - and every
-// number this page shows (sample rate, channel labels, per-channel energy,
-// the audio you hear) comes out of that real decode, not a canned animation.
-//
-// What is NOT real (yet): individual Atmos object positions. ac3::forge has
-// no decode-side OAMD/JOC parser today (only the encoder can write object
-// metadata; nothing in the library can read it back) - see the PR this demo
-// shipped in for the full explanation, and ROADMAP.md for the follow-up
-// tracking real object-position decode. The visualization below is the
-// speaker-ring / per-channel energy model from the desktop GUI's
-// SoundfieldView.qml, ported to Canvas and driven by genuinely decoded
-// per-channel RMS - it shows real bed energy, not object motion.
+// Everything on this page is real. A fetched .ec3/.ac3 file is handed
+// straight to the WASM module's Decoder.decode() - the actual ac3::forge
+// decoder, compiled to WASM - and every number shown (sample rate, channel
+// labels, per-channel energy, the audio you hear) comes out of that real
+// decode, not a canned animation. That now includes Atmos objects: real
+// decoded OAMD positions (ac3::forge PR #168) drive the room-plan/elevation
+// dots below, and real JOC-reconstructed per-object audio (PR #169) is what
+// "Solo object N" actually plays - not that object's panned slice of the
+// bed, its own isolated waveform. A plain (non-Atmos) stream simply has zero
+// objects and only shows the speaker-ring/bed panel.
 
 // Ear-level ring: ac3::spatial's kSpeakerAzimuthDeg
 // (src/lib/include/ac3/spatial/spatial.hpp), ITU-R BS.775, degrees CCW from
@@ -25,6 +21,14 @@
 // stream (like the bundled demo) never populates it; a real 7.1.4 stream does.
 const EAR_LEVEL_AZIMUTH_DEG = { L: 30, C: 0, R: -30, Ls: 110, Rs: -110 };
 const CEILING_AZIMUTH_DEG = { Vhl: 45, Vhr: -45, Vhc: 0, Lts: 110, Rts: -110 };
+
+// Distinct per-object colors - the desktop GUI's own room view uses one flat
+// color (only the currently-SELECTED object gets an accent), but this page
+// has no per-object selection concept, so each object gets its own hue to
+// stay visually distinguishable with several moving at once.
+const OBJECT_COLORS = ['248,113,113', '52,211,153', '96,165,250', '250,204,21', '192,132,252'];
+
+let soloObject = -1; // -1 = play the bed downmix; >=0 = that object's own isolated audio
 
 let audioCtx = null;
 let sourceNode = null;
@@ -77,6 +81,14 @@ async function decodeBytes(bytes, moduleInstance) {
         energy.push(copyOut(decoder.channelEnergy(ch)));
     }
 
+    const objectCount = decoder.objectCount();
+    const objectPositions = []; // per object: Float32Array of [x,y,z,gain_db] * frames
+    const objectAudio = [];     // per object: Float32Array, real isolated reconstructed audio
+    for (let obj = 0; obj < objectCount; obj++) {
+        objectPositions.push(copyOut(decoder.objectPositions(obj)));
+        objectAudio.push(copyOut(decoder.objectAudioPcm(obj)));
+    }
+
     const result = {
         streamKind: decoder.streamKind(),
         sampleRate: decoder.sampleRate(),
@@ -86,9 +98,27 @@ async function decodeBytes(bytes, moduleInstance) {
         energy,
         energyBlockSize: decoder.energyBlockSize(),
         durationSeconds: channelCount > 0 ? pcm[0].length / decoder.sampleRate() : 0,
+        objectCount,
+        objectPositions,
+        objectAudio,
+        objectFrameSize: decoder.objectFrameSize(),
+        objectFrameCount: decoder.objectFrameCount(),
+        objectStartSeconds: decoder.objectStartSeconds(),
     };
     decoder.delete();
     return result;
+}
+
+// Looks up object `obj`'s [x, y, z, gain_db] at playback time `t`, clamped to
+// the decoded range - real decoded OAMD data, one entry per real decoded
+// frame, not interpolated/fabricated between frames.
+function objectStateAt(result, obj, t) {
+    const positions = result.objectPositions[obj];
+    const frameDuration = result.objectFrameSize / result.sampleRate;
+    const relative = t - result.objectStartSeconds;
+    const frame = Math.max(0, Math.min(result.objectFrameCount - 1, Math.floor(relative / frameDuration)));
+    const base = frame * 4;
+    return { x: positions[base], y: positions[base + 1], z: positions[base + 2], gainDb: positions[base + 3] };
 }
 
 // A simple demo downmix to stereo for actual playback - NOT a spec Lo/Ro or
@@ -119,6 +149,26 @@ function downmixToStereo(result) {
     return { left, right };
 }
 
+// Builds the buffer actually played: either the bed downmix (default) or,
+// when soloObject >= 0, that object's own real isolated JOC-reconstructed
+// audio (mono, copied to both channels - deliberately no position-based pan
+// here, so what you hear is unambiguously that object's own waveform and
+// nothing else, not a re-panned approximation).
+function buildPlaybackBuffer(result) {
+    if (soloObject >= 0 && soloObject < result.objectCount) {
+        const mono = result.objectAudio[soloObject];
+        const left = new Float32Array(mono.length);
+        const right = new Float32Array(mono.length);
+        for (let i = 0; i < mono.length; i++) {
+            const s = Math.tanh(mono[i]);
+            left[i] = s;
+            right[i] = s;
+        }
+        return { left, right };
+    }
+    return downmixToStereo(result);
+}
+
 function stop() {
     if (sourceNode) {
         try { sourceNode.stop(); } catch (e) { /* already stopped */ }
@@ -134,7 +184,7 @@ function play() {
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     stop();
 
-    const { left, right } = downmixToStereo(decoded);
+    const { left, right } = buildPlaybackBuffer(decoded);
     const buffer = audioCtx.createBuffer(2, left.length, decoded.sampleRate);
     buffer.copyToChannel(left, 0);
     buffer.copyToChannel(right, 1);
@@ -275,6 +325,99 @@ function draw() {
     requestAnimationFrame(draw);
 }
 
+// Real per-object level at playback time t: a short RMS window over that
+// object's own real reconstructed audio (JOC, PR #169) - the same "pulse
+// with real energy" language the speaker-ring panel already uses, just
+// windowed in JS instead of precomputed in C++ since only a handful of
+// objects ever need it, each over a small window, once per animation frame.
+function objectAudioLevelAt(result, obj, t) {
+    const audio = result.objectAudio[obj];
+    if (!audio || audio.length === 0) return 0;
+    const center = Math.floor(t * result.sampleRate);
+    const half = 512;
+    const start = Math.max(0, center - half);
+    const end = Math.min(audio.length, center + half);
+    if (end <= start) return 0;
+    let sumSq = 0;
+    for (let i = start; i < end; i++) sumSq += audio[i] * audio[i];
+    return Math.max(0, Math.min(1, Math.sqrt(sumSq / (end - start)) / 0.35));
+}
+
+function drawRoomBox(ctx, x, y, w, h, label) {
+    ctx.strokeStyle = 'rgba(148,163,184,0.3)';
+    ctx.strokeRect(x + 1, y + 1, w - 2, h - 2);
+    ctx.fillStyle = 'rgba(148,163,184,0.6)';
+    ctx.font = '10px system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(label, x + 6, 12);
+}
+
+function drawObjectDot(ctx, x, y, radius, color, label, highlighted) {
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, 2 * Math.PI);
+    ctx.fillStyle = `rgba(${color},${highlighted ? 1 : 0.85})`;
+    ctx.fill();
+    if (highlighted) {
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+    }
+    ctx.fillStyle = 'rgba(226,232,240,0.85)';
+    ctx.font = '10px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(label, x, y - radius - 6);
+}
+
+// Ported from src/gui/qml/Main.qml's Objects tab (top-down + elevation room
+// panels, side by side - see docs/platforms/android.md's own description of
+// the same layout in the Shield app). Unlike that GUI's own version, which
+// previews positions about to be ENCODED, this one is driven entirely by
+// real decoded OAMD positions (ac3::forge PR #168) read back out of the
+// bitstream - what a real object actually did, not what it was told to do.
+function drawObjects() {
+    const canvas = el('objects');
+    if (canvas) {
+        const ctx = canvas.getContext('2d');
+        const w = canvas.width, h = canvas.height;
+        ctx.clearRect(0, 0, w, h);
+
+        if (decoded && decoded.objectCount > 0) {
+            const gap = 16;
+            const padW = (w - gap) / 2;
+            const elevX = padW + gap;
+            drawRoomBox(ctx, 0, 0, padW, h, 'PLAN (top-down)');
+            drawRoomBox(ctx, elevX, 0, padW, h, 'ELEVATION (side-on)');
+
+            // Main.qml's own piecewise z->y mapping: ear level sits at 66% of
+            // the pad's height, not the middle, and the floor/ceiling margins
+            // differ (14px top, 10px bottom) - ported verbatim.
+            const earY = h * 0.66;
+            const zToY = (z) => (z >= 0 ? earY - z * (earY - 14) : earY + (-z) * ((h - 10) - earY));
+            ctx.strokeStyle = 'rgba(148,163,184,0.25)';
+            ctx.beginPath();
+            ctx.moveTo(elevX + 4, earY);
+            ctx.lineTo(elevX + padW - 4, earY);
+            ctx.stroke();
+
+            const t = currentPlaybackSeconds();
+            for (let obj = 0; obj < decoded.objectCount; obj++) {
+                const s = objectStateAt(decoded, obj, t);
+                const level = objectAudioLevelAt(decoded, obj, t);
+                const color = OBJECT_COLORS[obj % OBJECT_COLORS.length];
+                const radius = 5 + level * 7;
+                const label = `obj ${obj + 1}`;
+                const highlighted = soloObject === obj;
+
+                // Plan: x -> right wall, y -> rear wall (top-down).
+                drawObjectDot(ctx, s.x * padW, s.y * h, radius, color, label, highlighted);
+                // Elevation: x-axis stays depth (y); y-axis is height via zToY.
+                drawObjectDot(ctx, elevX + s.y * padW, zToY(s.z), radius, color, label, highlighted);
+            }
+        }
+    }
+    requestAnimationFrame(drawObjects);
+}
+
 let seekDragging = false;
 
 function tick() {
@@ -295,6 +438,41 @@ function seekTo(fraction) {
     if (playing) play();
 }
 
+function setSoloObject(index) {
+    soloObject = index;
+    document.querySelectorAll('#soloControls button').forEach((btn) => {
+        btn.classList.toggle('active', Number(btn.dataset.object) === index);
+    });
+    if (playing) { pause(); play(); } // restart on the newly-selected source, from the same position
+}
+
+function buildSoloControls(objectCount) {
+    const container = el('soloControls');
+    container.innerHTML = '';
+    if (objectCount === 0) {
+        el('objectsPanel').style.display = 'none';
+        return;
+    }
+    el('objectsPanel').style.display = '';
+
+    const bedBtn = document.createElement('button');
+    bedBtn.textContent = 'Bed (all channels)';
+    bedBtn.dataset.object = '-1';
+    bedBtn.className = 'active';
+    bedBtn.addEventListener('click', () => setSoloObject(-1));
+    container.appendChild(bedBtn);
+
+    for (let obj = 0; obj < objectCount; obj++) {
+        const btn = document.createElement('button');
+        btn.textContent = `Solo object ${obj + 1}`;
+        btn.dataset.object = String(obj);
+        btn.style.setProperty('--dot-color', `rgb(${OBJECT_COLORS[obj % OBJECT_COLORS.length]})`);
+        btn.classList.add('object-btn');
+        btn.addEventListener('click', () => setSoloObject(obj));
+        container.appendChild(btn);
+    }
+}
+
 async function handleDecoded(bytes, label) {
     setStatus(`Decoding ${label}...`, false);
     try {
@@ -302,14 +480,17 @@ async function handleDecoded(bytes, label) {
         const result = await decodeBytes(bytes, moduleInstance);
         decoded = result;
         playStartOffset = 0;
+        soloObject = -1;
         stop();
+        const objectNote = result.objectCount > 0 ? `, ${result.objectCount} Atmos object(s)` : '';
         el('streamInfo').textContent =
             `${result.streamKind}, ${result.sampleRate} Hz, ${result.channelCount} ch ` +
-            `(${result.labels.join(', ')}), ${result.durationSeconds.toFixed(1)}s`;
+            `(${result.labels.join(', ')})${objectNote}, ${result.durationSeconds.toFixed(1)}s`;
         el('playPause').disabled = false;
         el('seek').disabled = false;
         el('seek').value = '0';
         el('scrubTime').textContent = `0.0s / ${result.durationSeconds.toFixed(1)}s`;
+        buildSoloControls(result.objectCount);
         setStatus(`Decoded ${label}.`, false);
     } catch (err) {
         decoded = null;
@@ -352,4 +533,5 @@ window.addEventListener('DOMContentLoaded', () => {
         seekTo(Number(seek.value) / 1000);
     });
     requestAnimationFrame(draw);
+    requestAnimationFrame(drawObjects);
 });

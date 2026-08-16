@@ -3,10 +3,12 @@
 WASM support is not `ac3cli` ported to a browser — it is a small, decode-only demo app,
 **`platform/wasm/`**, that compiles `ac3::forge`'s AC-3/E-AC-3 decoder to WebAssembly and runs it
 client-side in a static HTML page: load a real elementary stream, hear the decoded bed play through
-the Web Audio API, and watch real per-channel energy on a speaker-ring visualization. It exists to
-prove the decoder runs correctly outside a native process, and to give the documentation site a live
-demo (see [Live decode demo](../wasm-demo.md)) — not to be a general-purpose in-browser tool. This
-page covers what is specific to WASM; for the core library and the desktop platforms, see
+the Web Audio API, watch real per-channel energy on a speaker-ring visualization, and — for a stream
+carrying Atmos objects — watch each object's real decoded position (OAMD) move in a room view and
+solo its own real reconstructed audio (JOC). It exists to prove the decoder runs correctly outside a
+native process, and to give the documentation site a live demo (see
+[Live decode demo](../wasm-demo.md)) — not to be a general-purpose in-browser tool. This page covers
+what is specific to WASM; for the core library and the desktop platforms, see
 [Building from source](../building.md) and the other pages in this section.
 
 Decode-only, deliberately: WASM-encode is a separate, much larger undertaking (real-time MDCT/bit-
@@ -40,9 +42,13 @@ equivalent to add; a browser gets audio playback from the Web Audio API in JavaS
 `src/audio` is skipped from the configure entirely under `EMSCRIPTEN` (it hard-fails otherwise, for
 having no browser platform directory — see `src/audio/CMakeLists.txt`).
 
-Everything else — `decoder_bindings.cpp` (the Embind wrapper), `index.html`/`demo.js` (the page,
-Web Audio playback, the Canvas visualization ported from `src/gui/qml/SoundfieldView.qml`) — is new
-and lives entirely under `platform/wasm/`, outside anything the desktop tools build from.
+Everything else — `decoder_bindings.cpp` (the Embind wrapper), `index.html`/`demo.js` (the page, Web
+Audio playback, the Canvas visualizations ported from `src/gui/qml/SoundfieldView.qml` and Main.qml's
+Objects tab) — is new and lives entirely under `platform/wasm/`, outside anything the desktop tools
+build from. The object visualization/audio is a thin JS-facing surface over `Eac3Decoder`'s own real
+`object_metadata` (OAMD positions/gain, `ac3::forge#168`) and `object_audio` (JOC-reconstructed
+per-object audio, `ac3::forge#169`) fields — `decoder_bindings.cpp` does no decoding of its own, it
+just accumulates what `Eac3Decoder` already produced per frame and exposes it as typed-array views.
 
 ## Toolchain
 
@@ -85,20 +91,27 @@ would never trigger a redeploy at all, and the live demo would silently drift fr
 
 !!! note "Verified in a real browser"
     Both `cmake --preset config-wasm-emscripten` and the full desktop presets configure and build
-    clean from the same source tree (confirmed after merging the changes into `develop`, not just in
-    isolation). A real Chromium instance loading the built page — both standalone and embedded in the
-    actual `mkdocs build --strict`-built docs site — genuinely decodes a bundled 8-second, 3-object
-    Atmos-in-DD+ fixture (`E-AC-3, 48000 Hz, 6 ch (L, C, R, Ls, Rs, LFE), 8.0s`, matching what was
+    clean from the same source tree (confirmed repeatedly across this PR's history, including after
+    merging `develop` and merging #169's own branch in directly). A real Chromium instance loading
+    the built page — both standalone and embedded in the actual `mkdocs build --strict`-built docs
+    site — genuinely decodes a bundled 8-second, 3-object Atmos-in-DD+ fixture
+    (`E-AC-3, 48000 Hz, 6 ch (L, C, R, Ls, Rs, LFE), 3 Atmos object(s), 8.0s`, matching what was
     encoded), plays real audio with `AudioContext.currentTime` genuinely advancing, and paints a
-    visualization driven by real, time-varying per-channel RMS (confirmed non-degenerate per channel,
-    including a genuinely-silent LFE since nothing was routed to it) that changes with playback
-    position and responds to the seek bar.
+    speaker-ring visualization driven by real, time-varying per-channel RMS (confirmed non-degenerate
+    per channel, including a genuinely-silent LFE since nothing was routed to it) that changes with
+    playback position and responds to the seek bar.
+
+    **Object decode specifically**: the same object's decoded position genuinely differs between two
+    different playback timestamps (confirmed by direct comparison, not just "the code ran") and the
+    room-view canvas paints real, non-empty content from it. Each "Solo object N" button was confirmed
+    to switch playback to a buffer that (a) sample-for-sample matches `tanh()` of that specific
+    object's own `object_audio`, (b) differs from every other object's audio, and (c) differs from the
+    bed downmix — not just "some audio plays," the *correct* isolated object's audio plays.
 
 !!! warning "Not yet verified"
     Built and tested on a Windows host only — the toolchain file itself makes no Windows-specific
-    assumption, but a Linux/macOS Emscripten configure hasn't been run. No automated browser test
-    runs this in CI (see [Live decode demo](../wasm-demo.md) for what CI does and does not do yet);
-    every claim above is manual verification from one session, not a repeatable check. The
-    visualization shows real decoded **bed energy**, not object positions — `ac3::forge` has no
-    decode-side OAMD/JOC parser (see [Atmos & JOC](../concepts/atmos-joc.md)), so there is nothing
-    object-level to verify here yet either.
+    assumption, and CI's `build-wasm`/`docs.yml` jobs both run on `ubuntu-latest`, but no macOS run
+    has been attempted anywhere. No automated *browser* test runs this in CI — `build-wasm` proves it
+    compiles, not that it decodes/plays/renders correctly; every functional claim above is manual
+    verification across this PR's sessions, not a repeatable check. `ac3::forge#169` (JOC audio) is
+    merged into *this* PR's branch directly but is not yet on `develop` itself.

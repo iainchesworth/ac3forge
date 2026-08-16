@@ -12,7 +12,7 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 
 ## [Unreleased]
 
-### WASM decode demo (roadmap F3, partial)
+### WASM decode demo (roadmap F3)
 
 - **`ac3::forge`'s decode path now builds under Emscripten.** A new `config-wasm-emscripten`
   CMake preset (`cmake/toolchains/wasm.emscripten.toolchain.cmake`) compiles `ac3::forge` to
@@ -33,19 +33,20 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   `SoundfieldView.qml`. A seek bar lets a viewer scrub the real decoded timeline. The bundled
   fixture is a real 8-second, 3-object Atmos-in-DD+ stream encoded with the existing
   `AtmosEncoder`. See [docs/platforms/wasm.md](docs/platforms/wasm.md).
+- **Real object motion, not bed energy standing in for it.** With OAMD/JOC decode landed (see
+  "Atmos object decode" below), the demo grew a second visualization — a top-down/elevation room
+  view, the same layout as the desktop GUI's Objects tab — driven entirely by real decoded
+  positions (`DecodedAccessUnit::object_metadata`) read back out of the bitstream, not an
+  authored/preview model. A "solo object" control switches playback to that object's own real
+  JOC-reconstructed audio (`::object_audio`) — its actual isolated waveform, not a re-panned
+  approximation of its slice of the bed.
 - **Embedded live in the docs site** at `docs/wasm-demo.md` (nav: Project → "Live decode demo
-  (WASM)") via an iframe over a prebuilt copy of the demo under `docs/assets/wasm-decode-demo/`.
-  Committed rather than CI-built: `.github/workflows/docs.yml` only runs `mkdocs build`, with no
-  C++/Emscripten toolchain installed, so there is currently nowhere in the pipeline for an
-  `emcc` build to happen — teaching CI to rebuild and publish this automatically is a real gap,
-  not addressed here.
-- **What this does *not* do yet, and why F3 stays unchecked**: at the time this demo was built,
-  `ac3::forge` had no decode-side OAMD/JOC parser at all, so its visualization is real decoded
-  *bed* energy, not object positions. That gap has since narrowed — see "Atmos object decode"
-  below, landed in this same `[Unreleased]` section — but this demo has not yet been updated to
-  consume the new `object_metadata`/OAMD position API; it still only shows bed energy. Wiring
-  real object positions into the visualization, and picking up JOC audio reconstruction once
-  that lands too, is tracked as follow-up work.
+  (WASM)") via an iframe over a copy of the demo under `docs/assets/wasm-decode-demo/`. That copy
+  is committed (a working fallback for a plain local `mkdocs build`), but the *published* site
+  never ships it stale: `.github/workflows/docs.yml`'s `deploy` job installs Emscripten and
+  rebuilds `platform/wasm/` fresh from source before publishing. `_build.yml`'s `build-wasm` job
+  build-verifies the same target on every push, the same role `build-android`'s always-on debug
+  APK plays. Both share a new pinned composite action, `.github/actions/setup-emscripten`.
 
 ### Atmos object decode
 

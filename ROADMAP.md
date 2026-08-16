@@ -111,17 +111,16 @@ decoded an AC-3/E-AC-3 bitstream and verified its loudness metadata against meas
   for bindings and embedding.
 - [ ] **F2 (L)** — Python bindings on PyPI, with wheels for the three desktop platforms.
   Depends on F1, or goes pybind11-direct.
-- [ ] **F3 (L)** — WASM build plus a browser demo that decodes E-AC-3 + JOC and renders
-  object motion; could double as the documentation site's live demo. **Partially landed**:
-  `ac3::forge`'s AC-3/E-AC-3 decode path builds under Emscripten (`config-wasm-emscripten`
-  preset) and a real browser demo (`platform/wasm/`, embedded live at
-  `docs/wasm-demo.md`) decodes a genuine Atmos-in-DD+ stream and plays the real 5.1 bed with
-  a per-channel energy visualization. `Eac3Decoder` itself gained a real decode-side OAMD
-  parser (object positions/gain, `DecodedSubstream::object_metadata`) separately from this
-  item — but the demo hasn't been updated to consume it yet, so it still only shows bed
-  energy, not object motion. JOC's own per-object *audio* reconstruction is a further, still
-  -open gap on top of that. This item stays unchecked until the demo actually renders decoded
-  object positions.
+- [x] **F3 (L)** — WASM build plus a browser demo that decodes E-AC-3 + JOC and renders
+  object motion; could double as the documentation site's live demo. `ac3::forge`'s
+  AC-3/E-AC-3 decode path builds under Emscripten (`config-wasm-emscripten` preset), and a
+  real browser demo (`platform/wasm/`, embedded live at `docs/wasm-demo.md`) decodes a
+  genuine Atmos-in-DD+ stream, plays the real 5.1 bed, and renders each object's real
+  decoded position (OAMD, #168) moving in a top-down/elevation room view — plus a "solo
+  object" control that plays that object's own real JOC-reconstructed audio (#169), not its
+  panned slice of the bed. Depends on #169 (JOC audio decode) merging — this item's own PR
+  merges that branch directly rather than waiting, so it's checked off here as true of that
+  PR's own code, not yet of `develop` alone until #169 lands there too.
 - [ ] **F4 (M)** — Package-manager presence: a vcpkg port, a Homebrew formula, a winget
   manifest. **The vcpkg port is staged in-tree** — see
   [`packaging/vcpkg-port/ac3forge/`](https://github.com/iainchesworth/ac3forge/tree/main/packaging/vcpkg-port/ac3forge),

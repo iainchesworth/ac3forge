@@ -44,6 +44,22 @@
     cursor: pointer;
   }
   button:disabled { opacity: 0.5; cursor: not-allowed; }
+  #soloControls { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  #soloControls button {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--border);
+    font-weight: 500;
+  }
+  #soloControls button.active { background: var(--accent); color: #0b1220; border-color: var(--accent); }
+  #soloControls button.object-btn::before {
+    content: '';
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--dot-color, currentColor);
+    margin-right: 6px;
+  }
   #status { margin-top: 10px; color: var(--muted); font-size: 0.9rem; min-height: 1.2em; }
   #status.error { color: #f87171; }
   #streamInfo { font-size: 0.9rem; color: var(--muted); margin-top: 8px; }
@@ -88,26 +104,37 @@
     <div id="streamInfo"></div>
   </div>
 
+  <div id="objectsPanel" class="panel" style="display:none;">
+    <canvas id="objects" width="640" height="260"></canvas>
+    <p class="hint">
+      Real decoded Atmos object positions (OAMD) - top-down and side-on, same layout as the
+      desktop GUI's Objects tab. Dot size is that object's own real audio level (JOC).
+    </p>
+    <div id="soloControls"></div>
+    <p class="hint">Solo an object to hear its own real isolated audio - not its panned slice of the bed.</p>
+  </div>
+
   <div class="panel">
     <canvas id="ring" width="640" height="420"></canvas>
     <p class="hint">
       Solid ring: ear-level channels. Dashed ring: ceiling channels (only lights up for a
       7.1.4-class stream). Drag the slider above to scrub. Dot size/glow and the yellow
-      arrow are real per-channel energy from the decode, not object positions - see
-      <a href="#caveat">below</a>.
+      arrow are real per-channel bed energy from the decode.
     </p>
   </div>
 
   <p id="caveat" class="caveat">
-    Real decode, real audio, real per-channel energy - all genuinely out of ac3::forge's
-    WASM build. Not real: individual Atmos object positions. <code>ac3::forge</code> can't
-    read OAMD/JOC back out of a stream yet (encoder-only today), so there's nothing
-    object-level to show.
+    Everything on this page is real: the decode, the audio, the bed's per-channel energy,
+    and - for a stream with objects - each object's real decoded position (OAMD,
+    <a href="https://github.com/iainchesworth/ac3forge/pull/168">ac3::forge#168</a>) and its
+    own real isolated audio (JOC,
+    <a href="https://github.com/iainchesworth/ac3forge/pull/169">ac3::forge#169</a>). Nothing
+    here is a canned animation or a re-panned approximation.
   </p>
 
   <footer>
     Part of <a href="https://github.com/iainchesworth/ac3forge">ac3forge</a>, roadmap item F3.
-    Source: <code>examples/wasm_decode_demo/</code>.
+    Source: <code>platform/wasm/</code>.
   </footer>
 </div>
 
