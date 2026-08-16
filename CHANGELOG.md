@@ -89,6 +89,31 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   reconstructed object as its own single-channel `object_NN.wav`. `ac3cli monitor` reports the
   same object-count line (it still only plays the 5.1 bed — object playback isn't part of what
   that command does).
+- **`ac3gui` gains "Inspect objects…"** (header, beside "QC a stream…"), the decode-side counterpart
+  to the Objects tab's own authoring room view: opens an already-encoded E-AC-3 file and shows the
+  OAMD positions/gain and JOC-reconstructed audio `Eac3Decoder` actually recovers from it, scrubbed
+  or played frame by frame in the same plan/elevation room view the Objects tab already uses, plus
+  per-object audition through the same shared-mode playback path (`ac3::sinks::MonitorSink`) the
+  Objects tab's own motion preview uses. Read-only end to end — no plan, no source, no encoder in
+  the path, the same shape `QcController`/`QcDialog` already established for roadmap C3's "QC a
+  stream". See [docs/gui/inspect-objects.md](docs/gui/inspect-objects.md).
+
+### Atmos object signing
+
+- **`ac3::signing` can now check its own tag, not just write it.** `verify_atmos_frame`/
+  `verify_atmos_stream` recompute the same HMAC-SHA-256 construction `sign_atmos_frame`/
+  `sign_atmos_stream` use and compare it against a frame's existing `protection_bits_primary`,
+  without modifying anything. `verify_atmos_frame` returns one of three outcomes rather than a
+  bool — `kNoContainer` (nothing to check), `kValid`, or `kMismatch` — so a plain or `bed51` frame
+  is never misreported as a signature failure; `verify_atmos_stream` returns the aggregate
+  `VerifySummary` (valid/mismatch/no-container counts). `ac3cli decode`/`monitor` gain
+  `verify-objects` (with `signing-key=`, same option and error shape `sign-objects` already uses):
+  a mismatch is a hard refusal, matching this project's own either/or stance on a signed stream.
+  Checking is strictly opt-in — `Eac3Decoder` itself gains no knowledge of `ac3::signing`, and a
+  `decode`/`monitor` invocation with no `verify-objects` plays a signed stream exactly like an
+  unsigned one. This checks this project's own clean-room signer's tag — round-trip testing,
+  tamper detection, and CI/delivery QC — not a real Dolby-licensed decoder's own proprietary auth
+  gate. See [docs/concepts/object-signing.md](docs/concepts/object-signing.md).
 
 ### Delivery
 

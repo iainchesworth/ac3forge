@@ -1,8 +1,11 @@
-# vcpkg port for ac3forge - installs the library only (ac3::forge, plus
-# matroska::matroska behind the "matroska" feature). Never the CLI, GUI,
-# tests, examples or fuzz harnesses - the root CMakeLists.txt's
-# AC3FORGE_BUILD_CLI/GUI/TESTS/EXAMPLES/FUZZERS options make that a plain
-# OFF each, no vcpkg-specific patching needed.
+# vcpkg port for ac3forge - installs the library only (ac3::forge, plus matroska::matroska,
+# mp4::mp4 and mpegts::mpegts behind their own default-on features). Never the CLI, GUI, tests,
+# examples or fuzz harnesses - the root CMakeLists.txt's
+# AC3FORGE_BUILD_CLI/GUI/TESTS/EXAMPLES/FUZZERS options make that a plain OFF each, no
+# vcpkg-specific patching needed. ac3adm::ac3adm (the ADM/BW64 reader) is deliberately NOT a
+# feature here - it isn't part of the find_package(ac3forge) package at all (needs Boost,
+# consumed only via in-tree add_subdirectory - see docs/library/index.md), so there is nothing
+# for a vcpkg feature to install.
 #
 # Staged here (packaging/vcpkg-port/ac3forge/) for local --overlay-ports
 # validation before being copied into a microsoft/vcpkg fork as
@@ -21,12 +24,14 @@ vcpkg_from_github(
 )
 
 # One vcpkg feature <-> one AC3FORGE_BUILD_<NAME> CMake option. This is the
-# pattern a future optional component (e.g. mp4) extends - see
-# cmake/InstallLibrary.cmake's header comment in the main repo.
+# pattern a future optional component extends - see cmake/InstallLibrary.cmake's
+# header comment in the main repo.
 vcpkg_check_features(
     OUT_FEATURE_OPTIONS FEATURE_OPTIONS
     FEATURES
         matroska AC3FORGE_BUILD_MATROSKA
+        mp4      AC3FORGE_BUILD_MP4
+        mpegts   AC3FORGE_BUILD_MPEGTS
 )
 
 # DERIVED_VERSION_OVERRIDE: cmake/GitVersionDerivation.cmake normally derives

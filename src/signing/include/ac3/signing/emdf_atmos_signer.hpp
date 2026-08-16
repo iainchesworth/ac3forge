@@ -19,6 +19,14 @@
 // signed with a key that does not match a given decoder's simply fails that
 // decoder's check, exactly as an unsigned one does; nothing here reconstructs a
 // key.
+//
+// verify_atmos_frame/verify_atmos_stream below check a tag this same signer
+// wrote - round-trip testing, tamper detection on this project's own signed
+// test assets, and CI/delivery QC. That is NOT the same thing as, and grants
+// no interoperability with, a real Dolby-licensed decoder's own proprietary
+// auth gate: that one uses a completely different key and scheme baked into
+// Dolby's binary, and this project has deliberately never attempted to forge
+// or replicate it. See docs/concepts/object-signing.md.
 
 #include <cstddef>
 #include <span>
@@ -39,5 +47,37 @@ namespace ac3::signing {
 
 // One syncframe. Returns true if it carried a container and was signed.
 [[nodiscard]] bool sign_atmos_frame(std::span<std::byte> frame, const SigningKey& key);
+
+// A frame with no EMDF object container is neither "verified" nor "failed" -
+// there is nothing in it to check - so that case is its own outcome
+// (kNoContainer) rather than being folded into kMismatch, which would
+// misreport every plain/non-Atmos frame as a signature failure.
+enum class VerifyResult {
+    kNoContainer,  // no EMDF object container - nothing to verify
+    kValid,        // container present, tag matches `key`
+    kMismatch,     // container present, tag does not match `key`
+};
+
+// Frame counts by outcome, mirroring sign_atmos_stream's own aggregate
+// (frames signed) rather than a per-frame vector - a caller wants "how many
+// verified, how many didn't, how many had nothing to check", the same shape
+// apply_object_signing's own callers already consume.
+struct VerifySummary {
+    int valid = 0;
+    int mismatch = 0;
+    int no_container = 0;
+};
+
+// Checks every syncframe in `stream` against `key`, without modifying it.
+[[nodiscard]] VerifySummary verify_atmos_stream(std::span<const std::byte> stream,
+                                                const SigningKey& key);
+
+// One syncframe. Mirrors sign_atmos_frame's exact construction (excise the
+// framing/metadata/skip/CRC holes into message A, zero the tag bits in the
+// container to build message B, HMAC(key, A||B) truncated to the primary
+// protection field's width) but reads the existing protection_bits_primary
+// bits instead of writing computed ones, and compares.
+[[nodiscard]] VerifyResult verify_atmos_frame(std::span<const std::byte> frame,
+                                              const SigningKey& key);
 
 }  // namespace ac3::signing

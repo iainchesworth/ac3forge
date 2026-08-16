@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
-#include <cmath>
 
 #include "ac3/core/bitalloc.hpp"
 #include "ac3/core/bitreader.hpp"
@@ -13,6 +12,7 @@
 #include "ac3/core/mdct.hpp"
 #include "ac3/encoder/coupling.hpp"
 #include "ac3/meta/drc.hpp"
+#include "gain.hpp"
 
 namespace ac3 {
 
@@ -78,28 +78,6 @@ std::expected<std::size_t, DecodeError> syncframe_bytes(std::span<const std::byt
     // searches for an exact match, so the lookup inside it always succeeds.
     // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     return *frame_size_bytes(static_cast<SampleRate>(fscod), kbps, (frmsizecod & 1) != 0);
-}
-
-// The §7.7 gain for one block, resolving which of the two control signals
-// applies. §7.7.2.1: a decoder told to use compr falls back on dynrng for any
-// syncframe with no compr word, so heavy compression is a preference and not a
-// mode switch.
-double block_gain(const DecoderConfig& config, std::uint8_t dynrng_word,
-                  std::optional<std::uint8_t> compr) {
-    if (config.heavy_compression && compr) {
-        // §7.7.2 states no partial-compression scaling: compr's whole purpose
-        // is a hard ceiling, and a decoder that applied a fraction of it would
-        // be promising a ceiling it does not deliver.
-        return meta::compr_gain(*compr);
-    }
-    if (config.drc_scale == 0.0 || dynrng_word == meta::kDynrngUnity) {
-        return 1.0;
-    }
-    const double gain = meta::dynrng_gain(dynrng_word);
-    // §7.7.1's "Partial Compression" scales the word as a signed fraction of
-    // dB, which in the linear domain is exactly raising the gain to that
-    // power. Doing it here rather than on the bits avoids re-quantising.
-    return config.drc_scale == 1.0 ? gain : std::pow(gain, config.drc_scale);
 }
 
 }  // namespace
@@ -794,8 +772,9 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
         // would be exactly the cross-talk 1+1 exists to avoid.
         for (int ch = 0; ch < nchans; ++ch) {
             const bool second_programme = acmod == Acmod::kDualMono && ch == 1;
-            const double drc = second_programme ? block_gain(config_, dynrng2_word, compr2)
-                                                 : block_gain(config_, dynrng_word, compr);
+            const double drc = second_programme
+                                    ? internal::block_gain(config_, dynrng2_word, compr2)
+                                    : internal::block_gain(config_, dynrng_word, compr);
             if (drc != 1.0) {
                 for (auto& value : coeffs[static_cast<std::size_t>(ch)]) {
                     value *= drc;

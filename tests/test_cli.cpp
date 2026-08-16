@@ -744,6 +744,91 @@ TEST_CASE("sign-objects reaches atmos, atmos-path and atmos-encode alike",
     }
 }
 
+// verify-objects mirrors sign-objects' UX on the read side: decode/monitor
+// check each frame's EMDF object signature against signing-key= (same option
+// sign-objects already uses) instead of just decoding blind. This is a
+// deliberate opt-in design (see docs/concepts/object-signing.md and
+// Eac3Decoder's own stance that the protection field is opaque per spec) -
+// the last SECTION here is the one that matters most: decoding the very same
+// signed stream with no verify-objects token at all must succeed exactly as
+// it always has, proving the bypass is real and not just documented.
+TEST_CASE("verify-objects checks a decode against the signer's own tag",
+          "[cli][atmos][signing][verify]") {
+    const auto dir = scratch_dir();
+    const auto key_path = dir / "verify_objects_test.key";
+    const auto wrong_key_path = dir / "verify_objects_wrong.key";
+    {
+        std::ofstream key{key_path, std::ios::binary};
+        REQUIRE(key.is_open());
+        key << "not-a-real-key-just-test-material";
+    }
+    {
+        std::ofstream key{wrong_key_path, std::ios::binary};
+        REQUIRE(key.is_open());
+        key << "a-completely-different-key-for-mismatch";
+    }
+
+    const auto signed_ec3 = dir / "verify_objects_signed.ec3";
+    const auto signed_log = dir / "verify_objects_signed.log";
+    const auto sign_rc =
+        run_cli("atmos \"" + signed_ec3.string() +
+                    "\" 1 448 2 4 objects sign-objects signing-key=\"" + key_path.string() + "\"",
+                signed_log);
+    REQUIRE(sign_rc == 0);
+    REQUIRE(fs::exists(signed_ec3));
+
+    SECTION("the same key verifies every frame and the decode succeeds") {
+        const auto out_wav = dir / "verify_objects_ok.wav";
+        const auto log = dir / "verify_objects_ok.log";
+        const auto rc = run_cli("decode \"" + signed_ec3.string() + "\" \"" + out_wav.string() +
+                                    "\" verify-objects signing-key=\"" + key_path.string() + "\"",
+                                log);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(rc == 0);
+        CHECK(fs::exists(out_wav));
+        CHECK(text.find("valid") != std::string::npos);
+        CHECK(text.find("0 mismatched") != std::string::npos);
+    }
+
+    SECTION("a wrong key mismatches and the command refuses") {
+        const auto out_wav = dir / "verify_objects_wrong_key.wav";
+        const auto log = dir / "verify_objects_wrong_key.log";
+        const auto rc = run_cli("decode \"" + signed_ec3.string() + "\" \"" + out_wav.string() +
+                                    "\" verify-objects signing-key=\"" +
+                                    wrong_key_path.string() + "\"",
+                                log);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(rc != 0);
+        CHECK(text.find("mismatch") != std::string::npos);
+    }
+
+    SECTION("verify-objects with no key anywhere is a hard error, same shape as sign-objects") {
+        const auto out_wav = dir / "verify_objects_no_key.wav";
+        const auto log = dir / "verify_objects_no_key.log";
+        const auto rc = run_cli(
+            "decode \"" + signed_ec3.string() + "\" \"" + out_wav.string() + "\" verify-objects",
+            log);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(rc != 0);
+        CHECK(text.find("needs a key") != std::string::npos);
+    }
+
+    SECTION("decoding the same signed stream WITHOUT verify-objects still succeeds - the "
+           "bypass") {
+        const auto out_wav = dir / "verify_objects_bypass.wav";
+        const auto log = dir / "verify_objects_bypass.log";
+        const auto rc =
+            run_cli("decode \"" + signed_ec3.string() + "\" \"" + out_wav.string() + "\"", log);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(rc == 0);
+        CHECK(fs::exists(out_wav));
+    }
+}
+
 // keep-partial (item 34): a bare trailing token, same style as heavy/
 // mixmeta/sign-objects, that keeps whatever frames a failed encode already
 // produced at <name>.partial.<ext> instead of discarding them - see
