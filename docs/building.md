@@ -481,12 +481,18 @@ below) also passes: real SNR numbers from that CI run were 61.81/61.82 dB on mac
 67.84/67.82 dB on Linux and Windows for the same material - a real but modest cross-compiler
 floating-point difference, comfortably clear of the 30 dB gate.
 
-`src/lib/CMakeLists.txt` selects the no-backend audio implementations on macOS (same as a Linux
-machine without `libasound2-dev`), and `AC3FORGE_BUILD_GUI` defaults off there too (no CI leg
-builds `ac3gui` on macOS yet) — so the codec and CLI paths are now verified end to end, but the
-GUI and the three audio-hardware commands remain untested on macOS specifically, same as they
-are everywhere without real hardware or a Qt kit. See [Linux audio](#linux-audio) for the
-general shape of what "verified headless" does and does not prove.
+`src/audio/CMakeLists.txt` selects a real CoreAudio backend on macOS (`src/audio/src/platform/macos/`,
+built on the Audio HAL — `AudioObjectID`/`AudioDeviceIOProc` — the same layer WASAPI and ALSA
+occupy on their own platforms), not the no-backend stub it fell back to before. `AC3FORGE_BUILD_GUI`
+still defaults off there (no CI leg builds `ac3gui` on macOS yet), so the GUI remains untested on
+macOS specifically — but capture, monitor playback and IEC 61937 passthrough now compile and link
+for real, and `ac3tests` exercises the backend's device-free logic (format matching, sample
+conversion) directly. What CI cannot exercise is a real device: the hosted runner enumerates
+whatever HAL objects macOS itself reports and touches nothing beyond that, same as ALSA's own
+"verified headless" story below — see [Linux audio](#linux-audio) for the general shape of what
+that does and does not prove, and [macOS](platforms/macos.md) for the backend's own header
+comments on where its research came from (three independent real-world CoreAudio passthrough
+implementations, surveyed since no Mac is available to try it on directly).
 
 The `-arm64` presets are exercised in CI on GitHub's hosted `ubuntu-24.04-arm` runner (real ARM
 hardware, not QEMU) and, separately, on a real Raspberry Pi 4B — see
