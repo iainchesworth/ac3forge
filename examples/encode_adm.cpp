@@ -18,6 +18,10 @@
 // jumpPosition=1 state machine - see ac3::admbridge::build_channel_path's own comment for the full
 // walkthrough), so the encoded stream's own channel balance visibly tracks the authored ADM
 // automation rather than staying static throughout.
+//
+// Run with `--write-fixture <path>` to just write that same fixture to a real file and exit,
+// skipping the parse/bridge/encode demo below - see main()'s own comment on why
+// scripts/run-codec-matrix.sh uses exactly this to drive a real `ac3cli atmos-adm` invocation.
 
 #include <cmath>
 #include <cstdint>
@@ -212,7 +216,23 @@ bool write_fixture(const std::string& path) {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    // --write-fixture <path>: writes only the fixture below to `path` and exits, skipping the
+    // parse/bridge/encode demo that follows. Exists so scripts/run-codec-matrix.sh (a bash
+    // script with no access to this file's own C++ helpers) can reuse this exact fixture to drive
+    // a real `ac3cli atmos-adm` invocation against a real file on disk, rather than a fourth copy
+    // of the same byte-level BW64/ADM chunk-writing logic already duplicated (per this project's
+    // own established per-file test-fixture convention) across this file, examples/read_adm.cpp
+    // and tests/test_cli_atmos_adm.cpp - three was already the considered limit; a shell script
+    // reimplementing RIFF chunk framing in bash was not a fourth worth having.
+    if (argc >= 3 && std::string_view{argv[1]} == "--write-fixture") {
+        if (!write_fixture(argv[2])) {
+            std::printf("could not write fixture file\n");
+            return 1;
+        }
+        return 0;
+    }
+
     const auto fixture_path =
         (std::filesystem::temp_directory_path() / "ac3forge_encode_adm_fixture.wav").string();
     if (!write_fixture(fixture_path)) {
