@@ -131,6 +131,60 @@ TestCase {
         compare(totals.visible, EncoderController.captureDeviceCount > 0);
     }
 
+    // "Start monitoring as soon as a device is chosen" (Preferences ->
+    // autoMonitor) lives entirely in addCaptureDeviceButton's own onClicked
+    // now - like startLiveSession itself (see tst_live_session.qml's own
+    // file header), the fires-and-actually-starts-monitoring path has no
+    // Quick Test coverage here, since exercising it for real would open a
+    // live audio session against whatever this machine happens to have -
+    // in CI and on a dev box alike. What IS testable without one: the OFF
+    // guard never lets an empty-to-master pick through, on whichever real
+    // device this machine happens to enumerate.
+    function test_addInputNeverStartsLiveWhenAutoMonitorPreferenceIsOff() {
+        if (!EncoderController.captureSupported) {
+            // No real device on this box to "choose" - see this suite's own
+            // header note on why hardware-gated paths are skipped here
+            // rather than faked.
+            return;
+        }
+
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+        win.everHadSource = true;
+        win.inputMode = "live";
+        wait(300);
+
+        let addButton = null;
+        tryVerify(() => {
+            addButton = findChild(win.contentItem, "addCaptureDeviceButton");
+            return addButton !== null;
+        });
+
+        // Drain the rail to nothing selected, so the click below is a
+        // genuine empty -> master transition - the only case the restored
+        // guard covers - remembering the original picks to restore after.
+        const originalRows = EncoderController.captureDeviceRows.slice();
+        while (EncoderController.captureDeviceRows.length > 0) {
+            EncoderController.removeCaptureDevice(0);
+        }
+        const originalAutoMonitor = win.settings.autoMonitor;
+        win.settings.autoMonitor = false;
+
+        mouseClick(addButton);
+
+        compare(EncoderController.captureDeviceRows.length, 1);
+        compare(EncoderController.liveActive, false);
+
+        // Leave state clean for whichever test runs next.
+        win.settings.autoMonitor = originalAutoMonitor;
+        while (EncoderController.captureDeviceRows.length > 0) {
+            EncoderController.removeCaptureDevice(0);
+        }
+        for (let i = 0; i < originalRows.length; i++) {
+            EncoderController.addCaptureDevice(originalRows[i].deviceIndex);
+        }
+    }
+
     function test_cliLineCarriesCapture2TokenIffTwoDevicesAreSelected() {
         const win = createTemporaryObject(mainWindowComponent, testCase);
         verify(win !== null);

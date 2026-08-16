@@ -1769,8 +1769,24 @@ ApplicationWindow {
                                     text: qsTr("Add input…")
                                     enabled: !EncoderController.captureDeviceCapReached
                                              && !EncoderController.busy
-                                    onClicked: EncoderController.addCaptureDevice(
-                                                   addDeviceBox.currentIndex)
+                                    // "Start monitoring as soon as a device is chosen"
+                                    // (Preferences) - the explicit Add gesture only, the same
+                                    // deliberate-pick-only rule the single-device ComboBox's own
+                                    // onActivated applied before the rail grew a per-device list,
+                                    // and only when this pick becomes the MASTER: Monitor and
+                                    // Record both act on the master alone, so adding a second
+                                    // (slave) device has nothing new to start.
+                                    onClicked: {
+                                        const wasEmpty = EncoderController.captureDeviceRows.length === 0;
+                                        EncoderController.addCaptureDevice(addDeviceBox.currentIndex);
+                                        const becameMaster = wasEmpty
+                                                && EncoderController.captureDeviceRows.length > 0;
+                                        if (becameMaster && appSettings.autoMonitor
+                                                && !EncoderController.busy && EncoderController.captureSupported) {
+                                            EncoderController.startLiveSession(
+                                                window.liveMasterCaptureIndex, true, -1, false, "");
+                                        }
+                                    }
                                 }
                             }
                             Text {

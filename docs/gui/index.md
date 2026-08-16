@@ -161,8 +161,9 @@ A real dialog, persisted across sessions (QSettings), three columns:
   rate/VBR quality too. An edit made before Save is never clobbered by it: touch a field once (in
   Guided, Advanced or Expert, any of them count) and Preferences stops overwriting it for the rest
   of the session, exactly as the loudness contract already promises for Loudness/Metadata.
-  **Capture** — whether Record asks for a filename or writes straight to the output folder under
-  a timestamped take name. **Command line** — keep the `ac3cli` line visible.
+  **Capture** — start monitoring as soon as a device is chosen, and whether Record asks for a
+  filename or writes straight to the output folder under a timestamped take name. **Command
+  line** — keep the `ac3cli` line visible.
 
 ## Next
 
