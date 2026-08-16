@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ac3forge - WASM decode demo</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0b1220;
+    --panel: #131c2e;
+    --border: #263248;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --accent: #60a5fa;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    padding: 24px;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; }
+  h1 { font-size: 1.4rem; margin-bottom: 4px; }
+  p.lede { color: var(--muted); margin-top: 0; line-height: 1.5; }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 20px;
+    margin-bottom: 16px;
+  }
+  .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  button, input[type="file"]::file-selector-button {
+    background: var(--accent);
+    color: #0b1220;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  #status { margin-top: 10px; color: var(--muted); font-size: 0.9rem; min-height: 1.2em; }
+  #status.error { color: #f87171; }
+  #streamInfo { font-size: 0.9rem; color: var(--muted); margin-top: 8px; }
+  #scrubTime { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 0.9rem; }
+  canvas { display: block; margin: 0 auto; background: #0d1526; border-radius: 8px; }
+  .caveat {
+    border-left: 3px solid var(--accent);
+    padding: 8px 14px;
+    background: rgba(96,165,250,0.08);
+    font-size: 0.88rem;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+  .caveat strong { color: var(--text); }
+  code { background: rgba(148,163,184,0.15); padding: 1px 5px; border-radius: 4px; }
+  footer { color: var(--muted); font-size: 0.8rem; margin-top: 24px; }
+  footer a { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>ac3forge - WASM decode demo</h1>
+  <p class="lede">
+    A real AC-3/E-AC-3 decoder, compiled to WebAssembly and running entirely in this
+    tab: no server-side decode, no upload. Load the bundled Atmos-in-DD+ stream below,
+    or drop in your own <code>.ec3</code>/<code>.ac3</code> elementary stream.
+  </p>
+
+  <div class="panel">
+    <div class="controls">
+      <button id="loadDemo">Load bundled demo</button>
+      <input type="file" id="fileInput" accept=".ec3,.ac3,.eac3">
+      <button id="playPause" disabled>Play</button>
+      <span id="scrubTime"></span>
+    </div>
+    <div id="status"></div>
+    <div id="streamInfo"></div>
+  </div>
+
+  <div class="panel">
+    <canvas id="ring" width="640" height="420"></canvas>
+  </div>
+
+  <div class="panel caveat">
+    <strong>What's real here, and what isn't.</strong> The decode is real: this page
+    runs ac3::forge's actual C++ AC-3/E-AC-3 decoder compiled to WASM, and every number
+    shown - sample rate, channel layout, the audio you hear, the per-channel energy
+    driving the dots below - comes out of that real decode. What this panel does
+    <em>not</em> show is individual Atmos object positions: <code>ac3::forge</code> does
+    not yet have a decode-side OAMD/JOC parser (it can <em>write</em> object metadata
+    when encoding, but nothing in the library can read it back out of a stream today),
+    so there is no real per-object position to visualize. The dots below are the real
+    decoded 5.1 bed's per-speaker energy, using the same room/speaker model as the
+    desktop GUI's <code>SoundfieldView.qml</code> - genuinely decoded, just not
+    object-level. The audio you hear is a simple stereo downmix of that same real bed
+    for playback on ordinary speakers/headphones.
+  </div>
+
+  <footer>
+    Part of <a href="https://github.com/iainchesworth/ac3forge">ac3forge</a>, roadmap item F3.
+    Source: <code>examples/wasm_decode_demo/</code>.
+  </footer>
+</div>
+
+<script src="ac3forge_decode.js"></script>
+<script src="demo.js"></script>
+</body>
+</html>

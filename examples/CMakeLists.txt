@@ -6,7 +6,16 @@
 # produced, so the documented API is exercised and not merely parsed. They link
 # ac3::warnings like every other first-party target, so a documented call that
 # would make a caller's build noisy fails here first.
+#
+# Under Emscripten this whole flat, desktop-console-program list is skipped in
+# favour of wasm_decode_demo/ alone (see the bottom of this file): none of
+# these 19 examples are meaningful compiled to WASM (nothing loads them in a
+# browser, none is written expecting Emscripten's virtual filesystem for its
+# CLI-style file arguments), and they add nothing to a roadmap-F3 configure
+# that only wants the one browser-facing target.
 # ---------------------------------------------------------------------------
+
+if(NOT EMSCRIPTEN)
 
 set(AC3FORGE_EXAMPLES
     encode_ac3
@@ -171,3 +180,14 @@ if(AC3FORGE_BUILD_TESTS)
         add_test(NAME "example.${example}" COMMAND ${example})
     endforeach()
 endif()
+
+else()  # EMSCRIPTEN
+
+# The browser decode demo (roadmap F3). Its own CMakeLists.txt produces a
+# .wasm/.js/.html triple via Embind rather than a ctest-registered native
+# executable, so it does not belong in AC3FORGE_EXAMPLES above - nothing here
+# can run it as a native process, and AC3FORGE_BUILD_TESTS is always OFF on
+# the wasm-emscripten preset anyway (see CMakePresets.json).
+add_subdirectory(wasm_decode_demo)
+
+endif()  # EMSCRIPTEN

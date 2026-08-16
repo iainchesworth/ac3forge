@@ -114,6 +114,7 @@ nav:
       - Releasing: releasing.md
       - History: project/history.md
       - Roadmap: roadmap.md
+      - Live decode demo (WASM): wasm-demo.md
       - Quality trend: quality-trend.md
       - Performance trend: performance-trend.md
       - Landscape: landscape.md

@@ -88,18 +88,28 @@ option(AC3FORGE_BUILD_MPEGTS "Build the standalone MPEG-TS container writer (src
 # cmake/InstallLibrary.cmake); catch the unsupported combination here with a clear message
 # rather than letting it fail deep inside one of those subdirectories with a "target not found"
 # error.
-if(NOT AC3FORGE_BUILD_MATROSKA AND (AC3FORGE_BUILD_CLI OR AC3FORGE_BUILD_GUI OR AC3FORGE_BUILD_TESTS OR AC3FORGE_BUILD_EXAMPLES))
+# EMSCRIPTEN is excluded from all three guards below: under the WASM preset,
+# examples/CMakeLists.txt builds only examples/wasm_decode_demo (guarded by
+# EMSCRIPTEN itself, see that file), which links nothing but ac3::forge - none
+# of matroska::matroska/mp4::mp4/mpegts::mpegts are linked by anything a WASM
+# configure builds, so AC3FORGE_BUILD_EXAMPLES=ON with the three container
+# libraries OFF is a real, supported combination there, not the unsupported
+# one this guard exists to catch.
+if(NOT AC3FORGE_BUILD_MATROSKA AND NOT EMSCRIPTEN AND
+        (AC3FORGE_BUILD_CLI OR AC3FORGE_BUILD_GUI OR AC3FORGE_BUILD_TESTS OR AC3FORGE_BUILD_EXAMPLES))
     message(FATAL_ERROR "AC3FORGE_BUILD_MATROSKA=OFF requires AC3FORGE_BUILD_CLI, "
         "AC3FORGE_BUILD_GUI, AC3FORGE_BUILD_TESTS and AC3FORGE_BUILD_EXAMPLES to all be OFF too - "
         "they all link matroska::matroska unconditionally.")
 endif()
-if(NOT AC3FORGE_BUILD_MP4 AND (AC3FORGE_BUILD_CLI OR AC3FORGE_BUILD_GUI OR AC3FORGE_BUILD_TESTS OR AC3FORGE_BUILD_EXAMPLES))
+if(NOT AC3FORGE_BUILD_MP4 AND NOT EMSCRIPTEN AND
+        (AC3FORGE_BUILD_CLI OR AC3FORGE_BUILD_GUI OR AC3FORGE_BUILD_TESTS OR AC3FORGE_BUILD_EXAMPLES))
     message(FATAL_ERROR "AC3FORGE_BUILD_MP4=OFF requires AC3FORGE_BUILD_CLI, "
         "AC3FORGE_BUILD_GUI, AC3FORGE_BUILD_TESTS and AC3FORGE_BUILD_EXAMPLES to all be OFF too - "
         "they all link mp4::mp4 unconditionally.")
 endif()
-if(NOT AC3FORGE_BUILD_MPEGTS AND (AC3FORGE_BUILD_CLI OR AC3FORGE_BUILD_GUI OR
-                                  AC3FORGE_BUILD_TESTS OR AC3FORGE_BUILD_EXAMPLES))
+if(NOT AC3FORGE_BUILD_MPEGTS AND NOT EMSCRIPTEN AND
+        (AC3FORGE_BUILD_CLI OR AC3FORGE_BUILD_GUI OR
+         AC3FORGE_BUILD_TESTS OR AC3FORGE_BUILD_EXAMPLES))
     message(FATAL_ERROR "AC3FORGE_BUILD_MPEGTS=OFF requires AC3FORGE_BUILD_CLI, "
         "AC3FORGE_BUILD_GUI, AC3FORGE_BUILD_TESTS and AC3FORGE_BUILD_EXAMPLES to all be OFF too - "
         "they all link mpegts::mpegts unconditionally.")
@@ -137,7 +147,16 @@ add_subdirectory(src/lib)
 # ac3::forge for the IEC 61937 framer); before src/cli/src/gui/tests, which
 # link it alongside ac3::forge for their live-audio commands/features. Not
 # linked by examples/ - none of them touch live audio.
-add_subdirectory(src/audio)
+#
+# Skipped entirely under Emscripten: src/audio/CMakeLists.txt hard-fails
+# configure when none of WIN32/LINUX/APPLE/ANDROID is set (it has no browser
+# platform directory, and never will - a WASM build gets live audio from the
+# Web Audio API in JS instead, not from this library), and nothing a WASM
+# configure builds needs it anyway (AC3FORGE_BUILD_CLI/GUI/TESTS are all OFF
+# there, and examples/wasm_decode_demo does not link ac3::audio).
+if(NOT EMSCRIPTEN)
+    add_subdirectory(src/audio)
+endif()
 
 # The EMDF Atmos object signer (ac3::signing). Clean-room and dependency-free:
 # the HMAC construction and authenticated-region layout are in-tree, and the

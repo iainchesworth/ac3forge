@@ -12,6 +12,38 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 
 ## [Unreleased]
 
+### WASM decode demo (roadmap F3, partial)
+
+- **`ac3::forge`'s decode path now builds under Emscripten.** A new `config-wasm-emscripten`
+  CMake preset (`cmake/toolchains/wasm.emscripten.toolchain.cmake`) compiles `ac3::forge` to
+  WebAssembly. Unlike every other platform preset, this one does not chainload through vcpkg:
+  the codec's decode path has zero third-party dependencies (`vcpkg.json`'s own description
+  says so — catch2 is tests-only, and tests are off for this preset), so going through vcpkg's
+  community `wasm32-emscripten` triplet would only add cost for nothing it needs.
+  `src/audio` (the project's one genuinely platform-specific library — WASAPI/ALSA/AAudio) is
+  skipped entirely under this preset; a browser build gets live audio from the Web Audio API in
+  JS instead.
+- **A real browser demo**, `examples/wasm_decode_demo/`: an Embind wrapper
+  (`decoder_bindings.cpp`) around the existing `FrameDecoder`/`Eac3Decoder` API, plus a page
+  (`index.html`/`demo.js`) that fetches a raw `.ec3`/`.ac3` elementary stream (bundled, or
+  user-uploaded), decodes it entirely client-side, plays the decoded bed audio through the Web
+  Audio API, and visualizes real per-channel RMS energy on a speaker ring — the coordinate
+  model and screen-space transform ported from the desktop GUI's `SoundfieldView.qml`. The
+  bundled fixture is a real 8-second, 3-object Atmos-in-DD+ stream encoded with the existing
+  `AtmosEncoder`.
+- **Embedded live in the docs site** at `docs/wasm-demo.md` (nav: Project → "Live decode demo
+  (WASM)") via an iframe over a prebuilt copy of the demo under `docs/assets/wasm-decode-demo/`.
+  Committed rather than CI-built: `.github/workflows/docs.yml` only runs `mkdocs build`, with no
+  C++/Emscripten toolchain installed, so there is currently nowhere in the pipeline for an
+  `emcc` build to happen — teaching CI to rebuild and publish this automatically is a real gap,
+  not addressed here.
+- **What this does *not* do yet, and why F3 stays unchecked**: `ac3::forge` has no decode-side
+  OAMD/JOC parser — the encoder can write Atmos object metadata, but nothing in the library can
+  read it back out of a stream (`eac3_decoder.cpp` reads the EMDF-bearing skip field and
+  discards it). The demo's visualization is therefore real decoded *bed* energy, not object
+  positions. Real OAMD/JOC decode is tracked as separate follow-up work; this demo will grow
+  object motion once that lands.
+
 ### Delivery
 
 - **MP4/ISOBMFF muxer** (`mp4::mp4`, `ac3cli mp4 <in.ac3|in.ec3> <out.mp4>`) — a second
