@@ -3407,6 +3407,7 @@ int run_decode(std::string_view in_path, std::string_view out_path,
     // What the stream actually carried, reported whether or not it was applied.
     double dynrng_min_db = 0.0;
     double dynrng_max_db = 0.0;
+    std::size_t dynrng_words = 0;
     double compr_min_db = 0.0;
     double compr_max_db = 0.0;
     std::size_t compr_frames = 0;
@@ -3418,8 +3419,9 @@ int run_decode(std::string_view in_path, std::string_view out_path,
         }
         for (const auto word : decoded->dynrng) {
             const double db = ac3::meta::to_db(ac3::meta::dynrng_gain(word));
-            dynrng_min_db = std::min(dynrng_min_db, db);
-            dynrng_max_db = std::max(dynrng_max_db, db);
+            dynrng_min_db = dynrng_words == 0 ? db : std::min(dynrng_min_db, db);
+            dynrng_max_db = dynrng_words == 0 ? db : std::max(dynrng_max_db, db);
+            ++dynrng_words;
         }
         if (decoded->compr) {
             const double db = ac3::meta::to_db(ac3::meta::compr_gain(*decoded->compr));
@@ -4333,10 +4335,11 @@ int run_eac3_silence(std::string_view out_path, std::uint32_t seconds, std::uint
 // bitstreamed) output - a sanity-check/preview path, and the offline half of
 // live monitoring ('live's --monitor equivalent works the same way, one
 // access unit at a time as it is produced instead of read from a file).
-// Object metadata (JOC/OAMD) is not applied: the in-repo decoder's E-AC-3
-// scope is A/52 Annex E syntax, not TS 103 420's object layer, so an Atmos
-// file plays its 5.1 bed - exactly what a legacy decoder hears, which is the
-// thing most worth confirming actually sounds right.
+// Object metadata (JOC/OAMD) is parsed but not rendered here: Eac3Decoder
+// reads TS 103 420's object layer (DecodedSubstream::object_metadata/
+// object_audio), but this path only plays the 5.1 bed - exactly what a
+// legacy decoder hears, which is the thing most worth confirming actually
+// sounds right.
 int run_monitor(std::string_view in_path, int device_index) {
     const auto stream = read_all(in_path);
     if (stream.empty()) {
@@ -5203,9 +5206,9 @@ void print_usage() {
     std::println("record/live container=mkv: write straight to Matroska (a single command)");
     std::println("       instead of the bare elementary stream both write by default; 'mkv'");
     std::println("       remains the way to wrap an ALREADY-encoded file after the fact.");
-    std::println("monitor/live --monitor play the 5.1 BED of an Atmos-mode stream: the in-repo");
-    std::println("       decoder's E-AC-3 scope is A/52 Annex E syntax, not TS 103 420's object");
-    std::println("       layer, so this is what a legacy decoder hears, not unmixed objects.");
+    std::println("monitor/live --monitor play the 5.1 BED of an Atmos-mode stream: the decoder");
+    std::println("       reads TS 103 420's object layer (OAMD/JOC) but this path does not render");
+    std::println("       objects, so this is what a legacy decoder hears, not unmixed objects.");
     std::println("");
     std::println("tools:  Annex E coding tools, '+'-joined — {}", plan::kToolsSyntax);
     std::println("        cpl:N / spx:N pin that tool's band edge (e.g. cpl:4+spx:5);");
