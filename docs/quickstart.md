@@ -81,7 +81,7 @@ for (int frame = 0; frame < 31; ++frame) {
 - [Library conventions](library/index.md) — the full API reference: `ac3::eac3::FrameEncoder`
   and `AccessUnitEncoder`, both decoders, `ac3::io::scan`, the spatial object layer, the Atmos
   encoder, and `matroska::mux`.
-- [CLI reference](cli/index.md) — `ac3cli`, the twenty-five-command front end, for encoding and
+- [CLI reference](cli/index.md) — `ac3cli`, the twenty-six-command front end, for encoding and
   decoding from the shell without writing any C++.
 - [GUI guide](gui/index.md) — `ac3gui`, the Qt Quick front end: file and live-capture encoding,
   a plan view for placing objects, and channel-level metering.

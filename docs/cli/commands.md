@@ -13,6 +13,7 @@ Usage:
   ac3cli atmos        <out.ec3> [seconds] [bitrate_kbps] [objects] [orbit_seconds] [mode]
   ac3cli atmos-path   <out.ec3> <paths.txt> [seconds] [bitrate_kbps] [objects] (objects driven by an authored keyframe file instead of the built-in orbit)
   ac3cli atmos-encode <in.wav> <out.ec3> [bitrate_kbps] [objects] [paths.txt] (every source channel as an object; optional: authored per-object motion from a keyframe file (same format as atmos-path), objects it doesn't mention keep their default placement)
+  ac3cli atmos-adm    <in.adm.wav> <out.ec3> [bitrate_kbps] [programme_id] (UNAVAILABLE HERE)
   ac3cli record       <out.ac3> [seconds] [bitrate_kbps] [device_index]
   ac3cli live         <out.ac3|out.ec3> <capture_device> [seconds] [bitrate_kbps] [monitor_device] [passthrough_device] [mode] (capture -> encode -> live monitor and/or passthrough)
   ac3cli encode       <in.wav> <out.ac3> [bitrate_kbps] [layout] [in2.wav] (in2.wav: layout 1+1's Ch2, when Ch1 is a separate mono file; or use src=/map= for more than one source)
@@ -103,6 +104,55 @@ stderr instead of stdout whenever the output side is `-`, so it never ends up in
 stream — on the single-source paths. Two cases currently still write to stdout and will corrupt
 a `-` pipe: `dialnorm=auto`'s measurement line, and the `src=`/`map=` multi-source paths'
 summary/routing/levels report.
+
+### ADM ingest — real professional master files (opt-in, roadmap B1)
+
+**Only *runnable* in a build with `-DAC3FORGE_BUILD_ADM=ON`** — but always *listed*, the same
+"a command a build cannot run is shown, not hidden" treatment the live-audio commands below get
+(see that section's own note): a default build's usage block at the top of this page shows this
+row as `UNAVAILABLE HERE` instead of the description below, and running it prints a clear reason
+(`ac3cli atmos-adm ...` → `error: 'atmos-adm' is unavailable on this platform: this build was not
+configured with -DAC3FORGE_BUILD_ADM=ON ...`) rather than "unknown command". Every command besides
+this one builds and works identically whether that flag is on or off — this is the one exception,
+because it is the one command that needs `ac3adm::ac3adm`/`ac3::admbridge`, this project's sole
+opt-in, Boost-requiring module (default **off** — see
+[ADM / BW64 reading](../library/adm.md#why-opt-in)). What the row looks like in a build configured
+with the flag on (the usage block at the top of this page is copied from a *default* build, where
+this row instead reads `UNAVAILABLE HERE`):
+
+```text
+  ac3cli atmos-adm    <in.adm.wav> <out.ec3> [bitrate_kbps] [programme_id] (a real ADM BWF master (BS.2076-2 ADM XML + BW64/RF64, roadmap B1) straight to DD+ JOC E-AC-3; every bed/object channel the resolved audioProgramme names becomes an AtmosEncoder object, driven by the file's own authored automation - no keyframe file needed. Only in builds with -DAC3FORGE_BUILD_ADM=ON)
+```
+
+| Command | What it does |
+|---|---|
+| `atmos-adm` | A real ADM BWF master (professional delivery format Netflix's and Apple's own Atmos ingest pipelines require) straight to DD+ JOC E-AC-3 — no WAV, no hand-authored keyframe file: [`ac3::admbridge::build`](../library/adm-bridge.md) classifies every channel as a bed speaker feed or a dynamic object and builds its own `ac3::oba::ObjectPath` straight from the file's authored BS.2076-2 §10.3 position/gain automation, driven frame by frame the same way `atmos-encode` drives an authored `[paths.txt]` |
+
+```bash
+ac3cli atmos-adm master.wav out.ec3 448
+```
+
+448 kbps, the file's lowest-ID `audioProgramme` (BS.2076-2 §5.8's own default-selection rule).
+Pass a fourth argument to pick a different one by ID:
+
+```bash
+ac3cli atmos-adm master.wav out.ec3 448 APR_1002
+```
+
+`dialnorm=` works the same as every other encoding command (see
+[Options & grammars](metadata-options.md)); `dialnorm=auto` does not — an ADM document's bed/object
+channels have no single fixed layout to measure loudness against the way `atmos-encode`'s WAV
+input does, so `atmos-adm` refuses it with a clear error rather than silently keeping the default.
+
+Every failure — a container/XML parse error (`ac3adm::AdmError`) or a graph-resolution error
+(`ac3::admbridge::BridgeError`, e.g. no `audioProgramme`, an unresolved reference, an unsupported
+pack type) — prints a real diagnosis via that error's own `describe()`, never an opaque crash or a
+bare non-zero exit.
+
+See [ADM / BW64 reading](../library/adm.md) and [ADM → Atmos bridging](../library/adm-bridge.md)
+for the parser and the mapping layer this command drives, and
+[`examples/encode_adm.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/encode_adm.cpp)
+for the same pipeline as a minimal, standalone, self-fixturing program.
 
 ### Decoding & inspection
 

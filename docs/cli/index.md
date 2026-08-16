@@ -1,11 +1,14 @@
 # ac3cli
 
-`ac3cli` is the command-line front end over `ac3::forge` — twenty-five commands covering
+`ac3cli` is the command-line front end over `ac3::forge` — twenty-six commands covering
 synthesis, file encoding/decoding, container wrapping, inspection, and live capture/playback.
-Every command it can run is backed by the same public library documented under
-[Library](../library/index.md); every codec and format decision lives in the library, and the
-CLI keeps only small local helpers of its own (the DASH MPD document wrapper `fmp4` writes, the
-keyframe-file parser behind `atmos-path`/`atmos-encode`).
+One of the twenty-six (`atmos-adm`) only *runs* in a build configured with
+`-DAC3FORGE_BUILD_ADM=ON`, but is always *listed* — the same "shown, not hidden" treatment
+this page's own live-audio commands get when the platform can't run them either (see
+[Commands](commands.md)'s own ADM section). Every command it can run is backed by the same public
+library documented under [Library](../library/index.md); every codec and format decision lives in
+the library, and the CLI keeps only small local helpers of its own (the DASH MPD document wrapper
+`fmp4` writes, the keyframe-file parser behind `atmos-path`/`atmos-encode`).
 
 Run it with no arguments for the full usage text — the command list in [Commands](commands.md)
 is transcribed from it, and re-checked against a built binary at each release.
@@ -33,7 +36,7 @@ ac3forge 0.5.0-beta.1
   target:  Windows x86_64 (MSVC 1951)
 ```
 
-`--version` (or its `-v` alias) is a flag, not one of the twenty-five commands — it's handled
+`--version` (or its `-v` alias) is a flag, not one of the twenty-six commands — it's handled
 before argument parsing and exits immediately.
 
 ## Conventions shared across commands
@@ -78,7 +81,8 @@ before argument parsing and exits immediately.
 
 ## Next
 
-- [Commands](commands.md) — all 25 commands, grouped and with real usage text.
+- [Commands](commands.md) — all 26 commands, grouped and with real usage text (`atmos-adm` only
+  *runs* with `-DAC3FORGE_BUILD_ADM=ON`, but is listed either way).
 - [Options & grammars](metadata-options.md) — the `drc=`/`heavy`/`dialnorm=`/… options grammar,
   the `tools` argument grammar, and the full layout/location-list grammar.
 - [Concepts](../concepts/index.md) — if `bsid`, `syncframe`, or `JOC` aren't already familiar.

@@ -179,6 +179,19 @@ if(AC3FORGE_BUILD_ADM)
     target_link_libraries(ac3tests PRIVATE ac3adm::ac3adm ac3::admbridge)
 endif()
 
+# test_cli_atmos_adm.cpp (roadmap B1 phase 3, ac3cli's 'atmos-adm' command) needs BOTH conditions
+# above to hold at once, not just AC3FORGE_BUILD_ADM alone: it runs the real, built ac3cli binary
+# as a subprocess (AC3CLI_EXE, defined only inside the `if(TARGET ac3cli)` block above) against an
+# ADM fixture, so the command it exercises only exists in that binary at all when
+# AC3FORGE_BUILD_ADM was ALSO on for this same configure (src/cli/CMakeLists.txt's own
+# AC3FORGE_BUILD_ADM guard). Neither `if(TARGET ac3cli)` alone (AC3FORGE_BUILD_ADM could be off,
+# and 'atmos-adm' simply would not exist in that binary) nor `if(AC3FORGE_BUILD_ADM)` alone
+# (AC3CLI_EXE might not be defined at all, e.g. AC3FORGE_BUILD_CLI=OFF) is sufficient by itself -
+# both are checked together here, after both blocks above have already run.
+if(AC3FORGE_BUILD_ADM AND TARGET ac3cli)
+    target_sources(ac3tests PRIVATE test_cli_atmos_adm.cpp)
+endif()
+
 target_include_directories(ac3tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 
 target_link_libraries(ac3tests

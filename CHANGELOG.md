@@ -113,8 +113,37 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   driven through a real `AtmosEncoder`/`Eac3Decoder` round trip, confirming the decoded bitstream's
   channel energy lands where the authored ADM positions and hold/jump timing say it should — not
   just against hand-built graphs. Not part of the installed `find_package(ac3forge)` package, for
-  the same reason `ac3adm::ac3adm` itself is not. A worked end-to-end ADM→E-AC-3 pipeline example
-  (phase 3) remains — see [docs/library/adm-bridge.md](docs/library/adm-bridge.md).
+  the same reason `ac3adm::ac3adm` itself is not.
+- **`ac3cli atmos-adm`, roadmap item B1 phase 3 of 3 — the last piece.** A real ADM BWF master
+  straight to a DD+ JOC E-AC-3 elementary stream: `ac3adm::parse_bw64` reads the container and ADM
+  graph, `ac3::admbridge::build` maps it onto `AtmosEncoder`'s object-list input shape, and a
+  per-frame loop drives `ac3::oba::evaluate_placements`/`AtmosEncoder::encode_frame` the same way
+  `atmos-path`/`atmos-encode` already do — no WAV, no hand-authored keyframe file, since the master
+  already carries every channel's own position/gain automation. Every `AdmError`/`BridgeError`
+  prints a real diagnosis via that error's own `describe()`. `dialnorm=auto` is refused with a
+  clear message rather than silently ignored — an ADM document's bed/object channels have no single
+  fixed layout to measure loudness against the way `atmos-encode`'s WAV input does. A minimal,
+  standalone illustration of the same pipeline ships as
+  [`examples/encode_adm.cpp`](examples/encode_adm.cpp), writing its own small BW64/ADM fixture
+  (bed speaker feed plus one moving object) rather than requiring a real production master. Both
+  are the first code outside `tests/` to link `ac3adm::ac3adm`/`ac3::admbridge` — `src/cli/
+  CMakeLists.txt` links them only when the same flag turned the two libraries on; `ac3cli` itself
+  still builds and works identically with the flag off, just without this one command. Reached with
+  no preprocessor conditional anywhere (`scripts/check-platform-macros.ps1`, CI-enforced, forbids
+  any `#if`/`#ifdef` under `src/` — feature flags included, not just platform ones): `atmos-adm` is
+  always one row of `main.cpp`'s command table, refused at dispatch time by a new `Needs::kAdm`
+  case in the existing `unmet()` capability gate (the same mechanism
+  `Needs::kCapture`/`kPassthrough`/`kMonitor` already use for platform audio capability) when
+  `ac3cli::adm_capability()` reports unavailable — backed by a small pair of CMake-selected files,
+  `src/cli/adm/{enabled,disabled}/atmos_adm.cpp`, the identical "exactly one file compiled in,
+  chosen by CMake" shape this file's own `platform/{windows,posix}/stdio_binary.cpp` split already
+  uses for an OS difference, applied here to a library-linked-or-not one instead — see
+  `src/cli/adm/atmos_adm.hpp`'s own top comment for the full reasoning. Tested against a real
+  byte-level BW64 fixture run through the actual built `ac3cli` binary as a subprocess, decoding
+  what it wrote and confirming the channel energy lands where the authored ADM positions and
+  hold/jump timing say it should, plus two CLI-level error-path cases. See
+  [docs/library/adm-bridge.md](docs/library/adm-bridge.md) and
+  [docs/cli/commands.md](docs/cli/commands.md).
 
 ### Codec depth
 
