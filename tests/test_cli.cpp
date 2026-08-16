@@ -1835,3 +1835,97 @@ TEST_CASE("decode objects_dir warns instead of exporting when there is no object
         CHECK_FALSE(fs::exists(objects_dir));
     }
 }
+
+// Regression test for a latent bug in run_decode_eac3's Eac3Decoder::flush()
+// tail loop: it used to append a flushed substream's channels at pcm[0..N)
+// by CODED index, rather than at the Table E2.5 slot decode_access_unit's
+// own §E3.8.2 assembly would have used. That is silently correct for a lone
+// independent substream (its coded order already matches pcm's established
+// index order), but wrong the moment flush() hands back a DEPENDENT on its
+// own - its smaller channel set then lands in pcm[0]/pcm[1] (the bed's L/R)
+// instead of its own height slots, leaving some pcm[] vectors longer than
+// others once interleaved into the WAV.
+//
+// §3.7 transient pre-noise processing is what can make flush() return a raw
+// per-substream result at all (decoder.hpp's own doc comment on
+// Eac3Decoder::flush): a substream identity holds its last frame back
+// exactly when ITS OWN channels carry a transient on the stream's very last
+// frame, with no following frame to release it. tools=tpn turns the tool on
+// for every substream uniformly (plan.cpp's apply_tools), but activation is
+// decided per substream from its own real audio content - so a bed that ends
+// on a sharp transient while its height dependent stays silent desyncs
+// exactly like this at end of stream, the same asymmetry
+// test_eac3_decoder.cpp's own "decode_access_unit queues a substream..."
+// test already proves reliably triggers at the library level.
+TEST_CASE(
+    "decode assembles a flush()'d transient-pre-noise tail into the correct channel slots, not "
+    "coded-order-into-pcm-index",
+    "[cli][decode][eac3][transient_prenoise]") {
+    const auto dir = scratch_dir();
+    const auto wav_path = dir / "flush_desync_in.wav";
+
+    constexpr std::uint32_t kRate = 48000;
+    constexpr std::size_t kFrame = static_cast<std::size_t>(ac3::kSamplesPerFrame);
+    constexpr std::size_t kSilentFrames = 4;
+    // Within the final frame - the same offset the library's own
+    // transient_prenoise unit test uses to trigger block switching.
+    constexpr std::size_t kOnset = 960;
+    constexpr std::size_t kTotalFrames = (kSilentFrames + 1) * kFrame;
+
+    // Bed (L, R): silent until the very last frame, then a loud 1 kHz onset.
+    std::vector<float> bed_channel(kTotalFrames, 0.0f);
+    for (std::size_t n = kSilentFrames * kFrame + kOnset; n < kTotalFrames; ++n) {
+        bed_channel[n] = static_cast<float>(
+            0.9 * std::sin(2.0 * std::numbers::pi * 1000.0 * static_cast<double>(n) /
+                          static_cast<double>(kRate)));
+    }
+    // The height dependent (Vhl, Vhr): silent for the whole file, so it never
+    // sets transproce itself and keeps releasing every call right up to the
+    // stream's last frame - the asymmetry the bug needs. WAV channel order
+    // matches Table E2.5/kWavSpeakerOrder for this location set: L, R, then
+    // Vhl, Vhr.
+    const std::vector<float> silence(kTotalFrames, 0.0f);
+    REQUIRE(write_wav(wav_path, {bed_channel, bed_channel, silence, silence}, kRate));
+
+    const auto ec3_path = dir / "flush_desync.ec3";
+    const auto encode_log = dir / "flush_desync_encode.log";
+    const auto encode_rc = run_cli("eac3-encode \"" + wav_path.string() + "\" \"" +
+                                       ec3_path.string() + "\" 192 tpn L,R,Vhl,Vhr",
+                                   encode_log);
+    INFO(read_log(encode_log));
+    REQUIRE(encode_rc == 0);
+
+    const auto wav_out = dir / "flush_desync_out.wav";
+    const auto decode_log = dir / "flush_desync_decode.log";
+    const auto decode_rc =
+        run_cli("decode \"" + ec3_path.string() + "\" \"" + wav_out.string() + "\"", decode_log);
+    INFO(read_log(decode_log));
+    REQUIRE(decode_rc == 0);
+
+    const auto decoded = ac3::io::read_wav(wav_out.string());
+    REQUIRE(decoded.has_value());
+    REQUIRE(decoded->channels.size() == 4);
+
+    // The core symptom this bug produced: some pcm[] vectors longer than
+    // others once a flushed substream's channels landed at the wrong index.
+    // Every channel must come out exactly as long as every other.
+    const auto expected_length = decoded->channels[0].size();
+    for (const auto& channel : decoded->channels) {
+        CHECK(channel.size() == expected_length);
+    }
+    // Every real frame must have made it out, including the desynced tail -
+    // a fix that merely made the lengths agree by truncating the flush()
+    // tail would still pass the check above but fail this one.
+    CHECK(expected_length >= kTotalFrames);
+
+    // And the tail must have landed in the RIGHT channels: the bed's onset
+    // in L/R (indices 0/1), silence still in the height pair (indices 2/3) -
+    // not the reverse, and not smeared across both by a coded-order copy.
+    const auto tail_from = kSilentFrames * kFrame + kOnset;
+    for (const std::size_t ch : {std::size_t{0}, std::size_t{1}}) {
+        CHECK(rms(decoded->channels[ch], tail_from, expected_length - tail_from) > 0.3);
+    }
+    for (const std::size_t ch : {std::size_t{2}, std::size_t{3}}) {
+        CHECK(rms(decoded->channels[ch], tail_from, expected_length - tail_from) < 0.05);
+    }
+}

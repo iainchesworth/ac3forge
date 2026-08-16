@@ -191,8 +191,8 @@ TEST_CASE("reconstruct is a 256-sample-delayed identity when the matrix is a pur
     double signal = 0.0;
     double error = 0.0;
     for (int n = kDelay; n < ac3::kSamplesPerFrame; ++n) {
-        const double s = bed[0][static_cast<std::size_t>(n - kDelay)];
-        const double r = out[0][static_cast<std::size_t>(n)];
+        const double s = static_cast<double>(bed[0][static_cast<std::size_t>(n - kDelay)]);
+        const double r = static_cast<double>(out[0][static_cast<std::size_t>(n)]);
         signal += s * s;
         error += (s - r) * (s - r);
     }

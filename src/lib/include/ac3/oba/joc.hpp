@@ -129,6 +129,19 @@ struct ReconstructionState {
     int previous_objects = 0;
     int previous_num_bands_idx = -1;
     std::vector<std::array<double, 256>> object_history{};
+
+    // reconstruct()'s own per-call scratch (PREfast C6262: stack-declaring
+    // these inside the function put it at ~24 KB of stack per call). Reused
+    // across every (block, channel)/(block, object) iteration of a call
+    // instead, the same reasoning Eac3Decoder's own imdct_scratch_/
+    // ecpl_spectrum_*_ members already use - each is fully overwritten
+    // before being read, so nothing here needs to persist meaningfully
+    // BETWEEN calls the way bed_history/previous_matrix/object_history do.
+    std::array<std::array<double, 256>, kNumChannels5X> bed_mdct_scratch{};
+    std::array<double, 512> time_scratch{};
+    std::array<double, 512> windowed_scratch{};
+    std::array<double, 256> object_mdct_scratch{};
+    std::array<double, 512> synth_scratch{};
 };
 
 // Reconstructs each JOC object's time-domain audio for one frame from the

@@ -266,14 +266,18 @@ std::vector<std::vector<float>> reconstruct(std::span<const std::vector<float>> 
         static_cast<std::size_t>(objects),
         std::vector<float>(static_cast<std::size_t>(kSamplesPerFrame)));
 
+    auto& bed_mdct = state.bed_mdct_scratch;
+    auto& time = state.time_scratch;
+    auto& windowed = state.windowed_scratch;
+    auto& object_mdct = state.object_mdct_scratch;
+    auto& x = state.synth_scratch;
+
     for (int block = 0; block < kBlocksPerFrame; ++block) {
         // --- analyze this block of the downmix, one MDCT per bed channel ---
         // Only block 0 ever reads negative indices (into the previous
         // frame's tail); every later block's window sits entirely inside
         // THIS frame's own already-decoded samples.
-        std::array<std::array<double, 256>, kNumChannels5X> bed_mdct{};
         for (int ch = 0; ch < kNumChannels5X; ++ch) {
-            std::array<double, 512> time{};
             for (int n = 0; n < 512; ++n) {
                 const int index = block * kSamplesPerBlock + n - 256;
                 time[static_cast<std::size_t>(n)] =
@@ -283,7 +287,6 @@ std::vector<std::vector<float>> reconstruct(std::span<const std::vector<float>> 
                         : state.bed_history[static_cast<std::size_t>(ch)]
                                            [static_cast<std::size_t>(256 + index)];
             }
-            std::array<double, 512> windowed{};
             apply_analysis_window(time, windowed);
             mdct512_forward(windowed, bed_mdct[static_cast<std::size_t>(ch)], fast_mdct);
         }
@@ -297,7 +300,6 @@ std::vector<std::vector<float>> reconstruct(std::span<const std::vector<float>> 
         for (int object = 0; object < objects; ++object) {
             // --- §6.6.6: this object's spectrum is a per-band linear
             // combination of the downmix's ---
-            std::array<double, 256> object_mdct{};
             for (int bin = 0; bin < 256; ++bin) {
                 const int band = mapping[static_cast<std::size_t>(bin / 4)];
                 double sum = 0.0;
@@ -321,7 +323,6 @@ std::vector<std::vector<float>> reconstruct(std::span<const std::vector<float>> 
 
             // --- synthesize, same overlap-add eac3_decoder.cpp's own
             // channel reconstruction uses ---
-            std::array<double, 512> x{};
             imdct512_windowed(object_mdct, x);
             auto& history = state.object_history[static_cast<std::size_t>(object)];
             auto& pcm = out[static_cast<std::size_t>(object)];
