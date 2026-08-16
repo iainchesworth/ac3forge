@@ -41,9 +41,10 @@ find_package(Boost 1.57 QUIET)
 if(NOT Boost_FOUND)
     message(FATAL_ERROR
         "AC3FORGE_BUILD_ADM=ON needs libadm's Boost header dependencies (Optional, "
-        "Variant, Range, Iterator, Functional, Format), which were not found. If using "
-        "vcpkg, reconfigure with -DVCPKG_MANIFEST_FEATURES=adm (see vcpkg.json's \"adm\" "
-        "feature) so those packages resolve, or build with -DAC3FORGE_BUILD_ADM=OFF.")
+        "Variant, Range, Iterator, Functional, Format, Integer, Rational), which were not "
+        "found. If using vcpkg, reconfigure with -DVCPKG_MANIFEST_FEATURES=adm (see "
+        "vcpkg.json's \"adm\" feature) so those packages resolve, or build with "
+        "-DAC3FORGE_BUILD_ADM=OFF.")
 endif()
 
 include(FetchContent)
