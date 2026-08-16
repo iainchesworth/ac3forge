@@ -20,6 +20,18 @@ double to_seconds(const adm::Time& time) {
     return std::chrono::duration<double>(time.asNanoseconds()).count();
 }
 
+// libadm declares several coordinate/dimension NamedTypes as NamedType<float, ...> even though
+// this module's own equivalents (ac3adm/model.hpp) are double - no precision reason, just how
+// libadm declared them. Every plain float->double widening below goes through this helper to
+// make the promotion explicit rather than implicit: -Wdouble-promotion is real on GCC/Clang
+// (never caught by MSVC - see CONTRIBUTING.md's own multi-compiler verification note) and
+// Clang's variant of it - unlike GCC's, which only fires when a float and a double literal have
+// to unify inside a ternary - flags every single one of these plain assignments too, confirmed
+// directly by building this exact file on both.
+double to_double(float value) {
+    return static_cast<double>(value);
+}
+
 // Table 7/10/20/53's five typeDefinition values, plus UNDEFINED and the
 // 0x1000-0xFFFF "User Custom" range libadm folds into neither - see
 // adm::TypeDescriptor's own doc comment ("valid values are in the range
@@ -93,17 +105,19 @@ void set_position(const BlockFormat& block, AudioBlockFormat& out) {
         const auto cartesian = block.template get<Cartesian>();
         out.cartesian = true;
         out.position = CartesianPosition{
-            .x = cartesian.template get<adm::X>().get(),
-            .y = cartesian.template get<adm::Y>().get(),
-            .z = cartesian.template has<adm::Z>() ? cartesian.template get<adm::Z>().get() : 0.0,
+            .x = to_double(cartesian.template get<adm::X>().get()),
+            .y = to_double(cartesian.template get<adm::Y>().get()),
+            .z = cartesian.template has<adm::Z>() ? to_double(cartesian.template get<adm::Z>().get()) : 0.0,
         };
     } else if (block.template has<Spherical>()) {
         const auto spherical = block.template get<Spherical>();
         out.cartesian = false;
         out.position = PolarPosition{
-            .azimuth_deg = spherical.template get<adm::Azimuth>().get(),
-            .elevation_deg = spherical.template get<adm::Elevation>().get(),
-            .distance = spherical.template has<adm::Distance>() ? spherical.template get<adm::Distance>().get() : 1.0,
+            .azimuth_deg = to_double(spherical.template get<adm::Azimuth>().get()),
+            .elevation_deg = to_double(spherical.template get<adm::Elevation>().get()),
+            .distance = spherical.template has<adm::Distance>()
+                            ? to_double(spherical.template get<adm::Distance>().get())
+                            : 1.0,
         };
     }
 }
@@ -121,17 +135,17 @@ void set_objects_position(const adm::AudioBlockFormatObjects& block, AudioBlockF
         const auto& cartesian = boost::get<adm::CartesianPosition>(position);
         out.cartesian = true;
         out.position = CartesianPosition{
-            .x = cartesian.get<adm::X>().get(),
-            .y = cartesian.get<adm::Y>().get(),
-            .z = cartesian.has<adm::Z>() ? cartesian.get<adm::Z>().get() : 0.0,
+            .x = to_double(cartesian.get<adm::X>().get()),
+            .y = to_double(cartesian.get<adm::Y>().get()),
+            .z = cartesian.has<adm::Z>() ? to_double(cartesian.get<adm::Z>().get()) : 0.0,
         };
     } else {
         const auto& spherical = boost::get<adm::SphericalPosition>(position);
         out.cartesian = false;
         out.position = PolarPosition{
-            .azimuth_deg = spherical.get<adm::Azimuth>().get(),
-            .elevation_deg = spherical.get<adm::Elevation>().get(),
-            .distance = spherical.has<adm::Distance>() ? spherical.get<adm::Distance>().get() : 1.0,
+            .azimuth_deg = to_double(spherical.get<adm::Azimuth>().get()),
+            .elevation_deg = to_double(spherical.get<adm::Elevation>().get()),
+            .distance = spherical.has<adm::Distance>() ? to_double(spherical.get<adm::Distance>().get()) : 1.0,
         };
     }
 }
@@ -170,17 +184,17 @@ AudioBlockFormat convert(const adm::AudioBlockFormatObjects& src) {
                                                            : boost::none,
                                  src.get<adm::Gain>(), src.get<adm::Importance>());
     set_objects_position(src, block);
-    block.width = src.get<adm::Width>().get();
-    block.height = src.get<adm::Height>().get();
-    block.depth = src.get<adm::Depth>().get();
-    block.diffuse = src.get<adm::Diffuse>().get();
+    block.width = to_double(src.get<adm::Width>().get());
+    block.height = to_double(src.get<adm::Height>().get());
+    block.depth = to_double(src.get<adm::Depth>().get());
+    block.diffuse = to_double(src.get<adm::Diffuse>().get());
     if (src.has<adm::ChannelLock>()) {
         const auto channel_lock = src.get<adm::ChannelLock>();
         block.has_channel_lock = true;
         block.channel_lock = channel_lock.get<adm::ChannelLockFlag>().get();
         if (channel_lock.has<adm::MaxDistance>()) {
             block.has_channel_lock_max_distance = true;
-            block.channel_lock_max_distance = channel_lock.get<adm::MaxDistance>().get();
+            block.channel_lock_max_distance = to_double(channel_lock.get<adm::MaxDistance>().get());
         }
     }
     if (src.has<adm::JumpPosition>()) {

@@ -310,8 +310,17 @@ Bytes wrap_axml_only(std::string_view axml_xml) {
 // definitions.xml defines none of those four) - this helper finds one specific element by ID out
 // of a collection that may also hold the common set, rather than assuming it is the only/first
 // entry.
+//
+// `id` is std::string_view, not const std::string& - every call site here passes a string
+// literal, which would otherwise bind to a temporary std::string constructed just for the call.
+// GCC 15's -Wdangling-reference (real, -Werror on the Linux/GCC preset - not something MSVC
+// catches, confirmed by hitting this only on the Linux leg) flags the caller's own `const auto&`
+// binding to this function's returned container element as a possible dangling reference in
+// that situation, even though the returned reference is into `elements` and never aliases `id`
+// at all - string_view sidesteps the whole question since a literal converts to it without
+// constructing anything owning.
 template <typename T>
-const T& find_by_id(const std::vector<T>& elements, const std::string& id) {
+const T& find_by_id(const std::vector<T>& elements, std::string_view id) {
     auto it = std::find_if(elements.begin(), elements.end(), [&](const T& e) { return e.id == id; });
     REQUIRE(it != elements.end());
     return *it;
