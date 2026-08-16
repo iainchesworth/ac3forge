@@ -39,9 +39,9 @@ metadata options (any order, after the positional arguments):
   fast-mdct=off     force the direct §8.2.3.2 forward MDCT instead of the default §7.9.4 fast
                     path (identical streams to within ~3e-12 max relative coefficient error;
                     the direct form is the validation oracle) - applies wherever this command
-                    encodes, incl. atmos/record/live/eac3-sine; eac3-encode alone has a [tools]
-                    positional argument whose bare nofastmdct token reaches the same field
-                    instead; bare fast-mdct (the old opt-in) is a no-op
+                    encodes, incl. atmos/record/live/eac3-sine/eac3-encode; eac3-encode's
+                    [tools] positional can also reach this field via a bare nofastmdct token,
+                    which wins if both are given; bare fast-mdct (the old opt-in) is a no-op
 
 qc options (qc; any order, after the positional arguments):
   preset=<name>     gate the measurement against a named delivery spec
@@ -379,15 +379,16 @@ Optional positional arguments, when omitted:
   form, 331 dB direct-vs-fast end-to-end SNR, 0.000 dB SNR delta against an independent oracle
   at 192–448 kbps — see `tools/quality_race.py fast-mdct`). `fast-mdct=off` forces the direct
   §8.2.3.2 reference form — the validation oracle — wherever the command encodes, including the
-  `atmos*`, `record`, `live` and `eac3-sine` session builders. `eac3-encode` alone spells the
-  same thing as the bare `nofastmdct` token inside its `[tools]` positional argument instead of
-  `fast-mdct=off` (that command's fourth positional IS the tools set, and `fast-mdct=off` itself
-  is not read there); typing `tools=nofastmdct` as if it were a trailing option does not parse,
-  since any `=` token goes to the options parser, which has no `tools` key. The fast MDCT is not
-  a coding tool, so `none`/`all` leave it alone. `eac3-silence` has no use for either spelling:
-  it builds a silent access unit directly, with no forward transform in the loop to choose a
-  path for. The bare `fast-mdct` word and the `fastmdct` tool token — the opt-in spellings from
-  when this defaulted off — still parse and now name what already happens.
+  `atmos*`, `record`, `live`, `eac3-sine` and `eac3-encode` (both its single-source and its
+  `src=`/`map=` multi-source path). `eac3-encode` also has a second spelling: the bare
+  `nofastmdct` token inside its `[tools]` positional argument reaches the same field, and wins
+  over `fast-mdct=off` if both are given on the same command line. Typing `tools=nofastmdct` as
+  if it were a trailing option does not parse, since any `=` token goes to the options parser,
+  which has no `tools` key. The fast MDCT is not a coding tool, so `none`/`all` leave it alone.
+  `eac3-silence` has no use for either spelling: it builds a silent access unit directly, with no
+  forward transform in the loop to choose a path for. The bare `fast-mdct` word and the
+  `fastmdct` tool token — the opt-in spellings from when this defaulted off — still parse and now
+  name what already happens.
 - **`keep-partial`**: `encode`, `eac3-encode` and `atmos-encode` refuse a frame that cannot fit the
   configuration mid-run just as they always have, but with `keep-partial` given, whatever frames
   were already encoded before that point are written to `<name>.partial.<ext>` (`out.ec3` →

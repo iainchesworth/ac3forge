@@ -1743,6 +1743,7 @@ int run_eac3_encode_multi(std::string_view in_path, std::string_view out_path,
         return 1;
     }
 
+    p.tools.fast_mdct = meta.fast_mdct;
     if (!tools_or_error(tools, p.tools)) {
         return 1;
     }
@@ -1939,6 +1940,7 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
         return 1;
     }
 
+    p.tools.fast_mdct = meta.fast_mdct;
     if (!tools_or_error(tools, p.tools)) {
         return 1;
     }

@@ -184,7 +184,7 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   two). The GUI's own encoder controller now does the same — `dialnorm=auto`/`dialnorm2=auto`
   measure each dual-mono programme's own coded channel independently there too, and the
   Metadata tab's Programme 2 **measure** checkbox is enabled accordingly.
-- Four small CLI/docs accuracy fixes found during the docs sweep above:
+- Five small CLI/docs accuracy fixes found during the docs sweep above:
   - **`sign-objects`/`signing-key=` now reach `atmos-path` and `atmos-encode`, not just `atmos`**:
     all three commands parsed the flags (nothing in the trailing-options parser is
     command-specific), but only `atmos`'s own run function called into the signer —
@@ -195,6 +195,12 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
     no way to force the direct §8.2.3.2 transform for it. `eac3-silence` still has no use for
     either spelling — it builds a silent access unit directly, with no forward transform in the
     loop to choose a path for — so the built-in usage text no longer implies otherwise.
+  - **`eac3-encode`/`eac3-encode-multi` now honor `fast-mdct=off` directly**: every other encode
+    path (`atmos*`, `record`, `live`, `eac3-sine`, `encode`) applied `fast-mdct=off` before
+    resolving the tools set, but these two never did — only their `[tools]` positional's bare
+    `nofastmdct` token reached `Tools::fast_mdct`, so `fast-mdct=off` parsed and was silently
+    ignored. Both now apply it the same way as everywhere else; the `[tools]` positional's own
+    token still wins if both are given on the same command line.
   - **`map=` rows aimed at `obj`/`objm` (or `p1`/`p2` outside a dual-mono target) now warn
     instead of silently vanishing**: this CLI has no object-assembly path of its own (that's
     the GUI's), so `encode`/`eac3-encode` print a warning naming the source/channel and
