@@ -15,6 +15,19 @@
           "features": ["cli-tools", "on-demand"]
         }
       ]
+    },
+    "adm": {
+      "description": "Boost header libraries needed by src/ac3adm's vendored libadm (AC3FORGE_BUILD_ADM) - opt-in via -DVCPKG_MANIFEST_FEATURES=adm, off by default so a normal build never pulls Boost in at all. This list is every boost/*.hpp libadm 0.14.0's own include/ and src/ actually #include, confirmed by grepping its vendored source rather than guessed from its README (which undersells it - it does not mention Rational or Integer at all, both needed by adm/utilities/time_conversion.hpp).",
+      "dependencies": [
+        "boost-optional",
+        "boost-variant",
+        "boost-range",
+        "boost-iterator",
+        "boost-functional",
+        "boost-format",
+        "boost-integer",
+        "boost-rational"
+      ]
     }
   }
 }

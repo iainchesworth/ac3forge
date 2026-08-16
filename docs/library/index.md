@@ -1,7 +1,12 @@
 # Using ac3::forge
 
 The public API is the headers under `src/lib/include/ac3/`. Link `ac3::forge`; link
-`matroska::matroska` and/or `mp4::mp4` as well if you want a container writer.
+`matroska::matroska` and/or `mp4::mp4` as well if you want a container writer, or `ac3adm::ac3adm`
+if you want to read a professional ADM BWF master — the one module in this list that is a reader
+rather than a writer, and so does not need `ac3::forge` linked alongside it at all. Unlike every
+other module here, `ac3adm::ac3adm` is opt-in: it is only built with `-DAC3FORGE_BUILD_ADM=ON`
+(default off), and needs several Boost header libraries pulled in via
+`-DVCPKG_MANIFEST_FEATURES=adm` — see [ADM / BW64 reading](adm.md) for why.
 
 **In-tree** (this repo `add_subdirectory`'d into a larger build, or as a git submodule):
 
@@ -23,7 +28,9 @@ target_link_libraries(your_target PRIVATE ac3::forge_static)   # or ac3::forge_s
 An installed package has no ambient `BUILD_SHARED_LIBS` default to resolve against, so it
 exports both variants explicitly rather than a bare `ac3::forge` — pick the one you want.
 Neither the package nor the codec itself has any dependency of its own to find: no
-`find_dependency()` calls, no system or third-party library, static or shared.
+`find_dependency()` calls, no system or third-party library, static or shared. (`ac3adm::ac3adm`
+is the sole exception project-wide — see the note above — and for that reason is not part of the
+installed `find_package(ac3forge)` package at all; consume it via `add_subdirectory` in-tree.)
 
 **vcpkg.** A port lives in this repo at
 [`packaging/vcpkg-port/ac3forge/`](../../packaging/vcpkg-port/ac3forge/) and is pending
@@ -70,6 +77,8 @@ stopped compiling would break the build rather than sit here being wrong.
   (`mp4::fragment`, `mp4/hls.hpp`, `mp4/dash.hpp`), metering, the IEC 61937/passthrough/monitor
   sinks, and capture.
 - [File I/O](file-io.md) — reading and writing WAV.
+- [ADM / BW64 reading](adm.md) — `ac3adm::ac3adm`, a standalone BW64/RF64 + Audio Definition Model
+  parser (opt-in, `-DAC3FORGE_BUILD_ADM=ON`).
 - [Object signing](signing.md) — `ac3::signing`, the EMDF protection tag.
 - [Header map](header-map.md) — every public header and what lives in it.
 
