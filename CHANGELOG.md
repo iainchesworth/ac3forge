@@ -91,6 +91,30 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   `ac3::oba::AtmosEncoder` (phase 2) and a worked ADM→E-AC-3 pipeline example (phase 3) are not
   part of this change — see [docs/library/adm.md](docs/library/adm.md) and
   `examples/read_adm.cpp`.
+- **ADM → Atmos bridge** (`ac3::admbridge`, roadmap item B1, phase 2 of 3) — a new module
+  (`src/adm_bridge/`) mapping the object graph `ac3adm::ac3adm` parses onto
+  `ac3::oba::AtmosEncoder`'s input shape: one `ac3::oba::ObjectPath` plus one mono PCM span per
+  bed speaker feed or dynamic object. Classifies each `audioObject` as a DirectSpeakers bed or a
+  dynamic object via its resolved `audioPackFormat`'s `TypeDefinition` (Matrix/HOA/Binaural/User
+  Custom/mismatched packs are rejected with a clear `BridgeError` rather than mishandled); builds
+  each channel's motion/gain timeline from its `audioBlockFormat` sequence per BS.2076-2 §10.3's
+  `jumpPosition`/`interpolationLength` hold-vs-glide state machine (checked directly against the
+  standard's own Figs. 7–10 — the two cases run backwards from what a first, name-only reading
+  suggests); converts BS.2076-2's polar and Cartesian position conventions (§8) to
+  `ac3::oba::Position`'s own room-anchored one, verified against the standard's cardinal-point
+  axis directions and empirically against this project's own existing 5.1 ring-position test
+  constants; and resolves each channel's audio via `<chna>`. An LFE bed channel (Table 12's
+  `LFE`/`LFE1`/`LFE2` speakerLabel) routes via `lfe_send` rather than panning, the same convention
+  `ac3cli`'s and the GUI's own object-mode encoders already use. Depends on both `ac3adm::ac3adm`
+  and `ac3::forge` — the one module allowed to bridge them, since neither side may depend on the
+  other (`ac3adm` stays codec-blind by design; `ac3::forge` is always built and cannot gain a
+  Boost dependency) — gated by the same `AC3FORGE_BUILD_ADM` flag rather than a new option of its
+  own. Tested against a real byte-level BW64 fixture parsed by the real `ac3adm::parse_bw64()` and
+  driven through a real `AtmosEncoder`/`Eac3Decoder` round trip, confirming the decoded bitstream's
+  channel energy lands where the authored ADM positions and hold/jump timing say it should — not
+  just against hand-built graphs. Not part of the installed `find_package(ac3forge)` package, for
+  the same reason `ac3adm::ac3adm` itself is not. A worked end-to-end ADM→E-AC-3 pipeline example
+  (phase 3) remains — see [docs/library/adm-bridge.md](docs/library/adm-bridge.md).
 
 ### Codec depth
 

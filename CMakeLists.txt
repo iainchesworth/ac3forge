@@ -175,6 +175,13 @@ endif()
 # AC3FORGE_BUILD_ADM (default OFF, unlike the three above - see the option() itself for why).
 if(AC3FORGE_BUILD_ADM)
     add_subdirectory(src/ac3adm)
+
+    # ac3::admbridge - roadmap item B1 phase 2: maps ac3adm's parsed ADM graph onto
+    # ac3::oba::AtmosEncoder. Depends on BOTH ac3::forge (added above) and ac3adm::ac3adm (just
+    # added), so it is meaningless without AC3FORGE_BUILD_ADM - gated by the same flag rather
+    # than a new option of its own; see src/adm_bridge/CMakeLists.txt's own header comment for
+    # the full reasoning, including why this is a separate module from either side.
+    add_subdirectory(src/adm_bridge)
 endif()
 
 # install()/find_package(ac3forge) support for ac3::forge, matroska::matroska,
@@ -186,7 +193,8 @@ endif()
 # it stays out of docs/library/index.md's zero-dependency claim (see src/ac3adm/CMakeLists.txt's
 # header comment) plus the added complexity of re-exporting libbw64/libadm's own transitive
 # targets through this package - AC3FORGE_BUILD_ADM users consume ac3adm::ac3adm from an in-tree
-# add_subdirectory() build, not from a `find_package(ac3forge)` installed one, for now.
+# add_subdirectory() build, not from a `find_package(ac3forge)` installed one, for now. ac3::admbridge
+# (src/adm_bridge) is excluded for the same reason - it transitively depends on ac3adm::ac3adm.
 include(InstallLibrary)
 
 if(AC3FORGE_BUILD_CLI)
