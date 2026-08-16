@@ -43,15 +43,18 @@
 //     position+gain+lfe_send object model without a design of their own this phase does not
 //     attempt (HOA in particular has no "position" at all; Matrix's audioMatrixFormat encodes an
 //     entirely different, coefficient-based routing this bridge does not interpret).
-//   - AtmosEncoder has no distinct bed-feeding method - "There is no separate bed-feeding
-//     method... A bed channel becomes an object with an unmoving, pinned placement" (ac3/oba/
-//     atmos.hpp). This module follows the same convention every existing caller (src/cli/
-//     main.cpp's run_atmos_encode, src/gui/encoder_controller.cpp's encodeObjects) already
-//     uses: a bed channel becomes one more entry in the same flat channel list, with a static
-//     (or, rarely, dynamic - see build_channel_path()'s own comment) ObjectPath pinned at its
-//     speakerLabel's room position, at unity gain; a bed channel whose speakerLabel identifies it
-//     as the LFE (Table 12: "LFE", "LFE1", "LFE2") is instead routed at gain 0 / lfe_send 1,
-//     since (per atmos.hpp) "Objects never reach the LFE by panning".
+//   - AtmosEncoder has no distinct bed-feeding method: its constructor just takes an object
+//     count, and encode_frame() takes one flat span of objects plus one flat span of placements
+//     (ac3/oba/atmos.hpp) - nothing in that signature distinguishes "a bed channel" from "a
+//     dynamic object". A bed channel is therefore represented the only way the API allows: as an
+//     object with an unmoving, pinned placement, the same convention every existing caller
+//     (src/cli/main.cpp's run_atmos_encode, src/gui/encoder_controller.cpp's encodeObjects)
+//     already uses. This module follows suit - a bed channel becomes one more entry in the same
+//     flat channel list, with a static (or, rarely, dynamic - see build_channel_path()'s own
+//     comment) ObjectPath pinned at its speakerLabel's room position, at unity gain; a bed
+//     channel whose speakerLabel identifies it as the LFE (Table 12: "LFE", "LFE1", "LFE2") is
+//     instead routed at gain 0 / lfe_send 1, since (per atmos.hpp's own ObjectPlacement comment)
+//     "Objects never reach the LFE by panning".
 //   - Position/gain automation (ITU-R BS.2076-2 Clause 10.3's jumpPosition/interpolationLength
 //     hold-vs-glide state machine) is implemented in build_channel_path() below - see that
 //     function's own comment for the full walkthrough, verified against the standard's own

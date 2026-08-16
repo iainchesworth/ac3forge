@@ -58,12 +58,14 @@ this logic independent of `ac3adm`'s own BW64/ADM-XML-specific parsing, even tho
   with each other all fail clearly with `BridgeError::kUnsupportedType` rather than being silently
   mishandled — none of them map onto `AtmosEncoder`'s plain position+gain+lfe_send object model
   without a design of their own this phase does not attempt.
-- **`AtmosEncoder` has no separate bed-feeding method.** Per its own header comment, "a bed channel
-  becomes an object with an unmoving, pinned placement" — this module follows the same convention
-  every existing caller (`ac3cli`'s `run_atmos_encode`, the GUI's `encodeObjects`) already uses. A
-  bed channel whose `speakerLabel` identifies it as the LFE (BS.2076-2 Table 12: `LFE`, `LFE1`,
-  `LFE2`) is routed at gain 0 / `lfe_send` 1 instead of panned — objects never reach the LFE by
-  panning.
+- **`AtmosEncoder` has no separate bed-feeding method** — its constructor takes a plain object
+  count and `encode_frame()` takes one flat span of objects plus one flat span of placements,
+  nothing in that signature distinguishing a bed channel from a dynamic object — so a bed channel
+  is represented as an object with an unmoving, pinned placement, the only way the API allows it,
+  the same convention every existing caller (`ac3cli`'s `run_atmos_encode`, the GUI's
+  `encodeObjects`) already uses. A bed channel whose `speakerLabel` identifies it as the LFE
+  (BS.2076-2 Table 12: `LFE`, `LFE1`, `LFE2`) is routed at gain 0 / `lfe_send` 1 instead of panned
+  — objects never reach the LFE by panning.
 - **Position/gain automation** — `build_channel_path()` walks a channel's `audioBlockFormat`
   sequence into one `ac3::oba::ObjectPath`, implementing BS.2076-2 §10.3's `jumpPosition`/
   `interpolationLength` state machine: `jumpPosition = 0` interpolates continuously across a

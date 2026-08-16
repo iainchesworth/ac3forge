@@ -295,6 +295,38 @@ TEST_CASE("build_channel_path's first block always holds regardless of its own j
     CHECK_THAT(path->evaluate(0.999).position.x, Catch::Matchers::WithinAbs(want_first.x, 1e-6));
 }
 
+TEST_CASE("build_channel_path's first block, when it omits duration itself, still holds only "
+         "until the second block's own start - not indefinitely, and not stretching the second "
+         "block's ramp back to time zero", "[admbridge]") {
+    // §5.4.1 only "should" (not "must") pair rtime with duration once a channel is dynamic (more
+    // than one block), so a first block with no duration at all is legal, if discouraged. Its
+    // true end is the second block's own start (here rtime=1.0), not "forever" - block 1 below
+    // is a jumpPosition=0 glide across ITS OWN [1.0, 2.0) span; if the first block's hold were
+    // skipped instead of ending at 1.0, KeyframePath would have only one keyframe at time 0 to
+    // interpolate from, stretching the ramp all the way back to 0 instead of starting at 1.0.
+    const auto channel = channel_with({
+        block_at(0.0, std::nullopt, polar(45.0, 0.0)),
+        block_at(1.0, 1.0, polar(-45.0, 0.0), 1.0, /*jump_position=*/false),
+    });
+    const auto path = ac3::admbridge::build_channel_path(channel, 0.0, false);
+    REQUIRE(path.has_value());
+    const auto want_first = ac3::admbridge::adm_position_to_room(ac3adm::Position{polar(45.0, 0.0)});
+    const auto want_second = ac3::admbridge::adm_position_to_room(ac3adm::Position{polar(-45.0, 0.0)});
+
+    // Still exactly the first block's value anywhere before the second block starts - not
+    // already partway interpolated toward the second block's value.
+    CHECK_THAT(path->evaluate(0.5).position.x, Catch::Matchers::WithinAbs(want_first.x, 1e-6));
+    CHECK_THAT(path->evaluate(0.999).position.x, Catch::Matchers::WithinAbs(want_first.x, 1e-6));
+
+    // The glide happens only within block 1's own [1.0, 2.0) span.
+    const auto mid = path->evaluate(1.5);
+    const double lo = std::min(want_first.x, want_second.x);
+    const double hi = std::max(want_first.x, want_second.x);
+    CHECK(mid.position.x > lo + 1e-6);
+    CHECK(mid.position.x < hi - 1e-6);
+    CHECK_THAT(path->evaluate(2.0).position.x, Catch::Matchers::WithinAbs(want_second.x, 1e-6));
+}
+
 TEST_CASE("build_channel_path with force_lfe discards the block's own position and gain",
          "[admbridge]") {
     const auto channel = channel_with({block_at(0.0, std::nullopt, polar(123.0, 45.0), 0.5)});

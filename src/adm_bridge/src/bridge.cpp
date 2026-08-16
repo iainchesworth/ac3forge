@@ -102,8 +102,18 @@ std::expected<ac3::oba::ObjectPath, BridgeError> build_channel_path(
                 // §10.3: "the position specified in the first block covers the entire length of
                 // the block (regardless of the jumpPosition and interpolationLength properties)".
                 push_keyframe(t_start, position, gain);
-                if (has_end && t_end > t_start) {
-                    push_keyframe(t_end, position, gain);
+                // A non-final block omitting duration is legal (§5.4.1 only "should" - not
+                // "must" - pair rtime with duration once a channel has more than one block) but
+                // discouraged, and its true end is the NEXT block's own start, not "forever":
+                // channel.block_formats[1] always exists here (this whole branch only runs when
+                // size() > 1). Without this, the hold-keyframe below would be skipped entirely
+                // and block 1's own ramp/jump would be computed relative to this single
+                // keyframe, silently stretching its interpolation span back to object_start_s
+                // instead of block 1's own duration.
+                const double effective_end =
+                    has_end ? t_end : object_start_s + channel.block_formats[1].rtime_s;
+                if (effective_end > t_start) {
+                    push_keyframe(effective_end, position, gain);
                 }
                 continue;
             }
