@@ -15,6 +15,7 @@
 #include "ac3/core/mantissas.hpp"
 #include "ac3/core/tables.hpp"
 #include "ac3/export.hpp"
+#include "ac3/oba/joc.hpp"
 #include "ac3/oba/oamd.hpp"
 
 // The in-repo AC-3 / E-AC-3 decoder — the validation pyramid's strongest
@@ -174,10 +175,16 @@ struct DecodedSubstream {
     // but declined to interpret (see oba::parse_payload's own comment on
     // what it refuses). Which block actually carries the container is not
     // fixed (emdf::build_container's own comment), so every block's skip
-    // field is a candidate; the first one that parses wins. JOC's own
-    // per-object reconstructed audio is not part of this yet - only the
-    // object positions/gains OAMD itself carries.
+    // field is a candidate; the first one that parses wins.
     std::optional<oba::DecodedProgram> object_metadata = std::nullopt;
+    // JOC's (§6) reconstructed per-object audio, one waveform per object,
+    // parallel to object_metadata->objects (same index means the same
+    // object) - empty when object_metadata is unset, when no JOC payload
+    // rode alongside the OAMD one, or when the program shape is one JOC's
+    // own object ordering cannot be lined up against object_metadata's for
+    // (see Eac3Decoder::decode_substream's own comment on this - a bed
+    // program AtmosEncoder itself never produces).
+    std::vector<std::vector<float>> object_audio;
 
     // The Table E2.5 map this substream's channels occupy.
     [[nodiscard]] std::uint16_t location_map() const {
@@ -203,12 +210,13 @@ struct DecodedAccessUnit {
     // bit means something else entirely, so only the independent (bed)
     // substream's word is ever meaningful at the access-unit level.
     std::optional<std::uint8_t> compr = std::nullopt;
-    // The independent substream's own object_metadata - see
-    // DecodedSubstream::object_metadata's own comment. Object audio only
-    // ever rides in the bed (this project's own AtmosEncoder never sends a
-    // dependent substream at all), so there is nothing to union across
-    // substreams the way `layout` does below.
+    // The independent substream's own object_metadata/object_audio - see
+    // DecodedSubstream's own comments on both. Object audio only ever rides
+    // in the bed (this project's own AtmosEncoder never sends a dependent
+    // substream at all), so there is nothing to union across substreams the
+    // way `layout` does below.
     std::optional<oba::DecodedProgram> object_metadata = std::nullopt;
+    std::vector<std::vector<float>> object_audio;
     int substream_count = 0;
     eac3::chanmap::Layout layout;
     std::vector<std::vector<float>> channels;  // parallel to layout, except dual mono
@@ -268,6 +276,12 @@ class AC3FORGE_EXPORT Eac3Decoder {
     // own numbering space (§E2.3.1.2), so id alone does not identify a
     // substream. At most six coded channels each (3/2 plus LFE).
     std::map<int, std::array<std::array<double, 256>, 6>> delay_;
+    // Keyed the same way, one per substream identity that has ever carried
+    // JOC: joc::reconstruct's own matrix-ramp and per-object/per-channel
+    // overlap-add state, so a moving object's audio and the frame-to-frame
+    // matrix interpolation both have real continuity instead of restarting
+    // cold every frame - see joc::ReconstructionState's own doc comment.
+    std::map<int, joc::ReconstructionState> joc_state_;
     // A substream identity enters this map the first time one of its frames
     // sets transproce, and stays in it (buffering one frame at a time) for
     // the rest of the stream - see decode_substream's own doc comment.

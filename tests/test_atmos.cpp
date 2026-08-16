@@ -396,6 +396,149 @@ TEST_CASE("an Atmos frame is a plain 5.1 frame with metadata bolted on", "[atmos
     CHECK(r.read(5) == ac3::emdf::kPayloadIdOamd);
 }
 
+namespace {
+
+// Scans `frame` for the EMDF sync word and returns the OAMD/JOC payload
+// bytes found there, or nullopt if either is missing/malformed. Mirrors
+// exactly what Eac3Decoder's own skip-field handling does internally
+// (capture the skipfld bytes, then ac3::emdf::parse_container), duplicated
+// here so JOC's decode+reconstruct path can be tested against a real wire
+// frame ahead of task #7 wiring it into Eac3Decoder's own public API.
+std::optional<std::vector<std::byte>> find_payload(std::span<const std::byte> frame, int id) {
+    const std::size_t total = frame.size() * 8;
+    for (std::size_t bit = 0; bit + 16 <= total; ++bit) {
+        ac3::BitReader probe{frame};
+        probe.skip(bit);
+        if (probe.read(16) != ac3::emdf::kSyncWord) {
+            continue;
+        }
+        const auto length = probe.read(16);
+        std::vector<std::byte> container_bytes(4 + length);
+        ac3::BitReader raw{frame};
+        raw.skip(bit);
+        for (auto& byte : container_bytes) {
+            byte = static_cast<std::byte>(raw.read(8));
+        }
+        const auto container = ac3::emdf::parse_container(container_bytes);
+        if (!container.has_value() || !container->has_value()) {
+            continue;
+        }
+        for (const auto& payload : **container) {
+            if (payload.id == id) {
+                return payload.bytes;
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+}  // namespace
+
+TEST_CASE("joc::reconstruct recovers well-separated objects through the real wire", "[atmos][joc][decoder]") {
+    // Same four-corner placement/frequency setup as "well-separated objects
+    // come back out of the bed" above, which already proves the ENCODER's
+    // own in-memory matrix separates these cleanly - this test proves the
+    // same thing about the DECODE path: real encoded bytes, through
+    // emdf::parse_container + joc::parse_payload + joc::reconstruct.
+    ac3::oba::AtmosEncoder encoder{{.bitrate_kbps = 640}, 4};
+    const std::array<ac3::oba::ObjectPlacement, 4> placement{{
+        {.position = {.x = 0.0, .y = 0.0, .z = 0.0}},
+        {.position = {.x = 1.0, .y = 0.0, .z = 0.0}},
+        {.position = {.x = 0.0, .y = 1.0, .z = 1.0}},
+        {.position = {.x = 1.0, .y = 1.0, .z = 1.0}},
+    }};
+    const std::array<double, 4> hz{311.0, 997.0, 2200.0, 5000.0};
+    const std::array<double, 4> amplitude{0.30, 0.25, 0.20, 0.22};
+
+    constexpr std::array<int, ac3::joc::kNumChannels5X> kAc3FromJoc = {0, 2, 1, 3, 4};
+
+    ac3::Eac3Decoder decoder;
+    ac3::joc::ReconstructionState state;
+    std::vector<std::span<const float>> views(4);
+
+    constexpr int kFrames = 6;
+    std::array<std::vector<float>, 4> source;   // the whole run, per object
+    std::array<std::vector<float>, 4> recovered;  // ditto, aligned index for index
+    for (auto& s : source) {
+        s.reserve(static_cast<std::size_t>(kFrames * kFrame));
+    }
+    for (auto& r : recovered) {
+        r.reserve(static_cast<std::size_t>(kFrames * kFrame));
+    }
+
+    for (int frame = 0; frame < kFrames; ++frame) {
+        const auto start = static_cast<std::uint64_t>(frame) * kFrame;
+        std::vector<std::vector<float>> essences;
+        for (std::size_t i = 0; i < 4; ++i) {
+            essences.push_back(tone(hz[i], amplitude[i], 0.7 * static_cast<double>(i), start));
+            source[i].insert(source[i].end(), essences[i].begin(), essences[i].end());
+        }
+        for (std::size_t i = 0; i < views.size(); ++i) {
+            views[i] = essences[i];
+        }
+        const auto encoded = encoder.encode_frame(views, placement);
+        REQUIRE(encoded.has_value());
+        REQUIRE(encoded->substream_count() == 1);
+        const auto frame_bytes = encoded->substream(0);
+
+        const auto decoded = decoder.decode_substream(frame_bytes);
+        REQUIRE(decoded.has_value());
+        REQUIRE(decoded->has_value());
+        const auto& sub = **decoded;
+
+        const auto joc_bytes = find_payload(frame_bytes, ac3::emdf::kPayloadIdJoc);
+        REQUIRE(joc_bytes.has_value());
+        const auto params = ac3::joc::parse_payload(*joc_bytes);
+        REQUIRE(params.has_value());
+
+        std::vector<std::vector<float>> bed_joc_order(ac3::joc::kNumChannels5X);
+        for (int jc = 0; jc < ac3::joc::kNumChannels5X; ++jc) {
+            bed_joc_order[static_cast<std::size_t>(jc)] =
+                sub.channels[static_cast<std::size_t>(kAc3FromJoc[static_cast<std::size_t>(jc)])];
+        }
+        const auto reconstructed = ac3::joc::reconstruct(bed_joc_order, *params, state);
+        REQUIRE(reconstructed.size() == 4);
+        for (std::size_t i = 0; i < 4; ++i) {
+            recovered[i].insert(recovered[i].end(), reconstructed[i].begin(), reconstructed[i].end());
+        }
+    }
+
+    // Two stacked MDCT round trips carry two stacked 256-sample algorithmic
+    // delays: one from the real encode+decode of the bed itself (see
+    // tests/test_eac3_decoder.cpp's own snr_db helper), one more from
+    // reconstruct()'s own independent forward+inverse pass over that decoded
+    // bed (see "reconstruct is a 256-sample-delayed identity..." above).
+    // Comparing sample n of the recovered audio against sample (n - 512) of
+    // the true source is what actually measures reconstruction QUALITY
+    // rather than mostly measuring this codebase's own well-understood,
+    // expected transform-pair latency.
+    constexpr std::size_t kDelay = 512;
+    constexpr std::size_t kSkip = static_cast<std::size_t>(kFrame);  // one frame's warm-up/cool-down
+    for (int object = 0; object < 4; ++object) {
+        CAPTURE(object);
+        const auto index = static_cast<std::size_t>(object);
+        double signal = 0.0;
+        double error = 0.0;
+        for (std::size_t n = kSkip; n + kSkip < recovered[index].size(); ++n) {
+            const double want = static_cast<double>(source[index][n - kDelay]);
+            const double got = static_cast<double>(recovered[index][n]);
+            signal += want * want;
+            error += (got - want) * (got - want);
+        }
+        const double snr_db = 10.0 * std::log10(signal / std::max(error, 1e-30));
+        // Looser than "well-separated objects come back out of the bed"'s
+        // -20 dB: this measures the whole decode chain (Huffman-coded,
+        // quantized matrix coefficients feeding an MDCT-domain synthesis of
+        // real, quantized, bit-allocated PCM), not the encoder's own
+        // unquantized in-memory matrix applied to a single frequency bin -
+        // quantization noise at every one of those stages spends some of the
+        // budget that comparison never had to pay. Measured empirically at
+        // 18-35 dB across these four placements; 10 dB leaves real margin
+        // rather than pinning to the measured values.
+        CHECK(snr_db > 10.0);
+    }
+}
+
 TEST_CASE("Eac3Decoder recovers the object positions AtmosEncoder wrote", "[atmos][decoder]") {
     ac3::oba::AtmosEncoder encoder{{.bitrate_kbps = 448}, 3};
     const std::array<ac3::oba::ObjectPlacement, 3> placement{{
