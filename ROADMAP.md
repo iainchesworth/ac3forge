@@ -37,7 +37,7 @@ mixes are delivered as master files.
   delivery specifications both use ADM BWF masters. Natural split: the ADM/RF64 parser first,
   then object/bed mapping, then an end-to-end example. **Phase 1 (the standalone `ac3adm::ac3adm`
   BW64/RF64 + ADM parser, ITU-R BS.2088-1 + BS.2076-2) is done** — see
-  [`src/ac3adm/`](src/ac3adm/) and [docs/library/adm.md](docs/library/adm.md); phases 2 (object/bed
+  [`src/ac3adm/`](src/ac3adm/) and `docs/library/adm.md`; phases 2 (object/bed
   mapping onto `AtmosEncoder`) and 3 (the end-to-end example) remain. Built on the vendored
   libbw64/libadm (github.com/ebu) rather than a hand-rolled parser; opt-in via
   `-DAC3FORGE_BUILD_ADM=ON` (needs Boost, see `vcpkg.json`'s `adm` feature) — the only
