@@ -36,7 +36,7 @@ ac3forge 0.5.0-beta.1
   target:  Windows x86_64 (MSVC 1951)
 ```
 
-`--version` (or its `-v` alias) is a flag, not one of the twenty-five commands — it's handled
+`--version` (or its `-v` alias) is a flag, not one of the twenty-six commands — it's handled
 before argument parsing and exits immediately.
 
 ## Conventions shared across commands
