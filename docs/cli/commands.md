@@ -220,7 +220,7 @@ each OS.
 | `outputs` | Lists render endpoints and whether each supports AC-3/E-AC-3 passthrough |
 | `record` | Captures from a device straight to an AC-3 file, metering live — `container=mkv` writes straight to Matroska instead |
 | `play` | Exclusive-mode IEC 61937 passthrough of an existing file — `bsid` decides AC-3 vs. E-AC-3 |
-| `monitor` | Decodes an existing file and plays it on an ordinary, non-bitstreamed output — the shared-mode preview path. For an Atmos-mode stream, this plays the 5.1 **bed**: the in-repo decoder's E-AC-3 scope is A/52 Annex E syntax, not TS 103 420's object layer, so this is what a legacy decoder hears, not unmixed objects. |
+| `monitor` | Decodes an existing file and plays it on an ordinary, non-bitstreamed output — the shared-mode preview path. For an Atmos-mode stream, this plays the 5.1 **bed**: the decoder reads TS 103 420's object layer (OAMD/JOC) but this path does not render objects, so this is what a legacy decoder hears, not unmixed objects. |
 | `live` | Capture → encode → optional live monitor and/or IEC 61937 passthrough, running continuously, still writing the file `record` always has; optionally a second, clock-conformed capture device via `capture2=`, or straight to Matroska via `container=mkv` |
 
 `live`'s device arguments: `monitor_device`/`passthrough_device` take `-2` (default, leaves that
