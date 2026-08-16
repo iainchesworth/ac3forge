@@ -125,6 +125,8 @@ ApplicationWindow {
     readonly property alias runDetailsPopup: runDetailsDialog
     // Same reason again - roadmap C3's QC report dialog.
     readonly property alias qcDialogRef: qcDialog
+    // Same reason again - the decode-side object inspector.
+    readonly property alias objectInspectorDialogRef: objectInspectorDialog
 
     Component.onCompleted: {
         Theme.preference = appSettings.theme;
@@ -1036,6 +1038,14 @@ ApplicationWindow {
         id: qcDialog
     }
 
+    // The decode-side counterpart to QcDialog above - see
+    // ObjectInspectorDialog.qml's own header comment for why this is a
+    // second standalone dialog rather than folded into either QcDialog or
+    // the Objects tab.
+    ObjectInspectorDialog {
+        id: objectInspectorDialog
+    }
+
     Dialog {
         id: codecWarnDialog
         modal: true
@@ -1329,6 +1339,11 @@ ApplicationWindow {
                 objectName: "qcOpenButton"
                 text: qsTr("QC a stream…")
                 onClicked: qcDialog.open()
+            }
+            Button {
+                objectName: "objectInspectorOpenButton"
+                text: qsTr("Inspect objects…")
+                onClicked: objectInspectorDialog.open()
             }
             Button {
                 text: qsTr("Preferences")

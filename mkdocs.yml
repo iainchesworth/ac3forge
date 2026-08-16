@@ -109,6 +109,7 @@ nav:
       - Coding tools: gui/coding-tools.md
       - Metadata: gui/metadata.md
       - QC a stream: gui/qc.md
+      - Inspect objects: gui/inspect-objects.md
   - Project:
       - Contributing: contributing.md
       - Releasing: releasing.md

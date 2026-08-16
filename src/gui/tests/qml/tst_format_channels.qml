@@ -24,12 +24,22 @@ TestCase {
     // not-yet-arranged workbench overlaps the header and eats the click;
     // 6.8 on Windows had polished already). So: don't wait a guessed number
     // of milliseconds, wait for the observable fact the click depends on -
-    // the header row has laid out, which puts the tier control on the right
-    // half of the window instead of at its implicit-width position.
+    // the header row has laid out, which moves the tier control from its
+    // pre-arrange position (stacked near the row's own left margin, ~20px)
+    // out past the title/subtitle/CONTROLS label ahead of it.
+    //
+    // A fixed low threshold rather than "past the window's own horizontal
+    // centre": the segmented control's actual arranged position keeps
+    // drifting left as more buttons join the header after it (this already
+    // happened once - ObjectInspectorDialog.qml's own header button pushed
+    // it from ~720px to ~502px on a 1280px-wide window, comfortably still
+    // "arranged" but no longer past centre). 300px stays well clear of any
+    // plausible pre-arrange position while surviving that kind of header
+    // growth, which "> win.width / 2" does not.
     function waitForHeaderLayout(win, seg) {
         tryVerify(() => {
             const corner = seg.mapToItem(null, 0, 0);
-            return corner.x > win.width / 2;
+            return corner.x > 300;
         });
     }
 
