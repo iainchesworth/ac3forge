@@ -3309,24 +3309,70 @@ int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path
     }
     // Whatever transient pre-noise processing was still holding back at
     // end-of-stream. flush() returns raw per-substream results rather than
-    // assembled access units (see its own doc comment); appended directly
-    // here, which is exactly right for the common case this covers - a
-    // single independent substream with no dependents, where a substream's
-    // own channel order already matches the access unit's.
-    for (auto& substream : decoder.flush()) {
-        if (pcm.empty()) {
-            ac3::DecodedAccessUnit synthesized;
-            synthesized.sample_rate = substream.sample_rate;
-            synthesized.acmod = substream.acmod;
-            synthesized.dialnorm = substream.dialnorm;
-            synthesized.substream_count = 1;
-            synthesized.layout = ac3::eac3::chanmap::expand(substream.location_map());
-            first = synthesized;
-            pcm.resize(substream.channels.size());
-        }
-        for (std::size_t ch = 0; ch < substream.channels.size(); ++ch) {
-            pcm[ch].insert(pcm[ch].end(), substream.channels[ch].begin(),
-                           substream.channels[ch].end());
+    // assembled access units (see its own doc comment) - placed at the SAME
+    // pcm slot decode_access_unit's own §E3.8.2 assembly would have used
+    // (via location_map()), not assumed to already sit at that slot: a lone
+    // independent substream's coded order happens to agree with pcm's, but
+    // a dependent carrying only its own smaller channel set does not, and
+    // naively appending it by coded index corrupts already-established
+    // channels (e.g. a bed's L/R) with a dependent's height audio instead.
+    const auto flushed = decoder.flush();
+    if (!flushed.empty()) {
+        const bool dual_mono = pcm.empty() ? flushed.front().acmod == ac3::Acmod::kDualMono
+                                            : first.acmod == ac3::Acmod::kDualMono;
+        if (dual_mono) {
+            // No Table E2.5 location to place by - dual mono is always a
+            // lone substream with no dependents and no spatial layout
+            // (decode_access_unit's own comment) - so its channels go
+            // straight to pcm in coded order, same as decode_access_unit.
+            for (const auto& substream : flushed) {
+                if (pcm.empty()) {
+                    first.acmod = ac3::Acmod::kDualMono;
+                    first.sample_rate = substream.sample_rate;
+                    first.dialnorm = substream.dialnorm;
+                    first.substream_count = 1;
+                    pcm.resize(substream.channels.size());
+                }
+                for (std::size_t ch = 0; ch < substream.channels.size(); ++ch) {
+                    pcm[ch].insert(pcm[ch].end(), substream.channels[ch].begin(),
+                                   substream.channels[ch].end());
+                }
+            }
+        } else {
+            if (pcm.empty()) {
+                // No access unit ever completed - synthesize the program's
+                // layout by unioning every flushed substream's own
+                // locations, exactly like decode_access_unit's own §E3.8.2
+                // assembly.
+                std::uint16_t occupied = 0;
+                for (const auto& substream : flushed) {
+                    occupied = static_cast<std::uint16_t>(occupied | substream.location_map());
+                }
+                ac3::DecodedAccessUnit synthesized;
+                synthesized.sample_rate = flushed.front().sample_rate;
+                synthesized.acmod = flushed.front().acmod;
+                synthesized.dialnorm = flushed.front().dialnorm;
+                synthesized.substream_count = static_cast<int>(flushed.size());
+                synthesized.layout = ac3::eac3::chanmap::expand(occupied);
+                first = synthesized;
+                pcm.assign(static_cast<std::size_t>(first.layout.count), {});
+            }
+            // §E3.8.2 placement: each flushed substream's own channels land
+            // at whichever slot their Table E2.5 location occupies in
+            // `first.layout`, mirroring decode_access_unit's own assembly
+            // loop rather than assuming pcm[0..channels.size()).
+            for (const auto& substream : flushed) {
+                const auto locations = ac3::eac3::chanmap::expand(substream.location_map());
+                for (int i = 0; i < locations.count; ++i) {
+                    const int slot = first.layout.index_of(locations[i]);
+                    if (slot < 0) {
+                        continue;
+                    }
+                    const auto& channel = substream.channels[static_cast<std::size_t>(i)];
+                    pcm[static_cast<std::size_t>(slot)].insert(
+                        pcm[static_cast<std::size_t>(slot)].end(), channel.begin(), channel.end());
+                }
+            }
         }
     }
     if (pcm.empty()) {
@@ -3407,6 +3453,7 @@ int run_decode(std::string_view in_path, std::string_view out_path,
     // What the stream actually carried, reported whether or not it was applied.
     double dynrng_min_db = 0.0;
     double dynrng_max_db = 0.0;
+    std::size_t dynrng_words = 0;
     double compr_min_db = 0.0;
     double compr_max_db = 0.0;
     std::size_t compr_frames = 0;
@@ -3418,8 +3465,9 @@ int run_decode(std::string_view in_path, std::string_view out_path,
         }
         for (const auto word : decoded->dynrng) {
             const double db = ac3::meta::to_db(ac3::meta::dynrng_gain(word));
-            dynrng_min_db = std::min(dynrng_min_db, db);
-            dynrng_max_db = std::max(dynrng_max_db, db);
+            dynrng_min_db = dynrng_words == 0 ? db : std::min(dynrng_min_db, db);
+            dynrng_max_db = dynrng_words == 0 ? db : std::max(dynrng_max_db, db);
+            ++dynrng_words;
         }
         if (decoded->compr) {
             const double db = ac3::meta::to_db(ac3::meta::compr_gain(*decoded->compr));
@@ -4333,10 +4381,11 @@ int run_eac3_silence(std::string_view out_path, std::uint32_t seconds, std::uint
 // bitstreamed) output - a sanity-check/preview path, and the offline half of
 // live monitoring ('live's --monitor equivalent works the same way, one
 // access unit at a time as it is produced instead of read from a file).
-// Object metadata (JOC/OAMD) is not applied: the in-repo decoder's E-AC-3
-// scope is A/52 Annex E syntax, not TS 103 420's object layer, so an Atmos
-// file plays its 5.1 bed - exactly what a legacy decoder hears, which is the
-// thing most worth confirming actually sounds right.
+// Object metadata (JOC/OAMD) is parsed but not rendered here: Eac3Decoder
+// reads TS 103 420's object layer (DecodedSubstream::object_metadata/
+// object_audio), but this path only plays the 5.1 bed - exactly what a
+// legacy decoder hears, which is the thing most worth confirming actually
+// sounds right.
 int run_monitor(std::string_view in_path, int device_index) {
     const auto stream = read_all(in_path);
     if (stream.empty()) {
@@ -5203,9 +5252,9 @@ void print_usage() {
     std::println("record/live container=mkv: write straight to Matroska (a single command)");
     std::println("       instead of the bare elementary stream both write by default; 'mkv'");
     std::println("       remains the way to wrap an ALREADY-encoded file after the fact.");
-    std::println("monitor/live --monitor play the 5.1 BED of an Atmos-mode stream: the in-repo");
-    std::println("       decoder's E-AC-3 scope is A/52 Annex E syntax, not TS 103 420's object");
-    std::println("       layer, so this is what a legacy decoder hears, not unmixed objects.");
+    std::println("monitor/live --monitor play the 5.1 BED of an Atmos-mode stream: the decoder");
+    std::println("       reads TS 103 420's object layer (OAMD/JOC) but this path does not render");
+    std::println("       objects, so this is what a legacy decoder hears, not unmixed objects.");
     std::println("");
     std::println("tools:  Annex E coding tools, '+'-joined — {}", plan::kToolsSyntax);
     std::println("        cpl:N / spx:N pin that tool's band edge (e.g. cpl:4+spx:5);");

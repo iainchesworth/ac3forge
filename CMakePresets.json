@@ -138,6 +138,24 @@
     },
 
     {
+      "name": "wasm-emscripten",
+      "hidden": true,
+      "description": "Emscripten/WASM toolchain selection for the roadmap-F3 browser decode demo. Unlike every other platform preset here, this does NOT inherit \"core\": there is no host-OS condition (Emscripten cross-compiles from any host with $EMSDK set) and, more importantly, no vcpkg toolchainFile - see cmake/toolchains/wasm.emscripten.toolchain.cmake's own header for why going through vcpkg's community wasm32-emscripten triplet would be pure cost for zero benefit here. Everything \"core\" would otherwise supply (Ninja generator, binaryDir, the default ON options) is set directly below instead, deliberately turning off everything this preset does not need (CLI/GUI/tests/live-audio-linking containers) rather than inheriting defaults meant for a full desktop build.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/wasm.emscripten.toolchain.cmake",
+      "cacheVariables": {
+        "AC3FORGE_BUILD_CLI": "OFF",
+        "AC3FORGE_BUILD_GUI": "OFF",
+        "AC3FORGE_BUILD_TESTS": "OFF",
+        "AC3FORGE_BUILD_EXAMPLES": "OFF",
+        "AC3FORGE_BUILD_MATROSKA": "OFF",
+        "AC3FORGE_BUILD_MP4": "OFF",
+        "AC3FORGE_BUILD_MPEGTS": "OFF"
+      }
+    },
+
+    {
       "name": "sanitize-asan-ubsan",
       "hidden": true,
       "description": "AddressSanitizer + UndefinedBehaviorSanitizer, fatal on first violation (-fno-sanitize-recover=all in cmake/Sanitizers.cmake) rather than logging and continuing. Deliberately does NOT add -fsanitize=integer's unsigned-integer-overflow check: this codec relies on intentional unsigned wraparound (CRC16, ring-buffer indices, the splice counter), and blanket-enabling it drowns real findings in expected wraparound. Signed overflow and out-of-range shifts - the precedent bug's own category (commit 8386c8f) - are already part of the default 'undefined' set.",
@@ -235,6 +253,11 @@
       "displayName": "macOS LLVM Debug"
     },
     {
+      "name": "config-wasm-emscripten",
+      "inherits": [ "release", "wasm-emscripten" ],
+      "displayName": "Emscripten/WASM Release (browser decode demo)"
+    },
+    {
       "name": "config-linux-llvm-asan-ubsan",
       "inherits": [ "debug", "linux-llvm", "sanitize-asan-ubsan", "core" ],
       "displayName": "Linux LLVM ASan+UBSan"
@@ -321,6 +344,11 @@
       "name": "build-macos-llvm-debug",
       "configurePreset": "config-macos-llvm-debug",
       "displayName": "macOS LLVM Debug"
+    },
+    {
+      "name": "build-wasm-emscripten",
+      "configurePreset": "config-wasm-emscripten",
+      "displayName": "Emscripten/WASM Release (browser decode demo)"
     },
     {
       "name": "build-linux-llvm-asan-ubsan",
