@@ -113,6 +113,14 @@ void print_meta_usage() {
                  "command encodes, incl. atmos/record/live/eac3-sine; eac3-encode alone has a "
                  "[tools] positional argument whose bare nofastmdct token reaches the same "
                  "field instead; bare fast-mdct (the old opt-in) is a no-op");
+    std::println("  sign-objects      atmos/atmos-path/atmos-encode: write a keyed EMDF object "
+                 "signature (needs signing-key=); see docs/concepts/object-signing.md");
+    std::println("  verify-objects    decode/monitor: check each frame's EMDF object signature "
+                 "against signing-key= instead of just playing it - a mismatch refuses the "
+                 "command; omitted (the default) decodes signed and unsigned streams alike, "
+                 "unchecked");
+    std::println("  signing-key=<path>      the key file sign-objects/verify-objects use "
+                 "(or AC3FORGE_SIGNING_KEY_FILE / AC3FORGE_SIGNING_KEY)");
     std::println();
     std::println("source options (encode/eac3-encode; any order, after the positional "
                  "arguments):");
@@ -178,6 +186,13 @@ struct Options {
     // see docs/concepts/object-signing.md.
     bool sign_objects = false;
     std::optional<std::string> signing_key;
+    // 'decode'/'monitor' only: check each frame's EMDF object container
+    // against signing-key= (same option sign-objects uses - a decode never
+    // signs, so there is no ambiguity in sharing it) instead of just playing
+    // it. Off by default: a signed-but-unchecked stream decodes exactly like
+    // an unsigned one unless the operator opts in here - see
+    // docs/concepts/object-signing.md.
+    bool verify_objects = false;
     // 'live' only: a second ("slave") capture device index, same numbering
     // ac3::capture::enumerate_devices()/'devices' uses and the capture_device
     // positional already reads. Unset means the classic single-device
@@ -252,6 +267,10 @@ bool parse_options(std::span<char*> tokens, Options& out) {
         }
         if (token == "sign-objects") {
             out.sign_objects = true;
+            continue;
+        }
+        if (token == "verify-objects") {
+            out.verify_objects = true;
             continue;
         }
         if (key == "fast-mdct") {
@@ -2124,6 +2143,48 @@ std::optional<int> apply_object_signing(std::vector<std::vector<std::byte>>& uni
     return signed_count;
 }
 
+// Checks EMDF object signatures on a stream about to be decoded/monitored,
+// when the operator asked for it (verify-objects) and supplied a key. Reads
+// the raw stream bytes the same way sign_atmos_stream does - independent of,
+// and either before or alongside, whatever Eac3Decoder itself does with
+// those same bytes; never routed through it, since that class's own stance
+// is that the protection field is opaque per spec (see decoder.hpp). Returns
+// the summary, or nullopt if verification was requested but the key could
+// not be loaded, or if any signed frame's tag did not match (both cases
+// already print their own message). Not requested -> an all-zero summary,
+// nothing checked, stream untouched either way: this only reads bytes, it
+// never signs. A signed stream is either fully verified or the command
+// refuses - matching this project's own "graceful 5.1 fallback is
+// either/or" stance - never a silent partial pass.
+std::optional<ac3::signing::VerifySummary> apply_object_verification(
+    std::span<const std::byte> stream, const Options& meta) {
+    if (!meta.verify_objects) {
+        return ac3::signing::VerifySummary{};
+    }
+    const auto key = ac3::signing::load_signing_key(meta.signing_key.value_or(""));
+    if (!key) {
+        if (key.error().kind == ac3::signing::KeyErrorKind::kAbsent) {
+            std::println(stderr,
+                         "error: verify-objects needs a key — pass signing-key=<path>, or set "
+                         "AC3FORGE_SIGNING_KEY_FILE / AC3FORGE_SIGNING_KEY");
+        } else {
+            std::println(stderr, "error: {}", key.error().message);
+        }
+        return std::nullopt;
+    }
+    const auto summary = ac3::signing::verify_atmos_stream(stream, *key);
+    std::println("  object signature: {} valid, {} mismatched, {} unsigned frame(s)",
+                 summary.valid, summary.mismatch, summary.no_container);
+    if (summary.mismatch > 0) {
+        std::println(stderr,
+                     "error: object signature verification failed ({} of {} signed frames did "
+                     "not match the supplied key)",
+                     summary.mismatch, summary.valid + summary.mismatch);
+        return std::nullopt;
+    }
+    return summary;
+}
+
 // Objects moving in three dimensions, out as one 5.1 E-AC-3 stream carrying
 // JOC and OAMD. Each object orbits at its own rate and sits at its own height,
 // so no two of them share a direction for long - which is the condition under
@@ -3272,6 +3333,53 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
     return 0;
 }
 
+// Reports the object layer (if any) an E-AC-3 decode found - the decode-side
+// mirror of run_atmos_encode's own "{N} dynamic objects + the bed's LFE = {M}
+// objects" line - and, when objects_dir is non-empty, exports each JOC-
+// reconstructed object as its own single-channel WAV under it. Shared between
+// run_decode_eac3's dual-mono and ordinary return paths since both reach
+// here with the same (metadata, object_pcm) shape, even though this
+// project's own AtmosEncoder never emits dual mono alongside an object
+// container.
+int report_decoded_objects(FILE* status, const std::optional<ac3::oba::DecodedProgram>& metadata,
+                           const std::vector<std::vector<float>>& object_pcm,
+                           std::uint32_t sample_rate, std::string_view objects_dir) {
+    if (metadata) {
+        std::println(status, "  {} dynamic objects + the bed's LFE = {} objects, OAMD present{}",
+                     metadata->objects.size(), ac3::oba::object_count(metadata->program),
+                     object_pcm.empty() ? " (JOC audio not reconstructed)"
+                                        : ", JOC audio reconstructed");
+    }
+    if (objects_dir.empty()) {
+        return 0;
+    }
+    if (object_pcm.empty()) {
+        std::println(stderr,
+                     "warning: objects_dir given but there is no reconstructed object audio to "
+                     "export");
+        return 0;
+    }
+    std::error_code ec;
+    const std::filesystem::path dir{std::string{objects_dir}};
+    std::filesystem::create_directories(dir, ec);
+    if (ec) {
+        std::println(stderr, "error: cannot create directory {} ({})", objects_dir, ec.message());
+        return 1;
+    }
+    for (std::size_t i = 0; i < object_pcm.size(); ++i) {
+        const auto object_path = dir / std::format("object_{:02}.wav", i);
+        const auto written = ac3::io::write_wav_f32(
+            object_path.string(), std::span<const std::vector<float>>{&object_pcm[i], 1},
+            sample_rate);
+        if (!written) {
+            std::println(stderr, "error: {}", ac3::io::describe(written.error()));
+            return 1;
+        }
+    }
+    std::println(status, "  wrote {} object WAV(s) to {}", object_pcm.size(), objects_dir);
+    return 0;
+}
+
 // The dynrng/compr half of run_decode's own status report (main.cpp, further
 // down), factored out so run_decode_eac3 can report the same two figures -
 // range actually carried, and whether drc=/heavy asked for them to be
@@ -3293,7 +3401,7 @@ void print_drc_summary(FILE* status, double dynrng_min_db, double dynrng_max_db,
 }
 
 int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path,
-                     const Options& meta) {
+                     const Options& meta, std::string_view objects_dir) {
     // Access units, not syncframes: a dependent substream is only meaningful
     // alongside the independent one it extends, and the two are rendered
     // together into one set of speaker feeds.
@@ -3306,6 +3414,15 @@ int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path
     ac3::Eac3Decoder decoder{
         {.drc_scale = meta.drc_scale, .heavy_compression = meta.p.heavy.has_value()}};
     std::vector<std::vector<float>> pcm;
+    // JOC's reconstructed per-object audio, accumulated the same way `pcm`
+    // is above - parallel to first.object_metadata->objects (same index,
+    // same object), one entry per access unit that actually carried it. An
+    // access unit whose object_audio size doesn't match what's accumulated
+    // so far is skipped rather than resized into: DecodedSubstream's own
+    // comment documents this as reachable (a program-shape mismatch JOC's
+    // ordering can't be lined up against), not something worth failing the
+    // whole decode over.
+    std::vector<std::vector<float>> object_pcm;
     ac3::DecodedAccessUnit first{};
     // What the independent (bed) substream actually carried, reported whether
     // or not it was applied - same convention as run_decode's own dynrng_min_db/
@@ -3363,6 +3480,17 @@ int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path
         for (std::size_t ch = 0; ch < out.channels.size(); ++ch) {
             pcm[ch].insert(pcm[ch].end(), out.channels[ch].begin(), out.channels[ch].end());
         }
+        if (!out.object_audio.empty()) {
+            if (object_pcm.empty()) {
+                object_pcm.resize(out.object_audio.size());
+            }
+            if (out.object_audio.size() == object_pcm.size()) {
+                for (std::size_t i = 0; i < object_pcm.size(); ++i) {
+                    object_pcm[i].insert(object_pcm[i].end(), out.object_audio[i].begin(),
+                                         out.object_audio[i].end());
+                }
+            }
+        }
     }
     // Whatever transient pre-noise processing was still holding back at
     // end-of-stream. flush() returns raw per-substream results rather than
@@ -3399,6 +3527,7 @@ int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path
                     first.sample_rate = substream.sample_rate;
                     first.dialnorm = substream.dialnorm;
                     first.substream_count = 1;
+                    first.object_metadata = substream.object_metadata;
                     pcm.resize(substream.channels.size());
                 }
                 for (std::size_t ch = 0; ch < substream.channels.size(); ++ch) {
@@ -3422,6 +3551,15 @@ int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path
                 synthesized.dialnorm = flushed.front().dialnorm;
                 synthesized.substream_count = static_cast<int>(flushed.size());
                 synthesized.layout = ac3::eac3::chanmap::expand(occupied);
+                // Object audio only ever rides in the bed (the independent
+                // substream) - see DecodedAccessUnit::object_metadata's own
+                // comment - so at most one flushed substream carries it.
+                for (const auto& substream : flushed) {
+                    if (substream.object_metadata) {
+                        synthesized.object_metadata = substream.object_metadata;
+                        break;
+                    }
+                }
                 first = synthesized;
                 pcm.assign(static_cast<std::size_t>(first.layout.count), {});
             }
@@ -3439,6 +3577,24 @@ int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path
                     const auto& channel = substream.channels[static_cast<std::size_t>(i)];
                     pcm[static_cast<std::size_t>(slot)].insert(
                         pcm[static_cast<std::size_t>(slot)].end(), channel.begin(), channel.end());
+                }
+            }
+        }
+        // JOC's reconstructed per-object audio, accumulated the same way
+        // pcm is above - see the equivalent block in the main access-unit
+        // loop above for why a size mismatch is skipped rather than resized
+        // into.
+        for (const auto& substream : flushed) {
+            if (substream.object_audio.empty()) {
+                continue;
+            }
+            if (object_pcm.empty()) {
+                object_pcm.resize(substream.object_audio.size());
+            }
+            if (substream.object_audio.size() == object_pcm.size()) {
+                for (std::size_t i = 0; i < object_pcm.size(); ++i) {
+                    object_pcm[i].insert(object_pcm[i].end(), substream.object_audio[i].begin(),
+                                         substream.object_audio[i].end());
                 }
             }
         }
@@ -3468,7 +3624,8 @@ int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path
                      pcm.size(), sample_rate_hz(first.sample_rate));
         print_drc_summary(status, dynrng_min_db, dynrng_max_db, compr_min_db, compr_max_db,
                           compr_frames, meta);
-        return 0;
+        return report_decoded_objects(status, first.object_metadata, object_pcm,
+                                      sample_rate_hz(first.sample_rate), objects_dir);
     }
     // The same WAV speaker order the encode side reads a file in, so a stream
     // decoded here and re-encoded lands every channel back where it started.
@@ -3490,14 +3647,18 @@ int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path
                  speakers);
     print_drc_summary(status, dynrng_min_db, dynrng_max_db, compr_min_db, compr_max_db,
                       compr_frames, meta);
-    return 0;
+    return report_decoded_objects(status, first.object_metadata, object_pcm,
+                                  sample_rate_hz(first.sample_rate), objects_dir);
 }
 
-int run_decode(std::string_view in_path, std::string_view out_path,
-               const Options& meta) {
+int run_decode(std::string_view in_path, std::string_view out_path, const Options& meta,
+               std::string_view objects_dir) {
     const auto stream = read_all(in_path);
     if (stream.empty()) {
         std::println(stderr, "error: cannot read {}", in_path);
+        return 1;
+    }
+    if (!apply_object_verification(stream, meta)) {
         return 1;
     }
     // bsid at bit 40 says which syntax this is, before either is assumed.
@@ -3509,7 +3670,12 @@ int run_decode(std::string_view in_path, std::string_view out_path,
         return 1;
     }
     if (*bsid > 8) {
-        return run_decode_eac3(stream, out_path, meta);
+        return run_decode_eac3(stream, out_path, meta, objects_dir);
+    }
+    if (!objects_dir.empty()) {
+        std::println(stderr,
+                     "warning: objects_dir given but {} is plain AC-3 - it has no object layer",
+                     in_path);
     }
     const auto frames = ac3::split_frames(stream);
     if (!frames) {
@@ -4453,15 +4619,19 @@ int run_eac3_silence(std::string_view out_path, std::uint32_t seconds, std::uint
 // bitstreamed) output - a sanity-check/preview path, and the offline half of
 // live monitoring ('live's --monitor equivalent works the same way, one
 // access unit at a time as it is produced instead of read from a file).
-// Object metadata (JOC/OAMD) is parsed but not rendered here: Eac3Decoder
-// reads TS 103 420's object layer (DecodedSubstream::object_metadata/
-// object_audio), but this path only plays the 5.1 bed - exactly what a
-// legacy decoder hears, which is the thing most worth confirming actually
-// sounds right.
-int run_monitor(std::string_view in_path, int device_index) {
+// Object metadata (JOC/OAMD), when present, is reported (object count) but
+// not played or exported here: Eac3Decoder reads TS 103 420's object layer
+// (DecodedSubstream::object_metadata/object_audio), but this path only plays
+// the 5.1 bed - exactly what a legacy decoder hears, which is the thing most
+// worth confirming actually sounds right. 'ac3cli decode' with objects_dir
+// is where the reconstructed object audio itself comes out.
+int run_monitor(std::string_view in_path, int device_index, const Options& meta) {
     const auto stream = read_all(in_path);
     if (stream.empty()) {
         std::println(stderr, "error: cannot read {}", in_path);
+        return 1;
+    }
+    if (!apply_object_verification(stream, meta)) {
         return 1;
     }
     const auto bsid = ac3::stream_bsid(stream);
@@ -4544,6 +4714,26 @@ int run_monitor(std::string_view in_path, int device_index) {
                 }
                 std::println("monitoring {} ({} channels, {} Hz) on \"{}\"…", in_path,
                              order.size(), sample_rate_hz(out.sample_rate), device_name);
+                // Same object-count line run_decode_eac3 reports (see
+                // report_decoded_objects) - this path still only plays the
+                // 5.1 bed (this function's own header comment), so it says
+                // so rather than implying object playback is coming.
+                if (out.object_metadata) {
+                    // Guarded by the if above; clang-tidy's
+                    // bugprone-unchecked-optional-access doesn't trace the
+                    // guard through into a multi-argument std::println call,
+                    // the same false positive print_channel_summary(*meter)
+                    // elsewhere in this file works around - binding once here
+                    // instead of repeating out.object_metadata-> twice sidesteps it.
+                    const auto& metadata = *out.object_metadata;  // NOLINT(bugprone-unchecked-optional-access)
+                    std::println(
+                        "  {} dynamic objects + the bed's LFE = {} objects, OAMD present{}",
+                        metadata.objects.size(), ac3::oba::object_count(metadata.program),
+                        out.object_audio.empty()
+                            ? " (JOC audio not reconstructed)"
+                            : ", JOC audio reconstructed (bed-only playback here; see "
+                              "'ac3cli decode' with objects_dir to export it)");
+                }
             }
             play(interleave_reordered(out.channels, order));
             ++units_played;
@@ -5227,8 +5417,11 @@ constexpr std::array<Command, 26> kCommands{{
          return run_eac3_encode(x.str(1), x.str(2), x.u32(3, 192), x.str(4, "none"), x.str(5),
                                 x.str(6, "off"), x.meta, x.str(7));
      }},
-    {"decode", 3, "<in.ac3|in.ec3> <out.wav>", "AC-3 or E-AC-3; bsid decides", Needs::kNothing,
-     [](const Args& x) { return run_decode(x.str(1), x.str(2), x.meta); }},
+    {"decode", 3, "<in.ac3|in.ec3> <out.wav> [objects_dir]",
+     "AC-3 or E-AC-3; bsid decides. objects_dir (E-AC-3 Atmos only): export each "
+     "JOC-reconstructed object as its own object_NN.wav there",
+     Needs::kNothing,
+     [](const Args& x) { return run_decode(x.str(1), x.str(2), x.meta, x.str(3)); }},
     {"levels", 2, "<in.wav|in.ac3|in.ec3>", "per-channel peak/RMS report", Needs::kNothing,
      [](const Args& x) { return run_levels(x.str(1)); }},
     {"loudness", 2, "<in.wav>", "BS.1770-4 loudness -> dialnorm", Needs::kNothing,
@@ -5260,7 +5453,7 @@ constexpr std::array<Command, 26> kCommands{{
      [](const Args& x) { return run_play(x.str(1), x.i32(2, -1)); }},
     {"monitor", 2, "<in.ac3|in.ec3> [device_index]",
      "decode and play on an ordinary (non-bitstreamed) output", Needs::kMonitor,
-     [](const Args& x) { return run_monitor(x.str(1), x.i32(2, -1)); }},
+     [](const Args& x) { return run_monitor(x.str(1), x.i32(2, -1), x.meta); }},
 }};
 
 void print_usage() {
@@ -5325,8 +5518,11 @@ void print_usage() {
     std::println("       instead of the bare elementary stream both write by default; 'mkv'");
     std::println("       remains the way to wrap an ALREADY-encoded file after the fact.");
     std::println("monitor/live --monitor play the 5.1 BED of an Atmos-mode stream: the decoder");
-    std::println("       reads TS 103 420's object layer (OAMD/JOC) but this path does not render");
-    std::println("       objects, so this is what a legacy decoder hears, not unmixed objects.");
+    std::println("       reads TS 103 420's object layer (OAMD/JOC) and reports an object count,");
+    std::println("       but this path does not render or export objects, so this is what a");
+    std::println("       legacy decoder hears, not unmixed objects.");
+    std::println("decode objects_dir (E-AC-3 Atmos only): exports each JOC-reconstructed object");
+    std::println("       as its own object_NN.wav, alongside the usual 5.1 bed WAV.");
     std::println("");
     std::println("tools:  Annex E coding tools, '+'-joined — {}", plan::kToolsSyntax);
     std::println("        cpl:N / spx:N pin that tool's band edge (e.g. cpl:4+spx:5);");
@@ -5438,7 +5634,8 @@ int run_main(int argc, char** argv) {
         const bool is_option = token.find('=') != std::string_view::npos ||
                                token == "couple" || token == "heavy" || token == "heavy2" ||
                                token == "mixmeta" || token == "sign-objects" ||
-                               token == "keep-partial" || token == "fast-mdct";
+                               token == "verify-objects" || token == "keep-partial" ||
+                               token == "fast-mdct";
         if (token == "couple") {
             couple_flag = true;
         }
