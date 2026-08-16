@@ -90,3 +90,13 @@ ac3forge_add_fuzzer(fuzz_eac3_decode)
 # truncated or hand-edited WAV is exactly what a user hands the CLI
 # (src/lib/src/io/wav.cpp).
 ac3forge_add_fuzzer(fuzz_wav_read)
+
+# --- Differential mode (roadmap G3) -----------------------------------------
+# Same decode paths as fuzz_ac3_decode/fuzz_eac3_decode above, but instead of
+# only checking for a crash/sanitizer trip, these also decode the same
+# mutated bytes with FFmpeg and diff the PCM (fuzz/differential_oracle.hpp
+# has the full reasoning for what counts as a reportable divergence). Needs
+# `ffmpeg` on PATH at RUN time only - the build itself has no new dependency,
+# since differential_oracle.hpp shells out rather than linking anything.
+ac3forge_add_fuzzer(fuzz_differential_ac3_decode)
+ac3forge_add_fuzzer(fuzz_differential_eac3_decode)

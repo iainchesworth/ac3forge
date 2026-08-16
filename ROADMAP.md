@@ -113,7 +113,7 @@ AC-3/E-AC-3 bitstream and verifies its loudness metadata against measurement.
   `silent_frame` turned out to already be solidly covered (`tests/test_loudness.cpp`,
   `tests/test_frame.cpp`) and were left alone; the CLI's `silence`/`eac3-silence` commands had zero
   coverage of their own argv wiring and got some.
-- [ ] **G3 (M)** — Differential decoder fuzzing against FFmpeg: feed the same mutated frames
+- [x] **G3 (M)** — Differential decoder fuzzing against FFmpeg: feed the same mutated frames
   to both decoders and diff the PCM.
 
 ## Deliberately not on the list
