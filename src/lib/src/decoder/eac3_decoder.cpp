@@ -14,8 +14,13 @@
 #include "ac3/core/mantissas.hpp"
 #include "ac3/core/mdct.hpp"
 #include "ac3/decoder/transient_prenoise.hpp"
+#include "ac3/emdf/emdf.hpp"
 #include "ac3/encoder/coupling.hpp"
 #include "ac3/encoder/eac3_tools.hpp"
+#include "ac3/meta/drc.hpp"
+#include "ac3/oba/joc.hpp"
+#include "ac3/oba/oamd.hpp"
+#include "gain.hpp"
 
 // E-AC-3 syncframe decoding, ATSC A/52:2018 Annex E Tables E1.2, E1.3 and E1.4.
 //
@@ -69,6 +74,10 @@ struct Bsi {
     bool lfe = false;
     int dialnorm = 31;
     bool compre = false;
+    // Only ever set for an independent/convertible substream - see
+    // parse_bsi's own comment on why a dependent's compre bit does not mean
+    // this.
+    std::optional<std::uint8_t> compr;
     std::optional<std::uint16_t> chanmap;
     // Ch2's own dialnorm/compr, present only when acmod is kDualMono (1+1).
     std::optional<int> dialnorm2;
@@ -195,10 +204,15 @@ std::expected<Bsi, DecodeError> parse_bsi(BitReader& r, std::size_t frame_bytes)
     bsi.dialnorm = static_cast<int>(r.read(5));
     // §E3.8.5: in a DEPENDENT substream compre marks the last dependent of the
     // program rather than announcing a compression word - though it still
-    // drags one in. Either way the 8 bits have to be consumed.
+    // drags one in. Either way the 8 bits have to be consumed; only stored
+    // into bsi.compr when this substream is independent/convertible, where
+    // the word is actually what it says it is.
     bsi.compre = r.read(1) != 0;
     if (bsi.compre) {
-        r.skip(8);  // compr
+        const auto compr = static_cast<std::uint8_t>(r.read(8));
+        if (bsi.strmtyp != StreamType::kDependent) {
+            bsi.compr = compr;
+        }
     }
     // Annex E Table E1.2: unconditional on strmtyp, mirroring the encoder's
     // own write side - even a dependent substream coding 1+1 would carry it,
@@ -464,8 +478,11 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
     out.acmod = bsi->acmod;
     out.lfe = bsi->lfe;
     out.dialnorm = bsi->dialnorm;
+    out.compr = bsi->compr;
+    out.dynrng.fill(meta::kDynrngUnity);
     out.dialnorm2 = bsi->dialnorm2;
     out.compr2 = bsi->compr2;
+    out.dynrng2.fill(meta::kDynrngUnity);
     out.numblkscod = bsi->numblkscod;
     out.chanmap = bsi->chanmap;
     out.last_dependent = bsi->strmtyp == StreamType::kDependent && bsi->compre;
@@ -488,6 +505,11 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
     std::array<int, kMaxSubstreamStreams> fsnroffst{};
     int csnroffst = 0;
     std::array<bool, 4> rematflg{};
+    // §7.7.1.2: an absent word inherits from the previous BLOCK, and block 0
+    // without one is unity - same persistence rule as the legacy AC-3
+    // decoder's own dynrng_word/dynrng2_word (decoder.cpp).
+    std::uint8_t dynrng_word = meta::kDynrngUnity;
+    std::uint8_t dynrng2_word = meta::kDynrngUnity;
     // §7.2.2.6, reset to "no segments" at the start of every syncframe like
     // fsnroffst/codes above, then persisting block to block until
     // re-transmitted or cleared. Only the per-fbw-channel deltbae[ch] exists
@@ -570,7 +592,12 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
     // syncframe this call was not given: a real, documented approximation,
     // not a bug - every interior block reconstructs with its true
     // neighbors.
-    std::array<std::array<double, 256>, kBlocksPerFrame> ecpl_all_coeffs{};
+    // Heap-allocated like aht_coeffs above (PREfast's C6262, alert #63): a
+    // fixed std::array here was the single largest contributor to
+    // decode_substream's oversized stack frame, and - same as aht_coeffs -
+    // it's produced once per call, not per (block, channel) iteration, so
+    // there's no hot-loop allocation cost to heap-allocating it.
+    std::vector<std::array<double, 256>> ecpl_all_coeffs(static_cast<std::size_t>(kBlocksPerFrame));
     std::array<bool, kBlocksPerFrame> ecpl_active{};
 
     // Everything the second pass below (spx synthesis, rematrixing, IMDCT
@@ -621,6 +648,13 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
     };
     std::vector<BlockTail> tails(static_cast<std::size_t>(nblks));
 
+    // Captured alongside out.object_metadata below, from whichever block's
+    // skip field carries the EMDF container - kept raw here (not parsed
+    // yet) because joc::parse_payload needs FrameParameters::objects to
+    // agree with the OAMD program it rides beside, which is only known once
+    // both payloads have been seen.
+    std::vector<std::byte> joc_bytes;
+
     for (int blk = 0; blk < nblks; ++blk) {
         const auto strategy = [&](int ch) {
             return ch < nfchans
@@ -638,17 +672,30 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
             out.blksw[static_cast<std::size_t>(ch)][static_cast<std::size_t>(blk)] =
                 blksw[static_cast<std::size_t>(ch)];
         }
+        // Annex E Table E1.4's own audblk() syntax: full per-channel
+        // dithflag[ch] syntax when dithflage is set, else every channel
+        // defaults to "dithflag[ch] = 1 /* dither on */" for the block -
+        // NOT off. Reconstruction happens in read_stream/the decoupling loop
+        // below, the same split AC-3's own dithflag[ch] uses.
+        std::array<bool, eac3::chanmap::kMaxSubstreamFullbw> dithflag{};
         if (frm->dithflage) {
-            // bap-0 bins reconstruct as zero whatever this says, matching the
-            // AC-3 path: §7.3.4 lets the dither sequence be "any reasonably
-            // random sequence", so zeros are what keeps decode deterministic.
-            r.skip(static_cast<std::size_t>(nfchans));
+            for (int ch = 0; ch < nfchans; ++ch) {
+                dithflag[static_cast<std::size_t>(ch)] = r.read(1) != 0;
+            }
+        } else {
+            for (int ch = 0; ch < nfchans; ++ch) {
+                dithflag[static_cast<std::size_t>(ch)] = true;
+            }
         }
-        if (r.read(1) != 0) {
-            r.skip(8);  // dynrng: parsed, not applied
+        if (r.read(1) != 0) {  // dynrnge
+            dynrng_word = static_cast<std::uint8_t>(r.read(8));
         }
-        if (bsi->acmod == Acmod::kDualMono && r.read(1) != 0) {
-            r.skip(8);  // dynrng2e -> dynrng2: parsed, not applied - same as dynrng
+        out.dynrng[static_cast<std::size_t>(blk)] = dynrng_word;
+        if (bsi->acmod == Acmod::kDualMono) {
+            if (r.read(1) != 0) {  // dynrng2e
+                dynrng2_word = static_cast<std::uint8_t>(r.read(8));
+            }
+            out.dynrng2[static_cast<std::size_t>(blk)] = dynrng2_word;
         }
 
         // --- spectral extension strategy + geometry (§E2.3.3, §3.6) ---
@@ -1178,7 +1225,37 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
         }
         if (frm->skipflde && r.read(1) != 0) {  // skiple
             const auto skipl = r.read(9);
-            r.skip(skipl * 8);
+            // Materialized rather than left as a view into `frame`: skipfld
+            // starts wherever the bits before it happened to end, not
+            // necessarily on a byte boundary, so its bytes have to be read
+            // out 8 bits at a time (matching exactly how eac3_frame.cpp's
+            // put_skip_field wrote them) before they mean anything as a
+            // self-contained EMDF container.
+            std::vector<std::byte> skip_bytes;
+            skip_bytes.reserve(skipl);
+            for (std::uint32_t i = 0; i < skipl; ++i) {
+                skip_bytes.push_back(static_cast<std::byte>(r.read(8)));
+            }
+            // Which block carries the container is not fixed
+            // (emdf::build_container's own comment), so every block's skip
+            // field is a candidate; stop looking once one has produced OAMD.
+            // A container that is present but fails to parse leaves
+            // object_metadata unset, same as no container at all - it never
+            // fails the surrounding frame decode, matching EMDF's whole
+            // reason for existing: a decoder that does not understand this
+            // data reads the rest of the frame exactly as it would without it.
+            if (!out.object_metadata) {
+                const auto container = emdf::parse_container(skip_bytes);
+                if (container.has_value() && container->has_value()) {
+                    for (const auto& payload : **container) {
+                        if (payload.id == emdf::kPayloadIdOamd) {
+                            out.object_metadata = oba::parse_payload(payload.bytes);
+                        } else if (payload.id == emdf::kPayloadIdJoc && joc_bytes.empty()) {
+                            joc_bytes.assign(payload.bytes.begin(), payload.bytes.end());
+                        }
+                    }
+                }
+            }
         }
 
         // §7.2.2.1.1 is frame-wide: csnroffst together with EVERY channel's
@@ -1235,15 +1312,25 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
         // kMaxSubstreamStreams * 256 doubles, a stack std::array here is the
         // single largest contributor to this function's frame size.
         std::vector<std::array<double, 256>> coeffs(kMaxSubstreamStreams);
+        // §7.3.4, same split as decoder.cpp's own read_stream: only a stream
+        // with its OWN dithflag (a full-bandwidth channel, s < nfchans)
+        // dithers here. The LFE has no dithflag and always reconstructs as
+        // zero; kCplStream's shared bins stay silent here too and are
+        // dithered per receiving channel in the decoupling loop below
+        // instead, per §7.3.4's "applied after the individual channels are
+        // extracted ... uncorrelated" requirement.
         const auto read_stream = [&](int s, int begin) {
             const auto index = static_cast<std::size_t>(s);
+            const bool dither_eligible = s < nfchans && dithflag[static_cast<std::size_t>(s)];
             for (int bin = begin; bin < endmant[index]; ++bin) {
                 const int bap_value = bap[index][static_cast<std::size_t>(bin)];
+                const int exp = exps[index][static_cast<std::size_t>(bin)];
                 if (bap_value == 0) {
-                    continue;  // silence (dither substitution not implemented)
+                    coeffs[index][static_cast<std::size_t>(bin)] =
+                        dither_eligible ? dither_.next() / static_cast<double>(1u << exp) : 0.0;
+                    continue;
                 }
                 const auto code = mantissa_reader.read(r, bap_value);
-                const int exp = exps[index][static_cast<std::size_t>(bin)];
                 coeffs[index][static_cast<std::size_t>(bin)] =
                     dequantize_mantissa(code, bap_value) / static_cast<double>(1u << exp);
             }
@@ -1387,11 +1474,14 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
         // regardless of coupling mode).
         if (frm->cplinu[static_cast<std::size_t>(blk)] && !ecplinu_now) {
             const auto& shared = coeffs[static_cast<std::size_t>(kCplStream)];
+            const auto& cpl_bap = bap[static_cast<std::size_t>(kCplStream)];
+            const auto& cpl_exps = exps[static_cast<std::size_t>(kCplStream)];
             for (int ch = 0; ch < nfchans; ++ch) {
                 if (!chincpl[static_cast<std::size_t>(ch)]) {
                     continue;
                 }
                 auto& target = coeffs[static_cast<std::size_t>(ch)];
+                const bool ch_dither = dithflag[static_cast<std::size_t>(ch)];
                 for (int bnd = 0; bnd < static_cast<int>(subband_band.size()); ++bnd) {
                     const double coordinate =
                         cplco[static_cast<std::size_t>(ch)][static_cast<std::size_t>(bnd)];
@@ -1407,8 +1497,18 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
                     const int low = cplstrtmant + bnd * coupling::kBinsPerSubBand;
                     const int high = std::min(low + coupling::kBinsPerSubBand, cplendmant);
                     for (int bin = low; bin < high; ++bin) {
-                        target[static_cast<std::size_t>(bin)] =
-                            shared[static_cast<std::size_t>(bin)] * coordinate * 8.0 * sign;
+                        const std::size_t ubin = static_cast<std::size_t>(bin);
+                        // §7.3.4: independent per-channel dither for a
+                        // zero-bap shared bin, run through the same
+                        // extraction formula a real coupling coefficient
+                        // uses - see decoder.cpp's own copy of this comment
+                        // for why reusing one dithered coupling-domain
+                        // sample across channels would be wrong.
+                        const double coeff =
+                            (cpl_bap[ubin] == 0 && ch_dither)
+                                ? dither_.next() / static_cast<double>(1u << cpl_exps[ubin])
+                                : shared[ubin];
+                        target[ubin] = coeff * coordinate * 8.0 * sign;
                     }
                 }
             }
@@ -1489,8 +1589,8 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
                 (blk + 1 < nblks && ecpl_active[static_cast<std::size_t>(blk + 1)])
                     ? ecpl_all_coeffs[static_cast<std::size_t>(blk + 1)]
                     : kZero;
-            std::array<double, 256> zr{};
-            std::array<double, 256> zi{};
+            auto& zr = ecpl_spectrum_real_;
+            auto& zi = ecpl_spectrum_imag_;
             eac3::ecpl_channel_spectrum(
                 prev, ecpl_all_coeffs[static_cast<std::size_t>(blk)], next, zr, zi);
 
@@ -1606,9 +1706,36 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
             }
         }
 
+        // §7.7 gain, applied to the COEFFICIENTS rather than to the output
+        // samples - same reasoning and the same block_gain helper as the
+        // legacy AC-3 decoder (decoder.cpp): the overlap-add window then
+        // cross-fades one block's gain into the next, which is what keeps a
+        // per-block gain change from clicking. Applied to every coded
+        // channel including the LFE; the coupling channel is skipped
+        // because it is never one of the nchans real channels here (standard
+        // decoupling and, for enhanced coupling, the reconstruction above
+        // have already spread it into the channels above). Dual mono's two
+        // channels are independent programmes, so Ch2 gets its own gain
+        // from its own words (out.dynrng2/out.compr2) rather than sharing
+        // Ch1's.
+        for (int ch = 0; ch < nchans; ++ch) {
+            const bool second_programme = bsi->acmod == Acmod::kDualMono && ch == 1;
+            const double drc =
+                second_programme
+                    ? internal::block_gain(config_, out.dynrng2[static_cast<std::size_t>(blk)],
+                                           out.compr2)
+                    : internal::block_gain(config_, out.dynrng[static_cast<std::size_t>(blk)],
+                                           out.compr);
+            if (drc != 1.0) {
+                for (auto& value : coeffs[static_cast<std::size_t>(ch)]) {
+                    value *= drc;
+                }
+            }
+        }
+
         for (int ch = 0; ch < nchans; ++ch) {
             const auto index = static_cast<std::size_t>(ch);
-            std::array<double, 512> x{};
+            auto& x = imdct_scratch_;
             if (ch < nfchans && tail.blksw[static_cast<std::size_t>(ch)]) {
                 imdct256_pair_windowed(coeffs[index], x);
             } else {
@@ -1634,6 +1761,32 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
     // own doc comment; a stream needing more is refused rather than read
     // out of bounds).
     const int key = static_cast<int>(bsi->strmtyp) * 8 + bsi->substreamid;
+
+    // --- JOC audio reconstruction -----------------------------------------
+    // Only when OAMD's own object ordering and JOC's line up 1:1 - a
+    // dynamic-object-only program (no bed), where oba::parse_payload's
+    // `objects` is already exactly the objects JOC coded (see its own
+    // DecodedProgram comment). A bed program's JOC objects would not match
+    // object_metadata->objects index for index, and this project's own
+    // AtmosEncoder never produces one anyway, so reconstruction is skipped
+    // rather than risk mislabeling one object's audio as another's.
+    if (out.object_metadata && out.object_metadata->program.dynamic_only && !joc_bytes.empty()) {
+        const auto params = joc::parse_payload(joc_bytes);
+        if (params && params->objects == static_cast<int>(out.object_metadata->objects.size())) {
+            constexpr std::array<int, joc::kNumChannels5X> kAc3FromJoc = {0, 2, 1, 3, 4};
+            std::vector<std::vector<float>> bed_joc_order(joc::kNumChannels5X);
+            bool have_bed = static_cast<std::size_t>(joc::kNumChannels5X) <= out.channels.size();
+            for (int jc = 0; have_bed && jc < joc::kNumChannels5X; ++jc) {
+                bed_joc_order[static_cast<std::size_t>(jc)] =
+                    out.channels[static_cast<std::size_t>(
+                        kAc3FromJoc[static_cast<std::size_t>(jc)])];
+            }
+            if (have_bed) {
+                out.object_audio = joc::reconstruct(bed_joc_order, *params, joc_state_[key]);
+            }
+        }
+    }
+
     auto pending_it = pending_.find(key);
     if (frm->transproce) {
         for (int ch = 0; ch < nfchans; ++ch) {
@@ -1779,6 +1932,11 @@ std::expected<std::optional<DecodedAccessUnit>, DecodeError> Eac3Decoder::decode
     out.sample_rate = lead.sample_rate;
     out.acmod = lead.acmod;
     out.dialnorm = lead.dialnorm;
+    out.compr = lead.compr;
+    out.dynrng = lead.dynrng;
+    out.numblkscod = lead.numblkscod;
+    out.object_metadata = lead.object_metadata;
+    out.object_audio = lead.object_audio;
     out.substream_count = static_cast<int>(substreams.size());
 
     // Dual mono has no Table E2.5 location - Ch1 and Ch2 are unrelated

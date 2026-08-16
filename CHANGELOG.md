@@ -12,6 +12,103 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 
 ## [Unreleased]
 
+## [0.6.0-beta.1] - 2026-08-17
+
+Fifth tagged release. The main change is Atmos object *decode*: earlier releases could only
+encode object audio, and decoding an Atmos file just played its 5.1 bed. The E-AC-3 decoder now
+reads OAMD object positions and reconstructs JOC object audio, surfaced through the CLI's
+`decode`/`monitor` commands, a new GUI object inspector, and a browser-based WASM demo that
+renders real decoded object motion and solos individual object audio. A companion
+`verify-objects` mode checks a stream's own EMDF authenticity tag (not Dolby's proprietary
+decoder gate — see Known gaps).
+
+Also landing this release: a standalone BW64/RF64 + Audio Definition Model (ADM) reader that
+drives a real professional ADM BWF master straight through to a DD+ JOC E-AC-3 stream; two new
+container writers — MP4/ISOBMFF (with fragmented MP4/CMAF segmenting plus HLS/DASH signaling)
+and MPEG-2 Transport Stream — alongside the existing Matroska writer; full ITU-R BS.1770/EBU
+R128 loudness metering and a bitstream-aware delivery-QC command; Raspberry Pi (arm64 Linux) and
+a real macOS CoreAudio backend; and the library is now installable through vcpkg.
+
+### Atmos object decode
+
+- **The E-AC-3 decoder reads OAMD object metadata and reconstructs JOC object audio**, closing
+  the gap where only the encoder side supported objects. `ac3cli decode`/`monitor` surface the
+  decoded object layer directly (including per-object WAV export via `objects_dir`).
+- **A new GUI "Inspect objects…" dialog** plays back a decoded Atmos stream's object positions
+  and lets you solo individual objects' audio.
+- **A browser-based WASM demo** renders real decoded object motion and solo-plays real isolated
+  object audio, entirely in-browser.
+- **`ac3::signing` gained stream verification** (`verify_atmos_frame`/`verify_atmos_stream`, CLI
+  `verify-objects`): checks a stream's own embedded EMDF authenticity tag. This is opt-in and
+  separate from Dolby's own decoder gate — see Known gaps.
+- **The E-AC-3 decoder now applies dynamic range control** (`drc=`/`heavy`), matching the legacy
+  AC-3 decoder; previously accepted and silently ignored.
+
+### ADM ingest
+
+- **A standalone BW64/RF64 + Audio Definition Model parser** (`ac3adm::ac3adm`) reads a
+  professional ADM BWF master's object graph into memory, and a bridging layer maps it onto the
+  Atmos object encoder's input shape.
+- **`ac3cli atmos-adm`** drives both together end to end: a real ADM BWF master straight to a
+  DD+ JOC E-AC-3 stream. This module is opt-in (`-DAC3FORGE_BUILD_ADM=ON`, off by default) since
+  it needs several Boost header libraries; see [docs/library/index.md](docs/library/index.md).
+
+### Delivery containers
+
+- **A standalone MP4/ISOBMFF container writer**, with a spec-correct `dec3`/`dac3` box, plus
+  fragmented MP4/CMAF segmenting and HLS/DASH manifest signaling.
+- **A standalone MPEG-2 Transport Stream container writer.**
+- **Live capture sessions can mux straight to Matroska.** The GUI's Format tab and the CLI both
+  gained the new container options.
+
+### Loudness & delivery QC
+
+- **Full ITU-R BS.1770-4/EBU R128 metering**: momentary and short-term loudness, loudness
+  range, and true peak.
+- **`dialnorm=auto` finished for multi-source assignments and dual-mono streams**, in both the
+  CLI and GUI (dual-mono measures each channel independently).
+- **A new CLI `qc` command and GUI QC dialog** audit an already-encoded stream's bitstream-level
+  loudness against its embedded metadata and delivery gates.
+- **A perceptual-quality (ViSQOL) column** sits alongside SNR in the quality-comparison tooling.
+
+### Platform & packaging
+
+- **Raspberry Pi (arm64 Linux)** is now a supported platform, Pi 4/5 tier (Pi 3 out of scope on
+  real-time budget grounds).
+- **A real macOS CoreAudio backend** for live capture/monitor playback.
+- **The library is installable via vcpkg** (staged in-tree pending submission to the curated
+  registry — see [docs/releasing.md](docs/releasing.md#vcpkg-port)): `ac3::forge` plus
+  `matroska`/`mp4`/`mpegts` as opt-in container-writer features.
+
+### Fixes
+
+- **AC-3 decode's reported dynamic-range floor was wrong whenever the true minimum sample was
+  exactly 0.0 dB** — an accumulator seeded at 0.0 instead of the first real sample silently
+  widened the reported range.
+- **A flushed E-AC-3 dependent substream (e.g. a height-only pair at end of stream) could crash
+  the CLI decoder** instead of writing correct audio, when its channel layout didn't match the
+  program's main substream.
+- **`fast-mdct=off` is now honored consistently** across all `eac3-encode`/`eac3-encode-multi`
+  commands.
+- **Piping CLI output to `-` no longer risks corrupting stdout** when `dialnorm=auto` or a
+  multi-source summary is printed.
+- **The GUI's auto-monitor preference now actually takes effect** on the input rail's Add
+  button.
+
+### Known gaps
+
+- Objects still will not decode as *objects* in Dolby's own decoder or hardware: DD+ JOC gates
+  that on an authenticity tag keyed to a secret embedded in Dolby's decoder binaries, which this
+  project ships no key for. `verify-objects` checks a stream against its *own* signature, not
+  Dolby's gate. The bed still decodes as plain 5.1 anywhere.
+- Exclusive-mode S/PDIF/HDMI passthrough has not been confirmed against real bitstreaming
+  hardware on any platform.
+- `fscod2` audio content has no external decode oracle at all — verified only by this project's
+  own encoder/decoder round trip.
+
+See [Validation](docs/verification.md) for the full account of what is and isn't independently
+verified.
+
 ## [0.5.0-beta.1] - 2026-08-15
 
 Fourth tagged release. The main change is a fast-transform performance initiative: an opt-in
@@ -111,7 +208,8 @@ CLI together with the entire library SDK.
 
 - Objects will not decode as *objects* in Dolby's own decoder: DD+ JOC gates that on an
   authenticity tag keyed to a secret embedded in Dolby's decoder binaries, which this project
-  does not produce. The bed still decodes as plain 5.1 anywhere.
+  ships no key for, so its streams are unsigned unless an operator supplies one. The bed still
+  decodes as plain 5.1 anywhere.
 - Exclusive-mode S/PDIF/HDMI passthrough has not been confirmed against real bitstreaming hardware
   on either platform (no such endpoint was available during development).
 - `fscod2` audio content has no external decode oracle at all, not even Dolby's own Reference
@@ -392,7 +490,8 @@ dashboards, and Android release builds sign with a real keystore.
 
 - Objects will not decode as *objects* in Dolby's own decoder: DD+ JOC gates that on an
   authenticity tag keyed to a secret embedded in Dolby's decoder binaries, which this project
-  does not produce. The bed still decodes as plain 5.1 anywhere.
+  ships no key for, so its streams are unsigned unless an operator supplies one. The bed still
+  decodes as plain 5.1 anywhere.
 - Exclusive-mode S/PDIF/HDMI passthrough has not been confirmed against real bitstreaming hardware
   on either platform (no such endpoint was available during development).
 - `fscod2` audio content has no external decode oracle at all, not even Dolby's own Reference
@@ -491,8 +590,8 @@ assignment, and a GUI tier split for first-time users through experts.
   keystore is provisioned in this repo yet, so it's a sideload-only build, not one suited for
   store distribution.
 - Enhanced coupling's encoder always sends angle/chaos as zero (an amplitude-only fit) — quality
-  degrades if two channels' content shares one narrow coupling band. Closed in the next release;
-  see [Unreleased](#unreleased).
+  degrades if two channels' content shares one narrow coupling band. Closed in
+  [0.4.0-beta.1](#040-beta1---2026-08-14).
 - Objects will not decode as *objects* in Dolby's own decoder: DD+ JOC gates that on an
   authenticity tag keyed to a secret embedded in Dolby's decoder binaries, which this project
   does not produce. The bed still decodes as plain 5.1 anywhere.

@@ -3,7 +3,7 @@
 Quality is measured, not asserted, and coverage has known edges. This page is both: how output
 is checked, and exactly where checking runs out.
 
-## Four independent checks
+## Five independent checks
 
 In rough order of strength:
 
@@ -25,6 +25,13 @@ In rough order of strength:
    several real bugs — the EMDF container belonging in a skip field rather than the aux field,
    `codecdatae=0`, a dynamic-object-only programme with the LFE as an object but not a JOC
    output, and metadata flag arrays transmitted index-0-first.
+5. **Fuzzing.** The libFuzzer harnesses under `fuzz/` drive the codec's untrusted-input entry
+   points looking for crashes and undefined behaviour (ASan+UBSan), and two differential
+   harnesses decode each mutated stream with both this project's decoder and FFmpeg's and diff
+   the PCM. CI runs both: the `Fuzz Regress` job replays the checked-in seed and regression
+   corpora on every push and PR, and the `Fuzz Differential` job adds a bounded mutation budget
+   on pushes. See
+   [fuzz/README.md](https://github.com/iainchesworth/ac3forge/blob/main/fuzz/README.md).
 
 Contributor-facing detail on which oracle to reach for and how — including the exact FFmpeg
 flags and the CI jobs that run them — is in [Oracles](https://github.com/iainchesworth/ac3forge/blob/main/CONTRIBUTING.md#oracles).
@@ -44,7 +51,13 @@ cross-correlation, and reports SNR against the original:
 
 Measured with FFmpeg 8.0.1 on 2026-08-09; reproduce with `python tools/quality_race.py ac3`.
 SNR on synthetic material is a narrow metric — it says the waveform is closer, not that it
-sounds better, and no listening test has been run.
+sounds better, and no *subjective* listening test has been run. `quality_race.py`'s tables (and
+[Tool comparison trend](tool-comparison-trend.md)/[Landscape](landscape.md)) also carry an
+objective perceptual-quality prediction alongside SNR, [ViSQOL](https://github.com/google/visqol)'s
+MOS-LQO — narrower than a real listening panel, but closer to "how it would sound" than a
+waveform-distance number, and something SNR alone cannot claim. It's an optional column
+(`visqol-python` not installed shows `-`, never a failure), so it isn't in the snapshot table
+above; see `perceptual_score()` in `tools/quality_race.py`.
 
 That is a one-off snapshot. [Quality trend](quality-trend.md) tracks the same gold-reference SNR
 by commit, on every push to `develop` and `main`, so a regression shows up as a trend line
@@ -52,10 +65,10 @@ rather than only in that run's CI log.
 
 ## Test suite
 
-337 Catch2 unit tests (`ac3tests` plus the `ac3perf` throughput suite) plus the seven example
-programs: 344 `ctest` entries on macOS (no GUI leg there yet), 345 on Windows and any
-GUI-enabled Linux build (the GUI's Qt Quick Test harness, `ac3gui_qml_tests`, adds one), and 359
-on a Linux CI build with the GUI and the ALSA backend both on (`tests/platform/alsa/` adds 14).
+The Catch2 suites (`ac3tests` plus the `ac3perf` throughput suite) plus one `ctest` entry per
+example program, run per platform. The GUI's Qt Quick Test harness (`ac3gui_qmltests`) adds one
+entry on a GUI-enabled build, and the ALSA backend's `tests/platform/alsa/` adds 14 on a Linux
+build with libasound present; `ctest` runs whatever the configuration registered:
 
 ```bash
 ctest --preset test-windows-msvc-debug
@@ -136,11 +149,19 @@ covered where it's most relevant rather than repeated here:
   hardware; exclusive-mode passthrough bitstreaming has not been.
 - [Linux](platforms/linux.md#what-has-and-has-not-been-verified) — the ALSA backend is verified
   headless only; no real S/PDIF or HDMI output has been tried.
+- [macOS](platforms/macos.md#audio-backend-coreaudio) — the CoreAudio backend is CI-verified
+  only: its device-free logic runs under `ac3tests` on hosted runners, but no real Mac hardware
+  has ever run it.
+- [Raspberry Pi](platforms/raspberry-pi.md#verified-configuration) — real-hardware validation on
+  a Pi 4B: the full suite on both compilers, ALSA device enumeration against the Pi's real
+  `vc4hdmi` HDMI outputs, and an inspected arm64 `.deb` — still with no downstream receiver in
+  the loop.
 - [Android (Shield Atmos Demo)](platforms/android.md#what-has-and-has-not-been-verified) — the
   most thoroughly hardware-verified platform in the project: real E-AC-3/Atmos passthrough over
   HDMI to a real AV receiver, with object audio confirmed reconstructable (not just the panned
   bed). Verification specific to this one Android app on this one Shield + receiver pair, not a
   general claim about Android as a platform.
 - [Atmos & JOC](concepts/atmos-joc.md#two-honest-limitations) — Dolby's own decoder gates object
-  decoding on an authenticity tag this project doesn't produce, and objects sharing a direction
-  can't be perfectly separated. Neither is a conformance gap.
+  decoding on a keyed authenticity tag; the signer ships in-tree (`ac3::signing`) but this
+  project ships no key for it, so its streams are unsigned unless an operator supplies one.
+  Objects sharing a direction also can't be perfectly separated. Neither is a conformance gap.

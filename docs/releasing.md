@@ -1,9 +1,9 @@
 # Releasing ac3forge
 
 How to cut a release: what triggers `.github/workflows/release.yml`, what it produces, and how
-to set up the optional GPG signing key. Modelled on `R:\aqualink-automate`'s
-`docs/releasing.md`, with the parts that don't apply to ac3forge (APT/DNF repository
-publishing, a Docker image, a Home Assistant add-on) removed.
+to set up the optional GPG signing key. Modelled on an earlier project's release process, with
+the parts that don't apply to ac3forge (APT/DNF repository publishing, a Docker image, a Home
+Assistant add-on) removed.
 
 ## Versioning
 
@@ -12,8 +12,9 @@ ac3forge derives its version from git tags, the same way aqualink-automate does.
 `project()` in the top-level `CMakeLists.txt` and feeds the result straight into
 `project(ac3forge VERSION ...)` - the tag is the single source of truth. Nothing in the tree
 hardcodes a version to bump by hand: not `CMakeLists.txt`, and not `vcpkg.json`'s `"version"`
-field, which is a fixed placeholder never read for anything but satisfying vcpkg's manifest
-schema (see the comment beside it).
+field, which is a deliberate placeholder never read for anything but satisfying vcpkg's manifest
+schema (its own `$comment` says so; the staged port's `version-semver` is what tracks releases -
+see [vcpkg port](#vcpkg-port) below).
 
 So the order is just:
 
@@ -67,16 +68,15 @@ explicitly declared is a bigger surprise than a maintainer cleaning it up by han
 
 ## Dry run
 
-Builds and packages every platform (best-effort - see `_build.yml`'s `experimental` legs)
-without tagging, signing, or publishing anything. Exempt from the cut-from-main guard, so it can
+Builds and packages every platform without tagging, signing, or publishing anything. Exempt
+from the cut-from-main guard, so it can
 run from any branch - use it to validate a packaging change before merging.
 
 ## Post-release
 
 `gh release create --generate-notes` drafts release notes from merged PRs/commits since the
-previous tag - a first draft only. Modelled on aqualink-automate's own process
-(`R:\aqualink-automate\docs\releasing.md`), curating it to the established pattern is a
-required step, not optional polish:
+previous tag - a first draft only. Curating it to the established pattern is a required step,
+not optional polish:
 
 1. Update [CHANGELOG.md](https://github.com/iainchesworth/ac3forge/blob/main/CHANGELOG.md) first, if it isn't already current - a `## [x.y.z] -
    YYYY-MM-DD` section (moved down from `## [Unreleased]` if the changes were already logged
@@ -106,21 +106,84 @@ required step, not optional polish:
 4. Verify the release page has all expected artifacts, and that the curated notes render and
    read well.
 
+## vcpkg port
+
+A vcpkg port for `ac3forge` is staged in-tree at
+[`packaging/vcpkg-port/ac3forge/`](https://github.com/iainchesworth/ac3forge/tree/main/packaging/vcpkg-port/ac3forge)
+(`vcpkg.json`,
+`portfile.cmake`, `usage`) and is pending submission to the curated `microsoft/vcpkg` registry -
+see [docs/library/index.md](library/index.md) for how a consumer uses it either
+way. It installs the library only (`ac3::forge`, plus `matroska::matroska`/`mp4::mp4`/
+`mpegts::mpegts` behind their own default-on `matroska`/`mp4`/`mpegts` features - see
+`cmake/InstallLibrary.cmake`'s `AC3FORGE_BUILD_MATROSKA`/`AC3FORGE_BUILD_MP4`/
+`AC3FORGE_BUILD_MPEGTS`/`AC3FORGE_INSTALL_BOTH_LINKAGES` options), never the
+CLI/GUI/tests/examples/fuzzers. `ac3adm::ac3adm` (the ADM/BW64 reader) has no vcpkg feature and
+never will while it stays outside `find_package(ac3forge)` entirely - see
+[docs/library/index.md](library/index.md).
+
+Any future optional library component follows the same three-step recipe this repo's own
+`AC3FORGE_BUILD_<NAME>` options already establish: add the CMake option and its
+`cmake/InstallLibrary.cmake` guard first (that part isn't vcpkg-specific), then add a same-named
+feature to `packaging/vcpkg-port/ac3forge/vcpkg.json` and one line to `portfile.cmake`'s
+`vcpkg_check_features()` call.
+
+**Every release tag, once the port has been merged upstream**, needs a follow-up PR to
+`microsoft/vcpkg` - the curated registry has no mechanism to track a moving `main`, so a new
+`ac3forge` release is invisible to `vcpkg install` until this happens:
+
+1. Bump `packaging/vcpkg-port/ac3forge/vcpkg.json`'s `version-semver` to the new tag, and
+   `portfile.cmake`'s `vcpkg_from_github()` `REF`/`SHA512` to match (`sha512sum` the tag's
+   release tarball, or let a first `vcpkg install` attempt report the correct hash).
+2. Validate locally first (see below) before touching the upstream fork - a portfile change
+   that fails vcpkg's own CI is slower to iterate on there than here.
+3. Copy the updated port files into the `microsoft/vcpkg` fork's `ports/ac3forge/`, run
+   `vcpkg x-add-version ac3forge` to regenerate `versions/baseline.json`/
+   `versions/a-/ac3forge.json` (don't hand-edit these), and open the version-bump PR.
+
+**Validating the port locally**, any time `packaging/vcpkg-port/ac3forge/` or the CMake options
+it drives change (whether or not a release is involved):
+
+```bash
+vcpkg install ac3forge --classic --overlay-ports=packaging/vcpkg-port --triplet x64-windows
+vcpkg install ac3forge --classic --overlay-ports=packaging/vcpkg-port --triplet x64-windows-static
+vcpkg install ac3forge[core] --classic --overlay-ports=packaging/vcpkg-port --triplet x64-windows
+```
+
+`--classic` is required from inside this repo - the root `vcpkg.json` (manifest mode, for this
+project's *own* build-time dependencies) would otherwise shadow the package-name argument.
+Check for a clean post-build lint (no "not used"/"missing usage" warnings) and that
+`ac3forge[core]` installs without `matroska::matroska`/`mp4::mp4`/`mpegts::mpegts` at all, not
+just unlinked.
+
+Fetching a real tag only exercises whatever `AC3FORGE_BUILD_*` options actually existed in that
+tagged source - `vcpkg_from_github()`'s `REF` always points at an already-released tag, so a
+CMake option added since the last tag (as happened here: `AC3FORGE_BUILD_MP4`/
+`AC3FORGE_BUILD_MPEGTS` landed in `develop` after `v0.5.0-beta.1`) can't be exercised through a
+real fetch until the *next* tag contains it. To validate a port change against unreleased CMake
+options, temporarily swap the `vcpkg_from_github()` block in a scratch copy of `portfile.cmake`
+for `set(SOURCE_PATH "<absolute path to this checkout>")`, run the same three commands against
+that scratch copy, and discard it once validated - never commit that substitution.
+
 ## What gets published
 
-One package per OS, not one per compiler-toolchain leg: `_build.yml`'s matrix builds and tests
-both Windows toolchains (MSVC, clang-cl) and both Linux toolchains (GCC, Clang) on every push,
-but only the leg marked `release_package: true` per OS actually packages for a release -
-windows-msvc, linux-gcc and macos-llvm. windows-llvm and linux-llvm still catch
-compiler-specific bugs in full, every push; they just don't produce a second, redundantly
-canonical zip that a downloader would have no way to choose between.
+One package per OS **and architecture**, not one per compiler-toolchain leg: `_build.yml`'s matrix
+builds and tests both Windows toolchains (MSVC, clang-cl) and both Linux toolchains (GCC, Clang) - on
+both x64 and arm64 for Linux - on every push, but only the leg marked `release_package: true` per
+OS/arch actually packages for a release - windows-msvc, linux-gcc, linux-gcc-arm64 and macos-llvm.
+windows-llvm, linux-llvm and linux-llvm-arm64 still catch compiler-specific bugs in full, every push;
+they just don't produce a second, redundantly canonical archive that a downloader would have no way
+to choose between. `cmake/Packaging.cmake` arch-qualifies the Linux archive filename
+(`ac3forge-X.Y.Z-Linux-x86_64.tar.gz` vs. `...-Linux-aarch64.tar.gz`) specifically so the two Linux
+architectures' TGZ/ZIP downloads never collide; DEB/RPM already carry their arch in their own
+filenames.
 
-| Platform | Leg | End-user packages | Library (`ac3forge-dev-*`) |
-|---|---|---|---|
-| Windows | windows-msvc | `.zip`, `.exe` (NSIS, if `makensis` is on the runner) | `.zip` |
-| Linux | linux-gcc | `.tar.gz`, `.deb`, `.rpm` | `.tar.gz`, plus real system packages: `libac3forge0`/`ac3forge-devel` (RPM) and `libac3forge0`/`libac3forge-dev` (DEB) |
-| macOS | macos-llvm | `.tar.gz`, `.dmg` | `.tar.gz` |
-| Android (Shield) | build-android | `.apk` | none - Shield links `ac3::forge`/`ac3::audio` in-tree, it isn't a `find_package(ac3forge)` consumer |
+| Platform | Arch | Leg | End-user packages | Library (`ac3forge-dev-*`) |
+|---|---|---|---|---|
+| Windows | x64 | windows-msvc | `.zip`, `.exe` (NSIS, if `makensis` is on the runner) | `.zip` |
+| Linux | x86_64 | linux-gcc | `.tar.gz`, `.deb`, `.rpm` | `.tar.gz`, plus real system packages: `libac3forge0`/`ac3forge-devel` (RPM) and `libac3forge0`/`libac3forge-dev` (DEB) |
+| Linux | aarch64 (Raspberry Pi 4/5 and other arm64 targets) | linux-gcc-arm64 | `.tar.gz`, `.deb`, `.rpm` | same split as x86_64, above |
+| macOS | arm64 (Apple Silicon) | macos-llvm | `.tar.gz`, `.dmg` | `.tar.gz` |
+| Android (Shield) | arm64 (NDK) | build-android | `.apk` | none - Shield links `ac3::forge`/`ac3::audio` in-tree, it isn't a `find_package(ac3forge)` consumer |
 
 The end-user packages are `ac3cli`/`ac3gui` (CPack's `runtime` component) on desktop, or the
 Shield app's `.apk` on Android. The library packages are a second, independent download for a
@@ -159,7 +222,7 @@ which sideloading itself doesn't require. (Not to be confused with **object sign
 Atmos authenticity tag, provisioned separately via the `ATMOS_SIGNING_KEY` secret and
 unrelated to APK code-signing; see "Provisioning the Android object-signing key" below.)
 
-No leg is `experimental: true` any more (see `ci.yml`'s status table), so all four package
+No leg is `experimental: true` any more (see `ci.yml`'s status table), so all five package
 for real rather than best-effort - a packaging failure on any of them blocks the release the
 same as a build or test failure would. Every package - end-user or library - gets a `.sha512`
 (`CPACK_PACKAGE_CHECKSUM` in `cmake/Packaging.cmake`), an aggregate `SHA512SUMS` manifest,
@@ -299,5 +362,5 @@ not-yet-promoted leg - check the run's `build-packages` job.
 
 A tag-triggered release publishes signed, attested, SBOM'd packages and a GitHub Release. It does
 **not** publish an APT/DNF package repository, a Docker image, or anything Home Assistant-shaped -
-`R:\aqualink-automate`'s `.github/workflows/release.yml` / `publish-repos.yml` and
-`docs/releasing.md` are the precedent to copy from if any of those are ever wanted here.
+the earlier project this process was modelled on has release and repository-publishing workflows
+to copy from if any of those are ever wanted here.

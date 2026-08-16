@@ -6,7 +6,7 @@ gate](https://github.com/iainchesworth/ac3forge/blob/main/scripts/verify-gold-re
 `ac3cli`'s own decoder, delay-compensated SNR between the two) has its
 per-channel numbers appended to history instead of only living in that run's
 CI log. It turns the gate's own FFmpeg-oracle SNR check into a lightweight,
-trended perceptual signal — the gate itself has run on every commit since it
+trended quality signal — the gate itself has run on every commit since it
 landed; what's below is what makes the *numbers*, not just the pass/fail,
 outlive the run that produced them.
 

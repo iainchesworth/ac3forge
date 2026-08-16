@@ -582,12 +582,35 @@ bool bit_at(std::span<const std::byte> f, std::size_t p) {
     return (std::to_integer<std::uint32_t>(f[p >> 3]) >> (7 - (p & 7))) & 1;
 }
 
-}  // namespace
+// syncframe size from frmsiz (bits 16..26): (frmsiz+1)*2 bytes. Shared by
+// sign_atmos_stream and verify_atmos_stream's otherwise-identical framing
+// walk.
+std::size_t syncframe_size(std::span<const std::byte> at) {
+    const std::uint32_t b2 = std::to_integer<std::uint32_t>(at[2]);
+    const std::uint32_t b3 = std::to_integer<std::uint32_t>(at[3]);
+    const std::uint32_t frmsiz = ((b2 & 0x7) << 8) | b3;
+    return std::size_t(frmsiz + 1) * 2;
+}
 
-bool sign_atmos_frame(std::span<std::byte> frame, const SigningKey& key) {
-    if (key.empty()) return false;
+// Everything sign_atmos_frame and verify_atmos_frame both need: the parsed
+// frame, the tag it computes from A||B, and where in the frame that tag
+// belongs. Signing writes `digest` into the frame at `prim_off`; verifying
+// reads what is already there at `prim_off` and compares. Neither the parse
+// nor the HMAC construction differs between the two operations - only what
+// happens with the result - so this is the one place that logic lives.
+// nullopt means "no container to sign/verify", the same as parse()'s own
+// has_container.
+struct TagContext {
+    Parsed p;
+    std::array<std::byte, 32> digest;
+    int np;
+    std::size_t prim_off;
+};
+
+std::optional<TagContext> compute_tag_context(std::span<const std::byte> frame,
+                                               const SigningKey& key) {
     Parsed p = parse(frame);
-    if (!p.has_container) return false;
+    if (!p.has_container) return std::nullopt;
 
     // Reconstruct A: excise holes, pack MSB-first, round to nearest 16-bit word.
     const std::size_t total = frame.size() * 8;
@@ -610,7 +633,9 @@ bool sign_atmos_frame(std::span<std::byte> frame, const SigningKey& key) {
     for (std::size_t i = 0; i < kept.size(); ++i)
         if (kept[i]) a_bytes[i >> 3] |= std::uint8_t(1u << (7 - (i & 7)));
 
-    // Build B: container content, primary+secondary tag bits zeroed.
+    // Build B: container content, primary+secondary tag bits zeroed - always,
+    // regardless of what those bits currently hold, so verifying reproduces
+    // exactly the message signing itself hashed.
     const int np = prot_bits(p.prot_primary_code);
     const int ms = prot_bits(p.prot_secondary_code);
     const std::size_t clen = std::size_t(p.container_len);
@@ -629,20 +654,37 @@ bool sign_atmos_frame(std::span<std::byte> frame, const SigningKey& key) {
     msg.reserve(a_bytes.size() + b_bytes.size());
     for (std::uint8_t x : a_bytes) msg.push_back(std::byte{x});
     for (std::uint8_t x : b_bytes) msg.push_back(std::byte{x});
-    const std::array<std::byte, 32> digest = hmac_sha256(key.bytes(), msg);
 
-    // write protection_bits_primary (np bits) at container_start + pb - np - ms.
-    // Bounds-checked for the same reason bit_at() is: this indexes `frame`
-    // directly. A well-formed match from the single-match-per-frame fix
-    // above should never actually reach the out-of-range branch, but a
-    // write past the end would corrupt the wrong memory rather than just
-    // read garbage, so this one fails safe by skipping instead of clamping.
+    // Captured before p is moved into the result below - both are scalars so
+    // a moved-from Parsed would actually still carry them intact, but that is
+    // not worth relying on here.
     const std::size_t prim_off = p.container_start + pb - std::size_t(np) - std::size_t(ms);
-    for (int i = 0; i < np; ++i) {
-        std::size_t q = prim_off + std::size_t(i);
+    TagContext ctx{.p = std::move(p),
+                   .digest = hmac_sha256(key.bytes(), msg),
+                   .np = np,
+                   .prim_off = prim_off};
+    return ctx;
+}
+
+}  // namespace
+
+bool sign_atmos_frame(std::span<std::byte> frame, const SigningKey& key) {
+    if (key.empty()) return false;
+    const auto ctx = compute_tag_context(frame, key);
+    if (!ctx) return false;
+
+    // write protection_bits_primary (np bits) at prim_off. Bounds-checked for
+    // the same reason bit_at() is: this indexes `frame` directly. A
+    // well-formed match from the single-match-per-frame fix in parse() above
+    // should never actually reach the out-of-range branch, but a write past
+    // the end would corrupt the wrong memory rather than just read garbage,
+    // so this one fails safe by skipping instead of clamping.
+    for (int i = 0; i < ctx->np; ++i) {
+        std::size_t q = ctx->prim_off + std::size_t(i);
         if ((q >> 3) >= frame.size()) continue;
-        const bool bit =
-            (std::to_integer<std::uint32_t>(digest[std::size_t(i / 8)]) >> (7 - (i & 7))) & 1;
+        const bool bit = (std::to_integer<std::uint32_t>(ctx->digest[std::size_t(i / 8)]) >>
+                          (7 - (i & 7))) &
+                         1;
         std::byte& byte = frame[q >> 3];
         if (bit)
             byte |= static_cast<std::byte>(1u << (7 - (q & 7)));
@@ -661,16 +703,46 @@ int sign_atmos_stream(std::span<std::byte> stream, const SigningKey& key) {
     int signed_count = 0;
     std::size_t off = 0;
     while (off + 6 <= stream.size()) {
-        // syncframe size from frmsiz (bits 16..26): (frmsiz+1)*2 bytes
-        const std::uint32_t b2 = std::to_integer<std::uint32_t>(stream[off + 2]);
-        const std::uint32_t b3 = std::to_integer<std::uint32_t>(stream[off + 3]);
-        const std::uint32_t frmsiz = ((b2 & 0x7) << 8) | b3;
-        const std::size_t size = std::size_t(frmsiz + 1) * 2;
+        const std::size_t size = syncframe_size(stream.subspan(off));
         if (off + size > stream.size()) break;
         if (sign_atmos_frame(stream.subspan(off, size), key)) ++signed_count;
         off += size;
     }
     return signed_count;
+}
+
+VerifyResult verify_atmos_frame(std::span<const std::byte> frame, const SigningKey& key) {
+    const auto ctx = compute_tag_context(frame, key);
+    if (!ctx) return VerifyResult::kNoContainer;
+
+    // Compare the digest just computed against whatever tag bits the frame
+    // already carries at prim_off - unlike sign_atmos_frame, nothing here is
+    // written back.
+    for (int i = 0; i < ctx->np; ++i) {
+        const std::size_t q = ctx->prim_off + std::size_t(i);
+        const bool actual = bit_at(frame, q);
+        const bool expected = (std::to_integer<std::uint32_t>(ctx->digest[std::size_t(i / 8)]) >>
+                               (7 - (i & 7))) &
+                              1;
+        if (actual != expected) return VerifyResult::kMismatch;
+    }
+    return VerifyResult::kValid;
+}
+
+VerifySummary verify_atmos_stream(std::span<const std::byte> stream, const SigningKey& key) {
+    VerifySummary summary;
+    std::size_t off = 0;
+    while (off + 6 <= stream.size()) {
+        const std::size_t size = syncframe_size(stream.subspan(off));
+        if (off + size > stream.size()) break;
+        switch (verify_atmos_frame(stream.subspan(off, size), key)) {
+            case VerifyResult::kValid: ++summary.valid; break;
+            case VerifyResult::kMismatch: ++summary.mismatch; break;
+            case VerifyResult::kNoContainer: ++summary.no_container; break;
+        }
+        off += size;
+    }
+    return summary;
 }
 
 }  // namespace ac3::signing

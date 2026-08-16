@@ -91,8 +91,9 @@ struct FrameConfig {
     SampleRate sample_rate = SampleRate::k48000;
     std::uint32_t bitrate_kbps = 192;
     // std::nullopt: CBR, sized from bitrate_kbps (frame_words() below). Set:
-    // VBR: bitrate_kbps still serves as the AHT/decoder fallback rate and
-    // stays whatever the caller last had it at, but is ignored for sizing.
+    // VBR: bitrate_kbps is not read on the encode path at all - the
+    // cplbegf/spxbegf frequency defaults use vbr->nominal_kbps in its place
+    // (falling back to max_kbps, then kVbrDefaultNominalKbps).
     std::optional<VbrConfig> vbr = std::nullopt;
     Acmod acmod = Acmod::k2_0;
     bool lfe = false;
@@ -318,6 +319,19 @@ class AC3FORGE_EXPORT FrameEncoder {
     std::array<double, 512> windowed_scratch_{};
     std::array<double, 128> half1_scratch_{};
     std::array<double, 128> half2_scratch_{};
+    // Enhanced-coupling reconstruction scratch for encode_frame's ecpl
+    // coordinate search and its spx-blend re-decode check (PREfast's C6262,
+    // alert #25) - both run once per (channel, block) and never concurrently
+    // with each other, so this one set covers both call sites the same way
+    // the MDCT scratch above covers every (channel, block) MDCT call.
+    std::array<double, 256> ecpl_zr_scratch_{};
+    std::array<double, 256> ecpl_zi_scratch_{};
+    std::array<double, 256> ecpl_baseline_a_scratch_{};
+    std::array<double, 256> ecpl_baseline_b_scratch_{};
+    std::array<double, 256> ecpl_prev_scratch_{};
+    std::array<double, 256> ecpl_curr_scratch_{};
+    std::array<double, 256> ecpl_next_scratch_{};
+    std::array<double, 256> ecpl_recon_scratch_{};
     // The previous frame's converged SNR-offset composite, warm-starting the
     // next frame's search (src/lib/src/encoder/snr_search.hpp). Performance
     // state only: it changes how fast the search converges, never which

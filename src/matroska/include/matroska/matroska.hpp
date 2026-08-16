@@ -66,4 +66,67 @@ struct MuxOptions {
     const AudioTrack& track, std::span<const std::vector<std::byte>> frames,
     const MuxOptions& options = {});
 
+// Incrementally muxes frames into Matroska as they arrive, for a session
+// whose length is not known up front - a live capture, where mux() above
+// cannot help: it needs every frame before it can compute anything (the
+// Duration element, and how many clusters to lay out). Matroska is designed
+// to be streamable, so this needs no invention: Segment is written with
+// EBML's own reserved "unknown size" pattern (a size vint whose value bits
+// are all ones), the standard way a streamed Matroska declares a length it
+// cannot know yet - real players (and other streaming muxers, e.g. a live
+// WebM recording) already handle this. Duration is omitted from Info for the
+// same reason - there is nothing to put in it yet. Everything else - Tracks,
+// cluster layout, SimpleBlock framing - is identical to mux().
+//
+// No more than one cluster's worth of frames (`options.cluster_ms`, a second
+// by default) is ever held at once, so a caller streaming push()'s returned
+// bytes straight to disk keeps memory bounded for a session of any length -
+// the property mux() cannot offer, since it needs the whole frame list
+// resident to call it at all.
+//
+// No file I/O here either, matching mux() above: header(), push() and
+// finalize() hand back bytes for the caller to write; this class never
+// touches a disk, which is what keeps it testable without one.
+class MATROSKA_EXPORT Writer {
+public:
+    // Validates the track the same way mux() does. On success, header()
+    // already holds the EBML header through Tracks - everything before the
+    // first cluster.
+    [[nodiscard]] static std::expected<Writer, MuxError> create(const AudioTrack& track,
+                                                                 const MuxOptions& options = {});
+
+    // Write this exactly once, before any bytes push() or finalize() return.
+    [[nodiscard]] const std::vector<std::byte>& header() const { return header_; }
+
+    // Buffers one frame into the writer's current (in-progress) cluster.
+    // Returns the bytes of a cluster that just CLOSED to make room for this
+    // frame - empty on most calls, since a cluster spans about
+    // `options.cluster_ms` of audio; write whatever comes back, in order, as
+    // it comes back.
+    [[nodiscard]] std::expected<std::vector<std::byte>, MuxError> push(
+        std::span<const std::byte> frame);
+
+    // Flushes whatever partial cluster remains - call exactly once, when the
+    // session ends. Nothing else needs closing: Segment's size is unknown by
+    // design, so there is no length field left to patch. Safe to call with
+    // zero frames pushed (returns empty).
+    [[nodiscard]] std::vector<std::byte> finalize();
+
+    [[nodiscard]] std::size_t frames_written() const { return index_; }
+
+private:
+    Writer(AudioTrack track, MuxOptions options, std::vector<std::byte> header);
+
+    [[nodiscard]] std::uint64_t stamp_ms(std::size_t index) const;
+    [[nodiscard]] std::vector<std::byte> close_cluster();
+
+    AudioTrack track_;
+    MuxOptions options_;
+    std::size_t index_ = 0;
+    std::vector<std::byte> header_;
+    std::vector<std::byte> cluster_body_;
+    std::uint64_t cluster_base_ms_ = 0;
+    bool cluster_open_ = false;
+};
+
 }  // namespace matroska

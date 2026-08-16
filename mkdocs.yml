@@ -9,7 +9,6 @@ docs_dir: docs
 
 exclude_docs: |
   spec/
-  branch-protection.md
 
 theme:
   name: material
@@ -57,6 +56,8 @@ markdown_extensions:
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.inlinehilite
+  - pymdownx.tasklist:
+      custom_checkbox: true
   - tables
   - toc:
       permalink: true
@@ -69,8 +70,10 @@ nav:
       - Platform notes:
           - Windows: platforms/windows.md
           - Linux: platforms/linux.md
-          - macOS (TBD): platforms/macos.md
+          - Raspberry Pi: platforms/raspberry-pi.md
+          - macOS: platforms/macos.md
           - Android (NVIDIA Shield): platforms/android.md
+          - WebAssembly (browser demo): platforms/wasm.md
   - Concepts:
       - Overview: concepts/index.md
       - AC-3 & E-AC-3: concepts/ac3-eac3.md
@@ -79,6 +82,7 @@ nav:
   - Validation: verification.md
   - Library:
       - Conventions: library/index.md
+      - Example programs: library/examples.md
       - Encoding AC-3: library/encoding-ac3.md
       - Encoding E-AC-3: library/encoding-eac3.md
       - Decoding: library/decoding.md
@@ -88,25 +92,31 @@ nav:
       - Metadata: library/metadata.md
       - Muxing & sinks: library/muxing-and-sinks.md
       - File I/O: library/file-io.md
+      - ADM / BW64 reading: library/adm.md
+      - ADM → Atmos bridging: library/adm-bridge.md
       - Object signing: library/signing.md
       - Header map: library/header-map.md
   - CLI reference:
       - Overview: cli/index.md
       - Commands: cli/commands.md
-      - Metadata options: cli/metadata-options.md
+      - Options & grammars: cli/metadata-options.md
   - GUI guide:
       - Window layout: gui/index.md
       - Loading a source: gui/loading-a-source.md
-      - Multi-source & assignment: gui/source-assignment.md
       - Format & channels: gui/format-and-channels.md
-      - Coding tools: gui/coding-tools.md
-      - Metadata: gui/metadata.md
       - Objects & motion: gui/objects-and-motion.md
       - Live capture & session: gui/live-session.md
+      - Multi-source & assignment: gui/source-assignment.md
+      - Coding tools: gui/coding-tools.md
+      - Metadata: gui/metadata.md
+      - QC a stream: gui/qc.md
+      - Inspect objects: gui/inspect-objects.md
   - Project:
       - Contributing: contributing.md
       - Releasing: releasing.md
       - History: project/history.md
+      - Roadmap: roadmap.md
+      - Live decode demo (WASM): wasm-demo.md
       - Quality trend: quality-trend.md
       - Performance trend: performance-trend.md
       - Landscape: landscape.md

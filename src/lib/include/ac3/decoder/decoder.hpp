@@ -12,8 +12,11 @@
 #include <vector>
 
 #include "ac3/core/eac3_tables.hpp"
+#include "ac3/core/mantissas.hpp"
 #include "ac3/core/tables.hpp"
 #include "ac3/export.hpp"
+#include "ac3/oba/joc.hpp"
+#include "ac3/oba/oamd.hpp"
 
 // The in-repo AC-3 / E-AC-3 decoder — the validation pyramid's strongest
 // correctness anchor (fully normative, shares tables/bit-allocation/exponents/
@@ -28,24 +31,33 @@
 // alongside Ch1's, and each programme's §7.7 gain is applied to its own
 // channel only. Block switching (§8.2.2/§7.9) is decoded too — DecodedFrame::
 // blksw reports which blocks used the short transform. dynrng words are
-// parsed but not applied; bap-0 bins reconstruct as zero regardless of
-// dithflag (the spec lets the dither sequence be "any reasonably random
-// sequence"; zeros keep decode parity deterministic).
+// parsed but not applied; bap-0 bins reconstruct per §7.3.4's dithflag - a
+// true zero when it is clear, a dither sample (DitherGenerator, deterministic
+// per decoder instance) when it is set. A coupled channel's shared bap-0
+// bins are dithered independently per RECEIVING channel, after decoupling,
+// per §7.3.4's own "uncorrelated" requirement - never by dithering the
+// shared coupling-channel coefficient itself.
 //
 // E-AC-3 scope (Annex E, bsid 11-16): the whole of Tables E1.2/E1.3/E1.4 as
 // syntax — every metadata payload is walked correctly whether or not its
 // contents are used — plus dependent substreams, chanmap and the §E3.8.2
 // render. Every coding tool Annex E adds on top of AC-3 is implemented: AHT,
 // spectral extension, enhanced coupling (§E3.5) and transient pre-noise
-// processing (§3.7) - individually or all stacked together. Two syntax
-// corners inside those tools are still recognised and refused rather than
-// mis-decoded (enhanced coupling's angle-interpolation flag, Annex E's
-// default coupling band structure), because no stream this project's own
-// encoder produces exercises them. Transient pre-noise processing has one
+// processing (§3.7) - individually or all stacked together. Annex E's
+// default coupling band structures decode too: standard coupling falls back
+// to Table E2.12, enhanced coupling to Table E2.13. Two syntax corners are
+// still recognised and refused rather than mis-decoded - enhanced coupling's
+// angle-interpolation flag, and a transient pre-noise correction reaching
+// further back or forward than the one frame of history/lookahead buffered
+// here - because no stream this project's own encoder produces exercises
+// them. Transient pre-noise processing has one
 // consequence for this class's own API: see decode_substream and flush()
 // below. This is the only oracle 7.1.4 has: FFmpeg rejects any frame with
 // substreamid != 0, so a stream with two dependent substreams cannot be
-// checked against it in any container.
+// checked against it in any container. Every substream's own dynrng/dynrng2
+// words are reported on DecodedSubstream, same convention as DecodedFrame,
+// and optionally applied per Eac3Decoder's own constructor — see
+// DecoderConfig below.
 //
 // The §7.7 dynamic range words are always reported and optionally applied —
 // see DecoderConfig. Reporting them separately from applying them is what
@@ -121,6 +133,9 @@ class AC3FORGE_EXPORT FrameDecoder {
    private:
     DecoderConfig config_{};
     std::array<std::array<double, 256>, 6> delay_{};  // overlap-add state
+    // §7.3.4 dither, persisting across frames like delay_ above so a long
+    // stream's substituted noise does not repeat every syncframe.
+    DitherGenerator dither_{};
 };
 
 // --- E-AC-3 ----------------------------------------------------------------
@@ -135,10 +150,25 @@ struct DecodedSubstream {
     Acmod acmod = Acmod::k2_0;
     bool lfe = false;
     int dialnorm = 31;
+    // §5.4.2.9/§E3.8.5: std::nullopt when compre was clear OR this substream
+    // is a dependent one - a dependent's compre bit is repurposed to mark the
+    // LAST dependent of the program rather than announce a compression word
+    // (see parse_bsi's own comment), so there is no meaningful compr value to
+    // report there even though the 8 bits are still present on the wire.
+    std::optional<std::uint8_t> compr = std::nullopt;
+    // §7.7.1.2: the EFFECTIVE word for each block, with the persistence rule
+    // already resolved, same convention as DecodedFrame::dynrng - a block
+    // that transmitted nothing reports what it inherited, and block 0
+    // without a word reports unity. Sized to kBlocksPerFrame regardless of
+    // how many blocks this syncframe actually codes (numblkscod), matching
+    // blksw's own fixed-size convention above; entries at index >= nblks are
+    // never written.
+    std::array<std::uint8_t, kBlocksPerFrame> dynrng{};
     // Ch2's own dialnorm/compr, present only when acmod is kDualMono (1+1) -
     // the second of the two independent programmes 1+1 codes.
     std::optional<int> dialnorm2 = std::nullopt;
     std::optional<std::uint8_t> compr2 = std::nullopt;
+    std::array<std::uint8_t, kBlocksPerFrame> dynrng2{};
     int numblkscod = 3;
     // §E2.3.1.8: only a dependent substream may carry one.
     std::optional<std::uint16_t> chanmap;
@@ -151,6 +181,22 @@ struct DecodedSubstream {
     // LFE and any coupling channel never switch, so they carry no entry.
     std::vector<std::array<bool, kBlocksPerFrame>> blksw;
     std::vector<std::vector<float>> channels;
+    // §H.1/TS 103 420 §5.5: the OAMD payload found in one of this substream's
+    // block skip fields, if any - std::nullopt for plain E-AC-3 with no
+    // object audio at all, and equally for a skip field this decoder found
+    // but declined to interpret (see oba::parse_payload's own comment on
+    // what it refuses). Which block actually carries the container is not
+    // fixed (emdf::build_container's own comment), so every block's skip
+    // field is a candidate; the first one that parses wins.
+    std::optional<oba::DecodedProgram> object_metadata = std::nullopt;
+    // JOC's (§6) reconstructed per-object audio, one waveform per object,
+    // parallel to object_metadata->objects (same index means the same
+    // object) - empty when object_metadata is unset, when no JOC payload
+    // rode alongside the OAMD one, or when the program shape is one JOC's
+    // own object ordering cannot be lined up against object_metadata's for
+    // (see Eac3Decoder::decode_substream's own comment on this - a bed
+    // program AtmosEncoder itself never produces).
+    std::vector<std::vector<float>> object_audio;
 
     // The Table E2.5 map this substream's channels occupy.
     [[nodiscard]] std::uint16_t location_map() const {
@@ -171,6 +217,31 @@ struct DecodedAccessUnit {
     SampleRate sample_rate = SampleRate::k48000;
     Acmod acmod = Acmod::k2_0;
     int dialnorm = 31;
+    // The independent substream's own compr, when it carries one - see
+    // DecodedSubstream::compr's own comment; a dependent substream's compre
+    // bit means something else entirely, so only the independent (bed)
+    // substream's word is ever meaningful at the access-unit level.
+    std::optional<std::uint8_t> compr = std::nullopt;
+    // The independent substream's own dynrng, same reasoning as compr above -
+    // every substream carries its own words and a decoder applies each to
+    // that substream's own channels (see Eac3Decoder's DecoderConfig-driven
+    // gain), but the bed's is the one figure worth surfacing at the
+    // access-unit level for a status report. Only entries below
+    // eac3::blocks_per_syncframe(numblkscod) were ever written - see
+    // DecodedSubstream::dynrng's own comment on the fixed-size convention.
+    std::array<std::uint8_t, kBlocksPerFrame> dynrng{};
+    // The independent substream's own numblkscod (§E2.3.1.4), needed to know
+    // how many of the kBlocksPerFrame entries in `dynrng` above are real
+    // rather than the fixed array's unwritten tail - see
+    // eac3::blocks_per_syncframe.
+    int numblkscod = 3;
+    // The independent substream's own object_metadata/object_audio - see
+    // DecodedSubstream's own comments on both. Object audio only ever rides
+    // in the bed (this project's own AtmosEncoder never sends a dependent
+    // substream at all), so there is nothing to union across substreams the
+    // way `layout` does below.
+    std::optional<oba::DecodedProgram> object_metadata = std::nullopt;
+    std::vector<std::vector<float>> object_audio;
     int substream_count = 0;
     eac3::chanmap::Layout layout;
     std::vector<std::vector<float>> channels;  // parallel to layout, except dual mono
@@ -178,6 +249,9 @@ struct DecodedAccessUnit {
 
 class AC3FORGE_EXPORT Eac3Decoder {
    public:
+    Eac3Decoder() = default;
+    explicit Eac3Decoder(const DecoderConfig& config) : config_(config) {}
+
     // Decodes one syncframe. Overlap-add state is kept per substream identity,
     // so the substreams of successive access units stay independent of each
     // other; a caller stepping through syncframes by hand gets the same audio
@@ -226,10 +300,18 @@ class AC3FORGE_EXPORT Eac3Decoder {
     [[nodiscard]] std::vector<DecodedSubstream> flush();
 
    private:
+    DecoderConfig config_{};
+
     // Keyed by strmtyp and substreamid together: a dependent's id lives in its
     // own numbering space (§E2.3.1.2), so id alone does not identify a
     // substream. At most six coded channels each (3/2 plus LFE).
     std::map<int, std::array<std::array<double, 256>, 6>> delay_;
+    // Keyed the same way, one per substream identity that has ever carried
+    // JOC: joc::reconstruct's own matrix-ramp and per-object/per-channel
+    // overlap-add state, so a moving object's audio and the frame-to-frame
+    // matrix interpolation both have real continuity instead of restarting
+    // cold every frame - see joc::ReconstructionState's own doc comment.
+    std::map<int, joc::ReconstructionState> joc_state_;
     // A substream identity enters this map the first time one of its frames
     // sets transproce, and stays in it (buffering one frame at a time) for
     // the rest of the stream - see decode_substream's own doc comment.
@@ -245,6 +327,23 @@ class AC3FORGE_EXPORT Eac3Decoder {
     // the same identity - that would silently splice two different points
     // in time into one access unit.
     std::map<int, std::deque<DecodedSubstream>> pending_au_parts_;
+
+    // decode_substream's own per-block IMDCT/enhanced-coupling scratch
+    // (PREfast's C6262, alert #63): reused across every (block, channel)
+    // iteration of a call instead of stack-declared per iteration, the same
+    // reasoning as FrameEncoder's MDCT scratch members. Each is fully
+    // overwritten before being read, so nothing needs to persist beyond one
+    // decode_substream call - unlike delay_ above, these don't need to be
+    // keyed by substream identity.
+    std::array<double, 512> imdct_scratch_{};
+    std::array<double, 256> ecpl_spectrum_real_{};
+    std::array<double, 256> ecpl_spectrum_imag_{};
+    // §7.3.4 dither (Annex E's dithflag[ch]/dithflage), shared across every
+    // substream identity decode_substream ever sees - nothing about §7.3.4
+    // requires per-identity separation, only that simultaneous channels'
+    // noise stay uncorrelated, which independent draws from one sequential
+    // generator already give.
+    DitherGenerator dither_{};
 };
 
 // Split a raw elementary stream into syncframes by sync word and declared

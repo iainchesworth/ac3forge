@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
-#include <cmath>
 
 #include "ac3/core/bitalloc.hpp"
 #include "ac3/core/bitreader.hpp"
@@ -13,6 +12,7 @@
 #include "ac3/core/mdct.hpp"
 #include "ac3/encoder/coupling.hpp"
 #include "ac3/meta/drc.hpp"
+#include "gain.hpp"
 
 namespace ac3 {
 
@@ -78,28 +78,6 @@ std::expected<std::size_t, DecodeError> syncframe_bytes(std::span<const std::byt
     // searches for an exact match, so the lookup inside it always succeeds.
     // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     return *frame_size_bytes(static_cast<SampleRate>(fscod), kbps, (frmsizecod & 1) != 0);
-}
-
-// The §7.7 gain for one block, resolving which of the two control signals
-// applies. §7.7.2.1: a decoder told to use compr falls back on dynrng for any
-// syncframe with no compr word, so heavy compression is a preference and not a
-// mode switch.
-double block_gain(const DecoderConfig& config, std::uint8_t dynrng_word,
-                  std::optional<std::uint8_t> compr) {
-    if (config.heavy_compression && compr) {
-        // §7.7.2 states no partial-compression scaling: compr's whole purpose
-        // is a hard ceiling, and a decoder that applied a fraction of it would
-        // be promising a ceiling it does not deliver.
-        return meta::compr_gain(*compr);
-    }
-    if (config.drc_scale == 0.0 || dynrng_word == meta::kDynrngUnity) {
-        return 1.0;
-    }
-    const double gain = meta::dynrng_gain(dynrng_word);
-    // §7.7.1's "Partial Compression" scales the word as a signed fraction of
-    // dB, which in the linear domain is exactly raising the gain to that
-    // power. Doing it here rather than on the bits avoids re-quantising.
-    return config.drc_scale == 1.0 ? gain : std::pow(gain, config.drc_scale);
 }
 
 }  // namespace
@@ -308,8 +286,14 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
             out.blksw[static_cast<std::size_t>(ch)][static_cast<std::size_t>(block)] =
                 blksw[static_cast<std::size_t>(ch)];
         }
+        // §5.4.3.2/§7.3.4: per-channel, read fresh every block (unlike
+        // E-AC-3's frame-gated dithflage). Reconstruction is done in
+        // read_stream/the decoupling loop below; a coupled channel's own
+        // bit still gates dither for its shared high band, applied there
+        // after extraction rather than here.
+        std::array<bool, 5> dithflag{};
         for (int ch = 0; ch < nfchans; ++ch) {
-            (void)r.read(1);  // dithflag: bap-0 bins reconstruct as zero either way
+            dithflag[static_cast<std::size_t>(ch)] = r.read(1) != 0;
         }
         if (r.read(1) != 0) {  // dynrnge
             dynrng_word = static_cast<std::uint8_t>(r.read(8));
@@ -669,18 +653,31 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
         // decoupling and the rematrix undo both need whole channels.
         MantissaBlockReader mantissa_reader;
         std::vector<std::array<double, 256>> coeffs(max_streams);
+        // §7.3.4: dither is substituted at a bap-0 bin only for a stream that
+        // has its OWN dithflag - a full-bandwidth channel's own spectrum
+        // (s < nfchans). The LFE has no dithflag bit at all (§5.4.3.2's loop
+        // is bounded by nfchans) and always reconstructs as zero; the shared
+        // coupling stream (s == cpl_stream) is deliberately left silent HERE
+        // too, because §7.3.4 requires dither to be "applied after the
+        // individual channels are extracted from the coupling channel" so
+        // that "the dither applied to each channel's upper frequencies is
+        // uncorrelated" - see the decoupling loop below for that half.
         const auto read_stream = [&](int s) {
             const int begin = s == cpl_stream ? cplstrtmant : 0;
             const int end = endmant[static_cast<std::size_t>(s)];
+            const bool dither_eligible =
+                s < nfchans && dithflag[static_cast<std::size_t>(s)];
             for (int bin = begin; bin < end; ++bin) {
                 const int bap_value =
                     bap[static_cast<std::size_t>(s)][static_cast<std::size_t>(bin)];
-                if (bap_value == 0) {
-                    continue;  // silence (dither substitution not implemented)
-                }
-                const auto code = mantissa_reader.read(r, bap_value);
                 const int exp =
                     exps[static_cast<std::size_t>(s)][static_cast<std::size_t>(bin)];
+                if (bap_value == 0) {
+                    coeffs[static_cast<std::size_t>(s)][static_cast<std::size_t>(bin)] =
+                        dither_eligible ? dither_.next() / static_cast<double>(1u << exp) : 0.0;
+                    continue;
+                }
+                const auto code = mantissa_reader.read(r, bap_value);
                 coeffs[static_cast<std::size_t>(s)][static_cast<std::size_t>(bin)] =
                     dequantize_mantissa(code, bap_value) / static_cast<double>(1u << exp);
             }
@@ -702,12 +699,15 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
         // encoder's /8 headroom scaling.
         if (cplinu) {
             const auto& shared = coeffs[static_cast<std::size_t>(cpl_stream)];
+            const auto& cpl_bap = bap[static_cast<std::size_t>(cpl_stream)];
+            const auto& cpl_exps = exps[static_cast<std::size_t>(cpl_stream)];
             const int cplendmant = endmant[static_cast<std::size_t>(cpl_stream)];
             for (int ch = 0; ch < nfchans; ++ch) {
                 if (!chincpl[static_cast<std::size_t>(ch)]) {
                     continue;
                 }
                 auto& target = coeffs[static_cast<std::size_t>(ch)];
+                const bool ch_dither = dithflag[static_cast<std::size_t>(ch)];
                 for (int bnd = 0; bnd < ncplsubnd; ++bnd) {
                     const double coordinate =
                         cplco[static_cast<std::size_t>(ch)][static_cast<std::size_t>(bnd)];
@@ -723,8 +723,21 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
                     const int low = cplstrtmant + bnd * coupling::kBinsPerSubBand;
                     const int high = std::min(low + coupling::kBinsPerSubBand, cplendmant);
                     for (int bin = low; bin < high; ++bin) {
-                        target[static_cast<std::size_t>(bin)] =
-                            shared[static_cast<std::size_t>(bin)] * coordinate * 8.0 * sign;
+                        const std::size_t ubin = static_cast<std::size_t>(bin);
+                        // §7.3.4: a zero-bap shared bin is dither-substituted
+                        // per RECEIVING channel, independently - reusing one
+                        // dithered coupling-domain sample for every coupled
+                        // channel would make their noise correlated (just
+                        // scaled differently), which is exactly what "applied
+                        // after the individual channels are extracted ...
+                        // uncorrelated" rules out. Each channel draws its own
+                        // sample and runs it through the same extraction
+                        // formula a real coupling coefficient would use.
+                        const double coeff =
+                            (cpl_bap[ubin] == 0 && ch_dither)
+                                ? dither_.next() / static_cast<double>(1u << cpl_exps[ubin])
+                                : shared[ubin];
+                        target[ubin] = coeff * coordinate * 8.0 * sign;
                     }
                 }
             }
@@ -759,8 +772,9 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
         // would be exactly the cross-talk 1+1 exists to avoid.
         for (int ch = 0; ch < nchans; ++ch) {
             const bool second_programme = acmod == Acmod::kDualMono && ch == 1;
-            const double drc = second_programme ? block_gain(config_, dynrng2_word, compr2)
-                                                 : block_gain(config_, dynrng_word, compr);
+            const double drc = second_programme
+                                    ? internal::block_gain(config_, dynrng2_word, compr2)
+                                    : internal::block_gain(config_, dynrng_word, compr);
             if (drc != 1.0) {
                 for (auto& value : coeffs[static_cast<std::size_t>(ch)]) {
                     value *= drc;

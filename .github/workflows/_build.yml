@@ -1,10 +1,9 @@
 # Reusable configure/build/test workflow — the single definition of how ac3forge
 # is built and tested on each platform. Called by ci.yml (do_package defaults
 # false: only windows-msvc packages, continuously, as a packaging smoke test)
-# and by release.yml (do_package: true: every packageable leg attempts to
-# package, best-effort — the experimental legs still run continue-on-error, so
-# a release ships whichever packages actually built). Modelled on
-# aqualink-automate's .github/workflows/_build.yml.
+# and by release.yml (do_package: true: the release_package legs — one
+# canonical leg per OS/arch — package, and a packaging failure there blocks
+# the release). Modelled on an earlier project's _build.yml.
 #
 # ---------------------------------------------------------------------------
 # On `experimental: true`
@@ -140,6 +139,34 @@ jobs:
             runner: ubuntu-latest
             container: ubuntu:26.04
             preset: linux-llvm
+            llvm: true
+            gui: true
+            packageable: true
+            gold_reference: true
+
+          # arm64 - Raspberry Pi 4/5 and any other aarch64 Debian/Ubuntu
+          # target (see docs/platforms/raspberry-pi.md). Real ARM hardware via
+          # GitHub's hosted ubuntu-24.04-arm runner label, not QEMU emulation -
+          # the same ubuntu:26.04 container image as the x64 legs, which pulls
+          # its arm64 variant automatically on an arm64 runner. Otherwise the
+          # same shape as linux-gcc/linux-llvm above, including which leg
+          # carries alsa_fallback (compiler and architecture both don't affect
+          # that switch - see linux-gcc's own comment).
+          - name: "Linux GCC (arm64)"
+            runner: ubuntu-24.04-arm
+            container: ubuntu:26.04
+            preset: linux-gcc-arm64
+            gcc: true
+            gui: true
+            packageable: true
+            release_package: true
+            alsa_fallback: true
+            gold_reference: true
+
+          - name: "Linux LLVM (arm64)"
+            runner: ubuntu-24.04-arm
+            container: ubuntu:26.04
+            preset: linux-llvm-arm64
             llvm: true
             gui: true
             packageable: true
@@ -353,9 +380,10 @@ jobs:
           EOF
           cmake -P "${RUNNER_TEMP}/assert-cmake-version.cmake"
           case "${{ matrix.preset }}" in
-            linux-gcc)    g++ --version | head -1
+            linux-gcc|linux-gcc-arm64)
+                          g++ --version | head -1
                           g++ --version | head -1 | grep -q ' 15\.' || { echo "::error::expected g++ 15"; exit 1; } ;;
-            linux-llvm|linux-llvm-asan-ubsan)
+            linux-llvm|linux-llvm-arm64|linux-llvm-asan-ubsan)
                           clang++ --version | head -1
                           clang++ --version | head -1 | grep -qE 'version 21\.' || { echo "::error::expected clang 21"; exit 1; } ;;
             windows-llvm) clang-cl --version | head -1
@@ -440,9 +468,11 @@ jobs:
         shell: bash
         run: ctest --preset test-${{ matrix.preset }}
 
-      # The gold-reference correctness gate (docs/RESEARCH.md's L3 FFmpeg-
-      # oracle + a lightweight L4 SNR check, wired into CI for the first time
-      # here - see scripts/verify-gold-reference.sh's own header). Proven on
+      # The gold-reference correctness gate (the L3 FFmpeg-oracle + a
+      # lightweight L4 SNR check from the project's original validation-
+      # pyramid design, now docs/verification.md - wired into CI for the
+      # first time here; see scripts/verify-gold-reference.sh's own header).
+      # Proven on
       # macOS alone first; now every leg has it except linux-llvm-asan-ubsan,
       # which stays diagnostic-only (same reasoning as its `packageable`
       # exclusion below - a sanitizer build's job is catching memory/UB
@@ -574,11 +604,12 @@ jobs:
           ctest --preset test-linux-llvm-shared -LE Performance
 
       # Packaging. windows-msvc always packages, on every push, as a
-      # continuous smoke test of the packaging path itself - it is the only
-      # leg that has ever actually been packaged and inspected end to end.
-      # For a real release (do_package set, from release.yml), only one leg
-      # per OS actually packages - `release_package: true` on windows-msvc,
-      # linux-gcc and macos-llvm - rather than every packageable leg. A
+      # continuous smoke test of the packaging path itself - the only leg
+      # packaged continuously rather than only at releases. For a real
+      # release (do_package set, from release.yml), only one leg per
+      # OS/arch actually packages - `release_package: true` on windows-msvc,
+      # linux-gcc, linux-gcc-arm64 and macos-llvm - rather than every
+      # packageable leg. A
       # release ships one canonical build per platform for people to
       # download, not a build per compiler-toolchain leg: windows-llvm and
       # linux-llvm exist to catch compiler-specific bugs in CI, which they
@@ -685,6 +716,12 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: ${{ inputs.fetch_depth }}
+
+      # platform/android/gradle/wrapper/gradle-wrapper.jar is a committed
+      # binary (OpenSSF Scorecard's Binary-Artifacts check, alert #65) - it
+      # can't be dropped since gradlew needs it, so this verifies its
+      # checksum against Gradle's own known-good release hashes instead.
+      - uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
 
       # ubuntu-latest ships several Temurin JDKs preinstalled, each with its
       # own JAVA_HOME_<version>_X64 env var (see actions/runner-images) -
@@ -806,6 +843,48 @@ jobs:
           path: |
             packages/*.apk
             packages/*.apk.sha512
+          if-no-files-found: error
+
+  # The WASM browser decode demo (platform/wasm, roadmap F3): a real CMake
+  # preset (config-wasm-emscripten) unlike build-android above, but still its
+  # own job rather than a `build` matrix entry, for the same reason
+  # build-android's own header gives - this leg has none of the shape that
+  # matrix's steps assume (no ctest suite to run, no cpack package to stage,
+  # no gold-reference gate), so folding it in would mean threading new `if:`
+  # exclusions through most of that job's steps for no benefit. Runs on
+  # every push - a continuous smoke test that the Emscripten toolchain and
+  # every file it touches still build - the same role build-android's
+  # always-on debug APK plays; this job never produces a release artifact of
+  # its own the way build-android's release APK does, since the actual
+  # published copy is rebuilt fresh by docs.yml's deploy job rather than
+  # shipped from here (see that workflow and docs/platforms/wasm.md).
+  build-wasm:
+    name: WASM (browser decode demo)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: ${{ inputs.fetch_depth }}
+
+      - uses: ./.github/actions/setup-emscripten
+
+      - name: Configure
+        run: cmake --preset config-wasm-emscripten
+
+      - name: Build
+        run: cmake --build build/config-wasm-emscripten
+
+      # Not consumed by docs.yml (see this job's own header) - uploaded
+      # purely so a failed/successful build's actual output is inspectable
+      # from the Actions run, the same convenience packages-android gets.
+      - name: Upload demo artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wasm-decode-demo
+          path: build/config-wasm-emscripten/bin/wasm_decode_demo
           if-no-files-found: error
 
   # Persists this run's gold-reference SNR numbers (docs/quality-trend.md) so

@@ -123,6 +123,10 @@ ApplicationWindow {
     // Same reason as prefsDialog above - item 33's run details popover also
     // lives on the Overlay.
     readonly property alias runDetailsPopup: runDetailsDialog
+    // Same reason again - roadmap C3's QC report dialog.
+    readonly property alias qcDialogRef: qcDialog
+    // Same reason again - the decode-side object inspector.
+    readonly property alias objectInspectorDialogRef: objectInspectorDialog
 
     Component.onCompleted: {
         Theme.preference = appSettings.theme;
@@ -512,8 +516,11 @@ ApplicationWindow {
         return qsTr("%1 · %2 · %3")
             .arg(codec).arg(EncoderController.channelShapeName).arg(window.planRateText);
     }
-    readonly property string planLine: qsTr("%1 · .%2")
-        .arg(window.planLineCore).arg(EncoderController.outputSuffix())
+    // fMP4/CMAF has no single extension (outputIsFolder() is true there) -
+    // ".{suffix}" would otherwise read as a bare trailing dot.
+    readonly property string planLine: EncoderController.outputIsFolder()
+        ? qsTr("%1 · folder").arg(window.planLineCore)
+        : qsTr("%1 · .%2").arg(window.planLineCore).arg(EncoderController.outputSuffix())
     readonly property string planSubLine: {
         if (EncoderController.dualMono && !EncoderController.atmosEnabled) {
             return qsTr("acmod 0 · two independent programmes in one stream · no soundfield, no downmix");
@@ -581,14 +588,26 @@ ApplicationWindow {
     // "--bed/--extras" sketch (which does not match ac3cli's positional
     // subcommands). Everything the positionals cannot say rides as trailing
     // tokens: extra sources (src=), the assignment (map=), the metadata, and
-    // AC-3's bare `couple`. A live source renders the `live` subcommand; a
-    // Matroska container is honestly TWO commands, because pasting one would
-    // write a raw elementary stream into a file named .mkv - S/PDIF is the
-    // same shape, one more ac3cli subcommand (spdif) over the same stream.
+    // AC-3's bare `couple`. A live source renders the `live` subcommand, and
+    // its own container=mkv token (mirroring EncoderController.containerIndex
+    // the same way capture2= below already mirrors the rail's second device)
+    // writes straight to Matroska in that ONE command — a live session has no
+    // already-encoded file for a second 'mkv' step to wrap. A file encode's
+    // Matroska container is still honestly TWO commands, because pasting one
+    // would write a raw elementary stream into a file named .mkv — S/PDIF,
+    // MP4, fMP4/CMAF and MPEG-TS are the same shape there, one more ac3cli
+    // subcommand (spdif/mp4/fmp4/ts) over the same stream. Only Matroska
+    // gets a live container= token, though: mp4::mux/mp4::fragment/
+    // mpegts::mux are batch APIs with no incremental writer (see
+    // EncoderController::openLiveOutputWriters's own comment), so a live
+    // session with MP4/fMP4/MPEG-TS selected falls through to a plain
+    // elementary stream below, exactly like S/PDIF already does today.
     readonly property string cliLine: {
         const eac3Stream = EncoderController.atmosEnabled || EncoderController.codecIndex === 1;
         if (window.inputMode === "live") {
-            const liveCmd = ["ac3cli", "live", "out." + (eac3Stream ? "ec3" : "ac3"),
+            const liveMkv = EncoderController.containerIndex === 1;
+            const liveOut = liveMkv ? "out.mkv" : "out." + (eac3Stream ? "ec3" : "ac3");
+            const liveCmd = ["ac3cli", "live", liveOut,
                              String(Math.max(window.liveMasterCaptureIndex, 0)), "10",
                              String(EncoderController.bitrateKbps),
                              liveMonitorCheck.checked ? "-1" : "-2",
@@ -601,6 +620,9 @@ ApplicationWindow {
             if (EncoderController.captureDeviceRows.length > 1) {
                 liveCmd.push("capture2=" + EncoderController.captureDeviceRows[1].deviceIndex);
             }
+            if (liveMkv) {
+                liveCmd.push("container=mkv");
+            }
             return liveCmd.join(" ");
         }
         const source = EncoderController.sourcePath.length > 0
@@ -608,6 +630,9 @@ ApplicationWindow {
                        : "<source>";
         const mkv = EncoderController.containerIndex === 1;
         const spdif = EncoderController.containerIndex === 2;
+        const mp4 = EncoderController.containerIndex === 3;
+        const fmp4 = EncoderController.containerIndex === 4;
+        const mpegTs = EncoderController.containerIndex === 5;
         const streamOut = "out." + (eac3Stream ? "ec3" : "ac3");
         const rate = String(EncoderController.bitrateKbps);
         const meta = EncoderController.metaTokens;
@@ -676,6 +701,12 @@ ApplicationWindow {
             line += " && ac3cli mkv " + streamOut + " out.mkv";
         } else if (spdif) {
             line += " && ac3cli spdif " + streamOut + " out.wav";
+        } else if (mp4) {
+            line += " && ac3cli mp4 " + streamOut + " out.mp4";
+        } else if (fmp4) {
+            line += " && ac3cli fmp4 " + streamOut + " out_dir";
+        } else if (mpegTs) {
+            line += " && ac3cli ts " + streamOut + " out.ts";
         }
         return line;
     }
@@ -711,6 +742,21 @@ ApplicationWindow {
         }
     }
 
+    // fMP4/CMAF writes a FOLDER of files (init segment, media segments, HLS/
+    // DASH manifests), not one file - see EncoderController.outputIsFolder().
+    // A folder picker has no filename field the way FileDialog.SaveFile has,
+    // so this picks the PARENT folder and openSaveDialog() below appends the
+    // planned name (the same name the FileDialog branch would have used) to
+    // get the actual folder mp4::fragment's output is written into.
+    FolderDialog {
+        id: saveFolderDialog
+        title: qsTr("Choose a destination for the fMP4/CMAF output")
+        onAccepted: {
+            EncoderController.setPendingCliLine(window.cliLine);
+            EncoderController.encodeTo(selectedFolder + "/" + window.pendingOutputFolderName);
+        }
+    }
+
     FileDialog {
         id: recordDialog
         title: qsTr("Record to a file")
@@ -718,6 +764,20 @@ ApplicationWindow {
         onAccepted: {
             EncoderController.setPendingCliLine(window.cliLine);
             EncoderController.startRecording(window.liveMasterCaptureIndex, selectedFile);
+        }
+    }
+
+    // Same reasoning as saveFolderDialog above, for the "Record to a file"
+    // flow - recording still ends in one writeOutput() call (see
+    // EncoderController::startRecording), so it gets the same fMP4/CMAF
+    // folder treatment a file encode does.
+    FolderDialog {
+        id: recordFolderDialog
+        title: qsTr("Choose a destination for the fMP4/CMAF recording")
+        onAccepted: {
+            EncoderController.setPendingCliLine(window.cliLine);
+            EncoderController.startRecording(window.liveMasterCaptureIndex,
+                                             selectedFolder + "/" + window.pendingOutputFolderName);
         }
     }
 
@@ -758,6 +818,14 @@ ApplicationWindow {
                      : (EncoderController.sourcePath.length > 0
                         ? baseName(EncoderController.sourcePath).replace(/\.[^.]*$/, "")
                         : "output");
+        if (EncoderController.outputIsFolder()) {
+            // fMP4/CMAF names a FOLDER, not a file - the {source}.{ext}
+            // pattern is a file-extension convention with nothing to plug
+            // into its {ext} half here (outputSuffix() is empty), so this
+            // skips the pattern entirely rather than leaving a trailing "."
+            // in a folder name.
+            return stem;
+        }
         return appSettings.namePattern
             .replace("{source}", stem)
             .replace("{ext}", EncoderController.outputSuffix());
@@ -797,11 +865,28 @@ ApplicationWindow {
         return StandardPaths.writableLocation(StandardPaths.MusicLocation);
     }
 
-    function openSaveDialog(dialog, name) {
+    // The folder actually created once folderDialog accepts - see
+    // saveFolderDialog/recordFolderDialog's own onAccepted.
+    property string pendingOutputFolderName: ""
+
+    // folderDialog is only passed by callers that also have a folder
+    // variant ready (saveDialog/recordDialog do; liveSessionDialog does
+    // not, since a live session's fMP4/MP4/MPEG-TS selection falls through
+    // to a plain elementary-stream file - see window.cliLine's own comment)
+    // - omitting it always takes the FileDialog branch below, which is also
+    // what a live session with a folder-shaped container still wants.
+    function openSaveDialog(dialog, name, folderDialog) {
+        if (folderDialog && EncoderController.outputIsFolder()) {
+            pendingOutputFolderName = name;
+            folderDialog.currentFolder = outputFolderUrl();
+            folderDialog.open();
+            return;
+        }
         const suffix = EncoderController.outputSuffix();
         dialog.defaultSuffix = suffix;
-        dialog.nameFilters = [qsTr("%1 file (*.%2)").arg(suffix.toUpperCase()).arg(suffix),
-                              qsTr("All files (*)")];
+        dialog.nameFilters = suffix.length > 0
+            ? [qsTr("%1 file (*.%2)").arg(suffix.toUpperCase()).arg(suffix), qsTr("All files (*)")]
+            : [qsTr("All files (*)")];
         dialog.currentFolder = outputFolderUrl();
         dialog.selectedFile = name;
         dialog.open();
@@ -829,17 +914,18 @@ ApplicationWindow {
     // guided still nominally owns the tier. Idempotent both times - every
     // write below is a no-op once already at its target value.
     //
-    // Dual mono: measurement is refused outright at encode time (see
-    // LoudnessGroup.qml's own tooltip and encodeChannels' hard refusal), so
-    // the contract must never set measureDialnorm/measureDialnorm2 there -
-    // only its DRC half applies, and to BOTH programmes, since there is no
-    // reason guided should give one dual-mono programme its sensible
-    // default and leave the other at none.
+    // Dual mono: measurement now applies to BOTH programmes, same as the
+    // single-programme case below - each one is measured on its own coded
+    // channel (encodeChannels no longer refuses it), so there is no reason
+    // guided should give one dual-mono programme its sensible default and
+    // leave the other at none.
     function applyGuidedLoudnessContract() {
         if (tier !== "guided" || EncoderController.loudnessTouched) {
             return;
         }
         if (EncoderController.dualMono) {
+            EncoderController.measureDialnorm = true;
+            EncoderController.measureDialnorm2 = true;
             EncoderController.drcIndex = 1;   // film-standard
             EncoderController.drc2Index = 1;  // film-standard, Ch2's own
         } else {
@@ -867,14 +953,14 @@ ApplicationWindow {
             EncoderController.encodeTo(outputFolderUrl() + "/" + plannedFileName());
             return;
         }
-        openSaveDialog(saveDialog, plannedFileName());
+        openSaveDialog(saveDialog, plannedFileName(), saveFolderDialog);
     }
     // Record honours the capture preference: ask for a filename, or write
     // straight to the output folder under a timestamped take name — the
     // status line and run strip always say where it went.
     function startRecordFlow() {
         if (appSettings.askRecordName) {
-            openSaveDialog(recordDialog, plannedFileName());
+            openSaveDialog(recordDialog, plannedFileName(), recordFolderDialog);
             return;
         }
         const now = new Date();
@@ -942,6 +1028,22 @@ ApplicationWindow {
                 EncoderController.measureDialnorm = appSettings.defaultMeasureDialnorm;
             }
         }
+    }
+
+    // Roadmap C3 — see docs/gui/qc.md and QcDialog.qml's own header comment
+    // for why this is a standalone dialog rather than a tab: opening and
+    // verifying an already-encoded file is a different workflow shape to
+    // every tab beside it, which all configure an encode still to come.
+    QcDialog {
+        id: qcDialog
+    }
+
+    // The decode-side counterpart to QcDialog above - see
+    // ObjectInspectorDialog.qml's own header comment for why this is a
+    // second standalone dialog rather than folded into either QcDialog or
+    // the Objects tab.
+    ObjectInspectorDialog {
+        id: objectInspectorDialog
     }
 
     Dialog {
@@ -1232,6 +1334,16 @@ ApplicationWindow {
                 ]
                 currentValue: window.tier
                 onSelected: (value) => window.tier = value
+            }
+            Button {
+                objectName: "qcOpenButton"
+                text: qsTr("QC a stream…")
+                onClicked: qcDialog.open()
+            }
+            Button {
+                objectName: "objectInspectorOpenButton"
+                text: qsTr("Inspect objects…")
+                onClicked: objectInspectorDialog.open()
             }
             Button {
                 text: qsTr("Preferences")
@@ -1672,8 +1784,24 @@ ApplicationWindow {
                                     text: qsTr("Add input…")
                                     enabled: !EncoderController.captureDeviceCapReached
                                              && !EncoderController.busy
-                                    onClicked: EncoderController.addCaptureDevice(
-                                                   addDeviceBox.currentIndex)
+                                    // "Start monitoring as soon as a device is chosen"
+                                    // (Preferences) - the explicit Add gesture only, the same
+                                    // deliberate-pick-only rule the single-device ComboBox's own
+                                    // onActivated applied before the rail grew a per-device list,
+                                    // and only when this pick becomes the MASTER: Monitor and
+                                    // Record both act on the master alone, so adding a second
+                                    // (slave) device has nothing new to start.
+                                    onClicked: {
+                                        const wasEmpty = EncoderController.captureDeviceRows.length === 0;
+                                        EncoderController.addCaptureDevice(addDeviceBox.currentIndex);
+                                        const becameMaster = wasEmpty
+                                                && EncoderController.captureDeviceRows.length > 0;
+                                        if (becameMaster && appSettings.autoMonitor
+                                                && !EncoderController.busy && EncoderController.captureSupported) {
+                                            EncoderController.startLiveSession(
+                                                window.liveMasterCaptureIndex, true, -1, false, "");
+                                        }
+                                    }
                                 }
                             }
                             Text {
@@ -6593,8 +6721,13 @@ ApplicationWindow {
                             void EncoderController.codecIndex;
                             void EncoderController.containerIndex;
                             void EncoderController.atmosEnabled;
-                            return EncoderController.busy
-                                   ? qsTr("Encoding…")
+                            if (EncoderController.busy) {
+                                return qsTr("Encoding…");
+                            }
+                            // fMP4/CMAF has no single extension - see
+                            // EncoderController.outputIsFolder().
+                            return EncoderController.outputIsFolder()
+                                   ? qsTr("Encode to folder")
                                    : qsTr("Encode to .%1").arg(EncoderController.outputSuffix());
                         }
                         enabled: EncoderController.sourceReady && !EncoderController.busy

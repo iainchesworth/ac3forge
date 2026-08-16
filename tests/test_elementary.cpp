@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <numbers>
@@ -10,6 +11,7 @@
 #include "ac3/encoder/encoder.hpp"
 #include "ac3/encoder/silent_frame.hpp"
 #include "ac3/io/elementary.hpp"
+#include "ac3/oba/atmos.hpp"
 
 namespace {
 
@@ -159,4 +161,74 @@ TEST_CASE("scan refuses what it cannot read", "[elementary]") {
     std::vector<std::byte> trailing{frame->begin(), frame->end()};
     trailing.insert(trailing.end(), 8, std::byte{0xAB});
     CHECK(ac3::io::scan(trailing).error() == ScanError::kLostSync);
+}
+
+// bsid/bsmod/bit_rate_code and the TS 103 420 addbsi Atmos marker exist
+// purely for ac3::io::build_codec_config_box() (ac3/io/dec3.hpp) to build a
+// spec-correct dac3/dec3 box - see tests/test_mp4.cpp for the box byte
+// layout itself. These check the values scan() reports for them.
+TEST_CASE("scan reads bsid/bsmod/bit_rate_code straight off the bsi", "[elementary]") {
+    // A/52 encoder.cpp always writes bsid 8; real audio, not silence, per
+    // this project's own validation discipline - a bit offset error inside
+    // bsi could otherwise still land on a plausible-looking bsmod by luck.
+    ac3::FrameEncoder encoder{{.bitrate_kbps = 192, .acmod = ac3::Acmod::k2_0}};
+    auto pcm = tone(2);
+    const std::vector<std::span<const float>> views{pcm[0], pcm[1]};
+    std::vector<std::byte> stream;
+    for (int f = 0; f < 4; ++f) {
+        const auto frame = encoder.encode_frame(views);
+        REQUIRE(frame.has_value());
+        append(stream, *frame);
+    }
+
+    const auto scanned = ac3::io::scan(stream);
+    REQUIRE(scanned.has_value());
+    CHECK(scanned->bsid == 8);
+    CHECK(scanned->bsmod == 0);  // "main audio service: complete main" - the default
+    // 192 kbps is kBitratesKbps[10] (Table 5.18); frmsizecod's own top bits
+    // are exactly that index.
+    CHECK(scanned->bit_rate_code == 10);
+    CHECK_FALSE(scanned->oba_complexity_index.has_value());
+}
+
+TEST_CASE("scan reads the addbsi Dolby Atmos marker", "[elementary]") {
+    // Real, multi-frame object audio (not build_silent_access_unit): addbsi
+    // parsing has to land on the right bit offset regardless of what audio
+    // rides along after it, but going through the real encoder is what this
+    // project's tests do whenever an actual FrameEncoder is available for
+    // the case - see "scan reads an AC-3 elementary stream" above.
+    constexpr int kObjects = 2;
+    ac3::oba::AtmosEncoder encoder{{.bitrate_kbps = 448}, kObjects};
+    std::vector<std::vector<float>> sources(kObjects,
+                                            std::vector<float>(ac3::kSamplesPerFrame));
+    std::vector<std::span<const float>> views;
+    for (auto& source : sources) {
+        views.emplace_back(source);
+    }
+    std::array<ac3::oba::ObjectPlacement, kObjects> placement{};
+    for (auto& p : placement) {
+        p = {.position = {.x = 0.5, .y = 0.5, .z = 0.0}, .gain = 1.0};
+    }
+
+    std::vector<std::byte> stream;
+    for (int f = 0; f < 3; ++f) {
+        for (int obj = 0; obj < kObjects; ++obj) {
+            for (int n = 0; n < ac3::kSamplesPerFrame; ++n) {
+                const double t = (f * ac3::kSamplesPerFrame + n) / 48000.0;
+                sources[static_cast<std::size_t>(obj)][static_cast<std::size_t>(n)] =
+                    static_cast<float>(0.3 * std::sin(2.0 * std::numbers::pi *
+                                                      (440.0 * static_cast<double>(obj + 1)) * t));
+            }
+        }
+        const auto unit = encoder.encode_frame(views, placement);
+        REQUIRE(unit.has_value());
+        append(stream, unit->bytes);
+    }
+
+    const auto scanned = ac3::io::scan(stream);
+    REQUIRE(scanned.has_value());
+    REQUIRE(scanned->oba_complexity_index.has_value());
+    // §8.3.2.2: object_count is bed-first (the LFE, always present in this
+    // encoder's dynamic-only program) then the dynamic objects.
+    CHECK(*scanned->oba_complexity_index == kObjects + 1);
 }

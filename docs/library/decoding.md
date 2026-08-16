@@ -68,9 +68,12 @@ decoder as a check on the encoder: a test can assert on the `dynrng` words the e
 The E-AC-3 decoder reads every Annex E coding tool — standard coupling (§E3.3), enhanced coupling
 (§E3.5), spectral extension (§E3.6), the adaptive hybrid transform with GAQ (§E3.4), and transient
 pre-noise processing (§3.7) — individually or stacked together, at every channel layout including
-7.1.4. Two syntax corners inside those tools are still recognised and refused rather than
-mis-decoded: enhanced coupling's `ecplangleintrp` (angle interpolation) and Annex E's default
-coupling band structure, neither of which this project's own encoder produces.
+7.1.4. That includes Annex E's default coupling band structures: a block that transmits no band
+structure of its own falls back to Table E2.12 (standard coupling) or Table E2.13 (enhanced
+coupling) and decodes normally. Two syntax corners are still recognised and refused rather than
+mis-decoded — enhanced coupling's `ecplangleintrp` (angle interpolation), and a transient
+pre-noise correction reaching further back or forward than the one frame of history/lookahead
+this decoder buffers — because no stream this project's own encoder produces exercises either.
 
 Transient pre-noise processing has one API consequence worth knowing: once a stream turns it on,
 `Eac3Decoder::decode_substream` holds one frame back at a time (a correction can reach into the
@@ -105,8 +108,18 @@ two channels come back in coded order (Ch1, Ch2) instead.
 
 Delta bit allocation (§7.2.2.6) is decoded like any other transmitted parameter: both decoders
 carry per-channel state across a syncframe's blocks and apply it to the masking curve before
-computing `bap`. Neither encoder emits it on the coupling channel yet (see the library's
-[encoding](encoding-ac3.md) pages), but both decoders accept it there from any stream that does.
+computing `bap`, on the coupling channel as well as the full-bandwidth ones. The encode side
+differs by generation: the AC-3 encoder does emit coupling-channel delta (`cpldeltbae`, whenever
+the coupling channel has segments to send), while the E-AC-3 encoder skips delta entirely for
+any frame where coupling is active. How corrections are chosen, and when they are dropped, is
+covered in [Encoding AC-3](encoding-ac3.md#delta-bit-allocation).
+
+Dither substitution (§7.3.4) decodes on both as well: a bin allocated zero bits (`bap` 0)
+reconstructs as a true zero when its channel's `dithflag` is clear, and as a dither sample when
+it is set. A coupled channel's shared bap-0 bins are dithered independently per *receiving*
+channel, after decoupling — §7.3.4's own uncorrelated-noise requirement — never by dithering the
+shared coupling-channel coefficient itself. The generator's state persists across frames, like
+the overlap-add state, so a long stream's substituted noise does not repeat every syncframe.
 
 `fscod2` (the Annex E half sample rates — 24, 22.05, 16 kHz) is decoded like any other rate: the
 reduced rate reuses the same bit-allocation tables as its double-rate parent (§E2.3.1.4), so
@@ -125,14 +138,18 @@ usually take its neighbours down with it.
 const auto frames = ac3::split_frames(stream);
 
 ac3::FrameDecoder decoder;
-for (const auto& frame : *frames) {
-    const auto decoded = decoder.decode_frame(frame);
+int recovered = 0;
+int failed = 0;
+for (std::size_t i = 0; i < frames->size(); ++i) {
+    const auto decoded = decoder.decode_frame((*frames)[i]);
     if (!decoded) {
-        // CRC/sync/reserved-value failure on this one frame - skip it and
-        // keep decoding the rest.
+        const auto message = ac3::describe(decoded.error());
+        std::printf("frame %zu: decode failed (%.*s) - skipping\n", i,
+                    static_cast<int>(message.size()), message.data());
+        ++failed;
         continue;
     }
-    // ... use decoded->channels
+    ++recovered;
 }
 ```
 

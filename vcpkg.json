@@ -1,6 +1,7 @@
 {
   "name": "ac3forge",
   "version": "0.2.0",
+  "$comment": "The version field above is a deliberate placeholder, never read for anything but satisfying vcpkg's manifest schema: the build's real version derives from git tags (cmake/GitVersionDerivation.cmake), and releases are tracked by the staged port's own version-semver (packaging/vcpkg-port/ac3forge/vcpkg.json). See docs/releasing.md.",
   "description": "Clean-room AC-3 (ATSC A/52) encoder library and tools in C++23. Codec code has no third-party dependencies; vcpkg supplies test/tooling packages only.",
   "builtin-baseline": "eaca4a577b6b678c6e10252754b6988a61746c19",
   "dependencies": [
@@ -14,6 +15,19 @@
           "name": "tracy",
           "features": ["cli-tools", "on-demand"]
         }
+      ]
+    },
+    "adm": {
+      "description": "Boost header libraries needed by src/ac3adm's vendored libadm (AC3FORGE_BUILD_ADM) - opt-in via -DVCPKG_MANIFEST_FEATURES=adm, off by default so a normal build never pulls Boost in at all. This list is every boost/*.hpp libadm 0.14.0's own include/ and src/ actually #include, confirmed by grepping its vendored source rather than guessed from its README (which undersells it - it does not mention Rational or Integer at all, both needed by adm/utilities/time_conversion.hpp).",
+      "dependencies": [
+        "boost-optional",
+        "boost-variant",
+        "boost-range",
+        "boost-iterator",
+        "boost-functional",
+        "boost-format",
+        "boost-integer",
+        "boost-rational"
       ]
     }
   }

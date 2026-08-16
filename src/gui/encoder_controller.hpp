@@ -934,7 +934,12 @@ public:
     Q_INVOKABLE [[nodiscard]] QString suggestedOutputName() const;
     // The extension the current format and container imply, for the save
     // dialog. Derived rather than typed, so a .ac3 file can never hold E-AC-3.
+    // Empty when outputIsFolder() is true - fMP4/CMAF has no single extension.
     Q_INVOKABLE [[nodiscard]] QString outputSuffix() const;
+    // True only for fMP4/CMAF: its output is a FOLDER (init segment, media
+    // segments, HLS/DASH manifests), not one file. QML uses this to pick a
+    // FolderDialog over a FileDialog for the save/record/live destination.
+    Q_INVOKABLE [[nodiscard]] bool outputIsFolder() const;
     Q_INVOKABLE void refreshCaptureDevices();
     // Adds deviceIndex to captureDeviceRows (the rail's live device list) at
     // the next free slot - becomes the master if nothing was selected yet,
@@ -1296,8 +1301,10 @@ private:
     // live Atmos session.
     [[nodiscard]] std::vector<int> liveSlotChannels() const;
 
-    // Writes an elementary stream, or muxes Matroska, according to the chosen
-    // container. Returns an empty string on success and the reason otherwise.
+    // Writes an elementary stream, or muxes Matroska/MP4/MPEG-TS, or wraps
+    // fMP4/CMAF (a folder of files - see outputIsFolder()), according to the
+    // chosen container. Returns an empty string on success and the reason
+    // otherwise.
     [[nodiscard]] QString writeOutput(const QString& path,
                                       const std::vector<std::vector<std::byte>>& frames,
                                       std::uint32_t sample_rate, int channels) const;

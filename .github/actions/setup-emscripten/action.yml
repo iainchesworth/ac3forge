@@ -1,0 +1,63 @@
+name: Setup Emscripten
+description: >-
+  Clone and activate a pinned Emscripten SDK version, exporting EMSDK and its
+  bin directories to $GITHUB_ENV/$GITHUB_PATH for subsequent steps. Used by
+  both _build.yml's build-wasm job (build-verify on every push) and
+  docs.yml's deploy job (rebuilds the published demo fresh - see
+  docs/platforms/wasm.md).
+
+runs:
+  using: composite
+  steps:
+    # Pinned to an exact commit, not a moving tag or "latest" - the same
+    # "don't trust whatever happens to be current" reasoning every other
+    # toolchain step in this project's workflows follows (see e.g.
+    # _build.yml's NDK/LLVM installs, each a hardcoded version rather than a
+    # resolved-at-runtime one). Two things have to move together when
+    # bumping this: EMSDK_VERSION (the SDK release `emsdk install` fetches)
+    # and EMSDK_REPO_COMMIT (the emsdk MANAGER repo's own commit, pinned
+    # separately since it is unpinned third-party code that runs before the
+    # SDK version argument is ever consulted - `git ls-remote --tags
+    # https://github.com/emscripten-core/emsdk.git` resolves the matching
+    # tag). docs/platforms/wasm.md's own "Toolchain" section names the
+    # version below as what's actually been verified.
+    # zizmor's github-env audit (docs.zizmor.sh/audits/#github-env) targets
+    # workflows an attacker can trigger with elevated permissions/secrets -
+    # pull_request_target, workflow_run - where a value written to
+    # GITHUB_ENV/GITHUB_PATH could carry attacker-controlled content into a
+    # later, privileged step. Neither consumer of this action fits that
+    # shape: _build.yml's build-wasm job runs under a plain `pull_request`
+    # trigger (a fork PR gets a read-only, secret-less GITHUB_TOKEN by
+    # default), and docs.yml's deploy job that does hold `contents: write`
+    # explicitly never runs for a pull_request at all (`if: github.event_name
+    # != 'pull_request'`). Nothing written here ever comes from an
+    # attacker-influenceable source either - EMSDK_VERSION/EMSDK_REPO_COMMIT
+    # are the literal, pinned constants above, and PWD is this step's own
+    # cwd after a git checkout to a pinned commit. zizmor's own suggested
+    # alternative (GITHUB_OUTPUT) does not work for what this action needs
+    # to do - putting emcc/em++ on PATH for arbitrary later build steps,
+    # which only GITHUB_ENV/GITHUB_PATH can do, the same pattern
+    # setup-msvc-env's own MSVC-environment step already uses in this repo.
+    - name: Install Emscripten
+      shell: bash
+      env:
+        EMSDK_VERSION: "6.0.6"
+        EMSDK_REPO_COMMIT: "9981799f744be74ac67b1c1813ff172f63be0630" # tag 6.0.6
+      run: | # zizmor: ignore[github-env]
+        set -euo pipefail
+        emsdk_dir="$RUNNER_TEMP/emsdk"
+        git init --quiet "$emsdk_dir"
+        cd "$emsdk_dir"
+        git remote add origin https://github.com/emscripten-core/emsdk.git
+        git fetch --depth 1 origin "$EMSDK_REPO_COMMIT"
+        git checkout --quiet FETCH_HEAD
+        ./emsdk install "$EMSDK_VERSION"
+        ./emsdk activate "$EMSDK_VERSION"
+        # emsdk_env.sh mutates the CURRENT shell; every workflow step is a
+        # fresh shell, so EMSDK/PATH have to persist via
+        # $GITHUB_ENV/$GITHUB_PATH instead, the same reason
+        # setup-msvc-env's own MSVC environment step exports to $GITHUB_ENV
+        # rather than relying on its own step's environment surviving.
+        echo "EMSDK=$PWD" >> "$GITHUB_ENV"
+        echo "$PWD" >> "$GITHUB_PATH"
+        echo "$PWD/upstream/emscripten" >> "$GITHUB_PATH"

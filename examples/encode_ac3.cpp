@@ -2,8 +2,8 @@
 //
 // Builds a 5.1 layout (3/2 + LFE) carrying a different tone in each channel,
 // encodes one second of it, and reports the size. Every example in this
-// directory is also a snippet in docs/LIBRARY.md; they live here so the build
-// checks them.
+// directory backs the excerpts in the docs/library/ pages; they live here so
+// the build checks them.
 
 #include <array>
 #include <cmath>
