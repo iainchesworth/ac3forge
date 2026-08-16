@@ -111,8 +111,14 @@ decoded an AC-3/E-AC-3 bitstream and verified its loudness metadata against meas
   for bindings and embedding.
 - [ ] **F2 (L)** — Python bindings on PyPI, with wheels for the three desktop platforms.
   Depends on F1, or goes pybind11-direct.
-- [ ] **F3 (L)** — WASM build plus a browser demo that decodes E-AC-3 + JOC and renders
-  object motion; could double as the documentation site's live demo.
+- [x] **F3 (L)** — WASM build plus a browser demo that decodes E-AC-3 + JOC and renders
+  object motion; could double as the documentation site's live demo. `ac3::forge`'s
+  AC-3/E-AC-3 decode path builds under Emscripten (`config-wasm-emscripten` preset), and a
+  real browser demo (`platform/wasm/`, embedded live at `docs/wasm-demo.md`) decodes a
+  genuine Atmos-in-DD+ stream, plays the real 5.1 bed, and renders each object's real
+  decoded position (OAMD, #168) moving in a top-down/elevation room view — plus a "solo
+  object" control that plays that object's own real JOC-reconstructed audio (#169), not its
+  panned slice of the bed. Both #168 and #169 are merged to `develop`.
 - [ ] **F4 (M)** — Package-manager presence: a vcpkg port, a Homebrew formula, a winget
   manifest. **The vcpkg port is staged in-tree** — see
   [`packaging/vcpkg-port/ac3forge/`](https://github.com/iainchesworth/ac3forge/tree/main/packaging/vcpkg-port/ac3forge),

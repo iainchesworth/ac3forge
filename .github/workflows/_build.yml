@@ -845,6 +845,48 @@ jobs:
             packages/*.apk.sha512
           if-no-files-found: error
 
+  # The WASM browser decode demo (platform/wasm, roadmap F3): a real CMake
+  # preset (config-wasm-emscripten) unlike build-android above, but still its
+  # own job rather than a `build` matrix entry, for the same reason
+  # build-android's own header gives - this leg has none of the shape that
+  # matrix's steps assume (no ctest suite to run, no cpack package to stage,
+  # no gold-reference gate), so folding it in would mean threading new `if:`
+  # exclusions through most of that job's steps for no benefit. Runs on
+  # every push - a continuous smoke test that the Emscripten toolchain and
+  # every file it touches still build - the same role build-android's
+  # always-on debug APK plays; this job never produces a release artifact of
+  # its own the way build-android's release APK does, since the actual
+  # published copy is rebuilt fresh by docs.yml's deploy job rather than
+  # shipped from here (see that workflow and docs/platforms/wasm.md).
+  build-wasm:
+    name: WASM (browser decode demo)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: ${{ inputs.fetch_depth }}
+
+      - uses: ./.github/actions/setup-emscripten
+
+      - name: Configure
+        run: cmake --preset config-wasm-emscripten
+
+      - name: Build
+        run: cmake --build build/config-wasm-emscripten
+
+      # Not consumed by docs.yml (see this job's own header) - uploaded
+      # purely so a failed/successful build's actual output is inspectable
+      # from the Actions run, the same convenience packages-android gets.
+      - name: Upload demo artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wasm-decode-demo
+          path: build/config-wasm-emscripten/bin/wasm_decode_demo
+          if-no-files-found: error
+
   # Persists this run's gold-reference SNR numbers (docs/quality-trend.md) so
   # they outlive the CI run that produced them, instead of only ever living in
   # a log that ages out. One job, not one push per leg: `needs: build` waits
