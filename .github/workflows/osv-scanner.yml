@@ -6,7 +6,7 @@
 # Visible-only by design (fail-on-vuln: false): findings land in the
 # Security > Code scanning tab for both the PR and scheduled scans, but don't
 # block merges. dependency-review.yml is this repo's one blocking dependency
-# check - see docs/branch-protection.md. Modelled on CountdownSolver's
+# check - see .github/branch-protection.md. Modelled on CountdownSolver's
 # .github/workflows/osv-scanner.yml.
 
 on:

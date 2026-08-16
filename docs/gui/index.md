@@ -1,6 +1,7 @@
 # ac3gui — window layout
 
-`ac3gui` (window title `ac3forge`, QML module `Ac3Forge`) is a Qt Quick front end over the same
+`ac3gui` (window title `ac3forge — <source>` once a source is loaded, QML module `Ac3Forge`) is a
+Qt Quick front end over the same
 `ac3::forge` library documented under [Library](../library/index.md) — nothing in the GUI has
 logic the library doesn't also expose, and every setting it makes maps onto an equivalent
 [`ac3cli`](../cli/index.md) invocation shown live at the bottom of the window.
@@ -11,9 +12,8 @@ system's red), Ink (a cooler blue), Console (studio amber), and **System**, whic
 desktop's own accent colour (`QPalette::Accent`: the Windows accent, macOS's control accent,
 KDE's — Qt fills it natively, falling back to the highlight colour elsewhere, and an accent
 change in the OS Settings lands live). Each palette defines light **and dark by hand** — dark
-is no longer a mechanical inversion of the light ramp, which is what used to make dark mode
-read as a black-and-red glare. Both the mode (Light / Dark / System) and the palette are
-[Preferences](#preferences). Earlier builds — a nine-card single-column design, and a first
+is not a mechanical inversion of the light ramp. Both the mode (Light / Dark / System) and the
+palette are set in [Preferences](#preferences). Earlier builds — a nine-card single-column design, and a first
 cut of the workbench before the design handoff was fully implemented — are superseded; if you
 find references to either elsewhere in the repo's history, they predate this guide.
 
@@ -32,7 +32,8 @@ Minimum size 1280×900. Two panes, divided by a vertical rule:
 ![The workbench: a 5.1 source loaded, Advanced tier](screenshots/overview-default.png)
 
 - **Header** (top): the `ac3forge` wordmark and subtitle, a **Guided / Advanced / Expert**
-  segmented control, and a **Preferences** button.
+  segmented control, a **QC a stream…** button (a separate dialog that measures an
+  already-encoded file — see [QC a stream](qc.md)), and a **Preferences** button.
 - **Left rail — "the signal"** (always visible, never scrolled away, and never affected by which
   tier is selected): three numbered blocks — **01 Input** (one input, with a **File / Live
   capture** selector, the loaded source list and its totals), **02 Levels** (the channel meters),
@@ -53,14 +54,17 @@ Minimum size 1280×900. Two panes, divided by a vertical rule:
   click away. The line is genuinely complete: extra
   sources ride as `src=`, the assignment as `map=`, non-default metadata in `print_meta_usage`'s
   own grammar, AC-3's bare `couple`, quoting where names carry spaces; a live source renders the
-  `live` subcommand, and a Matroska container is honestly *two* commands (`… && ac3cli mkv …`),
-  because pasting one would write a raw elementary stream into a file named `.mkv`. Finished
+  `live` subcommand — a single command even with Matroska selected, via its `container=mkv` token
+  (see [Live capture & session](live-session.md)) — while a *file* encode's Matroska container is
+  honestly *two* commands (`… && ac3cli mkv …`), because pasting one would write a raw elementary
+  stream into a file named `.mkv`. Finished
   chips carry **Show in folder** and **Play** — sends that run's own output to a receiver over the
   same IEC 61937 passthrough path the Format tab's own Passthrough section uses (see [Format &
   channels](format-and-channels.md#loudness-and-passthrough)), greyed out when no device here can
   bitstream what that particular run actually produced. A run encoded through Guided's **Play it on
   my receiver** destination (step 5) carries the device Guided already auto-picked along with it, so
-  its Play needs no fresh device pick. **Clicking a chip** (anywhere but its buttons) opens that
+  its Play needs no fresh device pick. **Clicking a chip's summary text** (the text is the click
+  target — the status square and the chip's padding are inert, as are its buttons) opens that
   run's own details popover — status, rate, duration, size, frame count, the failure text if it
   failed, and the exact `ac3cli` command line as it stood *when that run started*, snapshotted
   rather than read live, so an old chip's popover still shows what actually ran even after the
@@ -128,19 +132,16 @@ Encode is ever pressed. This never overwrites an actual edit — the moment Loud
 by hand (in Guided itself, or in Advanced/Expert during the same session), the contract steps aside
 for good, this session, and dialnorm/DRC stay exactly what was set.
 
-Dual mono (`1+1`) gets the same contract, applied to both programmes: measured loudness and
-film-standard DRC for each one independently (Ch2's own `dialnorm2`/`drc2`, never inherited from
-Ch1's — see [Format & channels](format-and-channels.md#dual-mono) and
-[Metadata](metadata.md#loudness)).
+Dual mono (`1+1`) gets the same contract, applied to each of its two programmes independently —
+see [Dual mono](format-and-channels.md#dual-mono) for why nothing is shared between them.
 
 ## Preferences
 
-A real dialog, persisted across sessions (QSettings), three columns — every row wired to real
-behaviour:
+A real dialog, persisted across sessions (QSettings), three columns:
 
 - **Appearance** — theme (Light / Dark / System) and the **palette** (Signal / Ink / Console /
   System — the last follows the desktop's accent colour where the platform exposes one); which
-  meter rows to show by default ([Coded / Rendered](loading-a-source.md#channel-levels));
+  meter rows to show by default ([Coded / Rendered](loading-a-source.md#02-levels));
   **Explanations** — show the plain-language notes beside controls, and optionally warn before
   a choice changes the codec (the codec follows the channels either way; the warning only makes
   the moment deliberate).
@@ -160,26 +161,26 @@ behaviour:
   rate/VBR quality too. An edit made before Save is never clobbered by it: touch a field once (in
   Guided, Advanced or Expert, any of them count) and Preferences stops overwriting it for the rest
   of the session, exactly as the loudness contract already promises for Loudness/Metadata.
-  **Capture** — start monitoring as soon as a device is chosen, and whether Record asks for a
-  filename or writes straight to the output folder under a timestamped take name. **Command
-  line** — keep the `ac3cli` line visible.
+  **Capture** — whether Record asks for a filename or writes straight to the output folder under
+  a timestamped take name. **Command line** — keep the `ac3cli` line visible.
 
 ## Next
 
-Walk the panes in the order a first encode actually goes:
+The rest of the guide, in reading order:
 
 1. [Loading a source](loading-a-source.md) — pick a WAV (or several), or capture live; watch the
    channel meters
 2. [Format & channels](format-and-channels.md) — layout, dual mono, VBR, bit rate, container —
    and the assignment table everything else derives from
-3. [Coding tools](coding-tools.md) — Annex E tools (Expert, E-AC-3 only)
-4. [Metadata](metadata.md) — loudness, downmix, heavy compression (Expert)
-5. [Objects & motion](objects-and-motion.md) — Dolby Atmos objects
-6. [Live capture & session](live-session.md) — capture → encode → monitor/passthrough, live
-
-Loading more than one source at once — each channel individually assigned to a bed position, an
-object, or a dual-mono programme — is its own page:
-[Multi-source & assignment](source-assignment.md).
+3. [Objects & motion](objects-and-motion.md) — Dolby Atmos objects
+4. [Live capture & session](live-session.md) — capture → encode → monitor/passthrough, live
+5. [Multi-source & assignment](source-assignment.md) — several sources at once, each channel
+   individually assigned to a bed position, an object, or a dual-mono programme
+6. [Coding tools](coding-tools.md) — Annex E tools (Expert; the tools apply to E-AC-3 only, and
+   under AC-3 the tab shows an explainer instead)
+7. [Metadata](metadata.md) — loudness, downmix, heavy compression (Expert)
+8. [QC a stream](qc.md) — measure an already-encoded file against its own metadata, from the
+   header's own dialog
 
 Or start with [Concepts](../concepts/index.md) if terms like "dependent substream" or "JOC" are
 unfamiliar — the GUI uses the same vocabulary as the standards it implements.

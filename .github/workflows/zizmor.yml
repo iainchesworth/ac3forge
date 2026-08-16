@@ -5,7 +5,7 @@
 #
 # Visible-only (continue-on-error on the scan step): findings land in the
 # Security > Code scanning tab but don't block merges. dependency-review.yml
-# is this repo's one blocking check - see docs/branch-protection.md.
+# is this repo's one blocking check - see .github/branch-protection.md.
 # Modelled on CountdownSolver's .github/workflows/zizmor.yml.
 
 on:

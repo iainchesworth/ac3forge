@@ -30,6 +30,11 @@
 #     to tolerate, just no oracle - see docs/verification.md's own note.
 #     Those streams skip the FFmpeg check too; the in-repo decoder round trip
 #     still covers them.
+#   - One whole COMMAND, not just one FFmpeg check, is conditional: `atmos-adm`
+#     (roadmap B1) only runs for real when this build was configured with
+#     -DAC3FORGE_BUILD_ADM=ON, which neither of this script's two CI callers'
+#     presets turn on - see that command's own block below for the detection
+#     and the reasoning.
 #
 # Usage: run-codec-matrix.sh <path-to-ac3cli> [workdir]
 # Exits non-zero on the first command that fails (a sanitizer violation exits
@@ -285,6 +290,34 @@ PATHSEOF
 run atmos-path atmos_path.ec3 atmos_paths.txt 3 256 2
 run decode atmos_path.ec3 atmos_path.wav
 run_ffmpeg_check atmos_path.ec3
+
+# atmos-adm (roadmap B1): only exercised for real when THIS build actually has it.
+# ac3adm::ac3adm/ac3::admbridge are this project's one opt-in, non-default library
+# (AC3FORGE_BUILD_ADM, default off - see the root CMakeLists.txt's own option()), and it needs
+# Boost plus a dedicated vcpkg feature neither of this script's two CI callers (the ASan+UBSan
+# leg, the FFmpeg-oracle leg this file's own header describes) pulls in - both build the plain
+# default preset. Detected the same way ac3cli's own usage listing already answers this
+# (main.cpp's Needs::kAdm/unmet(): a build without the flag lists the row as "UNAVAILABLE HERE"
+# rather than omitting it), not guessed from a preset name, so this stays correct automatically
+# if that ever changes (e.g. roadmap B1's own adm-validate CI job, which DOES build with the flag
+# on, were ever pointed at this same script). When available, examples/encode_adm's own
+# --write-fixture mode reuses its existing BW64/ADM fixture-writing code (see that file's own
+# header comment on why this exists rather than a fourth copy of the same chunk-writing helpers)
+# to produce a real file on disk, so atmos-adm is driven through a real file the same way every
+# other command in this matrix is - not a synthetic shortcut. `run atmos-adm ...` appears in this
+# script's own text either way, which is what tools/check_matrix_coverage.py's static presence
+# check actually looks for - see that script's own module docstring.
+ADM_FIXTURE_TOOL="$(dirname "$CLI")/examples/encode_adm"
+if "$CLI" 2>&1 | grep -E '^  ac3cli atmos-adm[[:space:]]' | grep -q 'UNAVAILABLE HERE'; then
+    echo "    [skip] atmos-adm: this ac3cli build has no -DAC3FORGE_BUILD_ADM=ON (src/cli/adm/atmos_adm.hpp) - covered instead by the adm-validate CI job and tests/test_cli_atmos_adm.cpp, which do build with it"
+elif [ ! -x "$ADM_FIXTURE_TOOL" ]; then
+    echo "    [skip] atmos-adm: examples/encode_adm was not built alongside this ac3cli (AC3FORGE_BUILD_EXAMPLES=OFF?), so its --write-fixture mode is unavailable to generate a real ADM file"
+else
+    "$ADM_FIXTURE_TOOL" --write-fixture atmos_adm_fixture.wav
+    run atmos-adm atmos_adm_fixture.wav atmos_adm.ec3 256
+    run decode atmos_adm.ec3 atmos_adm.wav
+    run_ffmpeg_check atmos_adm.ec3
+fi
 
 # --- Reporting / container passes over a representative subset -------------
 run levels bootstrap_51.wav

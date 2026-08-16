@@ -32,11 +32,15 @@ set(AC3FORGE_EXAMPLES
 
 # read_adm demonstrates ac3adm::ac3adm (src/ac3adm), the standalone BW64/RF64 + ADM
 # parser - "standalone" meaning zero dependency on ac3::forge, unlike every other
-# example in the list above. It is only added when AC3FORGE_BUILD_ADM turned that
-# module on (default OFF - see root CMakeLists.txt's own option() for why), so the
-# foreach below cannot assume it is always present the way it can for e.g. mux_mkv.
+# example in the list above. encode_adm (roadmap B1 phase 3) is the end-to-end
+# counterpart: ac3adm::parse_bw64 -> ac3::admbridge::build -> ac3::oba::AtmosEncoder, so unlike
+# every other entry here (including read_adm) it needs BOTH ac3::forge and the opt-in ADM modules
+# together - see this file's own DLL-copy comments below for the Windows shared-build consequence
+# of that. Both are only added when AC3FORGE_BUILD_ADM turned those modules on (default OFF - see
+# root CMakeLists.txt's own option() for why), so the foreach below cannot assume either is always
+# present the way it can for e.g. mux_mkv.
 if(AC3FORGE_BUILD_ADM)
-    list(APPEND AC3FORGE_EXAMPLES read_adm)
+    list(APPEND AC3FORGE_EXAMPLES read_adm encode_adm)
 endif()
 
 foreach(example IN LISTS AC3FORGE_EXAMPLES)
@@ -46,6 +50,11 @@ foreach(example IN LISTS AC3FORGE_EXAMPLES)
         # src/ac3adm/CMakeLists.txt's header comment), so this example only needs
         # the parser itself plus the same ac3::warnings every other example gets.
         target_link_libraries(${example} PRIVATE ac3adm::ac3adm ac3::warnings)
+    elseif(example STREQUAL "encode_adm")
+        # The one example (and roadmap B1's own phase-3 deliverable) needing ac3::forge
+        # (AtmosEncoder) and the ADM modules (parse/bridge) at the same time.
+        target_link_libraries(${example} PRIVATE ac3::forge ac3adm::ac3adm ac3::admbridge
+                                                  ac3::warnings)
     else()
         target_link_libraries(${example} PRIVATE ac3::forge ac3::warnings)
     endif()
@@ -121,31 +130,38 @@ if(BUILD_SHARED_LIBS AND WIN32)
     # before ctest ever runs anything either way.
     foreach(example IN LISTS AC3FORGE_EXAMPLES)
         if(NOT example STREQUAL "mux_mkv" AND NOT example STREQUAL "mux_mp4"
-                AND NOT example STREQUAL "mux_ts" AND NOT example STREQUAL "read_adm")
+                AND NOT example STREQUAL "mux_ts" AND NOT example STREQUAL "read_adm"
+                AND NOT example STREQUAL "encode_adm")
             add_dependencies(${example} examples_copy_runtime_dlls)
         endif()
     endforeach()
 endif()
 
-# read_adm needs its own copy step, separate from the one above: it links
-# ac3adm::ac3adm rather than ac3::forge/matroska::matroska/mp4::mp4/mpegts::mpegts, so
-# none of mux_mkv/mux_mp4/mux_ts's TARGET_RUNTIME_DLLS cover it, and it only exists at
-# all when AC3FORGE_BUILD_ADM is ON (see the AC3FORGE_EXAMPLES list above) - folding it
-# into the block above would make that block depend on a target that may not exist.
+# read_adm and encode_adm need their own copy step, separate from the one above: read_adm links
+# ac3adm::ac3adm only, and encode_adm links ac3::forge ALONGSIDE ac3adm::ac3adm/ac3::admbridge (see
+# examples/CMakeLists.txt's own foreach above) - neither combination is the
+# ac3::forge/matroska::matroska/mp4::mp4/mpegts::mpegts set mux_mkv/mux_mp4/mux_ts's own
+# TARGET_RUNTIME_DLLS cover, and both only exist at all when AC3FORGE_BUILD_ADM is ON (see the
+# AC3FORGE_EXAMPLES list above) - folding either into the block above would make that block depend
+# on a target that may not exist. Combined into one target rather than two separate ones (the same
+# "list every DLL source once, copy together" shape the block above already uses for
+# mux_mkv/mux_mp4/mux_ts): TARGET_RUNTIME_DLLS resolves each target's own full transitive DLL
+# closure regardless of which libraries it links, so listing both here needs no reasoning about
+# whether one target's DLLs are a superset of the other's.
 #
-# read_adm itself is deliberately NOT made to depend on this copy target - it is the
-# only consumer of the DLLs this copies, so doing so would make it depend on a target
-# that itself DEPENDS on read_adm, a cycle. As with mux_mkv/mux_mp4/mux_ts above,
-# whether read_adm's own .exe existing waits on the copy or not doesn't matter: both
-# are ordinary members of the default ALL target, so a plain `cmake --build .` builds
+# Neither read_adm nor encode_adm is made to depend on this copy target - each is among its own
+# consumers, so doing so would make it depend on a target that itself DEPENDS on it, a cycle. As
+# with mux_mkv/mux_mp4/mux_ts above, whether either .exe existing waits on the copy or not doesn't
+# matter: all are ordinary members of the default ALL target, so a plain `cmake --build .` builds
 # everything before ctest ever runs anything either way.
 if(BUILD_SHARED_LIBS AND WIN32 AND AC3FORGE_BUILD_ADM)
-    add_custom_target(examples_copy_read_adm_runtime_dlls
+    add_custom_target(examples_copy_adm_runtime_dlls
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "$<TARGET_RUNTIME_DLLS:read_adm>"
+            "$<TARGET_RUNTIME_DLLS:encode_adm>"
             "${CMAKE_BINARY_DIR}/bin/examples"
         COMMAND_EXPAND_LISTS
-        DEPENDS read_adm)
+        DEPENDS read_adm encode_adm)
 endif()
 
 # Run them under ctest when tests are on, so "the examples still work" is

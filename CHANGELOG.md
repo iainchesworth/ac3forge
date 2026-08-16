@@ -42,13 +42,28 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   registers a dot-separated profile suffix) and, for Dolby Digital Plus with Atmos objects, HLS's
   `CHANNELS="<N>/JOC"` (Apple's HLS Authoring Specification for Apple Devices, reiterated with a
   worked example by Dolby's own Online Delivery Kit docs and AWS MediaLive's HLS+Atmos
-  documentation) — exactly the category of packaging correctness this initiative's own `dec3` box
-  work already cared about, and the same category of bug Shaka Packager and jellyfin-ffmpeg#584
-  have both hit around E-AC-3/Atmos-in-HLS signaling. The DASH snippet uses an exact
+  documentation) — the same category of packaging correctness as the `dec3` box work above, and
+  the same category of bug Shaka Packager and jellyfin-ffmpeg#584 have both hit around
+  E-AC-3/Atmos-in-HLS signaling. The DASH snippet uses an exact
   `SegmentTemplate`/`SegmentTimeline` (ISO/IEC 23009-1 §5.3.9.6) rather than one nominal
   `duration`, avoiding a real gap found against FFmpeg's own `dash` demuxer while writing this: a
   flat nominal duration with a shorter final segment (the normal case) let it compute one too many
   segments from `mediaPresentationDuration` and request a segment number past the end.
+
+- **Live sessions mux straight to Matroska.** `ac3cli record`/`ac3cli live` take a new
+  `container=mkv` trailing token, writing the take directly to `.mkv` in the one command instead of
+  needing a separate `ac3cli mkv` wrap afterward. The GUI's Live session tab already offers the same
+  choice through its existing Container combo (Format tab) — its own live write path is rebuilt on
+  top of a new incremental API, `matroska::Writer`, so a Matroska take is now written straight to
+  its real destination as it is captured rather than spooled as an elementary stream and muxed only
+  at a clean stop: Segment is written with EBML's reserved "unknown size" pattern (the standard way
+  a streamed Matroska declares a length it cannot know yet), so a crash mid-session now leaves a
+  genuinely playable, if truncated, `.mkv` behind instead of a recoverable elementary-stream
+  companion file. `matroska::mux()` (the existing whole-file API `ac3cli mkv` and file-based GUI
+  encodes use) is unchanged.
+- **The GUI's Format tab now offers MP4, fragmented MP4/CMAF and MPEG-TS in its Container combo**,
+  wired through the same `mp4::`/`mpegts::` writers the CLI's `mp4`/`fmp4`/`ts` commands use — for
+  file encodes only; live sessions keep their incremental Matroska path.
 
 ### Production ingest
 
@@ -98,22 +113,37 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   driven through a real `AtmosEncoder`/`Eac3Decoder` round trip, confirming the decoded bitstream's
   channel energy lands where the authored ADM positions and hold/jump timing say it should — not
   just against hand-built graphs. Not part of the installed `find_package(ac3forge)` package, for
-  the same reason `ac3adm::ac3adm` itself is not. A worked end-to-end ADM→E-AC-3 pipeline example
-  (phase 3) remains — see [docs/library/adm-bridge.md](docs/library/adm-bridge.md).
-
-### Added
-
-- **Live sessions mux straight to Matroska.** `ac3cli record`/`ac3cli live` take a new
-  `container=mkv` trailing token, writing the take directly to `.mkv` in the one command instead of
-  needing a separate `ac3cli mkv` wrap afterward. The GUI's Live session tab already offers the same
-  choice through its existing Container combo (Format tab) — its own live write path is rebuilt on
-  top of a new incremental API, `matroska::Writer`, so a Matroska take is now written straight to
-  its real destination as it is captured rather than spooled as an elementary stream and muxed only
-  at a clean stop: Segment is written with EBML's reserved "unknown size" pattern (the standard way
-  a streamed Matroska declares a length it cannot know yet), so a crash mid-session now leaves a
-  genuinely playable, if truncated, `.mkv` behind instead of a recoverable elementary-stream
-  companion file. `matroska::mux()` (the existing whole-file API `ac3cli mkv` and file-based GUI
-  encodes use) is unchanged.
+  the same reason `ac3adm::ac3adm` itself is not.
+- **`ac3cli atmos-adm`, roadmap item B1 phase 3 of 3 — the last piece.** A real ADM BWF master
+  straight to a DD+ JOC E-AC-3 elementary stream: `ac3adm::parse_bw64` reads the container and ADM
+  graph, `ac3::admbridge::build` maps it onto `AtmosEncoder`'s object-list input shape, and a
+  per-frame loop drives `ac3::oba::evaluate_placements`/`AtmosEncoder::encode_frame` the same way
+  `atmos-path`/`atmos-encode` already do — no WAV, no hand-authored keyframe file, since the master
+  already carries every channel's own position/gain automation. Every `AdmError`/`BridgeError`
+  prints a real diagnosis via that error's own `describe()`. `dialnorm=auto` is refused with a
+  clear message rather than silently ignored — an ADM document's bed/object channels have no single
+  fixed layout to measure loudness against the way `atmos-encode`'s WAV input does. A minimal,
+  standalone illustration of the same pipeline ships as
+  [`examples/encode_adm.cpp`](examples/encode_adm.cpp), writing its own small BW64/ADM fixture
+  (bed speaker feed plus one moving object) rather than requiring a real production master. Both
+  are the first code outside `tests/` to link `ac3adm::ac3adm`/`ac3::admbridge` — `src/cli/
+  CMakeLists.txt` links them only when the same flag turned the two libraries on; `ac3cli` itself
+  still builds and works identically with the flag off, just without this one command. Reached with
+  no preprocessor conditional anywhere (`scripts/check-platform-macros.ps1`, CI-enforced, forbids
+  any `#if`/`#ifdef` under `src/` — feature flags included, not just platform ones): `atmos-adm` is
+  always one row of `main.cpp`'s command table, refused at dispatch time by a new `Needs::kAdm`
+  case in the existing `unmet()` capability gate (the same mechanism
+  `Needs::kCapture`/`kPassthrough`/`kMonitor` already use for platform audio capability) when
+  `ac3cli::adm_capability()` reports unavailable — backed by a small pair of CMake-selected files,
+  `src/cli/adm/{enabled,disabled}/atmos_adm.cpp`, the identical "exactly one file compiled in,
+  chosen by CMake" shape this file's own `platform/{windows,posix}/stdio_binary.cpp` split already
+  uses for an OS difference, applied here to a library-linked-or-not one instead — see
+  `src/cli/adm/atmos_adm.hpp`'s own top comment for the full reasoning. Tested against a real
+  byte-level BW64 fixture run through the actual built `ac3cli` binary as a subprocess, decoding
+  what it wrote and confirming the channel energy lands where the authored ADM positions and
+  hold/jump timing say it should, plus two CLI-level error-path cases. See
+  [docs/library/adm-bridge.md](docs/library/adm-bridge.md) and
+  [docs/cli/commands.md](docs/cli/commands.md).
 
 ### Codec depth
 
@@ -207,6 +237,25 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   two). The GUI's own encoder controller now does the same — `dialnorm=auto`/`dialnorm2=auto`
   measure each dual-mono programme's own coded channel independently there too, and the
   Metadata tab's Programme 2 **measure** checkbox is enabled accordingly.
+- Four small CLI/docs accuracy fixes found during the docs sweep above:
+  - **`sign-objects`/`signing-key=` now reach `atmos-path` and `atmos-encode`, not just `atmos`**:
+    all three commands parsed the flags (nothing in the trailing-options parser is
+    command-specific), but only `atmos`'s own run function called into the signer —
+    `atmos-path` and `atmos-encode` silently accepted and ignored both. All three sign
+    identically now.
+  - **`eac3-sine` now honors `fast-mdct=off`**: unlike `eac3-encode` it has no `[tools]`
+    positional to spell it through, and previously never read the option at all, so there was
+    no way to force the direct §8.2.3.2 transform for it. `eac3-silence` still has no use for
+    either spelling — it builds a silent access unit directly, with no forward transform in the
+    loop to choose a path for — so the built-in usage text no longer implies otherwise.
+  - **`map=` rows aimed at `obj`/`objm` (or `p1`/`p2` outside a dual-mono target) now warn
+    instead of silently vanishing**: this CLI has no object-assembly path of its own (that's
+    the GUI's), so `encode`/`eac3-encode` print a warning naming the source/channel and
+    destination for every row `route()` cannot carry, rather than that channel's audio just
+    disappearing with no diagnostic.
+  - Corrected the built-in usage text's wide-layout inference line (`8 -> 7.1`, `10 -> 5.1.4`,
+    `12 -> 7.1.4`), which read as if `encode` shared it with `eac3-encode` — `encode` refuses
+    anything wider than 3/2 + LFE, so the inference is `eac3-encode`-only.
 
 ### AC-3 encoding
 
@@ -239,6 +288,13 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   `clang-tools` toolchain dependency (`clang-scan-deps`) that broke every `find_package` check
   under Clang's Ninja module scan.
 
+### Packaging
+
+- **A vcpkg port is staged in-tree** at `packaging/vcpkg-port/ac3forge` (portfile, usage text,
+  and a `matroska` feature for the optional Matroska writer), pending submission to the curated
+  `microsoft/vcpkg` registry. The submission and per-release update flow, and how to validate the
+  port locally, are documented in [docs/releasing.md](docs/releasing.md#vcpkg-port).
+
 ### Validation
 
 - **A perceptual-quality column alongside SNR** (roadmap G1) on `tools/quality_race.py`'s `ac3`/
@@ -256,6 +312,25 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   message rather than failing the run, and CI does not install it either, so the fidelity gate
   (`quality_race.py ci`) gains no new dependency or runtime cost — only the reporting tables and
   `trend`'s JSON output request a score at all.
+- **Test coverage backfill for the WAV reader and the §7.8 downmix** (roadmap G2).
+  `ac3::io::read_wav` (`tests/test_wav.cpp`, new) had no dedicated test at all despite being the
+  fixture-loading path every codec test in the suite depends on: its RIFF/WAVE validation, PCM16
+  decode scaling, `WAVE_FORMAT_EXTENSIBLE` handling, and its documented clamp-not-error behaviour
+  when a data chunk's declared size overruns the bytes actually present were all unexercised.
+  `ac3::meta::mixing` (`tests/test_mixing.cpp`, new) — `stereo_downmix`/`mono_downmix`'s per-acmod
+  routing, `mono_downmix_peak_dbfs`'s phase behaviour, and the `coefficient()`/
+  `valid_surround_mix_level()`/`lfe_mix_level_db()` tables — had only the aggregate `<=1`
+  normalization-bound check `test_drc.cpp` already carried; the mix-level tables and several
+  per-acmod branches (discrete-vs-spread surround routing, 1+1 dual mono) had none.
+  `tests/test_cli.cpp` gained coverage for the `silence`/`eac3-silence` commands' own argv wiring
+  (seconds/bitrate/layout threading, default application, invalid-bitrate rejection) — the
+  frame-building code underneath was already covered unit-level, but the CLI dispatch row itself,
+  the thing the command table's own comment credits with catching six real argv-index bugs during
+  its refactor, was not. Roadmap item G2's original "seven tests / four thousand lines" CLI
+  estimate was already stale by the time work started (the CLI has grown past 5,000 lines and 30
+  test cases since); `meta/loudness` and `silent_frame`, the roadmap's other two named gaps,
+  turned out to already have solid dedicated coverage (`tests/test_loudness.cpp`,
+  `tests/test_frame.cpp`) and were left alone.
 
 ### Developer tooling
 
@@ -281,6 +356,12 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   folded into either existing job, since it needs `ffmpeg` on PATH and is much slower per-exec
   (a real FFmpeg process per comparable input). The two harnesses share their crash-only
   siblings' seed corpora rather than duplicating them.
+- **A public [ROADMAP.md](ROADMAP.md)**: the candidate list of possible future work, each item
+  carrying a stable ID (`A1`–`G3`) that pull requests and this changelog can reference; mirrored
+  on the docs site.
+- **Static-analysis hardening, continuing 0.3.0-beta.1's round**: the remaining MSVC `/analyze`
+  C6262 stack-usage findings fixed (large codec state heap-allocated instead of declared on
+  worker stacks), plus a follow-up correcting the first pass's own regressions.
 
 ### macOS — real CoreAudio audio backend (roadmap E1)
 
@@ -399,30 +480,13 @@ CLI together with the entire library SDK.
   list, which let a steady ~25 dB interop fixture read as a crash relative to an unrelated ~68 dB
   series. The table now follows the same Codec scoping as the chart, with a `Check` column and a
   tooltipped `†` marker on non-primary checks.
-- **Test coverage backfill for the WAV reader and the §7.8 downmix.** `ac3::io::read_wav`
-  (`tests/test_wav.cpp`, new) had no dedicated test at all despite being the fixture-loading path
-  every codec test in the suite depends on: its RIFF/WAVE validation, PCM16 decode scaling,
-  `WAVE_FORMAT_EXTENSIBLE` handling, and its documented clamp-not-error behaviour when a data
-  chunk's declared size overruns the bytes actually present were all unexercised. `ac3::meta::mixing`
-  (`tests/test_mixing.cpp`, new) — `stereo_downmix`/`mono_downmix`'s per-acmod routing,
-  `mono_downmix_peak_dbfs`'s phase behaviour, and the `coefficient()`/`valid_surround_mix_level()`/
-  `lfe_mix_level_db()` tables — had only the aggregate `<=1` normalization-bound check
-  `test_drc.cpp` already carried; the mix-level tables and several per-acmod branches (discrete-
-  vs-spread surround routing, 1+1 dual mono) had none. `tests/test_cli.cpp` gained coverage for the
-  `silence`/`eac3-silence` commands' own argv wiring (seconds/bitrate/layout threading, default
-  application, invalid-bitrate rejection) — the frame-building code underneath was already covered
-  unit-level, but the CLI dispatch row itself, the thing the command table's own comment credits
-  with catching six real argv-index bugs during its refactor, was not. Roadmap item G2's original
-  "seven tests / four thousand lines" CLI estimate was already stale by the time work started (the
-  CLI has grown past 5,000 lines and 30 test cases since); `meta/loudness` and `silent_frame`, the
-  roadmap's other two named gaps, turned out to already have solid dedicated coverage
-  (`tests/test_loudness.cpp`, `tests/test_frame.cpp`) and were left alone.
 
 ### Known gaps
 
 - Objects will not decode as *objects* in Dolby's own decoder: DD+ JOC gates that on an
   authenticity tag keyed to a secret embedded in Dolby's decoder binaries, which this project
-  does not produce. The bed still decodes as plain 5.1 anywhere.
+  ships no key for, so its streams are unsigned unless an operator supplies one. The bed still
+  decodes as plain 5.1 anywhere.
 - Exclusive-mode S/PDIF/HDMI passthrough has not been confirmed against real bitstreaming hardware
   on either platform (no such endpoint was available during development).
 - `fscod2` audio content has no external decode oracle at all, not even Dolby's own Reference
@@ -703,7 +767,8 @@ dashboards, and Android release builds sign with a real keystore.
 
 - Objects will not decode as *objects* in Dolby's own decoder: DD+ JOC gates that on an
   authenticity tag keyed to a secret embedded in Dolby's decoder binaries, which this project
-  does not produce. The bed still decodes as plain 5.1 anywhere.
+  ships no key for, so its streams are unsigned unless an operator supplies one. The bed still
+  decodes as plain 5.1 anywhere.
 - Exclusive-mode S/PDIF/HDMI passthrough has not been confirmed against real bitstreaming hardware
   on either platform (no such endpoint was available during development).
 - `fscod2` audio content has no external decode oracle at all, not even Dolby's own Reference
@@ -802,8 +867,8 @@ assignment, and a GUI tier split for first-time users through experts.
   keystore is provisioned in this repo yet, so it's a sideload-only build, not one suited for
   store distribution.
 - Enhanced coupling's encoder always sends angle/chaos as zero (an amplitude-only fit) — quality
-  degrades if two channels' content shares one narrow coupling band. Closed in the next release;
-  see [Unreleased](#unreleased).
+  degrades if two channels' content shares one narrow coupling band. Closed in
+  [0.4.0-beta.1](#040-beta1---2026-08-14).
 - Objects will not decode as *objects* in Dolby's own decoder: DD+ JOC gates that on an
   authenticity tag keyed to a secret embedded in Dolby's decoder binaries, which this project
   does not produce. The bed still decodes as plain 5.1 anywhere.

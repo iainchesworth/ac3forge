@@ -5,8 +5,9 @@ B1 phase 2 of 3 (see [ROADMAP.md](https://github.com/iainchesworth/ac3forge/blob
 [`ac3adm::ac3adm`](adm.md) (phase 1) parses from a BW64/ADM master onto
 [`ac3::oba::AtmosEncoder`](spatial-and-atmos.md)'s input shape — one `ac3::oba::ObjectPath` plus
 one mono PCM span per bed speaker feed or dynamic object, ready to drive `encode_frame()` in a
-loop. Phase 3 (a CLI/GUI-facing end-to-end command) is a separate, later task; this module is the
-mapping/bridge library and its tests only.
+loop. This module is the mapping/bridge library and its tests only; driving it end to end is
+phase 3 — `ac3cli atmos-adm` and [`examples/encode_adm.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/encode_adm.cpp), both **done**, see
+[Commands](../cli/commands.md).
 
 **Opt-in, gated by the same flag as `ac3adm::ac3adm`.** `ac3::admbridge` depends on both
 `ac3adm::ac3adm` and `ac3::forge`, so it is meaningless without `AC3FORGE_BUILD_ADM=ON` and is
@@ -161,6 +162,14 @@ bridges it, and drives a real `ac3::oba::AtmosEncoder`/`ac3::Eac3Decoder` round 
 the decoded bitstream's channel energy actually lands where the authored ADM positions and hold/
 jump timing say it should, the same standard `tests/test_atmos_motion.cpp`'s own flagship test
 holds itself to.
+
+`tests/test_cli_atmos_adm.cpp` (phase 3) covers the same fixture shape one level up: it runs the
+real, built `ac3cli` binary's `atmos-adm` command as a subprocess against a real ADM BWF file on
+disk, then decodes what that binary actually wrote and checks the same channel-energy assertions —
+proving the CLI's own argument parsing and its `parse_bw64` → `build` → `AtmosEncoder` wiring, not
+just the library API in isolation — plus two error-path cases (`BridgeError::kNoProgramme`, a
+malformed/non-RIFF file) confirming `describe()` reaches the terminal rather than an opaque crash
+or exit code.
 
 ---
 

@@ -1,7 +1,6 @@
 # QC a stream
 
-Roadmap C3 — the same verification `ac3cli qc` runs on the command line, reachable from the
-window itself. Everything else in this guide configures and runs an **encode**: a source is
+The same verification `ac3cli qc` runs on the command line, reachable from the window itself. Everything else in this guide configures and runs an **encode**: a source is
 loaded, a plan is built on it, Encode writes a new file. QC is the opposite shape — an
 **already-encoded** `.ac3`/`.ec3` file is opened, decoded and measured against its own embedded
 `dialnorm`/`compr`, with no source, no plan and no encoder involved anywhere in the path. Folding

@@ -16,8 +16,8 @@ const int signed_count = ac3::signing::sign_atmos_stream(stream, key);
 Full program: [`examples/object_signing.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/object_signing.cpp)
 — encodes a two-object Atmos stream, then signs it. The key used there is a literal stand-in
 for the example's own sake, not a real key for any real decoder — a real one is always the
-operator's to provision at runtime (an environment variable or `--signing-key` file in the CLI),
-never compiled in.
+operator's to provision at runtime (an environment variable or a `signing-key=<path>` file in
+the CLI), never compiled in.
 
 `sign_atmos_stream` signs, in place, every syncframe in a stream that carries an EMDF object
 container — frames without one are left untouched — and returns how many it signed.
@@ -29,7 +29,7 @@ that subset asserts in debug and is left unsigned in release rather than signed 
 `SigningKey` owns its bytes and zeroizes them on destruction, so a supplied key does not linger
 in freed heap after signing finishes. `load_signing_key(explicit_path)` resolves one from, in
 order, an explicit path, `$AC3FORGE_SIGNING_KEY_FILE`, then `$AC3FORGE_SIGNING_KEY` — the same
-resolution the CLI's `--signing-key` uses. `decode_signing_key` is the shared decode underneath
+resolution the CLI's `signing-key=<path>` uses. `decode_signing_key` is the shared decode underneath
 all three: base64 when the content is valid base64 (the CI/secret-transport form — a GitHub
 secret is text and cannot carry a raw binary key), otherwise taken as raw bytes.
 

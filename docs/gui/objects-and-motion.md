@@ -55,8 +55,9 @@ above would, so either is a starting point, not a locked-in mode.
   object — or drag the marker itself. If the object has an authored path, a note under the room
   says the drag edits its *idle* position, not the path.
 - **Room — elevation** (beneath it): a true side view — the horizontal axis is the room's
-  *depth* (`front … rear`), so dragging edits y and z, never x. `ceiling`, `ear level` (at the
-  mockup's 66%) and the floor are marked, the bed's speakers sit on their lines for context, the
+  *depth* (`front … rear`), so dragging edits y and z, never x. `ceiling`, `ear level` (drawn at
+  66% of the view's height) and the floor are marked, the bed's speakers sit on their lines for
+  context, the
   selected object carries an `obj n · z 0.NN` chip, and its drop line reaches the floor — height
   reads as height above the ground. Height changes the *metadata*, not the bed: a 5.1 ring has
   no speakers above it, so two objects at one azimuth and different heights are identical in the
@@ -66,7 +67,7 @@ above would, so either is a starting point, not a locked-in mode.
   <n>` with one source, `<file> ch <n>` with several), X/Y/Z, path (`static`, the preset's own
   name like `orbit`, or `<n> keys` for a hand-authored one), LFE send, and keyframe count. The
   count line keeps the budget honest — the denominator is what is genuinely left once bed-pinned
-  channels have spent their slots (`4 of 15 objects · 2 pinned to the bed`), since the bed's LFE
+  channels have spent their slots (`4 of 13 objects · 2 pinned to the bed`), since the bed's LFE
   is the sixteenth. The selected object gets an **LFE send** slider (0.00–1.00) — the only route
   to that channel, since panning never reaches it.
 
@@ -83,9 +84,8 @@ A timeline beneath the object list — a ruler, a clip band per loaded source, o
 with its keyframes as rotated squares, and a playhead. It is an *editor*, not a display.
 
 **The timeline's length is derived, never set by hand**: it is `max(offset + duration)` over
-every loaded source (see the next section for what "offset" means), falling back to the old
-prototype's fixed 8 s only when nothing loaded has a duration to derive it from — a live session
-with no source, say. Loading a longer file, or dragging a source's clip band further out, grows
+every loaded source (see the next section for what "offset" means), falling back to a fixed 8 s
+only when nothing loaded has a duration to derive it from — a live session with no source, say. Loading a longer file, or dragging a source's clip band further out, grows
 the ruler and every lane along with it; nothing needs re-authoring just because the programme got
 longer.
 
@@ -117,10 +117,10 @@ cannot actually carry.
 
 Each loaded source gets its own **clip band** at the top of the timeline, spanning its active
 range (`offset … offset + duration`), and its own numeric **start offset** field on the rail's
-source row (see [Loading a source](loading-a-source.md#01--input)). Drag a clip band (or edit the
+source row (see [Loading a source](loading-a-source.md#01-input)). Drag a clip band (or edit the
 rail field directly) to shift when that source's channels start — encoded as leading silence
 ahead of its own audio, never as a change to the audio itself, the same way `ac3cli`'s `offset=`
-token works (see [CLI → Metadata options](../cli/metadata-options.md)).
+token works (see [CLI → Options & grammars](../cli/metadata-options.md)).
 
 **Keyframe times are programme-absolute, on purpose.** Sliding a clip band does *not* move that
 source's objects' keys by default — a key at 4.2 s means 4.2 s into the programme, regardless of

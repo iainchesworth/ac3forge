@@ -12,7 +12,7 @@
 // feeds the AC-3 encoder (or any other sink — nothing here knows about
 // AC-3 except the bed's channel order).
 //
-// Design per docs/RESEARCH.md §6:
+// Design:
 // - 2D pairwise amplitude panning (VBAP on the horizontal ring — 5.1 has no
 //   height): pick the adjacent speaker pair around the target azimuth, solve
 //   the 2x2 system, clamp, and normalize to Σg² = 1 (energy preservation).

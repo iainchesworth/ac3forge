@@ -8,10 +8,25 @@ Setup is in [docs/building.md](https://github.com/iainchesworth/ac3forge/blob/ma
 cmake --preset config-windows-msvc-debug && cmake --build --preset build-windows-msvc-debug && ctest --preset test-windows-msvc-debug
 ```
 
-There is no bare `debug` preset — swap `windows-msvc` for whichever platform/compiler fragment matches your machine (`windows-llvm`, `linux-gcc`, `linux-llvm`, `macos-llvm`).
+There is no bare `debug` preset — swap `windows-msvc` for whichever platform/compiler fragment matches your machine (`windows-llvm`, `linux-gcc`, `linux-llvm`, `linux-gcc-arm64`, `linux-llvm-arm64`, `macos-llvm`).
 
 Everything must pass before you push. There are no known-failing tests and no skips; if
 something fails, that is your change or a genuine regression, not noise.
+
+## Branches and pull requests
+
+The branch model is GitFlow: `main` holds releases, `develop` is where work integrates. Topic
+branches are named `<type>/<short-name>`, with `<type>` one of `feature`, `release`, `hotfix`,
+`bugfix` or `support` — CI's `Branch Name` check enforces
+`^(feature|release|hotfix|bugfix|support)/[a-z0-9._-]+$` on every PR, and its error message
+points back to this file.
+
+PRs target `develop`; `hotfix/*` branches target `main`. To merge, a PR must pass the required
+checks: `Branch Name`, the `CI Status` aggregate (every required CI job — the build/test matrix,
+clang-tidy, coverage, the FFmpeg-oracle validation and the rest), CodeQL's `Analyze (C++)`, and
+the `Scan dependency diff` dependency review. The maintainer-side record of the protection rules
+themselves is
+[.github/branch-protection.md](https://github.com/iainchesworth/ac3forge/blob/main/.github/branch-protection.md).
 
 ## The clean-room rule
 
@@ -157,7 +172,7 @@ the commit message and cover it bit-by-bit instead.
 ## Documentation
 
 The examples in [docs/library/](https://github.com/iainchesworth/ac3forge/blob/main/docs/library/index.md) are excerpts from programs in
-[`examples/`](examples/), which are build targets and `ctest` entries. If you change a public
+[`examples/`](https://github.com/iainchesworth/ac3forge/tree/main/examples), which are build targets and `ctest` entries. If you change a public
 API, update the example — the build will tell you if you forget. Do not add a snippet to the
 docs that is not backed by a compiled file.
 
