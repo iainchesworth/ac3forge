@@ -2,12 +2,15 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <numbers>
 #include <span>
 #include <vector>
 
 #include "ac3/core/bitreader.hpp"
+#include "ac3/core/tables.hpp"
 #include "ac3/oba/joc.hpp"
 #include "ac3/oba/oamd.hpp"
 
@@ -153,6 +156,136 @@ TEST_CASE("JOC payload decodes back to the matrix it was given", "[oba][joc]") {
     CHECK_FALSE(r.overflowed());
     // Only padding may remain, and §6.2.1 caps it at seven bits.
     CHECK(payload.size() * 8 - r.bit_position() < 8);
+}
+
+TEST_CASE("reconstruct is a 256-sample-delayed identity when the matrix is a pure passthrough",
+         "[oba][joc]") {
+    // A degenerate but exact check on the transform pair itself, decoupled
+    // from any panning/mixing math: M[0][0][*] = 1, every other entry 0,
+    // should hand channel 0 straight back through - modulo the 256-sample
+    // algorithmic delay every MDCT-based encode+decode round trip in this
+    // codebase carries (see tests/test_eac3_decoder.cpp's own snr_db helper
+    // and its "256-sample encode+decode delay" comment; reconstruct() runs
+    // its own independent forward+inverse MDCT pass, so it carries that same
+    // one block of delay relative to whatever bed it was handed).
+    ac3::joc::FrameParameters params{.objects = 1, .num_bands_idx = 4};
+    params.matrix.assign(params.coefficient_count(), 0.0);
+    for (int band = 0; band < params.bands(); ++band) {
+        params.at(0, 0, band) = 1.0;
+    }
+
+    std::vector<std::vector<float>> bed(5, std::vector<float>(ac3::kSamplesPerFrame, 0.0f));
+    for (int n = 0; n < ac3::kSamplesPerFrame; ++n) {
+        bed[0][static_cast<std::size_t>(n)] = static_cast<float>(
+            0.3 * std::sin(2.0 * std::numbers::pi * 440.0 * static_cast<double>(n) / 48000.0));
+    }
+
+    ac3::joc::ReconstructionState state;
+    std::vector<std::vector<float>> out;
+    for (int frame = 0; frame < 3; ++frame) {
+        out = ac3::joc::reconstruct(bed, params, state);
+    }
+    REQUIRE(out.size() == 1);
+
+    constexpr int kDelay = 256;
+    double signal = 0.0;
+    double error = 0.0;
+    for (int n = kDelay; n < ac3::kSamplesPerFrame; ++n) {
+        const double s = static_cast<double>(bed[0][static_cast<std::size_t>(n - kDelay)]);
+        const double r = static_cast<double>(out[0][static_cast<std::size_t>(n)]);
+        signal += s * s;
+        error += (s - r) * (s - r);
+    }
+    CHECK(10.0 * std::log10(signal / std::max(error, 1e-30)) > 100.0);
+}
+
+TEST_CASE("JOC parse_payload decodes back to the matrix it was given", "[oba][joc]") {
+    for (const bool fine : {false, true}) {
+        CAPTURE(fine);
+        ac3::joc::FrameParameters params{
+            .objects = 4, .num_bands_idx = 4, .fine_quant = fine, .seq_count = 7};
+        params.matrix.resize(params.coefficient_count());
+        for (int object = 0; object < params.objects; ++object) {
+            for (int channel = 0; channel < params.channels; ++channel) {
+                for (int band = 0; band < params.bands(); ++band) {
+                    params.at(object, channel, band) =
+                        (object == channel ? 1.0 : -0.3) + 0.1 * band - 0.05 * channel;
+                }
+            }
+        }
+
+        const auto payload = ac3::joc::build_payload(params);
+        const auto decoded = ac3::joc::parse_payload(payload);
+        REQUIRE(decoded.has_value());
+        CHECK(decoded->objects == params.objects);
+        CHECK(decoded->channels == params.channels);
+        CHECK(decoded->num_bands_idx == params.num_bands_idx);
+        CHECK(decoded->fine_quant == params.fine_quant);
+        CHECK(decoded->seq_count == params.seq_count);
+        REQUIRE(decoded->matrix.size() == params.matrix.size());
+        for (int object = 0; object < params.objects; ++object) {
+            for (int channel = 0; channel < params.channels; ++channel) {
+                for (int band = 0; band < params.bands(); ++band) {
+                    CAPTURE(object, channel, band);
+                    CHECK_THAT(decoded->at(object, channel, band),
+                              Catch::Matchers::WithinAbs(params.at(object, channel, band),
+                                                          fine ? 0.051 : 0.101));
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("JOC parse_payload covers every band count and the object-count boundary", "[oba][joc]") {
+    for (const int num_bands_idx : {0, 1, 2, 3, 4, 5, 6, 7}) {
+        CAPTURE(num_bands_idx);
+        for (const int objects : {1, ac3::joc::kMaxObjects}) {
+            CAPTURE(objects);
+            ac3::joc::FrameParameters params{.objects = objects, .num_bands_idx = num_bands_idx};
+            params.matrix.assign(params.coefficient_count(), 0.0);
+            for (int object = 0; object < objects; ++object) {
+                for (int channel = 0; channel < params.channels; ++channel) {
+                    for (int band = 0; band < params.bands(); ++band) {
+                        params.at(object, channel, band) = 0.2 * static_cast<double>(band + 1);
+                    }
+                }
+            }
+            const auto payload = ac3::joc::build_payload(params);
+            const auto decoded = ac3::joc::parse_payload(payload);
+            REQUIRE(decoded.has_value());
+            CHECK(decoded->objects == objects);
+            CHECK(decoded->bands() == params.bands());
+        }
+    }
+}
+
+TEST_CASE("JOC parse_payload rejects what it cannot cleanly interpret", "[oba][joc]") {
+    ac3::joc::FrameParameters params{.objects = 2, .num_bands_idx = 3};
+    params.matrix.assign(params.coefficient_count(), 0.5);
+    const auto payload = ac3::joc::build_payload(params);
+    REQUIRE(ac3::joc::parse_payload(payload).has_value());
+
+    SECTION("truncated payload") {
+        for (const std::size_t cut : {std::size_t{1}, payload.size() / 2, payload.size() - 1}) {
+            CAPTURE(cut);
+            const std::vector<std::byte> truncated(payload.begin(),
+                                                   payload.begin() + static_cast<std::ptrdiff_t>(cut));
+            CHECK_FALSE(ac3::joc::parse_payload(truncated).has_value());
+        }
+    }
+
+    SECTION("a non-5.X downmix config") {
+        // joc_dmx_config_idx occupies the payload's top 3 bits; forcing them
+        // to a nonzero value is the cheapest way to name a 7.X config this
+        // parser does not implement.
+        auto corrupt = payload;
+        corrupt[0] |= std::byte{0b001'00000};
+        CHECK_FALSE(ac3::joc::parse_payload(corrupt).has_value());
+    }
+
+    SECTION("an empty payload") {
+        CHECK_FALSE(ac3::joc::parse_payload({}).has_value());
+    }
 }
 
 TEST_CASE("JOC codes an unchanged band in a single bit", "[oba][joc]") {
