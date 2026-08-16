@@ -71,7 +71,7 @@ AC-3/E-AC-3 bitstream and verifies its loudness metadata against measurement.
 
 ## E. Platforms and hardware
 
-- [ ] **E1 (L)** — macOS CoreAudio backend. Every live-audio command is currently a stub on
+- [x] **E1 (L)** — macOS CoreAudio backend. Every live-audio command is currently a stub on
   macOS; the build and gold-reference gates pass, but there is no capture, playback, or
   passthrough.
 - [ ] **E2 (M)** — PipeWire backend, named in `docs/building.md` as the natural second Linux

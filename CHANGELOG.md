@@ -151,6 +151,29 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   `clang-tools` toolchain dependency (`clang-scan-deps`) that broke every `find_package` check
   under Clang's Ninja module scan.
 
+### macOS — real CoreAudio audio backend (roadmap E1)
+
+- **`src/audio/src/platform/macos/`**: live capture, IEC 61937 bitstream passthrough and
+  shared-mode monitor playback are now real on macOS, replacing the no-backend stub `if(APPLE)`
+  fell back to. Built on the Audio HAL (`AudioObjectID`/`AudioDeviceIOProc`) rather than
+  `AVAudioEngine`, the same layer WASAPI and ALSA occupy on their own platforms, for the same
+  reason ALSA rather than PulseAudio/PipeWire is the Linux backend: passthrough's exclusive-mode
+  format switch has to happen at that layer, so device enumeration, hog mode and format
+  negotiation live in one place (`coreaudio_support.hpp`) all three capabilities share. Capture
+  reads any HAL input endpoint; monitor plays ordinary float PCM back through a HAL output
+  endpoint, retuning the device's nominal sample rate when it doesn't already match (no engine-
+  level resampler exists at this layer the way WASAPI shared mode has one); passthrough takes hog
+  mode on a digital (HDMI/optical) output and retunes its *physical* stream format to
+  `kAudioFormat60958AC3` (AC-3) or `kAudioFormatEnhancedAC3` (E-AC-3, probed the same way though
+  the constant has no comparable IEC 60958-wrapped documentation history — see the file's own
+  header) before feeding it raw bursts, confirmed against three independent real-world
+  implementations of the same mechanism (MythTV, mpv, VLC) while researching it. No loopback
+  capture: unlike WASAPI's any-render-endpoint-in-loopback-mode, the HAL has no equivalent short
+  of Apple's Objective-C-only, permission-gated Core Audio Process Tap API (macOS 14.4+), so this
+  is the same honest gap ALSA already documents for a machine without `snd-aloop`. Linked via
+  `-framework CoreAudio -framework CoreFoundation`; `AC3FORGE_AUDIO_BACKEND` reports `macos`.
+  Verified via the `macos-llvm` CI leg only — no Mac is available to this project locally.
+
 ## [0.5.0-beta.1] - 2026-08-15
 
 Fourth tagged release. The main change is a fast-transform performance initiative: an opt-in

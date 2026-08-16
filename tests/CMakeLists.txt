@@ -136,6 +136,13 @@ elseif(AC3FORGE_AUDIO_BACKEND STREQUAL "android")
     # reach here.
     target_sources(ac3tests PRIVATE platform/android/test_android_support.cpp)
     target_include_directories(ac3tests PRIVATE "${AC3FORGE_AUDIO_BACKEND_DIR}")
+elseif(AC3FORGE_AUDIO_BACKEND STREQUAL "macos")
+    # Unlike alsa/android above, this branch DOES run on desktop-hosted
+    # ac3tests for real: src/audio/CMakeLists.txt selects macos/
+    # unconditionally under APPLE, so every macOS CI leg's ac3tests build
+    # compiles and runs this file.
+    target_sources(ac3tests PRIVATE platform/macos/test_macos_support.cpp)
+    target_include_directories(ac3tests PRIVATE "${AC3FORGE_AUDIO_BACKEND_DIR}")
 endif()
 
 # ---------------------------------------------------------------------------
