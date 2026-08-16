@@ -17,7 +17,9 @@
 #include "ac3/emdf/emdf.hpp"
 #include "ac3/encoder/coupling.hpp"
 #include "ac3/encoder/eac3_tools.hpp"
+#include "ac3/meta/drc.hpp"
 #include "ac3/oba/oamd.hpp"
+#include "gain.hpp"
 
 // E-AC-3 syncframe decoding, ATSC A/52:2018 Annex E Tables E1.2, E1.3 and E1.4.
 //
@@ -476,8 +478,10 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
     out.lfe = bsi->lfe;
     out.dialnorm = bsi->dialnorm;
     out.compr = bsi->compr;
+    out.dynrng.fill(meta::kDynrngUnity);
     out.dialnorm2 = bsi->dialnorm2;
     out.compr2 = bsi->compr2;
+    out.dynrng2.fill(meta::kDynrngUnity);
     out.numblkscod = bsi->numblkscod;
     out.chanmap = bsi->chanmap;
     out.last_dependent = bsi->strmtyp == StreamType::kDependent && bsi->compre;
@@ -500,6 +504,11 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
     std::array<int, kMaxSubstreamStreams> fsnroffst{};
     int csnroffst = 0;
     std::array<bool, 4> rematflg{};
+    // §7.7.1.2: an absent word inherits from the previous BLOCK, and block 0
+    // without one is unity - same persistence rule as the legacy AC-3
+    // decoder's own dynrng_word/dynrng2_word (decoder.cpp).
+    std::uint8_t dynrng_word = meta::kDynrngUnity;
+    std::uint8_t dynrng2_word = meta::kDynrngUnity;
     // §7.2.2.6, reset to "no segments" at the start of every syncframe like
     // fsnroffst/codes above, then persisting block to block until
     // re-transmitted or cleared. Only the per-fbw-channel deltbae[ch] exists
@@ -670,11 +679,15 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
                 dithflag[static_cast<std::size_t>(ch)] = true;
             }
         }
-        if (r.read(1) != 0) {
-            r.skip(8);  // dynrng: parsed, not applied
+        if (r.read(1) != 0) {  // dynrnge
+            dynrng_word = static_cast<std::uint8_t>(r.read(8));
         }
-        if (bsi->acmod == Acmod::kDualMono && r.read(1) != 0) {
-            r.skip(8);  // dynrng2e -> dynrng2: parsed, not applied - same as dynrng
+        out.dynrng[static_cast<std::size_t>(blk)] = dynrng_word;
+        if (bsi->acmod == Acmod::kDualMono) {
+            if (r.read(1) != 0) {  // dynrng2e
+                dynrng2_word = static_cast<std::uint8_t>(r.read(8));
+            }
+            out.dynrng2[static_cast<std::size_t>(blk)] = dynrng2_word;
         }
 
         // --- spectral extension strategy + geometry (§E2.3.3, §3.6) ---
@@ -1684,6 +1697,33 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
             }
         }
 
+        // §7.7 gain, applied to the COEFFICIENTS rather than to the output
+        // samples - same reasoning and the same block_gain helper as the
+        // legacy AC-3 decoder (decoder.cpp): the overlap-add window then
+        // cross-fades one block's gain into the next, which is what keeps a
+        // per-block gain change from clicking. Applied to every coded
+        // channel including the LFE; the coupling channel is skipped
+        // because it is never one of the nchans real channels here (standard
+        // decoupling and, for enhanced coupling, the reconstruction above
+        // have already spread it into the channels above). Dual mono's two
+        // channels are independent programmes, so Ch2 gets its own gain
+        // from its own words (out.dynrng2/out.compr2) rather than sharing
+        // Ch1's.
+        for (int ch = 0; ch < nchans; ++ch) {
+            const bool second_programme = bsi->acmod == Acmod::kDualMono && ch == 1;
+            const double drc =
+                second_programme
+                    ? internal::block_gain(config_, out.dynrng2[static_cast<std::size_t>(blk)],
+                                           out.compr2)
+                    : internal::block_gain(config_, out.dynrng[static_cast<std::size_t>(blk)],
+                                           out.compr);
+            if (drc != 1.0) {
+                for (auto& value : coeffs[static_cast<std::size_t>(ch)]) {
+                    value *= drc;
+                }
+            }
+        }
+
         for (int ch = 0; ch < nchans; ++ch) {
             const auto index = static_cast<std::size_t>(ch);
             auto& x = imdct_scratch_;
@@ -1858,6 +1898,8 @@ std::expected<std::optional<DecodedAccessUnit>, DecodeError> Eac3Decoder::decode
     out.acmod = lead.acmod;
     out.dialnorm = lead.dialnorm;
     out.compr = lead.compr;
+    out.dynrng = lead.dynrng;
+    out.numblkscod = lead.numblkscod;
     out.object_metadata = lead.object_metadata;
     out.substream_count = static_cast<int>(substreams.size());
 
