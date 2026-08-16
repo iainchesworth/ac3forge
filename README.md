@@ -33,25 +33,28 @@ affiliated with, endorsed by, or certified by Dolby Laboratories. Code and docum
 the technical names AC-3 and E-AC-3. Whether the patents reading on these formats matter for
 your use is your problem to assess, not something this project resolves.
 
-**Status.** The API is not stable — no release has been tagged yet, so the Latest release badge
-above reads empty; once one lands, that badge is the current version, not this paragraph. CI
-requires Windows (MSVC, clang-cl), Linux (GCC, Clang) and macOS (Homebrew LLVM) — CLI and GUI
-alike on the first four, CLI only on macOS — plus an ASan+UBSan leg, clang-tidy static analysis,
-a coverage gate over the library, a per-platform gold-reference quality gate, a dedicated
-Linux FFmpeg-validation leg, and a required Android build leg for the Shield TV demo app under
-`platform/android/`. See [docs/building.md](docs/building.md#verified-configuration) for
-exact toolchain versions and what each CI leg covers.
+**Status.** The API is not stable — releases so far are 0.x betas; the Latest release badge
+above shows the current one, and [CHANGELOG.md](CHANGELOG.md) records what each contains. CI
+requires Windows (MSVC, clang-cl), Linux (GCC and Clang, x64 and arm64) and macOS (Homebrew
+LLVM) — CLI and GUI alike everywhere except macOS, which builds the CLI only — plus an
+ASan+UBSan leg, clang-tidy static analysis, a coverage gate over the library, a per-platform
+gold-reference quality gate, dedicated Linux FFmpeg- and ADM-validation legs, and a required
+Android build leg for the Shield TV demo app under `platform/android/`. See
+[docs/building.md](docs/building.md#verified-configuration) for exact toolchain versions and
+what each CI leg covers.
 
 ## What it does
 
 Encodes AC-3 (bsid 8) across every coding mode the standard defines, and E-AC-3 (bsid 16) across
-those plus 7.1, 5.1.2, 5.1.4 and 7.1.4 through dependent substreams, spectral extension, the
-adaptive hybrid transform, and Dolby Atmos objects via JOC. The in-repo decoder shares the
-encoder's core and reads both formats back, including every Annex E coding tool at every layout.
-Also included: standalone MKV and MP4 muxers (the latter with a spec-correct `dec3`/`dac3` box,
-Dolby Atmos signalling included), fragmented MP4/CMAF segmenting with HLS/DASH signaling helpers,
-S/PDIF (IEC 61937) burst packing, WASAPI/ALSA live
-capture and playback, peak/RMS/loudness metering, and **Shield Atmos Demo** — a small
+those plus 7.1, 5.1.2, 5.1.4 and 7.1.4 through dependent substreams, spectral extension,
+enhanced coupling, the adaptive hybrid transform, transient pre-noise processing, and Dolby
+Atmos objects via JOC. The in-repo decoder shares the encoder's core and reads both formats
+back, including every Annex E coding tool at every layout. Also included: standalone MKV, MP4
+and MPEG-TS muxers (MP4 with a spec-correct `dec3`/`dac3` box, Dolby Atmos signalling included),
+fragmented MP4/CMAF segmenting with HLS/DASH signaling helpers, a BW64/RF64 + Audio Definition
+Model reader, S/PDIF (IEC 61937) burst packing, WASAPI/ALSA/CoreAudio live capture and playback,
+peak/RMS/loudness metering, bitstream loudness QC against named delivery specs (`ac3cli qc`),
+EMDF object signing with an operator-supplied key, and **Shield Atmos Demo** — a small
 Android TV app (`platform/android/`) that streams live, controller-driven Atmos object motion
 out an NVIDIA Shield's HDMI passthrough to a real AV receiver, sideload-only. See
 [docs/platforms/android.md](docs/platforms/android.md).
@@ -61,18 +64,16 @@ citations — are in [What it does](docs/index.md#what-it-does).
 
 ## What it does not do
 
-Enhanced coupling (`cpl+ecpl`) and transient pre-noise processing (`tpn`) are both implemented,
-including enhanced coupling's real angle/chaos coordinate fit (not just amplitude). One API
-characteristic worth knowing before enabling `tpn`: `Eac3Decoder::decode_substream` buffers one
-frame at a time once a stream turns it on, so a caller must call `Eac3Decoder::flush()` at
-end-of-stream or lose the last held-back frame. That buffering is per substream, not per
-stream — `decode_access_unit` assembles a whole access unit correctly even when only some of its
-substreams turn the tool on, queuing whichever ones release early rather than dropping or
-misaligning them, and `flush()` drains both its own assembly cache and each substream's held-back
-frame. AC-3 has no VBR — its frame size indexes a fixed table rather than stating a word count, so
-it stays CBR; E-AC-3 supports both. Object streams from here are spec-correct but won't decode as
-*objects* in Dolby's own decoder: it gates that on an authenticity tag this project doesn't
-produce, which is a licensing gate, not a conformance failure.
+Object streams from here are spec-correct but won't decode as *objects* in Dolby's own decoder:
+that decoder gates object decoding on a keyed authenticity tag, and this project ships no key.
+An operator who has one can sign with it — see
+[docs/library/signing.md](docs/library/signing.md) — and without one the stream plays as its
+5.1 bed. That is a licensing gate, not a conformance failure. AC-3 has no VBR — its frame size
+indexes a fixed table rather than stating a word count, so it stays CBR; E-AC-3 supports both.
+Enhanced coupling and transient pre-noise processing have no external decode oracle at all, so
+they are scored through the in-repo decoder rather than FFmpeg. No Linux or macOS audio output
+has been confirmed against real hardware, and no listening test has been run anywhere — the
+quality numbers below are waveform metrics.
 
 What that means for object reconstruction, which streams FFmpeg can check independently versus
 which only the in-repo decoder can, and what has and hasn't been confirmed against real audio
@@ -81,8 +82,8 @@ hardware, is in [Validation](docs/verification.md).
 ## Building
 
 Requires CMake ≥ 3.28, Ninja, a [vcpkg](https://github.com/microsoft/vcpkg) checkout with
-`VCPKG_ROOT` set (it supplies Catch2, and nothing else), and — for the GUI — a prebuilt Qt 6.5+
-kit, never from vcpkg. Windows needs Visual Studio 2026 (MSVC) or clang-cl; Linux needs GCC ≥ 15
+`VCPKG_ROOT` set (it supplies Catch2 — plus Boost and Tracy only for the opt-in `adm` and
+`profiling` features), and — for the GUI — a prebuilt Qt 6.5+ kit, never from vcpkg. Windows needs Visual Studio 2026 (MSVC) or clang-cl; Linux needs GCC ≥ 15
 or Clang ≥ 21.
 
 ```bash
@@ -105,7 +106,8 @@ ac3cli encode in.wav out.ac3 448 couple
 ac3cli decode out.ec3 out.wav
 ```
 
-`ac3cli` has twenty-five commands; run it with no arguments for the full listing.
+`ac3cli`'s commands cover encoding, decoding, muxing, inspection, QC and live capture; run it
+with no arguments for the full listing.
 `ac3gui` is a Qt Quick front end over the same library: file and live-capture encoding, a plan
 view for placing objects, and channel-level metering. For the C++ API — two headers and about a
 dozen lines to encode a frame — see [Quick start](docs/quickstart.md) or
@@ -139,6 +141,10 @@ cmake/          toolchains, Qt/CPack/sanitizer/coverage modules, vcpkg triplet o
 src/lib/        ac3::forge — the whole codec, GUI-free
 src/matroska/   matroska::matroska — a standalone MKV muxer, no ac3::forge dependency
 src/mp4/        mp4::mp4 — a standalone MP4/ISOBMFF muxer plus fMP4/CMAF + HLS/DASH, no ac3::forge dependency
+src/mpegts/     mpegts::mpegts — a standalone MPEG-2 Transport Stream muxer, no ac3::forge dependency
+src/ac3adm/     ac3adm::ac3adm — BW64/RF64 + Audio Definition Model reader (opt-in, needs Boost)
+src/audio/      the platform audio backends — WASAPI, ALSA, CoreAudio, Android, null fallback
+src/signing/    ac3::signing — EMDF object signing, key supplied at runtime
 src/cli/        ac3cli — command-line front end
 src/gui/        ac3gui — Qt Quick front end (QML module "Ac3Forge")
 platform/android/  Shield Atmos Demo — Android TV app, live Atmos object motion over HDMI
@@ -148,6 +154,8 @@ fuzz/           libFuzzer harnesses over untrusted-input entry points (Clang onl
                 default) — see fuzz/README.md
 tools/          Python: spec-table generators, independent reference
                 implementations, the FFmpeg quality race
+scripts/        CI helpers: the gold-reference gate, trend appenders, the codec matrix
+packaging/      the staged (unpublished) vcpkg port
 docs/           the site source — see Documentation below
 ```
 
@@ -164,16 +172,17 @@ generators in `tools/`.
 |---|---|
 | [docs/quickstart.md](docs/quickstart.md) | Developer quick start: clone to first encode |
 | [docs/building.md](docs/building.md) | Building from a clean clone, including the failures you will hit |
-| [docs/platforms/](docs/platforms/windows.md) | Windows / Linux / macOS specifics: toolchains, audio backends, packaging |
+| [docs/platforms/](docs/platforms/windows.md) | Windows / Linux / Raspberry Pi / macOS specifics: toolchains, audio backends, packaging |
 | [docs/platforms/android.md](docs/platforms/android.md) | Shield Atmos Demo: the Android TV app, HDMI passthrough, controller input, screenshots |
 | [docs/concepts/](docs/concepts/index.md) | Beginner's guide to AC-3, E-AC-3, Atmos and JOC, with diagrams |
 | [docs/library/](docs/library/index.md) | The public API, with compiled examples |
-| [docs/cli/](docs/cli/index.md) | The `ac3cli` reference: all 25 commands, metadata options |
+| [docs/library/examples.md](docs/library/examples.md) | Index of the example programs the library pages excerpt |
+| [docs/cli/](docs/cli/index.md) | The `ac3cli` reference: every command, the option grammars |
 | [docs/gui/](docs/gui/index.md) | Step-by-step `ac3gui` guide, with screenshots |
 | [docs/verification.md](docs/verification.md) | How output is checked, and where checking runs out |
 | [docs/project/history.md](docs/project/history.md) | How the implementation was built, milestone by milestone |
 | [ROADMAP.md](ROADMAP.md) | Candidate ideas, checked off as they land |
-| [docs/quality-trend.md](docs/quality-trend.md) | Gold-reference SNR history by commit, develop vs. main - the FFmpeg-oracle gate's numbers, trended over time |
+| [docs/quality-trend.md](docs/quality-trend.md) | Gold-reference SNR history by commit — with [performance](docs/performance-trend.md) and [tool-comparison](docs/tool-comparison-trend.md) siblings |
 | [docs/releasing.md](docs/releasing.md) | Cutting a release: versioning, the tag-triggered workflow, GPG signing |
 | [fuzz/README.md](fuzz/README.md) | The libFuzzer harnesses: what they cover, how to run them locally |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Conventions, and the validation discipline |

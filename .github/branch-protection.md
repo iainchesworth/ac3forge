@@ -1,5 +1,7 @@
 # Branch protection for `main` and `develop`
 
+*Maintainer notes — repo administration; not published on the docs site.*
+
 GitHub branch/repo security settings can't be expressed as a workflow file -
 they're applied in **Settings → Branches** (or **Settings → Rules → Rulesets**)
 by someone with admin rights on the repo. Configure a protection rule (or
@@ -12,9 +14,8 @@ ruleset) for `main` with:
   to be up to date" too), selecting:
   - `Branch Name` (from `ci.yml`)
   - `No Quarantine On Main` (from `ci.yml`)
-  - `CI Status` (from `ci.yml` - aggregates the build/test matrix, clang-tidy
-    and the platform-macros check; add or rename a matrix leg without ever
-    touching this rule)
+  - `CI Status` (from `ci.yml` - aggregates every required CI job; add or
+    rename a matrix leg without ever touching this rule)
   - `Analyze (C++)` (from `codeql.yml`)
   - `Scan dependency diff` (from `dependency-review.yml`) - fails on a
     moderate-or-worse known vulnerability newly introduced by the PR
@@ -45,7 +46,10 @@ job enforces the naming convention as a required status check either way.
 `osv-scanner.yml`, `zizmor.yml` and `scorecard.yml` upload SARIF to
 **Security → Code scanning** but don't fail PR checks - triage their alerts
 there rather than via a required status check (see each workflow's header
-comment for why). `scorecard.yml`'s branch-protection sub-check scores more
+comment for why). `msvc-analysis.yml` (MSVC Code Analysis, `/analyze`) is
+the same shape and runs on PRs to `main`/`develop` too (docs-only changes
+skipped): its findings land in code scanning for triage, not in a required
+status check. `scorecard.yml`'s branch-protection sub-check scores more
 completely with a fine-grained PAT (read-only, "Administration: read") added
 as a repo secret named `SCORECARD_READ_TOKEN`; without it, that one
 sub-check just degrades gracefully instead of failing.

@@ -7,10 +7,10 @@ Every command here has been run on the configuration described under
 
 | | Version | Notes |
 |---|---|---|
-| A compiler | MSVC (VS 2026), clang-cl 21, GCC 15, or Clang 21 | C++23. `std::expected`, `std::print` and deducing-`this` are all used. One [preset](#presets) per compiler; all seven platform/compiler legs are required, green CI (GCC 15 covers two of them — `linux-gcc` and `linux-gcc-arm64`; Clang 21 covers three — `linux-llvm`, `linux-llvm-arm64` and `macos-llvm` — each as a separate leg) — see [Verified configuration](#verified-configuration). |
+| A compiler | MSVC (VS 2026), clang-cl 21, GCC 15, or Clang 21 | C++23. `std::expected`, `std::print` and deducing-`this` are all used. One [preset](#presets) per compiler; all seven platform/compiler legs are required, green CI (GCC 15 covers two of them — `linux-gcc` and `linux-gcc-arm64`; Clang 21 covers three — `linux-llvm`, `linux-llvm-arm64` and `macos-llvm`, each as a separate leg, though `macos-llvm` deliberately tracks Homebrew's unpinned `llvm` formula, currently also 21, rather than an exact pin) — see [Verified configuration](#verified-configuration). |
 | CMake | ≥ 3.28 | `cmake_minimum_required(VERSION 3.28...4.3)`. |
 | Ninja | any recent | The presets hard-code the Ninja generator. |
-| vcpkg | any recent | Supplies Catch2 (needed only when tests are on) and, only with `-DVCPKG_MANIFEST_FEATURES=adm`, the Boost header libraries `AC3FORGE_BUILD_ADM=ON` needs — see `AC3FORGE_BUILD_ADM` below. Neither is required for a default build. |
+| vcpkg | any recent | Supplies Catch2 (needed only when tests are on); with `-DVCPKG_MANIFEST_FEATURES=adm`, the Boost header libraries `AC3FORGE_BUILD_ADM=ON` needs; and with `-DVCPKG_MANIFEST_FEATURES=profiling`, the Tracy profiler `AC3FORGE_ENABLE_TRACY=ON` needs — see [Options](#options). None of the three is required for a default build. |
 | Qt | 6.5+ prebuilt | GUI only. **Never from vcpkg** — see [Qt](#qt). |
 | ALSA (`libasound2-dev`) | any recent | Linux only, optional. Live capture/monitor/passthrough — see [Linux audio](#linux-audio). |
 | Python 3 + numpy | 3.11+ | Only for `tools/`; not part of the build. |
@@ -70,10 +70,13 @@ with C++" workload if you hit that.
 hidden fragments composed together, not a flat list:
 
 - `core` — the Ninja generator, the vcpkg toolchain file from `$env{VCPKG_ROOT}`,
-  `CMAKE_EXPORT_COMPILE_COMMANDS`, and the vcpkg overlay triplets under `cmake/vcpkg/triplets/`.
+  `AC3FORGE_BUILD_CLI`/`AC3FORGE_BUILD_TESTS` pinned `ON`, and the vcpkg overlay triplets under
+  `cmake/vcpkg/triplets/`. (`CMAKE_EXPORT_COMPILE_COMMANDS` comes from the top-level
+  `CMakeLists.txt` itself, not the presets.)
 - `debug` / `release` — just `CMAKE_BUILD_TYPE`.
-- `windows-msvc`, `windows-llvm`, `linux-gcc`, `linux-llvm`, `macos-llvm` — one per
-  platform/compiler pair. Each sets `VCPKG_TARGET_TRIPLET`, chainloads that platform's toolchain
+- `windows-msvc`, `windows-llvm`, `linux-gcc`, `linux-llvm`, `linux-gcc-arm64`,
+  `linux-llvm-arm64`, `macos-llvm` — one per platform/compiler pair. Each sets
+  `VCPKG_TARGET_TRIPLET`, chainloads that platform's toolchain
   file (see [above](#the-compiler-is-pinned-not-path-found)) via `VCPKG_CHAINLOAD_TOOLCHAIN_FILE`,
   and is gated by a `condition` on `hostSystemName` so only the presets for the machine you're on
   even appear. `AC3FORGE_BUILD_GUI` is `ON` for the two Windows ones and `OFF` for the rest — see
@@ -95,7 +98,7 @@ each with a matching `build-<platform>[-debug]` and `test-<platform>[-debug]` pr
 The two `-arm64` rows are the same `linux.gcc.toolchain.cmake`/`linux.llvm.toolchain.cmake` files as
 their x64 counterparts — only the vcpkg triplet (`arm64-linux-gcc`/`arm64-linux-llvm`) differs; the
 toolchain files already resolve aarch64 vs x86_64 from `VCPKG_TARGET_ARCHITECTURE`. See
-[Raspberry Pi](platforms/raspberry-pi.md), the flagship hardware this target is validated against.
+[Raspberry Pi](platforms/raspberry-pi.md), the primary hardware this target is validated against.
 
 There is a fifteenth configure/build/test trio, Debug-only and not part of the table above
 because it isn't a platform/compiler pair but an instrumented variant of `linux-llvm`:
@@ -112,7 +115,7 @@ There is a sixteenth trio, `config-linux-gcc-coverage` / `build-linux-gcc-covera
 `linux-gcc`, Debug-only, not a platform/compiler pair. It inherits a `coverage` fragment setting
 `AC3FORGE_ENABLE_COVERAGE=ON` (see `cmake/Coverage.cmake`, GCC/Clang's `--coverage` gcov
 instrumentation; other compilers just warn and skip it) plus `AC3FORGE_BUILD_CLI=OFF` and
-`AC3FORGE_BUILD_EXAMPLES=OFF` — `ac3cli` and the seven `examples/` executables also link the
+`AC3FORGE_BUILD_EXAMPLES=OFF` — `ac3cli` and the twenty `examples/` executables also link the
 now-instrumented `ac3::forge`, and turning them off avoids having to wire `ac3::coverage` into
 them too just to resolve its gcov runtime symbols at link time for targets nobody is measuring
 coverage of anyway. `.github/workflows/ci.yml`'s `coverage` job runs `gcovr` over `src/lib/*`
@@ -156,8 +159,9 @@ is a hidden `local` preset carrying the paths, inherited alongside the checked-i
 ```
 
 `debug` alone has no generator or binary directory — those live on the hidden `core` preset,
-and the compiler selection on a platform preset (`windows-msvc` here; `linux-gcc`, `linux-llvm`
-and `macos-llvm` are the others — see `CMakePresets.json`). Missing either from `dev`'s
+and the compiler selection on a platform preset (`windows-msvc` here; `windows-llvm`,
+`linux-gcc`, `linux-llvm`, `linux-gcc-arm64`, `linux-llvm-arm64` and `macos-llvm` are the
+others — see `CMakePresets.json`). Missing either from `dev`'s
 `inherits` list still configures, but silently: CMake
 falls back to its platform default generator (Visual Studio, on this machine) and an in-source
 binary directory instead of `build/dev`, which is a mess to notice and worse to undo. Inherit
@@ -176,10 +180,14 @@ platform/compiler fragment matches your machine.
 | `AC3FORGE_BUILD_TESTS` | `ON` | Build the Catch2 suite. Requires Catch2. |
 | `AC3FORGE_FETCH_CATCH2` | `ON` | When no local Catch2 3 is found (vcpkg, a distro package, an explicit `CMAKE_PREFIX_PATH`), fetch and build v3.15.3 from source via `FetchContent` instead of failing. Turn off to insist on a package-manager copy — see `tests/CMakeLists.txt`. Irrelevant when `AC3FORGE_BUILD_TESTS` is off. |
 | `AC3FORGE_BUILD_EXAMPLES` | `ON` | Build `examples/`, and register them as tests. |
+| `AC3FORGE_BUILD_MATROSKA` | `ON` | Build `matroska::matroska` (`src/matroska`), the standalone Matroska container writer. `OFF` only makes sense with the CLI, GUI, tests and examples all `OFF` too — they link it unconditionally, and configure fails with a clear message otherwise (see the root `CMakeLists.txt` guard). |
+| `AC3FORGE_BUILD_MP4` | `ON` | Build `mp4::mp4` (`src/mp4`), the standalone MP4/ISOBMFF container writer. Same all-off constraint as `AC3FORGE_BUILD_MATROSKA`. |
+| `AC3FORGE_BUILD_MPEGTS` | `ON` | Build `mpegts::mpegts` (`src/mpegts`), the standalone MPEG-TS container writer. Same all-off constraint as `AC3FORGE_BUILD_MATROSKA`. |
 | `AC3FORGE_BUILD_ADM` | `OFF` | Build `ac3adm::ac3adm` (`src/ac3adm`), the standalone BW64/RF64 + ADM parser — see [ADM / BW64 reading](library/adm.md). Off by default, unlike every other library component: it vendors libbw64/libadm via `FetchContent`, and libadm needs several Boost header libraries, resolved separately via `-DVCPKG_MANIFEST_FEATURES=adm` (`vcpkg.json`'s `adm` feature) — turning this `ON` without also selecting that feature fails with a clear configure-time message rather than a bare "Boost not found". |
 | `AC3FORGE_WITH_ALSA` | `AUTO` | Linux only. `AUTO` builds the ALSA audio backend when libasound's headers are present; `ON` requires them; `OFF` never builds it. See [Linux audio](#linux-audio). |
 | `AC3FORGE_SANITIZERS` | empty | Comma-separated `-fsanitize=` value, e.g. `address,undefined` — see `cmake/Sanitizers.cmake`. Empty is a no-op; GCC/Clang only, MSVC is a configure error. Set via the `-asan-ubsan` preset above rather than by hand. |
 | `AC3FORGE_ENABLE_COVERAGE` | `OFF` | `--coverage` gcov instrumentation over every target it's linked into — see `cmake/Coverage.cmake`. Off is a no-op; GCC/Clang only, other compilers get a configure-time warning and no instrumentation. Set via the `-coverage` preset above rather than by hand. |
+| `AC3FORGE_ENABLE_TRACY` | `OFF` | Tracy profiler instrumentation (`ac3::tracy` — see `cmake/Tracy.cmake`). Needs vcpkg's `profiling` manifest feature (`-DVCPKG_MANIFEST_FEATURES=profiling`), which supplies Tracy itself; off is a no-op. |
 | `AC3FORGE_BUILD_FUZZERS` | `OFF` | Build the libFuzzer harnesses under `fuzz/`. Clang only (GCC and MSVC ship no libFuzzer); use `fuzz/run.sh` rather than this option directly — it configures a dedicated `build/fuzz` with the right compiler. See [`fuzz/README.md`](https://github.com/iainchesworth/ac3forge/blob/main/fuzz/README.md). |
 
 Building the library and CLI alone, with neither Qt nor vcpkg involved:
@@ -313,7 +321,10 @@ in all of them. The device-independent halves of the backend — device-name con
 channel-status derivation, the negotiation, the render and capture threads, start/stop, and the
 error mapping — were additionally driven end to end against ALSA's software `null` PCM.
 
-**Not verified: any real sound hardware.** WSL2 has no sound devices and no kernel sound
+**What real hardware has and has not shown.** ALSA device enumeration has since run on real
+hardware — a Raspberry Pi 4B enumerated and correctly classified its `vc4hdmi` HDMI outputs
+(see [Raspberry Pi](platforms/raspberry-pi.md#verified-configuration)). What remains unverified
+on Linux is bitstreaming to a real receiver: WSL2 has no sound devices and no kernel sound
 modules, so nothing here has been played to an actual S/PDIF or HDMI output, and no AV receiver
 has been asked to lock onto the result. Whether a given output accepts a bitstream is
 per-device anyway — `ac3cli outputs` probes each one and says.
@@ -329,7 +340,8 @@ MacPorts prefixes, and so on — newest kit first, and then defers to Qt's own c
 Linux and macOS preset still forces `AC3FORGE_BUILD_GUI=OFF` by default — pass
 `-DAC3FORGE_BUILD_GUI=ON` explicitly on a machine that has Qt 6.5+, which is verified to work on
 Linux both locally (see [GUI on Linux](#gui-on-linux) above) and in CI, which installs a Qt6 kit
-and turns the flag on for both `linux-gcc` and `linux-llvm`. macOS has never been tried. See
+and turns the flag on for the four Linux build legs (x64 and arm64, GCC and Clang). macOS has
+never been tried. See
 [Verified configuration](#verified-configuration). If your kit is somewhere else, say so explicitly and it
 wins over the search — the project's own `-DAC3FORGE_QT_ROOT=` (or the `AC3FORGE_QT_ROOT`,
 `QT_ROOT_DIR` or `QTDIR` environment variables) is the preferred way:
@@ -365,12 +377,14 @@ cpack --preset pack-windows-msvc
 
 The equivalent `pack-<platform>` preset exists for every entry in the platform matrix
 (`pack-windows-llvm`, `pack-linux-gcc`, `pack-linux-llvm`, `pack-linux-gcc-arm64`,
-`pack-linux-llvm-arm64`, `pack-macos-llvm`), though only the Windows ones have ever actually been
-run — see [Verified configuration](#verified-configuration)
-and the note in `cmake/Packaging.cmake` about Linux Qt packaging not applying yet, since
-`AC3FORGE_BUILD_GUI` still defaults off on every non-Windows preset even though Qt itself can be
-found there and CI now builds and smoke-tests it on both Linux legs — see
-[GUI on Linux](#gui-on-linux). Packages land in `packages/` at the repository root.
+`pack-linux-llvm-arm64`, `pack-macos-llvm`). A pack preset reuses whatever the matching build
+tree was configured with — on a non-Windows preset that includes the GUI only if you opted in
+(`-DAC3FORGE_BUILD_GUI=ON`, which is exactly what CI's Linux packaging legs pass — see
+[GUI on Linux](#gui-on-linux)). Beyond `windows-msvc`'s continuous per-push packaging, the
+`release_package` legs have run for real on tagged releases, and `pack-linux-gcc-arm64` has
+additionally been run by hand on a real Raspberry Pi 4B with the resulting `.deb` inspected —
+see [Raspberry Pi](platforms/raspberry-pi.md#verified-configuration). Packages land in
+`packages/` at the repository root.
 `cmake --build --preset build-windows-msvc --target pack-ac3forge` runs the same thing from
 inside an IDE's target list instead of the command line.
 
@@ -390,10 +404,20 @@ artifact (`.github/workflows/_build.yml`), so the packaging path is exercised co
 rather than only when someone remembers to run it locally.
 
 A tag-triggered release workflow (`.github/workflows/release.yml`) builds, signs, attests and
-publishes packages for every platform in the matrix (best-effort beyond windows-msvc) whenever a
-`vX.Y.Z` tag is pushed — GPG signing (optional, off until a key is provisioned), keyless
-Sigstore/OIDC build provenance, an SPDX SBOM, and a GitHub Release. See
+publishes packages for the four `release_package` legs — `windows-msvc`, `linux-gcc`,
+`linux-gcc-arm64` and `macos-llvm`, one canonical build per OS/architecture — whenever a
+`vX.Y.Z` tag is pushed; a packaging failure on any of them blocks the release like any other
+required leg. The release carries GPG signing (optional, off until a key is provisioned),
+keyless Sigstore/OIDC build provenance, an SPDX SBOM, and a GitHub Release; four beta releases
+(v0.2.0-beta.1 through v0.5.0-beta.1) have shipped through this path for real. See
 [docs/releasing.md](releasing.md) for the full process, including how to provision the GPG key.
+
+There is also a staged, unpublished vcpkg port at `packaging/vcpkg-port/ac3forge/`
+(`portfile.cmake`, `usage`, its own `vcpkg.json`), pending submission to the curated
+`microsoft/vcpkg` registry. Today it exposes one feature, `matroska` (on by default); a consumer
+uses the installed package via `find_package(ac3forge)` exactly as
+[Using ac3::forge](library/index.md) documents. The per-release submission flow is in
+[docs/releasing.md](releasing.md#vcpkg-port).
 
 ## The standards documents
 
@@ -427,8 +451,8 @@ The Windows instructions in this document were run on:
 | FFmpeg | 8.0.1 |
 | Python | 3.14.6 |
 
-Result: configure, build and `ctest` all clean, 345/345 tests passing (windows-msvc and
-windows-llvm both — see `.github/workflows/ci.yml`'s status comment).
+Result: configure, build and `ctest` all clean — the full suite passes, windows-msvc and
+windows-llvm both.
 
 The Linux instructions were run on:
 
@@ -441,20 +465,22 @@ The Linux instructions were run on:
 | ALSA | `libasound2-dev`, both present and as the no-ALSA fallback — see [Linux audio](#linux-audio) |
 | vcpkg | checkout at `/opt/vcpkg` |
 
-Result: configure, build and `ctest` all clean on both compilers, GUI and ALSA both included —
-359/359 tests: the base suite is 344 (`ac3tests` and `ac3perf`'s Catch2 cases plus the seven
-examples), `AC3FORGE_WITH_ALSA`'s `tests/platform/alsa/` adds 14, and the GUI's Qt Quick Test
-harness (`ac3gui_qml_tests`, `src/gui/tests/CMakeLists.txt`) adds a 345th — unlike every other
-GUI-related target, that one harness *does* register its own `ctest` entry, gated on both
-`AC3FORGE_BUILD_GUI` and `AC3FORGE_BUILD_TESTS`. A Linux build with neither ALSA nor the GUI gets
-the base 344/344; with the GUI on and ALSA off it matches Windows exactly at 345/345. `ac3gui --smoke`
+Result: configure, build and `ctest` all clean on both compilers, GUI and ALSA both included.
+The base suite is `ac3tests` and `ac3perf`'s Catch2 cases plus one ctest entry per example
+program; `AC3FORGE_WITH_ALSA`'s `tests/platform/alsa/` adds 14 entries, and the GUI's Qt Quick
+Test harness (`ac3gui_qmltests`, `src/gui/tests/CMakeLists.txt`) adds one more — unlike every
+other GUI-related target, that one harness *does* register its own `ctest` entry, gated on both
+`AC3FORGE_BUILD_GUI` and `AC3FORGE_BUILD_TESTS`. A Linux build with neither ALSA nor the GUI
+runs the base suite; with the GUI on and ALSA off it matches Windows exactly. `ac3gui --smoke`
 also runs clean headless (`QT_QPA_PLATFORM=offscreen`), encoding real audio and instantiating
 real QML channel meters. See [Linux audio](#linux-audio) for what the ALSA verification did,
 and did not (real hardware), prove.
 
-linux-llvm, linux-llvm-asan-ubsan, macos-llvm, static-analysis (clang-tidy), coverage (gcovr over
-`src/lib`, via `config-linux-gcc-coverage`) and ffmpeg-validate on every push — the two Linux legs
-install the same Qt6/ALSA packages and build/smoke-test the GUI too. ffmpeg-validate is a
+linux-gcc, linux-llvm, linux-gcc-arm64, linux-llvm-arm64, linux-llvm-asan-ubsan, macos-llvm,
+static-analysis (clang-tidy), coverage (gcovr over `src/lib`, via `config-linux-gcc-coverage`),
+adm-validate (the opt-in ADM module) and ffmpeg-validate all run on every push, as does
+build-android (the Shield app's debug APK) — the four Linux build legs install the same
+Qt6/ALSA packages and build/smoke-test the GUI too. ffmpeg-validate is a
 separate, CLI-only linux-llvm build that runs FFmpeg as an independent oracle against the full
 layout/tool/metadata option space (see
 [CONTRIBUTING.md's Oracles section](https://github.com/iainchesworth/ac3forge/blob/main/CONTRIBUTING.md#oracles)) — a different question from the
@@ -465,13 +491,14 @@ the Annex E tool combinations the one fixed gold-reference sample does not itsel
 leg remains experimental.
 
 The coverage job's own gate — 81.3% line / 72.0% branch measured on a real GitHub Actions run,
-80%/70% required — uses the same GCC 15 pin as the other Linux legs; see the `coverage` row in
-`ci.yml`'s own status comment.
+80%/70% required — uses the same GCC 15 pin as the other Linux legs; see the coverage job's own
+comment in `ci.yml` for the thresholds and why they sit below the measured baseline.
 
 No macOS host exists for this project, so `config-macos-llvm`/`config-macos-llvm-debug` are only
 ever exercised by CI (`macos-latest`, Apple Silicon) — never locally. That CI leg is green:
-configure, build and `ctest` all clean, 344/344 tests passing (no GUI leg on macOS yet, so no
-`ac3gui_qml_tests` entry there — see the Linux count above), using a Homebrew-installed LLVM
+configure, build and `ctest` all clean — the full suite minus the GUI harness (no GUI leg on
+macOS yet, so no `ac3gui_qmltests` entry there — see the Linux note above), using a
+Homebrew-installed LLVM
 (`cmake/toolchains/macos.llvm.toolchain.cmake` prefers it over Apple's bundled clang) rather than
 a version-pinned one — Homebrew's core `llvm` formula has no versioned sibling the way
 apt.llvm.org or the official Windows installer do, so unlike the other LLVM legs this one tracks
@@ -504,8 +531,9 @@ Pi OS, and so on).
 ## Gold-reference correctness gate
 
 `scripts/verify-gold-reference.sh` (invoked in CI on every leg except linux-llvm-asan-ubsan,
-which stays diagnostic-only) is the first real implementation of the validation pyramid
-`docs/RESEARCH.md` designed but never wired into CI: encode a fixed, checked-in 5.1 WAV
+which stays diagnostic-only) is the first real implementation of the project's original
+validation-pyramid design (now [docs/verification.md](verification.md)), which had never been
+wired into CI before this: encode a fixed, checked-in 5.1 WAV
 (`tests/golden/audio/reference_51.wav`, synthesized once by `tools/gen_gold_reference_wav.py` —
 independent of this codec's own encoder/decoder, not bootstrapped from one of our own encodes),
 strict-decode the result with FFmpeg (`-err_detect crccheck+bitstream+buffer+explode`, checked

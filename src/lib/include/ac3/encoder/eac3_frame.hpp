@@ -91,8 +91,9 @@ struct FrameConfig {
     SampleRate sample_rate = SampleRate::k48000;
     std::uint32_t bitrate_kbps = 192;
     // std::nullopt: CBR, sized from bitrate_kbps (frame_words() below). Set:
-    // VBR: bitrate_kbps still serves as the AHT/decoder fallback rate and
-    // stays whatever the caller last had it at, but is ignored for sizing.
+    // VBR: bitrate_kbps is not read on the encode path at all - the
+    // cplbegf/spxbegf frequency defaults use vbr->nominal_kbps in its place
+    // (falling back to max_kbps, then kVbrDefaultNominalKbps).
     std::optional<VbrConfig> vbr = std::nullopt;
     Acmod acmod = Acmod::k2_0;
     bool lfe = false;

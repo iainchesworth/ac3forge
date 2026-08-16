@@ -44,7 +44,7 @@ private:
 // gave no key" (hard error) apart from "no signing requested" (fine, leave the
 // stream unsigned). Anything else is an outright misconfiguration.
 enum class KeyErrorKind {
-    kAbsent,      // no --signing-key, no env var: nothing to load
+    kAbsent,      // no signing-key= path, no env var: nothing to load
     kUnreadable,  // a path was given but could not be opened/read
     kMalformed,   // reserved: contents could not be interpreted as a key
     kEmpty,       // a source resolved but held no bytes
@@ -66,7 +66,7 @@ struct KeyLoadError {
 [[nodiscard]] std::optional<SigningKey> decode_signing_key(std::span<const std::byte> content);
 
 // Resolves a key from, in order: `explicit_path` if non-empty (the CLI's
-// --signing-key), then $AC3FORGE_SIGNING_KEY_FILE (a path), then
+// signing-key= option), then $AC3FORGE_SIGNING_KEY_FILE (a path), then
 // $AC3FORGE_SIGNING_KEY (inline). File and inline contents are decoded by
 // decode_signing_key() above (base64 or raw). The env fallbacks let CI provide
 // a key without a persisted file while the file form stays the documented

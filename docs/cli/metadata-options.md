@@ -1,7 +1,12 @@
-# Metadata options
+# Options & grammars
 
-Every encoding command in [Commands](commands.md) accepts these after its positional arguments,
-in any order:
+Encoding commands in [Commands](commands.md) take these after their positional arguments, in any
+order. Not every command honors every option, though the parser accepts them anywhere: `silence`
+takes none at all; `record` and `live` honor only `fast-mdct=off`, `container=` and (`live`
+only) `capture2=`, and accept but ignore the metadata options (`drc=`, `dialnorm=`, `heavy`,
+`cmixlev=`, …); `atmos` and `atmos-path` apply only `dialnorm=<n>` and `fast-mdct=off` (plus,
+on `atmos` alone, the object-signing flags below), and `dialnorm=auto` is silently inert on
+both — of the three Atmos commands, only `atmos-encode` measures:
 
 ```text
 metadata options (any order, after the positional arguments):
@@ -24,15 +29,20 @@ metadata options (any order, after the positional arguments):
   mixmeta           E-AC-3 only: emit the mixmdate group (Table E1.2)
   lfemix=<0..31>|off      E-AC-3 LFE mix level, 10-code dB (§E2.3.1.11)
   dmixmod=ltrt|loro|none  preferred stereo downmix (Table D2.2)
+  couple            enable channel coupling - honored by 'encode' and 'sine' ('sine' can also
+                    spell it as a 'c' layout suffix); E-AC-3 coupling is the tools argument's
+                    cpl token instead
   keep-partial      encode/eac3-encode/atmos-encode: if the run fails partway, keep whatever
                     frames were already encoded (named beside the intended output as
                     <name>.partial.<ext>) instead of discarding them - off by default, matching
                     the GUI's own keep-partial-output preference
   fast-mdct=off     force the direct §8.2.3.2 forward MDCT instead of the default §7.9.4 fast
-                    path (identical streams to within ~1e-12 coefficient error; the direct form
-                    is the validation oracle) - applies wherever this command encodes, incl.
-                    atmos/record/live; eac3-encode/eac3-sine use tools=nofastmdct instead;
-                    bare fast-mdct (the old opt-in) is a no-op
+                    path (identical streams to within ~3e-12 max relative coefficient error;
+                    the direct form is the validation oracle) - applies wherever this command
+                    encodes, incl. atmos/record/live; eac3-encode spells it as the bare
+                    nofastmdct token in its [tools] argument, and eac3-sine has no [tools]
+                    argument so its fast path cannot be disabled; bare fast-mdct (the old
+                    opt-in) is a no-op
 
 qc options (qc; any order, after the positional arguments):
   preset=<name>     gate the measurement against a named delivery spec
@@ -43,7 +53,9 @@ qc options (qc; any order, after the positional arguments):
 
 For `decode`, `drc=<scale>` instead applies §7.7.1 partial compression (`0` = ignore, `1` = as
 encoded), and bare `heavy` prefers `compr` where the stream carries it — the decode-time meaning
-of these two tokens is deliberately the mirror of their encode-time meaning.
+of these two tokens is deliberately the mirror of their encode-time meaning. That applies to
+AC-3 decode only: the E-AC-3 decode path takes no options, so both tokens are silently inert on
+`.ec3` input.
 
 See [Metadata](../library/metadata.md) for what each of these fields actually is at the library
 level (`dynrng`, `compr`, `dialnorm`, downmix levels) — the CLI tokens above map directly onto
@@ -70,11 +82,13 @@ tools:  Annex E coding tools, '+'-joined — none | cpl | spx | aht | tpn |
         still parses as a no-op
 ```
 
-Example: `tools=cpl+spx:5+aht:0` turns on coupling (auto band edge), spectral extension pinned
-to band 5, and AHT with GAQ off. `tools=cpl+ecpl+tpn` turns on enhanced coupling (auto band edge)
-and transient pre-noise processing together — `ecpl` and `tpn` are independent tools, not
-alternatives to each other or to `spx`/`aht`, so any combination `parse_tools` accepts is legal
-here. `all` does not currently imply `ecpl` or `tpn`; name them explicitly to get either.
+The tool set is the fourth positional argument, not an `=` option. Example:
+`ac3cli eac3-encode in.wav out.ec3 192 cpl+spx:5+aht:0` turns on coupling (auto band edge),
+spectral extension pinned to band 5, and AHT with GAQ off; `cpl+ecpl+tpn` in the same slot turns
+on enhanced coupling (auto band edge) and transient pre-noise processing together — `ecpl` and
+`tpn` are independent tools, not alternatives to each other or to `spx`/`aht`, so any
+combination the tools argument accepts is legal here. `all` does not currently imply `ecpl` or
+`tpn`; name them explicitly to get either.
 
 ## The `vbr` token (`eac3-encode` only)
 
@@ -92,8 +106,9 @@ capped at 320 kbps whenever the content would otherwise ask for more; `bitrate_k
 still drives the coupling/spx band-edge defaults the way it always has, since VBR has no fixed
 target rate to hand them.
 
-Omit `vbr` (or pass `off`) for ordinary CBR — the default, and the only mode AC-3 (`encode`,
-`eac3-silence`, `eac3-sine`) supports at all, since `frmsizecod` has no free word count to vary.
+Omit `vbr` (or pass `off`) for ordinary CBR — the default. AC-3 (`encode`) is CBR-only because
+`frmsizecod` indexes a fixed frame-size table; `eac3-silence` and `eac3-sine` are E-AC-3
+(`frmsiz`) and are CBR-only simply because their argument lists have no `vbr` slot.
 
 ## The `layout` grammar
 
@@ -169,11 +184,17 @@ which one it means. `objm` folds the whole range into ONE mono object (equal-wei
 than one object per channel the way a plain `obj` range does. Two entries naming the same location,
 or more than one entry per dual-mono programme, is refused.
 
+The `obj`/`objm` destinations parse but currently do nothing in `ac3cli`: the routing behind
+`encode`/`eac3-encode` skips every non-location row, the CLI has no object assembly behind
+`map=`, and `atmos-encode` ignores `src=`/`map=` entirely — audio mapped onto an object
+destination is silently discarded. Object destinations need the object-capable front end, the
+GUI (see [GUI → Multi-source & assignment](../gui/source-assignment.md)).
+
 Any `<dest>` may carry an optional trailing `@<trim>` — a signed decibel gain in `[-24, 24]`,
 snapped to a tenth of a dB (`L@-3.5`, `obj@2`) — applied as linear gain wherever that channel's
 content reaches the stream: folded into the routing matrix for a bed position or a dual-mono
-programme, or into the object's plane at assembly for `obj`/`objm`. Omitted (no `@`) means no
-trim, the same as an explicit `@0`.
+programme, or, for `obj`/`objm`, into the object's plane at assembly — which only the GUI
+performs, per the note above. Omitted (no `@`) means no trim, the same as an explicit `@0`.
 
 ```bash
 ac3cli eac3-encode roundtrip-stereo.wav out.ec3 384 none 51 \
@@ -186,8 +207,9 @@ ac3cli eac3-encode roundtrip-stereo.wav out.ec3 384 none 51 \
 is explicitly silenced. `roundtrip-51.wav` (source 1) fills the rest, its right channel (`1.1`)
 trimmed 3 dB down, with its own centre channel (`1.2`) also sent nowhere so it doesn't collide
 with the first source's. `[vbr]` and `[in2.wav]` are both skippable here even though they come
-earlier in `eac3-encode`'s own positional order — the parser treats the first token containing `=`
-as the start of the trailing options, whichever positional slot would otherwise have been next.
+earlier in `eac3-encode`'s own positional order — the parser lifts option tokens (anything
+containing `=`, plus the known bare flags) out of the argument list wherever they appear, so the
+remaining positionals keep their places whether options are present or not.
 
 `offset=1:2.5` delays `roundtrip-51.wav` (source 1) by 2.5 seconds of leading silence ahead of its
 own channels — every channel that source contributes shifts together, as when it starts, not what
@@ -195,7 +217,7 @@ it contains. `offset=` applies as silence, not truncation: the programme's overa
 cover whichever source ends latest once every offset is applied, not just the longest source's own
 raw length, so a delayed source is never cut short to fit. `<sourceIndex>` uses the same numbering
 `src=` establishes (`0` is the primary positional file, `1..N` are `src=` in the order given), and
-works with a single source too — `ac3cli encode in.wav out.ac3 384 5.1 offset=0:2.5` needs no
+works with a single source too — `ac3cli encode in.wav out.ac3 384 51 offset=0:2.5` needs no
 `src=`/`map=` at all. Omitting `offset=` for a source (or giving it `0` seconds) behaves exactly as
 it always has.
 
@@ -207,12 +229,14 @@ same as the single-file case; every other target gets one whole-programme measur
 routed bed. A trim on `map=` (e.g. `L@-6`) is measured on the trimmed signal, since that is what
 actually reaches the stream.
 
-A full-bandwidth channel explicitly mapped onto `LFE`/`LFE2` (e.g. `1.3:LFE` above) is sent through
-a 120 Hz low-pass rather than passed through untouched — an explicit `map=` entry states raw
-content for that position, and a real subwoofer (and the LFE channel's own +10 dB mixing headroom)
-assumes it only ever carries deep bass. This does not apply to a source's own dedicated LFE channel
-reaching `LFE` through automatic single-source routing (no `src=`/`map=` at all) — that stays
-bit-exact, since nothing there claims full-bandwidth content belongs on that position.
+In the GUI, a full-bandwidth channel explicitly assigned onto `LFE`/`LFE2` is sent through a
+120 Hz low-pass rather than passed through untouched — an explicit assignment states raw content
+for that position, and a real subwoofer (and the LFE channel's own +10 dB mixing headroom)
+assumes it only ever carries deep bass. `ac3cli` does not filter: its `map=` routing is a pure
+gain matrix, so content mapped onto `LFE`/`LFE2` (e.g. `1.3:LFE` above) passes through
+unfiltered. Neither front end touches a source's own dedicated LFE channel reaching `LFE`
+through automatic single-source routing (no `src=`/`map=` at all) — that stays bit-exact, since
+nothing there claims full-bandwidth content belongs on that position.
 
 The GUI's own multi-source Format-tab table (**Add source…** plus a per-channel assignment field)
 is a direct front end over this same grammar — see
@@ -224,12 +248,14 @@ is a direct front end over this same grammar — see
 record/live options (record, live; any order, after the positional arguments):
   container=mkv     write straight to Matroska instead of the bare elementary
                      stream this writes by default - same shape of choice as
-                     the GUI's own Container setting
+                     the GUI's own Container setting (container=matroska is
+                     an accepted alias)
   container=raw     the default, spelled out
 ```
 
-`container=mkv` writes the take straight to Matroska (`.mkv`) instead of a bare `.ac3`/`.ec3`
-elementary stream, in the one `record`/`live` command — unlike `mkv`, which wraps an
+`container=mkv` (alias `container=matroska`) writes the take straight to Matroska (`.mkv`)
+instead of a bare `.ac3`/`.ec3` elementary stream, in the one `record`/`live` command — unlike
+`mkv`, which wraps an
 *already-encoded* file after the fact (see [Command-specific notes](#command-specific-notes)
 below), there is no second command needed here. `container=raw` is the default spelled out
 explicitly; any other value is refused rather than silently ignored, the same rule every option on
@@ -296,6 +322,28 @@ Omitting `preset=` entirely leaves `qc` in measure-and-report mode — every num
 just no PASS/FAIL verdict and nothing to gate on. See [Commands → `qc`](commands.md#decoding-inspection) for the
 full report format and the exit-code convention this drives.
 
+## Defaults
+
+Optional positional arguments, when omitted:
+
+- `silence`, `sine`, `eac3-silence`, `eac3-sine` — 5 s at 192 kbps; the tone commands default to
+  1000 Hz at 50% amplitude, and the three that take `[layout]` default to `stereo`.
+- `orbit` — 8 s at 448 kbps, 4 s per orbit.
+- `atmos` — 8 s at 448 kbps, 4 objects, 6 s per orbit.
+- `record` — 5 s at 192 kbps from device 0.
+- `live` — 10 s at 192 kbps.
+- `play`, `monitor` — device `-1`, the default output.
+
+## What the encoder accepts
+
+- WAV sample rates: AC-3 takes 32, 44.1 or 48 kHz (Table 5.6); E-AC-3 additionally takes the
+  Annex E `fscod2` half rates 16, 22.05 and 24 kHz.
+- The bit rate must be one of the 19 nominal AC-3 rates (Table 5.18), 32 through 640 kbps.
+- `record` captures the first two channels of the endpoint (stereo); a mono device is duplicated
+  across both.
+- The Atmos commands take 1 to 15 objects — the bed's LFE is the 16th, and TS 103 420 §8.3.2.2
+  caps the total at 16.
+
 ## Command-specific notes
 
 - **`mkv`** reads format, packet boundaries, sample rate and channel count from the bitstream
@@ -319,8 +367,10 @@ full report format and the exit-code convention this drives.
   validate, instead of falling back to the bed on its own. See
   [Atmos & JOC](../concepts/atmos-joc.md) for why a decoder can tell the difference at all.
 - **`sign-objects`** (with **`signing-key=<path>`**): signs the object container's EMDF protection
-  tag so a validating decoder reconstructs the objects instead of playing the bed. Off unless you
-  pass both — `sign-objects` alone with no key is an error. The key may also come from
+  tag so a validating decoder reconstructs the objects instead of playing the bed. Honored by the
+  `atmos` command only — `atmos-path` and `atmos-encode` accept both flags and silently ignore
+  them. Off unless you pass both — `sign-objects` alone with no key is an error. The key may
+  also come from
   `AC3FORGE_SIGNING_KEY_FILE` / `AC3FORGE_SIGNING_KEY` instead of `signing-key=`. The key is never
   stored by the tool; the algorithm is in-tree but the key is yours to provision. Full details in
   [Object signing](../concepts/object-signing.md).
@@ -329,10 +379,13 @@ full report format and the exit-code convention this drives.
   form, 331 dB direct-vs-fast end-to-end SNR, 0.000 dB SNR delta against an independent oracle
   at 192–448 kbps — see `tools/quality_race.py fast-mdct`). `fast-mdct=off` forces the direct
   §8.2.3.2 reference form — the validation oracle — wherever the command encodes, including the
-  `atmos*`, `record` and `live` session builders. `eac3-encode`/`eac3-sine` spell the same thing
-  `tools=nofastmdct` (the fast MDCT is not a coding tool, so `tools=none`/`all` leave it alone).
-  The bare `fast-mdct` word and `tools=fastmdct` token — the opt-in spellings from when this
-  defaulted off — still parse and now name what already happens.
+  `atmos*`, `record` and `live` session builders. `eac3-encode` spells the same thing as the bare
+  `nofastmdct` token inside its `[tools]` positional argument — the `tools=nofastmdct` spelling
+  the built-in usage text suggests does not parse, since any `=` token goes to the options
+  parser, which has no `tools` key. The fast MDCT is not a coding tool, so `none`/`all` leave it
+  alone; and `eac3-sine` has no `[tools]` argument and never reads `fast-mdct=`, so its fast
+  path cannot be disabled at all. The bare `fast-mdct` word and the `fastmdct` tool token — the
+  opt-in spellings from when this defaulted off — still parse and now name what already happens.
 - **`keep-partial`**: `encode`, `eac3-encode` and `atmos-encode` refuse a frame that cannot fit the
   configuration mid-run just as they always have, but with `keep-partial` given, whatever frames
   were already encoded before that point are written to `<name>.partial.<ext>` (`out.ec3` →

@@ -1,6 +1,6 @@
 # Commands
 
-The full, real usage text — copied verbatim from a build of `ac3cli`, not retyped:
+The command list from the usage text — copied from a build of `ac3cli`, not retyped:
 
 ```text
 ac3forge — clean-room AC-3 / E-AC-3 (ATSC A/52) encoder/decoder
@@ -26,8 +26,8 @@ Usage:
   ac3cli spdif        <in.ac3> <out.wav>                      (IEC 61937 wrap as playable PCM16 WAV)
   ac3cli mkv          <in.ac3|in.ec3> <out.mkv>               (wrap as a playable Matroska file)
   ac3cli mp4          <in.ac3|in.ec3> <out.mp4>               (wrap as a playable MP4 with a spec-correct dac3/dec3 box)
-  ac3cli ts           <in.ac3|in.ec3> <out.ts>                (wrap as an MPEG-2 Transport Stream (DVB profile))
   ac3cli fmp4         <in.ac3|in.ec3> <out_dir> [frames_per_fragment] (fragmented MP4/CMAF + HLS/DASH manifests, ready for a packager)
+  ac3cli ts           <in.ac3|in.ec3> <out.ts>                (wrap as an MPEG-2 Transport Stream (DVB profile))
   ac3cli devices                                              (input and loopback capture endpoints)
   ac3cli outputs                                              (render endpoints + AC-3/E-AC-3 passthrough support)
   ac3cli play         <in.ac3|in.ec3> [device_index]          (exclusive-mode IEC 61937 passthrough; bsid decides AC-3 vs E-AC-3)
@@ -49,19 +49,28 @@ anything first.
 | `atmos` | E-AC-3 with synthetic orbiting Atmos objects — a 5.1 bed plus JOC + OAMD side data (TS 103 420) |
 | `atmos-path` | Same, but object motion comes from an authored keyframe file instead of the built-in orbit |
 
+The keyframe file `atmos-path` reads (and `atmos-encode`'s optional `[paths.txt]`, below) is
+plain text, one keyframe per line as whitespace-separated columns
+`object_index time_s x y z gain lfe_send`; `#` starts a comment and blank lines are skipped.
+It is the same grammar the GUI's timeline exports — see
+[GUI → Objects & motion](../gui/objects-and-motion.md).
+
 ```bash
 ac3cli eac3-sine out.ec3 5 384 1000 50 714
 ```
 
-Five seconds of a 1 kHz tone at 50% amplitude, 384 kbps, one tone per speaker across all 14
-coded channels of a 7.1.4 layout.
+Five seconds at 50% amplitude, 384 kbps, one tone per coded channel — 14 of them for a 7.1.4
+layout, though only 12 reach speakers: the two bed channels the dependent substreams replace
+carry tones a full decoder never renders. (The 1000 Hz argument applies only to a one- or
+two-channel layout; anything wider gets a distinct spread of per-channel frequencies instead,
+so a misrouted channel is identifiable by ear.)
 
 ### File encoding — real audio in, a stream out
 
 | Command | What it does |
 |---|---|
-| `encode` | WAV → AC-3. Without `[layout]`, follows the source channel count (1→mono, 2→stereo, 3–6→5.1, 8→7.1, 10→5.1.4, 12→7.1.4). |
-| `eac3-encode` | WAV → E-AC-3, with the Annex E `tools:` token and an optional `vbr:` token available (see [Metadata options](metadata-options.md)) |
+| `encode` | WAV → AC-3. Without `[layout]`, follows the source channel count (1→mono, 2→stereo, 3–6→5.1); a wider source is refused, since no AC-3 coding mode is wider than 3/2 + LFE. |
+| `eac3-encode` | WAV → E-AC-3, with the Annex E `tools:` token and an optional `vbr:` token available (see [Options & grammars](metadata-options.md)). Without `[layout]`, follows the source channel count (1→mono, 2→stereo, 3–6→5.1, 8→7.1, 10→5.1.4, 12→7.1.4). |
 | `atmos-encode` | WAV → E-AC-3 Atmos, every source channel becomes its own object; optional `[paths.txt]` drives per-object motion from an authored keyframe file the same way `atmos-path` does, keyed by WAV channel index — an object it doesn't mention keeps its default (fanned-out) placement |
 
 ```bash
@@ -79,8 +88,8 @@ ac3cli encode both.wav out.ac3 192 1+1                    # Ch1/Ch2 = channels 0
 ac3cli encode narration_en.wav out.ac3 192 1+1 narration_fr.wav  # Ch1, Ch2 as separate files
 ```
 
-See [Metadata options](metadata-options.md) for `dialnorm2=` — Ch2's own dialnorm, alongside the
-usual `dialnorm=`.
+See [Options & grammars](metadata-options.md) for `dialnorm2=` — Ch2's own dialnorm, alongside
+the usual `dialnorm=`.
 
 `encode`, `eac3-encode` and `atmos-encode` all take `-` in place of `<in.wav>` or the output path
 to mean stdin or stdout, so a pipeline never has to touch a temporary file:
@@ -91,7 +100,9 @@ ac3cli encode - - 448 couple < in.wav > out.ac3
 
 The status text these commands normally print (frame count, routing, per-channel levels) goes to
 stderr instead of stdout whenever the output side is `-`, so it never ends up inside the piped
-stream.
+stream — on the single-source paths. Two cases currently still write to stdout and will corrupt
+a `-` pipe: `dialnorm=auto`'s measurement line, and the `src=`/`map=` multi-source paths'
+summary/routing/levels report.
 
 ### Decoding & inspection
 
@@ -100,7 +111,7 @@ stream.
 | `decode` | AC-3 or E-AC-3 → WAV; `bsid` in the stream decides which decoder runs |
 | `levels` | Per-channel peak/RMS report — takes a WAV or an encoded stream |
 | `loudness` | BS.1770-4 gated loudness on a WAV, reported as the `dialnorm` it implies |
-| `qc` | Bitstream-aware loudness QC (roadmap C2): decodes an already-encoded AC-3/E-AC-3 stream, measures it with the real BS.1770-4/EBU Tech 3342 meter, and compares the result against the stream's own embedded `dialnorm`/`compr` and, optionally, a named delivery-spec gate |
+| `qc` | Bitstream-aware loudness QC: decodes an already-encoded AC-3/E-AC-3 stream, measures it with the real BS.1770-4/EBU Tech 3342 meter, and compares the result against the stream's own embedded `dialnorm`/`compr` and, optionally, a named delivery-spec gate |
 
 ```bash
 ac3cli decode out.ec3 out.wav
@@ -119,21 +130,21 @@ ac3cli qc programme.ec3
 ```
 
 ```text
-qc: programme.ec3 (E-AC-3, 3/2 + LFE, 48000 Hz, 1440 access unit(s), 30.00 s)
+qc: programme.ec3 (E-AC-3, 3/2 + LFE, 48000 Hz, 938 access unit(s), 30.02 s)
 measured (BS.1770-4 gated / EBU Tech 3342 / BS.1770-4 Annex 2):
   integrated loudness    -22.87 LKFS
-  loudness range           4.31 LU
-  true peak                -1.62 dBTP
+  loudness range          4.31 LU
+  true peak               -1.62 dBTP
 embedded metadata:
-  dialnorm                24  (claims dialogue at -24.00 LKFS)
-  compr                 absent
+  dialnorm              24  (claims dialogue at -24.00 LKFS)
+  compr                absent
 dialnorm check:
   claimed                -24.00 LKFS  (from dialnorm 24)
   delta                   +1.13 dB    (measured - claimed; positive = measured is louder)
   measurement-derived dialnorm would be 23, not 24
 ```
 
-Add `preset=<name>` (or `preset=all`) to gate that same measurement against a named delivery spec instead of just reporting it — see [Metadata options](metadata-options.md#qc-options-qc-preset) for the exact preset numbers and the primary source cited for each, and this page's own exit-code note below.
+Add `preset=<name>` (or `preset=all`) to gate that same measurement against a named delivery spec instead of just reporting it — see [Options & grammars](metadata-options.md#qc-options-qc-preset) for the exact preset numbers and the primary source cited for each, and this page's own exit-code note below.
 
 `qc`'s exit code is 0 only when the file decodes cleanly **and** (if a preset was given) every requested gate passes — non-zero otherwise, which is what makes it usable as an actual CI/pipeline QC step: `ac3cli qc out.ec3 preset=ebu-r128-s2 || echo "loudness QC failed"`. With no `preset=` at all it only ever measures and reports (no verdict to fail), so a plain `ac3cli qc <file>` exits non-zero solely on a genuine decode error.
 
@@ -141,16 +152,19 @@ Add `preset=<name>` (or `preset=all`) to gate that same measurement against a na
 
 | Command | What it does |
 |---|---|
-| `spdif` | Wraps AC-3 as IEC 61937 bursts inside a playable PCM16 WAV — for feeding a receiver through an ordinary audio path |
+| `spdif` | Wraps AC-3 or E-AC-3 as IEC 61937 bursts inside a playable PCM16 WAV — `bsid` in the stream decides which, and the E-AC-3 carrier runs at four times the content sample rate. For feeding a receiver through an ordinary audio path |
 | `mkv` | Wraps AC-3 or E-AC-3 as Matroska, reading format/packet boundaries/sample rate/channel count from the bitstream itself so the container can't be told the wrong ones |
 | `mp4` | Wraps AC-3 or E-AC-3 as a single-file MP4/ISOBMFF, writing a spec-correct `dac3`/`dec3` sample-entry box (fscod/bsid/bsmod/acmod/lfeon, plus the Atmos complexity-index extension for JOC content) read straight off the bitstream |
 | `ts` | Wraps AC-3 or E-AC-3 as an MPEG-2 Transport Stream (PAT + PMT + one PES-wrapped audio PID), identified per the DVB profile — `stream_type` 0x06 plus the `AC3_descriptor`/`Enhanced_AC3_descriptor` ETSI EN 300 468 Annex D defines, not ATSC's |
-| `fmp4` | Writes fragmented MP4/CMAF — an init segment plus one media segment per fragment — alongside an HLS media+master playlist pair and a DASH MPD, all pointing at the same segments, ready for a real HLS/DASH origin or packager. Atmos content signals `CHANNELS="<N>/JOC"` in the HLS playlists automatically |
+| `fmp4` | Writes fragmented MP4/CMAF — an init segment plus one media segment per fragment — alongside an HLS media+master playlist pair and a DASH MPD, all pointing at the same segments, ready for a real HLS/DASH origin or packager. `[frames_per_fragment]` defaults to 48 access units per fragment, about 1.5 s at 48 kHz. Atmos content signals `CHANNELS="<N>/JOC"` in the HLS playlists automatically |
 
 ### Live & hardware
 
-Needs the platform's capture/passthrough backend — see [Platform notes](../platforms/windows.md)
-for what's actually confirmed against real hardware on each OS.
+Needs the platform's capture/passthrough backend — see the per-OS Platform notes pages
+([Windows](../platforms/windows.md), [Linux](../platforms/linux.md),
+[Raspberry Pi](../platforms/raspberry-pi.md), [macOS](../platforms/macos.md),
+[Android](../platforms/android.md)) for what's actually confirmed against real hardware on
+each OS.
 
 | Command | What it does |
 |---|---|
@@ -172,10 +186,11 @@ one exists.
 
 `live capture2=<index>`: the `capture_device` positional stays the session's clock master, paced
 exactly as it always has been; `capture2=` adds a second, independently-clocked device (see
-[Metadata options](metadata-options.md#live-options-live-capture2) for the full grammar) whose
+[Options & grammars](metadata-options.md#live-options-live-capture2) for the full grammar) whose
 stream is resampled to track the master, with the measured drift printed at session end.
 
 ## Next
 
-[Metadata options](metadata-options.md) — the options every encoding command in this table
-accepts after its positional arguments, plus the full `layout`, `tools:` and `vbr` grammars.
+[Options & grammars](metadata-options.md) — the options encoding commands take after their
+positional arguments (and which commands ignore which), plus the full `layout`, `tools` and
+`vbr` grammars.

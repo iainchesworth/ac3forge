@@ -5,9 +5,9 @@ regardless of which tab is active on the right.
 
 ## 01 · Input
 
-One input, with a **File / Live capture** selector at the top — there aren't separate cards for
-the two any more, because they are the same thing to the encoder: a list of sources whose
-channels get routed onto the plan.
+One input, with a **File / Live capture** selector at the top — there are no separate cards for
+the two, because they are the same thing to the encoder: a list of sources whose channels get
+routed onto the plan.
 
 ### File
 
@@ -36,7 +36,7 @@ session tab already reports on, not this reduction.
 
 **Start offset** delays a source's own channels by that many seconds of leading silence — all of
 them shift together, encoded exactly as `ac3cli`'s `offset=` token would (see
-[CLI → Metadata options](../cli/metadata-options.md)), never as a change to the audio itself. It
+[CLI → Options & grammars](../cli/metadata-options.md)), never as a change to the audio itself. It
 is the same field the Objects tab's timeline shows as a draggable clip band (see
 [Objects & motion](objects-and-motion.md#per-source-offsets-and-keyframe-timing)) — editing either
 one moves the other. The totals strip's `LENGTH` grows to cover it: once any offset is set, it
@@ -54,7 +54,7 @@ table](source-assignment.md), which the **Assign** link beside the button jumps 
 
 ### Live capture
 
-A per-device list now, mirroring the File branch just above: one row per **selected** device (not
+A per-device list, mirroring the File branch just above: one row per **selected** device (not
 every endpoint the platform reports — that full list lives in the **Add input…** picker below),
 each showing its name, `N ch · 48 000 Hz`, and a **Remove** button. Below the list, **Add input…**
 picks from a combo of every enumerated endpoint — microphones and playback-device loopbacks, the
@@ -85,10 +85,10 @@ session always has:
   [capture preference](index.md#preferences) makes it ask for a filename first instead.
 
 Setting up a *real* session — writing the take to disk, adding a receiver leg, or both, with
-either device — is not a control on this block any more. It happens on the **Live session** tab,
-whose own Card covers the take's idle and running states, the durability guarantees behind an
-incremental write, the device-drop watchdog (now per device), and the VBR note that used to sit
-here and now sits there instead — see [Live capture & session](live-session.md) for all of it.
+either device — is not a control on this block. It happens on the **Live session** tab, whose own
+Card covers the take's idle and running states, the durability guarantees behind an incremental
+write, the per-device drop watchdog, and the VBR note — see
+[Live capture & session](live-session.md) for all of it.
 
 A capture endpoint feeds the encoder the same way a file does — same format, same layout, same
 metadata — its channels are just routed onto whatever layout is selected, live, instead of read
@@ -97,7 +97,8 @@ session's bed (see the two-device page linked above for why); both devices' chan
 Atmos session's object slots.
 
 !!! note "Platform backend"
-    Live capture needs the platform's audio backend (WASAPI on Windows, ALSA on Linux). See
+    Live capture needs the platform's audio backend (WASAPI on Windows, CoreAudio on macOS, ALSA
+    on Linux). See
     [Platform notes](../platforms/windows.md) for what's actually hardware-confirmed on each OS —
     the block reports itself unavailable on a build with no backend, rather than failing to load.
 

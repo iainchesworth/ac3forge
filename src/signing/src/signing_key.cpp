@@ -144,7 +144,7 @@ std::optional<SigningKey> decode_signing_key(std::span<const std::byte> content)
 }
 
 std::expected<SigningKey, KeyLoadError> load_signing_key(std::string_view explicit_path) {
-    // 1. --signing-key <path>
+    // 1. signing-key=<path>
     if (!explicit_path.empty()) {
         auto content = read_file(explicit_path);
         if (!content) {

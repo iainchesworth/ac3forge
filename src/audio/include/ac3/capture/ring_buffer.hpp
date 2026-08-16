@@ -9,8 +9,7 @@
 
 // Lock-free single-producer / single-consumer ring buffer: one thread writes,
 // one reads, with no locks, no allocation and no system calls once
-// constructed, so an audio thread never blocks (see docs/RESEARCH.md §6 on
-// real-time discipline).
+// constructed, so an audio thread never blocks.
 //
 // Used in both directions: the WASAPI capture thread writes float samples for
 // the encoder to drain, and the encoder writes IEC 61937 burst bytes for the

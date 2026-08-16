@@ -58,7 +58,8 @@ ac3::oba::AtmosEncoder encoder{{.bitrate_kbps = 448}, kObjects};
 
 ```cpp
 // Positions are room-anchored per §4.2.1: x 0 at the left wall to 1 at
-// the right, y 0 front to 1 back, z 0 floor to 1 ceiling.
+// the right, y 0 front to 1 back, z -1 at the floor to +1 at the
+// ceiling (0 is listener height).
 std::array<ac3::oba::ObjectPlacement, kObjects> placement{};
 placement[obj] = {
     .position = {.x = 0.5 + 0.45 * std::cos(angle),
@@ -83,7 +84,7 @@ At most 16 objects (`joc::kMaxObjects`, per TS 103 420 §8.3.2.2). `encoder.bed(
 5.1 bed the last frame encoded — what a legacy decoder hears, and the thing most worth
 checking — and `encoder.parameters()` the pre-quantization reconstruction matrix.
 
-The matrix is the minimum mean-square estimate `M = P Dᵀ (P D Dᵀ + εI)⁻¹`. Because the encoder
+The matrix is the minimum mean-square estimate `M = P Dᵀ (D P Dᵀ + εI)⁻¹`. Because the encoder
 built the downmix it knows `D` exactly rather than estimating it, which makes the solve
 near-exact for well-separated objects. Two limits are structural, not bugs: objects sharing a
 direction cannot be separated by any linear combination of the bed, and Dolby's decoder will
