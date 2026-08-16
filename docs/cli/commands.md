@@ -99,11 +99,9 @@ to mean stdin or stdout, so a pipeline never has to touch a temporary file:
 ac3cli encode - - 448 couple < in.wav > out.ac3
 ```
 
-The status text these commands normally print (frame count, routing, per-channel levels) goes to
-stderr instead of stdout whenever the output side is `-`, so it never ends up inside the piped
-stream — on the single-source paths. Two cases currently still write to stdout and will corrupt
-a `-` pipe: `dialnorm=auto`'s measurement line, and the `src=`/`map=` multi-source paths'
-summary/routing/levels report.
+The status text these commands normally print (frame count, routing, per-channel levels,
+`dialnorm=auto`'s measurement line) goes to stderr instead of stdout whenever the output side is
+`-`, so it never ends up inside the piped stream — `src=`/`map=` multi-source runs included.
 
 ### ADM ingest — real professional master files (opt-in, roadmap B1)
 

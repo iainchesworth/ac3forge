@@ -510,18 +510,24 @@ bool parse_options(std::span<char*> tokens, Options& out) {
 // text, same rounding, one place either could go wrong. `programme` is the
 // println's leading label ("Ch1"/"Ch2"), empty for a whole-programme
 // measurement that is not about one dual-mono channel; `field` is the
-// bitstream field this measurement feeds ("dialnorm"/"dialnorm2").
+// bitstream field this measurement feeds ("dialnorm"/"dialnorm2"). `out`
+// defaults to stdout for callers with no "-" output stream to protect (the
+// standalone loudness command); every dialnorm=auto/dialnorm2=auto encode
+// path passes status_stream(out_path) instead, the same convention
+// print_channel_summary and print_routing use.
 std::optional<int> finish_measurement(const ac3::meta::LoudnessMeter& meter,
-                                      std::string_view programme, std::string_view field) {
+                                      std::string_view programme, std::string_view field,
+                                      FILE* out = stdout) {
     const auto lkfs = meter.integrated_lkfs();
     if (!lkfs) {
         return std::nullopt;
     }
     const int dialnorm = ac3::meta::dialnorm_from_lkfs(*lkfs);
     if (programme.empty()) {
-        std::println("measured {:.2f} LKFS (BS.1770-4, gated) -> {} {}", *lkfs, field, dialnorm);
+        std::println(out, "measured {:.2f} LKFS (BS.1770-4, gated) -> {} {}", *lkfs, field,
+                     dialnorm);
     } else {
-        std::println("{} measured {:.2f} LKFS (BS.1770-4, gated) -> {} {}", programme, *lkfs,
+        std::println(out, "{} measured {:.2f} LKFS (BS.1770-4, gated) -> {} {}", programme, *lkfs,
                      field, dialnorm);
     }
     return dialnorm;
@@ -535,7 +541,7 @@ std::optional<int> finish_measurement(const ac3::meta::LoudnessMeter& meter,
 // callers route dual mono through measured_dialnorm_channel on each
 // programme's own channel alone instead.
 std::optional<int> measured_dialnorm(const ac3::io::WavData& wav, ac3::SampleRate rate,
-                                     ac3::Acmod acmod, bool lfe) {
+                                     ac3::Acmod acmod, bool lfe, FILE* out = stdout) {
     ac3::meta::LoudnessMeter meter{rate, acmod, lfe};
     std::vector<std::span<const float>> views;
     views.reserve(wav.channels.size());
@@ -543,7 +549,7 @@ std::optional<int> measured_dialnorm(const ac3::io::WavData& wav, ac3::SampleRat
         views.emplace_back(channel);
     }
     meter.push(views);
-    return finish_measurement(meter, {}, "dialnorm");
+    return finish_measurement(meter, {}, "dialnorm", out);
 }
 
 // Same measurement, for one dual-mono programme's own channel alone - never a
@@ -552,11 +558,12 @@ std::optional<int> measured_dialnorm(const ac3::io::WavData& wav, ac3::SampleRat
 // labels above - "Ch1"/"dialnorm" or "Ch2"/"dialnorm2", the two programmes
 // sharing this one function since the measurement itself does not differ.
 std::optional<int> measured_dialnorm_channel(std::span<const float> channel, ac3::SampleRate rate,
-                                             std::string_view programme, std::string_view field) {
+                                             std::string_view programme, std::string_view field,
+                                             FILE* out = stdout) {
     ac3::meta::LoudnessMeter meter{rate, ac3::Acmod::k1_0, false};
     const std::array<std::span<const float>, 1> views{channel};
     meter.push(views);
-    return finish_measurement(meter, programme, field);
+    return finish_measurement(meter, programme, field, out);
 }
 
 // Dual mono's Ch1/Ch2 arrive as either one two-channel file or two mono ones;
@@ -1788,6 +1795,11 @@ int run_eac3_encode_multi(std::string_view in_path, std::string_view out_path,
     // dialnorm2 only means anything under 1+1 - silently inert otherwise,
     // exactly like run_eac3_encode's identical check for its one file.
     const bool want_dialnorm2 = dual_mono && p.meta.measure_dialnorm2;
+    // status_stream(out_path): stderr instead of stdout when out_path is "-"
+    // - the E-AC-3 bytes this function writes below already own stdout in
+    // that case, and no human-readable report (the dialnorm=auto measurement
+    // just below included) may land in the middle of them.
+    const auto status = status_stream(out_path);
     if (want_dialnorm || want_dialnorm2) {
         // §5.4.2.8's BS.1770 pass has to measure what the encoder actually
         // receives - the routed/rendered coded channels, not each source's
@@ -1826,8 +1838,8 @@ int run_eac3_encode_multi(std::string_view in_path, std::string_view out_path,
             }
         }
         if (want_dialnorm) {
-            const auto measured = dual_mono ? finish_measurement(*ch1, "Ch1", "dialnorm")
-                                            : finish_measurement(*whole, {}, "dialnorm");
+            const auto measured = dual_mono ? finish_measurement(*ch1, "Ch1", "dialnorm", status)
+                                            : finish_measurement(*whole, {}, "dialnorm", status);
             if (!measured) {
                 std::println(stderr, "error: {}no audio above the -70 LKFS absolute gate; "
                                      "pass dialnorm=<1..31> explicitly",
@@ -1837,7 +1849,7 @@ int run_eac3_encode_multi(std::string_view in_path, std::string_view out_path,
             p.meta.dialnorm = *measured;
         }
         if (want_dialnorm2) {
-            const auto measured2 = finish_measurement(*ch2, "Ch2", "dialnorm2");
+            const auto measured2 = finish_measurement(*ch2, "Ch2", "dialnorm2", status);
             if (!measured2) {
                 std::println(stderr, "error: Ch2 has no audio above the -70 LKFS absolute gate; "
                                      "pass dialnorm2=<1..31> explicitly");
@@ -1880,19 +1892,22 @@ int run_eac3_encode_multi(std::string_view in_path, std::string_view out_path,
                                                         static_cast<double>(frames.size());
         const double mean_kbps = mean_bytes * 8.0 * static_cast<double>(sources->sample_rate) /
                                  (1000.0 * ac3::kSamplesPerFrame);
-        std::println("encoded {} E-AC-3 access units (vbr {}, {} Hz, {}, {} coded channels, "
+        std::println(status,
+                     "encoded {} E-AC-3 access units (vbr {}, {} Hz, {}, {} coded channels, "
                      "tools: {}) to {}",
                      frames.size(), plan::format_vbr(p.vbr), sources->sample_rate, label, nchans,
                      plan::format_tools(p.tools), out_path);
-        std::println("  access unit size: {}-{} bytes, {:.0f} bytes mean (~{:.0f} kbps mean)",
+        std::println(status,
+                     "  access unit size: {}-{} bytes, {:.0f} bytes mean (~{:.0f} kbps mean)",
                      min_bytes, max_bytes, mean_bytes, mean_kbps);
     } else {
-        std::println("encoded {} E-AC-3 access units ({} kbps, {} Hz, {}, {} coded channels, "
+        std::println(status,
+                     "encoded {} E-AC-3 access units ({} kbps, {} Hz, {}, {} coded channels, "
                      "tools: {}) to {}",
                      frames.size(), bitrate, sources->sample_rate, label, nchans,
                      plan::format_tools(p.tools), out_path);
     }
-    print_routing(p, *routing, label);
+    print_routing(p, *routing, label, status);
     return 0;
 }
 
@@ -1948,6 +1963,11 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
     }
     const auto cp = plan::resolve(p);
     const bool dual_mono = cp.bed_acmod == ac3::Acmod::kDualMono;
+    // status_stream(out_path): stderr instead of stdout when out_path is "-"
+    // - the E-AC-3 bytes this function writes below already own stdout in
+    // that case, and no human-readable report (the dialnorm=auto measurement
+    // just below included) may land in the middle of them.
+    const auto status = status_stream(out_path);
     if (p.meta.measure_dialnorm) {
         // Dual mono has no "whole programme" a single BS.1770 pass can mean -
         // Ch1 and Ch2 are unrelated (§E1.3, no downmix between them), so this
@@ -1956,8 +1976,8 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
         // every other layout can.
         const auto measured = dual_mono
                                   ? measured_dialnorm_channel(wav->channels[0], *sr, "Ch1",
-                                                              "dialnorm")
-                                  : measured_dialnorm(*wav, *sr, cp.bed_acmod, cp.bed_lfe);
+                                                              "dialnorm", status)
+                                  : measured_dialnorm(*wav, *sr, cp.bed_acmod, cp.bed_lfe, status);
         if (!measured) {
             std::println(stderr, "error: {}no audio above the -70 LKFS absolute gate; "
                                  "pass dialnorm=<1..31> explicitly",
@@ -1967,7 +1987,8 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
         p.meta.dialnorm = *measured;
     }
     if (dual_mono && p.meta.measure_dialnorm2) {
-        const auto measured2 = measured_dialnorm_channel(wav->channels[1], *sr, "Ch2", "dialnorm2");
+        const auto measured2 =
+            measured_dialnorm_channel(wav->channels[1], *sr, "Ch2", "dialnorm2", status);
         if (!measured2) {
             std::println(stderr, "error: Ch2 has no audio above the -70 LKFS absolute gate; "
                                  "pass dialnorm2=<1..31> explicitly");
@@ -2035,10 +2056,6 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
     if (!write_frames(out_path, frames)) {
         return 1;
     }
-    // See run_encode's identical status_stream() comment: out_path == "-"
-    // means the E-AC-3 bytes just written own stdout, so this report goes to
-    // stderr instead.
-    const auto status = status_stream(out_path);
     if (p.vbr) {
         // bitrate_kbps is only the nominal reference vbr's tool heuristics
         // used, not a target - what a VBR run actually spent is the sizes it
@@ -2393,11 +2410,17 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
         return 1;
     }
 
+    // status_stream(out_path): stderr instead of stdout when out_path is "-"
+    // - the E-AC-3 bytes this function writes below already own stdout in
+    // that case, and no human-readable report (the dialnorm=auto measurement
+    // just below included) may land in the middle of them.
+    const auto status = status_stream(out_path);
     int dialnorm = meta.p.dialnorm;
     if (meta.p.measure_dialnorm) {
         const auto layout = ac3::io::ac3_layout_for(wav->channels.size());
-        const auto measured =
-            layout ? measured_dialnorm(*wav, *sr, layout->acmod, layout->lfe) : std::nullopt;
+        const auto measured = layout
+                                  ? measured_dialnorm(*wav, *sr, layout->acmod, layout->lfe, status)
+                                  : std::nullopt;
         if (!measured) {
             std::println(stderr, "error: cannot measure loudness for this file; "
                                  "pass dialnorm=<1..31> explicitly");
@@ -2538,10 +2561,6 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
     if (!write_frames(out_path, out)) {
         return 1;
     }
-    // See run_encode's identical status_stream() comment: out_path == "-"
-    // means the E-AC-3 bytes just written own stdout, so this report goes to
-    // stderr instead.
-    const auto status = status_stream(out_path);
     std::println(status, "encoded {} E-AC-3 access units ({} kbps, {} Hz) to {}", out.size(),
                 bitrate, wav->sample_rate, out_path);
     std::println(status,
@@ -2982,6 +3001,11 @@ int run_encode_multi(std::string_view in_path, std::string_view out_path, std::u
     // dialnorm2 only means anything under 1+1 - silently inert otherwise,
     // exactly like run_encode's identical check for its one file.
     const bool want_dialnorm2 = dual_mono && p.meta.measure_dialnorm2;
+    // status_stream(out_path): stderr instead of stdout when out_path is "-"
+    // - the AC-3 bytes this function writes below already own stdout in that
+    // case, and no human-readable report (the dialnorm=auto measurement just
+    // below included) may land in the middle of them.
+    const auto status = status_stream(out_path);
     if (want_dialnorm || want_dialnorm2) {
         // §5.4.2.8's BS.1770 pass has to measure what the encoder actually
         // receives - the routed/rendered coded channels, not each source's
@@ -3020,8 +3044,8 @@ int run_encode_multi(std::string_view in_path, std::string_view out_path, std::u
             }
         }
         if (want_dialnorm) {
-            const auto measured = dual_mono ? finish_measurement(*ch1, "Ch1", "dialnorm")
-                                            : finish_measurement(*whole, {}, "dialnorm");
+            const auto measured = dual_mono ? finish_measurement(*ch1, "Ch1", "dialnorm", status)
+                                            : finish_measurement(*whole, {}, "dialnorm", status);
             if (!measured) {
                 std::println(stderr, "error: {}no audio above the -70 LKFS absolute gate; "
                                      "pass dialnorm=<1..31> explicitly",
@@ -3031,7 +3055,7 @@ int run_encode_multi(std::string_view in_path, std::string_view out_path, std::u
             p.meta.dialnorm = *measured;
         }
         if (want_dialnorm2) {
-            const auto measured2 = finish_measurement(*ch2, "Ch2", "dialnorm2");
+            const auto measured2 = finish_measurement(*ch2, "Ch2", "dialnorm2", status);
             if (!measured2) {
                 std::println(stderr, "error: Ch2 has no audio above the -70 LKFS absolute gate; "
                                      "pass dialnorm2=<1..31> explicitly");
@@ -3063,11 +3087,11 @@ int run_encode_multi(std::string_view in_path, std::string_view out_path, std::u
     if (!write_frames(out_path, frames)) {
         return 1;
     }
-    std::println("encoded {} frames ({} kbps, {} Hz, {}) to {}", frames.size(), bitrate,
+    std::println(status, "encoded {} frames ({} kbps, {} Hz, {}) to {}", frames.size(), bitrate,
                  sources->sample_rate, ac3::analysis::layout_name(config.acmod, config.lfe),
                  out_path);
-    print_routing(p, *routing, label);
-    print_channel_summary(meter);
+    print_routing(p, *routing, label, status);
+    print_channel_summary(meter, status);
     return 0;
 }
 
@@ -3132,6 +3156,11 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
     // which coded positions are surrounds.
     const auto cp = plan::resolve(p);
     const bool dual_mono = cp.bed_acmod == ac3::Acmod::kDualMono;
+    // status_stream(out_path): stderr instead of stdout when out_path is "-"
+    // - the AC-3 bytes this function writes below already own stdout in that
+    // case, and no human-readable report (the dialnorm=auto measurement just
+    // below included) may land in the middle of them.
+    const auto status = status_stream(out_path);
     if (p.meta.measure_dialnorm) {
         // Dual mono has no "whole programme" a single BS.1770 pass can mean -
         // Ch1 and Ch2 are unrelated (§E1.3, no downmix between them), so this
@@ -3140,8 +3169,8 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
         // every other layout can.
         const auto measured = dual_mono
                                   ? measured_dialnorm_channel(wav->channels[0], *sr, "Ch1",
-                                                              "dialnorm")
-                                  : measured_dialnorm(*wav, *sr, cp.bed_acmod, cp.bed_lfe);
+                                                              "dialnorm", status)
+                                  : measured_dialnorm(*wav, *sr, cp.bed_acmod, cp.bed_lfe, status);
         if (!measured) {
             std::println(stderr,
                          "error: {}no audio above the -70 LKFS absolute gate; "
@@ -3152,7 +3181,8 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
         p.meta.dialnorm = *measured;
     }
     if (dual_mono && p.meta.measure_dialnorm2) {
-        const auto measured2 = measured_dialnorm_channel(wav->channels[1], *sr, "Ch2", "dialnorm2");
+        const auto measured2 =
+            measured_dialnorm_channel(wav->channels[1], *sr, "Ch2", "dialnorm2", status);
         if (!measured2) {
             std::println(stderr,
                          "error: Ch2 has no audio above the -70 LKFS absolute gate; "
@@ -3233,10 +3263,6 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
     if (!write_frames(out_path, frames)) {
         return 1;
     }
-    // status_stream(out_path): stderr instead of stdout when out_path is "-"
-    // - the AC-3 bytes just written above already own stdout in that case,
-    // and this report must not land in the middle of them.
-    const auto status = status_stream(out_path);
     std::println(status, "encoded {} frames ({} kbps, {} Hz, {}) to {}", frames.size(), bitrate,
                 wav->sample_rate, ac3::analysis::layout_name(config.acmod, config.lfe), out_path);
     print_routing(p, *routing, label, status);

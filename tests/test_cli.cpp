@@ -96,6 +96,25 @@ int run_cli_stdio(const std::string& args, const fs::path& in_file, const fs::pa
 #endif
 }
 
+// Same idea as run_cli_stdio above, but only out_path is "-" - for src=/map=
+// commands, which take their input from a real in_path plus src="<file>"
+// (there is no second stdin to route a multi-source run's extra files
+// through), so only stdout needs redirecting away from the shell's own
+// inherited one. stderr still goes to its own `log`, kept separate from
+// `out_file` for the same reason run_cli_stdio's does.
+int run_cli_stdout(const std::string& args, const fs::path& out_file, const fs::path& log) {
+    const std::string command = "\"" + std::string(AC3CLI_EXE) + "\" " + args + " > \"" +
+                                out_file.string() + "\" 2> \"" + log.string() + "\"";
+#ifdef _WIN32
+    // Same double-quote-wrapping workaround run_cli uses above, and for the
+    // same reason - see its comment.
+    const std::string wrapped = "\"" + command + "\"";
+    return std::system(wrapped.c_str());
+#else
+    return std::system(command.c_str());
+#endif
+}
+
 // A short, genuinely non-silent multichannel WAV - per this project's own
 // testing convention (see memory: "Codec validation needs real audio"),
 // silence gives false passes a real tone does not: a silent leading region
@@ -891,6 +910,128 @@ TEST_CASE("eac3-encode and atmos-encode accept '-' for input and output", "[cli]
     INFO(read_log(dir / "stdio_atmos.log"));
     CHECK(atmos_rc == 0);
     CHECK(fs::file_size(atmos_out) > 0);
+}
+
+// A CLI-docs audit ahead of v0.6.0-beta.1 found that "everything but the
+// encoded stream goes to stderr, so a '-' pipe is never corrupted" was false
+// in two places, neither caught by the round-trip test above because it
+// never turns dialnorm=auto or src=/map= on: finish_measurement() (behind
+// every dialnorm=auto/dialnorm2=auto path) printed its "measured N LKFS ->
+// dialnorm M" line with the no-stream std::println overload, which always
+// targets stdout regardless of out_path; and run_eac3_encode_multi/
+// run_encode_multi's own final summary/routing report used that same
+// unconditional stdout instead of threading status_stream(out_path) through
+// the way their single-source run_eac3_encode/run_encode siblings already
+// did. Both are silent with a real file out_path - the leaked text just
+// lands in the terminal beside the file - so this only shows up once
+// out_path is "-" and that leaked text starts sharing stdout with the
+// encoded stream itself, which is exactly what each SECTION below pipes
+// through. The assertion is the same byte-for-byte comparison the round-trip
+// test above uses: any leaked line ahead of or after the stream makes the
+// piped bytes longer than (and different from) the clean file-based
+// reference, not merely "looks corrupted".
+TEST_CASE("dialnorm=auto and src=/map= keep '-' output free of interleaved status text",
+          "[cli][stdio][dialnorm][src]") {
+    const auto dir = scratch_dir();
+    constexpr std::uint32_t kRate = 48000;
+    constexpr std::size_t kFrames = 96000;  // 2s, same duration the src=/map= dialnorm
+                                            // tests below use - long enough to clear the
+                                            // BS.1770 absolute gate reliably.
+
+    SECTION("dialnorm=auto alone: piped eac3-encode matches the file-based one") {
+        const auto wav_path = dir / "stdio_dialnorm_in.wav";
+        REQUIRE(write_wav(wav_path, {make_tone(0.9, 220.0, kFrames, kRate)}, kRate));
+
+        const auto file_out = dir / "stdio_dialnorm_file.ec3";
+        REQUIRE(run_cli("eac3-encode \"" + wav_path.string() + "\" \"" + file_out.string() +
+                            "\" 96 none mono dialnorm=auto",
+                        dir / "stdio_dialnorm_file.log") == 0);
+
+        const auto piped_out = dir / "stdio_dialnorm_piped.ec3";
+        const auto piped_log = dir / "stdio_dialnorm_piped.log";
+        const auto rc = run_cli_stdio("eac3-encode - - 96 none mono dialnorm=auto", wav_path,
+                                      piped_out, piped_log);
+        INFO(read_log(piped_log));
+        REQUIRE(rc == 0);
+
+        std::ifstream file_in{file_out, std::ios::binary};
+        std::ifstream piped_in{piped_out, std::ios::binary};
+        const std::vector<char> file_bytes{std::istreambuf_iterator<char>{file_in},
+                                           std::istreambuf_iterator<char>{}};
+        const std::vector<char> piped_bytes{std::istreambuf_iterator<char>{piped_in},
+                                            std::istreambuf_iterator<char>{}};
+        REQUIRE_FALSE(file_bytes.empty());
+        const bool matches = file_bytes == piped_bytes;
+        CHECK(matches);
+    }
+
+    SECTION("src=/map=: piped E-AC-3 multi-source output matches the file-based one") {
+        const auto in1 = dir / "stdio_src_eac3_a.wav";
+        const auto in2 = dir / "stdio_src_eac3_b.wav";
+        REQUIRE(write_wav(in1, {make_tone(0.9, 220.0, kFrames, kRate)}, kRate));
+        REQUIRE(write_wav(in2, {make_tone(0.5, 660.0, kFrames, kRate)}, kRate));
+        // Same option combination as one command, so the only thing that
+        // differs between the file-based reference and the piped run below
+        // is out_path itself ("<file>" vs the bare - token).
+        const std::string args_tail =
+            " 192 none stereo src=\"" + in2.string() + "\" map=0.0:L,1.0:R dialnorm=auto";
+
+        const auto file_out = dir / "stdio_src_eac3_file.ec3";
+        REQUIRE(run_cli("eac3-encode \"" + in1.string() + "\" \"" + file_out.string() + "\"" +
+                            args_tail,
+                        dir / "stdio_src_eac3_file.log") == 0);
+
+        const auto piped_out = dir / "stdio_src_eac3_piped.ec3";
+        const auto piped_log = dir / "stdio_src_eac3_piped.log";
+        const auto rc = run_cli_stdout("eac3-encode \"" + in1.string() + "\" -" + args_tail,
+                                       piped_out, piped_log);
+        INFO(read_log(piped_log));
+        REQUIRE(rc == 0);
+
+        std::ifstream file_in{file_out, std::ios::binary};
+        std::ifstream piped_in{piped_out, std::ios::binary};
+        const std::vector<char> file_bytes{std::istreambuf_iterator<char>{file_in},
+                                           std::istreambuf_iterator<char>{}};
+        const std::vector<char> piped_bytes{std::istreambuf_iterator<char>{piped_in},
+                                            std::istreambuf_iterator<char>{}};
+        REQUIRE_FALSE(file_bytes.empty());
+        const bool matches = file_bytes == piped_bytes;
+        CHECK(matches);
+    }
+
+    SECTION("src=/map=: piped AC-3 multi-source output matches the file-based one") {
+        const auto in1 = dir / "stdio_src_ac3_a.wav";
+        const auto in2 = dir / "stdio_src_ac3_b.wav";
+        REQUIRE(write_wav(in1, {make_tone(0.9, 220.0, kFrames, kRate)}, kRate));
+        REQUIRE(write_wav(in2, {make_tone(0.5, 660.0, kFrames, kRate)}, kRate));
+        // run_encode_multi's own copy of the same summary/routing report bug
+        // - a separate function from run_eac3_encode_multi (the previous
+        // SECTION), so it needs its own proof it was fixed too.
+        const std::string args_tail =
+            " 192 stereo src=\"" + in2.string() + "\" map=0.0:L,1.0:R dialnorm=auto";
+
+        const auto file_out = dir / "stdio_src_ac3_file.ac3";
+        REQUIRE(run_cli("encode \"" + in1.string() + "\" \"" + file_out.string() + "\"" +
+                            args_tail,
+                        dir / "stdio_src_ac3_file.log") == 0);
+
+        const auto piped_out = dir / "stdio_src_ac3_piped.ac3";
+        const auto piped_log = dir / "stdio_src_ac3_piped.log";
+        const auto rc = run_cli_stdout("encode \"" + in1.string() + "\" -" + args_tail,
+                                       piped_out, piped_log);
+        INFO(read_log(piped_log));
+        REQUIRE(rc == 0);
+
+        std::ifstream file_in{file_out, std::ios::binary};
+        std::ifstream piped_in{piped_out, std::ios::binary};
+        const std::vector<char> file_bytes{std::istreambuf_iterator<char>{file_in},
+                                           std::istreambuf_iterator<char>{}};
+        const std::vector<char> piped_bytes{std::istreambuf_iterator<char>{piped_in},
+                                            std::istreambuf_iterator<char>{}};
+        REQUIRE_FALSE(file_bytes.empty());
+        const bool matches = file_bytes == piped_bytes;
+        CHECK(matches);
+    }
 }
 
 // Roadmap C4: dialnorm=auto/dialnorm2=auto used to be unconditionally

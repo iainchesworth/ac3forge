@@ -67,11 +67,10 @@ before argument parsing and exits immediately.
   arguments of any encoding command, in any order — see
   [Options & grammars](metadata-options.md), including which commands ignore which options.
 - **PCM-carrying commands report per-channel peak/RMS levels when they finish**; `record` meters
-  live. With `-` as the output path, the single-source encode and decode paths send that report
-  (and the rest of their status text) to stderr, so it never lands in the middle of the piped
-  stream. Two cases currently still write to stdout and will corrupt a `-` pipe:
-  `dialnorm=auto`'s measurement line, and the `src=`/`map=` multi-source paths'
-  summary/routing/levels report.
+  live. With `-` as the output path, every encode and decode path sends that report (and the rest
+  of its status text — `dialnorm=auto`'s measurement line and the `src=`/`map=` multi-source
+  paths' summary/routing/levels report included) to stderr, so it never lands in the middle of
+  the piped stream.
 - **Commands needing audio hardware** (`devices`, `record`, `monitor`, `live`, `outputs`, `play`)
   report themselves unavailable on a build with no capture/passthrough backend, rather than
   failing to link — see the per-OS Platform notes pages ([Windows](../platforms/windows.md),
