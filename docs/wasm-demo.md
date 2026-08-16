@@ -25,22 +25,13 @@ WASM instead of a native binary.
 
 ## What's real, and what isn't
 
-The decode is real: this page runs `ac3::forge`'s actual C++ AC-3/E-AC-3
-decoder compiled to WASM (via Emscripten), and everything it reports — sample
-rate, channel layout, the audio you hear, the per-channel energy driving the
-visualization — comes out of that decode, not a canned animation. Drop in
-your own `.ec3`/`.ac3` elementary stream to see it decode something other
-than the bundled fixture.
-
-What it does **not** show is individual Atmos object positions.
-`ac3::forge` can *write* OAMD/JOC object metadata when encoding (see
-[Atmos & JOC](concepts/atmos-joc.md)), but nothing in the library can read
-that metadata back out of a stream yet — there is no decode-side OAMD/JOC
-parser today. The dots in the visualization are the real decoded 5.1/7.x
-bed's per-speaker energy, using the same room/speaker model as the desktop
-GUI's `SoundfieldView.qml`, genuinely decoded — just not object-level. Real
-per-object position/audio decode is tracked as follow-up work; this page
-will grow object motion once that lands.
+Real: the decode, the audio, and the per-channel energy driving the two
+speaker rings (solid = ear-level, dashed = ceiling — ported from the desktop
+GUI's `SoundfieldView.qml`). Drop in your own `.ec3`/`.ac3` file to decode
+something other than the bundled fixture. Not real yet: individual Atmos
+object positions — `ac3::forge` can *write* OAMD/JOC metadata (see
+[Atmos & JOC](concepts/atmos-joc.md)) but can't read it back out of a stream,
+so there's nothing object-level to show. Tracked as follow-up work.
 
 ## Source and how it's built
 

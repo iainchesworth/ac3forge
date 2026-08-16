@@ -16,10 +16,15 @@
 // SoundfieldView.qml, ported to Canvas and driven by genuinely decoded
 // per-channel RMS - it shows real bed energy, not object motion.
 
-// Table 5.8 order (matches decoder_bindings.cpp's channelLabels()); azimuths
-// are ac3::spatial's kSpeakerAzimuthDeg (src/lib/include/ac3/spatial/spatial.hpp),
-// ITU-R BS.775, degrees CCW from front, left positive.
-const SPEAKER_AZIMUTH_DEG = { L: 30, C: 0, R: -30, Ls: 110, Rs: -110 };
+// Ear-level ring: ac3::spatial's kSpeakerAzimuthDeg
+// (src/lib/include/ac3/spatial/spatial.hpp), ITU-R BS.775, degrees CCW from
+// front, left positive. Ceiling ring: the same azimuth convention extended to
+// Table E2.5's height locations, matching src/gui/qml/SoundfieldView.qml's own
+// extension (its location_azimuth_deg()) - a second, smaller, dashed ring for
+// genuinely elevated channels, not a fabricated height axis. A plain 5.1/7.1
+// stream (like the bundled demo) never populates it; a real 7.1.4 stream does.
+const EAR_LEVEL_AZIMUTH_DEG = { L: 30, C: 0, R: -30, Ls: 110, Rs: -110 };
+const CEILING_AZIMUTH_DEG = { Vhl: 45, Vhr: -45, Vhc: 0, Lts: 110, Rts: -110 };
 
 let audioCtx = null;
 let sourceNode = null;
@@ -163,29 +168,59 @@ function currentPlaybackSeconds() {
 // energy-vector arrow - see that file for the original QML this was ported
 // from, and the PR description for why it's channel energy, not objects.)
 
+function drawRing(ctx, cx, cy, radius, dashed) {
+    ctx.save();
+    if (dashed) ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = 'rgba(148,163,184,0.35)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, 0, 2 * Math.PI);
+    ctx.stroke();
+    ctx.restore();
+}
+
+function drawSpeaker(ctx, cx, cy, radius, az, label, level, color) {
+    const azRad = (az * Math.PI) / 180;
+    const sx = cx - Math.sin(azRad) * radius;
+    const sy = cy - Math.cos(azRad) * radius;
+    const dotRadius = 6 + level * 10;
+
+    ctx.beginPath();
+    ctx.arc(sx, sy, dotRadius, 0, 2 * Math.PI);
+    ctx.fillStyle = `rgba(${color},${0.35 + 0.65 * level})`;
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(226,232,240,0.8)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    ctx.fillStyle = 'rgba(226,232,240,0.9)';
+    ctx.font = '12px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(label, sx, sy - dotRadius - 8);
+
+    return { x: Math.sin(azRad) * level, y: Math.cos(azRad) * level };
+}
+
+// Ported from src/gui/qml/SoundfieldView.qml: an ear-level ring plus a
+// smaller, dashed ceiling ring for genuinely elevated channels (its own
+// visual cue for "a conceptually different, flattened-height plane"), driven
+// throughout by real per-channel RMS from the decoder - not a fabricated
+// height axis; channels this stream doesn't have simply don't light up.
 function draw() {
     const canvas = el('ring');
     const ctx = canvas.getContext('2d');
     const w = canvas.width, h = canvas.height;
-    const cx = w / 2, cy = h / 2;
-    const radius = Math.min(w, h) / 2 - 28;
+    const cx = w / 2, cy = h / 2 + 20;
+    const earRadius = Math.min(w, h) / 2 - 44;
+    const ceilingRadius = earRadius * 0.6;
 
     ctx.clearRect(0, 0, w, h);
-
-    // Room bounds: crosshair + ring, same motif as SoundfieldView.qml.
-    ctx.strokeStyle = 'rgba(148,163,184,0.35)';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(cx, cy - h / 2 + 8); ctx.lineTo(cx, cy + h / 2 - 8);
-    ctx.moveTo(cx - w / 2 + 8, cy); ctx.lineTo(cx + w / 2 - 8, cy);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(cx, cy, radius, 0, 2 * Math.PI);
-    ctx.stroke();
+    drawRing(ctx, cx, cy, earRadius, false);
+    drawRing(ctx, cx, cy, ceilingRadius, true);
 
     // Listener.
     ctx.beginPath();
-    ctx.arc(cx, cy, 10, 0, 2 * Math.PI);
+    ctx.arc(cx, cy, 8, 0, 2 * Math.PI);
     ctx.strokeStyle = 'rgba(148,163,184,0.6)';
     ctx.stroke();
 
@@ -196,9 +231,7 @@ function draw() {
 
     const t = currentPlaybackSeconds();
     const blockDuration = decoded.energyBlockSize / decoded.sampleRate;
-
-    let vecX = 0, vecY = 0;
-    let lfeLevel = 0;
+    let vecX = 0, vecY = 0, lfeLevel = 0;
 
     decoded.labels.forEach((label, ch) => {
         const energyTrace = decoded.energy[ch];
@@ -208,39 +241,21 @@ function draw() {
         // a silent channel visibly at rest rather than pinned mid-scale.
         const level = Math.max(0, Math.min(1, rms / 0.35));
 
-        if (label === 'LFE') {
-            lfeLevel = level;
-            return; // LFE has no direction - never drawn spatially (matches SoundfieldView.qml).
-        }
-        const az = SPEAKER_AZIMUTH_DEG[label];
-        if (az === undefined) return; // height/rear channels: no ring position in this simple demo.
+        if (label === 'LFE') { lfeLevel = level; return; } // no direction (SoundfieldView.qml's own rule).
 
-        const azRad = (az * Math.PI) / 180;
-        const sx = cx - Math.sin(azRad) * radius;
-        const sy = cy - Math.cos(azRad) * radius;
-
-        vecX += Math.sin(azRad) * level;
-        vecY += Math.cos(azRad) * level;
-
-        const dotRadius = 6 + level * 10;
-        ctx.beginPath();
-        ctx.arc(sx, sy, dotRadius, 0, 2 * Math.PI);
-        ctx.fillStyle = `rgba(96,165,250,${0.35 + 0.65 * level})`;
-        ctx.fill();
-        ctx.strokeStyle = 'rgba(226,232,240,0.8)';
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-
-        ctx.fillStyle = 'rgba(226,232,240,0.9)';
-        ctx.font = '12px system-ui, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText(label, sx, sy - dotRadius - 8);
+        if (label in EAR_LEVEL_AZIMUTH_DEG) {
+            const v = drawSpeaker(ctx, cx, cy, earRadius, EAR_LEVEL_AZIMUTH_DEG[label], label, level, '96,165,250');
+            vecX += v.x; vecY += v.y;
+        } else if (label in CEILING_AZIMUTH_DEG) {
+            drawSpeaker(ctx, cx, cy, ceilingRadius, CEILING_AZIMUTH_DEG[label], label, level, '167,139,250');
+        } // any other channel (Cs, Lrs/Rrs, Lw/Rw, ...): no ring position in this simple demo.
     });
 
-    // Energy-vector arrow: the soundfield's overall instantaneous direction.
+    // Energy-vector arrow: the ear-level soundfield's overall instantaneous
+    // direction (not a height indicator - see the ceiling ring for that).
     const vecLen = Math.hypot(vecX, vecY);
     if (vecLen > 0.02) {
-        const scale = radius * Math.min(1, vecLen / 1.5);
+        const scale = earRadius * Math.min(1, vecLen / 1.5);
         const ex = cx - (vecX / vecLen) * scale;
         const ey = cy - (vecY / vecLen) * scale;
         ctx.beginPath();
@@ -260,11 +275,24 @@ function draw() {
     requestAnimationFrame(draw);
 }
 
+let seekDragging = false;
+
 function tick() {
     if (!playing) return;
     const t = currentPlaybackSeconds();
     el('scrubTime').textContent = `${t.toFixed(1)}s / ${decoded.durationSeconds.toFixed(1)}s`;
+    if (!seekDragging) el('seek').value = String((t / decoded.durationSeconds) * 1000);
     if (t < decoded.durationSeconds) requestAnimationFrame(tick);
+}
+
+// Lets a viewer scrub to any point in the real decoded audio/energy - moving
+// the slider while playing restarts playback from there; while paused it just
+// repositions the static preview frame draw() already reads from playStartOffset.
+function seekTo(fraction) {
+    if (!decoded) return;
+    playStartOffset = Math.max(0, Math.min(decoded.durationSeconds, fraction * decoded.durationSeconds));
+    el('scrubTime').textContent = `${playStartOffset.toFixed(1)}s / ${decoded.durationSeconds.toFixed(1)}s`;
+    if (playing) play();
 }
 
 async function handleDecoded(bytes, label) {
@@ -279,6 +307,9 @@ async function handleDecoded(bytes, label) {
             `${result.streamKind}, ${result.sampleRate} Hz, ${result.channelCount} ch ` +
             `(${result.labels.join(', ')}), ${result.durationSeconds.toFixed(1)}s`;
         el('playPause').disabled = false;
+        el('seek').disabled = false;
+        el('seek').value = '0';
+        el('scrubTime').textContent = `0.0s / ${result.durationSeconds.toFixed(1)}s`;
         setStatus(`Decoded ${label}.`, false);
     } catch (err) {
         decoded = null;
@@ -306,6 +337,19 @@ window.addEventListener('DOMContentLoaded', () => {
     });
     el('playPause').addEventListener('click', () => {
         if (playing) pause(); else play();
+    });
+    const seek = el('seek');
+    seek.addEventListener('pointerdown', () => { seekDragging = true; });
+    seek.addEventListener('input', () => {
+        // Live-update the static frame while dragging, without restarting
+        // audio on every intermediate tick - only on release (see 'change').
+        if (!decoded) return;
+        playStartOffset = (Number(seek.value) / 1000) * decoded.durationSeconds;
+        el('scrubTime').textContent = `${playStartOffset.toFixed(1)}s / ${decoded.durationSeconds.toFixed(1)}s`;
+    });
+    seek.addEventListener('change', () => {
+        seekDragging = false;
+        seekTo(Number(seek.value) / 1000);
     });
     requestAnimationFrame(draw);
 });

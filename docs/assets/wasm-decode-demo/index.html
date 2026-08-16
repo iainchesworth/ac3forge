@@ -33,6 +33,7 @@
     margin-bottom: 16px;
   }
   .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  #seek { flex: 1 1 160px; accent-color: var(--accent); }
   button, input[type="file"]::file-selector-button {
     background: var(--accent);
     color: #0b1220;
@@ -48,11 +49,15 @@
   #streamInfo { font-size: 0.9rem; color: var(--muted); margin-top: 8px; }
   #scrubTime { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 0.9rem; }
   canvas { display: block; margin: 0 auto; background: #0d1526; border-radius: 8px; }
+  .hint { color: var(--muted); font-size: 0.82rem; text-align: center; margin: 10px 0 0; line-height: 1.5; }
+  .hint a { color: var(--accent); }
   .caveat {
     border-left: 3px solid var(--accent);
-    padding: 8px 14px;
+    border-radius: 0 8px 8px 0;
+    padding: 10px 16px;
+    margin: 0 0 16px;
     background: rgba(96,165,250,0.08);
-    font-size: 0.88rem;
+    font-size: 0.85rem;
     color: var(--muted);
     line-height: 1.5;
   }
@@ -76,6 +81,7 @@
       <button id="loadDemo">Load bundled demo</button>
       <input type="file" id="fileInput" accept=".ec3,.ac3,.eac3">
       <button id="playPause" disabled>Play</button>
+      <input type="range" id="seek" min="0" max="1000" value="0" disabled>
       <span id="scrubTime"></span>
     </div>
     <div id="status"></div>
@@ -84,22 +90,20 @@
 
   <div class="panel">
     <canvas id="ring" width="640" height="420"></canvas>
+    <p class="hint">
+      Solid ring: ear-level channels. Dashed ring: ceiling channels (only lights up for a
+      7.1.4-class stream). Drag the slider above to scrub. Dot size/glow and the yellow
+      arrow are real per-channel energy from the decode, not object positions - see
+      <a href="#caveat">below</a>.
+    </p>
   </div>
 
-  <div class="panel caveat">
-    <strong>What's real here, and what isn't.</strong> The decode is real: this page
-    runs ac3::forge's actual C++ AC-3/E-AC-3 decoder compiled to WASM, and every number
-    shown - sample rate, channel layout, the audio you hear, the per-channel energy
-    driving the dots below - comes out of that real decode. What this panel does
-    <em>not</em> show is individual Atmos object positions: <code>ac3::forge</code> does
-    not yet have a decode-side OAMD/JOC parser (it can <em>write</em> object metadata
-    when encoding, but nothing in the library can read it back out of a stream today),
-    so there is no real per-object position to visualize. The dots below are the real
-    decoded 5.1 bed's per-speaker energy, using the same room/speaker model as the
-    desktop GUI's <code>SoundfieldView.qml</code> - genuinely decoded, just not
-    object-level. The audio you hear is a simple stereo downmix of that same real bed
-    for playback on ordinary speakers/headphones.
-  </div>
+  <p id="caveat" class="caveat">
+    Real decode, real audio, real per-channel energy - all genuinely out of ac3::forge's
+    WASM build. Not real: individual Atmos object positions. <code>ac3::forge</code> can't
+    read OAMD/JOC back out of a stream yet (encoder-only today), so there's nothing
+    object-level to show.
+  </p>
 
   <footer>
     Part of <a href="https://github.com/iainchesworth/ac3forge">ac3forge</a>, roadmap item F3.
