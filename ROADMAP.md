@@ -64,8 +64,10 @@ AC-3/E-AC-3 bitstream and verifies its loudness metadata against measurement.
   substream encode.
 - [ ] **D2 (S)** — Decoder dither substitution: zero-mantissa bands currently emit silence
   instead of dither, in both decoders (the only two TODOs in the tree).
-- [ ] **D3 (M)** — Delta bit allocation alongside coupling, and for LFE: currently skipped
-  whenever coupling is active that frame, and always for LFE.
+- [x] **D3 (M)** — Delta bit allocation alongside coupling: previously skipped whenever
+  coupling was active that frame, for the coupling channel and every fbw channel alike.
+  LFE was already correct as it stood - A/52 defines no delta bit allocation field for it
+  at all (§7.2.2.6, §5.4.3.49), so nothing changed there.
 - [ ] **D4 (L)** — AC-4 bitstream parser/inspector: ETSI TS 103 190 parse-and-inspect as a
   first step, not an encoder.
 
