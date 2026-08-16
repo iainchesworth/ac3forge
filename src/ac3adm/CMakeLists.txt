@@ -148,11 +148,38 @@ target_compile_features(ac3adm_objects PUBLIC cxx_std_23)
 # library that's part of an install(EXPORT) set. bw64/adm are PRIVATE too: neither
 # library's types cross ac3adm's own public API (see this file's header comment), so
 # nothing downstream needs to link them transitively.
+# -Wnull-dereference false positive, GNU only: adm.cpp's read_pcm() calls into libbw64's inlined
+# chunk accessors (bw64::DataSize64Chunk::size(), etc. - plain member-variable getters, nothing
+# genuinely null-unsafe), which GCC 15.2.0 at -O3 (Release) traces through several inlining levels
+# into libstdc++'s std::map/set internals (bits/stl_tree.h) and misattributes an "impossible" path
+# its own optimizer introduced as a real null dereference - confirmed by actually building this
+# target at -O3 (config-linux-gcc, not just the -debug preset development normally used, which
+# does not optimize enough to trigger it). cmake/CompilerWarnings.cmake already documents this
+# exact false-positive category for GCC < 15 against libstdc++ internals reached from this
+# project's own code (see its own comment, and gcc.gnu.org/bugzilla PR 108757 and neighbours) but
+# stops the guard there because the CI-pinned GCC 15 did not exhibit it - true until this module's
+# own interaction with libbw64 started reaching the same internals on that exact compiler. Scoped
+# to this target rather than widening that project-wide guard: nothing else in this project has
+# hit it on GCC 15, so silencing it everywhere would risk hiding a genuine one elsewhere.
+#
+# A separate INTERFACE library linked AFTER ac3::warnings, not a plain target_compile_options()
+# call on ac3adm_objects itself - confirmed by inspecting the generated compile_commands.json that
+# a target's own COMPILE_OPTIONS always land BEFORE the INTERFACE_COMPILE_OPTIONS propagated from
+# its linked libraries on the actual command line, regardless of which order the CMakeLists.txt
+# calls target_compile_options()/target_link_libraries() in - so a plain target_compile_options()
+# call here would be overridden right back by ac3::warnings' own -Wnull-dereference. Putting the
+# override in its own link dependency, listed after ac3::warnings, makes it win the last-flag-wins
+# rule instead.
+add_library(ac3adm_suppress_gcc15_null_deref INTERFACE)
+target_compile_options(ac3adm_suppress_gcc15_null_deref INTERFACE
+    "$<$<CXX_COMPILER_ID:GNU>:-Wno-null-dereference>")
+
 target_link_libraries(ac3adm_objects
     PRIVATE
         "$<BUILD_INTERFACE:ac3::warnings>"
         bw64
-        adm)
+        adm
+        ac3adm_suppress_gcc15_null_deref)
 
 set_target_properties(ac3adm_objects PROPERTIES
     POSITION_INDEPENDENT_CODE ON
