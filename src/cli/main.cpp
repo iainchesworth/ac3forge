@@ -113,6 +113,14 @@ void print_meta_usage() {
                  "command encodes, incl. atmos/record/live/eac3-sine; eac3-encode alone has a "
                  "[tools] positional argument whose bare nofastmdct token reaches the same "
                  "field instead; bare fast-mdct (the old opt-in) is a no-op");
+    std::println("  sign-objects      atmos/atmos-path/atmos-encode: write a keyed EMDF object "
+                 "signature (needs signing-key=); see docs/concepts/object-signing.md");
+    std::println("  verify-objects    decode/monitor: check each frame's EMDF object signature "
+                 "against signing-key= instead of just playing it - a mismatch refuses the "
+                 "command; omitted (the default) decodes signed and unsigned streams alike, "
+                 "unchecked");
+    std::println("  signing-key=<path>      the key file sign-objects/verify-objects use "
+                 "(or AC3FORGE_SIGNING_KEY_FILE / AC3FORGE_SIGNING_KEY)");
     std::println();
     std::println("source options (encode/eac3-encode; any order, after the positional "
                  "arguments):");
@@ -178,6 +186,13 @@ struct Options {
     // see docs/concepts/object-signing.md.
     bool sign_objects = false;
     std::optional<std::string> signing_key;
+    // 'decode'/'monitor' only: check each frame's EMDF object container
+    // against signing-key= (same option sign-objects uses - a decode never
+    // signs, so there is no ambiguity in sharing it) instead of just playing
+    // it. Off by default: a signed-but-unchecked stream decodes exactly like
+    // an unsigned one unless the operator opts in here - see
+    // docs/concepts/object-signing.md.
+    bool verify_objects = false;
     // 'live' only: a second ("slave") capture device index, same numbering
     // ac3::capture::enumerate_devices()/'devices' uses and the capture_device
     // positional already reads. Unset means the classic single-device
@@ -252,6 +267,10 @@ bool parse_options(std::span<char*> tokens, Options& out) {
         }
         if (token == "sign-objects") {
             out.sign_objects = true;
+            continue;
+        }
+        if (token == "verify-objects") {
+            out.verify_objects = true;
             continue;
         }
         if (key == "fast-mdct") {
@@ -2124,6 +2143,48 @@ std::optional<int> apply_object_signing(std::vector<std::vector<std::byte>>& uni
     return signed_count;
 }
 
+// Checks EMDF object signatures on a stream about to be decoded/monitored,
+// when the operator asked for it (verify-objects) and supplied a key. Reads
+// the raw stream bytes the same way sign_atmos_stream does - independent of,
+// and either before or alongside, whatever Eac3Decoder itself does with
+// those same bytes; never routed through it, since that class's own stance
+// is that the protection field is opaque per spec (see decoder.hpp). Returns
+// the summary, or nullopt if verification was requested but the key could
+// not be loaded, or if any signed frame's tag did not match (both cases
+// already print their own message). Not requested -> an all-zero summary,
+// nothing checked, stream untouched either way: this only reads bytes, it
+// never signs. A signed stream is either fully verified or the command
+// refuses - matching this project's own "graceful 5.1 fallback is
+// either/or" stance - never a silent partial pass.
+std::optional<ac3::signing::VerifySummary> apply_object_verification(
+    std::span<const std::byte> stream, const Options& meta) {
+    if (!meta.verify_objects) {
+        return ac3::signing::VerifySummary{};
+    }
+    const auto key = ac3::signing::load_signing_key(meta.signing_key.value_or(""));
+    if (!key) {
+        if (key.error().kind == ac3::signing::KeyErrorKind::kAbsent) {
+            std::println(stderr,
+                         "error: verify-objects needs a key — pass signing-key=<path>, or set "
+                         "AC3FORGE_SIGNING_KEY_FILE / AC3FORGE_SIGNING_KEY");
+        } else {
+            std::println(stderr, "error: {}", key.error().message);
+        }
+        return std::nullopt;
+    }
+    const auto summary = ac3::signing::verify_atmos_stream(stream, *key);
+    std::println("  object signature: {} valid, {} mismatched, {} unsigned frame(s)",
+                 summary.valid, summary.mismatch, summary.no_container);
+    if (summary.mismatch > 0) {
+        std::println(stderr,
+                     "error: object signature verification failed ({} of {} signed frames did "
+                     "not match the supplied key)",
+                     summary.mismatch, summary.valid + summary.mismatch);
+        return std::nullopt;
+    }
+    return summary;
+}
+
 // Objects moving in three dimensions, out as one 5.1 E-AC-3 stream carrying
 // JOC and OAMD. Each object orbits at its own rate and sits at its own height,
 // so no two of them share a direction for long - which is the condition under
@@ -3382,6 +3443,9 @@ int run_decode(std::string_view in_path, std::string_view out_path,
         std::println(stderr, "error: cannot read {}", in_path);
         return 1;
     }
+    if (!apply_object_verification(stream, meta)) {
+        return 1;
+    }
     // bsid at bit 40 says which syntax this is, before either is assumed.
     // spdif and play branch on it the same way now that both packers handle
     // E-AC-3 (Eac3BurstPacker alongside AC-3's wrap_frame).
@@ -4337,10 +4401,13 @@ int run_eac3_silence(std::string_view out_path, std::uint32_t seconds, std::uint
 // scope is A/52 Annex E syntax, not TS 103 420's object layer, so an Atmos
 // file plays its 5.1 bed - exactly what a legacy decoder hears, which is the
 // thing most worth confirming actually sounds right.
-int run_monitor(std::string_view in_path, int device_index) {
+int run_monitor(std::string_view in_path, int device_index, const Options& meta) {
     const auto stream = read_all(in_path);
     if (stream.empty()) {
         std::println(stderr, "error: cannot read {}", in_path);
+        return 1;
+    }
+    if (!apply_object_verification(stream, meta)) {
         return 1;
     }
     const auto bsid = ac3::stream_bsid(stream);
@@ -5139,7 +5206,7 @@ constexpr std::array<Command, 26> kCommands{{
      [](const Args& x) { return run_play(x.str(1), x.i32(2, -1)); }},
     {"monitor", 2, "<in.ac3|in.ec3> [device_index]",
      "decode and play on an ordinary (non-bitstreamed) output", Needs::kMonitor,
-     [](const Args& x) { return run_monitor(x.str(1), x.i32(2, -1)); }},
+     [](const Args& x) { return run_monitor(x.str(1), x.i32(2, -1), x.meta); }},
 }};
 
 void print_usage() {
@@ -5317,7 +5384,8 @@ int run_main(int argc, char** argv) {
         const bool is_option = token.find('=') != std::string_view::npos ||
                                token == "couple" || token == "heavy" || token == "heavy2" ||
                                token == "mixmeta" || token == "sign-objects" ||
-                               token == "keep-partial" || token == "fast-mdct";
+                               token == "verify-objects" || token == "keep-partial" ||
+                               token == "fast-mdct";
         if (token == "couple") {
             couple_flag = true;
         }

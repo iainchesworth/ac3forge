@@ -45,6 +45,23 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   quantizer's own step size — and 18-22 dB audio-tracking SNR per object across 59 frames of real
   circular motion, not a single static frame.
 
+### Atmos object signing
+
+- **`ac3::signing` can now check its own tag, not just write it.** `verify_atmos_frame`/
+  `verify_atmos_stream` recompute the same HMAC-SHA-256 construction `sign_atmos_frame`/
+  `sign_atmos_stream` use and compare it against a frame's existing `protection_bits_primary`,
+  without modifying anything. `verify_atmos_frame` returns one of three outcomes rather than a
+  bool — `kNoContainer` (nothing to check), `kValid`, or `kMismatch` — so a plain or `bed51` frame
+  is never misreported as a signature failure; `verify_atmos_stream` returns the aggregate
+  `VerifySummary` (valid/mismatch/no-container counts). `ac3cli decode`/`monitor` gain
+  `verify-objects` (with `signing-key=`, same option and error shape `sign-objects` already uses):
+  a mismatch is a hard refusal, matching this project's own either/or stance on a signed stream.
+  Checking is strictly opt-in — `Eac3Decoder` itself gains no knowledge of `ac3::signing`, and a
+  `decode`/`monitor` invocation with no `verify-objects` plays a signed stream exactly like an
+  unsigned one. This checks this project's own clean-room signer's tag — round-trip testing,
+  tamper detection, and CI/delivery QC — not a real Dolby-licensed decoder's own proprietary auth
+  gate. See [docs/concepts/object-signing.md](docs/concepts/object-signing.md).
+
 ### Delivery
 
 - **MP4/ISOBMFF muxer** (`mp4::mp4`, `ac3cli mp4 <in.ac3|in.ec3> <out.mp4>`) — a second
