@@ -12,488 +12,102 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 
 ## [Unreleased]
 
-### WASM decode demo (roadmap F3)
+## [0.6.0-beta.1] - 2026-08-17
 
-- **`ac3::forge`'s decode path now builds under Emscripten.** A new `config-wasm-emscripten`
-  CMake preset (`cmake/toolchains/wasm.emscripten.toolchain.cmake`) compiles `ac3::forge` to
-  WebAssembly. Unlike every other platform preset, this one does not chainload through vcpkg:
-  the codec's decode path has zero third-party dependencies (`vcpkg.json`'s own description
-  says so — catch2 is tests-only, and tests are off for this preset), so going through vcpkg's
-  community `wasm32-emscripten` triplet would only add cost for nothing it needs.
-  `src/audio` (the project's one genuinely platform-specific library — WASAPI/ALSA/AAudio) is
-  skipped entirely under this preset; a browser build gets live audio from the Web Audio API in
-  JS instead.
-- **A real browser demo**, `platform/wasm/` — a platform app in the same shape as
-  `platform/android/`'s Shield demo, not an `examples/` snippet: an Embind wrapper
-  (`decoder_bindings.cpp`) around the existing `FrameDecoder`/`Eac3Decoder` API, plus a page
-  (`index.html`/`demo.js`) that fetches a raw `.ec3`/`.ac3` elementary stream (bundled, or
-  user-uploaded), decodes it entirely client-side, plays the decoded bed audio through the Web
-  Audio API, and visualizes real per-channel RMS energy on two speaker rings (ear-level and
-  ceiling) — the coordinate model and screen-space transform ported from the desktop GUI's
-  `SoundfieldView.qml`. A seek bar lets a viewer scrub the real decoded timeline. The bundled
-  fixture is a real 8-second, 3-object Atmos-in-DD+ stream encoded with the existing
-  `AtmosEncoder`. See [docs/platforms/wasm.md](docs/platforms/wasm.md).
-- **Real object motion, not bed energy standing in for it.** With OAMD/JOC decode landed (see
-  "Atmos object decode" below), the demo grew a second visualization — a top-down/elevation room
-  view, the same layout as the desktop GUI's Objects tab — driven entirely by real decoded
-  positions (`DecodedAccessUnit::object_metadata`) read back out of the bitstream, not an
-  authored/preview model. A "solo object" control switches playback to that object's own real
-  JOC-reconstructed audio (`::object_audio`) — its actual isolated waveform, not a re-panned
-  approximation of its slice of the bed.
-- **Embedded live in the docs site** at `docs/wasm-demo.md` (nav: Project → "Live decode demo
-  (WASM)") via an iframe over a copy of the demo under `docs/assets/wasm-decode-demo/`. That copy
-  is committed (a working fallback for a plain local `mkdocs build`), but the *published* site
-  never ships it stale: `.github/workflows/docs.yml`'s `deploy` job installs Emscripten and
-  rebuilds `platform/wasm/` fresh from source before publishing. `_build.yml`'s `build-wasm` job
-  build-verifies the same target on every push, the same role `build-android`'s always-on debug
-  APK plays. Both share a new pinned composite action, `.github/actions/setup-emscripten`.
+Fifth tagged release. The main change is Atmos object *decode*: earlier releases could only
+encode object audio, and decoding an Atmos file just played its 5.1 bed. The E-AC-3 decoder now
+reads OAMD object positions and reconstructs JOC object audio, surfaced through the CLI's
+`decode`/`monitor` commands, a new GUI object inspector, and a browser-based WASM demo that
+renders real decoded object motion and solos individual object audio. A companion
+`verify-objects` mode checks a stream's own EMDF authenticity tag (not Dolby's proprietary
+decoder gate — see Known gaps).
+
+Also landing this release: a standalone BW64/RF64 + Audio Definition Model (ADM) reader that
+drives a real professional ADM BWF master straight through to a DD+ JOC E-AC-3 stream; two new
+container writers — MP4/ISOBMFF (with fragmented MP4/CMAF segmenting plus HLS/DASH signaling)
+and MPEG-2 Transport Stream — alongside the existing Matroska writer; full ITU-R BS.1770/EBU
+R128 loudness metering and a bitstream-aware delivery-QC command; Raspberry Pi (arm64 Linux) and
+a real macOS CoreAudio backend; and the library is now installable through vcpkg.
 
 ### Atmos object decode
 
-- **`Eac3Decoder` now reads OAMD, closing a real gap between what this library can encode and
-  what it can decode.** Until now the E-AC-3 decoder read the EMDF-bearing block skip field
-  (§5.4.3.58-60) and simply discarded it — every "object decode" claim about this project was
-  true for the encoder only. `ac3::emdf::parse_container` is the decode-side inverse of
-  `build_container` (ETSI TS 102 366 Annex H): it scans the skip field for the sync word, walks
-  the payload list into `{id, bytes}` pairs, and refuses (rather than mis-parses) an
-  `emdf_payload_config` outside the one shape TS 103 420 Table 56 mandates. `ac3::oba::parse_payload`
-  is the matching inverse of OAMD's `build_payload` (TS 103 420 §5.5), reconstructing the
-  `Program`/`DynamicObject`s a stream actually declared. `DecodedSubstream`/`DecodedAccessUnit`
-  gain a new `object_metadata` field — `std::nullopt` for plain E-AC-3 with no object audio, or a
-  skip field this decoder found but declined to interpret, so existing callers that only read
-  `.channels` are unaffected either way. JOC's own per-object audio reconstruction is not part of
-  this yet; OAMD alone already recovers each object's position and gain, verified end-to-end
-  against `AtmosEncoder`'s own output.
-- **`Eac3Decoder` now reads JOC too, and actually reconstructs each object's audio.**
-  `ac3::joc::parse_payload` is the decode-side inverse of JOC's `build_payload` (TS 103 420 §6.2):
-  the Huffman-coded, differentially-predicted coefficient matrix comes back dequantized and ready
-  to use. `ac3::joc::reconstruct` then applies §6.6.6's reconstruction — this codebase has no
-  complex QMF filterbank, so it runs the operation in the same 512-sample MDCT domain
-  `AtmosEncoder`'s own `band_energy` already uses to derive the matrix in the first place (see
-  that function's comment for why the substitution is legitimate), carrying real state
-  (`ac3::joc::ReconstructionState`) frame to frame so §6.6.5's matrix ramp and each object's own
-  overlap-add both have real continuity instead of restarting cold every frame. `DecodedSubstream`/
-  `DecodedAccessUnit` gain a new `object_audio` field, one waveform per object parallel to
-  `object_metadata->objects` — populated only for the dynamic-object-only (no bed) program shape
-  where the two orderings are guaranteed to line up, which is the only shape `AtmosEncoder` itself
-  ever produces. Verified against a genuinely moving three-object scene (`examples/atmos_objects.cpp`,
-  now decodes what it encodes): mean recovered position error of 0.02 room units — essentially the
-  quantizer's own step size — and 18-22 dB audio-tracking SNR per object across 59 frames of real
-  circular motion, not a single static frame.
-- **`ac3cli decode` now surfaces the object layer the two entries above taught `Eac3Decoder` to
-  read.** Until now nothing on the CLI side looked at `object_metadata`/`object_audio` at all — a
-  decoded Atmos stream's objects were parsed in the library and then silently dropped on the
-  floor. A plain `decode` now reports the object count found (`N dynamic objects + the bed's LFE
-  = M objects`) alongside the existing channel/dialnorm summary, whether or not JOC actually
-  reconstructed audio for them; a new `objects_dir` argument additionally exports each
-  reconstructed object as its own single-channel `object_NN.wav`. `ac3cli monitor` reports the
-  same object-count line (it still only plays the 5.1 bed — object playback isn't part of what
-  that command does).
-- **`ac3gui` gains "Inspect objects…"** (header, beside "QC a stream…"), the decode-side counterpart
-  to the Objects tab's own authoring room view: opens an already-encoded E-AC-3 file and shows the
-  OAMD positions/gain and JOC-reconstructed audio `Eac3Decoder` actually recovers from it, scrubbed
-  or played frame by frame in the same plan/elevation room view the Objects tab already uses, plus
-  per-object audition through the same shared-mode playback path (`ac3::sinks::MonitorSink`) the
-  Objects tab's own motion preview uses. Read-only end to end — no plan, no source, no encoder in
-  the path, the same shape `QcController`/`QcDialog` already established for roadmap C3's "QC a
-  stream". See [docs/gui/inspect-objects.md](docs/gui/inspect-objects.md).
+- **The E-AC-3 decoder reads OAMD object metadata and reconstructs JOC object audio**, closing
+  the gap where only the encoder side supported objects. `ac3cli decode`/`monitor` surface the
+  decoded object layer directly (including per-object WAV export via `objects_dir`).
+- **A new GUI "Inspect objects…" dialog** plays back a decoded Atmos stream's object positions
+  and lets you solo individual objects' audio.
+- **A browser-based WASM demo** renders real decoded object motion and solo-plays real isolated
+  object audio, entirely in-browser.
+- **`ac3::signing` gained stream verification** (`verify_atmos_frame`/`verify_atmos_stream`, CLI
+  `verify-objects`): checks a stream's own embedded EMDF authenticity tag. This is opt-in and
+  separate from Dolby's own decoder gate — see Known gaps.
+- **The E-AC-3 decoder now applies dynamic range control** (`drc=`/`heavy`), matching the legacy
+  AC-3 decoder; previously accepted and silently ignored.
 
-### Atmos object signing
+### ADM ingest
 
-- **`ac3::signing` can now check its own tag, not just write it.** `verify_atmos_frame`/
-  `verify_atmos_stream` recompute the same HMAC-SHA-256 construction `sign_atmos_frame`/
-  `sign_atmos_stream` use and compare it against a frame's existing `protection_bits_primary`,
-  without modifying anything. `verify_atmos_frame` returns one of three outcomes rather than a
-  bool — `kNoContainer` (nothing to check), `kValid`, or `kMismatch` — so a plain or `bed51` frame
-  is never misreported as a signature failure; `verify_atmos_stream` returns the aggregate
-  `VerifySummary` (valid/mismatch/no-container counts). `ac3cli decode`/`monitor` gain
-  `verify-objects` (with `signing-key=`, same option and error shape `sign-objects` already uses):
-  a mismatch is a hard refusal, matching this project's own either/or stance on a signed stream.
-  Checking is strictly opt-in — `Eac3Decoder` itself gains no knowledge of `ac3::signing`, and a
-  `decode`/`monitor` invocation with no `verify-objects` plays a signed stream exactly like an
-  unsigned one. This checks this project's own clean-room signer's tag — round-trip testing,
-  tamper detection, and CI/delivery QC — not a real Dolby-licensed decoder's own proprietary auth
-  gate. See [docs/concepts/object-signing.md](docs/concepts/object-signing.md).
+- **A standalone BW64/RF64 + Audio Definition Model parser** (`ac3adm::ac3adm`) reads a
+  professional ADM BWF master's object graph into memory, and a bridging layer maps it onto the
+  Atmos object encoder's input shape.
+- **`ac3cli atmos-adm`** drives both together end to end: a real ADM BWF master straight to a
+  DD+ JOC E-AC-3 stream. This module is opt-in (`-DAC3FORGE_BUILD_ADM=ON`, off by default) since
+  it needs several Boost header libraries; see [docs/library/index.md](docs/library/index.md).
 
-### Delivery
+### Delivery containers
 
-- **MP4/ISOBMFF muxer** (`mp4::mp4`, `ac3cli mp4 <in.ac3|in.ec3> <out.mp4>`) — a second
-  standalone container writer alongside `matroska::matroska`, same shape: no dependency on
-  `ac3::forge`, frames taken as opaque bytes. The `ec-3`/`ac-3` sample entry's `dec3`/`dac3`
-  configuration box (ETSI TS 102 366 Annex F) is built straight off the bitstream by a new
-  `ac3::io::build_codec_config_box`, Dolby Atmos signalling included —
-  `flag_ec3_extension_type_a`/`complexity_index_type_a` (TS 103 420 §8.3) are set whenever
-  `ac3::io::scan` finds the marker in the stream's own `addbsi`, which is exactly the signal
-  FFmpeg's own MKV→MP4 remux path is documented to drop or mis-signal
-  ([jellyfin-ffmpeg#584](https://github.com/jellyfin/jellyfin-ffmpeg/issues/584)).
-- **`mpegts::mpegts`**, a third standalone container writer alongside `matroska::matroska` and
-  `mp4::mp4` — PAT + PMT + one PES-wrapped AC-3/E-AC-3 elementary stream, PCR stamped
-  every access unit, identified per the DVB profile (`stream_type` 0x06 plus the
-  `AC3_descriptor`/`Enhanced_AC3_descriptor` ETSI EN 300 468 Annex D defines, not ATSC's). New
-  `ac3cli ts` command and `examples/mux_ts.cpp`, same shape as `mkv`/`mux_mkv.cpp`.
+- **A standalone MP4/ISOBMFF container writer**, with a spec-correct `dec3`/`dac3` box, plus
+  fragmented MP4/CMAF segmenting and HLS/DASH manifest signaling.
+- **A standalone MPEG-2 Transport Stream container writer.**
+- **Live capture sessions can mux straight to Matroska.** The GUI's Format tab and the CLI both
+  gained the new container options.
 
-- **Fragmented MP4/CMAF segmenting plus HLS/DASH signaling** (`mp4::fragment`, `mp4/hls.hpp`,
-  `mp4/dash.hpp`, `ac3cli fmp4 <in.ac3|in.ec3> <out_dir> [frames_per_fragment]`) — the streaming-
-  delivery follow-up `mp4::mux`'s own header comment deliberately left for later. `fragment()`
-  lays out an initialization segment (`ftyp`+`moov`, `mvex`/`trex` in place of a populated sample
-  table) and one CMAF media segment (`styp`+`moof`+`mdat`) per fragment (ISO/IEC 14496-12 §8.8,
-  ISO/IEC 23000-19), from the same batch AudioTrack/frame shape `mux()` already takes.
-  `build_hls_media_playlist`/`build_hls_master_playlist` emit a spec-correct HLS playlist pair
-  (RFC 8216) and `build_dash_adaptation_set` a DASH `AdaptationSet` snippet (ISO/IEC 23009-1) for
-  the identical segments — one CMAF segment format, two manifest flavors. Both get `CODECS`/
-  `codecs` right (the bare `ac-3`/`ec-3` sample-entry fourcc, RFC 6381 §3 — neither codec
-  registers a dot-separated profile suffix) and, for Dolby Digital Plus with Atmos objects, HLS's
-  `CHANNELS="<N>/JOC"` (Apple's HLS Authoring Specification for Apple Devices, reiterated with a
-  worked example by Dolby's own Online Delivery Kit docs and AWS MediaLive's HLS+Atmos
-  documentation) — the same category of packaging correctness as the `dec3` box work above, and
-  the same category of bug Shaka Packager and jellyfin-ffmpeg#584 have both hit around
-  E-AC-3/Atmos-in-HLS signaling. The DASH snippet uses an exact
-  `SegmentTemplate`/`SegmentTimeline` (ISO/IEC 23009-1 §5.3.9.6) rather than one nominal
-  `duration`, avoiding a real gap found against FFmpeg's own `dash` demuxer while writing this: a
-  flat nominal duration with a shorter final segment (the normal case) let it compute one too many
-  segments from `mediaPresentationDuration` and request a segment number past the end.
+### Loudness & delivery QC
 
-- **Live sessions mux straight to Matroska.** `ac3cli record`/`ac3cli live` take a new
-  `container=mkv` trailing token, writing the take directly to `.mkv` in the one command instead of
-  needing a separate `ac3cli mkv` wrap afterward. The GUI's Live session tab already offers the same
-  choice through its existing Container combo (Format tab) — its own live write path is rebuilt on
-  top of a new incremental API, `matroska::Writer`, so a Matroska take is now written straight to
-  its real destination as it is captured rather than spooled as an elementary stream and muxed only
-  at a clean stop: Segment is written with EBML's reserved "unknown size" pattern (the standard way
-  a streamed Matroska declares a length it cannot know yet), so a crash mid-session now leaves a
-  genuinely playable, if truncated, `.mkv` behind instead of a recoverable elementary-stream
-  companion file. `matroska::mux()` (the existing whole-file API `ac3cli mkv` and file-based GUI
-  encodes use) is unchanged.
-- **The GUI's Format tab now offers MP4, fragmented MP4/CMAF and MPEG-TS in its Container combo**,
-  wired through the same `mp4::`/`mpegts::` writers the CLI's `mp4`/`fmp4`/`ts` commands use — for
-  file encodes only; live sessions keep their incremental Matroska path.
+- **Full ITU-R BS.1770-4/EBU R128 metering**: momentary and short-term loudness, loudness
+  range, and true peak.
+- **`dialnorm=auto` finished for multi-source assignments and dual-mono streams**, in both the
+  CLI and GUI (dual-mono measures each channel independently).
+- **A new CLI `qc` command and GUI QC dialog** audit an already-encoded stream's bitstream-level
+  loudness against its embedded metadata and delivery gates.
+- **A perceptual-quality (ViSQOL) column** sits alongside SNR in the quality-comparison tooling.
 
-### Production ingest
+### Platform & packaging
 
-- **BW64/RF64 + Audio Definition Model parser** (`ac3adm::ac3adm`, roadmap item B1, phase 1 of 3)
-  — a new standalone module reading the professional delivery format Netflix's and Apple's own
-  Atmos ingest pipelines require. Same shape as `matroska::matroska`/`mp4::mp4`/`mpegts::mpegts`
-  (no dependency on `ac3::forge`, codec-blind) except in the opposite direction — a reader, not a
-  writer. Parses the container (Recommendation ITU-R BS.2088-1: `<ds64>`/`<fmt >`/`<data>`/
-  `<chna>`/`<axml>`, RF64/BW64 64-bit chunk sizing and plain sub-4GB `RIFF` alike) and the ADM
-  object graph inside `<axml>` (Recommendation ITU-R BS.2076-2: `audioProgramme`/`audioContent`/
-  `audioObject`/`audioPackFormat`/`audioChannelFormat`/`audioBlockFormat`/`audioStreamFormat`/
-  `audioTrackFormat`/`audioTrackUID`, including per-block position/gain/width/height/depth,
-  `channelLock`, `jumpPosition` and HOA order/degree/normalization). Built on the EBU's own
-  reference implementations, vendored via CMake `FetchContent` — `libbw64` (header-only) for the
-  container layer and `libadm` for ADM XML parsing/validation — rather than a hand-rolled parser;
-  neither library's own types cross this module's public API (its own namespace is `ac3adm`, not
-  `adm`, specifically to avoid colliding with libadm's). `ac3adm::parse_bw64` returns the parsed
-  graph, the `<chna>` track↔ID join table and the decoded PCM together as one `AdmDocument`.
-  Unlike every other module in this project, this one is **opt-in**: `AC3FORGE_BUILD_ADM`
-  defaults off, since libadm needs several Boost header libraries resolved through a new,
-  also opt-in `adm` vcpkg feature (`-DVCPKG_MANIFEST_FEATURES=adm`) — the only third-party
-  dependency anywhere in this codebase. Every other target (`ac3cli`, `ac3gui`, tests, every
-  other example) builds identically whether it's on or off, and it is not wired into the
-  Android/NDK build or the installed `find_package(ac3forge)` package. Mapping this graph onto
-  `ac3::oba::AtmosEncoder` (phase 2) and a worked ADM→E-AC-3 pipeline example (phase 3) are not
-  part of this change — see [docs/library/adm.md](docs/library/adm.md) and
-  `examples/read_adm.cpp`.
-- **ADM → Atmos bridge** (`ac3::admbridge`, roadmap item B1, phase 2 of 3) — a new module
-  (`src/adm_bridge/`) mapping the object graph `ac3adm::ac3adm` parses onto
-  `ac3::oba::AtmosEncoder`'s input shape: one `ac3::oba::ObjectPath` plus one mono PCM span per
-  bed speaker feed or dynamic object. Classifies each `audioObject` as a DirectSpeakers bed or a
-  dynamic object via its resolved `audioPackFormat`'s `TypeDefinition` (Matrix/HOA/Binaural/User
-  Custom/mismatched packs are rejected with a clear `BridgeError` rather than mishandled); builds
-  each channel's motion/gain timeline from its `audioBlockFormat` sequence per BS.2076-2 §10.3's
-  `jumpPosition`/`interpolationLength` hold-vs-glide state machine (checked directly against the
-  standard's own Figs. 7–10 — the two cases run backwards from what a first, name-only reading
-  suggests); converts BS.2076-2's polar and Cartesian position conventions (§8) to
-  `ac3::oba::Position`'s own room-anchored one, verified against the standard's cardinal-point
-  axis directions and empirically against this project's own existing 5.1 ring-position test
-  constants; and resolves each channel's audio via `<chna>`. An LFE bed channel (Table 12's
-  `LFE`/`LFE1`/`LFE2` speakerLabel) routes via `lfe_send` rather than panning, the same convention
-  `ac3cli`'s and the GUI's own object-mode encoders already use. Depends on both `ac3adm::ac3adm`
-  and `ac3::forge` — the one module allowed to bridge them, since neither side may depend on the
-  other (`ac3adm` stays codec-blind by design; `ac3::forge` is always built and cannot gain a
-  Boost dependency) — gated by the same `AC3FORGE_BUILD_ADM` flag rather than a new option of its
-  own. Tested against a real byte-level BW64 fixture parsed by the real `ac3adm::parse_bw64()` and
-  driven through a real `AtmosEncoder`/`Eac3Decoder` round trip, confirming the decoded bitstream's
-  channel energy lands where the authored ADM positions and hold/jump timing say it should — not
-  just against hand-built graphs. Not part of the installed `find_package(ac3forge)` package, for
-  the same reason `ac3adm::ac3adm` itself is not.
-- **`ac3cli atmos-adm`, roadmap item B1 phase 3 of 3 — the last piece.** A real ADM BWF master
-  straight to a DD+ JOC E-AC-3 elementary stream: `ac3adm::parse_bw64` reads the container and ADM
-  graph, `ac3::admbridge::build` maps it onto `AtmosEncoder`'s object-list input shape, and a
-  per-frame loop drives `ac3::oba::evaluate_placements`/`AtmosEncoder::encode_frame` the same way
-  `atmos-path`/`atmos-encode` already do — no WAV, no hand-authored keyframe file, since the master
-  already carries every channel's own position/gain automation. Every `AdmError`/`BridgeError`
-  prints a real diagnosis via that error's own `describe()`. `dialnorm=auto` is refused with a
-  clear message rather than silently ignored — an ADM document's bed/object channels have no single
-  fixed layout to measure loudness against the way `atmos-encode`'s WAV input does. A minimal,
-  standalone illustration of the same pipeline ships as
-  [`examples/encode_adm.cpp`](examples/encode_adm.cpp), writing its own small BW64/ADM fixture
-  (bed speaker feed plus one moving object) rather than requiring a real production master. Both
-  are the first code outside `tests/` to link `ac3adm::ac3adm`/`ac3::admbridge` — `src/cli/
-  CMakeLists.txt` links them only when the same flag turned the two libraries on; `ac3cli` itself
-  still builds and works identically with the flag off, just without this one command. Reached with
-  no preprocessor conditional anywhere (`scripts/check-platform-macros.ps1`, CI-enforced, forbids
-  any `#if`/`#ifdef` under `src/` — feature flags included, not just platform ones): `atmos-adm` is
-  always one row of `main.cpp`'s command table, refused at dispatch time by a new `Needs::kAdm`
-  case in the existing `unmet()` capability gate (the same mechanism
-  `Needs::kCapture`/`kPassthrough`/`kMonitor` already use for platform audio capability) when
-  `ac3cli::adm_capability()` reports unavailable — backed by a small pair of CMake-selected files,
-  `src/cli/adm/{enabled,disabled}/atmos_adm.cpp`, the identical "exactly one file compiled in,
-  chosen by CMake" shape this file's own `platform/{windows,posix}/stdio_binary.cpp` split already
-  uses for an OS difference, applied here to a library-linked-or-not one instead — see
-  `src/cli/adm/atmos_adm.hpp`'s own top comment for the full reasoning. Tested against a real
-  byte-level BW64 fixture run through the actual built `ac3cli` binary as a subprocess, decoding
-  what it wrote and confirming the channel energy lands where the authored ADM positions and
-  hold/jump timing say it should, plus two CLI-level error-path cases. See
-  [docs/library/adm-bridge.md](docs/library/adm-bridge.md) and
-  [docs/cli/commands.md](docs/cli/commands.md).
+- **Raspberry Pi (arm64 Linux)** is now a supported platform, Pi 4/5 tier (Pi 3 out of scope on
+  real-time budget grounds).
+- **A real macOS CoreAudio backend** for live capture/monitor playback.
+- **The library is installable via vcpkg** (staged in-tree pending submission to the curated
+  registry — see [docs/releasing.md](docs/releasing.md#vcpkg-port)): `ac3::forge` plus
+  `matroska`/`mp4`/`mpegts` as opt-in container-writer features.
 
-### Codec depth
+### Fixes
 
-- **Decoder dither substitution** (roadmap D2) — both decoders now implement A/52 §7.3.4: a
-  zero-bap mantissa reconstructs as a dither sample when its channel's `dithflag` is set, and as
-  a true zero when it is clear, instead of always silence regardless of the flag. AC-3 reads
-  `dithflag[ch]` fresh every block (§5.4.3.2); E-AC-3's Annex E equivalent is frame-gated
-  (`dithflage`) and, per Table E1.4, defaults every channel's `dithflag` to **on** for the whole
-  frame when that gate is clear — the opposite of "absent means off" most of Annex E's other
-  optional syntax uses, so this needed its own default rather than reusing the general pattern. A
-  coupled channel's shared high band is dithered per §7.3.4's own "applied after the individual
-  channels are extracted from the coupling channel ... uncorrelated" requirement: each receiving
-  channel draws its own independent sample, gated by its own `dithflag`, rather than dithering the
-  shared coupling-channel coefficient once and letting every coupled channel inherit a scaled copy
-  of the same noise. The generator (`ac3::DitherGenerator`) is a deterministic xorshift32 mapped
-  onto the spec's own "uniform distribution ... scale this by 0.707" — the same class of
-  unspecified-generator freedom this codebase's spectral-extension and enhanced-coupling noise
-  already use. This project's own encoders still always transmit `dithflag = 0` (true silence),
-  so no existing encoder output changes; the new behavior is reachable today by any other
-  encoder's stream, or a hand-built one.
+- **AC-3 decode's reported dynamic-range floor was wrong whenever the true minimum sample was
+  exactly 0.0 dB** — an accumulator seeded at 0.0 instead of the first real sample silently
+  widened the reported range.
+- **A flushed E-AC-3 dependent substream (e.g. a height-only pair at end of stream) could crash
+  the CLI decoder** instead of writing correct audio, when its channel layout didn't match the
+  program's main substream.
+- **`fast-mdct=off` is now honored consistently** across all `eac3-encode`/`eac3-encode-multi`
+  commands.
+- **Piping CLI output to `-` no longer risks corrupting stdout** when `dialnorm=auto` or a
+  multi-source summary is printed.
+- **The GUI's auto-monitor preference now actually takes effect** on the input rail's Add
+  button.
 
-### Loudness and QC
+### Known gaps
 
-- **Full R128 metering in `ac3::meta::LoudnessMeter`** (roadmap C1): momentary (400 ms) and
-  short-term (3 s) loudness — BS.1770-4 §2's own un-gated block power, read directly instead of
-  gated the way `integrated_lkfs()` already was; Loudness Range (`loudness_range()`) — EBU Tech
-  3342 §3.1's cascaded gate (-70 LUFS absolute, then -20 LU relative to what survives it, a
-  *different* relative threshold to integrated loudness's own -10 LU) over the short-term series,
-  reported as the 95th minus 10th percentile of what is left; and true peak (`true_peak_dbtp()`)
-  — ITU-R BS.1770-4 Annex 2's 4x-oversampled peak estimator, built from the Annex's own tabulated
-  order-48/4-phase FIR rather than the project's general-purpose offline `dsp::resampler` (that
-  one allocates and designs its own kernel; this is a fixed, tiny, allocation-free per-sample
-  filter, and Annex 2 gives no formula to redesign it from in the first place). True peak is the
-  one measure of the four that does not exclude the LFE channel or apply the surround
-  weighting — it is about physical overload headroom, not perceived loudness. All four share the
-  existing K-weighting/channel-summing machinery rather than duplicating it.
-- **`ac3cli qc` (roadmap C2), bitstream-aware loudness QC** — decodes a whole AC-3/E-AC-3 stream,
-  measures it with the real BS.1770-4/EBU Tech 3342 meter (the same `ac3::meta::LoudnessMeter`
-  `dialnorm=auto` already uses), and reports it against the stream's own embedded `dialnorm`/
-  `compr` — for E-AC-3, against the independent substream's own bed audio only, never a
-  dependent's, matching the scope the encoder's own pre-encode `measured_dialnorm` pass already
-  uses for the same programme. A new `ac3::meta::qc.hpp` names three delivery gates
-  (`preset=ebu-r128-s2 | atsc-a85 | netflix`, or `preset=all` for every one), each preset's
-  target loudness, tolerance and true-peak ceiling cited from its own primary source rather than
-  recalled from memory: EBU R 128 s2 "Loudness in Streaming" (Nov 2023 v3) plus EBU R 128 (Nov
-  2023 v5) for the tolerance/ceiling it defers to, ATSC A/85:2013 §6, and Netflix's Sound Mix
-  Specifications & Best Practices v1.6. Exit code is 0 only when the stream decodes cleanly and
-  (if a preset was given) every requested gate passes — the whole point being a usable CI/pipeline
-  QC step. Along the way, the E-AC-3 decoder gained a genuinely missing piece its own bitstream
-  parsing already walked past: the independent/convertible substream's own `compr` word was
-  parsed (to keep the bit count right) but discarded rather than exposed on `DecodedSubstream`/
-  `DecodedAccessUnit` — `qc` needed it, so it is now reported like AC-3's decoder already reports
-  its own `compr`.
-- **`ac3gui`'s own QC surface (roadmap C3), completing Theme C** — a **QC a stream…** button in
-  the header opens a new dialog that runs the exact measurement `ac3cli qc` does (decode, BS.1770-4
-  measure, compare against the stream's own embedded `dialnorm`/`compr`) against a chosen
-  `.ac3`/`.ec3` file, off the GUI thread the same way every encode already is. It is a standalone
-  dialog rather than a sixth tab beside Format/Coding tools/Metadata/Objects/Live session
-  deliberately — QC opens and verifies a file that already exists, with no source, plan or encoder
-  involved anywhere in the path, so it has nothing in common with the five tabs beside it, which
-  are all pages of controls for a plan still to come; see docs/gui/qc.md for the full reasoning.
-  The report shows integrated loudness, loudness range and true peak as filled meters (the same
-  track/fill shape the channel meters already use), a `1+1` dual-mono stream reported as its two
-  independent programmes, the dialnorm-vs-measured delta `ac3cli qc` already prints, and a
-  pass/fail verdict per delivery preset (`EBU R 128 s2`/`ATSC A/85`/`Netflix`, or all three at
-  once) — picking a single preset also draws its target tolerance band / true-peak ceiling as
-  lines on the meters, so a failing gate shows why. A new `QcController` singleton carries this
-  state rather than `EncoderController`, which stays exactly what it already was: encode-workflow
-  state only.
+- Objects still will not decode as *objects* in Dolby's own decoder or hardware: DD+ JOC gates
+  that on an authenticity tag keyed to a secret embedded in Dolby's decoder binaries, which this
+  project ships no key for. `verify-objects` checks a stream against its *own* signature, not
+  Dolby's gate. The bed still decodes as plain 5.1 anywhere.
+- Exclusive-mode S/PDIF/HDMI passthrough has not been confirmed against real bitstreaming
+  hardware on any platform.
+- `fscod2` audio content has no external decode oracle at all — verified only by this project's
+  own encoder/decoder round trip.
 
-### CLI
-
-- **`-` as a file argument means stdin/stdout**, the conventional Unix pipe convention, for
-  `encode`/`eac3-encode`/`atmos-encode`'s WAV input and AC-3/E-AC-3 output and for `decode`'s
-  stream input and WAV output — e.g. `ac3cli encode - - 448 couple < in.wav > out.ac3` and
-  `ac3cli decode - - < out.ac3 > out.wav`. Windows needs no special handling from the caller:
-  ac3cli puts stdin/stdout into binary mode itself before the first byte crosses either one (the
-  CRT defaults both to text mode, which otherwise corrupts compressed audio). With `-` as the
-  output path, the usual per-run status text (frame count, routing, per-channel levels) prints to
-  stderr instead of stdout, so it never lands inside the piped stream.
-- **`dialnorm=auto`/`dialnorm2=auto` now work with `src=`/`map=` multi-source encodes**
-  (`encode`/`eac3-encode`), instead of being unconditionally refused the moment more than one
-  source was in play. The whole programme is routed once as a BS.1770-4 measurement pre-pass —
-  over what `map=` actually assembles (post-routing, post-trim), not each source's own raw file —
-  before the real per-frame encode loop routes it again to encode it, mirroring the two-pass
-  measure-then-encode shape the single-file path already used. Along the way, a real bug in that
-  single-file path was found and fixed: `dialnorm` (Ch1) under a `1+1` dual-mono bed was silently
-  measuring the COMBINED BS.1770 loudness of both channels together (as if Ch1/Ch2 were a coherent
-  stereo pair) rather than Ch1's own channel alone, while `dialnorm2` (Ch2) was already correct —
-  both now measure their own programme independently, as §E1.3 requires (no downmix between the
-  two). The GUI's own encoder controller now does the same — `dialnorm=auto`/`dialnorm2=auto`
-  measure each dual-mono programme's own coded channel independently there too, and the
-  Metadata tab's Programme 2 **measure** checkbox is enabled accordingly.
-- Five small CLI/docs accuracy fixes found during the docs sweep above:
-  - **`sign-objects`/`signing-key=` now reach `atmos-path` and `atmos-encode`, not just `atmos`**:
-    all three commands parsed the flags (nothing in the trailing-options parser is
-    command-specific), but only `atmos`'s own run function called into the signer —
-    `atmos-path` and `atmos-encode` silently accepted and ignored both. All three sign
-    identically now.
-  - **`eac3-sine` now honors `fast-mdct=off`**: unlike `eac3-encode` it has no `[tools]`
-    positional to spell it through, and previously never read the option at all, so there was
-    no way to force the direct §8.2.3.2 transform for it. `eac3-silence` still has no use for
-    either spelling — it builds a silent access unit directly, with no forward transform in the
-    loop to choose a path for — so the built-in usage text no longer implies otherwise.
-  - **`eac3-encode`/`eac3-encode-multi` now honor `fast-mdct=off` directly**: every other encode
-    path (`atmos*`, `record`, `live`, `eac3-sine`, `encode`) applied `fast-mdct=off` before
-    resolving the tools set, but these two never did — only their `[tools]` positional's bare
-    `nofastmdct` token reached `Tools::fast_mdct`, so `fast-mdct=off` parsed and was silently
-    ignored. Both now apply it the same way as everywhere else; the `[tools]` positional's own
-    token still wins if both are given on the same command line.
-  - **`map=` rows aimed at `obj`/`objm` (or `p1`/`p2` outside a dual-mono target) now warn
-    instead of silently vanishing**: this CLI has no object-assembly path of its own (that's
-    the GUI's), so `encode`/`eac3-encode` print a warning naming the source/channel and
-    destination for every row `route()` cannot carry, rather than that channel's audio just
-    disappearing with no diagnostic.
-  - Corrected the built-in usage text's wide-layout inference line (`8 -> 7.1`, `10 -> 5.1.4`,
-    `12 -> 7.1.4`), which read as if `encode` shared it with `eac3-encode` — `encode` refuses
-    anything wider than 3/2 + LFE, so the inference is `eac3-encode`-only.
-
-### AC-3 encoding
-
-- **Delta bit allocation alongside coupling** (roadmap D3): the encoder previously withheld
-  delta bit allocation (§7.2.2.6) from every stream the instant coupling was active for the
-  frame — not just the coupling channel itself, but every fbw channel too, even the narrow
-  band each still codes independently below the coupling frequency. §7.2.2.6 places no such
-  restriction ("the delta bit allocation option is available for each fbw channel and the
-  coupling channel"), so both are now eligible whenever coupling is on. Doing this blindly
-  regressed a standing invariant — "coupling must not cost more bits than the channels it
-  replaces" — at 96 kbit/s stereo, the moment delta's own side-info cost and per-band
-  precision shifts started eating into the same budget coupling was supposed to free up; the
-  encoder now runs its SNR-offset search a second time with delta cleared whenever coupling
-  is active and something is queued to send, and keeps whichever pass reaches the higher
-  composite offset. LFE was already correct as it stood: A/52 defines no delta bit allocation
-  field for the LFE channel at all (§7.2.2.6, §5.4.3.49's own `for (ch = 0; ch < nfchans;
-  ch++)` loop bound never reaches it), so nothing changed there.
-
-### Raspberry Pi (arm64 Linux) — new platform
-
-- **Raspberry Pi 4/5 support**: a new `arm64-linux-{gcc,llvm}` vcpkg triplet pair and matching
-  `config-linux-{gcc,llvm}-arm64[-debug]` presets, backed by two new required CI legs on real ARM
-  hardware (GitHub's `ubuntu-24.04-arm` runner) and validated for real over SSH against a
-  Raspberry Pi 4B — full build, 440/440 tests, and the real-time encode gate all pass on both
-  compilers, and `cpack` produces a correctly arm64-labeled `.deb`. No platform-tree code changed:
-  Raspberry Pi OS hits the exact same `if(LINUX)`/ALSA/HDMI passthrough path any x86_64 Debian
-  box does. Pi 3 is explicitly not a supported target (real-time budget risk on its weaker CPU).
-- Two real, previously-latent bugs this validation found and fixed along the way: a GCC 14
-  `-Wnull-dereference` false positive at `-O2`/`-O3` inside libstdc++'s own headers, and a missing
-  `clang-tools` toolchain dependency (`clang-scan-deps`) that broke every `find_package` check
-  under Clang's Ninja module scan.
-
-### Packaging
-
-- **A vcpkg port is staged in-tree** at `packaging/vcpkg-port/ac3forge` (portfile, usage text,
-  and a `matroska` feature for the optional Matroska writer), pending submission to the curated
-  `microsoft/vcpkg` registry. The submission and per-release update flow, and how to validate the
-  port locally, are documented in [docs/releasing.md](docs/releasing.md#vcpkg-port).
-
-### Validation
-
-- **A perceptual-quality column alongside SNR** (roadmap G1) on `tools/quality_race.py`'s `ac3`/
-  `eac3`/`eac3-51`/`trend` tables and on the [docs/tool-comparison-trend.md](docs/tool-comparison-trend.md)
-  and [docs/landscape.md](docs/landscape.md) pages: MOS-LQO (Mean Opinion Score - Listening
-  Quality Objective) from [ViSQOL](https://github.com/google/visqol)'s audio mode, chosen over
-  PEAQ (ITU-R BS.1387) — PEAQ itself is FRAND-licensed ITU IP, not a dependency this clean-room
-  project wants, and the one credible open implementation (GstPEAQ) documents its own
-  non-conformance to the BS.1387-1 tolerance and has no Python surface at all. Google's own
-  `google/visqol` has no published PyPI wheel (its Python API needs a Bazel + TensorFlow source
-  build), so this uses `visqol-python`, a pure-Python Apache-2.0 reimplementation with prebuilt
-  wheels that scores within 0.0002 MOS-LQO of the reference C++ implementation on its own
-  conformance suite. Optional throughout, the same AUTO shape as `AC3FORGE_WITH_ALSA`
-  (`src/audio/CMakeLists.txt`): a missing `visqol-python` install skips the column with one clear
-  message rather than failing the run, and CI does not install it either, so the fidelity gate
-  (`quality_race.py ci`) gains no new dependency or runtime cost — only the reporting tables and
-  `trend`'s JSON output request a score at all.
-- **Test coverage backfill for the WAV reader and the §7.8 downmix** (roadmap G2).
-  `ac3::io::read_wav` (`tests/test_wav.cpp`, new) had no dedicated test at all despite being the
-  fixture-loading path every codec test in the suite depends on: its RIFF/WAVE validation, PCM16
-  decode scaling, `WAVE_FORMAT_EXTENSIBLE` handling, and its documented clamp-not-error behaviour
-  when a data chunk's declared size overruns the bytes actually present were all unexercised.
-  `ac3::meta::mixing` (`tests/test_mixing.cpp`, new) — `stereo_downmix`/`mono_downmix`'s per-acmod
-  routing, `mono_downmix_peak_dbfs`'s phase behaviour, and the `coefficient()`/
-  `valid_surround_mix_level()`/`lfe_mix_level_db()` tables — had only the aggregate `<=1`
-  normalization-bound check `test_drc.cpp` already carried; the mix-level tables and several
-  per-acmod branches (discrete-vs-spread surround routing, 1+1 dual mono) had none.
-  `tests/test_cli.cpp` gained coverage for the `silence`/`eac3-silence` commands' own argv wiring
-  (seconds/bitrate/layout threading, default application, invalid-bitrate rejection) — the
-  frame-building code underneath was already covered unit-level, but the CLI dispatch row itself,
-  the thing the command table's own comment credits with catching six real argv-index bugs during
-  its refactor, was not. Roadmap item G2's original "seven tests / four thousand lines" CLI
-  estimate was already stale by the time work started (the CLI has grown past 5,000 lines and 30
-  test cases since); `meta/loudness` and `silent_frame`, the roadmap's other two named gaps,
-  turned out to already have solid dedicated coverage (`tests/test_loudness.cpp`,
-  `tests/test_frame.cpp`) and were left alone.
-
-### Developer tooling
-
-- **Differential decoder fuzzing against FFmpeg** (roadmap G3): two new libFuzzer harnesses,
-  `fuzz_differential_ac3_decode`/`fuzz_differential_eac3_decode`, that drive the same
-  `split_frames`/`split_access_units` mutation surface `fuzz_ac3_decode`/`fuzz_eac3_decode`
-  already crash-fuzz, but additionally decode each mutated stream a second time with FFmpeg
-  (the same `-xerror -err_detect crccheck+bitstream+buffer+explode` strict-decode invocation
-  already used everywhere else this project treats FFmpeg as an oracle) and diff the PCM. A
-  mismatch is only reported when BOTH decoders accept the whole input and produce comparably-
-  shaped audio — FFmpeg's own error-concealment on a malformed frame legitimately differs from
-  this project's spec-strict decode, so declining a mutated frame is never itself a divergence
-  (`fuzz/differential_oracle.hpp` has the full reasoning). The agreement floor (6 dB) was
-  calibrated empirically, not guessed: a sweep of every currently-committed seed found real,
-  unmutated, already-shipping content — a panning source, and pure single-tone material — that
-  legitimately disagrees with FFmpeg by as much as 12–24 dB, traced to A/52 leaving bap-0
-  (unallocated) coefficient reconstruction implementation-defined ("any reasonably random
-  sequence"): this decoder always reconstructs zero there for deterministic parity, while
-  FFmpeg synthesizes real dither noise. Verified against a real, deliberately-introduced decode
-  bug (a dropped overlap-add term) before considering it done. New `fuzz-differential` CI job
-  in `.github/workflows/fuzz.yml`, its own 60-second-per-harness push-only budget and
-  `continue-on-error: true` (same experimental convention as `fuzz-short`/`fuzz-nightly`) — not
-  folded into either existing job, since it needs `ffmpeg` on PATH and is much slower per-exec
-  (a real FFmpeg process per comparable input). The two harnesses share their crash-only
-  siblings' seed corpora rather than duplicating them.
-- **A public [ROADMAP.md](ROADMAP.md)**: the candidate list of possible future work, each item
-  carrying a stable ID (`A1`–`G3`) that pull requests and this changelog can reference; mirrored
-  on the docs site.
-- **Static-analysis hardening, continuing 0.3.0-beta.1's round**: the remaining MSVC `/analyze`
-  C6262 stack-usage findings fixed (large codec state heap-allocated instead of declared on
-  worker stacks), plus a follow-up correcting the first pass's own regressions.
-
-### macOS — real CoreAudio audio backend (roadmap E1)
-
-- **`src/audio/src/platform/macos/`**: live capture, IEC 61937 bitstream passthrough and
-  shared-mode monitor playback are now real on macOS, replacing the no-backend stub `if(APPLE)`
-  fell back to. Built on the Audio HAL (`AudioObjectID`/`AudioDeviceIOProc`) rather than
-  `AVAudioEngine`, the same layer WASAPI and ALSA occupy on their own platforms, for the same
-  reason ALSA rather than PulseAudio/PipeWire is the Linux backend: passthrough's exclusive-mode
-  format switch has to happen at that layer, so device enumeration, hog mode and format
-  negotiation live in one place (`coreaudio_support.hpp`) all three capabilities share. Capture
-  reads any HAL input endpoint; monitor plays ordinary float PCM back through a HAL output
-  endpoint, retuning the device's nominal sample rate when it doesn't already match (no engine-
-  level resampler exists at this layer the way WASAPI shared mode has one); passthrough takes hog
-  mode on a digital (HDMI/optical) output and retunes its *physical* stream format to
-  `kAudioFormat60958AC3` (AC-3) or `kAudioFormatEnhancedAC3` (E-AC-3, probed the same way though
-  the constant has no comparable IEC 60958-wrapped documentation history — see the file's own
-  header) before feeding it raw bursts, confirmed against three independent real-world
-  implementations of the same mechanism (MythTV, mpv, VLC) while researching it. No loopback
-  capture: unlike WASAPI's any-render-endpoint-in-loopback-mode, the HAL has no equivalent short
-  of Apple's Objective-C-only, permission-gated Core Audio Process Tap API (macOS 14.4+), so this
-  is the same honest gap ALSA already documents for a machine without `snd-aloop`. Linked via
-  `-framework CoreAudio -framework CoreFoundation`; `AC3FORGE_AUDIO_BACKEND` reports `macos`.
-  Verified via the `macos-llvm` CI leg only — no Mac is available to this project locally.
+See [Validation](docs/verification.md) for the full account of what is and isn't independently
+verified.
 
 ## [0.5.0-beta.1] - 2026-08-15
 
