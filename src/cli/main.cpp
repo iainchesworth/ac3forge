@@ -3366,33 +3366,81 @@ int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path
     }
     // Whatever transient pre-noise processing was still holding back at
     // end-of-stream. flush() returns raw per-substream results rather than
-    // assembled access units (see its own doc comment); appended directly
-    // here, which is exactly right for the common case this covers - a
-    // single independent substream with no dependents, where a substream's
-    // own channel order already matches the access unit's.
-    for (auto& substream : decoder.flush()) {
-        if (pcm.empty()) {
-            ac3::DecodedAccessUnit synthesized;
-            synthesized.sample_rate = substream.sample_rate;
-            synthesized.acmod = substream.acmod;
-            synthesized.dialnorm = substream.dialnorm;
-            synthesized.substream_count = 1;
-            synthesized.layout = ac3::eac3::chanmap::expand(substream.location_map());
-            first = synthesized;
-            pcm.resize(substream.channels.size());
-        }
+    // assembled access units (see its own doc comment) - placed at the SAME
+    // pcm slot decode_access_unit's own §E3.8.2 assembly would have used
+    // (via location_map()), not assumed to already sit at that slot: a lone
+    // independent substream's coded order happens to agree with pcm's, but
+    // a dependent carrying only its own smaller channel set does not, and
+    // naively appending it by coded index corrupts already-established
+    // channels (e.g. a bed's L/R) with a dependent's height audio instead.
+    const auto flushed = decoder.flush();
+    if (!flushed.empty()) {
         // §7.7 words are meaningful at this report's level only from the
         // independent (bed) substream - same convention as
-        // DecodedAccessUnit::dynrng/compr above; a dependent flushed here on
-        // its own (only possible when transient pre-noise processing has left
+        // DecodedAccessUnit::dynrng/compr above; a dependent flushed here
+        // (only possible when transient pre-noise processing has left
         // substreams of one access unit desynchronised at end-of-stream) is
         // never the figure this report promises.
-        if (substream.strmtyp == ac3::eac3::StreamType::kIndependent) {
-            track_metadata(substream.dynrng, substream.numblkscod, substream.compr);
+        for (const auto& substream : flushed) {
+            if (substream.strmtyp == ac3::eac3::StreamType::kIndependent) {
+                track_metadata(substream.dynrng, substream.numblkscod, substream.compr);
+            }
         }
-        for (std::size_t ch = 0; ch < substream.channels.size(); ++ch) {
-            pcm[ch].insert(pcm[ch].end(), substream.channels[ch].begin(),
-                           substream.channels[ch].end());
+        const bool dual_mono = pcm.empty() ? flushed.front().acmod == ac3::Acmod::kDualMono
+                                            : first.acmod == ac3::Acmod::kDualMono;
+        if (dual_mono) {
+            // No Table E2.5 location to place by - dual mono is always a
+            // lone substream with no dependents and no spatial layout
+            // (decode_access_unit's own comment) - so its channels go
+            // straight to pcm in coded order, same as decode_access_unit.
+            for (const auto& substream : flushed) {
+                if (pcm.empty()) {
+                    first.acmod = ac3::Acmod::kDualMono;
+                    first.sample_rate = substream.sample_rate;
+                    first.dialnorm = substream.dialnorm;
+                    first.substream_count = 1;
+                    pcm.resize(substream.channels.size());
+                }
+                for (std::size_t ch = 0; ch < substream.channels.size(); ++ch) {
+                    pcm[ch].insert(pcm[ch].end(), substream.channels[ch].begin(),
+                                   substream.channels[ch].end());
+                }
+            }
+        } else {
+            if (pcm.empty()) {
+                // No access unit ever completed - synthesize the program's
+                // layout by unioning every flushed substream's own
+                // locations, exactly like decode_access_unit's own §E3.8.2
+                // assembly.
+                std::uint16_t occupied = 0;
+                for (const auto& substream : flushed) {
+                    occupied = static_cast<std::uint16_t>(occupied | substream.location_map());
+                }
+                ac3::DecodedAccessUnit synthesized;
+                synthesized.sample_rate = flushed.front().sample_rate;
+                synthesized.acmod = flushed.front().acmod;
+                synthesized.dialnorm = flushed.front().dialnorm;
+                synthesized.substream_count = static_cast<int>(flushed.size());
+                synthesized.layout = ac3::eac3::chanmap::expand(occupied);
+                first = synthesized;
+                pcm.assign(static_cast<std::size_t>(first.layout.count), {});
+            }
+            // §E3.8.2 placement: each flushed substream's own channels land
+            // at whichever slot their Table E2.5 location occupies in
+            // `first.layout`, mirroring decode_access_unit's own assembly
+            // loop rather than assuming pcm[0..channels.size()).
+            for (const auto& substream : flushed) {
+                const auto locations = ac3::eac3::chanmap::expand(substream.location_map());
+                for (int i = 0; i < locations.count; ++i) {
+                    const int slot = first.layout.index_of(locations[i]);
+                    if (slot < 0) {
+                        continue;
+                    }
+                    const auto& channel = substream.channels[static_cast<std::size_t>(i)];
+                    pcm[static_cast<std::size_t>(slot)].insert(
+                        pcm[static_cast<std::size_t>(slot)].end(), channel.begin(), channel.end());
+                }
+            }
         }
     }
     if (pcm.empty()) {
