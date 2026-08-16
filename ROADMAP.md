@@ -118,9 +118,7 @@ decoded an AC-3/E-AC-3 bitstream and verified its loudness metadata against meas
   genuine Atmos-in-DD+ stream, plays the real 5.1 bed, and renders each object's real
   decoded position (OAMD, #168) moving in a top-down/elevation room view — plus a "solo
   object" control that plays that object's own real JOC-reconstructed audio (#169), not its
-  panned slice of the bed. Depends on #169 (JOC audio decode) merging — this item's own PR
-  merges that branch directly rather than waiting, so it's checked off here as true of that
-  PR's own code, not yet of `develop` alone until #169 lands there too.
+  panned slice of the bed. Both #168 and #169 are merged to `develop`.
 - [ ] **F4 (M)** — Package-manager presence: a vcpkg port, a Homebrew formula, a winget
   manifest. **The vcpkg port is staged in-tree** — see
   [`packaging/vcpkg-port/ac3forge/`](https://github.com/iainchesworth/ac3forge/tree/main/packaging/vcpkg-port/ac3forge),

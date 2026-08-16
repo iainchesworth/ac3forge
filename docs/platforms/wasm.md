@@ -113,5 +113,4 @@ would never trigger a redeploy at all, and the live demo would silently drift fr
     assumption, and CI's `build-wasm`/`docs.yml` jobs both run on `ubuntu-latest`, but no macOS run
     has been attempted anywhere. No automated *browser* test runs this in CI — `build-wasm` proves it
     compiles, not that it decodes/plays/renders correctly; every functional claim above is manual
-    verification across this PR's sessions, not a repeatable check. `ac3::forge#169` (JOC audio) is
-    merged into *this* PR's branch directly but is not yet on `develop` itself.
+    verification across this PR's sessions, not a repeatable check.
