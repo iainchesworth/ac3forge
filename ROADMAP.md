@@ -101,7 +101,7 @@ AC-3/E-AC-3 bitstream and verifies its loudness metadata against measurement.
 - [ ] **G2 (M)** — Backfill thin test coverage: the CLI has seven tests against roughly four
   thousand lines; the WAV reader, `meta/loudness`, `meta/mixing`, and `silent_frame` have no
   dedicated test files.
-- [ ] **G3 (M)** — Differential decoder fuzzing against FFmpeg: feed the same mutated frames
+- [x] **G3 (M)** — Differential decoder fuzzing against FFmpeg: feed the same mutated frames
   to both decoders and diff the PCM.
 
 ## Deliberately not on the list
