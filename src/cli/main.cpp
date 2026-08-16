@@ -55,6 +55,7 @@
 #include "mp4/mp4.hpp"
 #include "mpegts/mpegts.hpp"
 #include "platform/stdio_binary.hpp"
+#include "adm/atmos_adm.hpp"
 
 namespace {
 
@@ -509,18 +510,24 @@ bool parse_options(std::span<char*> tokens, Options& out) {
 // text, same rounding, one place either could go wrong. `programme` is the
 // println's leading label ("Ch1"/"Ch2"), empty for a whole-programme
 // measurement that is not about one dual-mono channel; `field` is the
-// bitstream field this measurement feeds ("dialnorm"/"dialnorm2").
+// bitstream field this measurement feeds ("dialnorm"/"dialnorm2"). `out`
+// defaults to stdout for callers with no "-" output stream to protect (the
+// standalone loudness command); every dialnorm=auto/dialnorm2=auto encode
+// path passes status_stream(out_path) instead, the same convention
+// print_channel_summary and print_routing use.
 std::optional<int> finish_measurement(const ac3::meta::LoudnessMeter& meter,
-                                      std::string_view programme, std::string_view field) {
+                                      std::string_view programme, std::string_view field,
+                                      FILE* out = stdout) {
     const auto lkfs = meter.integrated_lkfs();
     if (!lkfs) {
         return std::nullopt;
     }
     const int dialnorm = ac3::meta::dialnorm_from_lkfs(*lkfs);
     if (programme.empty()) {
-        std::println("measured {:.2f} LKFS (BS.1770-4, gated) -> {} {}", *lkfs, field, dialnorm);
+        std::println(out, "measured {:.2f} LKFS (BS.1770-4, gated) -> {} {}", *lkfs, field,
+                     dialnorm);
     } else {
-        std::println("{} measured {:.2f} LKFS (BS.1770-4, gated) -> {} {}", programme, *lkfs,
+        std::println(out, "{} measured {:.2f} LKFS (BS.1770-4, gated) -> {} {}", programme, *lkfs,
                      field, dialnorm);
     }
     return dialnorm;
@@ -534,7 +541,7 @@ std::optional<int> finish_measurement(const ac3::meta::LoudnessMeter& meter,
 // callers route dual mono through measured_dialnorm_channel on each
 // programme's own channel alone instead.
 std::optional<int> measured_dialnorm(const ac3::io::WavData& wav, ac3::SampleRate rate,
-                                     ac3::Acmod acmod, bool lfe) {
+                                     ac3::Acmod acmod, bool lfe, FILE* out = stdout) {
     ac3::meta::LoudnessMeter meter{rate, acmod, lfe};
     std::vector<std::span<const float>> views;
     views.reserve(wav.channels.size());
@@ -542,7 +549,7 @@ std::optional<int> measured_dialnorm(const ac3::io::WavData& wav, ac3::SampleRat
         views.emplace_back(channel);
     }
     meter.push(views);
-    return finish_measurement(meter, {}, "dialnorm");
+    return finish_measurement(meter, {}, "dialnorm", out);
 }
 
 // Same measurement, for one dual-mono programme's own channel alone - never a
@@ -551,11 +558,12 @@ std::optional<int> measured_dialnorm(const ac3::io::WavData& wav, ac3::SampleRat
 // labels above - "Ch1"/"dialnorm" or "Ch2"/"dialnorm2", the two programmes
 // sharing this one function since the measurement itself does not differ.
 std::optional<int> measured_dialnorm_channel(std::span<const float> channel, ac3::SampleRate rate,
-                                             std::string_view programme, std::string_view field) {
+                                             std::string_view programme, std::string_view field,
+                                             FILE* out = stdout) {
     ac3::meta::LoudnessMeter meter{rate, ac3::Acmod::k1_0, false};
     const std::array<std::span<const float>, 1> views{channel};
     meter.push(views);
-    return finish_measurement(meter, programme, field);
+    return finish_measurement(meter, programme, field, out);
 }
 
 // Dual mono's Ch1/Ch2 arrive as either one two-channel file or two mono ones;
@@ -1788,6 +1796,11 @@ int run_eac3_encode_multi(std::string_view in_path, std::string_view out_path,
     // dialnorm2 only means anything under 1+1 - silently inert otherwise,
     // exactly like run_eac3_encode's identical check for its one file.
     const bool want_dialnorm2 = dual_mono && p.meta.measure_dialnorm2;
+    // status_stream(out_path): stderr instead of stdout when out_path is "-"
+    // - the E-AC-3 bytes this function writes below already own stdout in
+    // that case, and no human-readable report (the dialnorm=auto measurement
+    // just below included) may land in the middle of them.
+    const auto status = status_stream(out_path);
     if (want_dialnorm || want_dialnorm2) {
         // §5.4.2.8's BS.1770 pass has to measure what the encoder actually
         // receives - the routed/rendered coded channels, not each source's
@@ -1826,8 +1839,8 @@ int run_eac3_encode_multi(std::string_view in_path, std::string_view out_path,
             }
         }
         if (want_dialnorm) {
-            const auto measured = dual_mono ? finish_measurement(*ch1, "Ch1", "dialnorm")
-                                            : finish_measurement(*whole, {}, "dialnorm");
+            const auto measured = dual_mono ? finish_measurement(*ch1, "Ch1", "dialnorm", status)
+                                            : finish_measurement(*whole, {}, "dialnorm", status);
             if (!measured) {
                 std::println(stderr, "error: {}no audio above the -70 LKFS absolute gate; "
                                      "pass dialnorm=<1..31> explicitly",
@@ -1837,7 +1850,7 @@ int run_eac3_encode_multi(std::string_view in_path, std::string_view out_path,
             p.meta.dialnorm = *measured;
         }
         if (want_dialnorm2) {
-            const auto measured2 = finish_measurement(*ch2, "Ch2", "dialnorm2");
+            const auto measured2 = finish_measurement(*ch2, "Ch2", "dialnorm2", status);
             if (!measured2) {
                 std::println(stderr, "error: Ch2 has no audio above the -70 LKFS absolute gate; "
                                      "pass dialnorm2=<1..31> explicitly");
@@ -1880,19 +1893,22 @@ int run_eac3_encode_multi(std::string_view in_path, std::string_view out_path,
                                                         static_cast<double>(frames.size());
         const double mean_kbps = mean_bytes * 8.0 * static_cast<double>(sources->sample_rate) /
                                  (1000.0 * ac3::kSamplesPerFrame);
-        std::println("encoded {} E-AC-3 access units (vbr {}, {} Hz, {}, {} coded channels, "
+        std::println(status,
+                     "encoded {} E-AC-3 access units (vbr {}, {} Hz, {}, {} coded channels, "
                      "tools: {}) to {}",
                      frames.size(), plan::format_vbr(p.vbr), sources->sample_rate, label, nchans,
                      plan::format_tools(p.tools), out_path);
-        std::println("  access unit size: {}-{} bytes, {:.0f} bytes mean (~{:.0f} kbps mean)",
+        std::println(status,
+                     "  access unit size: {}-{} bytes, {:.0f} bytes mean (~{:.0f} kbps mean)",
                      min_bytes, max_bytes, mean_bytes, mean_kbps);
     } else {
-        std::println("encoded {} E-AC-3 access units ({} kbps, {} Hz, {}, {} coded channels, "
+        std::println(status,
+                     "encoded {} E-AC-3 access units ({} kbps, {} Hz, {}, {} coded channels, "
                      "tools: {}) to {}",
                      frames.size(), bitrate, sources->sample_rate, label, nchans,
                      plan::format_tools(p.tools), out_path);
     }
-    print_routing(p, *routing, label);
+    print_routing(p, *routing, label, status);
     return 0;
 }
 
@@ -1949,6 +1965,11 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
     }
     const auto cp = plan::resolve(p);
     const bool dual_mono = cp.bed_acmod == ac3::Acmod::kDualMono;
+    // status_stream(out_path): stderr instead of stdout when out_path is "-"
+    // - the E-AC-3 bytes this function writes below already own stdout in
+    // that case, and no human-readable report (the dialnorm=auto measurement
+    // just below included) may land in the middle of them.
+    const auto status = status_stream(out_path);
     if (p.meta.measure_dialnorm) {
         // Dual mono has no "whole programme" a single BS.1770 pass can mean -
         // Ch1 and Ch2 are unrelated (§E1.3, no downmix between them), so this
@@ -1957,8 +1978,8 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
         // every other layout can.
         const auto measured = dual_mono
                                   ? measured_dialnorm_channel(wav->channels[0], *sr, "Ch1",
-                                                              "dialnorm")
-                                  : measured_dialnorm(*wav, *sr, cp.bed_acmod, cp.bed_lfe);
+                                                              "dialnorm", status)
+                                  : measured_dialnorm(*wav, *sr, cp.bed_acmod, cp.bed_lfe, status);
         if (!measured) {
             std::println(stderr, "error: {}no audio above the -70 LKFS absolute gate; "
                                  "pass dialnorm=<1..31> explicitly",
@@ -1968,7 +1989,8 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
         p.meta.dialnorm = *measured;
     }
     if (dual_mono && p.meta.measure_dialnorm2) {
-        const auto measured2 = measured_dialnorm_channel(wav->channels[1], *sr, "Ch2", "dialnorm2");
+        const auto measured2 =
+            measured_dialnorm_channel(wav->channels[1], *sr, "Ch2", "dialnorm2", status);
         if (!measured2) {
             std::println(stderr, "error: Ch2 has no audio above the -70 LKFS absolute gate; "
                                  "pass dialnorm2=<1..31> explicitly");
@@ -2036,10 +2058,6 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
     if (!write_frames(out_path, frames)) {
         return 1;
     }
-    // See run_encode's identical status_stream() comment: out_path == "-"
-    // means the E-AC-3 bytes just written own stdout, so this report goes to
-    // stderr instead.
-    const auto status = status_stream(out_path);
     if (p.vbr) {
         // bitrate_kbps is only the nominal reference vbr's tool heuristics
         // used, not a target - what a VBR run actually spent is the sizes it
@@ -2394,11 +2412,17 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
         return 1;
     }
 
+    // status_stream(out_path): stderr instead of stdout when out_path is "-"
+    // - the E-AC-3 bytes this function writes below already own stdout in
+    // that case, and no human-readable report (the dialnorm=auto measurement
+    // just below included) may land in the middle of them.
+    const auto status = status_stream(out_path);
     int dialnorm = meta.p.dialnorm;
     if (meta.p.measure_dialnorm) {
         const auto layout = ac3::io::ac3_layout_for(wav->channels.size());
-        const auto measured =
-            layout ? measured_dialnorm(*wav, *sr, layout->acmod, layout->lfe) : std::nullopt;
+        const auto measured = layout
+                                  ? measured_dialnorm(*wav, *sr, layout->acmod, layout->lfe, status)
+                                  : std::nullopt;
         if (!measured) {
             std::println(stderr, "error: cannot measure loudness for this file; "
                                  "pass dialnorm=<1..31> explicitly");
@@ -2539,16 +2563,152 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
     if (!write_frames(out_path, out)) {
         return 1;
     }
-    // See run_encode's identical status_stream() comment: out_path == "-"
-    // means the E-AC-3 bytes just written own stdout, so this report goes to
-    // stderr instead.
-    const auto status = status_stream(out_path);
     std::println(status, "encoded {} E-AC-3 access units ({} kbps, {} Hz) to {}", out.size(),
                 bitrate, wav->sample_rate, out_path);
     std::println(status,
                  "  {} objects from {} source channels + the bed's LFE = {} objects, "
                  "JOC over a 5.1 downmix",
                  count, wav->channels.size(), ac3::oba::object_count(encoder.program()));
+    print_channel_summary(meter, status);
+    return 0;
+}
+
+// Roadmap B1 phase 3 of 3 (see ROADMAP.md's "ADM BWF reader feeding the JOC encoder" entry - the
+// last phase; phase 1 is src/ac3adm, phase 2 is src/adm_bridge, this command is the first place
+// both are driven together). A real ADM BWF master (BS.2076-2 ADM XML embedded in a BS.2088-1
+// BW64/RF64 container) straight to DD+ JOC E-AC-3 - no WAV plus a hand-authored keyframe file the
+// way atmos-encode above needs, because the master already carries every bed speaker feed's and
+// dynamic object's own position/gain automation (§10.3). Every resolved channel becomes one of
+// AtmosEncoder's flat object slots (a bed channel pinned in place, or LFE-routed, exactly as
+// ac3::admbridge::build()'s own header comment describes), driven frame by frame by
+// ac3::oba::evaluate_placements the same way run_atmos_path/run_atmos_encode above already do.
+//
+// The parse+bridge step itself (ac3adm::parse_bw64, ac3::admbridge::build) is NOT called from
+// here: ac3adm::ac3adm/ac3::admbridge are this project's one opt-in, non-default library
+// (AC3FORGE_BUILD_ADM, default OFF - see the root CMakeLists.txt's own option() for why), and this
+// file cannot name their types at all in a build where AC3FORGE_BUILD_ADM is off - not even behind
+// a preprocessor guard, since this project's scripts/check-platform-macros.ps1 (CI-enforced, see
+// .github/workflows/ci.yml's "Check for preprocessor conditionals in src/" job) refuses ANY
+// #if/#ifdef/#ifndef anywhere under src/, deliberately stricter than "no OS macros" (that script's
+// own comment: a feature-flag #ifdef is "just as unwelcome as a platform one"). So the same
+// principle this file's own platform/stdio_binary.cpp split already uses for an OS difference
+// applies here to a library-linked-or-not difference instead: adm/atmos_adm.hpp declares
+// ac3cli::load_adm_atmos_source() and ac3cli::adm_capability() unconditionally, in terms of
+// ac3::oba's own always-available types only, and src/cli/CMakeLists.txt compiles exactly one of
+// adm/enabled/atmos_adm.cpp (the real ac3adm/admbridge call) or adm/disabled/atmos_adm.cpp (a
+// stub) into this same ac3cli binary - never both, never neither. This function, and its
+// kCommands row below, are therefore unconditional too: 'atmos-adm' is always one of the 26 rows
+// in the table (matching every command's own fixed shape) and is refused before this function is
+// ever called by the SAME Needs::kAdm/unmet() capability gate the audio-hardware commands
+// (Needs::kCapture/kPassthrough/kMonitor, ac3::platform::audio_backend()) already use for their
+// own "is this available in this particular build?" question - reused rather than a second
+// mechanism invented for what is structurally the identical problem. (An earlier version of this
+// function used a scoped #ifdef instead, before scripts/check-platform-macros.ps1 was actually run
+// against it and found to reject that outright - this design is what replaced it.)
+//
+// This function is deliberately thin beyond that seam: parse+bridge, per-frame evaluate+encode,
+// write - the same library-API-is-the-shared-layer convention examples/encode_adm.cpp follows
+// independently (see docs/library/adm-bridge.md), just reached through load_adm_atmos_source()
+// instead of ac3adm::parse_bw64/ac3::admbridge::build directly.
+int run_atmos_adm(std::string_view in_path, std::string_view out_path, std::uint32_t bitrate,
+                  const Options& meta, std::string_view programme_id) {
+    // No fixed source layout to measure a pre-encode loudness figure against the way
+    // atmos-encode's WAV input has (ac3::io::ac3_layout_for) - an ADM document's channels are an
+    // arbitrary mix of bed speaker feeds and dynamic objects, not one of the handful of layouts
+    // that function maps. Refusing clearly beats silently keeping the fixed default dialnorm:
+    // "a silently ignored metadata flag looks exactly like metadata that did not work" (see
+    // parse_options's own comment above).
+    if (meta.p.measure_dialnorm) {
+        std::println(stderr,
+                     "error: dialnorm=auto is not supported by atmos-adm - an ADM document's bed/"
+                     "object channels have no single fixed layout to measure loudness against the "
+                     "way atmos-encode's WAV input does; pass dialnorm=<1..31> explicitly");
+        return 1;
+    }
+
+    auto source = ac3cli::load_adm_atmos_source(in_path, programme_id);
+    if (!source) {
+        std::println(stderr, "error: {}: {}", in_path, source.error());
+        return 1;
+    }
+
+    const auto sr = wav_sample_rate(source->sample_rate, "E-AC-3", true);
+    if (!sr) {
+        return 1;
+    }
+
+    const auto count = source->channel_count();
+    if (count < 1 || count > 15) {
+        std::println(stderr,
+                     "error: 1 to 15 bed/object channels (the bed's LFE is the 16th, and TS 103 "
+                     "420 §8.3.2.2 caps the total at 16); {} resolved {} channel(s)",
+                     in_path, count);
+        return 1;
+    }
+
+    ac3::oba::AtmosEncoder encoder{
+        {.sample_rate = *sr, .bitrate_kbps = bitrate, .dialnorm = meta.p.dialnorm,
+         .num_bands_idx = 4, .fast_mdct = meta.fast_mdct},
+        static_cast<int>(count)};
+
+    // Metered the same way run_atmos_encode meters its own bed: 3/2 + LFE is AtmosEncoder's own
+    // fixed bed layout regardless of how many dynamic objects/bed feeds fed it.
+    ac3::analysis::LevelMeter meter{ac3::Acmod::k3_2, true, source->sample_rate};
+    const std::size_t total = source->pcm.empty() ? 0 : source->pcm.front().size();
+    std::vector<std::vector<float>> block(count, std::vector<float>(ac3::kSamplesPerFrame));
+    std::vector<std::span<const float>> views(count);
+    std::vector<std::span<const float>> metered(6);
+    std::vector<std::vector<std::byte>> out;
+
+    for (std::size_t start = 0; start < total; start += ac3::kSamplesPerFrame) {
+        const auto valid = std::min<std::size_t>(ac3::kSamplesPerFrame, total - start);
+        for (std::size_t ch = 0; ch < count; ++ch) {
+            for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+                const std::size_t at = start + static_cast<std::size_t>(i);
+                block[ch][static_cast<std::size_t>(i)] =
+                    at < source->pcm[ch].size() ? source->pcm[ch][at] : 0.0f;
+            }
+            views[ch] = block[ch];
+        }
+        // Evaluated at the frame's END time, the same convention run_atmos_path/run_atmos_encode
+        // use.
+        const auto placement = ac3::oba::evaluate_placements(
+            source->paths, static_cast<double>(start + ac3::kSamplesPerFrame) /
+                                static_cast<double>(source->sample_rate));
+        auto unit = encoder.encode_frame(views, placement);
+        if (!unit) {
+            std::println(stderr,
+                         "error: cannot encode {} channels at {} kbps — the metadata and the "
+                         "mantissas share one frame, so try a higher bit rate",
+                         count, bitrate);
+            write_partial_output(out_path, meta.keep_partial, out);
+            return 1;
+        }
+        // The bed exists only once the frame is encoded, so it is metered afterwards - and it is
+        // the bed, not the source, that a legacy decoder plays.
+        for (std::size_t ch = 0; ch < metered.size(); ++ch) {
+            metered[ch] = std::span{encoder.bed()[ch]}.first(valid);
+        }
+        meter.process(metered);
+        out.push_back(std::move(unit->bytes));
+    }
+    if (!write_frames(out_path, out)) {
+        return 1;
+    }
+
+    std::size_t bed_count = 0;
+    for (const bool is_bed : source->is_bed) {
+        bed_count += is_bed ? 1 : 0;
+    }
+    // See run_encode's identical status_stream() comment: out_path == "-" means the E-AC-3 bytes
+    // just written own stdout, so this report goes to stderr instead.
+    const auto status = status_stream(out_path);
+    std::println(status, "encoded {} E-AC-3 access units ({} kbps, {} Hz) from {} to {}",
+                out.size(), bitrate, source->sample_rate, in_path, out_path);
+    std::println(status,
+                 "  {} bed speaker feed(s) + {} dynamic object(s) + the bed's LFE = {} objects, "
+                 "JOC over a 5.1 downmix",
+                 bed_count, count - bed_count, ac3::oba::object_count(encoder.program()));
     print_channel_summary(meter, status);
     return 0;
 }
@@ -2843,6 +3003,11 @@ int run_encode_multi(std::string_view in_path, std::string_view out_path, std::u
     // dialnorm2 only means anything under 1+1 - silently inert otherwise,
     // exactly like run_encode's identical check for its one file.
     const bool want_dialnorm2 = dual_mono && p.meta.measure_dialnorm2;
+    // status_stream(out_path): stderr instead of stdout when out_path is "-"
+    // - the AC-3 bytes this function writes below already own stdout in that
+    // case, and no human-readable report (the dialnorm=auto measurement just
+    // below included) may land in the middle of them.
+    const auto status = status_stream(out_path);
     if (want_dialnorm || want_dialnorm2) {
         // §5.4.2.8's BS.1770 pass has to measure what the encoder actually
         // receives - the routed/rendered coded channels, not each source's
@@ -2881,8 +3046,8 @@ int run_encode_multi(std::string_view in_path, std::string_view out_path, std::u
             }
         }
         if (want_dialnorm) {
-            const auto measured = dual_mono ? finish_measurement(*ch1, "Ch1", "dialnorm")
-                                            : finish_measurement(*whole, {}, "dialnorm");
+            const auto measured = dual_mono ? finish_measurement(*ch1, "Ch1", "dialnorm", status)
+                                            : finish_measurement(*whole, {}, "dialnorm", status);
             if (!measured) {
                 std::println(stderr, "error: {}no audio above the -70 LKFS absolute gate; "
                                      "pass dialnorm=<1..31> explicitly",
@@ -2892,7 +3057,7 @@ int run_encode_multi(std::string_view in_path, std::string_view out_path, std::u
             p.meta.dialnorm = *measured;
         }
         if (want_dialnorm2) {
-            const auto measured2 = finish_measurement(*ch2, "Ch2", "dialnorm2");
+            const auto measured2 = finish_measurement(*ch2, "Ch2", "dialnorm2", status);
             if (!measured2) {
                 std::println(stderr, "error: Ch2 has no audio above the -70 LKFS absolute gate; "
                                      "pass dialnorm2=<1..31> explicitly");
@@ -2924,11 +3089,11 @@ int run_encode_multi(std::string_view in_path, std::string_view out_path, std::u
     if (!write_frames(out_path, frames)) {
         return 1;
     }
-    std::println("encoded {} frames ({} kbps, {} Hz, {}) to {}", frames.size(), bitrate,
+    std::println(status, "encoded {} frames ({} kbps, {} Hz, {}) to {}", frames.size(), bitrate,
                  sources->sample_rate, ac3::analysis::layout_name(config.acmod, config.lfe),
                  out_path);
-    print_routing(p, *routing, label);
-    print_channel_summary(meter);
+    print_routing(p, *routing, label, status);
+    print_channel_summary(meter, status);
     return 0;
 }
 
@@ -2993,6 +3158,11 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
     // which coded positions are surrounds.
     const auto cp = plan::resolve(p);
     const bool dual_mono = cp.bed_acmod == ac3::Acmod::kDualMono;
+    // status_stream(out_path): stderr instead of stdout when out_path is "-"
+    // - the AC-3 bytes this function writes below already own stdout in that
+    // case, and no human-readable report (the dialnorm=auto measurement just
+    // below included) may land in the middle of them.
+    const auto status = status_stream(out_path);
     if (p.meta.measure_dialnorm) {
         // Dual mono has no "whole programme" a single BS.1770 pass can mean -
         // Ch1 and Ch2 are unrelated (§E1.3, no downmix between them), so this
@@ -3001,8 +3171,8 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
         // every other layout can.
         const auto measured = dual_mono
                                   ? measured_dialnorm_channel(wav->channels[0], *sr, "Ch1",
-                                                              "dialnorm")
-                                  : measured_dialnorm(*wav, *sr, cp.bed_acmod, cp.bed_lfe);
+                                                              "dialnorm", status)
+                                  : measured_dialnorm(*wav, *sr, cp.bed_acmod, cp.bed_lfe, status);
         if (!measured) {
             std::println(stderr,
                          "error: {}no audio above the -70 LKFS absolute gate; "
@@ -3013,7 +3183,8 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
         p.meta.dialnorm = *measured;
     }
     if (dual_mono && p.meta.measure_dialnorm2) {
-        const auto measured2 = measured_dialnorm_channel(wav->channels[1], *sr, "Ch2", "dialnorm2");
+        const auto measured2 =
+            measured_dialnorm_channel(wav->channels[1], *sr, "Ch2", "dialnorm2", status);
         if (!measured2) {
             std::println(stderr,
                          "error: Ch2 has no audio above the -70 LKFS absolute gate; "
@@ -3094,10 +3265,6 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
     if (!write_frames(out_path, frames)) {
         return 1;
     }
-    // status_stream(out_path): stderr instead of stdout when out_path is "-"
-    // - the AC-3 bytes just written above already own stdout in that case,
-    // and this report must not land in the middle of them.
-    const auto status = status_stream(out_path);
     std::println(status, "encoded {} frames ({} kbps, {} Hz, {}) to {}", frames.size(), bitrate,
                 wav->sample_rate, ac3::analysis::layout_name(config.acmod, config.lfe), out_path);
     print_routing(p, *routing, label, status);
@@ -4788,9 +4955,11 @@ struct Args {
     }
 };
 
-// What a command needs from the machine's audio hardware. Several commands
-// touch it; every other command is file I/O and runs anywhere ac3forge
-// compiles.
+// What a command needs beyond plain file I/O to run at all in THIS build. Most commands need
+// nothing. Several need the machine's audio hardware; one (atmos-adm) needs a library that is not
+// part of every build - either way, unmet() below answers with the same {available, reason} shape
+// (ac3::platform::Capability), so dispatch and the usage listing treat both kinds of "not here"
+// identically.
 //
 // This is a column in the table rather than a check inside each handler for
 // the same reason min_args is: stated once, beside the command it describes,
@@ -4804,16 +4973,25 @@ struct Args {
 // receiver that says no. Only 'monitor' (which does nothing BUT play back)
 // needs kMonitor as a hard gate, the same way 'play'/'outputs' need
 // kPassthrough.
-enum class Needs : std::uint8_t { kNothing, kCapture, kPassthrough, kMonitor };
-
-// The unmet requirement, or nullptr when the platform can satisfy it.
 //
-// Note what this is not: an OS test. main.cpp never asks whether it is on
-// Windows - it asks the one translation unit CMake compiled from
+// kAdm ('atmos-adm', roadmap B1 phase 3): unlike the three audio ones, this is not a hardware
+// question - it is whether ac3adm::ac3adm/ac3::admbridge were linked into this build at all
+// (AC3FORGE_BUILD_ADM, default OFF - see the root CMakeLists.txt's own option()). Answered the
+// same way regardless: adm/atmos_adm.hpp's ac3cli::adm_capability(), backed by exactly one of
+// adm/enabled/atmos_adm.cpp or adm/disabled/atmos_adm.cpp (see run_atmos_adm's own comment for
+// why a CMake-selected file, not a preprocessor conditional, decides this).
+enum class Needs : std::uint8_t { kNothing, kCapture, kPassthrough, kMonitor, kAdm };
+
+// The unmet requirement, or nullptr when this build/platform can satisfy it.
+//
+// Note what kCapture/kPassthrough/kMonitor are not: an OS test. main.cpp never asks whether it is
+// on Windows - it asks the one translation unit CMake compiled from
 // src/audio/src/platform/<os>/ what that platform can do, and prints the answer
 // that unit supplied. The day a Unix capture backend lands, capture flips to
 // available in that file alone and 'devices' and 'record' start working here
-// with no change to this file.
+// with no change to this file. kAdm asks the analogous question of
+// adm/{enabled,disabled}/atmos_adm.cpp instead - a library-linked-or-not fact rather than an
+// OS one, answered by the identical "ask the compiled-in file" shape.
 const ac3::platform::Capability* unmet(Needs needs) {
     const auto& backend = ac3::platform::audio_backend();
     switch (needs) {
@@ -4822,6 +5000,10 @@ const ac3::platform::Capability* unmet(Needs needs) {
         case Needs::kPassthrough:
             return backend.passthrough.available ? nullptr : &backend.passthrough;
         case Needs::kMonitor: return backend.monitor.available ? nullptr : &backend.monitor;
+        case Needs::kAdm: {
+            const auto& adm = ac3cli::adm_capability();
+            return adm.available ? nullptr : &adm;
+        }
     }
     return nullptr;
 }
@@ -4835,7 +5017,13 @@ struct Command {
     int (*run)(const Args&);
 };
 
-constexpr std::array<Command, 25> kCommands{{
+// 26 commands, always - including atmos-adm, whether or not AC3FORGE_BUILD_ADM linked
+// ac3adm::ac3adm/ac3::admbridge into this particular build (see Needs::kAdm/unmet() above and
+// run_atmos_adm's own comment): a command this build cannot run is listed with Needs gating it,
+// never sized out of the table entirely - the identical "listed, not hidden" treatment
+// kCapture/kPassthrough/kMonitor commands already get (see print_usage()'s own comment below on
+// why hiding would be a lie about a command that exists and would work elsewhere).
+constexpr std::array<Command, 26> kCommands{{
     {"silence", 2, "<out.ac3> [seconds] [bitrate_kbps]", "", Needs::kNothing,
      [](const Args& x) { return run_silence(x.str(1), x.u32(2, 5), x.u32(3, 192)); }},
     {"sine", 2, "<out.ac3> [seconds] [bitrate_kbps] [freq_hz] [amp_pct] [layout]", "",
@@ -4868,6 +5056,15 @@ constexpr std::array<Command, 25> kCommands{{
      [](const Args& x) {
          return run_atmos_encode(x.str(1), x.str(2), x.u32(3, 448), x.u32(4, 0), x.meta,
                                  x.str(5));
+     }},
+    {"atmos-adm", 3, "<in.adm.wav> <out.ec3> [bitrate_kbps] [programme_id]",
+     "a real ADM BWF master (BS.2076-2 ADM XML + BW64/RF64, roadmap B1) straight to DD+ JOC "
+     "E-AC-3; every bed/object channel the resolved audioProgramme names becomes an AtmosEncoder "
+     "object, driven by the file's own authored automation - no keyframe file needed. Only in "
+     "builds with -DAC3FORGE_BUILD_ADM=ON",
+     Needs::kAdm,
+     [](const Args& x) {
+         return run_atmos_adm(x.str(1), x.str(2), x.u32(3, 448), x.meta, x.str(4));
      }},
     {"record", 2, "<out.ac3> [seconds] [bitrate_kbps] [device_index]", "", Needs::kCapture,
      [](const Args& x) {

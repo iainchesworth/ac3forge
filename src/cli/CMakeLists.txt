@@ -3,16 +3,44 @@
 # ---------------------------------------------------------------------------
 add_executable(ac3cli main.cpp)
 
-# ac3cli's one piece of platform-specific code: putting stdin/stdout into
-# binary mode for the "-" stdin/stdout file-argument convention (see
-# platform/stdio_binary.hpp for why Windows needs a real call and POSIX
-# doesn't). Selected here rather than behind an #ifdef in main.cpp, the same
-# platform-tree pattern ac3::audio uses for WASAPI/ALSA (src/audio/CMakeLists.txt)
-# - scripts/check-platform-macros.ps1 enforces there being no third option.
+# ac3cli's platform-specific code: putting stdin/stdout into binary mode for
+# the "-" stdin/stdout file-argument convention (see platform/stdio_binary.hpp
+# for why Windows needs a real call and POSIX doesn't). Selected here rather
+# than behind an #ifdef in main.cpp, the same platform-tree pattern ac3::audio
+# uses for WASAPI/ALSA (src/audio/CMakeLists.txt) - scripts/check-platform-macros.ps1
+# enforces there being no third option.
 if(WIN32)
     target_sources(ac3cli PRIVATE platform/windows/stdio_binary.cpp)
 else()
     target_sources(ac3cli PRIVATE platform/posix/stdio_binary.cpp)
+endif()
+
+# main.cpp's 'atmos-adm' command (roadmap B1 phase 3) needs ac3adm::ac3adm/ac3::admbridge - this
+# project's one optional, non-default library dependency (AC3FORGE_BUILD_ADM, default OFF - see
+# the root CMakeLists.txt's own option() for why: libadm's Boost dependency). Unlike
+# matroska::matroska/mp4::mp4/mpegts::mpegts below (default ON, and a FATAL_ERROR guard in the
+# root CMakeLists.txt refuses to build this target at all without them), ac3cli builds and works
+# perfectly well with this flag off - it just lacks the one command, refused with a clear reason at
+# dispatch time (main.cpp's Needs::kAdm/unmet()) rather than missing from the binary's usage
+# listing entirely.
+#
+# main.cpp itself never names ac3adm::ac3adm/ac3::admbridge or includes either of their headers -
+# not even behind a preprocessor guard, since scripts/check-platform-macros.ps1 (CI-enforced)
+# refuses ANY #if/#ifdef/#ifndef anywhere under src/, feature flags included, not just platform
+# ones (that script's own header comment). So the same platform-tree shape the WIN32/else split
+# above already uses for stdio_binary.cpp applies here too, for a library-linked-or-not axis
+# instead of an OS one: adm/atmos_adm.hpp declares the narrow, ac3adm/admbridge-type-free seam
+# main.cpp calls unconditionally (ac3cli::load_adm_atmos_source(), ac3cli::adm_capability()), and
+# exactly one of the two files below actually implements it - never both, never neither - so
+# ac3cli links successfully and behaves correctly either way with zero preprocessor conditionals
+# anywhere in this target's sources. See adm/atmos_adm.hpp's own top comment for the full
+# reasoning, including why this replaced an earlier #ifdef-based design once
+# scripts/check-platform-macros.ps1 was actually run against it.
+if(AC3FORGE_BUILD_ADM)
+    target_sources(ac3cli PRIVATE adm/enabled/atmos_adm.cpp)
+    target_link_libraries(ac3cli PRIVATE ac3adm::ac3adm ac3::admbridge)
+else()
+    target_sources(ac3cli PRIVATE adm/disabled/atmos_adm.cpp)
 endif()
 
 target_link_libraries(ac3cli

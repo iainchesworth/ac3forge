@@ -92,6 +92,7 @@ nav:
       - Muxing & sinks: library/muxing-and-sinks.md
       - File I/O: library/file-io.md
       - ADM / BW64 reading: library/adm.md
+      - ADM → Atmos bridging: library/adm-bridge.md
       - Object signing: library/signing.md
       - Header map: library/header-map.md
   - CLI reference:
