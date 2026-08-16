@@ -381,6 +381,59 @@ TEST_CASE("fast-mdct is default-on with =off as the negation", "[cli][fast-mdct]
         CHECK(fs::exists(legacy_path));
     }
 
+    SECTION("eac3-encode also honors fast-mdct=off directly, not just tools=nofastmdct") {
+        const auto out_path = dir / "fastmdct_eac3_direct_off.ec3";
+        const auto log = dir / "fastmdct_eac3_direct.log";
+        fs::remove(out_path);
+        const auto rc = run_cli("eac3-encode \"" + wav_path.string() + "\" \"" +
+                                    out_path.string() + "\" 192 none stereo fast-mdct=off",
+                                log);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(rc == 0);
+        CHECK(fs::exists(out_path));
+        // format_tools() only ever emits "nofastmdct" (never a positive "fastmdct"
+        // token), so its presence here is proof fast-mdct=off actually reached
+        // Tools::fast_mdct rather than merely parsing without effect.
+        CHECK(text.find("nofastmdct") != std::string::npos);
+    }
+
+    SECTION("eac3-encode-multi (src=/map=) also honors fast-mdct=off directly") {
+        const auto out_path = dir / "fastmdct_eac3_multi_off.ec3";
+        const auto log = dir / "fastmdct_eac3_multi.log";
+        fs::remove(out_path);
+        // wav_path is 2-channel; parse_assignment requires a token for every
+        // channel of every source, so the reused second copy needs its own
+        // (unused) channels explicitly marked none rather than left absent.
+        const auto rc = run_cli("eac3-encode \"" + wav_path.string() + "\" \"" +
+                                    out_path.string() +
+                                    "\" 192 none stereo src=\"" + wav_path.string() +
+                                    "\" map=0.0:L,0.1:R,1.0:none,1.1:none fast-mdct=off",
+                                log);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(rc == 0);
+        CHECK(fs::exists(out_path));
+        CHECK(text.find("nofastmdct") != std::string::npos);
+    }
+
+    SECTION("the [tools] positional still wins when fast-mdct=off is also given") {
+        const auto out_path = dir / "fastmdct_eac3_precedence.ec3";
+        const auto log = dir / "fastmdct_eac3_precedence.log";
+        fs::remove(out_path);
+        const auto rc = run_cli("eac3-encode \"" + wav_path.string() + "\" \"" +
+                                    out_path.string() + "\" 192 fastmdct stereo fast-mdct=off",
+                                log);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(rc == 0);
+        CHECK(fs::exists(out_path));
+        // meta.fast_mdct=false (fast-mdct=off) seeds p.tools.fast_mdct, but
+        // parse_tools() runs after and overwrites the field on a literal
+        // fastmdct/nofastmdct token - so the explicit tools token wins.
+        CHECK(text.find("nofastmdct") == std::string::npos);
+    }
+
     SECTION("eac3-sine has no [tools] argument, but honors fast-mdct=off directly") {
         const auto out_path = dir / "fastmdct_eac3_sine_off.ec3";
         const auto log = dir / "fastmdct_eac3_sine.log";
