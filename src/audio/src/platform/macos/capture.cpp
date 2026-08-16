@@ -37,10 +37,12 @@
 // ---------------------------------------------------------------------------
 // No worker thread
 // ---------------------------------------------------------------------------
-// See coreaudio_support.hpp's own header comment: capture_ioproc below runs
-// on a realtime thread the OS owns (between AudioDeviceStart and
-// AudioDeviceStop), not one this library spawned - there is no jthread
-// field in Impl the way the ALSA/Windows backends each have one.
+// See coreaudio_support.hpp's own header comment: the IOProc callback
+// start() registers below runs on a realtime thread the OS owns (between
+// AudioDeviceStart and AudioDeviceStop), not one this library spawned -
+// there is no jthread field in Impl the way the ALSA/Windows backends each
+// have one. It is a captureless lambda defined inside start() itself rather
+// than a free function - see start()'s own comment for why.
 
 #include <CoreAudio/CoreAudio.h>
 
@@ -146,29 +148,11 @@ struct Capture::Impl {
     std::atomic<std::uint64_t> frames_silence{0};
     std::uint32_t sample_rate = 0;
     std::uint16_t channels = 0;
-    // Reused by the IOProc; see this file's own header comment on why
-    // AudioDeviceIOProc's plain-function-pointer signature rules out a
-    // lambda capture the way the ALSA/Windows worker threads use one.
+    // Reused by the IOProc; see start()'s own comment on why the callback
+    // reaches this through `client_data` rather than a lambda capture -
+    // AudioDeviceIOProc's plain-function-pointer signature rules one out.
     std::vector<float> scratch;
 };
-
-namespace {
-
-OSStatus capture_ioproc(AudioObjectID /*device*/, const AudioTimeStamp* /*now*/,
-                        const AudioBufferList* input_data, const AudioTimeStamp* /*input_time*/,
-                        AudioBufferList* /*output_data*/, const AudioTimeStamp* /*output_time*/,
-                        void* client_data) {
-    auto* impl = static_cast<Capture::Impl*>(client_data);
-    collect(input_data, impl->channels, impl->interleaved, impl->format, impl->scratch);
-    if (!impl->scratch.empty() && impl->channels > 0) {
-        impl->ring->write(impl->scratch);
-        impl->frames_captured.fetch_add(impl->scratch.size() / impl->channels,
-                                        std::memory_order_relaxed);
-    }
-    return noErr;
-}
-
-}  // namespace
 
 Capture::Capture() : impl_(std::make_unique<Impl>()) {}
 
@@ -259,8 +243,32 @@ std::expected<void, CaptureError> Capture::start(const std::string& device_id, D
     impl_->frames_silence.store(0, std::memory_order_relaxed);
     impl_->scratch.reserve(static_cast<std::size_t>(impl_->channels) * 4096);
 
+    // A captureless lambda, not a free function: AudioDeviceIOProc is a plain
+    // C function pointer (a capturing closure cannot decay to one), but
+    // `Impl` is private to Capture - a free function has no access to it at
+    // all, only a member function or something lexically nested inside one
+    // does. Defining the callback here, inside start(), gets both: the
+    // implicit captureless-lambda-to-function-pointer conversion
+    // AudioDeviceCreateIOProcID needs, and the same access to Capture::Impl
+    // this function itself already has. Every real per-call frame of state
+    // is reached through `client_data`, not a capture, so "captureless" costs
+    // nothing here.
+    const auto io_proc = [](AudioObjectID /*device*/, const AudioTimeStamp* /*now*/,
+                            const AudioBufferList* input_data, const AudioTimeStamp* /*input_time*/,
+                            AudioBufferList* /*output_data*/, const AudioTimeStamp* /*output_time*/,
+                            void* client_data) -> OSStatus {
+        auto* impl = static_cast<Impl*>(client_data);
+        collect(input_data, impl->channels, impl->interleaved, impl->format, impl->scratch);
+        if (!impl->scratch.empty() && impl->channels > 0) {
+            impl->ring->write(impl->scratch);
+            impl->frames_captured.fetch_add(impl->scratch.size() / impl->channels,
+                                            std::memory_order_relaxed);
+        }
+        return noErr;
+    };
+
     AudioDeviceIOProcID proc_id = nullptr;
-    if (AudioDeviceCreateIOProcID(device, &capture_ioproc, impl_.get(), &proc_id) != noErr ||
+    if (AudioDeviceCreateIOProcID(device, io_proc, impl_.get(), &proc_id) != noErr ||
         proc_id == nullptr) {
         return std::unexpected(CaptureError::kComFailure);
     }

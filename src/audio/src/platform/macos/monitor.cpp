@@ -27,9 +27,12 @@
 // ---------------------------------------------------------------------------
 // No worker thread
 // ---------------------------------------------------------------------------
-// See coreaudio_support.hpp's own header comment: render_ioproc below runs
-// on a realtime thread the OS owns, not one this library spawned - there is
-// no jthread field in Impl the way the ALSA/Windows backends each have one.
+// See coreaudio_support.hpp's own header comment: the IOProc callback
+// start() registers below runs on a realtime thread the OS owns, not one
+// this library spawned - there is no jthread field in Impl the way the
+// ALSA/Windows backends each have one. It is a captureless lambda defined
+// inside start() itself, not a free function - see platform/macos/capture.cpp's
+// own start() for why (the private Impl type is only reachable from there).
 
 #include <CoreAudio/CoreAudio.h>
 
@@ -84,59 +87,6 @@ struct MonitorSink::Impl {
     std::vector<float> scratch;
     std::vector<float> channel_scratch;
 };
-
-namespace {
-
-OSStatus render_ioproc(AudioObjectID /*device*/, const AudioTimeStamp* /*now*/,
-                       const AudioBufferList* /*input_data*/, const AudioTimeStamp* /*input_time*/,
-                       AudioBufferList* output, const AudioTimeStamp* /*output_time*/,
-                       void* client_data) {
-    auto* impl = static_cast<MonitorSink::Impl*>(client_data);
-    if (output == nullptr || output->mNumberBuffers == 0 || impl->channels == 0) {
-        return noErr;
-    }
-    const auto bytes = coreaudio::bytes_per_sample(impl->format);
-    if (bytes == 0) {
-        return noErr;
-    }
-
-    const std::size_t frames = impl->interleaved
-                                   ? output->mBuffers[0].mDataByteSize /
-                                         (bytes * static_cast<std::size_t>(impl->channels))
-                                   : output->mBuffers[0].mDataByteSize / bytes;
-    if (frames == 0) {
-        return noErr;
-    }
-
-    impl->scratch.resize(frames * impl->channels);
-    const auto got = impl->queue->read(impl->scratch);
-    if (got < impl->scratch.size()) {
-        // Nothing queued: emit silence for the remainder, counted rather
-        // than hidden, matching PassthroughSink's underrun discipline.
-        std::fill(impl->scratch.begin() + static_cast<std::ptrdiff_t>(got), impl->scratch.end(),
-                  0.0f);
-        impl->underruns.fetch_add(1, std::memory_order_relaxed);
-    }
-
-    if (impl->interleaved) {
-        coreaudio::float_to_samples(impl->scratch, impl->format,
-                                    static_cast<std::byte*>(output->mBuffers[0].mData));
-    } else {
-        impl->channel_scratch.resize(frames);
-        const auto channel_limit = static_cast<UInt32>(impl->channels);
-        for (UInt32 ch = 0; ch < output->mNumberBuffers && ch < channel_limit; ++ch) {
-            for (std::size_t i = 0; i < frames; ++i) {
-                impl->channel_scratch[i] = impl->scratch[i * impl->channels + ch];
-            }
-            coreaudio::float_to_samples(impl->channel_scratch, impl->format,
-                                        static_cast<std::byte*>(output->mBuffers[ch].mData));
-        }
-    }
-    impl->rendered.fetch_add(got / impl->channels, std::memory_order_relaxed);
-    return noErr;
-}
-
-}  // namespace
 
 MonitorSink::MonitorSink() : impl_(std::make_unique<Impl>()) {}
 
@@ -254,8 +204,63 @@ std::expected<void, MonitorError> MonitorSink::start(const std::string& device_i
     impl_->rendered.store(0, std::memory_order_relaxed);
     impl_->underruns.store(0, std::memory_order_relaxed);
 
+    // A captureless lambda, not a free function - see
+    // platform/macos/capture.cpp's own start() for why: AudioDeviceIOProc
+    // needs a plain C function pointer, but `Impl` is private to
+    // MonitorSink, so only a member function (or something lexically
+    // nested inside one, which is exactly what this is) has access to it.
+    const auto io_proc = [](AudioObjectID /*device*/, const AudioTimeStamp* /*now*/,
+                            const AudioBufferList* /*input_data*/,
+                            const AudioTimeStamp* /*input_time*/, AudioBufferList* output,
+                            const AudioTimeStamp* /*output_time*/, void* client_data) -> OSStatus {
+        auto* impl = static_cast<Impl*>(client_data);
+        if (output == nullptr || output->mNumberBuffers == 0 || impl->channels == 0) {
+            return noErr;
+        }
+        const auto bytes = coreaudio::bytes_per_sample(impl->format);
+        if (bytes == 0) {
+            return noErr;
+        }
+
+        const std::size_t frames = impl->interleaved
+                                       ? output->mBuffers[0].mDataByteSize /
+                                             (bytes * static_cast<std::size_t>(impl->channels))
+                                       : output->mBuffers[0].mDataByteSize / bytes;
+        if (frames == 0) {
+            return noErr;
+        }
+
+        impl->scratch.resize(frames * impl->channels);
+        const auto got = impl->queue->read(impl->scratch);
+        if (got < impl->scratch.size()) {
+            // Nothing queued: emit silence for the remainder, counted
+            // rather than hidden, matching PassthroughSink's underrun
+            // discipline.
+            std::fill(impl->scratch.begin() + static_cast<std::ptrdiff_t>(got),
+                      impl->scratch.end(), 0.0f);
+            impl->underruns.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        if (impl->interleaved) {
+            coreaudio::float_to_samples(impl->scratch, impl->format,
+                                        static_cast<std::byte*>(output->mBuffers[0].mData));
+        } else {
+            impl->channel_scratch.resize(frames);
+            const auto channel_limit = static_cast<UInt32>(impl->channels);
+            for (UInt32 ch = 0; ch < output->mNumberBuffers && ch < channel_limit; ++ch) {
+                for (std::size_t i = 0; i < frames; ++i) {
+                    impl->channel_scratch[i] = impl->scratch[i * impl->channels + ch];
+                }
+                coreaudio::float_to_samples(impl->channel_scratch, impl->format,
+                                            static_cast<std::byte*>(output->mBuffers[ch].mData));
+            }
+        }
+        impl->rendered.fetch_add(got / impl->channels, std::memory_order_relaxed);
+        return noErr;
+    };
+
     AudioDeviceIOProcID proc_id = nullptr;
-    if (AudioDeviceCreateIOProcID(device, &render_ioproc, impl_.get(), &proc_id) != noErr ||
+    if (AudioDeviceCreateIOProcID(device, io_proc, impl_.get(), &proc_id) != noErr ||
         proc_id == nullptr) {
         return std::unexpected(MonitorError::kComFailure);
     }

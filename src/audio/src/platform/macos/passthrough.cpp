@@ -85,8 +85,11 @@
 // ---------------------------------------------------------------------------
 // See coreaudio_support.hpp's own header comment: AudioDeviceCreateIOProcID
 // hands control to a realtime thread the OS owns, so there is no jthread
-// here the way the ALSA/Windows backends each run one - render_ioproc below
-// runs on Apple's I/O thread, not one this library spawned.
+// here the way the ALSA/Windows backends each run one - the IOProc callback
+// start() registers runs on Apple's I/O thread, not one this library
+// spawned. It is a captureless lambda defined inside start() itself, not a
+// free function - see platform/macos/capture.cpp's own start() for why
+// (the private Impl type is only reachable from there).
 
 #include <CoreAudio/CoreAudio.h>
 
@@ -214,43 +217,6 @@ struct PassthroughSink::Impl {
     std::atomic<std::uint64_t> rendered{0};
     std::atomic<std::uint64_t> underruns{0};
 };
-
-namespace {
-
-OSStatus render_ioproc(AudioObjectID /*device*/, const AudioTimeStamp* /*now*/,
-                       const AudioBufferList* /*input_data*/, const AudioTimeStamp* /*input_time*/,
-                       AudioBufferList* output, const AudioTimeStamp* /*output_time*/,
-                       void* client_data) {
-    auto* impl = static_cast<PassthroughSink::Impl*>(client_data);
-    if (output == nullptr || output->mNumberBuffers == 0) {
-        return noErr;
-    }
-    auto& buffer = output->mBuffers[0];
-    const auto wanted = static_cast<std::size_t>(buffer.mDataByteSize);
-    auto* dest = static_cast<std::byte*>(buffer.mData);
-
-    std::size_t filled = 0;
-    while (filled + impl->burst_bytes <= wanted) {
-        const auto got = impl->queue->read(std::span(dest + filled, impl->burst_bytes));
-        if (got < impl->burst_bytes) {
-            // Nothing queued: emit silence for the remainder. A receiver
-            // that sees a gap in the burst stream usually drops lock, so
-            // this is counted, not hidden - matching the Windows/ALSA
-            // backends' own underrun discipline.
-            std::fill(dest + filled + got, dest + filled + impl->burst_bytes, std::byte{0});
-            impl->underruns.fetch_add(1, std::memory_order_relaxed);
-        } else {
-            impl->rendered.fetch_add(1, std::memory_order_relaxed);
-        }
-        filled += impl->burst_bytes;
-    }
-    if (filled < wanted) {
-        std::fill(dest + filled, dest + wanted, std::byte{0});
-    }
-    return noErr;
-}
-
-}  // namespace
 
 PassthroughSink::PassthroughSink() : impl_(std::make_unique<Impl>()) {}
 
@@ -388,8 +354,46 @@ std::expected<void, PassthroughError> PassthroughSink::start(const std::string& 
     impl_->rendered.store(0, std::memory_order_relaxed);
     impl_->underruns.store(0, std::memory_order_relaxed);
 
+    // A captureless lambda, not a free function - see
+    // platform/macos/capture.cpp's own start() for why: AudioDeviceIOProc
+    // needs a plain C function pointer, but `Impl` is private to
+    // PassthroughSink, so only a member function (or something lexically
+    // nested inside one, which is exactly what this is) has access to it.
+    const auto io_proc = [](AudioObjectID /*device*/, const AudioTimeStamp* /*now*/,
+                            const AudioBufferList* /*input_data*/,
+                            const AudioTimeStamp* /*input_time*/, AudioBufferList* output,
+                            const AudioTimeStamp* /*output_time*/, void* client_data) -> OSStatus {
+        auto* impl = static_cast<Impl*>(client_data);
+        if (output == nullptr || output->mNumberBuffers == 0) {
+            return noErr;
+        }
+        auto& buffer = output->mBuffers[0];
+        const auto wanted = static_cast<std::size_t>(buffer.mDataByteSize);
+        auto* dest = static_cast<std::byte*>(buffer.mData);
+
+        std::size_t filled = 0;
+        while (filled + impl->burst_bytes <= wanted) {
+            const auto got = impl->queue->read(std::span(dest + filled, impl->burst_bytes));
+            if (got < impl->burst_bytes) {
+                // Nothing queued: emit silence for the remainder. A
+                // receiver that sees a gap in the burst stream usually
+                // drops lock, so this is counted, not hidden - matching the
+                // Windows/ALSA backends' own underrun discipline.
+                std::fill(dest + filled + got, dest + filled + impl->burst_bytes, std::byte{0});
+                impl->underruns.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                impl->rendered.fetch_add(1, std::memory_order_relaxed);
+            }
+            filled += impl->burst_bytes;
+        }
+        if (filled < wanted) {
+            std::fill(dest + filled, dest + wanted, std::byte{0});
+        }
+        return noErr;
+    };
+
     AudioDeviceIOProcID proc_id = nullptr;
-    if (AudioDeviceCreateIOProcID(impl_->device, &render_ioproc, impl_.get(), &proc_id) != noErr ||
+    if (AudioDeviceCreateIOProcID(impl_->device, io_proc, impl_.get(), &proc_id) != noErr ||
         proc_id == nullptr) {
         stop();
         return std::unexpected(PassthroughError::kComFailure);
