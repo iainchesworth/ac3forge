@@ -18,6 +18,7 @@
 #include "ac3/encoder/coupling.hpp"
 #include "ac3/encoder/eac3_tools.hpp"
 #include "ac3/meta/drc.hpp"
+#include "ac3/oba/joc.hpp"
 #include "ac3/oba/oamd.hpp"
 #include "gain.hpp"
 
@@ -647,6 +648,13 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
     };
     std::vector<BlockTail> tails(static_cast<std::size_t>(nblks));
 
+    // Captured alongside out.object_metadata below, from whichever block's
+    // skip field carries the EMDF container - kept raw here (not parsed
+    // yet) because joc::parse_payload needs FrameParameters::objects to
+    // agree with the OAMD program it rides beside, which is only known once
+    // both payloads have been seen.
+    std::vector<std::byte> joc_bytes;
+
     for (int blk = 0; blk < nblks; ++blk) {
         const auto strategy = [&](int ch) {
             return ch < nfchans
@@ -1242,7 +1250,8 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
                     for (const auto& payload : **container) {
                         if (payload.id == emdf::kPayloadIdOamd) {
                             out.object_metadata = oba::parse_payload(payload.bytes);
-                            break;
+                        } else if (payload.id == emdf::kPayloadIdJoc && joc_bytes.empty()) {
+                            joc_bytes.assign(payload.bytes.begin(), payload.bytes.end());
                         }
                     }
                 }
@@ -1752,6 +1761,32 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
     // own doc comment; a stream needing more is refused rather than read
     // out of bounds).
     const int key = static_cast<int>(bsi->strmtyp) * 8 + bsi->substreamid;
+
+    // --- JOC audio reconstruction -----------------------------------------
+    // Only when OAMD's own object ordering and JOC's line up 1:1 - a
+    // dynamic-object-only program (no bed), where oba::parse_payload's
+    // `objects` is already exactly the objects JOC coded (see its own
+    // DecodedProgram comment). A bed program's JOC objects would not match
+    // object_metadata->objects index for index, and this project's own
+    // AtmosEncoder never produces one anyway, so reconstruction is skipped
+    // rather than risk mislabeling one object's audio as another's.
+    if (out.object_metadata && out.object_metadata->program.dynamic_only && !joc_bytes.empty()) {
+        const auto params = joc::parse_payload(joc_bytes);
+        if (params && params->objects == static_cast<int>(out.object_metadata->objects.size())) {
+            constexpr std::array<int, joc::kNumChannels5X> kAc3FromJoc = {0, 2, 1, 3, 4};
+            std::vector<std::vector<float>> bed_joc_order(joc::kNumChannels5X);
+            bool have_bed = static_cast<std::size_t>(joc::kNumChannels5X) <= out.channels.size();
+            for (int jc = 0; have_bed && jc < joc::kNumChannels5X; ++jc) {
+                bed_joc_order[static_cast<std::size_t>(jc)] =
+                    out.channels[static_cast<std::size_t>(
+                        kAc3FromJoc[static_cast<std::size_t>(jc)])];
+            }
+            if (have_bed) {
+                out.object_audio = joc::reconstruct(bed_joc_order, *params, joc_state_[key]);
+            }
+        }
+    }
+
     auto pending_it = pending_.find(key);
     if (frm->transproce) {
         for (int ch = 0; ch < nfchans; ++ch) {
@@ -1901,6 +1936,7 @@ std::expected<std::optional<DecodedAccessUnit>, DecodeError> Eac3Decoder::decode
     out.dynrng = lead.dynrng;
     out.numblkscod = lead.numblkscod;
     out.object_metadata = lead.object_metadata;
+    out.object_audio = lead.object_audio;
     out.substream_count = static_cast<int>(substreams.size());
 
     // Dual mono has no Table E2.5 location - Ch1 and Ch2 are unrelated
