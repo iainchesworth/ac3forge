@@ -36,9 +36,6 @@ so there's nothing object-level to show. Tracked as follow-up work.
 ## Source and how it's built
 
 Source: [`platform/wasm/`](https://github.com/iainchesworth/ac3forge/tree/develop/platform/wasm) —
-see [WebAssembly](platforms/wasm.md) for the build/toolchain details and what's reused vs. new.
-
-The files under `docs/assets/wasm-decode-demo/` embedded above are a committed copy of that target's
-output, kept as a working fallback for local `mkdocs build`; see [WebAssembly](platforms/wasm.md#build-and-run)
-for how to regenerate it and [Release / CI](platforms/wasm.md) for how the published site gets a
-freshly-built copy.
+see [WebAssembly](platforms/wasm.md) for the build/toolchain details and what's reused vs. new. CI
+rebuilds this embed fresh from source on every deploy to `main`; see
+[Release / CI](platforms/wasm.md#release-ci).

@@ -1,0 +1,41 @@
+name: Setup Emscripten
+description: >-
+  Clone and activate a pinned Emscripten SDK version, exporting EMSDK and its
+  bin directories to $GITHUB_ENV/$GITHUB_PATH for subsequent steps. Used by
+  both _build.yml's build-wasm job (build-verify on every push) and
+  docs.yml's deploy job (rebuilds the published demo fresh - see
+  docs/platforms/wasm.md).
+
+inputs:
+  version:
+    description: >-
+      Emscripten SDK version to install (an emsdk release tag, not "latest" -
+      see this action's own steps for why a moving target is deliberately
+      avoided here).
+    required: true
+    default: "6.0.6"
+
+runs:
+  using: composite
+  steps:
+    # Pinned explicitly rather than "latest" - the same "don't trust
+    # whatever happens to be current" reasoning every other toolchain step
+    # in this project's workflows follows (see e.g. _build.yml's NDK/LLVM
+    # installs). docs/platforms/wasm.md's own "Toolchain" section names the
+    # default above as what's actually been verified.
+    - name: Install Emscripten ${{ inputs.version }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
+        cd "$RUNNER_TEMP/emsdk"
+        ./emsdk install "${{ inputs.version }}"
+        ./emsdk activate "${{ inputs.version }}"
+        # emsdk_env.sh mutates the CURRENT shell; every workflow step is a
+        # fresh shell, so EMSDK/PATH have to persist via
+        # $GITHUB_ENV/$GITHUB_PATH instead, the same reason
+        # setup-msvc-env's own MSVC environment step exports to $GITHUB_ENV
+        # rather than relying on its own step's environment surviving.
+        echo "EMSDK=$PWD" >> "$GITHUB_ENV"
+        echo "$PWD" >> "$GITHUB_PATH"
+        echo "$PWD/upstream/emscripten" >> "$GITHUB_PATH"

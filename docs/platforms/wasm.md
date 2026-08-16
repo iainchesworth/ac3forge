@@ -56,6 +56,31 @@ Verified against **Emscripten 6.0.6**. No version is pinned in the toolchain fil
 Android NDK's explicit pin) — there is no CMake-side equivalent of `local.properties`' `sdk.dir` to
 pin against yet; whatever `$EMSDK` resolves to is what gets used.
 
+## Release / CI
+
+The demo builds alongside the desktop packages rather than only ever being hand-built locally:
+`.github/workflows/_build.yml`'s `build-wasm` job configures and builds it on every push, the same
+continuous-smoke-test role `build-android`'s always-on debug APK plays — proving the Emscripten
+toolchain and every file it touches still build. Like `build-android`, it's its own job rather than
+a `build` matrix entry: this leg has no ctest suite, no cpack package and no gold-reference gate, so
+folding it into that matrix would mean threading new `if:` exclusions through most of that job's
+steps for no benefit.
+
+**The published demo is rebuilt fresh, not shipped from a committed copy.** `docs/assets/wasm-decode-demo/`
+is committed to the repo as a working fallback (so a plain local `mkdocs build` — or this repo's own
+PR-time docs check — still has something to embed without anyone needing Emscripten installed just
+to preview docs), but `.github/workflows/docs.yml`'s `deploy` job (push to `main` only) installs
+Emscripten, rebuilds `platform/wasm/` from source, and overwrites that directory *before* `mkdocs
+gh-deploy` runs — so what actually reaches the live site always reflects current source, never a
+possibly-stale commit. Both jobs share one Emscripten install step,
+`.github/actions/setup-emscripten` (pinned to the same version this page's Toolchain section names),
+so the two never drift onto different SDK versions.
+
+`docs.yml`'s trigger `paths:` list includes `platform/wasm/**`, `CMakeLists.txt`,
+`CMakePresets.json` and the WASM toolchain file specifically — without them, a source change there
+would never trigger a redeploy at all, and the live demo would silently drift from what's in
+`platform/wasm/`.
+
 ## What has and has not been verified
 
 !!! note "Verified in a real browser"
