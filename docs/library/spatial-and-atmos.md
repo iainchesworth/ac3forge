@@ -155,4 +155,6 @@ mantissas, so the two configurations' decoded bed is close but not bit-identical
 See also: [Encoding E-AC-3](encoding-eac3.md) — Atmos objects ride inside an ordinary E-AC-3
 stream; [Object signing](../concepts/object-signing.md) — what makes a validating decoder
 accept the container in the first place; [A worked scene: the station broadcast](station-broadcast.md)
-— a complete 115-second authored scene built on this API, from synthesis to `.ec3`.
+— a complete 115-second authored scene built on this API, from synthesis to `.ec3`;
+[ADM → Atmos bridging](adm-bridge.md) — mapping a professional ADM BWF master's beds and objects
+onto this same `ObjectPath`/`AtmosEncoder` surface.
