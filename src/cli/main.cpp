@@ -3272,7 +3272,28 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
     return 0;
 }
 
-int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path) {
+// The dynrng/compr half of run_decode's own status report (main.cpp, further
+// down), factored out so run_decode_eac3 can report the same two figures -
+// range actually carried, and whether drc=/heavy asked for them to be
+// applied - without duplicating run_decode's own dialnorm-anchored
+// indentation, which this command's report has no dialnorm line to anchor to.
+void print_drc_summary(FILE* status, double dynrng_min_db, double dynrng_max_db,
+                       double compr_min_db, double compr_max_db, std::size_t compr_frames,
+                       const Options& meta) {
+    std::println(status, "  dynrng {:+.2f} .. {:+.2f} dB{}", dynrng_min_db, dynrng_max_db,
+                 meta.drc_scale != 0.0 ? std::format(", applied at scale {}", meta.drc_scale)
+                                       : ", not applied");
+    if (compr_frames > 0) {
+        std::println(status, "  compr  {:+.2f} .. {:+.2f} dB over {} access units{}",
+                     compr_min_db, compr_max_db, compr_frames,
+                     meta.p.heavy ? ", applied" : ", not applied");
+    } else {
+        std::println(status, "  compr  absent");
+    }
+}
+
+int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path,
+                     const Options& meta) {
     // Access units, not syncframes: a dependent substream is only meaningful
     // alongside the independent one it extends, and the two are rendered
     // together into one set of speaker feeds.
@@ -3282,9 +3303,44 @@ int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path
                      static_cast<int>(units.error()));
         return 1;
     }
-    ac3::Eac3Decoder decoder;
+    ac3::Eac3Decoder decoder{
+        {.drc_scale = meta.drc_scale, .heavy_compression = meta.p.heavy.has_value()}};
     std::vector<std::vector<float>> pcm;
     ac3::DecodedAccessUnit first{};
+    // What the independent (bed) substream actually carried, reported whether
+    // or not it was applied - same convention as run_decode's own dynrng_min_db/
+    // dynrng_max_db/compr_min_db/compr_max_db above, except both are seeded
+    // from the first real word rather than from 0.0: a stream whose transmitted
+    // dynrng/compr never happens to cross exactly unity would otherwise have
+    // its true min or max silently clamped to 0 dB by the seed itself.
+    double dynrng_min_db = 0.0;
+    double dynrng_max_db = 0.0;
+    std::size_t dynrng_words = 0;
+    double compr_min_db = 0.0;
+    double compr_max_db = 0.0;
+    std::size_t compr_frames = 0;
+    // numblkscod bounds how many of `dynrng`'s kBlocksPerFrame entries are
+    // real: E-AC-3 (unlike AC-3) can code as few as one block per syncframe,
+    // and the rest of the fixed-size array is never written (DecodedSubstream::
+    // dynrng's own comment) - folding those unwritten, always-unity entries in
+    // here would understate the true range for any such stream.
+    const auto track_metadata = [&](const std::array<std::uint8_t, ac3::kBlocksPerFrame>& dynrng,
+                                    int numblkscod, std::optional<std::uint8_t> compr) {
+        const auto nblks =
+            static_cast<std::size_t>(ac3::eac3::blocks_per_syncframe(numblkscod));
+        for (std::size_t i = 0; i < nblks; ++i) {
+            const double db = ac3::meta::to_db(ac3::meta::dynrng_gain(dynrng[i]));
+            dynrng_min_db = dynrng_words == 0 ? db : std::min(dynrng_min_db, db);
+            dynrng_max_db = dynrng_words == 0 ? db : std::max(dynrng_max_db, db);
+            ++dynrng_words;
+        }
+        if (compr) {
+            const double db = ac3::meta::to_db(ac3::meta::compr_gain(*compr));
+            compr_min_db = compr_frames == 0 ? db : std::min(compr_min_db, db);
+            compr_max_db = compr_frames == 0 ? db : std::max(compr_max_db, db);
+            ++compr_frames;
+        }
+    };
     for (const auto& unit : *units) {
         const auto decoded = decoder.decode_access_unit(unit);
         if (!decoded) {
@@ -3303,6 +3359,7 @@ int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path
             first = out;
             pcm.resize(out.channels.size());
         }
+        track_metadata(out.dynrng, out.numblkscod, out.compr);
         for (std::size_t ch = 0; ch < out.channels.size(); ++ch) {
             pcm[ch].insert(pcm[ch].end(), out.channels[ch].begin(), out.channels[ch].end());
         }
@@ -3318,6 +3375,17 @@ int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path
     // channels (e.g. a bed's L/R) with a dependent's height audio instead.
     const auto flushed = decoder.flush();
     if (!flushed.empty()) {
+        // §7.7 words are meaningful at this report's level only from the
+        // independent (bed) substream - same convention as
+        // DecodedAccessUnit::dynrng/compr above; a dependent flushed here
+        // (only possible when transient pre-noise processing has left
+        // substreams of one access unit desynchronised at end-of-stream) is
+        // never the figure this report promises.
+        for (const auto& substream : flushed) {
+            if (substream.strmtyp == ac3::eac3::StreamType::kIndependent) {
+                track_metadata(substream.dynrng, substream.numblkscod, substream.compr);
+            }
+        }
         const bool dual_mono = pcm.empty() ? flushed.front().acmod == ac3::Acmod::kDualMono
                                             : first.acmod == ac3::Acmod::kDualMono;
         if (dual_mono) {
@@ -3398,6 +3466,8 @@ int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path
                      "  {} channels, {} Hz: Ch1 Ch2 (1+1 dual mono - two programmes, not a "
                      "soundfield)",
                      pcm.size(), sample_rate_hz(first.sample_rate));
+        print_drc_summary(status, dynrng_min_db, dynrng_max_db, compr_min_db, compr_max_db,
+                          compr_frames, meta);
         return 0;
     }
     // The same WAV speaker order the encode side reads a file in, so a stream
@@ -3418,6 +3488,8 @@ int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path
                  units->size(), first.substream_count, out_path);
     std::println(status, "  {} channels, {} Hz: {}", map.size(), sample_rate_hz(first.sample_rate),
                  speakers);
+    print_drc_summary(status, dynrng_min_db, dynrng_max_db, compr_min_db, compr_max_db,
+                      compr_frames, meta);
     return 0;
 }
 
@@ -3437,7 +3509,7 @@ int run_decode(std::string_view in_path, std::string_view out_path,
         return 1;
     }
     if (*bsid > 8) {
-        return run_decode_eac3(stream, out_path);
+        return run_decode_eac3(stream, out_path, meta);
     }
     const auto frames = ac3::split_frames(stream);
     if (!frames) {

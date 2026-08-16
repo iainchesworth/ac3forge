@@ -1013,3 +1013,128 @@ TEST_CASE("every substream of an E-AC-3 access unit carries the same dynrng",
     CHECK(words.back()[0] != ac3::meta::kDynrngUnity);
     CHECK(dynrng_gain(words.back()[0]) < 1.0);
 }
+
+TEST_CASE("E-AC-3 dynrng survives the round trip and moves the decoded level",
+          "[drc][eac3][decoder]") {
+    // The E-AC-3 sibling of "AC-3 dynrng survives the round trip and moves the
+    // decoded level" above - same shape (eight frames, four loud then four
+    // quiet, assertions on the settled last frame of each run), but through
+    // ac3::Eac3Decoder rather than a raw-bitstream probe_eac3 walk. Nothing
+    // exercised this decoder's own gain application before: probe_eac3 only
+    // ever reads the transmitted word, never asks Eac3Decoder to apply it.
+    constexpr int kLoudFrames = 4;
+    const auto audio = stepped_tone(8, 2, 0.5, 0.004, kLoudFrames);
+    auto profile = ac3::meta::profile(ac3::meta::ProfileId::kFilmStandard);
+    profile.attack_ms = 5.0;
+    profile.release_ms = 40.0;
+    ac3::eac3::FrameEncoder encoder{
+        {.bitrate_kbps = 448, .acmod = ac3::Acmod::k2_0, .dialnorm = 24, .drc = profile}};
+
+    std::vector<std::vector<std::byte>> frames;
+    for (int frame = 0; frame < 8; ++frame) {
+        auto encoded = encoder.encode_frame(frame_views(audio, frame));
+        REQUIRE(encoded.has_value());
+        frames.push_back(std::move(*encoded));
+    }
+
+    // The words the encoder chose have to come back out of the bitstream,
+    // through the real decoder rather than a bitstream probe.
+    ac3::Eac3Decoder reader;
+    std::vector<std::array<std::uint8_t, ac3::kBlocksPerFrame>> words;
+    for (const auto& frame : frames) {
+        const auto decoded = reader.decode_substream(frame);
+        REQUIRE(decoded.has_value());
+        REQUIRE(decoded->has_value());
+        words.push_back((*decoded)->dynrng);
+    }
+    // Loud frames must be cut and quiet frames lifted, or the curve is not
+    // being consulted at all.
+    CHECK(dynrng_gain(words[3][5]) < 1.0);  // end of the loud run
+    CHECK(dynrng_gain(words[7][5]) > 1.0);  // end of the quiet run
+
+    // And the words must actually change the audio when applied. Decoding the
+    // same bytes twice with different drc_scale is the discriminating test: a
+    // stream carrying dead metadata gives the same answer both times - the
+    // exact gap this test bundle closes (Eac3Decoder used to skip() these bits
+    // outright).
+    ac3::Eac3Decoder off{{.drc_scale = 0.0}};
+    ac3::Eac3Decoder on{{.drc_scale = 1.0}};
+    std::vector<double> off_db;
+    std::vector<double> on_db;
+    for (const auto& frame : frames) {
+        const auto a = off.decode_substream(frame);
+        const auto b = on.decode_substream(frame);
+        REQUIRE(a.has_value());
+        REQUIRE(b.has_value());
+        REQUIRE(a->has_value());
+        REQUIRE(b->has_value());
+        off_db.push_back(rms_db((*a)->channels[0]));
+        on_db.push_back(rms_db((*b)->channels[0]));
+    }
+    // Frame 3 is settled loud, frame 7 settled quiet.
+    CHECK(on_db[3] < off_db[3] - 2.0);
+    CHECK(on_db[7] > off_db[7] + 2.0);
+    const double range_off = off_db[3] - off_db[7];
+    const double range_on = on_db[3] - on_db[7];
+    CHECK(range_off - range_on > 5.0);
+
+    // Half the compression is half the dB, which is what §7.7.1's partial
+    // compression means - same check as the AC-3 sibling test.
+    ac3::Eac3Decoder half{{.drc_scale = 0.5}};
+    double half_db = 0.0;
+    for (std::size_t i = 0; i < frames.size(); ++i) {
+        const auto decoded = half.decode_substream(frames[i]);
+        REQUIRE(decoded.has_value());
+        REQUIRE(decoded->has_value());
+        if (i == 3) {
+            half_db = rms_db((*decoded)->channels[0]);
+        }
+    }
+    CHECK(half_db == Catch::Approx(0.5 * (off_db[3] + on_db[3])).margin(0.15));
+}
+
+TEST_CASE("E-AC-3 heavy compression holds its ceiling through the decoder",
+          "[drc][eac3][decoder]") {
+    // The E-AC-3 sibling of "AC-3 compr holds its ceiling through the
+    // decoder" above, through the real Eac3Decoder rather than a bitstream
+    // probe - and using DecodedSubstream::compr, which used to be reported
+    // but never had anywhere to apply to.
+    const auto audio = stepped_tone(8, 2, 0.95, 0.004, 2);
+    constexpr double ceiling = -1.0;
+    ac3::eac3::FrameEncoder encoder{
+        {.bitrate_kbps = 448,
+         .acmod = ac3::Acmod::k2_0,
+         .dialnorm = 24,
+         .heavy = ac3::meta::HeavyConfig{.peak_ceiling_dbfs = ceiling}}};
+    std::vector<std::vector<std::byte>> frames;
+    for (int frame = 0; frame < 8; ++frame) {
+        auto encoded = encoder.encode_frame(frame_views(audio, frame));
+        REQUIRE(encoded.has_value());
+        frames.push_back(std::move(*encoded));
+    }
+
+    ac3::Eac3Decoder plain;
+    ac3::Eac3Decoder heavy{{.heavy_compression = true}};
+    constexpr double kCodingSlack = 0.1;
+    bool saw_word = false;
+    bool would_have_breached = false;
+    for (std::size_t i = 0; i < frames.size(); ++i) {
+        const auto a = plain.decode_substream(frames[i]);
+        const auto b = heavy.decode_substream(frames[i]);
+        REQUIRE(a.has_value());
+        REQUIRE(b.has_value());
+        REQUIRE(a->has_value());
+        REQUIRE(b->has_value());
+        REQUIRE((*a)->compr.has_value());
+        saw_word = true;
+        if (peak_db((*a)->channels[0]) > ceiling + kCodingSlack) {
+            would_have_breached = true;
+        }
+        if (i >= 1) {  // skip the fade-in frame
+            CHECK(peak_db((*b)->channels[0]) <= ceiling + kCodingSlack);
+            CHECK(peak_db((*b)->channels[1]) <= ceiling + kCodingSlack);
+        }
+    }
+    CHECK(saw_word);
+    CHECK(would_have_breached);
+}

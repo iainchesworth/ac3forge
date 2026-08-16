@@ -556,15 +556,20 @@ TEST_CASE("E-AC-3 dual mono codes two independent programmes, never one into the
 TEST_CASE("E-AC-3 dual mono: Ch2's own heavy compression is not Ch1's, and is not assumed",
           "[eac3][decoder][dual-mono]") {
     using ac3::Acmod;
-    // Eac3Decoder never applies compr/compr2 to the reconstructed audio (no
-    // heavy_compression toggle exists on it - see the class comment), and
-    // DecodedSubstream exposes only compr2, not Ch1's own compr (see the
-    // struct - there is nothing to compare compr2 against directly the way
-    // the sibling AC-3 test in test_drc.cpp compares decoded peaks). So
-    // divergence is shown by comparing Ch2's OWN compr2 word across two
-    // encodes that differ only in heavy2's ceiling: if Ch2's controller
-    // were still built from `heavy` instead of `heavy2`, both encodes would
-    // produce the identical word regardless of what heavy2 says.
+    // This decoder is default-constructed, so it never applies compr/compr2
+    // to the reconstructed audio regardless of the words it reports (see
+    // Eac3Decoder's DecoderConfig-driven gain; tests/test_drc.cpp exercises
+    // heavy_compression actually applying it, including the peak-level cross-
+    // channel check the AC-3 sibling test does). This test instead stays at
+    // the word level: it compares Ch2's OWN compr2 word across two encodes
+    // that differ only in heavy2's ceiling - a direct within-one-encode
+    // compr-vs-compr2 comparison couldn't distinguish "Ch2's controller uses
+    // heavy2" from "the two channels' controllers just produce different
+    // words," since Ch1 and Ch2 hear the same loud signal but start from
+    // different heavy/heavy2 ceilings either way. Across two encodes, if
+    // Ch2's controller were still built from `heavy` instead of `heavy2`,
+    // both would produce the identical compr2 word regardless of what
+    // heavy2 says.
     constexpr double kLooseCeiling = -1.0;
     constexpr double kTightCeiling = -6.0;
 

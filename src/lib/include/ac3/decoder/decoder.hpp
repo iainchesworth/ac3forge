@@ -54,7 +54,10 @@
 // consequence for this class's own API: see decode_substream and flush()
 // below. This is the only oracle 7.1.4 has: FFmpeg rejects any frame with
 // substreamid != 0, so a stream with two dependent substreams cannot be
-// checked against it in any container.
+// checked against it in any container. Every substream's own dynrng/dynrng2
+// words are reported on DecodedSubstream, same convention as DecodedFrame,
+// and optionally applied per Eac3Decoder's own constructor — see
+// DecoderConfig below.
 //
 // The §7.7 dynamic range words are always reported and optionally applied —
 // see DecoderConfig. Reporting them separately from applying them is what
@@ -153,10 +156,19 @@ struct DecodedSubstream {
     // (see parse_bsi's own comment), so there is no meaningful compr value to
     // report there even though the 8 bits are still present on the wire.
     std::optional<std::uint8_t> compr = std::nullopt;
+    // §7.7.1.2: the EFFECTIVE word for each block, with the persistence rule
+    // already resolved, same convention as DecodedFrame::dynrng - a block
+    // that transmitted nothing reports what it inherited, and block 0
+    // without a word reports unity. Sized to kBlocksPerFrame regardless of
+    // how many blocks this syncframe actually codes (numblkscod), matching
+    // blksw's own fixed-size convention above; entries at index >= nblks are
+    // never written.
+    std::array<std::uint8_t, kBlocksPerFrame> dynrng{};
     // Ch2's own dialnorm/compr, present only when acmod is kDualMono (1+1) -
     // the second of the two independent programmes 1+1 codes.
     std::optional<int> dialnorm2 = std::nullopt;
     std::optional<std::uint8_t> compr2 = std::nullopt;
+    std::array<std::uint8_t, kBlocksPerFrame> dynrng2{};
     int numblkscod = 3;
     // §E2.3.1.8: only a dependent substream may carry one.
     std::optional<std::uint16_t> chanmap;
@@ -210,6 +222,19 @@ struct DecodedAccessUnit {
     // bit means something else entirely, so only the independent (bed)
     // substream's word is ever meaningful at the access-unit level.
     std::optional<std::uint8_t> compr = std::nullopt;
+    // The independent substream's own dynrng, same reasoning as compr above -
+    // every substream carries its own words and a decoder applies each to
+    // that substream's own channels (see Eac3Decoder's DecoderConfig-driven
+    // gain), but the bed's is the one figure worth surfacing at the
+    // access-unit level for a status report. Only entries below
+    // eac3::blocks_per_syncframe(numblkscod) were ever written - see
+    // DecodedSubstream::dynrng's own comment on the fixed-size convention.
+    std::array<std::uint8_t, kBlocksPerFrame> dynrng{};
+    // The independent substream's own numblkscod (§E2.3.1.4), needed to know
+    // how many of the kBlocksPerFrame entries in `dynrng` above are real
+    // rather than the fixed array's unwritten tail - see
+    // eac3::blocks_per_syncframe.
+    int numblkscod = 3;
     // The independent substream's own object_metadata/object_audio - see
     // DecodedSubstream's own comments on both. Object audio only ever rides
     // in the bed (this project's own AtmosEncoder never sends a dependent
@@ -224,6 +249,9 @@ struct DecodedAccessUnit {
 
 class AC3FORGE_EXPORT Eac3Decoder {
    public:
+    Eac3Decoder() = default;
+    explicit Eac3Decoder(const DecoderConfig& config) : config_(config) {}
+
     // Decodes one syncframe. Overlap-add state is kept per substream identity,
     // so the substreams of successive access units stay independent of each
     // other; a caller stepping through syncframes by hand gets the same audio
@@ -272,6 +300,8 @@ class AC3FORGE_EXPORT Eac3Decoder {
     [[nodiscard]] std::vector<DecodedSubstream> flush();
 
    private:
+    DecoderConfig config_{};
+
     // Keyed by strmtyp and substreamid together: a dependent's id lives in its
     // own numbering space (§E2.3.1.2), so id alone does not identify a
     // substream. At most six coded channels each (3/2 plus LFE).
