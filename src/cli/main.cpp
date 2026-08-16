@@ -4517,10 +4517,16 @@ int run_monitor(std::string_view in_path, int device_index) {
                 // 5.1 bed (this function's own header comment), so it says
                 // so rather than implying object playback is coming.
                 if (out.object_metadata) {
+                    // Guarded by the if above; clang-tidy's
+                    // bugprone-unchecked-optional-access doesn't trace the
+                    // guard through into a multi-argument std::println call,
+                    // the same false positive print_channel_summary(*meter)
+                    // elsewhere in this file works around - binding once here
+                    // instead of repeating out.object_metadata-> twice sidesteps it.
+                    const auto& metadata = *out.object_metadata;  // NOLINT(bugprone-unchecked-optional-access)
                     std::println(
                         "  {} dynamic objects + the bed's LFE = {} objects, OAMD present{}",
-                        out.object_metadata->objects.size(),
-                        ac3::oba::object_count(out.object_metadata->program),
+                        metadata.objects.size(), ac3::oba::object_count(metadata.program),
                         out.object_audio.empty()
                             ? " (JOC audio not reconstructed)"
                             : ", JOC audio reconstructed (bed-only playback here; see "
