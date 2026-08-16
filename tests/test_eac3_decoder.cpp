@@ -1590,3 +1590,137 @@ TEST_CASE("E-AC-3 encodes and decodes real audio at fscod2 half rates",
         CHECK(std::abs(fscod2_dominant_freq_hz(rendered[1], c.hz) - 700.0) < 15.0);
     }
 }
+
+TEST_CASE("dithflag=1 substitutes dither at zero-bap bins instead of silence (E-AC-3)",
+          "[eac3][decoder][dither]") {
+    // Same reasoning as decoder.cpp's own version of this test: with every
+    // SNR offset at zero, §7.2.2.1.1's bit allocation is fully zero-bap for
+    // genuinely silent input - every bin in the frame is bap == 0, which is
+    // exactly what §7.3.4/Annex E's dithflag[ch] governs.
+    //
+    // This project's encoder always turns dithflage on (kDithflage in
+    // eac3_frame.cpp) but writes every dithflag[ch] bit as 0 (dither off),
+    // so the frame is patched by hand to flip block 0's dithflag[0] and
+    // crc2 is restored - the only CRC E-AC-3 has (no crc1, unlike AC-3).
+    ac3::eac3::FrameEncoder encoder{{.bitrate_kbps = 192}};  // default acmod k2_0, no LFE
+    const std::vector<float> silence(ac3::kSamplesPerFrame, 0.0f);
+    const std::vector<std::span<const float>> views(2, silence);
+    auto frame = encoder.encode_frame(views);
+    REQUIRE(frame.has_value());
+
+    // Bit offset of block 0's dithflag[0], cross-checked against "E-AC-3
+    // coupling places its fields where Annex E puts them" above: that test
+    // reaches dithflag at bit 108 for the same minimal stereo shape PLUS
+    // coupling's extra 5-bit frmcplexpstr code (present because cpl_active
+    // is true there) - a config with no coupling never sends that code and
+    // lands 5 bits earlier, at bit 103.
+    constexpr std::size_t kDithflagBit0 = 103;
+
+    {
+        ac3::Eac3Decoder decoder;
+        const auto decoded = decoder.decode_substream(*frame);
+        REQUIRE(decoded.has_value());
+        REQUIRE(decoded->has_value());
+        for (const float v : (*decoded)->channels[0]) {
+            CHECK(v == 0.0f);
+        }
+        for (const float v : (*decoded)->channels[1]) {
+            CHECK(v == 0.0f);
+        }
+    }
+
+    auto patched = *frame;
+    patch_bits(patched, kDithflagBit0, 1, 1);  // dithflag[0] = 1
+
+    // Determinism: two independent decoders on the same patched frame
+    // produce bit-identical PCM.
+    ac3::Eac3Decoder decoder_a;
+    const auto decoded_a = decoder_a.decode_substream(patched);
+    REQUIRE(decoded_a.has_value());
+    REQUIRE(decoded_a->has_value());
+    ac3::Eac3Decoder decoder_b;
+    const auto decoded_b = decoder_b.decode_substream(patched);
+    REQUIRE(decoded_b.has_value());
+    REQUIRE(decoded_b->has_value());
+    CHECK((*decoded_a)->channels[0] == (*decoded_b)->channels[0]);
+
+    double ch0_energy = 0.0;
+    for (const float v : (*decoded_a)->channels[0]) {
+        ch0_energy += static_cast<double>(v) * static_cast<double>(v);
+    }
+    CHECK(ch0_energy > 0.0);
+    for (const float v : (*decoded_a)->channels[1]) {
+        CHECK(v == 0.0f);  // channel 1's dithflag untouched, stays literal zero
+    }
+}
+
+TEST_CASE("dithflag=1 on a coupled E-AC-3 channel dithers independently of its sibling",
+          "[eac3][decoder][dither][coupling]") {
+    // Same point as decoder.cpp's coupled dither test: §7.3.4 requires
+    // dither to be drawn independently PER RECEIVING CHANNEL after
+    // decoupling, not once for the shared coupling-domain bin and then
+    // scaled by each channel's coordinate. Real (not silent) per-channel
+    // tones are needed here, deliberately, unlike the plain dither test
+    // above: a silent channel's own coupling coordinate is legitimately
+    // zero (it contributes nothing to the shared sum), which would zero out
+    // dither same as anything else and prove nothing about §7.3.4 - the
+    // interaction under test only shows up once the coordinate that
+    // multiplies the dithered sample is itself nonzero.
+    ac3::eac3::FrameEncoder encoder{
+        {.bitrate_kbps = 96, .coupling = true, .cplbegf = 4}};
+    std::vector<float> tone0(static_cast<std::size_t>(ac3::kSamplesPerFrame));
+    std::vector<float> tone1(static_cast<std::size_t>(ac3::kSamplesPerFrame));
+    for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+        tone0[static_cast<std::size_t>(i)] = static_cast<float>(
+            0.5 * std::sin(2.0 * std::numbers::pi * 5000.0 * i / 48000.0));
+        tone1[static_cast<std::size_t>(i)] = static_cast<float>(
+            0.5 * std::sin(2.0 * std::numbers::pi * 7000.0 * i / 48000.0));
+    }
+    const std::vector<std::span<const float>> views{tone0, tone1};
+    auto frame = encoder.encode_frame(views);
+    REQUIRE(frame.has_value());
+
+    // Bit offset validated by "E-AC-3 coupling places its fields where
+    // Annex E puts them" above, for this exact config (content-independent:
+    // it only depends on which optional fields are structurally present).
+    constexpr std::size_t kDithflagBit0 = 108;
+
+    ac3::Eac3Decoder baseline_decoder;
+    const auto baseline = baseline_decoder.decode_substream(*frame);
+    REQUIRE(baseline.has_value());
+    REQUIRE(baseline->has_value());
+
+    auto patched = *frame;
+    patch_bits(patched, kDithflagBit0, 2, 0b11);  // dithflag[0] = dithflag[1] = 1
+
+    ac3::Eac3Decoder decoder;
+    const auto decoded = decoder.decode_substream(patched);
+    REQUIRE(decoded.has_value());
+    REQUIRE(decoded->has_value());
+
+    // Turning dither on changes SOMETHING relative to the dithflag == 0
+    // baseline (proving the substitution actually reached the output
+    // through nonzero coupling coordinates), and channel 0 and channel 1
+    // do not end up with an identical delta (proving each channel's dither
+    // is its own independent draw, not one shared sample scaled by two
+    // different coordinates).
+    const auto& base0 = (*baseline)->channels[0];
+    const auto& base1 = (*baseline)->channels[1];
+    const auto& ch0 = (*decoded)->channels[0];
+    const auto& ch1 = (*decoded)->channels[1];
+    REQUIRE(ch0.size() == base0.size());
+    REQUIRE(ch1.size() == base1.size());
+    bool ch0_changed = false;
+    bool ch1_changed = false;
+    bool deltas_differ = false;
+    for (std::size_t i = 0; i < ch0.size(); ++i) {
+        const double d0 = static_cast<double>(ch0[i]) - static_cast<double>(base0[i]);
+        const double d1 = static_cast<double>(ch1[i]) - static_cast<double>(base1[i]);
+        if (std::abs(d0) > 1e-9) ch0_changed = true;
+        if (std::abs(d1) > 1e-9) ch1_changed = true;
+        if (std::abs(d0 - d1) > 1e-9) deltas_differ = true;
+    }
+    CHECK(ch0_changed);
+    CHECK(ch1_changed);
+    CHECK(deltas_differ);
+}

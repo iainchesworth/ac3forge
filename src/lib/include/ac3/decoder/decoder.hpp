@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "ac3/core/eac3_tables.hpp"
+#include "ac3/core/mantissas.hpp"
 #include "ac3/core/tables.hpp"
 #include "ac3/export.hpp"
 
@@ -28,9 +29,12 @@
 // alongside Ch1's, and each programme's §7.7 gain is applied to its own
 // channel only. Block switching (§8.2.2/§7.9) is decoded too — DecodedFrame::
 // blksw reports which blocks used the short transform. dynrng words are
-// parsed but not applied; bap-0 bins reconstruct as zero regardless of
-// dithflag (the spec lets the dither sequence be "any reasonably random
-// sequence"; zeros keep decode parity deterministic).
+// parsed but not applied; bap-0 bins reconstruct per §7.3.4's dithflag - a
+// true zero when it is clear, a dither sample (DitherGenerator, deterministic
+// per decoder instance) when it is set. A coupled channel's shared bap-0
+// bins are dithered independently per RECEIVING channel, after decoupling,
+// per §7.3.4's own "uncorrelated" requirement - never by dithering the
+// shared coupling-channel coefficient itself.
 //
 // E-AC-3 scope (Annex E, bsid 11-16): the whole of Tables E1.2/E1.3/E1.4 as
 // syntax — every metadata payload is walked correctly whether or not its
@@ -121,6 +125,9 @@ class AC3FORGE_EXPORT FrameDecoder {
    private:
     DecoderConfig config_{};
     std::array<std::array<double, 256>, 6> delay_{};  // overlap-add state
+    // §7.3.4 dither, persisting across frames like delay_ above so a long
+    // stream's substituted noise does not repeat every syncframe.
+    DitherGenerator dither_{};
 };
 
 // --- E-AC-3 ----------------------------------------------------------------
@@ -267,6 +274,12 @@ class AC3FORGE_EXPORT Eac3Decoder {
     std::array<double, 512> imdct_scratch_{};
     std::array<double, 256> ecpl_spectrum_real_{};
     std::array<double, 256> ecpl_spectrum_imag_{};
+    // §7.3.4 dither (Annex E's dithflag[ch]/dithflage), shared across every
+    // substream identity decode_substream ever sees - nothing about §7.3.4
+    // requires per-identity separation, only that simultaneous channels'
+    // noise stay uncorrelated, which independent draws from one sequential
+    // generator already give.
+    DitherGenerator dither_{};
 };
 
 // Split a raw elementary stream into syncframes by sync word and declared
