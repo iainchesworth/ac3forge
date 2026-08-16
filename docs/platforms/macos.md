@@ -30,13 +30,23 @@ against 67.84/67.82 dB on Linux and Windows for the same material — a real but
 cross-compiler floating-point difference (Homebrew LLVM's libm vs. glibc's/MSVC's), comfortably
 clear of the gate's 30 dB floor.
 
-`src/lib/CMakeLists.txt` selects the same no-backend audio implementation on macOS that a Linux
-machine without `libasound2-dev` gets: capture, monitor playback and IEC 61937 passthrough all
-report themselves unavailable rather than failing to link. `AC3FORGE_BUILD_GUI` also defaults
-off here (no CI leg builds `ac3gui` on macOS), so the GUI and the three audio-hardware commands
-remain untested on macOS specifically — same as everywhere else without real hardware or a Qt
-kit. See [Building from source](../building.md#verified-configuration) for the full picture
-across every platform.
+`src/audio/CMakeLists.txt` selects a real CoreAudio backend on macOS, `src/audio/src/platform/macos/`
+(roadmap E1) — capture, monitor playback and IEC 61937 passthrough are built on the Audio HAL
+(`AudioObjectID`/`AudioDeviceIOProc`), the same layer WASAPI and ALSA occupy on their own
+platforms, rather than the no-backend stub that used to fall back to here. Its passthrough
+mechanism is genuinely different from both: CoreAudio has no per-open bitstream flag the way
+WASAPI's exclusive-mode subformat or ALSA's channel-status device name are, so bitstreaming means
+taking hog mode on a digital output and retuning its *physical* stream format
+(`kAudioStreamPropertyPhysicalFormat`) to `kAudioFormat60958AC3` for AC-3 — see
+`src/audio/src/platform/macos/passthrough.cpp`'s own header for the full mechanism, cross-checked
+against three independent real-world implementations of the same thing (MythTV, mpv, VLC) while
+writing it, since there was no Mac available locally to try it on directly. `AC3FORGE_BUILD_GUI`
+still defaults off here (no CI leg builds `ac3gui` on macOS), so the GUI remains untested on macOS
+specifically — but the three audio-hardware commands now compile, link, and (for the parts that
+need no live device — enumeration on a machine with none, format matching, sample conversion) run
+under `ac3tests`, same as everywhere else without real hardware. See
+[Building from source](../building.md#verified-configuration) for the full picture across every
+platform.
 
 ## Packaging
 

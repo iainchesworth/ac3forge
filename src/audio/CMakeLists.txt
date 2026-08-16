@@ -52,12 +52,13 @@ target_link_libraries(ac3audio PRIVATE ac3::forge ac3::warnings)
 #
 # The axis is the audio subsystem rather than the operating system, because
 # that is where the answers actually differ: windows/ is WASAPI, alsa/ is
-# ALSA, and posix/ is the one that says no to everything. Two of those follow
-# from the OS; the third does not, which is the point - a Linux host without
-# libasound's development headers falls back to posix/ and still builds a
-# complete library, so the dependency is optional rather than required. A
-# future pipewire/ or coreaudio/ is a directory and a branch below, and
-# nothing else.
+# ALSA, macos/ is CoreAudio, and posix/ is the one that says no to
+# everything (Linux only, now that macOS has its own directory - see below).
+# posix/'s existence is not tied to the OS the way the other three are,
+# which is the point - a Linux host without libasound's development headers
+# falls back to it and still builds a complete library, so the ALSA
+# dependency is optional rather than required. A future pipewire/ is a
+# directory and a branch below, and nothing else.
 #
 # AC3FORGE_AUDIO_BACKEND names the selected directory and is published to the
 # parent scope: tests/CMakeLists.txt reads it to add that backend's own
@@ -156,16 +157,35 @@ if(LINUX)
 endif(LINUX)
 
 if(APPLE)
-    # CoreAudio would go here; until it does, macOS gets the no-backend files
-    # and 'ac3cli play' says so instead of failing to link.
+    # -----------------------------------------------------------------------
+    # CoreAudio: the Audio HAL (AudioObjectID / AudioDeviceIOProc), the same
+    # layer WASAPI and ALSA occupy on their own platforms - not AVAudioEngine
+    # or Audio Queue Services. See src/platform/macos/capture.cpp's own
+    # header for why: passthrough's exclusive-mode physical-format switch
+    # has to happen at the HAL, so every capability shares that one layer
+    # (and its device-enumeration/hog-mode code, coreaudio_support.hpp)
+    # rather than each reaching for a different API.
+    #
+    # Always available and never optional the way ALSA is on Linux: CoreAudio
+    # is part of every macOS SDK, with no missing-headers story to fall back
+    # from - see src/platform/macos/audio_backend.cpp's own comment on what
+    # "available" still does and does not promise.
+    # -----------------------------------------------------------------------
     target_sources(ac3audio
         PRIVATE
-            src/platform/posix/audio_backend.cpp
-            src/platform/posix/capture.cpp
-            src/platform/posix/monitor.cpp
-            src/platform/posix/passthrough.cpp)
+            src/platform/macos/audio_backend.cpp
+            src/platform/macos/capture.cpp
+            src/platform/macos/passthrough.cpp
+            src/platform/macos/monitor.cpp)
 
-    set(AC3FORGE_AUDIO_BACKEND posix)
+    # CoreAudio: the Audio HAL itself. CoreFoundation: CFStringRef, used
+    # throughout coreaudio_support.hpp for every device's persistent UID and
+    # friendly name. Apple frameworks are linked as plain "-framework <name>"
+    # strings rather than through find_library/find_package - there is
+    # nothing to find, they ship with every macOS SDK.
+    target_link_libraries(ac3audio PRIVATE "-framework CoreAudio" "-framework CoreFoundation")
+
+    set(AC3FORGE_AUDIO_BACKEND macos)
 endif(APPLE)
 
 if(ANDROID)
