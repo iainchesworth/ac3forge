@@ -8,10 +8,39 @@
 #include <string_view>
 #include <vector>
 
+#include "ac3/core/crc16.hpp"
 #include "ac3/decoder/decoder.hpp"
 #include "ac3/encoder/encoder.hpp"
 
 namespace {
+
+// Overwrite `count` bits at `offset` and restore both AC-3 CRCs (§7.10.1):
+// crc1 precedes the first 5/8 of the frame it protects and has to be SOLVED
+// for (ac3::solve_leading_crc), crc2 is a plain trailing CRC over everything
+// after the sync word. Mirrors encoder.cpp's own tail-patching logic, so a
+// hand-patched frame stays a legal syncframe and only the flipped bit's own
+// meaning changes.
+void patch_bits(std::vector<std::byte>& frame, std::size_t offset, int count,
+                std::uint32_t value) {
+    for (int i = 0; i < count; ++i) {
+        const std::size_t bit = offset + static_cast<std::size_t>(i);
+        const auto mask = static_cast<std::uint8_t>(0x80u >> (bit & 7));
+        const auto set = (value >> (count - 1 - i)) & 1u;
+        auto& target = frame[bit >> 3];
+        target = set != 0 ? (target | std::byte{mask})
+                          : (target & static_cast<std::byte>(~mask));
+    }
+    const auto bytes = frame.size();
+    const auto words = static_cast<std::uint32_t>(bytes / 2);
+    const auto words58 = ac3::frame_size_58_words(words);
+    const std::span<const std::byte> view{frame};
+    const std::uint16_t crc1 = ac3::solve_leading_crc(view.subspan(4, 2 * words58 - 4));
+    frame[2] = static_cast<std::byte>(crc1 >> 8);
+    frame[3] = static_cast<std::byte>(crc1 & 0xFF);
+    const std::uint16_t crc2 = ac3::crc16(view.subspan(2, bytes - 4));
+    frame[bytes - 2] = static_cast<std::byte>(crc2 >> 8);
+    frame[bytes - 1] = static_cast<std::byte>(crc2 & 0xFF);
+}
 
 // Multi-frame encode -> decode of per-channel tones; returns concatenated
 // decoded PCM per channel (AC-3 order).
@@ -389,4 +418,122 @@ TEST_CASE("a real transient triggers block switching and decodes without pre-ech
         }
         CHECK(pre_energy < 1e-4);
     }
+}
+
+TEST_CASE("dithflag=1 substitutes dither at zero-bap bins instead of silence",
+          "[decoder][dither]") {
+    // §7.2.2.1.1: with every SNR offset at zero, the bit allocation goes
+    // fully zero-bap - a genuinely silent frame allocates NO mantissa bits
+    // anywhere. Unlike CONTRIBUTING.md's general warning against silence as
+    // a test signal (which is about exercising the encoder broadly),
+    // silence is exactly the right stimulus HERE: every bin in the frame is
+    // bap == 0, isolating §7.3.4's dither-substitution path with nothing
+    // else able to confound the result.
+    //
+    // This project's own encoder always writes dithflag == 0 (see
+    // encoder.cpp), so the frame is patched by hand to flip block 0's
+    // dithflag[0] to 1 and both CRCs are restored - legal per §7.10.1, and
+    // the ONLY thing it changes is what a bap-0 mantissa in channel 0's
+    // first block reconstructs as.
+    ac3::FrameEncoder encoder{{.bitrate_kbps = 192}};  // default acmod k2_0, no LFE
+    const std::vector<float> silence(ac3::kSamplesPerFrame, 0.0f);
+    const std::vector<std::span<const float>> views(2, silence);
+    auto frame = encoder.encode_frame(views);
+    REQUIRE(frame.has_value());
+
+    // Bit offset of block 0's dithflag[0], cross-checked against
+    // test_encoder.cpp's own parse_block_zero: syncinfo (40) + bsi for 2/0
+    // without LFE (27, through addbsie) + block 0's blksw[0..1] (2) puts
+    // dithflag[0] at bit 69, immediately followed by dithflag[1].
+    constexpr std::size_t kDithflagBit0 = 40 + 27 + 2;
+
+    // Baseline: dithflag == 0 (the encoder's own default) must still decode
+    // to literal zero throughout - confirms the "off" half of §7.3.4 still
+    // holds after adding the "on" half.
+    {
+        ac3::FrameDecoder decoder;
+        const auto decoded = decoder.decode_frame(*frame);
+        REQUIRE(decoded.has_value());
+        for (const float v : decoded->channels[0]) {
+            CHECK(v == 0.0f);
+        }
+        for (const float v : decoded->channels[1]) {
+            CHECK(v == 0.0f);
+        }
+    }
+
+    auto patched = *frame;
+    patch_bits(patched, kDithflagBit0, 1, 1);  // dithflag[0] = 1
+
+    // Determinism: two independent decoder instances given the same patched
+    // frame must produce bit-identical PCM - DitherGenerator is seeded the
+    // same way every time, so "random-looking" does not mean "unreproducible".
+    ac3::FrameDecoder decoder_a;
+    const auto decoded_a = decoder_a.decode_frame(patched);
+    REQUIRE(decoded_a.has_value());
+    ac3::FrameDecoder decoder_b;
+    const auto decoded_b = decoder_b.decode_frame(patched);
+    REQUIRE(decoded_b.has_value());
+    CHECK(decoded_a->channels[0] == decoded_b->channels[0]);
+
+    // Channel 0 now has real energy (dither), channel 1's dithflag was never
+    // touched and must stay exactly silent - proving the substitution is
+    // scoped to precisely the bit that was flipped, not a blanket change.
+    double ch0_energy = 0.0;
+    for (const float v : decoded_a->channels[0]) {
+        ch0_energy += static_cast<double>(v) * static_cast<double>(v);
+    }
+    CHECK(ch0_energy > 0.0);
+    for (const float v : decoded_a->channels[1]) {
+        CHECK(v == 0.0f);
+    }
+}
+
+TEST_CASE("dithflag=1 on a coupled channel dithers independently of its sibling",
+          "[decoder][dither][coupling]") {
+    // §7.3.4: "Dither is applied after the individual channels are
+    // extracted from the coupling channel. In this way, the dither applied
+    // to each channel's upper frequencies is uncorrelated." A stereo,
+    // silent, coupled frame puts both channels' shared high band through
+    // the SAME zero-bap coupling-channel bins; each channel's own dithflag
+    // must still gate its OWN independent noise there, not a shared one.
+    ac3::FrameEncoder encoder{
+        {.bitrate_kbps = 192, .acmod = ac3::Acmod::k2_0, .coupling = true}};
+    const std::vector<float> silence(ac3::kSamplesPerFrame, 0.0f);
+    const std::vector<std::span<const float>> views(2, silence);
+    auto frame = encoder.encode_frame(views);
+    REQUIRE(frame.has_value());
+
+    // Same bit layout as the plain stereo case up to block 0's dithflag:
+    // coupling strategy fields live AFTER dithflag/dynrnge in block 0's own
+    // syntax (§5.4.3.11 cplstre follows dynrnge), so the offset does not
+    // move just because coupling is on.
+    constexpr std::size_t kDithflagBit0 = 40 + 27 + 2;
+
+    auto patched = *frame;
+    patch_bits(patched, kDithflagBit0, 2, 0b11);  // dithflag[0] = dithflag[1] = 1
+
+    ac3::FrameDecoder decoder;
+    const auto decoded = decoder.decode_frame(patched);
+    REQUIRE(decoded.has_value());
+
+    // Both channels get real, and - because each draws its own independent
+    // dither sample rather than sharing one scaled coupling-domain value -
+    // DIFFERENT energy/noise, not a common signal scaled by each channel's
+    // coordinate.
+    double ch0_energy = 0.0;
+    double ch1_energy = 0.0;
+    bool any_differs = false;
+    for (std::size_t i = 0; i < decoded->channels[0].size(); ++i) {
+        const double a = static_cast<double>(decoded->channels[0][i]);
+        const double b = static_cast<double>(decoded->channels[1][i]);
+        ch0_energy += a * a;
+        ch1_energy += b * b;
+        if (std::abs(a - b) > 1e-9) {
+            any_differs = true;
+        }
+    }
+    CHECK(ch0_energy > 0.0);
+    CHECK(ch1_energy > 0.0);
+    CHECK(any_differs);
 }

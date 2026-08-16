@@ -62,7 +62,7 @@ AC-3/E-AC-3 bitstream and verifies its loudness metadata against measurement.
   `ac3::mlp` module — sync and restart-header framing, the lossless matrix cascade, Rice
   coding, CRC, tests, and a design doc (`docs/concepts/truehd-mlp.md`). Next step is a full
   substream encode.
-- [ ] **D2 (S)** — Decoder dither substitution: zero-mantissa bands currently emit silence
+- [x] **D2 (S)** — Decoder dither substitution: zero-mantissa bands currently emit silence
   instead of dither, in both decoders (the only two TODOs in the tree).
 - [ ] **D3 (M)** — Delta bit allocation alongside coupling, and for LFE: currently skipped
   whenever coupling is active that frame, and always for LFE.

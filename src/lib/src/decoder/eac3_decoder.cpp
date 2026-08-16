@@ -653,11 +653,20 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
             out.blksw[static_cast<std::size_t>(ch)][static_cast<std::size_t>(blk)] =
                 blksw[static_cast<std::size_t>(ch)];
         }
+        // Annex E Table E1.4's own audblk() syntax: full per-channel
+        // dithflag[ch] syntax when dithflage is set, else every channel
+        // defaults to "dithflag[ch] = 1 /* dither on */" for the block -
+        // NOT off. Reconstruction happens in read_stream/the decoupling loop
+        // below, the same split AC-3's own dithflag[ch] uses.
+        std::array<bool, eac3::chanmap::kMaxSubstreamFullbw> dithflag{};
         if (frm->dithflage) {
-            // bap-0 bins reconstruct as zero whatever this says, matching the
-            // AC-3 path: §7.3.4 lets the dither sequence be "any reasonably
-            // random sequence", so zeros are what keeps decode deterministic.
-            r.skip(static_cast<std::size_t>(nfchans));
+            for (int ch = 0; ch < nfchans; ++ch) {
+                dithflag[static_cast<std::size_t>(ch)] = r.read(1) != 0;
+            }
+        } else {
+            for (int ch = 0; ch < nfchans; ++ch) {
+                dithflag[static_cast<std::size_t>(ch)] = true;
+            }
         }
         if (r.read(1) != 0) {
             r.skip(8);  // dynrng: parsed, not applied
@@ -1250,15 +1259,25 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
         // kMaxSubstreamStreams * 256 doubles, a stack std::array here is the
         // single largest contributor to this function's frame size.
         std::vector<std::array<double, 256>> coeffs(kMaxSubstreamStreams);
+        // §7.3.4, same split as decoder.cpp's own read_stream: only a stream
+        // with its OWN dithflag (a full-bandwidth channel, s < nfchans)
+        // dithers here. The LFE has no dithflag and always reconstructs as
+        // zero; kCplStream's shared bins stay silent here too and are
+        // dithered per receiving channel in the decoupling loop below
+        // instead, per §7.3.4's "applied after the individual channels are
+        // extracted ... uncorrelated" requirement.
         const auto read_stream = [&](int s, int begin) {
             const auto index = static_cast<std::size_t>(s);
+            const bool dither_eligible = s < nfchans && dithflag[static_cast<std::size_t>(s)];
             for (int bin = begin; bin < endmant[index]; ++bin) {
                 const int bap_value = bap[index][static_cast<std::size_t>(bin)];
+                const int exp = exps[index][static_cast<std::size_t>(bin)];
                 if (bap_value == 0) {
-                    continue;  // silence (dither substitution not implemented)
+                    coeffs[index][static_cast<std::size_t>(bin)] =
+                        dither_eligible ? dither_.next() / static_cast<double>(1u << exp) : 0.0;
+                    continue;
                 }
                 const auto code = mantissa_reader.read(r, bap_value);
-                const int exp = exps[index][static_cast<std::size_t>(bin)];
                 coeffs[index][static_cast<std::size_t>(bin)] =
                     dequantize_mantissa(code, bap_value) / static_cast<double>(1u << exp);
             }
@@ -1402,11 +1421,14 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
         // regardless of coupling mode).
         if (frm->cplinu[static_cast<std::size_t>(blk)] && !ecplinu_now) {
             const auto& shared = coeffs[static_cast<std::size_t>(kCplStream)];
+            const auto& cpl_bap = bap[static_cast<std::size_t>(kCplStream)];
+            const auto& cpl_exps = exps[static_cast<std::size_t>(kCplStream)];
             for (int ch = 0; ch < nfchans; ++ch) {
                 if (!chincpl[static_cast<std::size_t>(ch)]) {
                     continue;
                 }
                 auto& target = coeffs[static_cast<std::size_t>(ch)];
+                const bool ch_dither = dithflag[static_cast<std::size_t>(ch)];
                 for (int bnd = 0; bnd < static_cast<int>(subband_band.size()); ++bnd) {
                     const double coordinate =
                         cplco[static_cast<std::size_t>(ch)][static_cast<std::size_t>(bnd)];
@@ -1422,8 +1444,18 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
                     const int low = cplstrtmant + bnd * coupling::kBinsPerSubBand;
                     const int high = std::min(low + coupling::kBinsPerSubBand, cplendmant);
                     for (int bin = low; bin < high; ++bin) {
-                        target[static_cast<std::size_t>(bin)] =
-                            shared[static_cast<std::size_t>(bin)] * coordinate * 8.0 * sign;
+                        const std::size_t ubin = static_cast<std::size_t>(bin);
+                        // §7.3.4: independent per-channel dither for a
+                        // zero-bap shared bin, run through the same
+                        // extraction formula a real coupling coefficient
+                        // uses - see decoder.cpp's own copy of this comment
+                        // for why reusing one dithered coupling-domain
+                        // sample across channels would be wrong.
+                        const double coeff =
+                            (cpl_bap[ubin] == 0 && ch_dither)
+                                ? dither_.next() / static_cast<double>(1u << cpl_exps[ubin])
+                                : shared[ubin];
+                        target[ubin] = coeff * coordinate * 8.0 * sign;
                     }
                 }
             }

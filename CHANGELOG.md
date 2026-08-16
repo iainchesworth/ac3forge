@@ -64,6 +64,26 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   companion file. `matroska::mux()` (the existing whole-file API `ac3cli mkv` and file-based GUI
   encodes use) is unchanged.
 
+### Codec depth
+
+- **Decoder dither substitution** (roadmap D2) — both decoders now implement A/52 §7.3.4: a
+  zero-bap mantissa reconstructs as a dither sample when its channel's `dithflag` is set, and as
+  a true zero when it is clear, instead of always silence regardless of the flag. AC-3 reads
+  `dithflag[ch]` fresh every block (§5.4.3.2); E-AC-3's Annex E equivalent is frame-gated
+  (`dithflage`) and, per Table E1.4, defaults every channel's `dithflag` to **on** for the whole
+  frame when that gate is clear — the opposite of "absent means off" most of Annex E's other
+  optional syntax uses, so this needed its own default rather than reusing the general pattern. A
+  coupled channel's shared high band is dithered per §7.3.4's own "applied after the individual
+  channels are extracted from the coupling channel ... uncorrelated" requirement: each receiving
+  channel draws its own independent sample, gated by its own `dithflag`, rather than dithering the
+  shared coupling-channel coefficient once and letting every coupled channel inherit a scaled copy
+  of the same noise. The generator (`ac3::DitherGenerator`) is a deterministic xorshift32 mapped
+  onto the spec's own "uniform distribution ... scale this by 0.707" — the same class of
+  unspecified-generator freedom this codebase's spectral-extension and enhanced-coupling noise
+  already use. This project's own encoders still always transmit `dithflag = 0` (true silence),
+  so no existing encoder output changes; the new behavior is reachable today by any other
+  encoder's stream, or a hand-built one.
+
 ### Loudness and QC
 
 - **Full R128 metering in `ac3::meta::LoudnessMeter`** (roadmap C1): momentary (400 ms) and
