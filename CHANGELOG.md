@@ -80,6 +80,14 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   now decodes what it encodes): mean recovered position error of 0.02 room units — essentially the
   quantizer's own step size — and 18-22 dB audio-tracking SNR per object across 59 frames of real
   circular motion, not a single static frame.
+- **`ac3gui` gains "Inspect objects…"** (header, beside "QC a stream…"), the decode-side counterpart
+  to the Objects tab's own authoring room view: opens an already-encoded E-AC-3 file and shows the
+  OAMD positions/gain and JOC-reconstructed audio `Eac3Decoder` actually recovers from it, scrubbed
+  or played frame by frame in the same plan/elevation room view the Objects tab already uses, plus
+  per-object audition through the same shared-mode playback path (`ac3::sinks::MonitorSink`) the
+  Objects tab's own motion preview uses. Read-only end to end — no plan, no source, no encoder in
+  the path, the same shape `QcController`/`QcDialog` already established for roadmap C3's "QC a
+  stream". See [docs/gui/inspect-objects.md](docs/gui/inspect-objects.md).
 
 ### Delivery
 

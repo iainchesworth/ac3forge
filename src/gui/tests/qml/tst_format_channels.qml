@@ -24,12 +24,31 @@ TestCase {
     // not-yet-arranged workbench overlaps the header and eats the click;
     // 6.8 on Windows had polished already). So: don't wait a guessed number
     // of milliseconds, wait for the observable fact the click depends on -
-    // the header row has laid out, which puts the tier control on the right
-    // half of the window instead of at its implicit-width position.
+    // the header row has laid out and the tier control has reached its
+    // final, stable position.
+    //
+    // Not a fixed threshold on that position (an earlier version of this
+    // checked "past the window's own horizontal centre", then "past
+    // 300px" after ObjectInspectorDialog.qml's own header button moved the
+    // control's real resting position from ~720px to ~502px on a 1280px
+    // window): any single absolute number is fragile against the header
+    // gaining more entries later, AND turned out to already be racy on
+    // Linux CI even at 300px - a mouseClick landing before the RowLayout
+    // had genuinely finished arranging, not just reached that mark in
+    // passing during an intermediate frame. Waiting for the position to
+    // read the SAME non-zero value on two successive polls is what "has
+    // settled" actually means, independent of what that value is or which
+    // platform's settling cadence produced it - and waitForRendering first
+    // makes sure at least one real painted frame of `seg` itself has
+    // happened before polling begins.
     function waitForHeaderLayout(win, seg) {
+        waitForRendering(seg);
+        let lastX = -1;
         tryVerify(() => {
-            const corner = seg.mapToItem(null, 0, 0);
-            return corner.x > win.width / 2;
+            const x = seg.mapToItem(null, 0, 0).x;
+            const stable = x > 0 && x === lastX;
+            lastX = x;
+            return stable;
         });
     }
 

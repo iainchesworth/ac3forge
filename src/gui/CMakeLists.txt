@@ -17,6 +17,8 @@ qt_add_executable(ac3gui
     encoder_controller.hpp
     qc_controller.cpp
     qc_controller.hpp
+    object_decode_controller.cpp
+    object_decode_controller.hpp
     system_theme.cpp
     system_theme.hpp)
 
@@ -47,7 +49,8 @@ set(AC3_QML_FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/qml/FirstRunScreen.qml"
     "${CMAKE_CURRENT_SOURCE_DIR}/qml/PreferencesDialog.qml"
     "${CMAKE_CURRENT_SOURCE_DIR}/qml/QcGateMeter.qml"
-    "${CMAKE_CURRENT_SOURCE_DIR}/qml/QcDialog.qml")
+    "${CMAKE_CURRENT_SOURCE_DIR}/qml/QcDialog.qml"
+    "${CMAKE_CURRENT_SOURCE_DIR}/qml/ObjectInspectorDialog.qml")
 
 foreach(qml_file IN LISTS AC3_QML_FILES)
     get_filename_component(qml_name "${qml_file}" NAME)
