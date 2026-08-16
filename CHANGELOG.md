@@ -164,6 +164,23 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   measure each dual-mono programme's own coded channel independently there too, and the
   Metadata tab's Programme 2 **measure** checkbox is enabled accordingly.
 
+### AC-3 encoding
+
+- **Delta bit allocation alongside coupling** (roadmap D3): the encoder previously withheld
+  delta bit allocation (§7.2.2.6) from every stream the instant coupling was active for the
+  frame — not just the coupling channel itself, but every fbw channel too, even the narrow
+  band each still codes independently below the coupling frequency. §7.2.2.6 places no such
+  restriction ("the delta bit allocation option is available for each fbw channel and the
+  coupling channel"), so both are now eligible whenever coupling is on. Doing this blindly
+  regressed a standing invariant — "coupling must not cost more bits than the channels it
+  replaces" — at 96 kbit/s stereo, the moment delta's own side-info cost and per-band
+  precision shifts started eating into the same budget coupling was supposed to free up; the
+  encoder now runs its SNR-offset search a second time with delta cleared whenever coupling
+  is active and something is queued to send, and keeps whichever pass reaches the higher
+  composite offset. LFE was already correct as it stood: A/52 defines no delta bit allocation
+  field for the LFE channel at all (§7.2.2.6, §5.4.3.49's own `for (ch = 0; ch < nfchans;
+  ch++)` loop bound never reaches it), so nothing changed there.
+
 ### Raspberry Pi (arm64 Linux) — new platform
 
 - **Raspberry Pi 4/5 support**: a new `arm64-linux-{gcc,llvm}` vcpkg triplet pair and matching

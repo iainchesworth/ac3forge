@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <numbers>
+#include <random>
 #include <span>
 #include <vector>
 
@@ -134,6 +135,12 @@ struct BlockZero {
     std::vector<int> master;                        // one per fbw channel
     std::vector<ac3::coupling::Coordinate> coords;  // [ch][bnd]
     int snroffst = 0;                               // (csnroffst << 4) | fsnroffst
+    // §5.4.3.47-49: Table 5.16 codes (0 reuse, 1 new info, 2 no delta alloc).
+    // cpldeltbae is only meaningful when cplinu && deltbaie; deltbae[ch] one
+    // entry per fbw channel, only meaningful when deltbaie.
+    bool deltbaie = false;
+    int cpldeltbae = 0;
+    std::vector<int> deltbae;
 };
 
 // Parses §5.4 syncinfo/bsi/audblk far enough to reach csnroffst, for the 2/0
@@ -222,8 +229,53 @@ BlockZero parse_block_zero(std::span<const std::byte> frame) {
     const auto csnroffst = r.read(6);
     // The first fine offset belongs to the coupling channel when coupled and
     // to channel 0 otherwise; this encoder gives every stream the same one.
-    const auto fsnroffst = r.read(4);
-    out.snroffst = static_cast<int>((csnroffst << 4) | fsnroffst);
+    int first_fsnroffst = -1;
+    if (out.cplinu) {
+        first_fsnroffst = static_cast<int>(r.read(4));  // cplfsnroffst
+        r.skip(3);                                      // cplfgaincod
+    }
+    for (int ch = 0; ch < kNfchans; ++ch) {
+        const auto fsnroffst = static_cast<int>(r.read(4));
+        if (first_fsnroffst < 0) {
+            first_fsnroffst = fsnroffst;
+        }
+        r.skip(3);  // fgaincod[ch]
+    }
+    out.snroffst = (static_cast<int>(csnroffst) << 4) | first_fsnroffst;
+    if (out.cplinu) {
+        REQUIRE(r.read(1) == 1);  // cplleake, always sent in block 0
+        r.skip(3);                // cplfleak
+        r.skip(3);                // cplsleak
+    }
+
+    // §5.4.3.47-57: deltbaie gates cpldeltbae/deltbae[ch], which are read for
+    // every stream FIRST, then every stream's segment data - not interleaved.
+    out.deltbaie = r.read(1) != 0;
+    if (out.deltbaie) {
+        if (out.cplinu) {
+            out.cpldeltbae = static_cast<int>(r.read(2));
+        }
+        for (int ch = 0; ch < kNfchans; ++ch) {
+            out.deltbae.push_back(static_cast<int>(r.read(2)));
+        }
+        const auto skip_segments = [&r](bool has_new_info) {
+            if (!has_new_info) {
+                return;
+            }
+            const auto nseg = static_cast<int>(r.read(3)) + 1;
+            for (int seg = 0; seg < nseg; ++seg) {
+                r.skip(5);  // deltoffst
+                r.skip(4);  // deltlen
+                r.skip(3);  // deltba
+            }
+        };
+        if (out.cplinu) {
+            skip_segments(out.cpldeltbae == 1);
+        }
+        for (int ch = 0; ch < kNfchans; ++ch) {
+            skip_segments(out.deltbae[static_cast<std::size_t>(ch)] == 1);
+        }
+    }
     REQUIRE_FALSE(r.overflowed());
     return out;
 }
@@ -468,6 +520,111 @@ TEST_CASE("a coupling coordinate carries a ratio, not a level", "[encoder][coupl
             CAPTURE(i, ch, a, b, db);
             CHECK(std::abs(db) < 0.5);  // one quantizer step is 0.26 dB
         }
+    }
+}
+
+// Deterministic band-limited noise: many closely spaced tones with a
+// pseudo-random (fixed-seed, reproducible) amplitude and phase each, so
+// energy varies sharply bin to bin within a single exponent group - unlike a
+// handful of clean isolated tones, this reliably diverges from whatever ONE
+// exponent a group of bins is forced to share.
+std::vector<std::vector<float>> noisy_frame(int channels, std::uint64_t start, double lo_hz,
+                                            double hi_hz, double amplitude, std::uint32_t seed) {
+    std::minstd_rand rng(seed);
+    std::uniform_real_distribution<double> freq_dist(lo_hz, hi_hz);
+    std::uniform_real_distribution<double> phase_dist(0.0, 2.0 * std::numbers::pi);
+    struct Component {
+        double freq;
+        double amp;
+        double phase;
+    };
+    std::vector<Component> components;
+    // Sharply uneven amplitudes (0.02 or 1.0, nothing between) so that within
+    // any single bit-allocation band, some bins carry real energy two orders
+    // of magnitude below others - a shared band-wide exponent-derived curve
+    // cannot represent that spread, where a smoother distribution might.
+    std::bernoulli_distribution loud_dist(0.15);
+    for (int i = 0; i < 400; ++i) {
+        const double amp = loud_dist(rng) ? 1.0 : 0.02;
+        components.push_back({freq_dist(rng), amp, phase_dist(rng)});
+    }
+    std::vector<std::vector<float>> pcm(
+        static_cast<std::size_t>(channels),
+        std::vector<float>(static_cast<std::size_t>(ac3::kSamplesPerFrame)));
+    for (std::size_t ch = 0; ch < pcm.size(); ++ch) {
+        for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+            const auto n = static_cast<double>(start + static_cast<std::uint64_t>(i));
+            double value = 0.0;
+            for (const auto& c : components) {
+                value += c.amp * std::sin(2.0 * std::numbers::pi * c.freq * n / 48000.0 + c.phase);
+            }
+            pcm[ch][static_cast<std::size_t>(i)] =
+                static_cast<float>(amplitude * value / static_cast<double>(components.size()));
+        }
+    }
+    return pcm;
+}
+
+std::vector<std::byte> steady_state_noise(const ac3::EncoderConfig& config, int channels,
+                                          double lo_hz, double hi_hz, double amplitude,
+                                          std::uint32_t seed, int count = 3) {
+    ac3::FrameEncoder encoder{config};
+    std::vector<std::byte> last;
+    std::uint64_t n = 0;
+    for (int f = 0; f < count; ++f) {
+        const auto pcm = noisy_frame(channels, n, lo_hz, hi_hz, amplitude, seed);
+        n += ac3::kSamplesPerFrame;
+        std::vector<std::span<const float>> views;
+        for (const auto& channel : pcm) {
+            views.emplace_back(channel);
+        }
+        auto frame = encoder.encode_frame(views);
+        REQUIRE(frame.has_value());
+        last = std::move(*frame);
+    }
+    return last;
+}
+
+TEST_CASE("delta bit allocation reaches fbw channels while coupling is active",
+         "[encoder][coupling]") {
+    // Before this test existed, delta bit allocation was withheld from EVERY
+    // stream the instant coupling turned on for the frame - not just the
+    // coupling channel itself, but every fbw channel too (see encoder.cpp
+    // step 5's old blanket "!cplinu" gate). §7.2.2.6 places no such
+    // restriction: "the delta bit allocation option is available for each
+    // fbw channel and the coupling channel" - full stop, coupling or not.
+    // This drives content that genuinely needs the correction (see
+    // noisy_frame's own comment) through a coupled encode and checks the
+    // bitstream itself for it, rather than trusting the encoder's internal
+    // bookkeeping.
+    constexpr double kBinHz = 48000.0 / 512.0;
+    const double cpl_lo = ac3::coupling::start_mant(kProbeCplBegf) * kBinHz;
+    const double cpl_hi = ac3::coupling::end_mant(kProbeCplEndf) * kBinHz;
+    for (const std::uint32_t kbps : {384u, 448u}) {
+        CAPTURE(kbps);
+        const auto frame = steady_state_noise({.bitrate_kbps = kbps,
+                                               .coupling = true,
+                                               .cplbegf = kProbeCplBegf,
+                                               .cplendf = kProbeCplEndf},
+                                              2, cpl_lo, cpl_hi, 0.7, 12345);
+        check_frame_invariants(frame, ac3::SampleRate::k48000, kbps);
+        const auto block0 = parse_block_zero(frame);
+        REQUIRE(block0.cplinu);
+        REQUIRE(block0.deltbaie);
+        REQUIRE(block0.deltbae.size() == 2);
+        // Table 5.16: 1 is "new info follows" - the state that only exists at
+        // all when a real correction was computed and judged worth its cost.
+        const bool any_fbw_delta =
+            block0.deltbae[0] == 1 || block0.deltbae[1] == 1;
+        CHECK(any_fbw_delta);
+
+        // The decoder must reconstruct bit-exactly from whatever the encoder
+        // actually chose to send here - delta included - so round-tripping
+        // the frame is the real proof this is wired correctly end to end,
+        // not just that the right bits went out.
+        ac3::FrameDecoder decoder;
+        const auto decoded = decoder.decode_frame(frame);
+        REQUIRE(decoded.has_value());
     }
 }
 

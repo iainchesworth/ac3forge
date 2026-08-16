@@ -111,6 +111,15 @@ struct StreamPlan {
     std::vector<ExponentRun> runs;
 };
 
+// Step 9's SNR-offset search result: the composite offset it found, and the
+// mantissa bit cost AT that offset (so a caller never has to re-run
+// compute_bit_allocation over every stream just to learn what its own search
+// already measured on the winning probe).
+struct SnrSearchResult {
+    int composite = 0;
+    std::uint32_t mantissa_bits = 0;
+};
+
 }  // namespace
 
 FrameEncoder::FrameEncoder(const EncoderConfig& config) : config_(config) {
@@ -681,23 +690,30 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
             // measure the (intentional) gap between "loudest block" and
             // "typical block" instead of real quantization error and bias
             // toward spurious cuts on any run spanning more than one block.
-            // LFE is excluded: §5.4.3.49's deltbae[ch] loop is bounded by
-            // nfchans, so LFE has no delta bit allocation field to carry one
-            // in at all - computing and applying one here anyway would let
-            // the encoder's own allocation diverge from what the decoder,
-            // which never receives it, would ever reconstruct.
+            // LFE is excluded: §7.2.2.6 states plainly that "the delta bit
+            // allocation option is available for each fbw channel and the
+            // coupling channel" - LFE is not in that list. §5.4.3.49 confirms
+            // it from the syntax side: deltbae[ch] is described as "per full
+            // bandwidth channel", and audblk()'s own `for (ch = 0; ch <
+            // nfchans; ch++) {deltbae[ch]}` loop never reaches the LFE slot -
+            // there is no bitstream field to carry an LFE delta at all, so
+            // computing one here would just diverge from what no decoder
+            // could ever receive.
             //
-            // Delta is skipped entirely whenever coupling is in use this
-            // frame - not just for the coupling channel itself - deliberately
-            // narrowing this first cut's scope: the coupling channel is a
-            // synthesized average of the coupled channels rather than a real
-            // recorded signal, and even leaving ONLY the fbw channels' own
-            // narrow below-cplstrtmant region eligible, the extra side-info
-            // overhead was enough to break the tightest coupling scenarios
-            // (128 kbit/s 5.1, exactly the case coupling exists to rescue).
-            // Getting a coupling-aware version of this heuristic right needs
-            // more care than this phase has room for.
-            if (!is_lfe && !is_cpl && !cplinu) {
+            // The coupling channel and every fbw channel - even in a frame
+            // where coupling is active - ARE in §7.2.2.6's scope, so both are
+            // eligible below. `coeffs_at(cpl_stream, ...)` at this point is
+            // already the §7.4.1 average of the coupled channels, divided
+            // back down to their natural level (step 2 above), so the
+            // real-vs-quantized-psd comparison this drives is exactly as
+            // meaningful for it as for a real recorded fbw channel. The extra
+            // side-info cost this can add is bounded generically further
+            // below (§7.2.2.6's own scope note, step 8): delta is a pure
+            // quality refinement that gets cleared and re-measured, for every
+            // stream, if it would make an otherwise-fittable frame fail to
+            // fit - so there is no need to withhold it here pre-emptively
+            // just because coupling happens to be on this frame.
+            if (!is_lfe) {
                 std::vector<double> peak_mag(static_cast<std::size_t>(end), 0.0);
                 for (int block = first; block < last; ++block) {
                     const auto& c = coeffs_at(s, block);
@@ -996,9 +1012,12 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     // load-bearing - a run's own code saying "no delta" is always legal - so
     // its side-info cost must never be the reason an otherwise-fittable frame
     // is refused. Cleared and re-measured, lazily, only if the budget check
-    // below would otherwise fail on it - generalizing the coupling exclusion
-    // above (§7.2.2.6's own scope note) from "coupling active" to "would not
-    // otherwise fit".
+    // below would otherwise fail on it. This is the ONLY gate on delta now
+    // (see the per-run computation above, step 5): every eligible stream -
+    // every fbw channel and the coupling channel alike, including a frame
+    // where coupling is active - gets a chance at a delta correction, and
+    // this is what reins in the side-info cost if that chance turns out to
+    // be more than the frame can afford.
     if (side_bits + detail::kTailBits > total_bits) {
         bool any_delta = false;
         for (auto& p : plan) {
@@ -1021,7 +1040,10 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         // The chosen configuration cannot fit its own headers at this rate.
         return std::unexpected(FrameError::kInvalidBitrate);
     }
-    const std::uint32_t budget = total_bits - side_bits - detail::kTailBits;
+    // Mutable: step 9 below may swap this for the no-delta budget if
+    // coupling's delta correction turns out to cost more composite SNR
+    // offset than it is worth.
+    std::uint32_t budget = total_bits - side_bits - detail::kTailBits;
 
     // --- 9. SNR-offset search ----------------------------------------------
     AC3_ZONE_BEGIN(zone_snr_search, "step9_snr_search");
@@ -1068,20 +1090,84 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         return total;
     };
 
-    int last_eval = -1;
-    std::uint32_t last_bits = 0;
-    const int lo =
-        internal::search_max_fitting(1023, snr_search_hint_, [&](int composite) {
-            last_eval = composite;
-            last_bits = bits_at(composite);
-            return last_bits <= budget;
-        });
+    // Binary-searches `search_budget` for the largest fitting composite
+    // offset and hands back that offset's own mantissa cost too, so a caller
+    // never has to re-run bits_at() over every stream just to learn what its
+    // own search already measured on the winning probe (the same "was the
+    // last probe already the answer" trick the single-pass search used to
+    // apply inline).
+    const auto search = [&](std::uint32_t search_budget) -> SnrSearchResult {
+        int last_eval = -1;
+        std::uint32_t last_bits = 0;
+        const int found =
+            internal::search_max_fitting(1023, snr_search_hint_, [&](int composite) {
+                last_eval = composite;
+                last_bits = bits_at(composite);
+                return last_bits <= search_budget;
+            });
+        return {found, last_eval == found ? last_bits : bits_at(found)};
+    };
+
+    auto [lo, mantissa_bits] = search(budget);
+
+    // §7.2.2.6 says delta is a pure refinement, and step 8 above already
+    // guarantees it never costs a frame its FIT. It can still cost a frame
+    // composite SNR offset - quality - even while comfortably fitting: every
+    // delta segment is side-info bits taken out of the same budget that
+    // would otherwise buy a higher offset, and a correction that lowers the
+    // mask in one band asks for MORE mantissa precision there, not less.
+    // Coupling is where this bites hardest, because "coupling must not cost
+    // more bits than the channels it replaces" (test_encoder.cpp) is a
+    // standing promise this encoder makes about the resulting composite
+    // offset, and it broke - at 96 kbit/s stereo, no exotic layout required -
+    // the moment delta became eligible during coupling (see step 5's
+    // comment). So whenever coupling is active and there is still a delta
+    // queued to send (step 8's fit-based fallback may already have cleared
+    // every one of them), the search is repeated with delta fully cleared,
+    // and whichever pass reaches the higher composite offset wins - a tie
+    // keeps delta, since at equal offset it is a strictly free correction.
+    bool any_delta = false;
+    for (const auto& p : plan) {
+        for (const auto& run : p.runs) {
+            any_delta = any_delta || run.delta.deltnseg > 0;
+        }
+    }
+    if (cplinu && any_delta) {
+        std::vector<std::vector<DeltaSegments>> saved(plan.size());
+        for (std::size_t s = 0; s < plan.size(); ++s) {
+            saved[s].resize(plan[s].runs.size());
+            for (std::size_t r = 0; r < plan[s].runs.size(); ++r) {
+                saved[s][r] = plan[s].runs[r].delta;
+                plan[s].runs[r].delta = {};
+            }
+        }
+        const std::uint32_t side_bits_without = measure_side_bits();
+        // Clearing delta only ever removes bits from the side information,
+        // so this cannot be larger than what step 8 already proved fits.
+        assert(side_bits_without <= side_bits);
+        const std::uint32_t budget_without = total_bits - side_bits_without - detail::kTailBits;
+        const auto without = search(budget_without);
+        if (without.composite > lo) {
+            lo = without.composite;
+            budget = budget_without;
+            mantissa_bits = without.mantissa_bits;
+            // Deltas are already cleared above; leave them that way.
+        } else {
+            for (std::size_t s = 0; s < plan.size(); ++s) {
+                for (std::size_t r = 0; r < plan[s].runs.size(); ++r) {
+                    plan[s].runs[r].delta = saved[s][r];
+                }
+            }
+            // run_bap was left holding the no-delta pass's allocation above;
+            // restoring plan's deltas invalidates it, so step 10 needs a
+            // fresh evaluation at the winning (delta) composite.
+            mantissa_bits = bits_at(lo);
+        }
+    }
+
     snr_search_hint_ = lo;
     csnroffst = lo >> 4;
     fsnroffst = lo & 15;
-    // run_bap must hold lo's own allocation for step 10 below, so re-evaluate
-    // unless the search's last probe already was lo.
-    const std::uint32_t mantissa_bits = last_eval == lo ? last_bits : bits_at(lo);
     assert(mantissa_bits <= budget);
     AC3_ZONE_END(zone_snr_search);
 
