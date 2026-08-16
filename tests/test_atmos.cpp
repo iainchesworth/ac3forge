@@ -407,10 +407,13 @@ TEST_CASE("Eac3Decoder recovers the object positions AtmosEncoder wrote", "[atmo
     // §5.6.1.1.8-11's own quantization, applied the same way build_payload's
     // encode side does, so this asserts what the wire can actually carry
     // rather than the pre-quantization placement values themselves.
-    const auto quantize_xy = [](double v) { return std::lround(std::clamp(v, 0.0, 1.0) * 62.0) / 62.0; };
+    const auto quantize_xy = [](double v) {
+        return static_cast<double>(std::lround(std::clamp(v, 0.0, 1.0) * 62.0)) / 62.0;
+    };
     const auto quantize_z = [](double v) {
         const double clamped = std::clamp(v, -1.0, 1.0);
-        return (clamped < 0.0 ? -1.0 : 1.0) * std::lround(std::abs(clamped) * 15.0) / 15.0;
+        return (clamped < 0.0 ? -1.0 : 1.0) *
+              static_cast<double>(std::lround(std::abs(clamped) * 15.0)) / 15.0;
     };
 
     std::vector<std::vector<float>> essences;
