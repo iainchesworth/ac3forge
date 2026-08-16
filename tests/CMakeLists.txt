@@ -76,6 +76,7 @@ add_executable(ac3tests
     test_mdct.cpp
     test_mdct_fast.cpp
     test_meta_qc.cpp
+    test_mixing.cpp
     test_mp4.cpp
     test_mpegts.cpp
     test_oba.cpp
@@ -88,6 +89,7 @@ add_executable(ac3tests
     test_transient.cpp
     test_transient_prenoise.cpp
     test_watchdog.cpp
+    test_wav.cpp
     test_wav_stream_writer.cpp)
 
 # test_signing.cpp reaches ac3::signing's internal crypto headers (sha256.hpp/

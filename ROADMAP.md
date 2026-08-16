@@ -105,9 +105,12 @@ AC-3/E-AC-3 bitstream and verifies its loudness metadata against measurement.
 
 - [ ] **G1 (M)** — A perceptual-quality leg: a perceptual metric (ViSQOL or PEAQ) column on
   the quality race and landscape pages alongside SNR.
-- [ ] **G2 (M)** — Backfill thin test coverage: the CLI has seven tests against roughly four
-  thousand lines; the WAV reader, `meta/loudness`, `meta/mixing`, and `silent_frame` have no
-  dedicated test files.
+- [x] **G2 (M)** — Backfill thin test coverage. Resurveyed rather than trusting the original
+  estimate (already stale): the WAV reader and `meta/mixing` genuinely had no dedicated test file
+  and got one each (`tests/test_wav.cpp`, `tests/test_mixing.cpp`); `meta/loudness` and
+  `silent_frame` turned out to already be solidly covered (`tests/test_loudness.cpp`,
+  `tests/test_frame.cpp`) and were left alone; the CLI's `silence`/`eac3-silence` commands had zero
+  coverage of their own argv wiring and got some.
 - [ ] **G3 (M)** — Differential decoder fuzzing against FFmpeg: feed the same mutated frames
   to both decoders and diff the PCM.
 

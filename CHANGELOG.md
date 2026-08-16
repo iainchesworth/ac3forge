@@ -272,6 +272,24 @@ CLI together with the entire library SDK.
   list, which let a steady ~25 dB interop fixture read as a crash relative to an unrelated ~68 dB
   series. The table now follows the same Codec scoping as the chart, with a `Check` column and a
   tooltipped `†` marker on non-primary checks.
+- **Test coverage backfill for the WAV reader and the §7.8 downmix.** `ac3::io::read_wav`
+  (`tests/test_wav.cpp`, new) had no dedicated test at all despite being the fixture-loading path
+  every codec test in the suite depends on: its RIFF/WAVE validation, PCM16 decode scaling,
+  `WAVE_FORMAT_EXTENSIBLE` handling, and its documented clamp-not-error behaviour when a data
+  chunk's declared size overruns the bytes actually present were all unexercised. `ac3::meta::mixing`
+  (`tests/test_mixing.cpp`, new) — `stereo_downmix`/`mono_downmix`'s per-acmod routing,
+  `mono_downmix_peak_dbfs`'s phase behaviour, and the `coefficient()`/`valid_surround_mix_level()`/
+  `lfe_mix_level_db()` tables — had only the aggregate `<=1` normalization-bound check
+  `test_drc.cpp` already carried; the mix-level tables and several per-acmod branches (discrete-
+  vs-spread surround routing, 1+1 dual mono) had none. `tests/test_cli.cpp` gained coverage for the
+  `silence`/`eac3-silence` commands' own argv wiring (seconds/bitrate/layout threading, default
+  application, invalid-bitrate rejection) — the frame-building code underneath was already covered
+  unit-level, but the CLI dispatch row itself, the thing the command table's own comment credits
+  with catching six real argv-index bugs during its refactor, was not. Roadmap item G2's original
+  "seven tests / four thousand lines" CLI estimate was already stale by the time work started (the
+  CLI has grown past 5,000 lines and 30 test cases since); `meta/loudness` and `silent_frame`, the
+  roadmap's other two named gaps, turned out to already have solid dedicated coverage
+  (`tests/test_loudness.cpp`, `tests/test_frame.cpp`) and were left alone.
 
 ### Known gaps
 
