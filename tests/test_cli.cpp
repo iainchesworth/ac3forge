@@ -1289,3 +1289,109 @@ TEST_CASE(
     const bool expect_success = *ebu_pass && *atsc_pass && *netflix_pass;
     CHECK((rc == 0) == expect_success);
 }
+
+// silence/eac3-silence build their frames from build_silent_stereo_frame/
+// build_silent_access_unit, both already covered directly (test_frame.cpp,
+// test_eac3.cpp) - what neither of those unit-tests can see is the CLI
+// dispatch row itself: whether 'silence <out> [seconds] [bitrate_kbps]' and
+// 'eac3-silence <out> [seconds] [bitrate_kbps] [layout]' actually route argv
+// to the right parameters. main.cpp's own comment on the command table
+// above records six real argv-index bugs found consolidating the old
+// if-chain into that table, none of which a unit test on the frame builders
+// alone could have caught - only running the built binary can.
+
+TEST_CASE("silence writes the documented default duration/bitrate and decodes to genuine "
+         "silence",
+         "[cli][silence]") {
+    const auto dir = scratch_dir();
+    const auto out_path = dir / "silence_default.ac3";
+    const auto log = dir / "silence_default.log";
+    fs::remove(out_path);
+    REQUIRE(run_cli("silence \"" + out_path.string() + "\"", log) == 0);
+
+    // Defaults are 5 s at 192 kbps (see main.cpp's kCommands row and
+    // run_silence's own u32(2, 5)/u32(3, 192) fallbacks) - pinned here
+    // against the same frame_size_bytes() the encoder itself uses, not a
+    // transcribed byte count.
+    const std::uint64_t expect_count = (5ull * 48000 + 1535) / 1536;
+    const auto frame_bytes = ac3::frame_size_bytes(ac3::SampleRate::k48000, 192);
+    REQUIRE(frame_bytes.has_value());
+    REQUIRE(fs::exists(out_path));
+    CHECK(fs::file_size(out_path) == expect_count * *frame_bytes);
+
+    const auto wav_path = dir / "silence_default.wav";
+    REQUIRE(run_cli("decode \"" + out_path.string() + "\" \"" + wav_path.string() + "\"",
+                    dir / "silence_default_decode.log") == 0);
+    const auto decoded = ac3::io::read_wav(wav_path.string());
+    REQUIRE(decoded.has_value());
+    REQUIRE(decoded->channels.size() == 2);
+    REQUIRE(decoded->frame_count() > 0);
+    for (const auto& channel : decoded->channels) {
+        CHECK(rms(channel, 0, channel.size()) == 0.0);
+    }
+}
+
+TEST_CASE("silence threads its seconds and bitrate arguments to the right parameters, "
+         "not swapped",
+         "[cli][silence]") {
+    const auto dir = scratch_dir();
+    const auto out_path = dir / "silence_explicit.ac3";
+    const auto log = dir / "silence_explicit.log";
+    fs::remove(out_path);
+    // 2 seconds at 384 kbps: distinct enough from the 5 s/192 kbps default
+    // that a swapped or misindexed argv read produces a file size neither
+    // combination could coincidentally match.
+    REQUIRE(run_cli("silence \"" + out_path.string() + "\" 2 384", log) == 0);
+
+    const std::uint64_t expect_count = (2ull * 48000 + 1535) / 1536;
+    const auto frame_bytes = ac3::frame_size_bytes(ac3::SampleRate::k48000, 384);
+    REQUIRE(frame_bytes.has_value());
+    REQUIRE(fs::exists(out_path));
+    CHECK(fs::file_size(out_path) == expect_count * *frame_bytes);
+}
+
+TEST_CASE("silence rejects an illegal bitrate and leaves no file behind", "[cli][silence]") {
+    const auto dir = scratch_dir();
+    const auto out_path = dir / "silence_bad_bitrate.ac3";
+    const auto log = dir / "silence_bad_bitrate.log";
+    fs::remove(out_path);
+    const auto rc = run_cli("silence \"" + out_path.string() + "\" 1 193", log);
+    CHECK(rc != 0);
+    CHECK_FALSE(fs::exists(out_path));
+    CHECK(read_log(log).find("bitrate") != std::string::npos);
+}
+
+TEST_CASE("eac3-silence threads its layout argument through to the reported label and "
+         "substream count, and decodes to genuine silence",
+         "[cli][eac3-silence]") {
+    const auto dir = scratch_dir();
+
+    const auto stereo_path = dir / "eac3_silence_stereo.ec3";
+    const auto stereo_log = dir / "eac3_silence_stereo.log";
+    fs::remove(stereo_path);
+    REQUIRE(run_cli("eac3-silence \"" + stereo_path.string() + "\"", stereo_log) == 0);
+    const auto stereo_text = read_log(stereo_log);
+    INFO(stereo_text);
+    CHECK(stereo_text.find("2/0 stereo") != std::string::npos);  // the "stereo" default's label
+    CHECK(stereo_text.find("1 substreams") != std::string::npos);
+
+    const auto surround_path = dir / "eac3_silence_51.ec3";
+    const auto surround_log = dir / "eac3_silence_51.log";
+    fs::remove(surround_path);
+    REQUIRE(run_cli("eac3-silence \"" + surround_path.string() + "\" 1 192 51", surround_log) ==
+           0);
+    const auto surround_text = read_log(surround_log);
+    INFO(surround_text);
+    CHECK(surround_text.find("5.1") != std::string::npos);
+    CHECK(surround_text.find("2/0 stereo") == std::string::npos);
+
+    const auto wav_path = dir / "eac3_silence_51.wav";
+    REQUIRE(run_cli("decode \"" + surround_path.string() + "\" \"" + wav_path.string() + "\"",
+                    dir / "eac3_silence_51_decode.log") == 0);
+    const auto decoded = ac3::io::read_wav(wav_path.string());
+    REQUIRE(decoded.has_value());
+    REQUIRE(decoded->frame_count() > 0);
+    for (const auto& channel : decoded->channels) {
+        CHECK(rms(channel, 0, channel.size()) == 0.0);
+    }
+}
