@@ -2,6 +2,8 @@
 
 #include <cassert>
 
+#include "ac3/core/bitreader.hpp"
+
 namespace ac3::emdf {
 
 namespace {
@@ -70,6 +72,82 @@ int variable_bits_size(std::uint32_t value, int group_bits) {
     return variable_bits_shape(value, group_bits).groups * (group_bits + 1);
 }
 
+namespace {
+
+// Decode-side inverse of put_variable_bits: groups of `group_bits`, MSB
+// group first, each followed by a read_more bit, accumulating the same
+// per-group offset the writer folds in. BitReader's sticky overflow makes
+// this safe against a stream that never sends a 0 read_more bit - once past
+// the end, read_bit() returns 0 forever, so read_more reads false and the
+// loop terminates instead of running away.
+std::uint32_t read_variable_bits(BitReader& r, int group_bits) {
+    std::uint32_t value = 0;
+    while (true) {
+        value += r.read(static_cast<int>(group_bits));
+        if (r.read_bit() == 0) {
+            return value;
+        }
+        value <<= group_bits;
+        value += 1u << group_bits;
+    }
+}
+
+// §H.2.2.1.1: the container's position depends on how many bits the audio
+// took, so it is found by scanning rather than at a fixed offset. Mirrors
+// tests/test_emdf.cpp's own find_emdf_sync, promoted here because production
+// decode needs the same search, not just a test helper for one.
+constexpr std::size_t kSyncNotFound = static_cast<std::size_t>(-1);
+
+std::size_t find_sync_bit(std::span<const std::byte> data) {
+    const std::size_t total_bits = data.size() * 8;
+    if (total_bits < 16) {
+        return kSyncNotFound;
+    }
+    for (std::size_t bit = 0; bit + 16 <= total_bits; ++bit) {
+        BitReader r{data};
+        r.skip(bit);
+        if (r.read(16) == kSyncWord) {
+            return bit;
+        }
+    }
+    return kSyncNotFound;
+}
+
+// Decode-side inverse of put_payload_config, restricted (like the writer) to
+// the one shape TS 103 420 Table 56 mandates. Returns false for anything
+// else - an `e`/mode bit reading differently from what the writer always
+// sends - since the fields that would follow a different choice are not
+// documented anywhere this codebase transcribes them from, and guessing
+// their width would risk desynchronising the rest of the container.
+[[nodiscard]] bool read_payload_config(BitReader& r) {
+    if (r.read(1) != 0) {  // smploffste
+        return false;
+    }
+    if (r.read(1) != 0) {  // duratione
+        return false;
+    }
+    if (r.read(1) != 1) {  // groupide
+        return false;
+    }
+    read_variable_bits(r, 2);  // groupid: not needed to tell OAMD and JOC apart, both arrive by id
+    if (r.read(1) != 0) {  // codecdatae - see put_payload_config's own comment
+        return false;
+    }
+    if (r.read(1) != 0) {  // discard_unknown_payload
+        return false;
+    }
+    if (r.read(1) != 1) {  // payload_frame_aligned
+        return false;
+    }
+    r.skip(1);  // create_duplicate
+    r.skip(1);  // remove_duplicate
+    r.skip(5);  // priority
+    r.skip(2);  // proc_allowed
+    return true;
+}
+
+}  // namespace
+
 std::vector<std::byte> build_container(std::span<const Payload> payloads, int groupid) {
     BitWriter container;
     container.put(0, 2);  // emdf_version: 0 is the syntax in Annex H
@@ -120,6 +198,75 @@ std::vector<std::byte> build_container(std::span<const Payload> payloads, int gr
         out.put(std::to_integer<std::uint32_t>(byte), 8);
     }
     return out.take();
+}
+
+std::expected<std::optional<std::vector<DecodedPayload>>, ParseError> parse_container(
+    std::span<const std::byte> data) {
+    const std::size_t sync_bit = find_sync_bit(data);
+    if (sync_bit == kSyncNotFound) {
+        return std::optional<std::vector<DecodedPayload>>{std::nullopt};
+    }
+
+    BitReader r{data};
+    r.skip(sync_bit + 16);  // past the sync word itself, already matched
+    const auto length = r.read(16);
+    const std::size_t total_bits = data.size() * 8;
+    // §H.2.2.1.2: emdf_container_length counts the container in bytes,
+    // starting right after this field - the sync word precedes it and is not
+    // part of the count.
+    if (sync_bit + 32 + static_cast<std::size_t>(length) * 8 > total_bits) {
+        return std::unexpected(ParseError::kTruncated);
+    }
+
+    if (r.read(2) != 0) {  // emdf_version: only 0 (Annex H's own syntax) is defined
+        return std::unexpected(ParseError::kUnsupportedConfig);
+    }
+    r.skip(3);  // key_id: unauthenticated, nothing to check on decode
+
+    std::vector<DecodedPayload> payloads;
+    while (true) {
+        const auto id = r.read(5);
+        if (id == 0) {  // terminates the payload list
+            break;
+        }
+        if (id == 0x1F) {  // §H.2.2.2.2: the size-extension escape, never emitted here
+            return std::unexpected(ParseError::kUnsupportedConfig);
+        }
+        if (!read_payload_config(r)) {
+            return std::unexpected(ParseError::kUnsupportedConfig);
+        }
+        const auto size = read_variable_bits(r, 8);
+        // Attacker/corruption-controlled: bound it against what is actually
+        // left before allocating, rather than trusting a field that could
+        // otherwise claim gigabytes from a few dozen bits of garbage.
+        const std::size_t remaining_bits = total_bits > r.bit_position() ? total_bits - r.bit_position() : 0;
+        if (static_cast<std::size_t>(size) * 8 > remaining_bits) {
+            return std::unexpected(ParseError::kTruncated);
+        }
+        DecodedPayload payload;
+        payload.id = static_cast<int>(id);
+        payload.bytes.reserve(size);
+        for (std::uint32_t i = 0; i < size; ++i) {
+            payload.bytes.push_back(static_cast<std::byte>(r.read(8)));
+        }
+        payloads.push_back(std::move(payload));
+    }
+
+    // §H.2.2.4: skip the protection field rather than validate it - its
+    // content is implementation dependent and unverifiable, see
+    // build_container's own comment. Only the shape real streams (this
+    // encoder's and Dolby's own reference ones) actually use is recognised;
+    // anything else is refused rather than mis-skipped.
+    if (r.read(2) != 0b10 || r.read(2) != 0b01) {
+        return std::unexpected(ParseError::kUnsupportedConfig);
+    }
+    r.skip(32);  // protection_bits_primary
+    r.skip(8);   // protection_bits_secondary
+
+    if (r.overflowed()) {
+        return std::unexpected(ParseError::kTruncated);
+    }
+    return std::optional<std::vector<DecodedPayload>>{std::move(payloads)};
 }
 
 }  // namespace ac3::emdf
