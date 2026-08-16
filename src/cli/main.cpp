@@ -109,8 +109,9 @@ void print_meta_usage() {
     std::println("  fast-mdct=off     force the direct §8.2.3.2 forward MDCT instead of the "
                  "default §7.9.4 fast path (identical streams to within ~1e-12 coefficient "
                  "error; the direct form is the validation oracle) - applies wherever this "
-                 "command encodes, incl. atmos/record/live; eac3-encode/eac3-sine use "
-                 "tools=nofastmdct instead; bare fast-mdct (the old opt-in) is a no-op");
+                 "command encodes, incl. atmos/record/live/eac3-sine; eac3-encode alone has a "
+                 "[tools] positional argument whose bare nofastmdct token reaches the same "
+                 "field instead; bare fast-mdct (the old opt-in) is a no-op");
     std::println();
     std::println("source options (encode/eac3-encode; any order, after the positional "
                  "arguments):");
@@ -1395,6 +1396,10 @@ int run_eac3_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_
     if (!resolve_layout(layout, plan::Codec::kEac3, p, label)) {
         return 1;
     }
+    // No [tools] positional here (unlike eac3-encode), so fast-mdct=off is
+    // this command's only way to reach it - same field, same meaning as
+    // 'sine'/'encode's identical assignment.
+    p.tools.fast_mdct = meta.fast_mdct;
     const auto config = plan::eac3_config(p);
     const auto cp = plan::resolve(p);
 
@@ -1601,9 +1606,29 @@ std::optional<plan::Routing> routing_for_sources(const plan::Plan& p, const Load
         return std::nullopt;
     }
     const auto target = plan::resolve(p);
-    auto routing = target.bed_acmod == ac3::Acmod::kDualMono
-                      ? plan::dual_mono_routing(sources.shapes, assignment)
-                      : plan::route(target, sources.shapes, assignment);
+    const bool dual_mono = target.bed_acmod == ac3::Acmod::kDualMono;
+    if (!dual_mono) {
+        // route() (below) only carries kLocation rows into the output - see
+        // its own comment. obj/objm reach it here because this CLI has no
+        // object-assembly path of its own (that is the GUI's, see
+        // encoder_controller.cpp's encodeObjects); p1/p2 reach it only if a
+        // caller wrote them for a target that isn't dual mono, so route()
+        // would drop those too, for lack of anywhere to route them to. Either
+        // way, a channel silently contributing nothing is worth a warning
+        // rather than a surprise in the output.
+        for (const auto kind : {plan::DestinationKind::kObject, plan::DestinationKind::kObjectMono,
+                                plan::DestinationKind::kProgramme1,
+                                plan::DestinationKind::kProgramme2}) {
+            for (const auto& [s, c] : assignment.rows_of(kind)) {
+                std::println(stderr,
+                             "warning: {}.{} maps to '{}', which this command has no way to "
+                             "carry - that channel contributes nothing to the output",
+                             s, c, plan::format_destination(assignment.at(s, c)));
+            }
+        }
+    }
+    auto routing = dual_mono ? plan::dual_mono_routing(sources.shapes, assignment)
+                             : plan::route(target, sources.shapes, assignment);
     if (!routing) {
         std::println(stderr, "error: map= does not resolve to a valid routing for this format");
         return std::nullopt;
@@ -2320,6 +2345,16 @@ int run_atmos_path(std::string_view out_path, std::string_view paths_path, std::
         }
         out.push_back(std::move(unit->bytes));
     }
+    // Optional object signing, same as 'atmos' - see apply_object_signing's
+    // own comment.
+    const auto signed_count = apply_object_signing(out, meta);
+    if (!signed_count) {
+        return 1;
+    }
+    if (*signed_count > 0) {
+        std::println("  signed {} frames' EMDF object container with the supplied key",
+                     *signed_count);
+    }
     if (!write_frames(out_path, out)) {
         return 1;
     }
@@ -2486,6 +2521,18 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
         }
         meter.process(metered);
         out.push_back(std::move(unit->bytes));
+    }
+    // Optional object signing, same as 'atmos' - see apply_object_signing's
+    // own comment. Goes through status_stream() like the report below: with
+    // out_path == "-" the E-AC-3 bytes just written own stdout.
+    const auto signed_count = apply_object_signing(out, meta);
+    if (!signed_count) {
+        return 1;
+    }
+    if (*signed_count > 0) {
+        std::println(status_stream(out_path),
+                     "  signed {} frames' EMDF object container with the supplied key",
+                     *signed_count);
     }
     if (!write_frames(out_path, out)) {
         return 1;
@@ -5032,10 +5079,11 @@ void print_usage() {
     std::println("0x06 plus the AC3_descriptor or Enhanced_AC3_descriptor ETSI EN 300 468 Annex D");
     std::println("defines, not ATSC's — with PCR stamped on the audio PID every access unit.");
     std::println("");
-    std::println("Without a layout, encode and eac3-encode follow the source: 1 -> mono,");
-    std::println("2 -> stereo, 3 to 6 -> 5.1, 8 -> 7.1, 10 -> 5.1.4, 12 -> 7.1.4. Commands");
-    std::println("that carry PCM report per-channel levels when they finish; 'record' meters");
-    std::println("live. 'couple' turns on channel coupling wherever a command encodes.");
+    std::println("Without a layout, encode and eac3-encode both follow the source: 1 -> mono,");
+    std::println("2 -> stereo, 3 to 6 -> 5.1; eac3-encode alone extends that to 8 -> 7.1,");
+    std::println("10 -> 5.1.4, 12 -> 7.1.4 (encode refuses anything wider than 3/2 + LFE).");
+    std::println("Commands that carry PCM report per-channel levels when they finish; 'record'");
+    std::println("meters live. 'couple' turns on channel coupling wherever a command encodes.");
     print_meta_usage();
     std::println("");
     std::println("For decode, drc=<scale> applies §7.7.1 partial compression (0 = ignore,");

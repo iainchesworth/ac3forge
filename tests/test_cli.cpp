@@ -361,6 +361,18 @@ TEST_CASE("fast-mdct is default-on with =off as the negation", "[cli][fast-mdct]
         CHECK(rc2 == 0);
         CHECK(fs::exists(legacy_path));
     }
+
+    SECTION("eac3-sine has no [tools] argument, but honors fast-mdct=off directly") {
+        const auto out_path = dir / "fastmdct_eac3_sine_off.ec3";
+        const auto log = dir / "fastmdct_eac3_sine.log";
+        fs::remove(out_path);
+        const auto rc = run_cli("eac3-sine \"" + out_path.string() + "\" 1 192 1000 50 stereo "
+                                    "fast-mdct=off",
+                                log);
+        INFO(read_log(log));
+        CHECK(rc == 0);
+        CHECK(fs::exists(out_path));
+    }
 }
 
 // capture2= is 'live'-only, but its rejection happens in parse_options,
@@ -571,6 +583,93 @@ TEST_CASE("atmos-encode with a keyframes file authors motion", "[cli][atmos-enco
     // was observed to crash outright.
     const bool differs = static_bytes != motion_bytes;
     CHECK(differs);
+}
+
+// sign-objects/signing-key= used to be wired into 'atmos' only - 'atmos-path'
+// and 'atmos-encode' accepted both flags (parse_options does not know which
+// command it is parsing for) and silently ignored them. All three now call
+// apply_object_signing, so all three should report a signed frame count.
+// decode_signing_key() falls back to raw bytes for anything that is not
+// valid base64 (see signing_key.hpp), so any non-empty file is a usable key
+// here - the signature's own correctness is test_signing.cpp's concern, not
+// this integration test's.
+TEST_CASE("sign-objects reaches atmos, atmos-path and atmos-encode alike",
+          "[cli][atmos][signing]") {
+    const auto dir = scratch_dir();
+    const auto key_path = dir / "sign_objects_test.key";
+    {
+        std::ofstream key{key_path, std::ios::binary};
+        REQUIRE(key.is_open());
+        key << "not-a-real-key-just-test-material";
+    }
+    const std::string signing_args =
+        " sign-objects signing-key=\"" + key_path.string() + "\"";
+
+    SECTION("atmos") {
+        const auto out_path = dir / "sign_objects_atmos.ec3";
+        const auto log = dir / "sign_objects_atmos.log";
+        const auto rc =
+            run_cli("atmos \"" + out_path.string() + "\" 1 448 2 4 objects" + signing_args, log);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(rc == 0);
+        CHECK(text.find("signed") != std::string::npos);
+    }
+
+    SECTION("atmos-path") {
+        const auto paths_path = dir / "sign_objects_paths.txt";
+        {
+            std::ofstream paths{paths_path};
+            REQUIRE(paths.is_open());
+            paths << "0 0.0 0.5 0.5 0.0 0.6 0.0\n";
+        }
+        const auto out_path = dir / "sign_objects_atmos_path.ec3";
+        const auto log = dir / "sign_objects_atmos_path.log";
+        const auto rc = run_cli("atmos-path \"" + out_path.string() + "\" \"" +
+                                    paths_path.string() + "\" 1 448 1" + signing_args,
+                                log);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(rc == 0);
+        CHECK(text.find("signed") != std::string::npos);
+    }
+
+    SECTION("atmos-encode") {
+        const auto wav_path = dir / "sign_objects_in.wav";
+        const auto channels = make_tone_channels(2, 4000, 48000);
+        REQUIRE(ac3::io::write_wav_f32(wav_path.string(), channels, 48000).has_value());
+        const auto out_path = dir / "sign_objects_atmos_encode.ec3";
+        const auto log = dir / "sign_objects_atmos_encode.log";
+        const auto rc = run_cli("atmos-encode \"" + wav_path.string() + "\" \"" +
+                                    out_path.string() + "\" 448 2" + signing_args,
+                                log);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(rc == 0);
+        CHECK(text.find("signed") != std::string::npos);
+    }
+
+    SECTION("atmos-path without sign-objects stays unsigned, same as before") {
+        // Deliberately not named "*unsigned*": that spelling contains
+        // "signed" as a substring, which the assertion below would then
+        // find in the echoed file path rather than in any real message.
+        const auto paths_path = dir / "sign_objects_paths_plain.txt";
+        {
+            std::ofstream paths{paths_path};
+            REQUIRE(paths.is_open());
+            paths << "0 0.0 0.5 0.5 0.0 0.6 0.0\n";
+        }
+        const auto out_path = dir / "sign_objects_atmos_path_plain.ec3";
+        const auto log = dir / "sign_objects_atmos_path_plain.log";
+        const auto rc = run_cli("atmos-path \"" + out_path.string() + "\" \"" +
+                                    paths_path.string() + "\" 1 448 1",
+                                log);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(rc == 0);
+        CHECK(fs::exists(out_path));
+        CHECK(text.find("signed") == std::string::npos);
+    }
 }
 
 // keep-partial (item 34): a bare trailing token, same style as heavy/
@@ -946,6 +1045,57 @@ TEST_CASE("dialnorm=auto works with src=/map= on the plain AC-3 encode path too"
     CHECK(fs::exists(out));
     CHECK(text.find("not yet supported") == std::string::npos);
     CHECK(reported_value(text, "dialnorm").has_value());
+}
+
+// route() only ever carries kLocation content into the routing it returns
+// (see assignment.hpp's own comment on kObject/kObjectMono/kProgramme* rows
+// contributing nothing) - map= itself happily parses a row aimed at obj (the
+// destination is legal syntax, see kAssignmentSyntax), but this CLI has no
+// object-assembly path of its own to catch what route() drops; that is the
+// GUI's (encoder_controller.cpp's encodeObjects). Before this fix, such a
+// channel's audio just vanished with no diagnostic at all; now
+// routing_for_sources() warns about each row route() cannot carry, naming
+// the source/channel and the destination that ate it.
+TEST_CASE("map= to an object destination warns instead of silently discarding it",
+          "[cli][src][obj]") {
+    const auto dir = scratch_dir();
+    constexpr std::uint32_t kRate = 48000;
+    constexpr std::size_t kFrames = 4 * static_cast<std::size_t>(ac3::kSamplesPerFrame);
+
+    const auto primary = dir / "obj_warn_primary.wav";
+    const auto extra = dir / "obj_warn_extra.wav";
+    REQUIRE(write_wav(primary, {make_tone(0.5, 220.0, kFrames, kRate)}, kRate));
+    REQUIRE(write_wav(extra, {make_tone(0.5, 660.0, kFrames, kRate)}, kRate));
+
+    SECTION("channel 1.0 mapped to obj: warns, names the row, still encodes") {
+        const auto out = dir / "obj_warn.ec3";
+        const auto log = dir / "obj_warn.log";
+        const auto rc = run_cli("eac3-encode \"" + primary.string() + "\" \"" + out.string() +
+                                    "\" 192 none stereo src=\"" + extra.string() +
+                                    "\" map=0.0:L,1.0:obj",
+                                log);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(rc == 0);
+        CHECK(fs::exists(out));
+        // Named: which row (source 1, channel 0) and what it resolved to.
+        CHECK(text.find("1.0") != std::string::npos);
+        CHECK(text.find("obj") != std::string::npos);
+        CHECK(text.find("warning") != std::string::npos);
+    }
+
+    SECTION("a location-only map= stays exactly as quiet as before") {
+        const auto out = dir / "obj_warn_quiet.ec3";
+        const auto log = dir / "obj_warn_quiet.log";
+        const auto rc = run_cli("eac3-encode \"" + primary.string() + "\" \"" + out.string() +
+                                    "\" 192 none stereo src=\"" + extra.string() +
+                                    "\" map=0.0:L,1.0:R",
+                                log);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(rc == 0);
+        CHECK(text.find("warning") == std::string::npos);
+    }
 }
 
 // Roadmap C4's other half: dual mono (1+1) dialnorm=auto looked implemented
