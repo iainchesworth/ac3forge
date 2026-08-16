@@ -3,8 +3,8 @@
 // The output is one ordinary 5.1 E-AC-3 stream. Objects are panned into the
 // bed, which a legacy decoder plays unchanged; the OAMD and JOC payloads ride
 // beside it in an EMDF container saying where each object is and how to pull
-// it back out. See docs/LIBRARY.md for what a decoder will and will not do
-// with them.
+// it back out. See docs/library/spatial-and-atmos.md for what a decoder will
+// and will not do with them.
 
 #include <array>
 #include <cmath>
@@ -44,8 +44,9 @@ int main() {
         }
 
         // Positions are room-anchored per §4.2.1: x 0 at the left wall to 1 at
-        // the right, y 0 front to 1 back, z 0 floor to 1 ceiling. Each object
-        // circles at its own rate and height.
+        // the right, y 0 front to 1 back, z -1 at the floor to +1 at the
+        // ceiling (0 is listener height). Each object circles at its own rate
+        // and height.
         const double seconds = frame * ac3::kSamplesPerFrame / 48000.0;
         std::array<ac3::oba::ObjectPlacement, kObjects> placement{};
         for (std::size_t obj = 0; obj < kObjects; ++obj) {

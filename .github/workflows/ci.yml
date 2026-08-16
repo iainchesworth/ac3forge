@@ -1,65 +1,43 @@
 # ac3forge CI.
 #
 # ---------------------------------------------------------------------------
-# Matrix status (updated when linux-gcc/linux-llvm picked up the GUI, merged
-# with the ALSA audio backend that landed on develop in the meantime)
+# Matrix status
 # ---------------------------------------------------------------------------
-# linux-gcc and linux-llvm were run for real by this merge itself: fresh
-# configure + build + full ctest on WSL2 Ubuntu 26.04 (gcc 15.2.0 / clang
-# 21.1.8) with both the GUI and ALSA present together - the exact package list
-# _build.yml now installs (qt6-base-dev/-tools, qt6-declarative-dev/-tools,
-# libasound2-dev) - plus the same leg's no-ALSA-fallback step, plus the
-# headless `ac3gui --smoke` command _build.yml runs after Test. None of that
-# has gone through an actual GitHub Actions run yet, since this is the first
-# push combining the GUI and ALSA work; rows marked GREEN* should be read as
-# "confirmed on WSL2, pending this branch's first real CI run" until that run
-# lands. windows-msvc/windows-llvm's 256/256 and linux-llvm-asan-ubsan's
-# 270/270 are carried over from before this merge (MSVC 14.51 locally, and the
-# commit that landed the ALSA backend, respectively) - not re-run here, but
-# the 256 baseline is corroborated independently by this merge's own
-# no-ALSA-fallback measurement, which landed on the same number.
+# A point-in-time record, not a standing guarantee - each leg's latest run is
+# the authority, so re-check there rather than trusting a row here. Exact
+# test counts per leg drift as features land (the same counts-drift note
+# _build.yml's header carries), so no count is stated here: read the ctest
+# summary in the leg's own log. Every leg is required and has real GitHub
+# Actions runs behind it (see _build.yml's header for how the last of them,
+# macos-llvm, got there).
 #
 #   leg                     status    notes
 #   ----------------------  --------  ------------------------------------------
-#   windows-msvc            GREEN     256/256 tests pass
-#   windows-llvm             GREEN    256/256 tests pass; fixed a qsizetype-to-int
-#                                     narrowing in encoder_controller.cpp that
-#                                     -Wconversion rejects under clang-cl (MSVC's
-#                                     /W4 has no equivalent check). Not re-run
-#                                     for the ALSA change, which touches no
-#                                     Windows code - see the note below on why
-#                                     the count still moved
-#   linux-gcc                GREEN*   270/270 tests incl. GUI and ALSA both,
-#                                     plus 256/256 again in the same leg's
-#                                     no-ALSA fallback step - see the WSL2 note
-#                                     above
-#   linux-llvm                GREEN*  270/270 tests incl. GUI and ALSA both -
-#                                     see the WSL2 note above
-#   linux-llvm-asan-ubsan    GREEN    270/270 tests (as reported when the ALSA
-#                                     backend landed; not independently re-run
-#                                     for this merge), leak detection on. Still
-#                                     CLI-only by design, to keep a Qt kit out
-#                                     of the sanitizer leg's install time - see
-#                                     _build.yml. The codec-matrix script this
-#                                     leg also runs was not re-run either: it
-#                                     exercises encode/decode paths, and no
-#                                     codec source changed
-#   static-analysis (tidy)   GREEN    .clang-tidy's curated set, clean baseline
-#   coverage                 GREEN    81.3% line / 72.0% branch over src/lib
-#                                     (ac3::forge only), gated at 80%/70% -
-#                                     real GitHub Actions run (gcc 15.2.0,
-#                                     ubuntu:26.04 container). A prior WSL2
-#                                     measurement came back a couple of points
-#                                     higher on both axes - close but not
-#                                     identical, and this real-CI number is
-#                                     the one to trust. See the job's own
-#                                     comment for why the gate sits below it
-#   macos-llvm               GREEN    256/256 tests pass (real GitHub Actions
-#                                     run, not WSL2/local - this project has
-#                                     no Mac). First-ever run hit one genuine,
-#                                     fully-understood issue (Homebrew's
-#                                     unpinned llvm formula flagging Catch2's
-#                                     __COUNTER__ under -Wc2y-extensions - see
+#   windows-msvc            GREEN
+#   windows-llvm            GREEN     fixed a qsizetype-to-int narrowing in
+#                                     encoder_controller.cpp that -Wconversion
+#                                     rejects under clang-cl (MSVC's /W4 has
+#                                     no equivalent check)
+#   linux-gcc               GREEN     GUI and ALSA both on, plus the same
+#                                     leg's no-ALSA-fallback step
+#   linux-llvm              GREEN     GUI and ALSA both on
+#   linux-llvm-asan-ubsan   GREEN     leak detection on. Still CLI-only by
+#                                     design, to keep a Qt kit out of the
+#                                     sanitizer leg's install time - see
+#                                     _build.yml. Also runs the codec-matrix
+#                                     script's full layout/tool/atmos sweep
+#   static-analysis (tidy)  GREEN     .clang-tidy's curated set, clean baseline
+#   coverage                GREEN     81.3% line / 72.0% branch over src/lib
+#                                     (ac3::forge only) when last recorded
+#                                     here, gated at 80%/70% - see the job's
+#                                     own comment for why the gate sits below
+#                                     the measured number
+#   macos-llvm              GREEN     real GitHub Actions runs - this project
+#                                     has no Mac. Its first-ever run hit one
+#                                     genuine, fully-understood issue
+#                                     (Homebrew's unpinned llvm formula
+#                                     flagging Catch2's __COUNTER__ under
+#                                     -Wc2y-extensions - see
 #                                     cmake/CompilerWarnings.cmake), fixed in
 #                                     one commit, then two consecutive clean
 #                                     runs. No longer experimental.
@@ -67,9 +45,10 @@
 # ---------------------------------------------------------------------------
 # Gold-reference correctness gate (added alongside the macos-llvm promotion)
 # ---------------------------------------------------------------------------
-# docs/RESEARCH.md's validation pyramid designed L3 (FFmpeg-oracle strict
-# decode, every commit) and L4 (perceptual SNR) from the start; neither was
-# ever wired into any CI leg until now. scripts/verify-gold-reference.sh
+# The project's original validation-pyramid design (now docs/verification.md)
+# called for L3 (FFmpeg-oracle strict decode, every commit) and L4
+# (perceptual SNR) from the start; neither was ever wired into any CI leg
+# until now. scripts/verify-gold-reference.sh
 # encodes a fixed checked-in 5.1 WAV (tests/golden/audio/reference_51.wav),
 # strict-decodes it with FFmpeg, decodes it with ac3cli's own decoder, and
 # asserts they agree via scripts/compare_wav.py's delay-compensated SNR (>=
@@ -81,30 +60,21 @@
 # threshold on every leg, and exactly why the gate is SNR-based rather than a
 # bit-exact bitstream comparison.
 #
-# UPDATE (Qt Quick Test harness): the line above ("GUI does not gate any
-# ctest entry") is no longer true. src/gui/tests/ adds ac3gui_qml_tests, a
-# real ctest entry (label "gui") that Quick-Test-drives the actual
-# EncoderController singleton and Main.qml shell, registered only when
-# AC3FORGE_BUILD_GUI is ON - so it rides the existing GUI axis rather than
-# adding a new one. Verified locally on windows-msvc: builds clean, CTest
-# picks it up with zero changes to this file or _build.yml (the existing
-# `ctest --preset test-<leg>` step already runs every registered test), and
-# all 4 tst_*.qml files / 13 test functions pass. Not yet run on an actual
-# GitHub Actions leg - the "256/256 everywhere" baseline below predates this
-# and needs a `+ 1 gui test` correction the next time any leg's real count is
-# confirmed.
+# Qt Quick Test harness: src/gui/tests/ adds ac3gui_qml_tests, a real ctest
+# entry (label "gui") that Quick-Test-drives the actual EncoderController
+# singleton and Main.qml shell, registered only when AC3FORGE_BUILD_GUI is
+# ON - so it rides the existing GUI axis rather than adding a new one, and
+# the existing `ctest --preset test-<leg>` step picks it up with zero changes
+# to this file or _build.yml.
 #
-# The baseline itself (no ALSA, GUI on or off, doesn't matter) is 256/256
-# everywhere, confirmed directly by an earlier merge's own linux-gcc
-# no-ALSA-fallback run. AC3FORGE_WITH_ALSA's tests/platform/alsa/ (see
-# tests/CMakeLists.txt) accounts for the 270-256=14 gap on top of that.
+# ALSA-conditional tests (tests/platform/alsa/, see tests/CMakeLists.txt)
+# register only when AC3FORGE_WITH_ALSA finds libasound, which is why a
+# no-ALSA fallback run reports fewer tests than the same leg's full run - a
+# configuration difference, not tests going missing.
 #
 # What none of this covers: real audio hardware. WSL2 has no sound devices and
 # no kernel sound modules, and neither does a GitHub runner, so the ALSA
 # backend is verified headless only. See docs/BUILDING.md#linux-audio.
-#
-# * Confirmed on WSL2, not yet on an actual GitHub Actions run - see the note
-#   above. Drop the asterisk once this branch's CI confirms it there too.
 #
 # macos-llvm is no longer experimental (see _build.yml's own header for how
 # that happened) - it blocks like every other leg now, no continue-on-error.
@@ -323,10 +293,10 @@ jobs:
   # --fail-under-line 80 / --fail-under-branch 70 are deliberately NOT the
   # 80/80 gate a sibling project (CountdownSolver) uses for the same setup:
   # this job's own first real GitHub Actions run (gcc 15.2.0, matching the
-  # linux-gcc leg's pin) came back 81.3% line / 72.0% branch, and block
-  # switching, delta bit allocation, half sample rate and dual mono support
-  # are all landing on this project right now (see docs/RESEARCH.md's own
-  # status). Both thresholds sit a few points under that measured baseline on
+  # linux-gcc leg's pin) came back 81.3% line / 72.0% branch, measured while
+  # block switching, delta bit allocation, half sample rate and dual mono
+  # support were all still landing. Both thresholds sit a few points under
+  # that measured baseline on
   # purpose, so ordinary in-flight churn does not immediately trip the gate,
   # while a real coverage regression still fails the job. Raise both as the
   # suite's own coverage grows rather than leaving the headroom in place

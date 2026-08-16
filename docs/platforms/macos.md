@@ -19,19 +19,10 @@ one isn't pinned to an exact version: Homebrew's core `llvm` formula has no vers
 pin against the way `apt.llvm.org` or the official Windows installer do, so CI installs and
 reports whatever Homebrew currently ships rather than asserting a specific one.
 
-## What has and has not been verified
-
-Build, `ctest` (344/344 tests — no GUI leg on macOS yet, so no `ac3gui_qml_tests` entry; see
-[Verified configuration](../building.md#verified-configuration) for how that count differs from
-Windows/Linux) and the [gold-reference correctness
-gate](../building.md#gold-reference-correctness-gate) all pass on real GitHub Actions runners —
-not a simulation or a local guess. Real SNR numbers from that CI run: 61.81/61.82 dB on macOS,
-against 67.84/67.82 dB on Linux and Windows for the same material — a real but modest
-cross-compiler floating-point difference (Homebrew LLVM's libm vs. glibc's/MSVC's), comfortably
-clear of the gate's 30 dB floor.
+## Audio backend: CoreAudio
 
 `src/audio/CMakeLists.txt` selects a real CoreAudio backend on macOS, `src/audio/src/platform/macos/`
-(roadmap E1) — capture, monitor playback and IEC 61937 passthrough are built on the Audio HAL
+— capture, monitor playback and IEC 61937 passthrough are built on the Audio HAL
 (`AudioObjectID`/`AudioDeviceIOProc`), the same layer WASAPI and ALSA occupy on their own
 platforms, rather than the no-backend stub that used to fall back to here. Its passthrough
 mechanism is genuinely different from both: CoreAudio has no per-open bitstream flag the way
@@ -40,24 +31,59 @@ taking hog mode on a digital output and retuning its *physical* stream format
 (`kAudioStreamPropertyPhysicalFormat`) to `kAudioFormat60958AC3` for AC-3 — see
 `src/audio/src/platform/macos/passthrough.cpp`'s own header for the full mechanism, cross-checked
 against three independent real-world implementations of the same thing (MythTV, mpv, VLC) while
-writing it, since there was no Mac available locally to try it on directly. `AC3FORGE_BUILD_GUI`
-still defaults off here (no CI leg builds `ac3gui` on macOS), so the GUI remains untested on macOS
-specifically — but the three audio-hardware commands now compile, link, and (for the parts that
-need no live device — enumeration on a machine with none, format matching, sample conversion) run
-under `ac3tests`, same as everywhere else without real hardware. See
-[Building from source](../building.md#verified-configuration) for the full picture across every
-platform.
+writing it, since there was no Mac available locally to try it on directly. For E-AC-3, the same
+walk additionally probes a stream's available physical formats for `kAudioFormatEnhancedAC3`:
+Apple's own documentation confirms Dolby Digital Plus/Atmos HDMI passthrough exists on Apple
+Silicon Macs without documenting the HAL mechanism behind it, so where a driver doesn't publish
+that format (older hardware, a non-HDMI output, an Intel Mac) the backend simply reports E-AC-3
+passthrough unavailable rather than claiming it everywhere — see `passthrough.cpp`'s own "AC-3
+and E-AC-3" section.
+
+The backend is CI-verified only: the parts that need no live device — enumeration on a machine
+with none, format matching, sample conversion — run under `ac3tests` on the hosted runner, same
+as everywhere else without real hardware, but no real Mac has ever run this code against an
+actual digital output, and no receiver has been asked to lock onto its output.
+
+## Building
+
+```bash
+export VCPKG_ROOT=/path/to/vcpkg
+cmake --preset config-macos-llvm-debug
+cmake --build --preset build-macos-llvm-debug
+ctest --preset test-macos-llvm-debug
+```
+
+Drop `-debug` from all three preset names for a Release build; the `ci-macos-llvm` workflow
+preset chains the same three steps in one command. Homebrew's `llvm` formula must be installed
+(CI runs `brew install llvm`), and `VCPKG_ROOT` must point at a vcpkg checkout — it supplies
+Catch2, plus Boost and Tracy only if you opt into the `adm`/`profiling` features (see
+[building.md](../building.md)). `AC3FORGE_BUILD_GUI` defaults **OFF** here, as on Linux — no CI
+leg builds `ac3gui` on macOS, so the GUI remains untested on macOS specifically.
 
 ## Packaging
 
-`pack-macos-llvm` exists, and `macos-llvm` is one of the three `release_package` legs
-(alongside `windows-msvc` and `linux-gcc`) that actually package on a real tagged release
-(`release.yml`, `do_package: true`) — DragNDrop on top of a plain ZIP if the packaging tool is
-found on the runner, the same way NSIS is on Windows and DEB/RPM are on Linux. No release has
-shipped yet — the API isn't stable and no `vX.Y.Z` tag has been pushed — so that path is wired
-up but has not been exercised for real. Only `windows-msvc`'s continuous per-push packaging
-smoke test (`ci.yml`) has actually run and been inspected end to end; see
+```bash
+cpack --preset pack-macos-llvm
+```
+
+Produces a DragNDrop image on top of a plain ZIP when the packaging tool is found, the same way
+NSIS is on Windows and DEB/RPM are on Linux. `macos-llvm` is one of the four `release_package`
+legs (alongside `windows-msvc`, `linux-gcc` and `linux-gcc-arm64`) that package on a real tagged
+release (`release.yml`, `do_package: true`). That path has been exercised for real: four beta
+releases, v0.2.0-beta.1 through v0.5.0-beta.1, have shipped through the tag-triggered workflow,
+macOS packages included. No stable (non-beta) release has been tagged yet. See
 [Packaging](../building.md#packaging).
+
+## CI: what has and has not been verified
+
+Build, `ctest` (the full suite — no GUI leg on macOS yet, so no `ac3gui_qmltests` entry; see
+[Verified configuration](../building.md#verified-configuration) for how the suite's composition
+differs from Windows/Linux) and the [gold-reference correctness
+gate](../building.md#gold-reference-correctness-gate) all pass on real GitHub Actions runners —
+not a simulation or a local guess. Real SNR numbers from that CI run: 61.81/61.82 dB on macOS,
+against 67.84/67.82 dB on Linux and Windows for the same material — a real but modest
+cross-compiler floating-point difference (Homebrew LLVM's libm vs. glibc's/MSVC's), comfortably
+clear of the gate's 30 dB floor.
 
 ---
 

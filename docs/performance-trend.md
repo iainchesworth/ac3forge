@@ -21,14 +21,10 @@ Three separate mechanisms, not one, and it matters which is which:
   drifts, *which stage* moved - without anyone having to reattach a profiler to find
   out.
 
-Both exist because of the same incident: `AtmosEncoder::encode_frame()` was once
-measured at ~266ms for a 32ms-budget frame on real hardware (an NVIDIA Shield's ARM
-SoC) - an 8-28x regression with zero test coverage to catch it, traced with
-[Tracy](https://github.com/wolfpld/tracy) to the forward MDCT recomputing
-`std::cos()` fresh inside an O(N²) loop on every call instead of using a precomputed
-table (`src/lib/src/core/mdct.cpp`'s `ForwardCosTable`) the way the inverse
-transform right next to it already did. Fixed in one change; this pair of suites is
-what stops it from happening silently again.
+All of this exists because a severe encoder regression (a per-call recomputation the
+forward MDCT should have cached) once shipped with no coverage to catch it: the hard
+gate blocks a repeat outright, and the trend tables catch the gradual drift a
+pass/fail gate cannot see.
 
 `scripts/append-performance-history.py` appends every `develop`/`main` run's numbers
 to the `quality-history` branch (reused, not a new branch - the same reasoning

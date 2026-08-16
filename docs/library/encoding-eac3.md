@@ -8,10 +8,12 @@ alternation disappears), and exponent strategies for all six blocks hoisted into
 `audfrm`.
 
 ```cpp
-ac3::eac3::FrameEncoder encoder{{
+// Heap-allocated: FrameEncoder carries several KB of MDCT scratch/history
+// state (PREfast's C6262).
+auto encoder = std::make_unique<ac3::eac3::FrameEncoder>(ac3::eac3::FrameConfig{
     .bitrate_kbps = 192,
     .acmod = ac3::Acmod::k2_0,
-}};
+});
 
 std::vector<std::vector<float>> pcm(2, std::vector<float>(ac3::kSamplesPerFrame));
 const auto views = views_of(pcm);
@@ -19,7 +21,7 @@ const auto views = views_of(pcm);
 std::vector<std::byte> stream;
 for (int frame = 0; frame < 31; ++frame) {
     fill_tones(pcm, tones, frame, 48000.0);
-    const auto encoded = encoder.encode_frame(views);
+    const auto encoded = encoder->encode_frame(views);
     if (!encoded) {
         return 1;
     }
@@ -27,7 +29,17 @@ for (int frame = 0; frame < 31; ++frame) {
 }
 ```
 
-`FrameConfig` carries everything `EncoderConfig` does, plus the Annex E tools:
+`FrameConfig` carries nearly everything `EncoderConfig` does, plus the Annex E tools. Two AC-3
+fields do not carry over as-is: there is no `cplendf` — the coupling end frequency is derived
+(the top of the coded spectrum, or from `spxbegf` when spectral extension is on, §E3.3.1) —
+and `chbwcod` defaults to a fixed 60 rather than AC-3's auto-from-bitrate −1.
+
+One field widens instead: `FrameConfig::sample_rate` also accepts the three Annex E half rates —
+`k24000`, `k22050`, `k16000` (24/22.05/16 kHz). For those the encoder writes `fscod2` in place
+of `numblkscod` (§E2.3.1.3, the block count is then implicitly six), and the reduced rate reuses
+its double-rate parent's bit-allocation tables (§E2.3.1.4). The CLI maps the plain rate numbers
+onto them. Classic AC-3 has no `frmsizecod` row for a reduced rate, so `ac3::FrameEncoder`
+rejects them outright.
 
 | Field | Default | Notes |
 |---|---|---|
@@ -42,13 +54,10 @@ for (int frame = 0; frame < 31; ++frame) {
 | `strmtyp`, `substreamid`, `chanmap`, `last_dependent` | independent, 0, none, false | Substream identity. Set by `AccessUnitEncoder`; you rarely touch these directly. |
 | `oba_complexity_index` | none | TS 103 420 §8.3 object count in `addbsi`. This is the marker FFmpeg keys its "Dolby Digital Plus + Dolby Atmos" report off. |
 
-> The in-repo decoder reads every one of these — `spx`, `aht`, standard and enhanced coupling,
-> and transient pre-noise processing — individually or stacked together, at every layout
-> including 7.1.4. `cpl`, `spx` and `aht` are cross-checked against FFmpeg wherever FFmpeg itself
-> can decode them; enhanced coupling and transient pre-noise processing have no external oracle
-> at all, so they're checked through this project's own decoder instead
-> (`tools/quality_race.py`'s CI gate). See the verification-gap table in
-> [Validation](../verification.md#where-the-oracles-dont-reach) for the full picture.
+> The in-repo decoder reads every one of these tools, individually or stacked together, at every
+> layout including 7.1.4 — see [Decoding](decoding.md) for the decode-side picture, and the
+> verification-gap table in [Validation](../verification.md#where-the-oracles-dont-reach) for
+> which tools have an external oracle.
 
 Block switching (§8.2.2/§7.9) is automatic here too — no config field. A channel that switches
 anywhere in the frame is excluded from both coupling (same reasoning as AC-3's) and, for this
@@ -57,7 +66,7 @@ what triggered the switch) already selects against a switching channel most of t
 exclusion is explicit rather than relying on that correlation.
 
 Rematrixing (§7.5.3) is automatic too, `acmod` 2/0 only, no config field — the same minimum-power
-decision AC-3's own encoder makes (see [Encoding AC-3](encoding-ac3.md)), over the same Table 7.25
+decision AC-3's own encoder makes (see [Encoding AC-3](encoding-ac3.md#rematrixing)), over the same Table 7.25
 bands. Annex E §3.3's "Modifications to Previously Defined Parameters" only changes how many of
 those bands are active (`nrematbd`, accounting for coupling, enhanced coupling and spectral
 extension all separately taking over the top of the spectrum) — the boundaries and the decision
@@ -81,7 +90,7 @@ chosen quality):
 
 ```cpp
 ac3::eac3::FrameEncoder encoder{{
-    .bitrate_kbps = 192,  // still used: see nominal_kbps below
+    .bitrate_kbps = 192,  // not read once vbr is set — see below
     .acmod = ac3::Acmod::k2_0,
     .vbr = ac3::eac3::VbrConfig{
         .quality = 0.4,
@@ -92,12 +101,13 @@ ac3::eac3::FrameEncoder encoder{{
 
 | `VbrConfig` field | Default | Notes |
 |---|---|---|
-| `quality` | `0.5` | `[0, 1]`, linearly maps onto the encoder's own SNR-offset search space. Encoder-relative, not a perceptual scale — and **not linear in bit cost**: cost rises steeply in roughly the top half of the range, so a high quality with no `max_kbps` bound will often refuse ordinary multi-channel material outright (`FrameError::kInvalidBitrate`) rather than produce an oversized frame. |
+| `quality` | `0.5` | `[0, 1]`, linearly maps onto the encoder's own SNR-offset search space. Encoder-relative, not a perceptual scale — and **not linear in bit cost**: cost rises steeply in roughly the top third of the range, so a high quality with no `max_kbps` bound will often refuse ordinary multi-channel material outright (`FrameError::kInvalidBitrate`) rather than produce an oversized frame. |
 | `min_kbps`, `max_kbps` | none, none | Optional hard bounds, same unit as `bitrate_kbps`. When the quality target would need more words than `max_kbps` allows, the encoder falls back to the same search CBR uses, budgeted against the ceiling — so a bounded VBR frame is never worse than the best CBR could do at that rate. `min_kbps` is a pure floor: `finish_frame`'s own padding covers the gap. |
 | `nominal_kbps` | none | Drives the `cplbegf`/`spxbegf` frequency defaults in place of a fixed target rate. Defaults to `max_kbps` if set, else 192. A caller who wants today's CBR tool behaviour at some quality supplies the same number they would have passed as `bitrate_kbps`. |
 
-`bitrate_kbps` itself is not used for sizing once `vbr` is set, but it is still read — it is
-`nominal_kbps`'s own fallback when neither `nominal_kbps` nor `max_kbps` is given.
+`bitrate_kbps` itself is not read on the encode path at all once `vbr` is set: when neither
+`nominal_kbps` nor `max_kbps` is given, the frequency defaults fall back to the fixed
+`kVbrDefaultNominalKbps` (192), not to `bitrate_kbps`.
 
 `AccessUnitConfig` needs no separate VBR field: each substream's own `FrameConfig::vbr` carries
 what it needs, and `plan::eac3_config()` shares one `VbrConfig` across every substream of a

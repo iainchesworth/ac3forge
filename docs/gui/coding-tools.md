@@ -1,8 +1,13 @@
 # Coding tools
 
-Expert tier, E-AC-3 only — this tab disappears entirely for AC-3, which doesn't have Annex E.
+Expert tier. The tab is always in Expert's tab bar, but the tools themselves exist in the E-AC-3
+syntax only: with AC-3 selected, the controls give way to an explainer card — *"AC-3 has no
+Annex E tools — coupling bands, spectral extension and AHT exist in the E-AC-3 syntax only.
+Switch the codec to Dolby Digital Plus on the Format tab and they appear here."* — and object
+mode shows its own equivalent (the JOC bed is coded with the encoder's own fixed tool choices;
+turning object mode off on the Objects tab brings the controls back).
 
-Three checkboxes, all off by default:
+Under E-AC-3, three checkboxes, all off by default:
 
 ![Coding tools tab, nothing enabled](screenshots/coding-tools-off.png)
 
@@ -23,7 +28,7 @@ there to let the encoder pick a band edge, or pin one explicitly:
 
 At the foot of the card, a monospace `ac3cli tools token` readout (`cpl+spx`, `cpl+spx+aht`, …)
 shows the exact string that reproduces this configuration on the command line — see
-[CLI → Metadata options](../cli/metadata-options.md) for the full `tools:` grammar, including the
+[CLI → Options & grammars](../cli/metadata-options.md) for the full `tools:` grammar, including the
 `cpl:N`/`spx:N`/`aht:N` pinning syntax this token expands to.
 
 ## Next

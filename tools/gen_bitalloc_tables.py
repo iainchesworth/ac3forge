@@ -1,6 +1,6 @@
 """Extract the A/52 bit-allocation tables (7.6-7.16) from the spec text.
 
-Emits libs/ac3forge/include/ac3/core/bitalloc_tables.hpp (constexpr arrays,
+Emits src/lib/include/ac3/core/bitalloc_tables.hpp (constexpr arrays,
 citations included)
 after self-verifying the parse: element counts, masktab identity against the
 banding structure, latab monotonicity, and spot values. Import parse_tables()
@@ -15,7 +15,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 SPEC_TXT = REPO / "docs" / "spec" / "A52-2018.txt"
-OUT = REPO / "src" / "ac3" / "core" / "bitalloc_tables.hpp"
+OUT = REPO / "src" / "lib" / "include" / "ac3" / "core" / "bitalloc_tables.hpp"
 
 
 def _lines():

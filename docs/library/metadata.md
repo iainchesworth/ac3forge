@@ -84,7 +84,7 @@ AC-3, `MixMetadata` for the E-AC-3 `mixmdate` group. In `MixMetadata`, an absent
 `lfemixlevcod` means LFE mixing is *disabled*, which per §E2.3.1.10 is a decision in its own
 right and not the same as sending code 31.
 
-`ac3/meta/qc.hpp` (roadmap C2) is the QC-side counterpart: named loudness/true-peak delivery
+`ac3/meta/qc.hpp` is the QC-side counterpart: named loudness/true-peak delivery
 gates a decoded stream's measurement can be checked against, mirroring `meta::Profile`/
 `meta::ProfileId`'s own shape:
 

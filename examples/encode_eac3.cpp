@@ -4,7 +4,7 @@
 //   2. AccessUnitEncoder — an independent 5.1 bed plus dependent substreams
 //                          carrying the channels that do not fit in it. 7.1.4
 //                          needs two dependents, which is the case no external
-//                          decoder will read (see docs/LIBRARY.md).
+//                          decoder will read (see docs/library/encoding-eac3.md).
 
 #include <array>
 #include <cmath>

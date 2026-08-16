@@ -9,8 +9,8 @@ rather than half-checked. Sizes are rough guesses: **S** (an afternoon), **M** (
 
 ## A. Delivery
 
-Matroska is currently the only container; `docs/project/history.md` names MP4 and MPEG-TS as
-the step the decoder was meant to lead toward.
+At drafting time Matroska was the only container; `docs/project/history.md` named MP4 and
+MPEG-TS as the step the decoder was meant to lead toward.
 
 - [x] **A1 (L)** — MP4/ISOBMFF muxer with a correct `dec3` box. A standalone module in the
   `matroska::` mould: E-AC-3 (and AC-3) into MP4 with spec-correct `dec3` generation, including
@@ -23,8 +23,9 @@ the step the decoder was meant to lead toward.
 - [x] **A3 (M)** — MPEG-TS muxing with AC-3/E-AC-3 descriptors per ATSC/DVB.
 - [x] **A4 (S)** — stdin/stdout streaming in `ac3cli`: the `-` filename convention for
   pipe-based workflows. Everything today is whole-file.
-- [x] **A5 (S)** — Live sessions mux straight to Matroska. Live captures currently write
-  elementary streams only; `docs/gui/live-session.md` flags containerised output as pending.
+- [x] **A5 (S)** — Live sessions mux straight to Matroska. At drafting time, live captures
+  wrote elementary streams only; `docs/gui/live-session.md` flagged containerised output as
+  pending.
 
 ## B. Production ingest
 
@@ -33,23 +34,26 @@ mixes are delivered as master files.
 
 - [x] **B1 (XL)** — ADM BWF reader feeding the JOC encoder: parse BS.2076 ADM metadata plus
   RF64/BWF audio, map beds and objects onto `AtmosEncoder`, and encode a master file to a
-  DD+ JOC bitstream. The Netflix and Apple delivery specifications both use ADM BWF masters.
-  Natural split: the ADM/RF64 parser first, then object/bed mapping, then an end-to-end command
-  and example. **Phase 1 (the standalone `ac3adm::ac3adm` BW64/RF64 + ADM parser, ITU-R BS.2088-1
-  + BS.2076-2) is done** — see [`src/ac3adm/`](src/ac3adm/) and `docs/library/adm.md`. **Phase 2
+  DD+ JOC bitstream. At drafting time no open implementation of this step existed; the Netflix
+  and Apple delivery specifications both use ADM BWF masters. Natural split: the ADM/RF64 parser
+  first, then object/bed mapping, then an end-to-end command and example. **Phase 1 (the
+  standalone `ac3adm::ac3adm` BW64/RF64 + ADM parser, ITU-R BS.2088-1 + BS.2076-2) and phase 2
   (the `ac3::admbridge` object/bed mapping layer onto `AtmosEncoder`, including BS.2076-2 §10.3
-  position/gain automation and the polar/Cartesian → room-anchored coordinate conversion) is also
-  done** — see [`src/adm_bridge/`](src/adm_bridge/) and `docs/library/adm-bridge.md`. **Phase 3
-  (driving both together end to end) is also done** — the `ac3cli atmos-adm` command
-  (`src/cli/main.cpp`) and [`examples/encode_adm.cpp`](examples/encode_adm.cpp). `ac3cli` still
-  builds and works identically whether `AC3FORGE_BUILD_ADM` is on or off, just with or without this
-  one command — with no preprocessor conditional anywhere (`scripts/check-platform-macros.ps1`
-  forbids one under `src/`, feature flags included): `atmos-adm` is always one row in `main.cpp`'s
-  command table, gated at dispatch time by a new `Needs::kAdm`/`unmet()` case (the same mechanism
-  `Needs::kCapture`/`kPassthrough`/`kMonitor` already use for platform audio capability), backed by
-  a small CMake-selected file pair (`src/cli/adm/{enabled,disabled}/atmos_adm.cpp`) rather than an
-  `#ifdef` — see `src/cli/adm/atmos_adm.hpp`'s own comment for the full reasoning. Built on the
-  vendored libbw64/libadm (github.com/ebu) rather than a hand-rolled parser; opt-in via
+  position/gain automation and the polar/Cartesian → room-anchored coordinate conversion) are both
+  done** — see [`src/ac3adm/`](https://github.com/iainchesworth/ac3forge/tree/main/src/ac3adm) and
+  `docs/library/adm.md`, and [`src/adm_bridge/`](https://github.com/iainchesworth/ac3forge/tree/main/src/adm_bridge)
+  and `docs/library/adm-bridge.md`. **Phase 3 (driving both together end to end) is also done** —
+  the `ac3cli atmos-adm` command (`src/cli/main.cpp`) and
+  [`examples/encode_adm.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/encode_adm.cpp).
+  `ac3cli` still builds and works identically whether `AC3FORGE_BUILD_ADM` is on or off, just with
+  or without this one command — with no preprocessor conditional anywhere
+  (`scripts/check-platform-macros.ps1` forbids one under `src/`, feature flags included):
+  `atmos-adm` is always one row in `main.cpp`'s command table, gated at dispatch time by a new
+  `Needs::kAdm`/`unmet()` case (the same mechanism `Needs::kCapture`/`kPassthrough`/`kMonitor`
+  already use for platform audio capability), backed by a small CMake-selected file pair
+  (`src/cli/adm/{enabled,disabled}/atmos_adm.cpp`) rather than an `#ifdef` — see
+  `src/cli/adm/atmos_adm.hpp`'s own comment for the full reasoning. Built on the vendored
+  libbw64/libadm (github.com/ebu) rather than a hand-rolled parser; opt-in via
   `-DAC3FORGE_BUILD_ADM=ON` (needs Boost, see `vcpkg.json`'s `adm` feature) — the only third-party
   dependency anywhere in this project, and deliberately not default-on.
 - [ ] **B2 (M)** — DAMF reader: the `.atmos` / `.atmos.metadata` / `.atmos.audio` triple,
@@ -59,8 +63,9 @@ mixes are delivered as master files.
 
 ## C. Loudness and QC
 
-The library measures BS.1770-4 gated loudness to set dialnorm; no open tool decodes an
-AC-3/E-AC-3 bitstream and verifies its loudness metadata against measurement.
+The library measures BS.1770-4 gated loudness to set dialnorm; at drafting time no open tool
+decoded an AC-3/E-AC-3 bitstream and verified its loudness metadata against measurement
+(`ac3cli qc` now does).
 
 - [x] **C1 (M)** — Full R128 metering: momentary and short-term loudness, loudness range
   (LRA), and oversampled true peak in `ac3::meta::loudness`.
@@ -78,8 +83,8 @@ AC-3/E-AC-3 bitstream and verifies its loudness metadata against measurement.
   `ac3::mlp` module — sync and restart-header framing, the lossless matrix cascade, Rice
   coding, CRC, tests, and a design doc (`docs/concepts/truehd-mlp.md`). Next step is a full
   substream encode.
-- [x] **D2 (S)** — Decoder dither substitution: zero-mantissa bands currently emit silence
-  instead of dither, in both decoders (the only two TODOs in the tree).
+- [x] **D2 (S)** — Decoder dither substitution: zero-mantissa bands emitted silence instead
+  of dither, in both decoders (at drafting time, the only two TODOs in the tree).
 - [x] **D3 (M)** — Delta bit allocation alongside coupling: previously skipped whenever
   coupling was active that frame, for the coupling channel and every fbw channel alike.
   LFE was already correct as it stood - A/52 defines no delta bit allocation field for it
@@ -89,9 +94,9 @@ AC-3/E-AC-3 bitstream and verifies its loudness metadata against measurement.
 
 ## E. Platforms and hardware
 
-- [x] **E1 (L)** — macOS CoreAudio backend. Every live-audio command is currently a stub on
-  macOS; the build and gold-reference gates pass, but there is no capture, playback, or
-  passthrough.
+- [x] **E1 (L)** — macOS CoreAudio backend. At drafting time every live-audio command was a
+  stub on macOS; the build and gold-reference gates passed, but there was no capture,
+  playback, or passthrough.
 - [ ] **E2 (M)** — PipeWire backend, named in `docs/building.md` as the natural second Linux
   backend.
 - [ ] **E3 (S)** — Confirm exclusive-mode passthrough against real bitstreaming hardware —
@@ -109,7 +114,13 @@ AC-3/E-AC-3 bitstream and verifies its loudness metadata against measurement.
 - [ ] **F3 (L)** — WASM build plus a browser demo that decodes E-AC-3 + JOC and renders
   object motion; could double as the documentation site's live demo.
 - [ ] **F4 (M)** — Package-manager presence: a vcpkg port, a Homebrew formula, a winget
-  manifest. Includes fixing the stale `version` field in `vcpkg.json`.
+  manifest. **The vcpkg port is staged in-tree** — see
+  [`packaging/vcpkg-port/ac3forge/`](https://github.com/iainchesworth/ac3forge/tree/main/packaging/vcpkg-port/ac3forge),
+  with the submission and per-release update flow documented in `docs/releasing.md`; what
+  remains is the `microsoft/vcpkg` registry submission itself, plus Homebrew and winget. The
+  root `vcpkg.json`'s `version` field is a deliberate placeholder (the build's version derives
+  from git tags, and releases are tracked by the port's own `version-semver`), not something
+  to fix.
 - [ ] **F5 (M)** — API freeze → v1.0.0: the SemVer commitment, a deprecation policy, ABI
   notes.
 

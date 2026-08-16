@@ -1,17 +1,17 @@
 # ADM / BW64 reading: `ac3adm::ac3adm`
 
 `ac3adm/ac3adm.hpp`, library `ac3adm::ac3adm`. A standalone BW64/RF64 + Audio Definition Model
-(ADM) parser — roadmap item B1 phase 1 of 3 (see [ROADMAP.md](https://github.com/iainchesworth/ac3forge/blob/main/ROADMAP.md)): the professional delivery format
-Netflix's and Apple's own Atmos ingest pipelines require. Like `matroska::matroska`, `mp4::mp4`
-and `mpegts::mpegts`, it links nothing from `ac3::forge` — it has no idea AC-3, E-AC-3 or the
-JOC/Atmos object layer exist. It differs from those three in one way: they are container
-**writers**, this is a container **reader**, because that's the direction a professional master
-needs to travel to reach this project's own encoder in the first place.
+(ADM) parser: the professional delivery format Netflix's and Apple's own Atmos ingest pipelines
+require. Like `matroska::matroska`, `mp4::mp4` and `mpegts::mpegts`, it links nothing from
+`ac3::forge` — it has no idea AC-3, E-AC-3 or the JOC/Atmos object layer exist. It differs from
+those three in one way: they are container **writers**, this is a container **reader**, because
+that's the direction a professional master needs to travel to reach this project's own encoder
+in the first place.
 
 Mapping the graph this module parses onto `ac3::oba::AtmosEncoder` is a separate module,
-[`ac3::admbridge`](adm-bridge.md) (phase 2, done); driving the two together end to end — a real
-ADM BWF master straight to a DD+ JOC E-AC-3 stream — is phase 3, also done: `ac3cli atmos-adm`
-(see [Commands](../cli/commands.md)) and
+[`ac3::admbridge`](adm-bridge.md) (done); driving the two together end to end — a real ADM BWF
+master straight to a DD+ JOC E-AC-3 stream — is also done: `ac3cli atmos-adm` (see
+[Commands](../cli/commands.md)) and
 [`examples/encode_adm.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/encode_adm.cpp). This page and
 [`examples/read_adm.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/read_adm.cpp) only demonstrate this module's own API — opening a file and walking the
 parsed graph; `encode_adm.cpp` is the one that shows the full pipeline.
