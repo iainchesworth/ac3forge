@@ -443,11 +443,18 @@ jobs:
   # before landing (see the PR that introduced it, branch feature/adm-bw64-parser: Windows MSVC,
   # WSL2 gcc-15, WSL2 clang++-21, all green).
   #
-  # AC3FORGE_BUILD_CLI/EXAMPLES off, same reasoning as the coverage job above: this job's only
-  # question is whether ac3tests (including test_adm.cpp's [adm]-tagged cases) passes with the
-  # module built in, not whether the CLI or examples link against it too - nothing outside tests/
-  # links ac3adm::ac3adm at all (see the root CMakeLists.txt's own comment on why it stays out of
-  # InstallLibrary's export set). AC3FORGE_BUILD_GUI already defaults OFF on this preset.
+  # AC3FORGE_BUILD_CLI/EXAMPLES stay at their preset default (ON): roadmap B1 phase 3 (the
+  # 'atmos-adm' ac3cli command, src/cli/main.cpp's run_atmos_adm, and examples/encode_adm.cpp) is
+  # the first code outside tests/ to link ac3adm::ac3adm/ac3::admbridge at all, so unlike phases 1
+  # and 2 (when neither the CLI nor the examples touched this module, hence this job originally
+  # turning both off), this job now has to build and run both too or the CLI command and example
+  # get zero CI coverage - the same gap this job's own header comment above already exists to close
+  # for the library modules themselves. examples/ registers each example as its own ctest case
+  # (examples/CMakeLists.txt), so `ctest --preset test-linux-gcc` below already exercises
+  # encode_adm's own standalone fixture-driven run alongside test_adm.cpp/test_adm_bridge.cpp/
+  # test_cli_atmos_adm.cpp (tests/CMakeLists.txt only compiles that last one in when
+  # AC3FORGE_BUILD_ADM AND ac3cli are both present, exactly the combination this job now builds).
+  # AC3FORGE_BUILD_GUI already defaults OFF on this preset.
   adm-validate:
     name: ADM Module (Linux, GCC)
     needs: changes
@@ -481,8 +488,6 @@ jobs:
           cmake --preset config-linux-gcc
           -DVCPKG_MANIFEST_FEATURES=adm
           -DAC3FORGE_BUILD_ADM=ON
-          -DAC3FORGE_BUILD_CLI=OFF
-          -DAC3FORGE_BUILD_EXAMPLES=OFF
 
       - name: Build
         shell: bash

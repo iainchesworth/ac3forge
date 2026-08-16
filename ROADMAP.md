@@ -31,20 +31,27 @@ the step the decoder was meant to lead toward.
 The object path today starts from mono WAVs placed by the CLI or GUI; post-production Atmos
 mixes are delivered as master files.
 
-- [ ] **B1 (XL)** — ADM BWF reader feeding the JOC encoder: parse BS.2076 ADM metadata plus
+- [x] **B1 (XL)** — ADM BWF reader feeding the JOC encoder: parse BS.2076 ADM metadata plus
   RF64/BWF audio, map beds and objects onto `AtmosEncoder`, and encode a master file to a
-  DD+ JOC bitstream. No open implementation of this step exists today; the Netflix and Apple
-  delivery specifications both use ADM BWF masters. Natural split: the ADM/RF64 parser first,
-  then object/bed mapping, then an end-to-end example. **Phase 1 (the standalone `ac3adm::ac3adm`
-  BW64/RF64 + ADM parser, ITU-R BS.2088-1 + BS.2076-2) is done** — see
-  [`src/ac3adm/`](src/ac3adm/) and `docs/library/adm.md`. **Phase 2 (the `ac3::admbridge` object/
-  bed mapping layer onto `AtmosEncoder`, including BS.2076-2 §10.3 position/gain automation and
-  the polar/Cartesian → room-anchored coordinate conversion) is also done** — see
-  [`src/adm_bridge/`](src/adm_bridge/) and `docs/library/adm-bridge.md`; phase 3 (the end-to-end
-  example tying both together) remains. Built on the vendored libbw64/libadm (github.com/ebu)
-  rather than a hand-rolled parser; opt-in via `-DAC3FORGE_BUILD_ADM=ON` (needs Boost, see
-  `vcpkg.json`'s `adm` feature) — the only third-party dependency anywhere in this project, and
-  deliberately not default-on.
+  DD+ JOC bitstream. The Netflix and Apple delivery specifications both use ADM BWF masters.
+  Natural split: the ADM/RF64 parser first, then object/bed mapping, then an end-to-end command
+  and example. **Phase 1 (the standalone `ac3adm::ac3adm` BW64/RF64 + ADM parser, ITU-R BS.2088-1
+  + BS.2076-2) is done** — see [`src/ac3adm/`](src/ac3adm/) and `docs/library/adm.md`. **Phase 2
+  (the `ac3::admbridge` object/bed mapping layer onto `AtmosEncoder`, including BS.2076-2 §10.3
+  position/gain automation and the polar/Cartesian → room-anchored coordinate conversion) is also
+  done** — see [`src/adm_bridge/`](src/adm_bridge/) and `docs/library/adm-bridge.md`. **Phase 3
+  (driving both together end to end) is also done** — the `ac3cli atmos-adm` command
+  (`src/cli/main.cpp`) and [`examples/encode_adm.cpp`](examples/encode_adm.cpp). `ac3cli` still
+  builds and works identically whether `AC3FORGE_BUILD_ADM` is on or off, just with or without this
+  one command — with no preprocessor conditional anywhere (`scripts/check-platform-macros.ps1`
+  forbids one under `src/`, feature flags included): `atmos-adm` is always one row in `main.cpp`'s
+  command table, gated at dispatch time by a new `Needs::kAdm`/`unmet()` case (the same mechanism
+  `Needs::kCapture`/`kPassthrough`/`kMonitor` already use for platform audio capability), backed by
+  a small CMake-selected file pair (`src/cli/adm/{enabled,disabled}/atmos_adm.cpp`) rather than an
+  `#ifdef` — see `src/cli/adm/atmos_adm.hpp`'s own comment for the full reasoning. Built on the
+  vendored libbw64/libadm (github.com/ebu) rather than a hand-rolled parser; opt-in via
+  `-DAC3FORGE_BUILD_ADM=ON` (needs Boost, see `vcpkg.json`'s `adm` feature) — the only third-party
+  dependency anywhere in this project, and deliberately not default-on.
 - [ ] **B2 (M)** — DAMF reader: the `.atmos` / `.atmos.metadata` / `.atmos.audio` triple,
   sharing B1's mapping layer.
 - [ ] **B3 (XL)** — IAMF / Eclipsa Audio interop: shared ADM ingest, possibly growing into

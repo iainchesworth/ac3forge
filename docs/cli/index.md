@@ -1,9 +1,13 @@
 # ac3cli
 
-`ac3cli` is the command-line front end over `ac3::forge` — twenty-five commands covering
+`ac3cli` is the command-line front end over `ac3::forge` — twenty-six commands covering
 synthesis, file encoding/decoding, container wrapping, inspection, and live capture/playback.
-Every command it can run is backed by the same public library documented under
-[Library](../library/index.md); nothing in the CLI has logic the library doesn't also expose.
+One of the twenty-six (`atmos-adm`) only *runs* in a build configured with
+`-DAC3FORGE_BUILD_ADM=ON`, but is always *listed* — the same "shown, not hidden" treatment
+this page's own live-audio commands get when the platform can't run them either (see
+[Commands](commands.md)'s own ADM section). Every command it can run is backed by the same public
+library documented under [Library](../library/index.md); nothing in the CLI has logic the library
+doesn't also expose.
 
 Run it with no arguments for the full usage text — that's also what [Commands](commands.md) is
 transcribed from, verbatim, so the two never disagree.
@@ -70,7 +74,8 @@ and exits immediately.
 
 ## Next
 
-- [Commands](commands.md) — all 25 commands, grouped and with real usage text.
+- [Commands](commands.md) — all 26 commands, grouped and with real usage text (`atmos-adm` only
+  *runs* with `-DAC3FORGE_BUILD_ADM=ON`, but is listed either way).
 - [Metadata options](metadata-options.md) — the `drc=`/`heavy`/`dialnorm=`/… options grammar,
   the `tools:` token grammar, and the full layout/location-list grammar.
 - [Concepts](../concepts/index.md) — if `bsid`, `syncframe`, or `JOC` aren't already familiar.

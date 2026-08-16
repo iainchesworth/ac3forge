@@ -9,10 +9,12 @@ JOC/Atmos object layer exist. It differs from those three in one way: they are c
 needs to travel to reach this project's own encoder in the first place.
 
 Mapping the graph this module parses onto `ac3::oba::AtmosEncoder` is a separate module,
-[`ac3::admbridge`](adm-bridge.md) (phase 2, done); a worked ADM → E-AC-3 pipeline example tying
-the two together end to end is phase 3, still to come. This page and
+[`ac3::admbridge`](adm-bridge.md) (phase 2, done); driving the two together end to end — a real
+ADM BWF master straight to a DD+ JOC E-AC-3 stream — is phase 3, also done: `ac3cli atmos-adm`
+(see [Commands](../cli/commands.md)) and
+[`examples/encode_adm.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/encode_adm.cpp). This page and
 [`examples/read_adm.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/read_adm.cpp) only demonstrate this module's own API — opening a file and walking the
-parsed graph.
+parsed graph; `encode_adm.cpp` is the one that shows the full pipeline.
 
 **Opt-in, unlike every other module in this library.** `AC3FORGE_BUILD_ADM` defaults **off**, and
 turning it on additionally needs `-DVCPKG_MANIFEST_FEATURES=adm` (see
