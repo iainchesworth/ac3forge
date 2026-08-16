@@ -24,6 +24,8 @@ qt_add_executable(ac3gui_qmltests
     tests/qml_test_main.cpp
     encoder_controller.cpp
     encoder_controller.hpp
+    qc_controller.cpp
+    qc_controller.hpp
     system_theme.cpp
     system_theme.hpp)
 
@@ -74,6 +76,8 @@ target_link_libraries(ac3gui_qmltests
         ac3::forge
         ac3::audio
         matroska::matroska
+        mp4::mp4
+        mpegts::mpegts
         ac3::warnings
         Qt6::Core
         Qt6::Gui

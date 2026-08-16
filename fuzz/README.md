@@ -95,16 +95,63 @@ there. `ac3::io::read_wav` takes a path rather than a byte span, so
 beyond calling the real function directly, since there is no in-memory
 overload to call instead.
 
+## Differential mode (roadmap G3)
+
+`fuzz_differential_ac3_decode` and `fuzz_differential_eac3_decode` drive the
+exact same decode paths as `fuzz_ac3_decode`/`fuzz_eac3_decode` above, but
+instead of (in addition to - a crash is still a crash) only checking for a
+crash or sanitizer trip, they decode the SAME mutated bytes a second time
+with FFmpeg and diff the resulting PCM against this project's own decode.
+`fuzz/differential_oracle.hpp` has the full mechanism and reasoning; the
+short version:
+
+- Both decoders have to accept the ENTIRE input - every frame/access unit,
+  one unchanging acmod/sample rate throughout - before FFmpeg is even
+  invoked. The overwhelming majority of mutations get rejected immediately
+  by this project's own decoder (bad sync word, bad CRC, a reserved field),
+  and none of those are worth a real FFmpeg process.
+- A **PCM mismatch is only reported as a divergence when both decoders
+  accepted the input and produced comparably-shaped audio.** FFmpeg's own
+  error-concealment on a mutated (i.e. potentially malformed) frame can
+  legitimately differ from this project's spec-strict decode - that proves
+  nothing about which one is right, so it is treated as "no oracle for this
+  one," the same stance `scripts/run-codec-matrix.sh` already takes for the
+  Annex E tool combinations FFmpeg has no reading of at all (enhanced
+  coupling, transient pre-noise processing, a second dependent substream/
+  7.1.4 - see `docs/verification.md`'s "Where the oracles don't reach").
+- Where a comparison IS eligible, the floor is deliberately loose relative
+  to what a clean, non-fuzzed stream actually measures at (`docs/
+  verification.md`: float32-precision parity for the plain path, 98+ dB for
+  coupling/spectral extension, 62-89 dB for AHT) - it reuses
+  `scripts/verify-gold-reference.sh`'s own `CPLBNDSTRCE0_MIN_SNR_DB=15`
+  precedent, this project's one existing floor for "two decodes of a
+  bitstream neither side controls," rather than inventing a new number.
+
+Because every comparable input spawns a real FFmpeg process, these two
+harnesses are much slower per-exec than every other harness here and are
+NOT in `fuzz/run.sh`'s default target list or in the `fuzz-regress`/
+`fuzz-short`/`fuzz-nightly` CI jobs - they get their own job,
+`fuzz-differential` (see the CI section below), and need `ffmpeg` on PATH to
+compare anything at all (silently a no-op otherwise, same as running without
+`ffmpeg` installed locally). They share their crash-only siblings' seed
+corpora rather than duplicating those files (`fuzz/run.sh`'s
+`seed_source_for`) - same bytes, same decode path, just with an extra
+comparison bolted on.
+
 ## Running locally
 
 ```bash
 # One-time: any Clang 18+ with libFuzzer works; CI pins LLVM 21 the same way
 # ci.yml's linux-llvm leg does (.github/toolchain/03-llvm-toolchain.sh).
-fuzz/run.sh                    # build, then run every harness for 60s each
+fuzz/run.sh                    # build, then run every default-list harness for 60s each
 fuzz/run.sh fuzz_scan          # just one harness
 AC3FORGE_FUZZ_SECONDS=600 fuzz/run.sh   # a deeper local run
 fuzz/run.sh regress            # replay seeds + regressions, no mutation (fast)
 fuzz/run.sh minimize fuzz_scan fuzz/artifacts/fuzz_scan-crash-<hash>
+
+# Differential harnesses need `ffmpeg` on PATH and are named explicitly -
+# see "Differential mode" above for why they're not in the default list.
+fuzz/run.sh run fuzz_differential_ac3_decode fuzz_differential_eac3_decode
 ```
 
 On Windows, run this from WSL or inside a Linux container - there is no
@@ -164,19 +211,27 @@ gitignored; `fuzz/run.sh` creates it on demand.
   mutation, on every push/PR to `main`/`develop`. Seconds, not minutes, and
   not marked experimental: a failure here means a previously-fixed bug came
   back, which should always be loud.
-- `fuzz-short` - a 60-second-per-harness mutation budget, push only (not
-  pull_request, to keep PR turnaround unaffected).
+- `fuzz-short` - a 60-second-per-harness mutation budget over the crash-only
+  harnesses, push only (not pull_request, to keep PR turnaround unaffected).
+- `fuzz-differential` - the same 60-second-per-harness mutation budget, push
+  only, but over ONLY the two differential harnesses (see "Differential
+  mode" above) - a separate job rather than folded into `fuzz-short` because
+  it needs `ffmpeg` installed and is much slower per-exec (a real FFmpeg
+  process per comparable input), so sharing a budget with the crash-only
+  harnesses would have starved them of iterations. Also replays
+  `fuzz/regressions/fuzz_differential_*` first, same shape as `fuzz-regress`.
 - `fuzz-nightly` - a 10-minute-per-harness mutation budget on a daily
   schedule, plus `workflow_dispatch` with a configurable budget for an
-  on-demand deeper run.
+  on-demand deeper run. Crash-only harnesses only - see `fuzz-differential`.
 
-`fuzz-short` and `fuzz-nightly` run with `continue-on-error: true`, the same
-convention `ci.yml` uses for its other unproven legs: neither has multiple
-clean fuzzing runs behind it yet. That is a question of track record, and it
-is not settled by the build being warnings-clean - a bounded mutation run can
-still surface something on any given night. `fuzz-regress` is cheap enough to
-make a required branch-protection check once it has proven itself - that is a
-repository setting this file cannot declare on its own.
+`fuzz-short`, `fuzz-differential` and `fuzz-nightly` run with
+`continue-on-error: true`, the same convention `ci.yml` uses for its other
+unproven legs: none has multiple clean fuzzing runs behind it yet. That is a
+question of track record, and it is not settled by the build being
+warnings-clean - a bounded mutation run can still surface something on any
+given night. `fuzz-regress` is cheap enough to make a required
+branch-protection check once it has proven itself - that is a repository
+setting this file cannot declare on its own.
 
 This is a bounded, time-boxed run, not continuous (OSS-Fuzz-style) fuzzing
 infrastructure. That is a deliberate scope decision, not a limitation

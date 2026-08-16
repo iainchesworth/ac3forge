@@ -414,7 +414,7 @@ TestCase {
         EncoderController.drcIndex = 0;
     }
 
-    function test_guidedContractAppliesDrcOnlyForDualMonoWithoutRefusing() {
+    function test_guidedContractAppliesLoudnessAndDrcToBothDualMonoProgrammes() {
         const win = createTemporaryObject(mainWindowComponent, testCase);
         verify(win !== null);
         EncoderController.atmosEnabled = false;
@@ -432,17 +432,18 @@ TestCase {
         wizard.currentStepKey = "output";
         wait(50);
 
-        // The DRC half of the contract applies to BOTH programmes...
+        // Both halves of the contract now apply to BOTH programmes - each
+        // one is measured on its own coded channel (encodeChannels no
+        // longer refuses it), so guided has no reason to give one dual-mono
+        // programme its sensible default and leave the other at none.
         compare(EncoderController.drcIndex, 1);
         compare(EncoderController.drc2Index, 1);
-        // ...but measurement is never turned on for dual mono - it would
-        // trip encodeChannels' hard refusal (measure_dialnorm(2) set under
-        // acmod kDualMono), which is exactly the broken-encode outcome this
-        // contract must never create.
-        compare(EncoderController.measureDialnorm, false);
-        compare(EncoderController.measureDialnorm2, false);
+        compare(EncoderController.measureDialnorm, true);
+        compare(EncoderController.measureDialnorm2, true);
 
         EncoderController.loudnessTouched = false;
+        EncoderController.measureDialnorm = false;
+        EncoderController.measureDialnorm2 = false;
         EncoderController.drcIndex = 0;
         EncoderController.drc2Index = 0;
         EncoderController.applyChannelPreset("5.1");

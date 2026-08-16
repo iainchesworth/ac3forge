@@ -17,8 +17,9 @@
 | `ac3/decoder/decoder.hpp` | `FrameDecoder`, `Eac3Decoder`, `split_frames`, `split_access_units`, `stream_bsid`. |
 | `ac3/decoder/transient_prenoise.hpp` | `apply_transient_prenoise`, `transient_prenoise_range` — the §3.7.2 post-IMDCT pre-echo correction `Eac3Decoder` applies to decoded PCM; see [Decoding](decoding.md) for the buffering it forces on `decode_substream`/`decode_access_unit`. |
 | `ac3/io/elementary.hpp` | `scan`, `ScannedStream`. |
+| `ac3/io/dec3.hpp` | `build_codec_config_box` — the ISOBMFF `dac3`/`dec3` sample-entry payload (ETSI TS 102 366 Annex F), Dolby Atmos extension included, built from a `ScannedStream`. What `mp4::AudioTrack::codec_config` is filled in with. |
 | `ac3/io/wav.hpp` | WAV read/write (PCM16 and float32) and the WAV↔Table 5.8 permutation. |
-| `ac3/meta/drc.hpp`, `loudness.hpp`, `mixing.hpp` | `dynrng`, `compr`, BS.1770, downmix levels. |
+| `ac3/meta/drc.hpp`, `loudness.hpp`, `mixing.hpp`, `qc.hpp` | `dynrng`, `compr`, BS.1770, downmix levels, named QC delivery-gate presets. |
 | `ac3/spatial/spatial.hpp` | `BedRenderer`, `pan_azimuth`, `pan_room`. |
 | `ac3/oba/atmos.hpp`, `joc.hpp`, `oamd.hpp` | The object layer. |
 | `ac3/oba/motion.hpp` | `Keyframe`, `KeyframePath`, `OrbitPath`, `ObjectPath` (a `std::variant` of the two), `evaluate_placements`. Turns authored keyframes or a closed-form orbit into the `ObjectPlacement` span `AtmosEncoder::encode_frame` already took per-frame — a placement-generation layer in front of the existing API, not a change to it. Backs `ac3cli atmos-path` and `live`'s `atmos` mode. |
@@ -29,4 +30,5 @@
 | `ac3/platform/audio_backend.hpp` | `ac3::platform::audio_backend()` — whether capture, monitor playback and passthrough are available at all on this build's platform, and why not when they aren't. Backs the CLI's `UNAVAILABLE HERE` messaging for `devices`, `record`, `monitor`, `live`, `outputs` and `play`. |
 | `ac3/analysis/levels.hpp` | Peak/RMS metering and the Gerzon energy vector. |
 | `matroska/matroska.hpp` | `mux`, `AudioTrack`, `MuxOptions`. |
+| `mp4/mp4.hpp` | `mux`, `AudioTrack`, `MuxOptions` — same shape as `matroska/matroska.hpp`, plus `AudioTrack::codec_config` for the `dac3`/`dec3` box payload (see `ac3/io/dec3.hpp` above). |
 | `ac3/signing/signing_key.hpp`, `emdf_atmos_signer.hpp` | `SigningKey`, `load_signing_key`, `decode_signing_key`, `sign_atmos_stream`, `sign_atmos_frame` — the EMDF object-signing library, `ac3::signing`. A separate CMake target from `ac3::forge`, not part of the distributed package's link line: signing is a strictly optional step a front end applies to already-encoded frames. |

@@ -6,10 +6,18 @@
 # this directory for what "bounded" means and why.
 #
 # Usage:
-#   fuzz/run.sh                     # build, then run every harness
+#   fuzz/run.sh                     # build, then run every default-list harness
 #   fuzz/run.sh fuzz_scan            # build, then run just this harness
 #   fuzz/run.sh regress              # replay every seed + regression corpus once, no mutation
 #   fuzz/run.sh minimize <target> <path-to-crash-file>
+#
+# The differential harnesses (fuzz_differential_ac3_decode,
+# fuzz_differential_eac3_decode - roadmap G3: same mutated bytes decoded by
+# both ac3forge and FFmpeg, PCM diffed - see fuzz/differential_oracle.hpp)
+# are NOT in the default target list `run`/`regress` use with no arguments:
+# they need `ffmpeg` on PATH and are much slower per-exec, so name them
+# explicitly, e.g. `fuzz/run.sh run fuzz_differential_ac3_decode`. CI's
+# fuzz-differential job (fuzz.yml) does exactly this.
 #
 # Env overrides:
 #   AC3FORGE_FUZZ_SECONDS       per-target time budget in `run` mode (default 60)
@@ -26,6 +34,15 @@ CORPUS_ROOT="${AC3FORGE_FUZZ_CORPUS_DIR:-$REPO_ROOT/fuzz/corpus}"
 ARTIFACT_DIR="${AC3FORGE_FUZZ_ARTIFACT_DIR:-$REPO_ROOT/fuzz/artifacts}"
 SECONDS_PER_TARGET="${AC3FORGE_FUZZ_SECONDS:-60}"
 
+# The crash-only targets fuzz-regress/fuzz-short/fuzz-nightly run by
+# default. The two differential targets (fuzz_differential_ac3_decode,
+# fuzz_differential_eac3_decode - roadmap G3) are deliberately NOT in this
+# list: they need `ffmpeg` on PATH and are much slower per-exec (a real
+# FFmpeg process per comparable input), so they get their own CI job
+# (fuzz.yml's fuzz-differential) that names them explicitly, the same way
+# `fuzz/run.sh run fuzz_scan` already lets a caller run just one target from
+# this list. See seed_source_for below for how they reuse seed corpora
+# without duplicating any files.
 readonly TARGETS=(fuzz_scan fuzz_ac3_decode fuzz_eac3_decode fuzz_wav_read)
 
 CXX_CANDIDATE="${CXX:-clang++}"
@@ -56,6 +73,19 @@ target_binary() {
     echo "$BUILD_DIR/bin/$1"
 }
 
+# A differential target (roadmap G3) shares its crash-only sibling's seed
+# corpus rather than duplicating those files under a second directory - it
+# drives the exact same decode path, just with an extra FFmpeg comparison on
+# top (see fuzz/differential_oracle.hpp). Every other target is its own seed
+# source, unchanged.
+seed_source_for() {
+    case "$1" in
+        fuzz_differential_ac3_decode)  echo fuzz_ac3_decode ;;
+        fuzz_differential_eac3_decode) echo fuzz_eac3_decode ;;
+        *)                              echo "$1" ;;
+    esac
+}
+
 # Every corpus/seed/regression/artifact directory a target could read from or
 # write to, created ahead of time - libFuzzer does not create its OWN corpus
 # directory for you, and a missing seed/regression directory is silently
@@ -71,7 +101,13 @@ cmd_run() {
     local status=0
     for target in "${requested[@]}"; do
         prepare_dirs "$target"
-        local seeds="$REPO_ROOT/fuzz/seeds/$target"
+        # Seeds come from seed_source_for (shared for the differential
+        # targets, see its own comment); regressions stay keyed by the
+        # target's OWN name always - a divergence found by
+        # fuzz_differential_ac3_decode is a different class of finding from
+        # a crash found by fuzz_ac3_decode, and minimizes into its own
+        # fuzz/regressions/fuzz_differential_ac3_decode/ directory.
+        local seeds="$REPO_ROOT/fuzz/seeds/$(seed_source_for "$target")"
         local regressions="$REPO_ROOT/fuzz/regressions/$target"
         local extra_corpora=()
         [ -d "$seeds" ] && extra_corpora+=("$seeds")
@@ -105,7 +141,7 @@ cmd_regress() {
     configure_and_build
     local status=0
     for target in "${requested[@]}"; do
-        local seeds="$REPO_ROOT/fuzz/seeds/$target"
+        local seeds="$REPO_ROOT/fuzz/seeds/$(seed_source_for "$target")"
         local regressions="$REPO_ROOT/fuzz/regressions/$target"
         local inputs=()
         [ -d "$seeds" ] && inputs+=("$seeds")

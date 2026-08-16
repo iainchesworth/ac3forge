@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "ac3/core/eac3_tables.hpp"
+#include "ac3/core/mantissas.hpp"
 #include "ac3/core/tables.hpp"
 #include "ac3/export.hpp"
 
@@ -28,9 +29,12 @@
 // alongside Ch1's, and each programme's §7.7 gain is applied to its own
 // channel only. Block switching (§8.2.2/§7.9) is decoded too — DecodedFrame::
 // blksw reports which blocks used the short transform. dynrng words are
-// parsed but not applied; bap-0 bins reconstruct as zero regardless of
-// dithflag (the spec lets the dither sequence be "any reasonably random
-// sequence"; zeros keep decode parity deterministic).
+// parsed but not applied; bap-0 bins reconstruct per §7.3.4's dithflag - a
+// true zero when it is clear, a dither sample (DitherGenerator, deterministic
+// per decoder instance) when it is set. A coupled channel's shared bap-0
+// bins are dithered independently per RECEIVING channel, after decoupling,
+// per §7.3.4's own "uncorrelated" requirement - never by dithering the
+// shared coupling-channel coefficient itself.
 //
 // E-AC-3 scope (Annex E, bsid 11-16): the whole of Tables E1.2/E1.3/E1.4 as
 // syntax — every metadata payload is walked correctly whether or not its
@@ -121,6 +125,9 @@ class AC3FORGE_EXPORT FrameDecoder {
    private:
     DecoderConfig config_{};
     std::array<std::array<double, 256>, 6> delay_{};  // overlap-add state
+    // §7.3.4 dither, persisting across frames like delay_ above so a long
+    // stream's substituted noise does not repeat every syncframe.
+    DitherGenerator dither_{};
 };
 
 // --- E-AC-3 ----------------------------------------------------------------
@@ -135,6 +142,12 @@ struct DecodedSubstream {
     Acmod acmod = Acmod::k2_0;
     bool lfe = false;
     int dialnorm = 31;
+    // §5.4.2.9/§E3.8.5: std::nullopt when compre was clear OR this substream
+    // is a dependent one - a dependent's compre bit is repurposed to mark the
+    // LAST dependent of the program rather than announce a compression word
+    // (see parse_bsi's own comment), so there is no meaningful compr value to
+    // report there even though the 8 bits are still present on the wire.
+    std::optional<std::uint8_t> compr = std::nullopt;
     // Ch2's own dialnorm/compr, present only when acmod is kDualMono (1+1) -
     // the second of the two independent programmes 1+1 codes.
     std::optional<int> dialnorm2 = std::nullopt;
@@ -171,6 +184,11 @@ struct DecodedAccessUnit {
     SampleRate sample_rate = SampleRate::k48000;
     Acmod acmod = Acmod::k2_0;
     int dialnorm = 31;
+    // The independent substream's own compr, when it carries one - see
+    // DecodedSubstream::compr's own comment; a dependent substream's compre
+    // bit means something else entirely, so only the independent (bed)
+    // substream's word is ever meaningful at the access-unit level.
+    std::optional<std::uint8_t> compr = std::nullopt;
     int substream_count = 0;
     eac3::chanmap::Layout layout;
     std::vector<std::vector<float>> channels;  // parallel to layout, except dual mono
@@ -245,6 +263,23 @@ class AC3FORGE_EXPORT Eac3Decoder {
     // the same identity - that would silently splice two different points
     // in time into one access unit.
     std::map<int, std::deque<DecodedSubstream>> pending_au_parts_;
+
+    // decode_substream's own per-block IMDCT/enhanced-coupling scratch
+    // (PREfast's C6262, alert #63): reused across every (block, channel)
+    // iteration of a call instead of stack-declared per iteration, the same
+    // reasoning as FrameEncoder's MDCT scratch members. Each is fully
+    // overwritten before being read, so nothing needs to persist beyond one
+    // decode_substream call - unlike delay_ above, these don't need to be
+    // keyed by substream identity.
+    std::array<double, 512> imdct_scratch_{};
+    std::array<double, 256> ecpl_spectrum_real_{};
+    std::array<double, 256> ecpl_spectrum_imag_{};
+    // §7.3.4 dither (Annex E's dithflag[ch]/dithflage), shared across every
+    // substream identity decode_substream ever sees - nothing about §7.3.4
+    // requires per-identity separation, only that simultaneous channels'
+    // noise stay uncorrelated, which independent draws from one sequential
+    // generator already give.
+    DitherGenerator dither_{};
 };
 
 // Split a raw elementary stream into syncframes by sync word and declared

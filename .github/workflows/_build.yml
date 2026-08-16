@@ -145,6 +145,34 @@ jobs:
             packageable: true
             gold_reference: true
 
+          # arm64 - Raspberry Pi 4/5 and any other aarch64 Debian/Ubuntu
+          # target (see docs/platforms/raspberry-pi.md). Real ARM hardware via
+          # GitHub's hosted ubuntu-24.04-arm runner label, not QEMU emulation -
+          # the same ubuntu:26.04 container image as the x64 legs, which pulls
+          # its arm64 variant automatically on an arm64 runner. Otherwise the
+          # same shape as linux-gcc/linux-llvm above, including which leg
+          # carries alsa_fallback (compiler and architecture both don't affect
+          # that switch - see linux-gcc's own comment).
+          - name: "Linux GCC (arm64)"
+            runner: ubuntu-24.04-arm
+            container: ubuntu:26.04
+            preset: linux-gcc-arm64
+            gcc: true
+            gui: true
+            packageable: true
+            release_package: true
+            alsa_fallback: true
+            gold_reference: true
+
+          - name: "Linux LLVM (arm64)"
+            runner: ubuntu-24.04-arm
+            container: ubuntu:26.04
+            preset: linux-llvm-arm64
+            llvm: true
+            gui: true
+            packageable: true
+            gold_reference: true
+
           # AddressSanitizer + UndefinedBehaviorSanitizer (cmake/Sanitizers.cmake),
           # -fno-sanitize-recover=all so a violation fails the job outright. Shares
           # the Linux LLVM container/toolchain; `sanitizer: true` additionally runs
@@ -353,9 +381,10 @@ jobs:
           EOF
           cmake -P "${RUNNER_TEMP}/assert-cmake-version.cmake"
           case "${{ matrix.preset }}" in
-            linux-gcc)    g++ --version | head -1
+            linux-gcc|linux-gcc-arm64)
+                          g++ --version | head -1
                           g++ --version | head -1 | grep -q ' 15\.' || { echo "::error::expected g++ 15"; exit 1; } ;;
-            linux-llvm|linux-llvm-asan-ubsan)
+            linux-llvm|linux-llvm-arm64|linux-llvm-asan-ubsan)
                           clang++ --version | head -1
                           clang++ --version | head -1 | grep -qE 'version 21\.' || { echo "::error::expected clang 21"; exit 1; } ;;
             windows-llvm) clang-cl --version | head -1
@@ -685,6 +714,12 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: ${{ inputs.fetch_depth }}
+
+      # platform/android/gradle/wrapper/gradle-wrapper.jar is a committed
+      # binary (OpenSSF Scorecard's Binary-Artifacts check, alert #65) - it
+      # can't be dropped since gradlew needs it, so this verifies its
+      # checksum against Gradle's own known-good release hashes instead.
+      - uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
 
       # ubuntu-latest ships several Temurin JDKs preinstalled, each with its
       # own JAVA_HOME_<version>_X64 env var (see actions/runner-images) -

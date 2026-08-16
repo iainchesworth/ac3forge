@@ -1,0 +1,13 @@
+ac3forge provides CMake targets via find_package(ac3forge):
+
+    find_package(ac3forge CONFIG REQUIRED)
+    target_link_libraries(main PRIVATE ac3::forge)
+
+The Matroska (.mkv) container writer is a separate, opt-in feature ("matroska", installed by
+default) - when present, matroska::matroska is also available:
+
+    target_link_libraries(main PRIVATE matroska::matroska)
+
+To install ac3forge without it:
+
+    vcpkg install ac3forge[core]

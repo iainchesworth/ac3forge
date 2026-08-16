@@ -21,8 +21,8 @@ every tier.
   programmes with no shared downmix to average anything across (§7.7.2.2), so each states its own
   DRC curve and dialogue level — programme 2's DRC is **not** inherited from programme 1's; a plan
   that wants both programmes compressed alike sets both explicitly. dialnorm2's **measure**
-  checkbox is disabled — `dialnorm=auto`/`dialnorm2=auto` aren't yet supported for dual mono, so
-  both have to be set by hand.
+  checkbox works the same as dialnorm's — `dialnorm=auto`/`dialnorm2=auto` each measure their own
+  programme's coded channel independently, never a blend of the two.
 
 ## Downmix
 

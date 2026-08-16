@@ -33,6 +33,12 @@ metadata options (any order, after the positional arguments):
                     is the validation oracle) - applies wherever this command encodes, incl.
                     atmos/record/live; eac3-encode/eac3-sine use tools=nofastmdct instead;
                     bare fast-mdct (the old opt-in) is a no-op
+
+qc options (qc; any order, after the positional arguments):
+  preset=<name>     gate the measurement against a named delivery spec
+                    ebu-r128-s2 | atsc-a85 | netflix
+  preset=all        gate against every preset above
+                    omitted: measure and report only, no gate
 ```
 
 For `decode`, `drc=<scale>` instead applies §7.7.1 partial compression (`0` = ignore, `1` = as
@@ -193,9 +199,13 @@ works with a single source too — `ac3cli encode in.wav out.ac3 384 5.1 offset=
 `src=`/`map=` at all. Omitting `offset=` for a source (or giving it `0` seconds) behaves exactly as
 it always has.
 
-`dialnorm=auto`/`dialnorm2=auto` are not yet supported alongside `src=`/`map=` — pass an explicit
-`dialnorm=<1..31>` (and `dialnorm2=` for `1+1`) instead; measuring loudness per source is a later
-extension, not a hole in the routing itself.
+`dialnorm=auto`/`dialnorm2=auto` work alongside `src=`/`map=`: the whole programme is routed once
+as a measurement pre-pass — the same BS.1770-4 gated pass the single-file path runs, over what
+`map=` actually assembles (post-routing, post-trim), not each source's own raw channels — before
+the real encode loop routes it again to encode it. A `1+1` target measures Ch1/Ch2 independently,
+same as the single-file case; every other target gets one whole-programme measurement over the
+routed bed. A trim on `map=` (e.g. `L@-6`) is measured on the trimmed signal, since that is what
+actually reaches the stream.
 
 A full-bandwidth channel explicitly mapped onto `LFE`/`LFE2` (e.g. `1.3:LFE` above) is sent through
 a 120 Hz low-pass rather than passed through untouched — an explicit `map=` entry states raw
@@ -207,6 +217,31 @@ bit-exact, since nothing there claims full-bandwidth content belongs on that pos
 The GUI's own multi-source Format-tab table (**Add source…** plus a per-channel assignment field)
 is a direct front end over this same grammar — see
 [GUI → Multi-source & assignment](../gui/source-assignment.md).
+
+## Record/live options (`record`, `live`): `container=mkv`
+
+```text
+record/live options (record, live; any order, after the positional arguments):
+  container=mkv     write straight to Matroska instead of the bare elementary
+                     stream this writes by default - same shape of choice as
+                     the GUI's own Container setting
+  container=raw     the default, spelled out
+```
+
+`container=mkv` writes the take straight to Matroska (`.mkv`) instead of a bare `.ac3`/`.ec3`
+elementary stream, in the one `record`/`live` command — unlike `mkv`, which wraps an
+*already-encoded* file after the fact (see [Command-specific notes](#command-specific-notes)
+below), there is no second command needed here. `container=raw` is the default spelled out
+explicitly; any other value is refused rather than silently ignored, the same rule every option on
+this page follows. This is the same choice the GUI's own Container combo offers on the Format tab
+(see [GUI → Format & channels](../gui/format-and-channels.md)) — see [GUI → Live capture &
+session](../gui/live-session.md#take-durability) for how a live session's own take durability
+differs slightly between the two front ends.
+
+```bash
+ac3cli record out.mkv 30 192 0 container=mkv
+ac3cli live out.mkv 0 30 448 -2 -2 atmos container=mkv
+```
 
 ## Live options (`live`): `capture2=`
 
@@ -233,6 +268,33 @@ ac3cli live out.ec3 0 30 448 -2 -2 atmos capture2=1
 
 Captures 30 seconds of Atmos-mode E-AC-3 from device 0 (the clock master) plus device 1
 (clock-conformed to device 0), no monitor or passthrough, writing `out.ec3`.
+
+## Qc options (`qc`): `preset=`
+
+```text
+qc options (qc; any order, after the positional arguments):
+  preset=<name>     gate the measurement against a named delivery spec
+                    ebu-r128-s2 | atsc-a85 | netflix
+  preset=all        gate against every preset above
+                    omitted: measure and report only, no gate
+```
+
+`preset=<name>` checks `qc`'s BS.1770-4 measurement against one named delivery-loudness gate instead of just
+reporting it; `preset=all` checks every one below in a single run. Each preset states a target integrated
+loudness, a symmetric tolerance around it (in LU) and a true-peak ceiling (a one-sided limit, never exceeded —
+not a tolerance band). The numbers are defined in `ac3::meta::qc_preset()`
+([`ac3/meta/qc.hpp`](https://github.com/iainchesworth/ac3forge/blob/main/src/lib/include/ac3/meta/qc.hpp)), each
+read directly from its own primary source rather than recalled from memory:
+
+| Preset | Target | Tolerance | Max true peak | Source |
+|---|---|---|---|---|
+| `ebu-r128-s2` | −23.0 LUFS | ±1.0 LU | −1.0 dBTP | EBU R 128 s2 "Loudness in Streaming" (Geneva, November 2023, v3) recommendation (e) — programmes "should be streamed unchanged, that is at −23.0 LUFS" — which itself defers tolerance/true-peak to EBU R 128 (Geneva, November 2023, v5) recommendations (h) and (m) |
+| `atsc-a85` | −24.0 LKFS | ±2.0 dB | −2.0 dBTP | ATSC A/85:2013 (with Corrigendum No. 1, 11 February 2021) §6 "Target Loudness and True Peak Levels for Content Delivery or Exchange" |
+| `netflix` | −27.0 LKFS | ±2.0 LU | −2.0 dBTP | Netflix "Sound Mix Specifications & Best Practices" v1.6, Near-field Audio Prerequisites for Mix Facilities |
+
+Omitting `preset=` entirely leaves `qc` in measure-and-report mode — every number is still printed, there is
+just no PASS/FAIL verdict and nothing to gate on. See [Commands → `qc`](commands.md#decoding-inspection) for the
+full report format and the exit-code convention this drives.
 
 ## Command-specific notes
 

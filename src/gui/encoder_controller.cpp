@@ -14,6 +14,9 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <expected>
+#include <filesystem>
+#include <format>
 #include <fstream>
 #include <limits>
 #include <memory>
@@ -30,12 +33,18 @@
 #include "ac3/dsp/resampler.hpp"
 #include "ac3/encoder/eac3_frame.hpp"
 #include "ac3/encoder/encoder.hpp"
+#include "ac3/io/dec3.hpp"
+#include "ac3/io/elementary.hpp"
 #include "ac3/io/wav.hpp"
 #include "ac3/meta/loudness.hpp"
 #include "ac3/oba/atmos.hpp"
 #include "ac3/sinks/iec61937.hpp"
 #include "ac3/spatial/spatial.hpp"
 #include "matroska/matroska.hpp"
+#include "mp4/dash.hpp"
+#include "mp4/hls.hpp"
+#include "mp4/mp4.hpp"
+#include "mpegts/mpegts.hpp"
 
 namespace plan = ac3::plan;
 
@@ -156,6 +165,89 @@ std::vector<std::vector<float>> apply_channel_offsets(std::vector<std::vector<fl
 // elementary stream, which is everything this is not.
 constexpr int kContainerMatroska = 1;
 constexpr int kContainerSpdif = 2;
+constexpr int kContainerMp4 = 3;
+constexpr int kContainerFmp4 = 4;
+constexpr int kContainerMpegts = 5;
+
+// The result of scanning a just-written frame buffer for MP4/fMP4 purposes:
+// the AudioTrack (with its dec3/dac3 codec_config already built) plus the
+// one extra field fMP4's HLS CHANNELS="<N>/JOC" attribute needs. Deliberately
+// NOT the whole ac3::io::ScannedStream - its access_units are spans into
+// scan_for_mp4()'s local `raw` buffer and would dangle the moment this
+// function returns; oba_complexity_index is a plain value, so it is the one
+// field worth carrying out.
+struct Mp4Scan {
+    mp4::AudioTrack track;
+    std::optional<int> oba_complexity_index;
+};
+
+// mp4::AudioTrack::codec_config (the dec3/dac3 box, including the Atmos
+// flag_ec3_extension_type_a/complexity_index_type_a extension) can only be
+// built from a real ac3::io::ScannedStream - bsid/bsmod/the Atmos marker are
+// bitstream syntax this controller does not otherwise track. So MP4 and
+// fMP4 both re-scan the frames they are about to write, the same way
+// ac3cli's own run_mp4/run_fmp4 (src/cli/main.cpp) re-scan an already-
+// encoded file before wrapping it. Returns the QString writeOutput() already
+// uses for its error contract on failure.
+std::expected<Mp4Scan, QString> scan_for_mp4(const std::vector<std::vector<std::byte>>& frames) {
+    std::vector<std::byte> raw;
+    for (const auto& frame : frames) {
+        raw.insert(raw.end(), frame.begin(), frame.end());
+    }
+    const auto scanned = ac3::io::scan(raw);
+    if (!scanned) {
+        return std::unexpected(to_qstring(ac3::io::describe(scanned.error())));
+    }
+    const bool eac3 = scanned->kind == ac3::io::StreamKind::kEac3;
+    mp4::AudioTrack track{
+        .codec_id = std::string{eac3 ? mp4::kCodecEac3 : mp4::kCodecAc3},
+        .sample_rate = ac3::sample_rate_hz(scanned->sample_rate),
+        .channels = scanned->channels,
+        .samples_per_frame = ac3::kSamplesPerFrame,
+        .codec_config = ac3::io::build_codec_config_box(*scanned)};
+    return Mp4Scan{std::move(track), scanned->oba_complexity_index};
+}
+
+bool write_bytes_to_path(const std::filesystem::path& path, std::span<const std::byte> bytes) {
+    std::ofstream out{path, std::ios::binary};
+    if (!out) {
+        return false;
+    }
+    out.write(reinterpret_cast<const char*>(bytes.data()),
+              static_cast<std::streamsize>(bytes.size()));
+    return static_cast<bool>(out);
+}
+
+bool write_text_to_path(const std::filesystem::path& path, std::string_view text) {
+    return write_bytes_to_path(
+        path, std::as_bytes(std::span{reinterpret_cast<const char*>(text.data()), text.size()}));
+}
+
+// A minimal but complete DASH MPD document wrapped around
+// mp4::build_dash_adaptation_set()'s <AdaptationSet> snippet, ported from
+// ac3cli's own build_dash_mpd (src/cli/main.cpp): that helper is CLI-side
+// glue, not part of mp4:: (mp4/dash.hpp deliberately stops at the
+// <AdaptationSet> snippet - see its own header comment), so the GUI needs
+// the identical wrapper.
+QString build_dash_mpd(const mp4::AudioTrack& track, std::span<const mp4::MediaSegment> segments,
+                       std::string_view adaptation_set) {
+    std::uint64_t total_samples = 0;
+    for (const auto& segment : segments) {
+        total_samples += segment.duration_samples;
+    }
+    const double total_seconds =
+        static_cast<double>(total_samples) / static_cast<double>(track.sample_rate);
+    return QString::fromStdString(std::format(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        "<MPD xmlns=\"urn:mpeg:dash:schema:mpd:2011\" type=\"static\" "
+        "mediaPresentationDuration=\"PT{:.3f}S\" minBufferTime=\"PT2S\" "
+        "profiles=\"urn:mpeg:dash:profile:isoff-live:2011\">\n"
+        "  <Period>\n"
+        "{}"
+        "  </Period>\n"
+        "</MPD>\n",
+        total_seconds, adaptation_set));
+}
 
 // See kbpsPerChannelFloor()'s own Q_PROPERTY comment for the derivation.
 constexpr int kMinKbpsPerFullBandwidthChannel = 77;
@@ -308,28 +400,13 @@ QString partial_output_path(const QString& path) {
 }
 
 // Splices a fixed suffix onto `path`'s stem, replacing whatever extension it
-// had - the shared "derive a sibling filename" logic live_stream_spool_path
-// and the raw-WAV safety copy's own path both need.
+// had - the raw-WAV safety copy's own path needs exactly this "derive a
+// sibling filename" logic.
 QString sibling_path(const QString& path, const QString& suffix) {
     const qsizetype dot = path.lastIndexOf(QLatin1Char('.'));
     const qsizetype slash = std::max(path.lastIndexOf(QLatin1Char('/')),
                                      path.lastIndexOf(QLatin1Char('\\')));
     return (dot > slash ? path.left(dot) : path) + suffix;
-}
-
-// Where a live session's Matroska take spools its elementary stream while it
-// grows - matroska::mux() only ever produces a complete file from the WHOLE
-// set of frames, so the real .mkv can only be written once, at a clean stop
-// (see EncoderController::LiveOutputWriters' own comment). Named with its
-// own honest extension beside the final path, deliberately NOT using
-// partial_output_path's ".partial" suffix above - that means "kept only
-// because a run failed"; this spool exists for the entire life of every
-// Matroska live session, failed or not, and is folded into the .mkv (then
-// removed) on success. A crash leaves exactly this file behind holding
-// everything captured up to that point - "the elementary take" the live
-// session docs page promises.
-QString live_stream_spool_path(const QString& mkv_path, bool eac3) {
-    return sibling_path(mkv_path, eac3 ? QStringLiteral(".live.ec3") : QStringLiteral(".live.ac3"));
 }
 
 // Whether the receiver leg should run the parallel 5.1 downmix instead of
@@ -468,19 +545,26 @@ struct EncoderController::Source {
 
 // What runLiveSession needs to keep writing a take incrementally once its
 // GUI-thread preamble hands off to the worker - see
-// EncoderController::openLiveOutputWriters. `stream` IS the final output for
-// an elementary-stream container (every byte written here is already the
-// take); for Matroska it is the spool at live_stream_spool_path(), and
-// `frame_sizes` is the lightweight (one uint32 per unit, not the audio
-// itself) index that lets the clean-stop path split the spool back into
-// frames for matroska::mux() without ever having kept the encoded bytes in
-// RAM during the run.
+// EncoderController::openLiveOutputWriters. `stream` is always the take's own
+// final destination now, byte for byte: an elementary-stream container writes
+// every unit straight into it (every byte written here already is the take),
+// and Matroska writes matroska::Writer's own header/cluster bytes into the
+// SAME file as they are produced - see `writer`'s own comment. There is no
+// separate spool for either container any more, and so nothing to fold
+// together at the end: finalize() below is the whole of what a clean stop
+// still has to do.
 struct EncoderController::LiveOutputWriters {
     std::ofstream stream;
-    QString stream_path;   // == the final path unless matroska
-    QString final_path;    // always the real destination the user chose
+    QString path;  // the real destination the user chose
     bool matroska = false;
-    std::vector<std::uint32_t> frame_sizes;
+    // Only engaged when matroska is set - constructed once the coded channel
+    // count is known (routing/atmos bed resolved), just after this struct is
+    // opened, back on the GUI thread in runLiveSession before the worker
+    // ever starts (see there). header() is written to `stream` at that same
+    // point; every push() return value is written to `stream` as the frame
+    // loop runs, and finalize()'s tail bytes at the end - see the "failure
+    // story" comment further down for exactly where.
+    std::optional<matroska::Writer> writer;
     std::unique_ptr<ac3::io::WavStreamWriter> wav_safety;  // null when not requested
 };
 
@@ -517,8 +601,12 @@ QStringList EncoderController::codecNames() const {
 }
 
 QStringList EncoderController::containerNames() const {
-    return {QStringLiteral("Elementary stream"), QStringLiteral("Matroska (.mkv)"),
-            QStringLiteral("S/PDIF (.wav)")};
+    return {QStringLiteral("Elementary stream"),
+            QStringLiteral("Matroska (.mkv)"),
+            QStringLiteral("S/PDIF (.wav)"),
+            QStringLiteral("MP4 (.mp4)"),
+            QStringLiteral("Fragmented MP4/CMAF (folder)"),
+            QStringLiteral("MPEG-TS (.ts)")};
 }
 
 int EncoderController::bedIndex() const {
@@ -2424,18 +2512,37 @@ QString EncoderController::outputSuffix() const {
     if (container_index_ == kContainerSpdif) {
         return QStringLiteral("wav");
     }
+    if (container_index_ == kContainerMp4) {
+        return QStringLiteral("mp4");
+    }
+    if (container_index_ == kContainerMpegts) {
+        return QStringLiteral("ts");
+    }
+    if (container_index_ == kContainerFmp4) {
+        // fMP4/CMAF writes a FOLDER of files (init.mp4, segment*.m4s, an
+        // HLS media+master playlist pair, a DASH MPD) - there is no single
+        // extension to name it by. outputIsFolder() is what callers (the
+        // save dialog, the "Encode to .%1" button) branch on instead.
+        return QString();
+    }
     // Object mode is E-AC-3 whatever the codec box says, so the suffix follows
     // the plan rather than the control.
     return to_qstring(plan::codec_suffix(atmos_enabled_ ? plan::Codec::kEac3 : codec_));
 }
 
 QString EncoderController::suggestedOutputName() const {
+    if (container_index_ == kContainerFmp4) {
+        return source_path_.isEmpty() ? QStringLiteral("output")
+                                       : QFileInfo(source_path_).completeBaseName();
+    }
     const QString suffix = QStringLiteral(".") + outputSuffix();
     if (source_path_.isEmpty()) {
         return QStringLiteral("output") + suffix;
     }
     return QFileInfo(source_path_).completeBaseName() + suffix;
 }
+
+bool EncoderController::outputIsFolder() const { return container_index_ == kContainerFmp4; }
 
 void EncoderController::refreshCaptureDevices() {
     QStringList names;
@@ -3541,14 +3648,27 @@ std::unique_ptr<EncoderController::LiveOutputWriters> EncoderController::openLiv
         return nullptr;
     }
     auto writers = std::make_unique<LiveOutputWriters>();
-    writers->final_path = path;
+    writers->path = path;
     writers->matroska = container_index_ == kContainerMatroska;
-    const bool eac3 = atmos_enabled_ || codec_ == plan::Codec::kEac3;
-    writers->stream_path = writers->matroska ? live_stream_spool_path(path, eac3) : path;
-    writers->stream.open(writers->stream_path.toStdString(), std::ios::binary);
+    // Only Matroska is special-cased for a live session: matroska::Writer is
+    // the only INCREMENTAL muxer this codebase has. mp4::mux/mp4::fragment
+    // and mpegts::mux are batch APIs - every frame has to be known up front
+    // (see mp4.hpp/mpegts.hpp's own header comments) - so there is no
+    // equivalent live writer for MP4/fMP4/MPEG-TS to build here. Selecting
+    // one of those three containers for a live session therefore falls
+    // through to the same plain elementary-stream write S/PDIF already
+    // falls through to today, rather than gaining a new failure mode.
+    // Matroska's own track/writer construction needs the CODED channel count
+    // (routing/atmos bed), which is not resolved yet at this point - see
+    // runLiveSession, which constructs `writers->writer` and writes its
+    // header the moment that count is known, still on the GUI thread before
+    // the worker starts. Only the file itself opens here: a bad destination
+    // path is refused now, exactly like a bad device choice already is, not
+    // discovered as a mid-take failure minutes in.
+    writers->stream.open(writers->path.toStdString(), std::ios::binary);
     if (!writers->stream) {
         setStatus(QStringLiteral("Could not open \"%1\" for writing.")
-                      .arg(QFileInfo(writers->stream_path).fileName()));
+                      .arg(QFileInfo(writers->path).fileName()));
         emit encodeRefused(status_);
         return nullptr;
     }
@@ -3913,6 +4033,40 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device,
     setMetering(true);
     clearClipLatches();
 
+    // Matroska needs the CODED channel count to declare a valid AudioTrack -
+    // atmos's bed is always 6 (5.1), channel mode is routing's own coded
+    // channel count, the identical formula the worker lambda below uses for
+    // its own coded_count. Both are known now, so the writer (and its header
+    // bytes) are built here, still on the GUI thread, before the worker ever
+    // starts - a track EBML/Matroska genuinely cannot describe (in practice
+    // unreachable: plan::validate() and the device checks in
+    // startLiveSession already rule out zero channels or an unsupported
+    // rate) is refused before the session goes live, the same "not a
+    // mid-take failure minutes in" promise openLiveOutputWriters' own file
+    // open already gives the destination path.
+    if (writers && writers->matroska) {
+        const int coded_for_track = atmos ? 6 : routing->coded_channels;
+        auto created = matroska::Writer::create(
+            {.codec_id = std::string{eac3 ? matroska::kCodecEac3 : matroska::kCodecAc3},
+             .sample_rate = device.sample_rate,
+             .channels = coded_for_track,
+             .samples_per_frame = ac3::kSamplesPerFrame});
+        if (!created) {
+            live_capture_.reset();
+            live_monitor_sink_.reset();
+            live_passthrough_sink_.reset();
+            live_active_ = false;
+            setBusy(false);
+            emit liveActiveChanged();
+            setStatus(to_qstring(matroska::describe(created.error())));
+            emit encodeFinished(false, status());
+            return;
+        }
+        writers->stream.write(reinterpret_cast<const char*>(created->header().data()),
+                              static_cast<std::streamsize>(created->header().size()));
+        writers->writer = std::move(*created);
+    }
+
     // The allocated slot BUDGET (see startLiveSession's own comment on why
     // this is no longer just device.channels), not recomputed here - it has
     // to match exactly what startLiveSession sized object_configs_/
@@ -4056,6 +4210,13 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device,
         // actual device that went quiet rather than always blaming the
         // master.
         bool lost_is_slave = false;
+        // Set if matroska::Writer::push() ever refuses a frame - see the
+        // write_to_disk block below. In practice unreachable (a SimpleBlock's
+        // own limit is 2^40 bytes; no real AC-3/E-AC-3 access unit comes
+        // close), but the muxer reports it as std::expected rather than
+        // asserting, per this project's "no exceptions for stream-level
+        // failure" rule, so this loop honours that instead of ignoring it.
+        std::optional<matroska::MuxError> mux_error;
         // The one-shot capture->monitor latency measurement: only attempted
         // once monitoring is on and the pipeline has run for about a second
         // (past whatever startup transient the first few frames carry), and
@@ -4373,16 +4534,30 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device,
             }
 
             if (write_to_disk && writers) {
-                writers->stream.write(reinterpret_cast<const char*>(unit_bytes.data()),
-                                      static_cast<std::streamsize>(unit_bytes.size()));
-                if (writers->matroska) {
-                    // The lightweight index the clean-stop mux step splits
-                    // the spool back into frames with - a few bytes per
-                    // unit, not the audio itself, which is exactly what
-                    // keeps this incremental instead of the old
-                    // frames.push_back(unit_bytes) that held the WHOLE take
-                    // in RAM for as long as the session ran.
-                    writers->frame_sizes.push_back(static_cast<std::uint32_t>(unit_bytes.size()));
+                if (writers->matroska && writers->writer) {
+                    // Push straight into the writer's current cluster and
+                    // write back whatever it hands back - empty on most
+                    // calls (a cluster spans about a second), the just-closed
+                    // cluster's bytes when one closes. Nothing here holds the
+                    // take in RAM: at most one cluster's worth of frames is
+                    // ever buffered inside `writer` itself, so memory stays
+                    // bounded for a session of any length, the same property
+                    // the old ec3-spool design existed to give - this design
+                    // gives it AND leaves a genuinely playable (if a clean
+                    // stop never comes) .mkv behind, which the spool never
+                    // could.
+                    auto pushed = writers->writer->push(unit_bytes);
+                    if (!pushed) {
+                        mux_error = pushed.error();
+                        break;
+                    }
+                    if (!pushed->empty()) {
+                        writers->stream.write(reinterpret_cast<const char*>(pushed->data()),
+                                              static_cast<std::streamsize>(pushed->size()));
+                    }
+                } else {
+                    writers->stream.write(reinterpret_cast<const char*>(unit_bytes.data()),
+                                          static_cast<std::streamsize>(unit_bytes.size()));
                 }
                 ++frames_written;
                 if (writers->wav_safety) {
@@ -4430,10 +4605,9 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device,
 
         // The failure story, in priority order: a device that stopped
         // delivering audio is the interesting cause even if the disk side
-        // finishes cleanly; a disk-side problem (only reachable for
-        // Matroska - an elementary-stream take is already fully written by
-        // the time the loop above exits) only replaces it when there was
-        // nothing more specific to say.
+        // finishes cleanly; a mux problem (only reachable for Matroska, and
+        // in practice never - see mux_error's own comment) only replaces it
+        // when there was nothing more specific to say.
         QString problem;
         if (device_lost) {
             problem = QStringLiteral(
@@ -4442,52 +4616,37 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device,
                           .arg(lost_is_slave ? device2_name : device_name)
                           .arg(frames_written);
         }
+        if (problem.isEmpty() && mux_error) {
+            const auto why = matroska::describe(*mux_error);
+            problem = QStringLiteral("Matroska muxing failed: %1")
+                          .arg(QString::fromUtf8(why.data(), static_cast<qsizetype>(why.size())));
+        }
         if (write_to_disk && writers) {
+            if (writers->matroska && writers->writer) {
+                // The trailing partial cluster - whatever the loop above
+                // never reached the time budget to close on its own. Nothing
+                // else needs closing: Segment's size was written unknown by
+                // design (see matroska::Writer's own comment), so there is
+                // no length field left to go back and patch, the way the old
+                // spool-and-remux design needed a clean stop to even attempt.
+                // A device-lost or otherwise interrupted session still
+                // reaches this (the loop's every `break` falls through to
+                // here), so whatever was captured is flushed either way -
+                // only an outright process crash leaves anything behind
+                // unflushed, and even then every cluster already written to
+                // `stream` earlier is already a complete, valid Matroska
+                // Cluster on disk: a crash truncates the take, it does not
+                // corrupt it.
+                const auto tail = writers->writer->finalize();
+                if (!tail.empty()) {
+                    writers->stream.write(reinterpret_cast<const char*>(tail.data()),
+                                          static_cast<std::streamsize>(tail.size()));
+                }
+            }
             writers->stream.flush();
             writers->stream.close();
             if (writers->wav_safety) {
                 writers->wav_safety->close();
-            }
-            if (writers->matroska) {
-                // matroska::mux() only ever produces a complete file from
-                // the WHOLE set of frames, so the spool this session has
-                // been growing incrementally is read back and muxed HERE,
-                // once, at a clean stop - not per frame, which is the whole
-                // point of spooling instead of holding every frame in RAM
-                // for the run's whole duration (see LiveOutputWriters' own
-                // comment). A device-lost or otherwise interrupted session
-                // still reaches this (the loop's every `break` falls
-                // through to here), so the spool is folded into the .mkv
-                // whenever there is anything to fold; only an outright
-                // process crash leaves it behind unmuxed.
-                std::ifstream spool_in{writers->stream_path.toStdString(), std::ios::binary};
-                std::vector<std::vector<std::byte>> mux_frames;
-                mux_frames.reserve(writers->frame_sizes.size());
-                bool read_ok = static_cast<bool>(spool_in);
-                for (const auto size : writers->frame_sizes) {
-                    std::vector<std::byte> frame(size);
-                    spool_in.read(reinterpret_cast<char*>(frame.data()),
-                                 static_cast<std::streamsize>(size));
-                    if (!spool_in) {
-                        read_ok = false;
-                        break;
-                    }
-                    mux_frames.push_back(std::move(frame));
-                }
-                spool_in.close();
-                QString mux_problem = read_ok
-                    ? writeOutput(writers->final_path, mux_frames, sample_rate,
-                                 static_cast<int>(coded_count))
-                    : QStringLiteral("Could not read back the elementary stream to mux it.");
-                if (!mux_problem.isEmpty()) {
-                    mux_problem += QStringLiteral(" The elementary stream is kept at \"%1\".")
-                                       .arg(QFileInfo(writers->stream_path).fileName());
-                    if (problem.isEmpty()) {
-                        problem = mux_problem;
-                    }
-                } else {
-                    QFile::remove(writers->stream_path);
-                }
             }
         }
 
@@ -5399,6 +5558,102 @@ QString EncoderController::writeOutput(const QString& path,
             ac3::io::write_wav_pcm16_raw(path.toStdString(), *payload, carrier_rate, 2);
         return written ? QString() : to_qstring(ac3::io::describe(written.error()));
     }
+    if (container_index_ == kContainerMpegts) {
+        // Same shape as the Matroska branch above: mpegts::AudioTrack needs
+        // no codec-config box (DVB's AC3_descriptor/Enhanced_AC3_descriptor
+        // is built entirely from track.codec), so no bitstream scan is
+        // needed here, matching ac3cli's own run_ts (main.cpp).
+        const bool eac3 = atmos_enabled_ || codec_ == plan::Codec::kEac3;
+        const mpegts::AudioTrack track{
+            .codec = eac3 ? mpegts::AudioCodec::kEac3 : mpegts::AudioCodec::kAc3,
+            .sample_rate = sample_rate,
+            .channels = channels,
+            .samples_per_frame = ac3::kSamplesPerFrame};
+        const auto file = mpegts::mux(track, frames);
+        if (!file) {
+            return to_qstring(mpegts::describe(file.error()));
+        }
+        std::ofstream out{path.toStdString(), std::ios::binary};
+        if (!out) {
+            return QStringLiteral("Could not open the output file for writing.");
+        }
+        out.write(reinterpret_cast<const char*>(file->data()),
+                  static_cast<std::streamsize>(file->size()));
+        return out ? QString() : QStringLiteral("Writing the MPEG-TS file failed.");
+    }
+    if (container_index_ == kContainerMp4) {
+        const auto built = scan_for_mp4(frames);
+        if (!built) {
+            return built.error();
+        }
+        const auto file = mp4::mux(built->track, frames);
+        if (!file) {
+            return to_qstring(mp4::describe(file.error()));
+        }
+        std::ofstream out{path.toStdString(), std::ios::binary};
+        if (!out) {
+            return QStringLiteral("Could not open the output file for writing.");
+        }
+        out.write(reinterpret_cast<const char*>(file->data()),
+                  static_cast<std::streamsize>(file->size()));
+        return out ? QString() : QStringLiteral("Writing the MP4 file failed.");
+    }
+    if (container_index_ == kContainerFmp4) {
+        // Writes a FOLDER of files (init segment, one media segment per
+        // fragment, an HLS media+master playlist pair, a DASH MPD) rather
+        // than one file - `path` names the folder, the same way it names a
+        // file for every other container. Mirrors ac3cli's own run_fmp4
+        // (main.cpp) exactly, including its default 48-frame fragment
+        // length (no GUI control for it yet).
+        const auto built = scan_for_mp4(frames);
+        if (!built) {
+            return built.error();
+        }
+        const auto fragmented = mp4::fragment(built->track, frames);
+        if (!fragmented) {
+            return to_qstring(mp4::describe(fragmented.error()));
+        }
+        std::error_code ec;
+        const std::filesystem::path dir{path.toStdString()};
+        std::filesystem::create_directories(dir, ec);
+        if (ec) {
+            return QStringLiteral("Could not create the output folder \"%1\": %2")
+                .arg(path, QString::fromStdString(ec.message()));
+        }
+        if (!write_bytes_to_path(dir / "init.mp4", fragmented->init_segment)) {
+            return QStringLiteral("Could not write init.mp4 to \"%1\".").arg(path);
+        }
+        for (const auto& segment : fragmented->media_segments) {
+            const auto name = std::format("segment{}.m4s", segment.sequence_number);
+            if (!write_bytes_to_path(dir / name, segment.bytes)) {
+                return QStringLiteral("Could not write %1 to \"%2\".")
+                    .arg(QString::fromStdString(name), path);
+            }
+        }
+        // Dolby Digital Plus with Atmos objects needs CHANNELS="<N>/JOC"
+        // instead of a plain channel count - see mp4/hls.hpp's own
+        // citations, and run_fmp4 (src/cli/main.cpp) for the CLI's
+        // identical construction.
+        const mp4::HlsOptions hls_options{
+            .channels_attribute = built->oba_complexity_index
+                                      ? std::format("{}/JOC", *built->oba_complexity_index)
+                                      : std::string{}};
+        const auto media_playlist =
+            mp4::build_hls_media_playlist(built->track, fragmented->media_segments, hls_options);
+        const auto master_playlist = mp4::build_hls_master_playlist(
+            built->track, fragmented->media_segments, "audio.m3u8", hls_options);
+        if (!write_text_to_path(dir / "audio.m3u8", media_playlist) ||
+            !write_text_to_path(dir / "master.m3u8", master_playlist)) {
+            return QStringLiteral("Could not write the HLS playlists to \"%1\".").arg(path);
+        }
+        const auto adaptation_set =
+            mp4::build_dash_adaptation_set(built->track, fragmented->media_segments);
+        const auto mpd = build_dash_mpd(built->track, fragmented->media_segments, adaptation_set);
+        if (!write_text_to_path(dir / "manifest.mpd", mpd.toStdString())) {
+            return QStringLiteral("Could not write manifest.mpd to \"%1\".").arg(path);
+        }
+        return QString();
+    }
 
     std::ofstream out{path.toStdString(), std::ios::binary};
     if (!out) {
@@ -5521,28 +5776,71 @@ void EncoderController::encodeChannels(const QString& path,
     // routingForSources - this function cannot silently disagree with what
     // the pre-encode preview already showed.
 
-    // Dual mono has no "whole programme" for the block below to gate-measure
-    // over - Ch1 and Ch2 are unrelated (§E1.3, no downmix between them), so
-    // a single BS.1770 pass across both would measure a blend of two
-    // different things rather than either one. ac3cli's own dual-mono path
-    // measures each programme independently instead (measured_dialnorm_channel
-    // in main.cpp); this controller does not have that machinery yet, so -
-    // matching the same scope cut Part 3 already made for src=/map= - it
-    // asks for both values explicitly rather than measuring one of them
-    // wrong.
-    if (isDualMono() && (p.meta.measure_dialnorm || p.meta.measure_dialnorm2)) {
-        setBusy(false);
-        setStatus(QStringLiteral("dialnorm=auto is not yet supported for 1+1 dual mono - set "
-                                 "both programmes' dialnorm by hand."));
-        emit encodeFinished(false, status());
-        return;
-    }
+    // Dual mono has no "whole programme" for a single BS.1770 pass to gate-
+    // measure over - Ch1 and Ch2 are unrelated (§E1.3, no downmix between
+    // them), so each programme gets its own k1_0 LoudnessMeter instead, fed
+    // its own coded channel: routing's coded channel 0 is programme 1,
+    // channel 1 is programme 2 (see ac3::plan::dual_mono_routing). render()
+    // is a stateless per-sample gain mix, not a streaming transform like the
+    // frame encoder below - there is no MDCT/overlap state to carry between
+    // calls, so one call over the whole buffer stands in for a frame loop.
+    if (isDualMono()) {
+        if (p.meta.measure_dialnorm || p.meta.measure_dialnorm2) {
+            std::size_t total = 0;
+            for (const auto& channel : planes) {
+                total = std::max(total, channel.size());
+            }
+            std::vector<std::vector<float>> programmes(2, std::vector<float>(total));
+            std::vector<std::span<const float>> in;
+            for (const auto& channel : planes) {
+                in.emplace_back(channel);
+            }
+            std::vector<std::span<float>> out;
+            for (auto& channel : programmes) {
+                out.emplace_back(channel);
+            }
+            plan::render(routing, in, out, total);
 
-    // §5.4.2.8 wants dialogue level below full scale, and measuring it needs
-    // the whole programme (the BS.1770 relative gate does), so it happens once
-    // here rather than per frame. The layout it measures is the OUTPUT's,
-    // because the channel weighting depends on which positions are surrounds.
-    if (p.meta.measure_dialnorm) {
+            const auto measure_one = [&](const std::vector<float>& channel) -> std::optional<int> {
+                ac3::meta::LoudnessMeter meter{p.sample_rate, ac3::Acmod::k1_0, false};
+                const std::array<std::span<const float>, 1> views{channel};
+                meter.push(views);
+                if (const auto lkfs = meter.integrated_lkfs()) {
+                    return ac3::meta::dialnorm_from_lkfs(*lkfs);
+                }
+                return std::nullopt;
+            };
+            if (p.meta.measure_dialnorm) {
+                if (const auto measured = measure_one(programmes[0])) {
+                    p.meta.dialnorm = *measured;
+                } else {
+                    setBusy(false);
+                    setStatus(QStringLiteral("Program 1 has no audio above the -70 LKFS gate, "
+                                             "so dialnorm cannot be measured. Set it by hand "
+                                             "instead."));
+                    emit encodeFinished(false, status());
+                    return;
+                }
+            }
+            if (p.meta.measure_dialnorm2) {
+                if (const auto measured = measure_one(programmes[1])) {
+                    p.meta.dialnorm2 = *measured;
+                } else {
+                    setBusy(false);
+                    setStatus(QStringLiteral("Program 2 has no audio above the -70 LKFS gate, "
+                                             "so dialnorm2 cannot be measured. Set it by hand "
+                                             "instead."));
+                    emit encodeFinished(false, status());
+                    return;
+                }
+            }
+        }
+    } else if (p.meta.measure_dialnorm) {
+        // §5.4.2.8 wants dialogue level below full scale, and measuring it
+        // needs the whole programme (the BS.1770 relative gate does), so it
+        // happens once here rather than per frame. The layout it measures is
+        // the OUTPUT's, because the channel weighting depends on which
+        // positions are surrounds.
         ac3::meta::LoudnessMeter loudness{p.sample_rate, cp.bed_acmod, cp.bed_lfe};
         std::vector<std::span<const float>> views;
         for (const auto& channel : planes) {

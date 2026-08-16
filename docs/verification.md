@@ -44,7 +44,13 @@ cross-correlation, and reports SNR against the original:
 
 Measured with FFmpeg 8.0.1 on 2026-08-09; reproduce with `python tools/quality_race.py ac3`.
 SNR on synthetic material is a narrow metric — it says the waveform is closer, not that it
-sounds better, and no listening test has been run.
+sounds better, and no *subjective* listening test has been run. `quality_race.py`'s tables (and
+[Tool comparison trend](tool-comparison-trend.md)/[Landscape](landscape.md)) also carry an
+objective perceptual-quality prediction alongside SNR, [ViSQOL](https://github.com/google/visqol)'s
+MOS-LQO — narrower than a real listening panel, but closer to "how it would sound" than a
+waveform-distance number, and something SNR alone cannot claim. It's an optional column
+(`visqol-python` not installed shows `-`, never a failure), so it isn't in the snapshot table
+above; see `perceptual_score()` in `tools/quality_race.py`.
 
 That is a one-off snapshot. [Quality trend](quality-trend.md) tracks the same gold-reference SNR
 by commit, on every push to `develop` and `main`, so a regression shows up as a trend line

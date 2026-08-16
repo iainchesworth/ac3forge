@@ -106,21 +106,63 @@ required step, not optional polish:
 4. Verify the release page has all expected artifacts, and that the curated notes render and
    read well.
 
+## vcpkg port
+
+A vcpkg port for `ac3forge` is staged in-tree at
+[`packaging/vcpkg-port/ac3forge/`](../packaging/vcpkg-port/ac3forge/) (`vcpkg.json`,
+`portfile.cmake`, `usage`) and is pending submission to the curated `microsoft/vcpkg` registry -
+see [docs/library/index.md](library/index.md) for how a consumer uses it either
+way. It installs the library only (`ac3::forge`, plus `matroska::matroska` behind the `matroska`
+feature - see `cmake/InstallLibrary.cmake`'s `AC3FORGE_BUILD_MATROSKA`/
+`AC3FORGE_INSTALL_BOTH_LINKAGES` options), never the CLI/GUI/tests/examples/fuzzers.
+
+**Every release tag, once the port has been merged upstream**, needs a follow-up PR to
+`microsoft/vcpkg` - the curated registry has no mechanism to track a moving `main`, so a new
+`ac3forge` release is invisible to `vcpkg install` until this happens:
+
+1. Bump `packaging/vcpkg-port/ac3forge/vcpkg.json`'s `version-semver` to the new tag, and
+   `portfile.cmake`'s `vcpkg_from_github()` `REF`/`SHA512` to match (`sha512sum` the tag's
+   release tarball, or let a first `vcpkg install` attempt report the correct hash).
+2. Validate locally first (see below) before touching the upstream fork - a portfile change
+   that fails vcpkg's own CI is slower to iterate on there than here.
+3. Copy the updated port files into the `microsoft/vcpkg` fork's `ports/ac3forge/`, run
+   `vcpkg x-add-version ac3forge` to regenerate `versions/baseline.json`/
+   `versions/a-/ac3forge.json` (don't hand-edit these), and open the version-bump PR.
+
+**Validating the port locally**, any time `packaging/vcpkg-port/ac3forge/` or the CMake options
+it drives change (whether or not a release is involved):
+
+```bash
+vcpkg install ac3forge --classic --overlay-ports=packaging/vcpkg-port --triplet x64-windows
+vcpkg install ac3forge --classic --overlay-ports=packaging/vcpkg-port --triplet x64-windows-static
+vcpkg install ac3forge[core] --classic --overlay-ports=packaging/vcpkg-port --triplet x64-windows
+```
+
+`--classic` is required from inside this repo - the root `vcpkg.json` (manifest mode, for this
+project's *own* build-time dependencies) would otherwise shadow the package-name argument.
+Check for a clean post-build lint (no "not used"/"missing usage" warnings) and that
+`ac3forge[core]` installs without `matroska::matroska` at all, not just unlinked.
+
 ## What gets published
 
-One package per OS, not one per compiler-toolchain leg: `_build.yml`'s matrix builds and tests
-both Windows toolchains (MSVC, clang-cl) and both Linux toolchains (GCC, Clang) on every push,
-but only the leg marked `release_package: true` per OS actually packages for a release -
-windows-msvc, linux-gcc and macos-llvm. windows-llvm and linux-llvm still catch
-compiler-specific bugs in full, every push; they just don't produce a second, redundantly
-canonical zip that a downloader would have no way to choose between.
+One package per OS **and architecture**, not one per compiler-toolchain leg: `_build.yml`'s matrix
+builds and tests both Windows toolchains (MSVC, clang-cl) and both Linux toolchains (GCC, Clang) - on
+both x64 and arm64 for Linux - on every push, but only the leg marked `release_package: true` per
+OS/arch actually packages for a release - windows-msvc, linux-gcc, linux-gcc-arm64 and macos-llvm.
+windows-llvm, linux-llvm and linux-llvm-arm64 still catch compiler-specific bugs in full, every push;
+they just don't produce a second, redundantly canonical archive that a downloader would have no way
+to choose between. `cmake/Packaging.cmake` arch-qualifies the Linux archive filename
+(`ac3forge-X.Y.Z-Linux-x86_64.tar.gz` vs. `...-Linux-aarch64.tar.gz`) specifically so the two Linux
+architectures' TGZ/ZIP downloads never collide; DEB/RPM already carry their arch in their own
+filenames.
 
-| Platform | Leg | End-user packages | Library (`ac3forge-dev-*`) |
-|---|---|---|---|
-| Windows | windows-msvc | `.zip`, `.exe` (NSIS, if `makensis` is on the runner) | `.zip` |
-| Linux | linux-gcc | `.tar.gz`, `.deb`, `.rpm` | `.tar.gz`, plus real system packages: `libac3forge0`/`ac3forge-devel` (RPM) and `libac3forge0`/`libac3forge-dev` (DEB) |
-| macOS | macos-llvm | `.tar.gz`, `.dmg` | `.tar.gz` |
-| Android (Shield) | build-android | `.apk` | none - Shield links `ac3::forge`/`ac3::audio` in-tree, it isn't a `find_package(ac3forge)` consumer |
+| Platform | Arch | Leg | End-user packages | Library (`ac3forge-dev-*`) |
+|---|---|---|---|---|
+| Windows | x64 | windows-msvc | `.zip`, `.exe` (NSIS, if `makensis` is on the runner) | `.zip` |
+| Linux | x86_64 | linux-gcc | `.tar.gz`, `.deb`, `.rpm` | `.tar.gz`, plus real system packages: `libac3forge0`/`ac3forge-devel` (RPM) and `libac3forge0`/`libac3forge-dev` (DEB) |
+| Linux | aarch64 (Raspberry Pi 4/5 and other arm64 targets) | linux-gcc-arm64 | `.tar.gz`, `.deb`, `.rpm` | same split as x86_64, above |
+| macOS | arm64 (Apple Silicon) | macos-llvm | `.tar.gz`, `.dmg` | `.tar.gz` |
+| Android (Shield) | arm64 (NDK) | build-android | `.apk` | none - Shield links `ac3::forge`/`ac3::audio` in-tree, it isn't a `find_package(ac3forge)` consumer |
 
 The end-user packages are `ac3cli`/`ac3gui` (CPack's `runtime` component) on desktop, or the
 Shield app's `.apk` on Android. The library packages are a second, independent download for a
@@ -159,7 +201,7 @@ which sideloading itself doesn't require. (Not to be confused with **object sign
 Atmos authenticity tag, provisioned separately via the `ATMOS_SIGNING_KEY` secret and
 unrelated to APK code-signing; see "Provisioning the Android object-signing key" below.)
 
-No leg is `experimental: true` any more (see `ci.yml`'s status table), so all four package
+No leg is `experimental: true` any more (see `ci.yml`'s status table), so all five package
 for real rather than best-effort - a packaging failure on any of them blocks the release the
 same as a build or test failure would. Every package - end-user or library - gets a `.sha512`
 (`CPACK_PACKAGE_CHECKSUM` in `cmake/Packaging.cmake`), an aggregate `SHA512SUMS` manifest,

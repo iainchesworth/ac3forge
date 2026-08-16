@@ -39,6 +39,23 @@ inline constexpr std::array<int, 6> kSymmetricLevels = {0, 3, 5, 7, 11, 15};
 // Reconstruction value in [-1, 1) for a code (test/decoder use).
 [[nodiscard]] AC3FORGE_EXPORT double dequantize_mantissa(std::uint32_t code, int bap);
 
+// §7.3.4: dither for zero-bit mantissas (bap == 0), substituted only where
+// the bitstream's dithflag says to - a decoder must reproduce a TRUE zero
+// when it is clear. "Any reasonably random sequence may be used to generate
+// the dither values. The word length of the dither values is not critical
+// ... The optimum scaling for the dither words is to take a uniform
+// distribution of values between +1 and -1, and scale this by 0.707." That
+// is the same class of freedom AC-3/E-AC-3's other unspecified-generator
+// tools already exercise (see SpxNoise, EcplNoise in eac3_tools.hpp), so
+// this is the same style of generator: a plain xorshift32 mapped onto the
+// spec's own +-0.707 uniform range. Deterministic per instance - the same
+// stream always decodes to the same PCM - which is why it is a value type a
+// caller owns (one per decoder instance) rather than global state.
+struct AC3FORGE_EXPORT DitherGenerator {
+    std::uint32_t state = 0x6C8E9CF7U;  // never zero, or xorshift sticks at 0
+    [[nodiscard]] double next();
+};
+
 // One bitstream write: `bits` bits of `value`.
 struct MantissaToken {
     std::uint8_t bits;

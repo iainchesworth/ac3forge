@@ -418,6 +418,80 @@ jobs:
           name: coverage-report
           path: build/coverage*.html
 
+  # ac3adm::ac3adm (src/ac3adm) is opt-in - AC3FORGE_BUILD_ADM defaults OFF, unlike every other
+  # library component (see the root CMakeLists.txt's own option() and src/ac3adm/CMakeLists.txt's
+  # header comment for why: it is the one module in this repo with a third-party dependency,
+  # libadm's Boost header libraries, resolved only via -DVCPKG_MANIFEST_FEATURES=adm). No leg in
+  # build-and-test's matrix (_build.yml) or any other job in this file ever passes
+  # -DAC3FORGE_BUILD_ADM=ON, so without this job the module has zero CI coverage - a change to it,
+  # or to its vendored libbw64/libadm pins (src/ac3adm/CMakeLists.txt's GIT_TAG values), could
+  # silently break it and nobody would notice until someone happens to build with the flag on.
+  #
+  # A dedicated job rather than an extra pass inside an existing Linux leg (the shape
+  # alsa_fallback and BUILD_SHARED_LIBS already use in _build.yml): those legs are already the
+  # busiest in the matrix (GUI, ALSA fallback, a second shared-libs configure+build+test pass,
+  # the gold-reference gate, packaging), and this module's own dependency footprint - two
+  # FetchContent git clones (vendored libbw64/libadm) plus eight vcpkg Boost header packages - is
+  # real enough to be worth keeping off that critical path rather than adding to it. A standalone
+  # job instead runs in parallel with everything else, the same reasoning static-analysis,
+  # coverage and ffmpeg-validate already follow for their own container+toolchain setup.
+  #
+  # One leg, not the whole matrix - same reasoning as ffmpeg-validate above: this module's own
+  # code does not vary by platform/compiler (no #ifdefs anywhere in this repo - see
+  # scripts/check-platform-macros.ps1), so one Linux leg is enough to catch a real regression.
+  # GCC 15, matching one of the two Linux toolchains this module was verified against locally
+  # before landing (see the PR that introduced it, branch feature/adm-bw64-parser: Windows MSVC,
+  # WSL2 gcc-15, WSL2 clang++-21, all green).
+  #
+  # AC3FORGE_BUILD_CLI/EXAMPLES off, same reasoning as the coverage job above: this job's only
+  # question is whether ac3tests (including test_adm.cpp's [adm]-tagged cases) passes with the
+  # module built in, not whether the CLI or examples link against it too - nothing outside tests/
+  # links ac3adm::ac3adm at all (see the root CMakeLists.txt's own comment on why it stays out of
+  # InstallLibrary's export set). AC3FORGE_BUILD_GUI already defaults OFF on this preset.
+  adm-validate:
+    name: ADM Module (Linux, GCC)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    container: ubuntu:26.04
+    steps:
+      - name: Bootstrap container
+        run: |
+          set -eu
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends \
+            build-essential ca-certificates cmake curl git gnupg lsb-release \
+            ninja-build pkg-config software-properties-common tar unzip wget zip
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install GCC 15
+        run: bash .github/toolchain/02-gcc-toolchain.sh
+
+      - uses: ./.github/actions/setup-vcpkg
+        with:
+          vcpkg-commit: "eaca4a577b6b678c6e10252754b6988a61746c19"
+
+      - name: Configure
+        shell: bash
+        run: >
+          cmake --preset config-linux-gcc
+          -DVCPKG_MANIFEST_FEATURES=adm
+          -DAC3FORGE_BUILD_ADM=ON
+          -DAC3FORGE_BUILD_CLI=OFF
+          -DAC3FORGE_BUILD_EXAMPLES=OFF
+
+      - name: Build
+        shell: bash
+        run: cmake --build --preset build-linux-gcc -- -k 0
+
+      - name: Test
+        shell: bash
+        run: ctest --preset test-linux-gcc
+
   build-and-test:
     name: Build & Test
     needs: changes
@@ -691,6 +765,19 @@ jobs:
       # requirements-ffmpeg-validate.txt is a pip-compile --generate-hashes
       # lock (see its own header for how to regenerate) so this install is
       # hash-pinned.
+      #
+      # Deliberately NOT installing `visqol-python` here (tools/quality_race.py's
+      # perceptual_score(), see its own docstring for why ViSQOL/why that
+      # package): this job's `ci` step is a hard fidelity gate and stays exactly
+      # as fast and as free of new supply-chain surface as it was before that
+      # column existed - quality_race.py's own graceful degradation (a "-" cell
+      # and one clear message, never a failure) already lets this job run
+      # unchanged. The `trend` step below feeds the quality-history branch that
+      # docs/landscape.md and docs/tool-comparison-trend.md read, so a real MOS
+      # column there needs `visqol-python` added to requirements-ffmpeg-
+      # validate.in and this lock regenerated - a deliberate later step once
+      # that dependency's own track record justifies pinning it into every CI
+      # run, not a default of this PR.
       - name: Install numpy
         run: pip install --quiet --break-system-packages --require-hashes -r requirements-ffmpeg-validate.txt
 
@@ -850,7 +937,7 @@ jobs:
   ci-status:
     name: CI Status
     if: always()
-    needs: [ branch-name, no-quarantine, changes, platform-macros, static-analysis, coverage, build-and-test, ffmpeg-validate, persist-performance-trend, persist-external-comparison-trend ]
+    needs: [ branch-name, no-quarantine, changes, platform-macros, static-analysis, coverage, adm-validate, build-and-test, ffmpeg-validate, persist-performance-trend, persist-external-comparison-trend ]
     runs-on: ubuntu-latest
     steps:
       - name: Gate on required job results
@@ -864,6 +951,7 @@ jobs:
           # 'skipped' on a docs-only change, which is a pass, not a failure.
           R_TIDY: ${{ needs.static-analysis.result }}
           R_COVERAGE: ${{ needs.coverage.result }}
+          R_ADM: ${{ needs.adm-validate.result }}
           R_BUILD: ${{ needs.build-and-test.result }}
           R_FFMPEG: ${{ needs.ffmpeg-validate.result }}
           # 'skipped' on every PR and every push off develop/main (its own
@@ -876,6 +964,7 @@ jobs:
           for pair in "branch-name:$R_BRANCH" "no-quarantine:$R_QUARANTINE" \
                       "changes:$R_CHANGES" "platform-macros:$R_MACROS" \
                       "static-analysis:$R_TIDY" "coverage:$R_COVERAGE" \
+                      "adm-validate:$R_ADM" \
                       "build-and-test:$R_BUILD" "ffmpeg-validate:$R_FFMPEG" \
                       "persist-performance-trend:$R_PERF_TREND" \
                       "persist-external-comparison-trend:$R_EXT_TREND"; do

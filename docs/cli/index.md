@@ -1,6 +1,6 @@
 # ac3cli
 
-`ac3cli` is the command-line front end over `ac3::forge` — twenty-one commands covering
+`ac3cli` is the command-line front end over `ac3::forge` — twenty-five commands covering
 synthesis, file encoding/decoding, container wrapping, inspection, and live capture/playback.
 Every command it can run is backed by the same public library documented under
 [Library](../library/index.md); nothing in the CLI has logic the library doesn't also expose.
@@ -31,7 +31,7 @@ ac3forge 0.2.0
   target:  Windows x86_64 (MSVC 1951)
 ```
 
-`--version` is a flag, not one of the twenty-one commands — it's handled before argument parsing
+`--version` is a flag, not one of the twenty-five commands — it's handled before argument parsing
 and exits immediately.
 
 ## Conventions shared across commands
@@ -44,11 +44,25 @@ and exits immediately.
   [Metadata options](metadata-options.md) for the full grammar.
 - **`out.ac3` vs. `out.ec3`** is how commands tell AC-3 output from E-AC-3 output; extensions
   aren't enforced, they're just the convention the examples follow.
+- **`-` means stdin or stdout** for `encode`, `eac3-encode`, `atmos-encode` and `decode`'s WAV/
+  AC-3/E-AC-3 path arguments — the conventional Unix pipe convention, so a WAV or stream never
+  needs to touch a disk at all:
+
+  ```bash
+  ac3cli encode - - 448 couple < in.wav > out.ac3
+  ac3cli decode - - < out.ac3 > out.wav
+  ```
+
+  Everything else about the command is unchanged; only the argument's meaning changes from "open
+  this path" to "use the standard stream instead". Windows needs no special handling on the
+  caller's part — ac3cli puts stdin/stdout into binary mode itself before the first byte crosses
+  either one.
 - **Metadata options** (`drc=`, `heavy`, `dialnorm=`, `cmixlev=`, …) can follow the positional
   arguments of any encoding command, in any order — see
   [Metadata options](metadata-options.md).
 - **PCM-carrying commands report per-channel peak/RMS levels when they finish**; `record` meters
-  live.
+  live. With `-` as the output path, that report (and everything else the command would normally
+  print) goes to stderr instead of stdout, so it never lands in the middle of the piped stream.
 - **Commands needing audio hardware** (`devices`, `record`, `monitor`, `live`, `outputs`, `play`)
   report themselves unavailable on a build with no capture/passthrough backend, rather than
   failing to link — see [Platform notes](../platforms/windows.md) for what's actually
@@ -56,7 +70,7 @@ and exits immediately.
 
 ## Next
 
-- [Commands](commands.md) — all 21 commands, grouped and with real usage text.
+- [Commands](commands.md) — all 25 commands, grouped and with real usage text.
 - [Metadata options](metadata-options.md) — the `drc=`/`heavy`/`dialnorm=`/… options grammar,
   the `tools:` token grammar, and the full layout/location-list grammar.
 - [Concepts](../concepts/index.md) — if `bsid`, `syncframe`, or `JOC` aren't already familiar.

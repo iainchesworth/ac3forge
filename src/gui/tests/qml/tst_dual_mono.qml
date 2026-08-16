@@ -17,6 +17,12 @@ TestCase {
 
     readonly property url stereoUrl:
         Qt.resolvedUrl("../../../../fuzz/seeds/fuzz_wav_read/roundtrip-stereo.wav")
+    // Ch1 silent, Ch2 a real 300 Hz tone - built for the independent-
+    // measurement tests below, where a blended pass across both dual-mono
+    // channels (the bug) and a per-channel one (the fix) give different,
+    // observable pass/fail outcomes rather than just different numbers.
+    readonly property url ch2OnlyUrl:
+        Qt.resolvedUrl("../../../../fuzz/seeds/fuzz_wav_read/dual-mono-ch2-only.wav")
     readonly property url outputUrl:
         Qt.resolvedUrl("_test_output/tst_dual_mono.ac3")
 
@@ -67,6 +73,61 @@ TestCase {
         // read off that, same as everywhere else in this file.
         compare(EncoderController.surround, false);
         compare(EncoderController.runs[0].status, "done");
+    }
+
+    // --- dialnorm=auto for dual mono ----------------------------------------
+
+    function test_dialnormAutoNoLongerRefusedForDualMono() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+
+        EncoderController.loadSourceFile(stereoUrl);
+        tryCompare(EncoderController, "sourceReady", true);
+        EncoderController.bedIndex = 0;  // 1+1
+        compare(EncoderController.dualMono, true);
+
+        EncoderController.measureDialnorm = true;
+        EncoderController.measureDialnorm2 = true;
+        EncoderController.encodeTo(outputUrl);
+        tryCompare(EncoderController, "busy", false, 10000);
+
+        // stereoUrl's own L/R both carry real audio, so both programmes'
+        // measurements pass their absolute gate and the encode completes -
+        // encodeChannels no longer hard-refuses measure_dialnorm(2) just
+        // because the bed is dual mono.
+        compare(EncoderController.runs[0].status, "done");
+
+        EncoderController.measureDialnorm = false;
+        EncoderController.measureDialnorm2 = false;
+        EncoderController.applyChannelPreset("stereo");
+    }
+
+    function test_dialnormAutoMeasuresEachDualMonoProgrammeOnItsOwnChannel() {
+        const win = createTemporaryObject(mainWindowComponent, testCase);
+        verify(win !== null);
+
+        // ch2OnlyUrl's Ch1 is pure silence and Ch2 a real tone. A blended
+        // pass across both dual-mono channels at once - measuring Ch1 with
+        // Ch2's content mixed in, the bug this feature replaces - would let
+        // Ch2's real signal carry Ch1 past the -70 LKFS absolute gate too.
+        // Measuring Ch1 on its own coded channel instead correctly finds
+        // nothing there and refuses, which is the observable difference
+        // this test checks for.
+        EncoderController.loadSourceFile(ch2OnlyUrl);
+        tryCompare(EncoderController, "sourceReady", true);
+        EncoderController.bedIndex = 0;  // 1+1
+        compare(EncoderController.dualMono, true);
+
+        EncoderController.measureDialnorm = true;
+        EncoderController.measureDialnorm2 = false;  // Ch2 stays manual - irrelevant here
+        EncoderController.encodeTo(outputUrl);
+        tryCompare(EncoderController, "busy", false, 10000);
+
+        compare(EncoderController.runs[0].status, "failed");
+        verify(EncoderController.runs[0].detail.indexOf("Program 1") >= 0);
+
+        EncoderController.measureDialnorm = false;
+        EncoderController.applyChannelPreset("stereo");
     }
 
     // --- Ch2's own DRC (bundle D, item 23) ----------------------------------

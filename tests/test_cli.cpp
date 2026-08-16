@@ -1,12 +1,17 @@
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <cctype>
+#include <charconv>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <numbers>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "ac3/core/tables.hpp"
@@ -70,6 +75,27 @@ std::string read_log(const fs::path& log) {
     return {std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{}};
 }
 
+// Runs `ac3cli <args>` with stdin redirected from `in_file` and stdout
+// redirected to `out_file`, for exercising the "-" stdin/stdout convention
+// (main.cpp's is_stdio_path()) the same way a real shell pipeline would.
+// stderr goes to `log`, same diagnostic convention as run_cli above but kept
+// separate from stdout, which here is the command's real binary output, not
+// somewhere to also stash messages.
+int run_cli_stdio(const std::string& args, const fs::path& in_file, const fs::path& out_file,
+                  const fs::path& log) {
+    const std::string command = "\"" + std::string(AC3CLI_EXE) + "\" " + args + " < \"" +
+                                in_file.string() + "\" > \"" + out_file.string() + "\" 2> \"" +
+                                log.string() + "\"";
+#ifdef _WIN32
+    // Same double-quote-wrapping workaround run_cli uses above, and for the
+    // same reason - see its comment.
+    const std::string wrapped = "\"" + command + "\"";
+    return std::system(wrapped.c_str());
+#else
+    return std::system(command.c_str());
+#endif
+}
+
 // A short, genuinely non-silent multichannel WAV - per this project's own
 // testing convention (see memory: "Codec validation needs real audio"),
 // silence gives false passes a real tone does not: a silent leading region
@@ -100,6 +126,113 @@ double rms(const std::vector<float>& channel, std::size_t from, std::size_t coun
     }
     const std::size_t n = end > from ? end - from : 1;
     return std::sqrt(sum_sq / static_cast<double>(n));
+}
+
+// A single mono channel at a chosen amplitude/frequency - unlike
+// make_tone_channels above (which ladders frequency across the channels of
+// ONE file), the dialnorm=auto tests below need independently-controlled,
+// separately-loud tracks: two whole files for src=/map=, or the two channels
+// of a hand-built dual-mono WAV, with levels deliberately far enough apart
+// that a wrong (blended, swapped, or unrouted) measurement reads as a
+// distinctly different number rather than a rounding nuance.
+std::vector<float> make_tone(double amp, double hz, std::size_t frames, std::uint32_t sample_rate) {
+    std::vector<float> out(frames);
+    for (std::size_t n = 0; n < frames; ++n) {
+        out[n] = static_cast<float>(
+            amp * std::sin(2.0 * std::numbers::pi * hz * static_cast<double>(n) /
+                          static_cast<double>(sample_rate)));
+    }
+    return out;
+}
+
+// write_wav_f32 takes a std::span<const std::vector<float>>, which (unlike
+// make_tone_channels' already-a-vector result above) a braced-init-list of
+// make_tone(...) calls does not implicitly convert to - this takes the list
+// as a real std::vector<std::vector<float>> parameter first so callers below
+// can still write the channels inline as a brace list.
+bool write_wav(const fs::path& path, std::vector<std::vector<float>> channels,
+               std::uint32_t sample_rate) {
+    return ac3::io::write_wav_f32(path.string(), channels, sample_rate).has_value();
+}
+
+// The integer dialnorm/dialnorm2 value the CLI's own "-> dialnorm N" /
+// "-> dialnorm2 N" report line prints, straight out of the log text - reads
+// the same reported number an operator would, rather than re-deriving one
+// from the logged LKFS float and risking a second place rounding could
+// disagree. The trailing space in `needle` matters: it is what keeps a
+// "dialnorm" search from also matching inside "dialnorm2 30" (the character
+// right after "dialnorm" there is '2', not a space).
+std::optional<int> reported_value(const std::string& log, std::string_view field) {
+    const std::string needle = std::string("-> ") + std::string(field) + " ";
+    const auto pos = log.find(needle);
+    if (pos == std::string::npos) {
+        return std::nullopt;
+    }
+    return std::stoi(log.substr(pos + needle.size()));
+}
+
+// Finds `label` in `log` and parses the (possibly signed, possibly
+// fractional) number immediately following it, skipping whitespace in
+// between - `ac3cli qc`'s own report lines are "label<spaces>value...", laid
+// out with std::format field widths this deliberately does not need to know:
+// skipping runs of whitespace instead of a fixed offset means a column-width
+// tweak in main.cpp can never silently break these tests the way a
+// fixed-offset substring slice would.
+std::optional<double> value_after(const std::string& log, std::string_view label) {
+    const auto pos = log.find(label);
+    if (pos == std::string::npos) {
+        return std::nullopt;
+    }
+    std::size_t i = pos + label.size();
+    while (i < log.size() && std::isspace(static_cast<unsigned char>(log[i])) != 0) {
+        ++i;
+    }
+    // std::from_chars for floating point does not accept a leading '+' (only
+    // '-' is part of its grammar) - qc's own report uses {:+.2f} throughout
+    // so every positive number is printed with one, and it has to be
+    // skipped here rather than included in the range handed to from_chars
+    // below, unlike '-' which from_chars parses directly.
+    if (i < log.size() && log[i] == '+') {
+        ++i;
+    }
+    const std::size_t start = i;
+    if (i < log.size() && log[i] == '-') {
+        ++i;
+    }
+    while (i < log.size() &&
+          (std::isdigit(static_cast<unsigned char>(log[i])) != 0 || log[i] == '.')) {
+        ++i;
+    }
+    if (i == start) {
+        return std::nullopt;
+    }
+    double value = 0.0;
+    const auto [ptr, ec] = std::from_chars(log.data() + static_cast<std::ptrdiff_t>(start),
+                                           log.data() + static_cast<std::ptrdiff_t>(i), value);
+    (void)ptr;
+    return ec == std::errc{} ? std::optional<double>(value) : std::nullopt;
+}
+
+// The PASS/FAIL of the first "verdict: " line at or after `from` - qc's own
+// per-preset overall verdict (as opposed to its two sub-verdicts, loudness
+// and true peak, which this deliberately does not match on).
+std::optional<bool> gate_verdict_after(const std::string& log, std::size_t from) {
+    if (from == std::string::npos) {
+        return std::nullopt;
+    }
+    constexpr std::string_view kNeedle = "verdict: ";
+    const auto pos = log.find(kNeedle, from);
+    if (pos == std::string::npos) {
+        return std::nullopt;
+    }
+    const auto value_pos = pos + kNeedle.size();
+    if (log.compare(value_pos, 4, "PASS") == 0) {
+        return true;
+    }
+    if (log.compare(value_pos, 4, "FAIL") == 0) {
+        return false;
+    }
+    return std::nullopt;
 }
 
 }  // namespace
@@ -276,6 +409,55 @@ TEST_CASE("capture2= rejects malformed tokens", "[cli][capture2]") {
         CHECK(rc != 0);
         CHECK_FALSE(fs::exists(out_path));
         CHECK(read_log(log).find("capture2=") != std::string::npos);
+    }
+}
+
+// container= is 'record'/'live'-only, but like capture2= above its rejection
+// happens in parse_options, before either command's own logic ever runs - so
+// 'encode' (Needs::kNothing) can exercise the parsing without a real capture
+// device, the same reasoning capture2='s own test comment gives.
+TEST_CASE("container= rejects malformed tokens and accepts the two real ones",
+          "[cli][container]") {
+    const auto dir = scratch_dir();
+    const auto wav_path = dir / "container_parse_in.wav";
+    const auto channels = make_tone_channels(2, 4000, 48000);
+    REQUIRE(ac3::io::write_wav_f32(wav_path.string(), channels, 48000).has_value());
+
+    SECTION("an unrecognised value is refused, not silently ignored") {
+        const auto out_path = dir / "container_parse_bad.ac3";
+        const auto log = dir / "container_parse_bad.log";
+        fs::remove(out_path);
+        const auto rc = run_cli("encode \"" + wav_path.string() + "\" \"" + out_path.string() +
+                                    "\" 192 stereo container=avi",
+                                log);
+        CHECK(rc != 0);
+        CHECK_FALSE(fs::exists(out_path));
+        CHECK(read_log(log).find("container") != std::string::npos);
+    }
+
+    SECTION("container=mkv parses (encode itself never reads it, so the run still succeeds "
+           "and writes the plain elementary stream)") {
+        const auto out_path = dir / "container_parse_mkv.ac3";
+        const auto log = dir / "container_parse_mkv.log";
+        fs::remove(out_path);
+        const auto rc = run_cli("encode \"" + wav_path.string() + "\" \"" + out_path.string() +
+                                    "\" 192 stereo container=mkv",
+                                log);
+        INFO(read_log(log));
+        CHECK(rc == 0);
+        CHECK(fs::exists(out_path));
+    }
+
+    SECTION("container=raw parses, spelling out the default") {
+        const auto out_path = dir / "container_parse_raw.ac3";
+        const auto log = dir / "container_parse_raw.log";
+        fs::remove(out_path);
+        const auto rc = run_cli("encode \"" + wav_path.string() + "\" \"" + out_path.string() +
+                                    "\" 192 stereo container=raw",
+                                log);
+        INFO(read_log(log));
+        CHECK(rc == 0);
+        CHECK(fs::exists(out_path));
     }
 }
 
@@ -511,4 +693,705 @@ TEST_CASE("bare heavy2 token turns on Ch2 heavy compression on a 1+1 encode",
     const auto heavy2_log = read_log(dir / "heavy2_token_heavy2_decode.log");
     INFO(heavy2_log);
     CHECK(heavy2_log.find("compr2 present") != std::string::npos);
+}
+
+// The "-" stdin/stdout convention (roadmap item A4): 'ac3cli encode - -'
+// reads the WAV from stdin and writes AC-3 to stdout instead of opening
+// files by those literal names, and 'decode - -' the same in reverse - see
+// is_stdio_path() in main.cpp. This is also the binary-safety proof
+// CONTRIBUTING's validation discipline asks for: on Windows, std::cin/
+// std::cout default to TEXT mode, which would either corrupt the compressed
+// stream (0x0A -> 0x0D 0x0A) or truncate it early (a stray 0x1A read back as
+// EOF) the moment either byte value appears - and in four frames of a real,
+// non-silent 5.1 tone at 448 kbps, both values appear many times over. So a
+// missing or wrong platform/stdio_binary.hpp call shows up here either as a
+// decode failure or as a byte mismatch against the file-based reference,
+// not as a subtle level difference.
+TEST_CASE("encode/decode round trip through '-' matches the file-based one", "[cli][stdio]") {
+    const auto dir = scratch_dir();
+    constexpr std::uint32_t kSampleRate = 48000;
+    constexpr std::size_t kFrames = 4 * static_cast<std::size_t>(ac3::kSamplesPerFrame);
+    const auto channels = make_tone_channels(6, kFrames, kSampleRate);
+    const auto wav_path = dir / "stdio_roundtrip_in.wav";
+    REQUIRE(ac3::io::write_wav_f32(wav_path.string(), channels, kSampleRate).has_value());
+
+    // Reference: the classic, all-file round trip.
+    const auto file_ac3 = dir / "stdio_roundtrip_file.ac3";
+    const auto file_wav = dir / "stdio_roundtrip_file_decoded.wav";
+    REQUIRE(run_cli("encode \"" + wav_path.string() + "\" \"" + file_ac3.string() +
+                        "\" 448 couple",
+                    dir / "stdio_roundtrip_file_encode.log") == 0);
+    REQUIRE(run_cli("decode \"" + file_ac3.string() + "\" \"" + file_wav.string() + "\"",
+                    dir / "stdio_roundtrip_file_decode.log") == 0);
+    const auto file_decoded = ac3::io::read_wav(file_wav.string());
+    REQUIRE(file_decoded.has_value());
+
+    // Same round trip, but '-' stands in for both paths at each step: the
+    // WAV goes in over stdin and the AC-3 comes out over stdout, then that
+    // AC-3 goes back in over stdin and the decoded WAV comes out over
+    // stdout.
+    const auto stdio_ac3 = dir / "stdio_roundtrip_stdio.ac3";
+    const auto stdio_wav = dir / "stdio_roundtrip_stdio_decoded.wav";
+    const auto encode_rc = run_cli_stdio("encode - - 448 couple", wav_path, stdio_ac3,
+                                         dir / "stdio_roundtrip_encode.log");
+    INFO(read_log(dir / "stdio_roundtrip_encode.log"));
+    REQUIRE(encode_rc == 0);
+    const auto decode_rc =
+        run_cli_stdio("decode - -", stdio_ac3, stdio_wav, dir / "stdio_roundtrip_decode.log");
+    INFO(read_log(dir / "stdio_roundtrip_decode.log"));
+    REQUIRE(decode_rc == 0);
+
+    // The elementary AC-3 stream must be byte-identical either way - "-" is
+    // a routing change at the argument-parsing layer, not a different
+    // encode path. Compared as a bool first, not the vectors themselves -
+    // see the atmos-encode test above for why (Catch2 stringifying a
+    // multi-KB mismatch for the diff message is slow and was observed to
+    // crash outright).
+    std::ifstream file_ac3_in{file_ac3, std::ios::binary};
+    std::ifstream stdio_ac3_in{stdio_ac3, std::ios::binary};
+    const std::vector<char> file_ac3_bytes{std::istreambuf_iterator<char>{file_ac3_in},
+                                           std::istreambuf_iterator<char>{}};
+    const std::vector<char> stdio_ac3_bytes{std::istreambuf_iterator<char>{stdio_ac3_in},
+                                            std::istreambuf_iterator<char>{}};
+    REQUIRE_FALSE(file_ac3_bytes.empty());
+    const bool ac3_matches = file_ac3_bytes == stdio_ac3_bytes;
+    CHECK(ac3_matches);
+
+    // And the decoded PCM must match too, sample for sample.
+    const auto stdio_decoded = ac3::io::read_wav(stdio_wav.string());
+    REQUIRE(stdio_decoded.has_value());
+    REQUIRE(stdio_decoded->channels.size() == file_decoded->channels.size());
+    CHECK(stdio_decoded->sample_rate == file_decoded->sample_rate);
+    const bool pcm_matches = stdio_decoded->channels == file_decoded->channels;
+    CHECK(pcm_matches);
+}
+
+// eac3-encode and atmos-encode share run_encode/run_decode's read_wav_arg/
+// write_frames helpers, so "-" reaches them too (see main.cpp's kCommands
+// table and this task's own scope note) - covered separately from the
+// encode/decode round trip above since each has its own positional argument
+// shape (tools/layout for eac3-encode, objects for atmos-encode).
+TEST_CASE("eac3-encode and atmos-encode accept '-' for input and output", "[cli][stdio]") {
+    const auto dir = scratch_dir();
+    constexpr std::uint32_t kSampleRate = 48000;
+    constexpr std::size_t kFrames = 3 * static_cast<std::size_t>(ac3::kSamplesPerFrame);
+    const auto channels = make_tone_channels(6, kFrames, kSampleRate);
+    const auto wav_path = dir / "stdio_eac3_atmos_in.wav";
+    REQUIRE(ac3::io::write_wav_f32(wav_path.string(), channels, kSampleRate).has_value());
+
+    const auto eac3_out = dir / "stdio_eac3_out.ec3";
+    const auto eac3_rc = run_cli_stdio("eac3-encode - - 384 cpl 51", wav_path, eac3_out,
+                                       dir / "stdio_eac3.log");
+    INFO(read_log(dir / "stdio_eac3.log"));
+    CHECK(eac3_rc == 0);
+    CHECK(fs::file_size(eac3_out) > 0);
+
+    const auto atmos_out = dir / "stdio_atmos_out.ec3";
+    const auto atmos_rc = run_cli_stdio("atmos-encode - - 448 6", wav_path, atmos_out,
+                                        dir / "stdio_atmos.log");
+    INFO(read_log(dir / "stdio_atmos.log"));
+    CHECK(atmos_rc == 0);
+    CHECK(fs::file_size(atmos_out) > 0);
+}
+
+// Roadmap C4: dialnorm=auto/dialnorm2=auto used to be unconditionally
+// rejected the moment src=/map= was in play (main.cpp's old "not yet
+// supported with src=/map=" error), regardless of whether the routing would
+// have made measurement ambiguous. The fix routes/renders the whole
+// programme once as a measurement pre-pass - the same BS.1770-4 gated pass
+// the single-file path already runs - before the real per-frame encode loop
+// renders it again to actually encode it. `loud`/`quiet` are two whole WAV
+// files, at clearly different levels, so a bug that measured the wrong
+// source (or blended both) reads as a clearly wrong number rather than a
+// coincidental match.
+TEST_CASE("dialnorm=auto/dialnorm2=auto measure the routed programme with src=/map=",
+          "[cli][dialnorm][src]") {
+    const auto dir = scratch_dir();
+    constexpr std::uint32_t kRate = 48000;
+    constexpr std::size_t kFrames = 96000;  // 2s: several full 400ms BS.1770 gate windows
+
+    const auto loud = dir / "dialnorm_src_loud.wav";
+    const auto quiet = dir / "dialnorm_src_quiet.wav";
+    REQUIRE(write_wav(loud, {make_tone(0.9, 220.0, kFrames, kRate)}, kRate));
+    REQUIRE(write_wav(quiet, {make_tone(0.5, 660.0, kFrames, kRate)}, kRate));
+
+    // Solo measurements: each source alone, through a plain mono target, is
+    // the ground truth every assertion below compares against.
+    const auto loud_solo_log = dir / "dialnorm_loud_solo.log";
+    REQUIRE(run_cli("eac3-encode \"" + loud.string() + "\" \"" +
+                        (dir / "loud_solo.ec3").string() + "\" 96 none mono dialnorm=auto",
+                    loud_solo_log) == 0);
+    const auto loud_solo = reported_value(read_log(loud_solo_log), "dialnorm");
+    REQUIRE(loud_solo.has_value());
+
+    const auto quiet_solo_log = dir / "dialnorm_quiet_solo.log";
+    REQUIRE(run_cli("eac3-encode \"" + quiet.string() + "\" \"" +
+                        (dir / "quiet_solo.ec3").string() + "\" 96 none mono dialnorm=auto",
+                    quiet_solo_log) == 0);
+    const auto quiet_solo = reported_value(read_log(quiet_solo_log), "dialnorm");
+    REQUIRE(quiet_solo.has_value());
+
+    // The two solo levels have to actually differ, or a blending bug and a
+    // correct per-source measurement could print the same number by
+    // accident and this test would prove nothing.
+    REQUIRE(*loud_solo != *quiet_solo);
+
+    SECTION("stereo target: matches an equivalent single-file measurement exactly") {
+        // Independent 2-channel equivalent of the src=/map= run below (same
+        // two tones, already in coded-channel order) - the strongest
+        // cross-check available: a straight L/R map= carries bit-identical
+        // audio, so the routed measurement must match this file's own
+        // single-file measurement exactly, not merely "some number".
+        const auto equiv = dir / "dialnorm_equiv_stereo.wav";
+        REQUIRE(write_wav(equiv,
+                          {make_tone(0.9, 220.0, kFrames, kRate),
+                           make_tone(0.5, 660.0, kFrames, kRate)},
+                          kRate));
+        const auto equiv_log = dir / "dialnorm_equiv_stereo.log";
+        REQUIRE(run_cli("eac3-encode \"" + equiv.string() + "\" \"" +
+                            (dir / "equiv_stereo.ec3").string() +
+                            "\" 192 none stereo dialnorm=auto",
+                        equiv_log) == 0);
+        const auto equiv_measured = reported_value(read_log(equiv_log), "dialnorm");
+        REQUIRE(equiv_measured.has_value());
+
+        const auto out = dir / "dialnorm_stereo.ec3";
+        const auto log = dir / "dialnorm_stereo.log";
+        const auto rc = run_cli("eac3-encode \"" + loud.string() + "\" \"" + out.string() +
+                                    "\" 192 none stereo src=\"" + quiet.string() +
+                                    "\" map=0.0:L,1.0:R dialnorm=auto",
+                                log);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(rc == 0);
+        CHECK(fs::exists(out));
+        // Was unconditionally rejected before this fix.
+        CHECK(text.find("not yet supported") == std::string::npos);
+        const auto measured = reported_value(text, "dialnorm");
+        REQUIRE(measured.has_value());
+        CHECK(*measured == *equiv_measured);
+    }
+
+    SECTION("map= trim is measured on the rendered programme, not the raw source levels") {
+        const auto trimmed_out = dir / "dialnorm_multi_trimmed.ec3";
+        const auto trimmed_log = dir / "dialnorm_multi_trimmed.log";
+        REQUIRE(run_cli("eac3-encode \"" + loud.string() + "\" \"" + trimmed_out.string() +
+                            "\" 192 none stereo src=\"" + quiet.string() +
+                            "\" map=0.0:L@-12,1.0:R dialnorm=auto",
+                        trimmed_log) == 0);
+        const auto trimmed = reported_value(read_log(trimmed_log), "dialnorm");
+        REQUIRE(trimmed.has_value());
+
+        const auto untrimmed_out = dir / "dialnorm_multi_untrimmed.ec3";
+        const auto untrimmed_log = dir / "dialnorm_multi_untrimmed.log";
+        REQUIRE(run_cli("eac3-encode \"" + loud.string() + "\" \"" + untrimmed_out.string() +
+                            "\" 192 none stereo src=\"" + quiet.string() +
+                            "\" map=0.0:L,1.0:R dialnorm=auto",
+                        untrimmed_log) == 0);
+        const auto untrimmed = reported_value(read_log(untrimmed_log), "dialnorm");
+        REQUIRE(untrimmed.has_value());
+
+        // Attenuating the dominant (loud) source by -12 dB before measuring
+        // must measurably quieten the programme (a bigger dialnorm number).
+        // If this measured the raw, unrouted source files instead of the
+        // rendered/trimmed ones, the trim would have no effect at all.
+        CHECK(*trimmed > *untrimmed);
+    }
+
+    SECTION("1+1 target via src=/map=: each source's channel is measured on its own") {
+        const auto out = dir / "dialnorm_dualmono_multi.ec3";
+        const auto log = dir / "dialnorm_dualmono_multi.log";
+        const auto rc = run_cli("eac3-encode \"" + loud.string() + "\" \"" + out.string() +
+                                    "\" 192 none 1+1 src=\"" + quiet.string() +
+                                    "\" map=0.0:p1,1.0:p2 dialnorm=auto dialnorm2=auto",
+                                log);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(rc == 0);
+        CHECK(fs::exists(out));
+        const auto ch1 = reported_value(text, "dialnorm");
+        const auto ch2 = reported_value(text, "dialnorm2");
+        REQUIRE(ch1.has_value());
+        REQUIRE(ch2.has_value());
+        // p1 came from `loud` alone, p2 from `quiet` alone - a correct,
+        // per-programme measurement matches each source's own solo number
+        // exactly; a blended or swapped measurement would not.
+        CHECK(*ch1 == *loud_solo);
+        CHECK(*ch2 == *quiet_solo);
+    }
+}
+
+// Same fix, plain AC-3 (run_encode_multi rather than run_eac3_encode_multi) -
+// a separate function in main.cpp with its own copy of the measurement
+// pre-pass, so it needs its own proof it was actually fixed too.
+TEST_CASE("dialnorm=auto works with src=/map= on the plain AC-3 encode path too",
+          "[cli][dialnorm][src]") {
+    const auto dir = scratch_dir();
+    constexpr std::uint32_t kRate = 48000;
+    constexpr std::size_t kFrames = 96000;
+    const auto loud = dir / "dialnorm_ac3_loud.wav";
+    const auto quiet = dir / "dialnorm_ac3_quiet.wav";
+    REQUIRE(write_wav(loud, {make_tone(0.9, 220.0, kFrames, kRate)}, kRate));
+    REQUIRE(write_wav(quiet, {make_tone(0.5, 660.0, kFrames, kRate)}, kRate));
+
+    const auto out = dir / "dialnorm_ac3_multi.ac3";
+    const auto log = dir / "dialnorm_ac3_multi.log";
+    const auto rc = run_cli("encode \"" + loud.string() + "\" \"" + out.string() +
+                                "\" 192 stereo src=\"" + quiet.string() +
+                                "\" map=0.0:L,1.0:R dialnorm=auto",
+                            log);
+    const auto text = read_log(log);
+    INFO(text);
+    CHECK(rc == 0);
+    CHECK(fs::exists(out));
+    CHECK(text.find("not yet supported") == std::string::npos);
+    CHECK(reported_value(text, "dialnorm").has_value());
+}
+
+// Roadmap C4's other half: dual mono (1+1) dialnorm=auto looked implemented
+// already (measured_dialnorm_channel existed for Ch2), but Ch1's own
+// measurement went through measured_dialnorm() with the target's acmod
+// (kDualMono) instead - which runs a normal multi-channel BS.1770 pass
+// across BOTH wav channels at once, silently reporting the combined loudness
+// of Ch1+Ch2 as if they were a coherent stereo pair, rather than Ch1's own
+// channel alone (§E1.3: the two programmes are unrelated and share no
+// downmix). Ch1 and Ch2 are given comparable levels here specifically so
+// that bug - a summed-power measurement roughly 3 dB louder than Ch1 alone -
+// would read as a clearly different, clearly wrong dialnorm rather than a
+// rounding nuance.
+TEST_CASE("dialnorm=auto for 1+1 dual mono measures each programme's own channel, "
+          "single-file path",
+          "[cli][dialnorm][dual-mono]") {
+    const auto dir = scratch_dir();
+    constexpr std::uint32_t kRate = 48000;
+    constexpr std::size_t kFrames = 96000;
+
+    const auto ch1_tone = make_tone(0.5, 220.0, kFrames, kRate);
+    const auto ch2_tone = make_tone(0.5, 660.0, kFrames, kRate);
+
+    const auto ch1_solo_path = dir / "dm_ch1_solo.wav";
+    REQUIRE(write_wav(ch1_solo_path, {ch1_tone}, kRate));
+    const auto ch1_log = dir / "dm_ch1_solo.log";
+    REQUIRE(run_cli("eac3-encode \"" + ch1_solo_path.string() + "\" \"" +
+                        (dir / "dm_ch1_solo.ec3").string() + "\" 96 none mono dialnorm=auto",
+                    ch1_log) == 0);
+    const auto ch1_solo = reported_value(read_log(ch1_log), "dialnorm");
+    REQUIRE(ch1_solo.has_value());
+
+    const auto ch2_solo_path = dir / "dm_ch2_solo.wav";
+    REQUIRE(write_wav(ch2_solo_path, {ch2_tone}, kRate));
+    const auto ch2_log = dir / "dm_ch2_solo.log";
+    REQUIRE(run_cli("eac3-encode \"" + ch2_solo_path.string() + "\" \"" +
+                        (dir / "dm_ch2_solo.ec3").string() + "\" 96 none mono dialnorm=auto",
+                    ch2_log) == 0);
+    const auto ch2_solo = reported_value(read_log(ch2_log), "dialnorm");
+    REQUIRE(ch2_solo.has_value());
+
+    const auto dualmono_path = dir / "dm_dualmono.wav";
+    REQUIRE(write_wav(dualmono_path, {ch1_tone, ch2_tone}, kRate));
+
+    SECTION("eac3-encode") {
+        const auto out = dir / "dm_eac3.ec3";
+        const auto log = dir / "dm_eac3.log";
+        const auto rc = run_cli("eac3-encode \"" + dualmono_path.string() + "\" \"" +
+                                    out.string() +
+                                    "\" 192 none 1+1 dialnorm=auto dialnorm2=auto",
+                                log);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(rc == 0);
+        CHECK(fs::exists(out));
+        const auto ch1 = reported_value(text, "dialnorm");
+        const auto ch2 = reported_value(text, "dialnorm2");
+        REQUIRE(ch1.has_value());
+        REQUIRE(ch2.has_value());
+        CHECK(*ch1 == *ch1_solo);
+        CHECK(*ch2 == *ch2_solo);
+    }
+
+    SECTION("encode (plain AC-3)") {
+        const auto out = dir / "dm_ac3.ac3";
+        const auto log = dir / "dm_ac3.log";
+        const auto rc = run_cli("encode \"" + dualmono_path.string() + "\" \"" + out.string() +
+                                    "\" 192 1+1 dialnorm=auto dialnorm2=auto",
+                                log);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(rc == 0);
+        CHECK(fs::exists(out));
+        const auto ch1 = reported_value(text, "dialnorm");
+        const auto ch2 = reported_value(text, "dialnorm2");
+        REQUIRE(ch1.has_value());
+        REQUIRE(ch2.has_value());
+        CHECK(*ch1 == *ch1_solo);
+        CHECK(*ch2 == *ch2_solo);
+    }
+}
+
+// Roadmap C2: `ac3cli qc` - decode a stream, measure it with the real
+// BS.1770-4 meter, and compare against the embedded dialnorm/compr and,
+// optionally, a named delivery-spec gate. See main.cpp's run_qc/
+// report_qc_programme and ac3/meta/qc.hpp for the implementation these tests
+// exercise through the real, built binary (this file's own top comment on
+// why: main.cpp has no library surface to link against directly).
+
+TEST_CASE("qc preset= rejects an unknown name and accepts every real one", "[cli][qc]") {
+    const auto dir = scratch_dir();
+    const auto wav_path = dir / "qc_preset_parse_in.wav";
+    const auto channels =
+        make_tone_channels(6, 4 * static_cast<std::size_t>(ac3::kSamplesPerFrame), 48000);
+    REQUIRE(ac3::io::write_wav_f32(wav_path.string(), channels, 48000).has_value());
+    const auto ac3_path = dir / "qc_preset_parse.ac3";
+    REQUIRE(run_cli("encode \"" + wav_path.string() + "\" \"" + ac3_path.string() + "\" 192 51",
+                    dir / "qc_preset_parse_encode.log") == 0);
+
+    SECTION("an unrecognised value is refused, not silently ignored") {
+        const auto log = dir / "qc_preset_bad.log";
+        const auto rc = run_cli("qc \"" + ac3_path.string() + "\" preset=bogus", log);
+        CHECK(rc != 0);
+        CHECK(read_log(log).find("preset") != std::string::npos);
+    }
+
+    SECTION("preset=ebu-r128-s2 parses and runs a gate check") {
+        const auto log = dir / "qc_preset_ebu.log";
+        const auto rc = run_cli("qc \"" + ac3_path.string() + "\" preset=ebu-r128-s2", log);
+        const auto text = read_log(log);
+        INFO(text);
+        (void)rc;  // reflects the gate verdict here, not a parse failure - see below instead
+        CHECK(text.find("unknown qc preset") == std::string::npos);
+        CHECK(text.find("ebu-r128-s2:") != std::string::npos);
+        CHECK(text.find("gates:") != std::string::npos);
+    }
+
+    SECTION("preset=atsc-a85 parses and runs a gate check") {
+        const auto log = dir / "qc_preset_atsc.log";
+        run_cli("qc \"" + ac3_path.string() + "\" preset=atsc-a85", log);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(text.find("unknown qc preset") == std::string::npos);
+        CHECK(text.find("atsc-a85:") != std::string::npos);
+    }
+
+    SECTION("preset=netflix parses and runs a gate check") {
+        const auto log = dir / "qc_preset_netflix.log";
+        run_cli("qc \"" + ac3_path.string() + "\" preset=netflix", log);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(text.find("unknown qc preset") == std::string::npos);
+        CHECK(text.find("netflix:") != std::string::npos);
+    }
+
+    SECTION("preset=all checks every preset") {
+        const auto log = dir / "qc_preset_all.log";
+        run_cli("qc \"" + ac3_path.string() + "\" preset=all", log);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(text.find("ebu-r128-s2:") != std::string::npos);
+        CHECK(text.find("atsc-a85:") != std::string::npos);
+        CHECK(text.find("netflix:") != std::string::npos);
+    }
+
+    SECTION("no preset at all just measures - no 'gates:' section, exit 0") {
+        const auto log = dir / "qc_preset_none.log";
+        const auto rc = run_cli("qc \"" + ac3_path.string() + "\"", log);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(rc == 0);
+        CHECK(text.find("gates:") == std::string::npos);
+    }
+}
+
+TEST_CASE("qc reports the embedded dialnorm and a sane, self-consistent measured loudness",
+          "[cli][qc]") {
+    const auto dir = scratch_dir();
+    const auto wav_path = dir / "qc_measure_in.wav";
+    constexpr std::uint32_t kSampleRate = 48000;
+    // 96000 samples = 2 s: BS.1770's absolute gate needs a full 400 ms
+    // block before integrated_lkfs() reports anything at all (LoudnessMeter's
+    // own doc comment) - a handful of AC-3 frames is not enough, the same
+    // reason the dialnorm=auto tests above all use this same duration.
+    constexpr std::size_t kFrames = 96000;
+    const auto channels = make_tone_channels(6, kFrames, kSampleRate);
+    REQUIRE(ac3::io::write_wav_f32(wav_path.string(), channels, kSampleRate).has_value());
+
+    const auto ac3_path = dir / "qc_measure.ac3";
+    constexpr int kDialnorm = 17;
+    REQUIRE(run_cli("encode \"" + wav_path.string() + "\" \"" + ac3_path.string() +
+                        "\" 256 51 dialnorm=" + std::to_string(kDialnorm),
+                    dir / "qc_measure_encode.log") == 0);
+
+    const auto log = dir / "qc_measure.log";
+    const auto rc = run_cli("qc \"" + ac3_path.string() + "\"", log);
+    const auto text = read_log(log);
+    INFO(text);
+    // Measure-only (no preset=) never gates - a successful decode always
+    // exits 0, whatever the numbers turn out to be.
+    CHECK(rc == 0);
+
+    const auto dialnorm = value_after(text, "dialnorm");
+    REQUIRE(dialnorm.has_value());
+    CHECK(*dialnorm == Catch::Approx(kDialnorm));
+
+    const auto measured = value_after(text, "integrated loudness");
+    REQUIRE(measured.has_value());
+    // Real, non-silent, non-clipping multichannel content: comfortably
+    // inside BS.1770's legal range, nowhere near the -70 LKFS "no
+    // meaningful loudness" floor and never above digital 0 dBFS.
+    CHECK(*measured > -70.0);
+    CHECK(*measured < 0.0);
+
+    const auto claimed = value_after(text, "claimed");
+    REQUIRE(claimed.has_value());
+    CHECK(*claimed == Catch::Approx(-static_cast<double>(kDialnorm)));
+
+    const auto delta = value_after(text, "delta");
+    REQUIRE(delta.has_value());
+    // Self-consistency: the printed delta must be exactly measured -
+    // claimed - the same arithmetic report_qc_programme performs internally
+    // to produce it, and exactly what a sign or operand-order bug there
+    // would break.
+    CHECK(*delta == Catch::Approx(*measured - *claimed).margin(0.01));
+}
+
+// Roadmap C2's own explicit ask: a case where the embedded dialnorm and the
+// measured loudness deliberately disagree, so the delta-reporting path is
+// genuinely exercised rather than merely the agreement case above. dialnorm=1
+// claims the loudest legal dialogue level (-1 LKFS) against a deliberately
+// quiet (0.05 amplitude, well under make_tone_channels' own 0.5) real 5.1 mix
+// - measured loudness cannot plausibly reach anywhere near -1 LKFS for
+// content this quiet, so the mismatch is large and its sign (measured is
+// quieter than claimed) is guaranteed by construction, not a coincidence of
+// whatever the codec happened to produce.
+TEST_CASE("qc's dialnorm-vs-measured delta is genuinely exercised when they deliberately disagree",
+          "[cli][qc][dialnorm]") {
+    const auto dir = scratch_dir();
+    const auto wav_path = dir / "qc_mismatch_in.wav";
+    constexpr std::uint32_t kSampleRate = 48000;
+    // 96000 samples = 2 s: BS.1770's absolute gate needs a full 400 ms
+    // block before integrated_lkfs() reports anything at all (LoudnessMeter's
+    // own doc comment) - a handful of AC-3 frames is not enough, the same
+    // reason the dialnorm=auto tests above all use this same duration.
+    constexpr std::size_t kFrames = 96000;
+    std::vector<std::vector<float>> quiet_channels;
+    quiet_channels.reserve(6);
+    for (int ch = 0; ch < 6; ++ch) {
+        quiet_channels.push_back(
+            make_tone(0.05, 200.0 + 137.0 * static_cast<double>(ch), kFrames, kSampleRate));
+    }
+    REQUIRE(write_wav(wav_path, quiet_channels, kSampleRate));
+
+    const auto ec3_path = dir / "qc_mismatch.ec3";
+    constexpr int kWrongDialnorm = 1;  // claims -1 LKFS - as loud as dialnorm can say
+    REQUIRE(run_cli("eac3-encode \"" + wav_path.string() + "\" \"" + ec3_path.string() +
+                        "\" 192 none 51 dialnorm=" + std::to_string(kWrongDialnorm),
+                    dir / "qc_mismatch_encode.log") == 0);
+
+    const auto log = dir / "qc_mismatch.log";
+    run_cli("qc \"" + ec3_path.string() + "\" preset=atsc-a85", log);
+    const auto text = read_log(log);
+    INFO(text);
+
+    const auto dialnorm = value_after(text, "dialnorm");
+    REQUIRE(dialnorm.has_value());
+    CHECK(*dialnorm == Catch::Approx(kWrongDialnorm));
+
+    const auto measured = value_after(text, "integrated loudness");
+    REQUIRE(measured.has_value());
+
+    const auto delta = value_after(text, "delta");
+    REQUIRE(delta.has_value());
+    // Deliberately, substantially negative - measured is far quieter than
+    // the -1 LKFS dialnorm=1 claims, by construction (see this test's own
+    // comment above), not a rounding nuance a correct-but-tiny delta could
+    // also produce.
+    CHECK(*delta < -5.0);
+
+    // The measurement-derived dialnorm this mismatch implies is nowhere near
+    // the wrong embedded value - the disagreement is real, not cosmetic.
+    const auto implied_pos = text.find("measurement-derived dialnorm would be");
+    REQUIRE(implied_pos != std::string::npos);
+    const auto implied = value_after(text.substr(implied_pos), "would be");
+    REQUIRE(implied.has_value());
+    CHECK(*implied != kWrongDialnorm);
+    CHECK(*implied > kWrongDialnorm + 10);  // a much quieter (larger) dialnorm code
+
+    // The gate line's own arithmetic is self-consistent too: ATSC A/85's
+    // published target/tolerance/ceiling (Sec.6: -24 LKFS +/-2 dB, true peak
+    // <= -2 dBTP - see ac3/meta/qc.hpp's own citation) reproduced here as
+    // literals to check the CLI's printed numbers against, not derived from
+    // them. This does not assume which way the verdict lands (a quiet
+    // dialnorm=1 mismatch says nothing about where -22-ish LKFS content
+    // happens to sit relative to a -24 LKFS target, and it turns out to
+    // land inside tolerance here) - only that the printed verdict is exactly
+    // what evaluate_qc_gate's own |delta| <= tolerance / measured <= ceiling
+    // rule would produce from the printed numbers.
+    constexpr double kAtscTargetLkfs = -24.0;
+    constexpr double kAtscToleranceLu = 2.0;
+    constexpr double kAtscMaxTruePeakDbtp = -2.0;
+    const auto gate_pos = text.find("atsc-a85:");
+    REQUIRE(gate_pos != std::string::npos);
+    const auto gate_text = text.substr(gate_pos);
+    const auto gate_delta = value_after(gate_text, "delta");
+    REQUIRE(gate_delta.has_value());
+    CHECK(*gate_delta == Catch::Approx(*measured - kAtscTargetLkfs).margin(0.01));
+    const auto expect_loudness_pass = std::abs(*gate_delta) <= kAtscToleranceLu;
+
+    const auto peak_section = gate_text.substr(gate_text.find("true peak"));
+    const auto gate_peak_measured = value_after(peak_section, "measured");
+    REQUIRE(gate_peak_measured.has_value());
+    const auto expect_peak_pass = *gate_peak_measured <= kAtscMaxTruePeakDbtp;
+
+    const auto overall = gate_verdict_after(text, gate_pos);
+    REQUIRE(overall.has_value());
+    CHECK(*overall == (expect_loudness_pass && expect_peak_pass));
+}
+
+TEST_CASE(
+    "qc preset=all checks every preset, and the exit code matches whether every verdict passed",
+    "[cli][qc]") {
+    const auto dir = scratch_dir();
+    const auto wav_path = dir / "qc_all_in.wav";
+    constexpr std::uint32_t kSampleRate = 48000;
+    // 96000 samples = 2 s: BS.1770's absolute gate needs a full 400 ms
+    // block before integrated_lkfs() reports anything at all (LoudnessMeter's
+    // own doc comment) - a handful of AC-3 frames is not enough, the same
+    // reason the dialnorm=auto tests above all use this same duration.
+    constexpr std::size_t kFrames = 96000;
+    const auto channels = make_tone_channels(6, kFrames, kSampleRate);
+    REQUIRE(ac3::io::write_wav_f32(wav_path.string(), channels, kSampleRate).has_value());
+    const auto ec3_path = dir / "qc_all.ec3";
+    REQUIRE(run_cli("eac3-encode \"" + wav_path.string() + "\" \"" + ec3_path.string() +
+                        "\" 256 cpl 51 dialnorm=auto",
+                    dir / "qc_all_encode.log") == 0);
+
+    const auto log = dir / "qc_all.log";
+    const auto rc = run_cli("qc \"" + ec3_path.string() + "\" preset=all", log);
+    const auto text = read_log(log);
+    INFO(text);
+
+    for (const std::string_view name : {"ebu-r128-s2:", "atsc-a85:", "netflix:"}) {
+        CHECK(text.find(name) != std::string::npos);
+    }
+
+    const auto ebu_pass = gate_verdict_after(text, text.find("ebu-r128-s2:"));
+    const auto atsc_pass = gate_verdict_after(text, text.find("atsc-a85:"));
+    const auto netflix_pass = gate_verdict_after(text, text.find("netflix:"));
+    REQUIRE(ebu_pass.has_value());
+    REQUIRE(atsc_pass.has_value());
+    REQUIRE(netflix_pass.has_value());
+
+    // The exit code (this project's own binary 0/1 convention - see this
+    // file's own run_cli comment) must match "every requested gate passed",
+    // recomputed from the same three verdicts the log itself printed -
+    // whichever way the real BS.1770 numbers actually land, a bug that ORs
+    // instead of ANDs the per-preset verdicts (or ignores one preset
+    // entirely) shows up here as rc disagreeing with this recomputation.
+    const bool expect_success = *ebu_pass && *atsc_pass && *netflix_pass;
+    CHECK((rc == 0) == expect_success);
+}
+
+// silence/eac3-silence build their frames from build_silent_stereo_frame/
+// build_silent_access_unit, both already covered directly (test_frame.cpp,
+// test_eac3.cpp) - what neither of those unit-tests can see is the CLI
+// dispatch row itself: whether 'silence <out> [seconds] [bitrate_kbps]' and
+// 'eac3-silence <out> [seconds] [bitrate_kbps] [layout]' actually route argv
+// to the right parameters. main.cpp's own comment on the command table
+// above records six real argv-index bugs found consolidating the old
+// if-chain into that table, none of which a unit test on the frame builders
+// alone could have caught - only running the built binary can.
+
+TEST_CASE("silence writes the documented default duration/bitrate and decodes to genuine "
+         "silence",
+         "[cli][silence]") {
+    const auto dir = scratch_dir();
+    const auto out_path = dir / "silence_default.ac3";
+    const auto log = dir / "silence_default.log";
+    fs::remove(out_path);
+    REQUIRE(run_cli("silence \"" + out_path.string() + "\"", log) == 0);
+
+    // Defaults are 5 s at 192 kbps (see main.cpp's kCommands row and
+    // run_silence's own u32(2, 5)/u32(3, 192) fallbacks) - pinned here
+    // against the same frame_size_bytes() the encoder itself uses, not a
+    // transcribed byte count.
+    const std::uint64_t expect_count = (5ull * 48000 + 1535) / 1536;
+    const auto frame_bytes = ac3::frame_size_bytes(ac3::SampleRate::k48000, 192);
+    REQUIRE(frame_bytes.has_value());
+    REQUIRE(fs::exists(out_path));
+    CHECK(fs::file_size(out_path) == expect_count * *frame_bytes);
+
+    const auto wav_path = dir / "silence_default.wav";
+    REQUIRE(run_cli("decode \"" + out_path.string() + "\" \"" + wav_path.string() + "\"",
+                    dir / "silence_default_decode.log") == 0);
+    const auto decoded = ac3::io::read_wav(wav_path.string());
+    REQUIRE(decoded.has_value());
+    REQUIRE(decoded->channels.size() == 2);
+    REQUIRE(decoded->frame_count() > 0);
+    for (const auto& channel : decoded->channels) {
+        CHECK(rms(channel, 0, channel.size()) == 0.0);
+    }
+}
+
+TEST_CASE("silence threads its seconds and bitrate arguments to the right parameters, "
+         "not swapped",
+         "[cli][silence]") {
+    const auto dir = scratch_dir();
+    const auto out_path = dir / "silence_explicit.ac3";
+    const auto log = dir / "silence_explicit.log";
+    fs::remove(out_path);
+    // 2 seconds at 384 kbps: distinct enough from the 5 s/192 kbps default
+    // that a swapped or misindexed argv read produces a file size neither
+    // combination could coincidentally match.
+    REQUIRE(run_cli("silence \"" + out_path.string() + "\" 2 384", log) == 0);
+
+    const std::uint64_t expect_count = (2ull * 48000 + 1535) / 1536;
+    const auto frame_bytes = ac3::frame_size_bytes(ac3::SampleRate::k48000, 384);
+    REQUIRE(frame_bytes.has_value());
+    REQUIRE(fs::exists(out_path));
+    CHECK(fs::file_size(out_path) == expect_count * *frame_bytes);
+}
+
+TEST_CASE("silence rejects an illegal bitrate and leaves no file behind", "[cli][silence]") {
+    const auto dir = scratch_dir();
+    const auto out_path = dir / "silence_bad_bitrate.ac3";
+    const auto log = dir / "silence_bad_bitrate.log";
+    fs::remove(out_path);
+    const auto rc = run_cli("silence \"" + out_path.string() + "\" 1 193", log);
+    CHECK(rc != 0);
+    CHECK_FALSE(fs::exists(out_path));
+    CHECK(read_log(log).find("bitrate") != std::string::npos);
+}
+
+TEST_CASE("eac3-silence threads its layout argument through to the reported label and "
+         "substream count, and decodes to genuine silence",
+         "[cli][eac3-silence]") {
+    const auto dir = scratch_dir();
+
+    const auto stereo_path = dir / "eac3_silence_stereo.ec3";
+    const auto stereo_log = dir / "eac3_silence_stereo.log";
+    fs::remove(stereo_path);
+    REQUIRE(run_cli("eac3-silence \"" + stereo_path.string() + "\"", stereo_log) == 0);
+    const auto stereo_text = read_log(stereo_log);
+    INFO(stereo_text);
+    CHECK(stereo_text.find("2/0 stereo") != std::string::npos);  // the "stereo" default's label
+    CHECK(stereo_text.find("1 substreams") != std::string::npos);
+
+    const auto surround_path = dir / "eac3_silence_51.ec3";
+    const auto surround_log = dir / "eac3_silence_51.log";
+    fs::remove(surround_path);
+    REQUIRE(run_cli("eac3-silence \"" + surround_path.string() + "\" 1 192 51", surround_log) ==
+           0);
+    const auto surround_text = read_log(surround_log);
+    INFO(surround_text);
+    CHECK(surround_text.find("5.1") != std::string::npos);
+    CHECK(surround_text.find("2/0 stereo") == std::string::npos);
+
+    const auto wav_path = dir / "eac3_silence_51.wav";
+    REQUIRE(run_cli("decode \"" + surround_path.string() + "\" \"" + wav_path.string() + "\"",
+                    dir / "eac3_silence_51_decode.log") == 0);
+    const auto decoded = ac3::io::read_wav(wav_path.string());
+    REQUIRE(decoded.has_value());
+    REQUIRE(decoded->frame_count() > 0);
+    for (const auto& channel : decoded->channels) {
+        CHECK(rms(channel, 0, channel.size()) == 0.0);
+    }
 }

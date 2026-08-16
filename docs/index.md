@@ -95,11 +95,16 @@ misaligning them against the one still catching up.
 |---|---|
 | `ac3::io::scan` | Finds access-unit boundaries in a raw elementary stream and reports what it renders, without being told. |
 | `matroska::matroska` | A standalone MKV muxer. Links nothing from `ac3::forge` and knows nothing about AC-3. |
+| `mp4::mp4` | A standalone MP4/ISOBMFF muxer, same shape as `matroska::matroska`. `ac3::io::build_codec_config_box` builds a spec-correct `dac3`/`dec3` sample-entry box (ETSI TS 102 366 Annex F), Dolby Atmos extension included, straight off the bitstream. |
+| `mpegts::mpegts` | A standalone MPEG-2 Transport Stream muxer (PAT + PMT + one PES-wrapped elementary stream), identifying AC-3/E-AC-3 per DVB's ETSI EN 300 468 Annex D descriptors. Links nothing from `ac3::forge` beyond the AC-3/E-AC-3 choice it is told. |
+| `ac3adm::ac3adm` | A standalone BW64/RF64 + Audio Definition Model reader (roadmap item B1 phase 1 — the ADM/RF64 parser; object/bed mapping onto `ac3::oba::AtmosEncoder` is a later phase). Parses the container (ITU-R BS.2088-1) and the ADM XML graph (ITU-R BS.2076-2) on top of the vendored libbw64/libadm (github.com/ebu); links nothing from `ac3::forge` and knows nothing about AC-3. Opt-in (`-DAC3FORGE_BUILD_ADM=ON`, needs Boost) — the one component in this project with a third-party dependency. |
+| `mp4::fragment` + `mp4/hls.hpp` + `mp4/dash.hpp` | Fragmented MP4/CMAF segmenting (init segment + media segments, ISO/IEC 14496-12 §8.8 / ISO/IEC 23000-19) plus HLS media/master playlist and DASH `AdaptationSet` signaling helpers for the same segments — correct `CODECS`/`codecs` (RFC 6381) and, for Dolby Atmos, HLS's `CHANNELS="<N>/JOC"` (Apple's HLS Authoring Specification). `ac3cli fmp4` wraps the whole thing. |
 | `ac3::sinks::iec61937` | S/PDIF burst packing: AC-3 byte-exact against FFmpeg's `spdif` muxer; E-AC-3 (`Eac3BurstPacker`) verified against FFmpeg's `spdif_header_eac3` and Microsoft's own IEC 61937 documentation (both independently fetched, not recalled — see the caveats below). |
 | `ac3::capture` | Live input/loopback capture — WASAPI on Windows, ALSA on Linux — through a lock-free SPSC ring. |
 | `ac3::sinks::PassthroughSink` | Exclusive-mode/direct bitstream output, AC-3 or E-AC-3 — WASAPI on Windows, ALSA on Linux, JNI-bridged `AudioTrack` on Android. See the caveats below (Windows and Android hardware-confirmed; the ALSA backend is not). |
 | `ac3::sinks::MonitorSink` | Shared-mode PCM playback — WASAPI or ALSA: a non-bitstreamed preview/monitor path that decodes what is being encoded and plays it back on an ordinary output. Confirmed against real Windows hardware. |
 | `ac3::analysis` | Peak/RMS metering with console ballistics, and the Gerzon energy vector over the BS.775 ring. |
+| `ac3::meta::qc` | Bitstream-aware loudness QC (roadmap C2, `ac3cli qc`): decodes a stream, measures it with the real BS.1770-4/EBU Tech 3342 meter, and compares against the stream's own embedded `dialnorm`/`compr` and, optionally, a named delivery-spec gate — EBU R 128 s2, ATSC A/85, or Netflix's Sound Mix Specifications, each preset's target/tolerance/true-peak ceiling cited from its own primary source. |
 
 ## What it does not do
 
@@ -148,5 +153,5 @@ it has no equivalent and stays CBR.
 - **Validation** — [how output is checked](verification.md): quality numbers, oracle coverage,
   and exactly where it runs out.
 - **Library** — [Conventions](library/index.md): the public C++ API, with compiled examples.
-- **CLI reference** — [Overview](cli/index.md): `ac3cli`'s twenty-one commands.
+- **CLI reference** — [Overview](cli/index.md): `ac3cli`'s twenty-five commands.
 - **GUI guide** — [Window layout](gui/index.md): `ac3gui`, the Qt Quick front end.

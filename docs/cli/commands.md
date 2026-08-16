@@ -22,8 +22,12 @@ Usage:
   ac3cli decode       <in.ac3|in.ec3> <out.wav>               (AC-3 or E-AC-3; bsid decides)
   ac3cli levels       <in.wav|in.ac3|in.ec3>                  (per-channel peak/RMS report)
   ac3cli loudness     <in.wav>                                (BS.1770-4 loudness -> dialnorm)
+  ac3cli qc           <in.ac3|in.ec3> [preset=<name>|all]     (bitstream-aware loudness QC: measured loudness vs. embedded dialnorm/compr, optional preset gate)
   ac3cli spdif        <in.ac3> <out.wav>                      (IEC 61937 wrap as playable PCM16 WAV)
   ac3cli mkv          <in.ac3|in.ec3> <out.mkv>               (wrap as a playable Matroska file)
+  ac3cli mp4          <in.ac3|in.ec3> <out.mp4>               (wrap as a playable MP4 with a spec-correct dac3/dec3 box)
+  ac3cli ts           <in.ac3|in.ec3> <out.ts>                (wrap as an MPEG-2 Transport Stream (DVB profile))
+  ac3cli fmp4         <in.ac3|in.ec3> <out_dir> [frames_per_fragment] (fragmented MP4/CMAF + HLS/DASH manifests, ready for a packager)
   ac3cli devices                                              (input and loopback capture endpoints)
   ac3cli outputs                                              (render endpoints + AC-3/E-AC-3 passthrough support)
   ac3cli play         <in.ac3|in.ec3> [device_index]          (exclusive-mode IEC 61937 passthrough; bsid decides AC-3 vs E-AC-3)
@@ -78,6 +82,17 @@ ac3cli encode narration_en.wav out.ac3 192 1+1 narration_fr.wav  # Ch1, Ch2 as s
 See [Metadata options](metadata-options.md) for `dialnorm2=` — Ch2's own dialnorm, alongside the
 usual `dialnorm=`.
 
+`encode`, `eac3-encode` and `atmos-encode` all take `-` in place of `<in.wav>` or the output path
+to mean stdin or stdout, so a pipeline never has to touch a temporary file:
+
+```bash
+ac3cli encode - - 448 couple < in.wav > out.ac3
+```
+
+The status text these commands normally print (frame count, routing, per-channel levels) goes to
+stderr instead of stdout whenever the output side is `-`, so it never ends up inside the piped
+stream.
+
 ### Decoding & inspection
 
 | Command | What it does |
@@ -85,10 +100,42 @@ usual `dialnorm=`.
 | `decode` | AC-3 or E-AC-3 → WAV; `bsid` in the stream decides which decoder runs |
 | `levels` | Per-channel peak/RMS report — takes a WAV or an encoded stream |
 | `loudness` | BS.1770-4 gated loudness on a WAV, reported as the `dialnorm` it implies |
+| `qc` | Bitstream-aware loudness QC (roadmap C2): decodes an already-encoded AC-3/E-AC-3 stream, measures it with the real BS.1770-4/EBU Tech 3342 meter, and compares the result against the stream's own embedded `dialnorm`/`compr` and, optionally, a named delivery-spec gate |
 
 ```bash
 ac3cli decode out.ec3 out.wav
 ```
+
+`decode` takes `-` for either path too, the same convention the encoding commands above use:
+
+```bash
+ac3cli decode - - < out.ac3 > out.wav
+```
+
+`qc` is `loudness`'s bitstream-aware counterpart: `loudness` measures a *source* WAV before encoding, `qc` measures what a stream actually *delivers* after encoding and decoding it back, and checks that against what the stream's own metadata claims:
+
+```bash
+ac3cli qc programme.ec3
+```
+
+```text
+qc: programme.ec3 (E-AC-3, 3/2 + LFE, 48000 Hz, 1440 access unit(s), 30.00 s)
+measured (BS.1770-4 gated / EBU Tech 3342 / BS.1770-4 Annex 2):
+  integrated loudness    -22.87 LKFS
+  loudness range           4.31 LU
+  true peak                -1.62 dBTP
+embedded metadata:
+  dialnorm                24  (claims dialogue at -24.00 LKFS)
+  compr                 absent
+dialnorm check:
+  claimed                -24.00 LKFS  (from dialnorm 24)
+  delta                   +1.13 dB    (measured - claimed; positive = measured is louder)
+  measurement-derived dialnorm would be 23, not 24
+```
+
+Add `preset=<name>` (or `preset=all`) to gate that same measurement against a named delivery spec instead of just reporting it — see [Metadata options](metadata-options.md#qc-options-qc-preset) for the exact preset numbers and the primary source cited for each, and this page's own exit-code note below.
+
+`qc`'s exit code is 0 only when the file decodes cleanly **and** (if a preset was given) every requested gate passes — non-zero otherwise, which is what makes it usable as an actual CI/pipeline QC step: `ac3cli qc out.ec3 preset=ebu-r128-s2 || echo "loudness QC failed"`. With no `preset=` at all it only ever measures and reports (no verdict to fail), so a plain `ac3cli qc <file>` exits non-zero solely on a genuine decode error.
 
 ### Containers
 
@@ -96,6 +143,9 @@ ac3cli decode out.ec3 out.wav
 |---|---|
 | `spdif` | Wraps AC-3 as IEC 61937 bursts inside a playable PCM16 WAV — for feeding a receiver through an ordinary audio path |
 | `mkv` | Wraps AC-3 or E-AC-3 as Matroska, reading format/packet boundaries/sample rate/channel count from the bitstream itself so the container can't be told the wrong ones |
+| `mp4` | Wraps AC-3 or E-AC-3 as a single-file MP4/ISOBMFF, writing a spec-correct `dac3`/`dec3` sample-entry box (fscod/bsid/bsmod/acmod/lfeon, plus the Atmos complexity-index extension for JOC content) read straight off the bitstream |
+| `ts` | Wraps AC-3 or E-AC-3 as an MPEG-2 Transport Stream (PAT + PMT + one PES-wrapped audio PID), identified per the DVB profile — `stream_type` 0x06 plus the `AC3_descriptor`/`Enhanced_AC3_descriptor` ETSI EN 300 468 Annex D defines, not ATSC's |
+| `fmp4` | Writes fragmented MP4/CMAF — an init segment plus one media segment per fragment — alongside an HLS media+master playlist pair and a DASH MPD, all pointing at the same segments, ready for a real HLS/DASH origin or packager. Atmos content signals `CHANNELS="<N>/JOC"` in the HLS playlists automatically |
 
 ### Live & hardware
 
@@ -106,10 +156,10 @@ for what's actually confirmed against real hardware on each OS.
 |---|---|
 | `devices` | Lists capture endpoints (microphones, playback-device loopbacks) |
 | `outputs` | Lists render endpoints and whether each supports AC-3/E-AC-3 passthrough |
-| `record` | Captures from a device straight to an AC-3 file, metering live |
+| `record` | Captures from a device straight to an AC-3 file, metering live — `container=mkv` writes straight to Matroska instead |
 | `play` | Exclusive-mode IEC 61937 passthrough of an existing file — `bsid` decides AC-3 vs. E-AC-3 |
 | `monitor` | Decodes an existing file and plays it on an ordinary, non-bitstreamed output — the shared-mode preview path. For an Atmos-mode stream, this plays the 5.1 **bed**: the in-repo decoder's E-AC-3 scope is A/52 Annex E syntax, not TS 103 420's object layer, so this is what a legacy decoder hears, not unmixed objects. |
-| `live` | Capture → encode → optional live monitor and/or IEC 61937 passthrough, running continuously, still writing the file `record` always has; optionally a second, clock-conformed capture device via `capture2=` |
+| `live` | Capture → encode → optional live monitor and/or IEC 61937 passthrough, running continuously, still writing the file `record` always has; optionally a second, clock-conformed capture device via `capture2=`, or straight to Matroska via `container=mkv` |
 
 `live`'s device arguments: `monitor_device`/`passthrough_device` take `-2` (default, leaves that
 leg off), `-1` (the default render endpoint), or an index from `outputs`. Either or both legs may

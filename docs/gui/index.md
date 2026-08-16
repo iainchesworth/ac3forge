@@ -128,11 +128,10 @@ Encode is ever pressed. This never overwrites an actual edit — the moment Loud
 by hand (in Guided itself, or in Advanced/Expert during the same session), the contract steps aside
 for good, this session, and dialnorm/DRC stay exactly what was set.
 
-Dual mono (`1+1`) gets the honest, partial version: automatic loudness measurement is refused
-outright for dual mono (see [Format & channels](format-and-channels.md#dual-mono)), so the contract
-never turns it on there — it applies film-standard DRC to both programmes instead (Ch2's own
-`drc2`, not inherited from Ch1's — see [Metadata](metadata.md#loudness)) and leaves dialnorm to be
-set by hand, the way it always has been for `1+1`.
+Dual mono (`1+1`) gets the same contract, applied to both programmes: measured loudness and
+film-standard DRC for each one independently (Ch2's own `dialnorm2`/`drc2`, never inherited from
+Ch1's — see [Format & channels](format-and-channels.md#dual-mono) and
+[Metadata](metadata.md#loudness)).
 
 ## Preferences
 

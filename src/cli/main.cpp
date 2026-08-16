@@ -6,8 +6,11 @@
 #include <exception>
 #include <cstdint>
 #include <cstdio>
+#include <expected>
+#include <filesystem>
 #include <format>
 #include <fstream>
+#include <iostream>
 #include <iterator>
 #include <memory>
 #include <numbers>
@@ -29,11 +32,13 @@
 #include "ac3/encoder/encoder.hpp"
 #include "ac3/encoder/plan.hpp"
 #include "ac3/encoder/silent_frame.hpp"
+#include "ac3/io/dec3.hpp"
 #include "ac3/io/elementary.hpp"
 #include "ac3/io/wav.hpp"
 #include "ac3/meta/drc.hpp"
 #include "ac3/meta/loudness.hpp"
 #include "ac3/meta/mixing.hpp"
+#include "ac3/meta/qc.hpp"
 #include "ac3/oba/atmos.hpp"
 #include "ac3/oba/motion.hpp"
 #include "ac3/platform/audio_backend.hpp"
@@ -45,6 +50,11 @@
 #include "ac3/signing/emdf_atmos_signer.hpp"
 #include "ac3/signing/signing_key.hpp"
 #include "matroska/matroska.hpp"
+#include "mp4/dash.hpp"
+#include "mp4/hls.hpp"
+#include "mp4/mp4.hpp"
+#include "mpegts/mpegts.hpp"
+#include "platform/stdio_binary.hpp"
 
 namespace {
 
@@ -113,9 +123,22 @@ void print_meta_usage() {
     std::println("                    the programme is still as long as the longest one once "
                  "every offset is applied");
     std::println();
+    std::println("record/live options (record, live; any order, after the positional "
+                 "arguments):");
+    std::println("  container=mkv     write straight to Matroska instead of the bare elementary");
+    std::println("                    stream this writes by default - same shape of choice as");
+    std::println("                    the GUI's own Container setting");
+    std::println("  container=raw     the default, spelled out");
+    std::println();
     std::println("live options (live; any order, after the positional arguments):");
     std::println("  capture2=<index>  a second capture device, clock-conformed to the first "
                  "(see 'devices')");
+    std::println();
+    std::println("qc options (qc; any order, after the positional arguments):");
+    std::println("  preset=<name>     gate the measurement against a named delivery spec");
+    std::println("                    {}", ac3::meta::kQcPresetNames);
+    std::println("  preset=all        gate against every preset above");
+    std::println("                    omitted: measure and report only, no gate");
 }
 
 // Everything a command accepts after its positional arguments, in any order.
@@ -158,6 +181,13 @@ struct Options {
     // positional already reads. Unset means the classic single-device
     // session, unchanged from before this option existed.
     std::optional<int> capture2 = std::nullopt;
+    // 'record'/'live' only: write straight to Matroska instead of the bare
+    // elementary stream they write by default - the same shape of choice the
+    // GUI's own Container combo offers (EncoderController::containerIndex ==
+    // kContainerMatroska), see write_frames_or_mux. Off by default, matching
+    // every bare-token/off-by-default field here: a plain invocation writes
+    // exactly the .ac3/.ec3 it always has.
+    bool matroska_container = false;
     // Off by default, matching every bare token here - keep whatever frames
     // a failed encode already produced, written beside the intended output
     // as <name>.partial.<ext> instead of discarded outright. The same
@@ -179,6 +209,11 @@ struct Options {
     // (the opt-in spelling from when this defaulted off) stays accepted and
     // now names what already happens.
     bool fast_mdct = true;
+    // 'qc' only: which delivery gate(s) to check the measurement against -
+    // one of ac3::meta::kQcPresetNames, or "all" to check every preset.
+    // Unset (measure-only, no gate) is the default - a plain
+    // 'ac3cli qc <file>' just reports the numbers, no pass/fail verdict.
+    std::optional<std::string> qc_preset;
 };
 
 bool parse_double(std::string_view text, double& out) {
@@ -426,6 +461,29 @@ bool parse_options(std::span<char*> tokens, Options& out) {
             out.capture2 = index;
             continue;
         }
+        if (key == "container") {
+            if (value == "mkv" || value == "matroska") {
+                out.matroska_container = true;
+            } else if (value == "raw") {
+                out.matroska_container = false;
+            } else {
+                std::println(stderr, "error: container must be raw or mkv (got '{}')", token);
+                return false;
+            }
+            continue;
+        }
+        if (key == "preset") {
+            if (value != "all") {
+                ac3::meta::QcPresetId id{};
+                if (!ac3::meta::parse_qc_preset(value, id)) {
+                    std::println(stderr, "error: unknown qc preset '{}' ({} | all)", value,
+                                 ac3::meta::kQcPresetNames);
+                    return false;
+                }
+            }
+            out.qc_preset = std::string{value};
+            continue;
+        }
         if (key == "signing-key") {
             if (value.empty()) {
                 std::println(stderr, "error: signing-key= needs a key file path");
@@ -441,7 +499,39 @@ bool parse_options(std::span<char*> tokens, Options& out) {
     return true;
 }
 
+// Reads a loudness measurement someone else already pushed every sample
+// into, reports it the same way every dialnorm=auto path does, and returns
+// the dialnorm it implies. Factored out of measured_dialnorm/
+// measured_dialnorm_channel below so a measurement built incrementally
+// across many frames (the src=/map= routed-programme pre-pass) reports
+// itself identically to one built from a single whole-buffer push - same
+// text, same rounding, one place either could go wrong. `programme` is the
+// println's leading label ("Ch1"/"Ch2"), empty for a whole-programme
+// measurement that is not about one dual-mono channel; `field` is the
+// bitstream field this measurement feeds ("dialnorm"/"dialnorm2").
+std::optional<int> finish_measurement(const ac3::meta::LoudnessMeter& meter,
+                                      std::string_view programme, std::string_view field) {
+    const auto lkfs = meter.integrated_lkfs();
+    if (!lkfs) {
+        return std::nullopt;
+    }
+    const int dialnorm = ac3::meta::dialnorm_from_lkfs(*lkfs);
+    if (programme.empty()) {
+        std::println("measured {:.2f} LKFS (BS.1770-4, gated) -> {} {}", *lkfs, field, dialnorm);
+    } else {
+        std::println("{} measured {:.2f} LKFS (BS.1770-4, gated) -> {} {}", programme, *lkfs,
+                     field, dialnorm);
+    }
+    return dialnorm;
+}
+
 // BS.1770 integrated loudness of a whole WAV, and the dialnorm it implies.
+// Never meaningful for a dual-mono (1+1) target - Ch1 and Ch2 are two
+// unrelated programmes sharing one syncframe (§E1.3, no downmix between
+// them), so a single BS.1770 pass across both channels would measure a
+// blend of two different things rather than either programme's own level;
+// callers route dual mono through measured_dialnorm_channel on each
+// programme's own channel alone instead.
 std::optional<int> measured_dialnorm(const ac3::io::WavData& wav, ac3::SampleRate rate,
                                      ac3::Acmod acmod, bool lfe) {
     ac3::meta::LoudnessMeter meter{rate, acmod, lfe};
@@ -451,30 +541,20 @@ std::optional<int> measured_dialnorm(const ac3::io::WavData& wav, ac3::SampleRat
         views.emplace_back(channel);
     }
     meter.push(views);
-    const auto lkfs = meter.integrated_lkfs();
-    if (!lkfs) {
-        return std::nullopt;
-    }
-    const int dialnorm = ac3::meta::dialnorm_from_lkfs(*lkfs);
-    std::println("measured {:.2f} LKFS (BS.1770-4, gated) -> dialnorm {}", *lkfs, dialnorm);
-    return dialnorm;
+    return finish_measurement(meter, {}, "dialnorm");
 }
 
 // Same measurement, for one dual-mono programme's own channel alone - never a
 // programme's worth of BS.1770 surround weighting, since a 1+1 channel is not
-// part of a soundfield.
-std::optional<int> measured_dialnorm_channel(std::span<const float> channel,
-                                             ac3::SampleRate rate) {
+// part of a soundfield. `programme`/`field` are finish_measurement's own
+// labels above - "Ch1"/"dialnorm" or "Ch2"/"dialnorm2", the two programmes
+// sharing this one function since the measurement itself does not differ.
+std::optional<int> measured_dialnorm_channel(std::span<const float> channel, ac3::SampleRate rate,
+                                             std::string_view programme, std::string_view field) {
     ac3::meta::LoudnessMeter meter{rate, ac3::Acmod::k1_0, false};
     const std::array<std::span<const float>, 1> views{channel};
     meter.push(views);
-    const auto lkfs = meter.integrated_lkfs();
-    if (!lkfs) {
-        return std::nullopt;
-    }
-    const int dialnorm = ac3::meta::dialnorm_from_lkfs(*lkfs);
-    std::println("Ch2 measured {:.2f} LKFS (BS.1770-4, gated) -> dialnorm2 {}", *lkfs, dialnorm);
-    return dialnorm;
+    return finish_measurement(meter, programme, field);
 }
 
 // Dual mono's Ch1/Ch2 arrive as either one two-channel file or two mono ones;
@@ -533,7 +613,49 @@ bool prepare_dual_mono_source(ac3::io::WavData& wav, std::string_view layout,
     return true;
 }
 
+// The conventional Unix "-" file argument: a lone dash means stdin for an
+// input path or stdout for an output path, the same convention ffmpeg, sox
+// and most other Unix tools use for pipe-based workflows (e.g.
+// `ac3cli encode - - 448 couple < in.wav > out.ac3`). Checked by exact
+// string match only - a path that merely starts with '-' is an ordinary
+// (if oddly named) filename, not this convention.
+bool is_stdio_path(std::string_view path) { return path == "-"; }
+
+// Where a command's human-readable status report goes, once out_path's own
+// destination is settled: stdout as always, unless out_path IS "-" - the
+// binary payload itself is going to stdout then, and a status line like
+// "encoded N frames..." landing in the middle of that stream would corrupt
+// whatever is reading it downstream. The same split ffmpeg and friends make
+// between their progress/log output and the media they actually pipe.
+FILE* status_stream(std::string_view out_path) { return is_stdio_path(out_path) ? stderr : stdout; }
+
+std::vector<std::byte> to_bytes(std::span<const char> raw) {
+    std::vector<std::byte> bytes(raw.size());
+    for (std::size_t i = 0; i < raw.size(); ++i) {
+        bytes[i] = static_cast<std::byte>(static_cast<unsigned char>(raw[i]));
+    }
+    return bytes;
+}
+
 bool write_frames(std::string_view path, std::span<const std::vector<std::byte>> frames) {
+    if (is_stdio_path(path)) {
+        // set_stdio_binary() before the first byte, not once at startup: a
+        // command that never touches "-" (the overwhelming majority of
+        // invocations) should not pay for it, and calling it more than once
+        // in the rare case both the input and output of one command are "-"
+        // is harmless - see platform/stdio_binary.hpp for what it fixes.
+        ac3::cli::platform::set_stdio_binary();
+        for (const auto& frame : frames) {
+            std::cout.write(reinterpret_cast<const char*>(frame.data()),
+                            static_cast<std::streamsize>(frame.size()));
+        }
+        std::cout.flush();
+        if (!std::cout) {
+            std::println(stderr, "error: cannot write to stdout");
+            return false;
+        }
+        return true;
+    }
     std::ofstream out{std::string{path}, std::ios::binary};
     if (!out) {
         std::println(stderr, "error: cannot open {} for writing", path);
@@ -542,6 +664,40 @@ bool write_frames(std::string_view path, std::span<const std::vector<std::byte>>
     for (const auto& frame : frames) {
         out.write(reinterpret_cast<const char*>(frame.data()),
                   static_cast<std::streamsize>(frame.size()));
+    }
+    return true;
+}
+
+// Writes `frames` either as a bare elementary stream (write_frames above) or,
+// when `matroska` is set, muxed into Matroska - the choice 'record'/'live's
+// own container= token (and the GUI's Container combo) offer. `track` is
+// built by the caller from what it already knows about the session (codec,
+// sample rate, coded channel count) rather than scanned off the bitstream
+// the way 'mkv' reads an arbitrary already-encoded file: record/live just
+// finished constructing the encoder themselves, so there is nothing to
+// rediscover. Kept beside write_frames rather than folded into it - most
+// callers have no AudioTrack to give it, and 'mkv' itself stays separate too,
+// since ITS track comes from ac3::io::scan(), not a caller-supplied one.
+bool write_frames_or_mux(std::string_view path, bool matroska, const matroska::AudioTrack& track,
+                         std::span<const std::vector<std::byte>> frames) {
+    if (!matroska) {
+        return write_frames(path, frames);
+    }
+    const auto file = matroska::mux(track, frames);
+    if (!file) {
+        std::println(stderr, "error: {}", matroska::describe(file.error()));
+        return false;
+    }
+    std::ofstream out{std::string{path}, std::ios::binary};
+    if (!out) {
+        std::println(stderr, "error: cannot open {} for writing", path);
+        return false;
+    }
+    out.write(reinterpret_cast<const char*>(file->data()),
+             static_cast<std::streamsize>(file->size()));
+    if (!out) {
+        std::println(stderr, "error: write failed");
+        return false;
     }
     return true;
 }
@@ -572,6 +728,18 @@ void write_partial_output(std::string_view out_path, bool keep_partial,
     if (!keep_partial || frames.empty()) {
         return;
     }
+    if (is_stdio_path(out_path)) {
+        // "beside the intended output" (partial_output_path's naming below)
+        // has no meaning for a pipe - stdout IS the intended output, and a
+        // literal file called "-.partial" is not what keep-partial means
+        // here. So the frames already encoded go straight to stdout instead,
+        // the closest equivalent a single output stream can offer.
+        if (write_frames(out_path, frames)) {
+            std::println(stderr, "note: the {} frames already encoded were written to stdout",
+                         frames.size());
+        }
+        return;
+    }
     const auto partial = partial_output_path(out_path);
     if (write_frames(partial, frames)) {
         std::println(stderr, "note: the {} frames already encoded are kept at {}", frames.size(),
@@ -598,17 +766,47 @@ std::vector<float> interleave_reordered(std::span<const std::vector<float>> chan
 }
 
 std::vector<std::byte> read_all(std::string_view path) {
+    if (is_stdio_path(path)) {
+        ac3::cli::platform::set_stdio_binary();
+        const std::vector<char> raw{std::istreambuf_iterator<char>(std::cin),
+                                    std::istreambuf_iterator<char>()};
+        return to_bytes(raw);
+    }
     std::ifstream in{std::string{path}, std::ios::binary};
     if (!in) {
         return {};
     }
     const std::vector<char> raw{std::istreambuf_iterator<char>(in),
                                 std::istreambuf_iterator<char>()};
-    std::vector<std::byte> bytes(raw.size());
-    for (std::size_t i = 0; i < raw.size(); ++i) {
-        bytes[i] = static_cast<std::byte>(static_cast<unsigned char>(raw[i]));
+    return to_bytes(raw);
+}
+
+// Wraps ac3::io::read_wav to honor the "-" stdin convention (is_stdio_path
+// above): "-" reads the WAV from stdin, binary mode set first, instead of
+// opening a file with that literal name.
+std::expected<ac3::io::WavData, ac3::io::WavError> read_wav_arg(std::string_view path) {
+    if (is_stdio_path(path)) {
+        ac3::cli::platform::set_stdio_binary();
+        return ac3::io::read_wav(std::cin);
     }
-    return bytes;
+    return ac3::io::read_wav(std::string{path});
+}
+
+// Wraps ac3::io::write_wav_f32 to honor the "-" stdout convention: "-"
+// writes the WAV to stdout, binary mode set first, instead of opening a file
+// with that literal name. ac3::io::write_wav_f32(std::ostream&, ...) never
+// seeks (see its own comment), so this is exactly as safe on the unseekable
+// pipe stdout usually is as the path overload is on a plain file.
+std::expected<void, ac3::io::WavError> write_wav_f32_arg(
+        std::string_view path, std::span<const std::vector<float>> channels,
+        std::uint32_t sample_rate, std::span<const std::size_t> channel_order = {}) {
+    if (is_stdio_path(path)) {
+        ac3::cli::platform::set_stdio_binary();
+        auto result = ac3::io::write_wav_f32(std::cout, channels, sample_rate, channel_order);
+        std::cout.flush();
+        return result;
+    }
+    return ac3::io::write_wav_f32(std::string{path}, channels, sample_rate, channel_order);
 }
 
 // ---------------------------------------------------------------------------
@@ -631,16 +829,21 @@ std::string meter_bar(double db, int width) {
 // The exact figures for a finished run. Peak and RMS here are unweighted over
 // the whole signal — ballistics exist to make a moving display readable, and
 // would only blur a question that has a right answer.
-void print_channel_summary(const ac3::analysis::LevelMeter& meter) {
+// `out` defaults to stdout for every existing caller; the only ones that
+// pass anything else are the "-" stdout-output commands (encode/eac3-encode/
+// atmos-encode/decode), which redirect it to stderr so this human-readable
+// report doesn't land in the middle of the binary stream those commands may
+// be writing to the very same stdout - see status_stream()'s own comment.
+void print_channel_summary(const ac3::analysis::LevelMeter& meter, FILE* out = stdout) {
     const auto acmod = meter.acmod();
     const bool lfe = meter.lfe();
-    std::println("");
-    std::println("per-channel levels ({}):", ac3::analysis::layout_name(acmod, lfe));
-    std::println("  {:<4} {:>8} {:>8}  {:<20} {}", "ch", "peak", "rms", "peak (-60..0 dBFS)",
-                 "clipped");
+    std::println(out, "");
+    std::println(out, "per-channel levels ({}):", ac3::analysis::layout_name(acmod, lfe));
+    std::println(out, "  {:<4} {:>8} {:>8}  {:<20} {}", "ch", "peak", "rms",
+                "peak (-60..0 dBFS)", "clipped");
     for (int ch = 0; ch < meter.channel_count(); ++ch) {
         const auto& stats = meter.summary()[static_cast<std::size_t>(ch)];
-        std::println("  {:<4} {:>8.2f} {:>8.2f}  [{}] {}",
+        std::println(out, "  {:<4} {:>8.2f} {:>8.2f}  [{}] {}",
                      ac3::analysis::channel_name(acmod, lfe, ch), stats.peak_db(),
                      stats.rms_db(), meter_bar(stats.peak_db(), 18),
                      stats.clipped_samples > 0 ? std::to_string(stats.clipped_samples) : "-");
@@ -658,7 +861,7 @@ void print_channel_summary(const ac3::analysis::LevelMeter& meter) {
         // A perfectly centred image leaves a vanishing negative y, which
         // rounds to a correct but ridiculous "-0°".
         const double azimuth = std::round(field.azimuth_deg);
-        std::println("  soundfield: {:.0f}° azimuth, focus {:.2f} (1.0 = a single speaker)",
+        std::println(out, "  soundfield: {:.0f}° azimuth, focus {:.2f} (1.0 = a single speaker)",
                      azimuth == 0.0 ? 0.0 : azimuth, field.magnitude);
     }
 }
@@ -907,6 +1110,273 @@ int run_mkv(std::string_view in_path, std::string_view out_path) {
     // Name the layout only when one substream carries the whole thing. With
     // dependents the acmod describes the BED, so printing it beside a wider
     // rendered channel count would just contradict itself.
+    const std::string shape =
+        scanned->substreams_per_unit > 1
+            ? std::format("{} substreams", scanned->substreams_per_unit)
+            : std::string{ac3::analysis::layout_name(scanned->acmod, scanned->lfe)};
+    std::println("wrote {} {} access units ({}, {} channels, {} bytes) to {}",
+                 units.size(), eac3 ? "E-AC-3" : "AC-3", shape, track.channels,
+                 file->size(), out_path);
+    return 0;
+}
+
+// Same shape as run_mkv above, wrapping mp4::mux() instead: ac3::io::scan()
+// still supplies everything the container needs to declare, and additionally
+// - via ac3::io::build_codec_config_box() - the exact dac3/dec3 sample-entry
+// payload (fscod/bsid/bsmod/acmod/lfeon and, when the stream carries Dolby
+// Atmos objects, the flag_ec3_extension_type_a/complexity_index_type_a
+// extension) straight off the bitstream. mp4::mux() never sees any of that
+// syntax itself - see src/mp4/include/mp4/mp4.hpp's own header comment.
+int run_mp4(std::string_view in_path, std::string_view out_path) {
+    const auto raw = read_all(in_path);
+    if (raw.empty()) {
+        std::println(stderr, "error: cannot open {}", in_path);
+        return 1;
+    }
+    const auto scanned = ac3::io::scan(raw);
+    if (!scanned) {
+        std::println(stderr, "error: {}", ac3::io::describe(scanned.error()));
+        return 1;
+    }
+    const bool eac3 = scanned->kind == ac3::io::StreamKind::kEac3;
+
+    std::vector<std::vector<std::byte>> units;
+    units.reserve(scanned->access_units.size());
+    for (const auto unit : scanned->access_units) {
+        units.emplace_back(unit.begin(), unit.end());
+    }
+
+    const mp4::AudioTrack track{
+        .codec_id = std::string{eac3 ? mp4::kCodecEac3 : mp4::kCodecAc3},
+        .sample_rate = ac3::sample_rate_hz(scanned->sample_rate),
+        .channels = scanned->channels,
+        .samples_per_frame = ac3::kSamplesPerFrame,
+        .codec_config = ac3::io::build_codec_config_box(*scanned)};
+    const auto file = mp4::mux(track, units);
+    if (!file) {
+        std::println(stderr, "error: {}", mp4::describe(file.error()));
+        return 1;
+    }
+    std::ofstream out{std::string{out_path}, std::ios::binary};
+    if (!out) {
+        std::println(stderr, "error: cannot write {}", out_path);
+        return 1;
+    }
+    out.write(reinterpret_cast<const char*>(file->data()),
+              static_cast<std::streamsize>(file->size()));
+    if (!out) {
+        std::println(stderr, "error: write failed");
+        return 1;
+    }
+    const std::string shape =
+        scanned->substreams_per_unit > 1
+            ? std::format("{} substreams", scanned->substreams_per_unit)
+            : std::string{ac3::analysis::layout_name(scanned->acmod, scanned->lfe)};
+    const std::string atmos =
+        scanned->oba_complexity_index
+            ? std::format(", Atmos complexity {}", *scanned->oba_complexity_index)
+            : std::string{};
+    std::println("wrote {} {} access units ({}, {} channels{}, {} bytes) to {}",
+                 units.size(), eac3 ? "E-AC-3" : "AC-3", shape, track.channels, atmos,
+                 file->size(), out_path);
+    return 0;
+}
+
+bool write_bytes_to_path(const std::filesystem::path& path, std::span<const std::byte> bytes) {
+    std::ofstream out{path, std::ios::binary};
+    if (!out) {
+        std::println(stderr, "error: cannot open {} for writing", path.string());
+        return false;
+    }
+    out.write(reinterpret_cast<const char*>(bytes.data()),
+              static_cast<std::streamsize>(bytes.size()));
+    if (!out) {
+        std::println(stderr, "error: write failed for {}", path.string());
+        return false;
+    }
+    return true;
+}
+
+bool write_text_to_path(const std::filesystem::path& path, std::string_view text) {
+    return write_bytes_to_path(
+        path, std::as_bytes(std::span{reinterpret_cast<const char*>(text.data()), text.size()}));
+}
+
+// A minimal but complete DASH MPD document wrapped around
+// mp4::build_dash_adaptation_set()'s <AdaptationSet> snippet - the library
+// stops at the snippet (mp4.hpp/dash.hpp's own scope: single-representation
+// audio, no opinion on the surrounding document), the CLI front end supplies
+// the rest, the same boundary mp4::mux() not doing file I/O already draws.
+// profiles="isoff-live" is what a SegmentTemplate-based MPD declares
+// regardless of static/live (ISO/IEC 23009-1 Annex A.3) - "isoff-on-demand"
+// instead mandates a single SegmentBase/index-range layout this module does
+// not produce.
+std::string build_dash_mpd(const mp4::AudioTrack& track,
+                           std::span<const mp4::MediaSegment> segments,
+                           std::string_view adaptation_set) {
+    std::uint64_t total_samples = 0;
+    for (const auto& segment : segments) {
+        total_samples += segment.duration_samples;
+    }
+    const double total_seconds =
+        static_cast<double>(total_samples) / static_cast<double>(track.sample_rate);
+    return std::format(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        "<MPD xmlns=\"urn:mpeg:dash:schema:mpd:2011\" type=\"static\" "
+        "mediaPresentationDuration=\"PT{:.3f}S\" minBufferTime=\"PT2S\" "
+        "profiles=\"urn:mpeg:dash:profile:isoff-live:2011\">\n"
+        "  <Period>\n"
+        "{}"
+        "  </Period>\n"
+        "</MPD>\n",
+        total_seconds, adaptation_set);
+}
+
+// fMP4/CMAF segmenting plus HLS/DASH signaling helpers (ROADMAP.md's A2) -
+// the streaming-delivery follow-up 'mp4' (run_mp4 above) deliberately left
+// for later. Same source (ac3::io::scan) as run_mp4/run_mkv for everything
+// the container needs to declare; the only new wrinkle is that this writes a
+// DIRECTORY of files (an init segment, one media segment per fragment, an
+// HLS media+master playlist pair, and a DASH MPD) rather than one file, so a
+// packager or CDN origin can be pointed at out_dir directly.
+int run_fmp4(std::string_view in_path, std::string_view out_dir,
+             std::uint32_t frames_per_fragment) {
+    const auto raw = read_all(in_path);
+    if (raw.empty()) {
+        std::println(stderr, "error: cannot open {}", in_path);
+        return 1;
+    }
+    const auto scanned = ac3::io::scan(raw);
+    if (!scanned) {
+        std::println(stderr, "error: {}", ac3::io::describe(scanned.error()));
+        return 1;
+    }
+    const bool eac3 = scanned->kind == ac3::io::StreamKind::kEac3;
+
+    std::vector<std::vector<std::byte>> units;
+    units.reserve(scanned->access_units.size());
+    for (const auto unit : scanned->access_units) {
+        units.emplace_back(unit.begin(), unit.end());
+    }
+
+    const mp4::AudioTrack track{.codec_id = std::string{eac3 ? mp4::kCodecEac3 : mp4::kCodecAc3},
+                                .sample_rate = ac3::sample_rate_hz(scanned->sample_rate),
+                                .channels = scanned->channels,
+                                .samples_per_frame = ac3::kSamplesPerFrame,
+                                .codec_config = ac3::io::build_codec_config_box(*scanned)};
+
+    const auto fragmented = mp4::fragment(
+        track, units, mp4::FragmentOptions{.frames_per_fragment = frames_per_fragment});
+    if (!fragmented) {
+        std::println(stderr, "error: {}", mp4::describe(fragmented.error()));
+        return 1;
+    }
+
+    std::error_code ec;
+    const std::filesystem::path dir{std::string{out_dir}};
+    std::filesystem::create_directories(dir, ec);
+    if (ec) {
+        std::println(stderr, "error: cannot create directory {} ({})", out_dir, ec.message());
+        return 1;
+    }
+
+    if (!write_bytes_to_path(dir / "init.mp4", fragmented->init_segment)) {
+        return 1;
+    }
+    for (const auto& segment : fragmented->media_segments) {
+        const auto name = std::format("segment{}.m4s", segment.sequence_number);
+        if (!write_bytes_to_path(dir / name, segment.bytes)) {
+            return 1;
+        }
+    }
+
+    // Dolby Digital Plus with Atmos objects needs CHANNELS="<N>/JOC" instead
+    // of a plain channel count (see mp4/hls.hpp's own citations) - N is the
+    // same decodable-object count ac3::io::scan already read off the
+    // bitstream to build the dec3 box above (TS 103 420
+    // §8.3.2's complexity_index_type_a). mp4:: itself never reads that
+    // field; only this CLI front end, which already has it, does.
+    const mp4::HlsOptions hls_options{
+        .channels_attribute = scanned->oba_complexity_index
+                                  ? std::format("{}/JOC", *scanned->oba_complexity_index)
+                                  : std::string{}};
+    const auto media_playlist =
+        mp4::build_hls_media_playlist(track, fragmented->media_segments, hls_options);
+    const auto master_playlist = mp4::build_hls_master_playlist(track, fragmented->media_segments,
+                                                                "audio.m3u8", hls_options);
+    if (!write_text_to_path(dir / "audio.m3u8", media_playlist) ||
+        !write_text_to_path(dir / "master.m3u8", master_playlist)) {
+        return 1;
+    }
+
+    const auto adaptation_set = mp4::build_dash_adaptation_set(track, fragmented->media_segments);
+    const auto mpd = build_dash_mpd(track, fragmented->media_segments, adaptation_set);
+    if (!write_text_to_path(dir / "manifest.mpd", mpd)) {
+        return 1;
+    }
+
+    const std::string shape =
+        scanned->substreams_per_unit > 1
+            ? std::format("{} substreams", scanned->substreams_per_unit)
+            : std::string{ac3::analysis::layout_name(scanned->acmod, scanned->lfe)};
+    const std::string atmos =
+        scanned->oba_complexity_index
+            ? std::format(", Atmos complexity {}", *scanned->oba_complexity_index)
+            : std::string{};
+    std::println(
+        "wrote {} {} access units ({}, {} channels{}) as {} fragment(s) to {} "
+        "(init.mp4, segment*.m4s, audio.m3u8, master.m3u8, manifest.mpd)",
+        units.size(), eac3 ? "E-AC-3" : "AC-3", shape, track.channels, atmos,
+        fragmented->media_segments.size(), out_dir);
+    return 0;
+}
+
+// Same shape as run_mkv above: everything mpegts::mux needs comes off the
+// bitstream via ac3::io::scan, not from a caller-supplied layout that could
+// disagree with what is actually in the file. See mpegts/mpegts.hpp's header
+// comment for the broadcast profile this wraps as (DVB stream_type 0x06 plus
+// the AC3_descriptor/Enhanced_AC3_descriptor ETSI EN 300 468 Annex D defines)
+// and why.
+int run_ts(std::string_view in_path, std::string_view out_path) {
+    const auto raw = read_all(in_path);
+    if (raw.empty()) {
+        std::println(stderr, "error: cannot open {}", in_path);
+        return 1;
+    }
+    const auto scanned = ac3::io::scan(raw);
+    if (!scanned) {
+        std::println(stderr, "error: {}", ac3::io::describe(scanned.error()));
+        return 1;
+    }
+    const bool eac3 = scanned->kind == ac3::io::StreamKind::kEac3;
+
+    std::vector<std::vector<std::byte>> units;
+    units.reserve(scanned->access_units.size());
+    for (const auto unit : scanned->access_units) {
+        units.emplace_back(unit.begin(), unit.end());
+    }
+
+    const mpegts::AudioTrack track{
+        .codec = eac3 ? mpegts::AudioCodec::kEac3 : mpegts::AudioCodec::kAc3,
+        .sample_rate = ac3::sample_rate_hz(scanned->sample_rate),
+        .channels = scanned->channels,
+        .samples_per_frame = ac3::kSamplesPerFrame};
+    const auto file = mpegts::mux(track, units);
+    if (!file) {
+        std::println(stderr, "error: {}", mpegts::describe(file.error()));
+        return 1;
+    }
+    std::ofstream out{std::string{out_path}, std::ios::binary};
+    if (!out) {
+        std::println(stderr, "error: cannot write {}", out_path);
+        return 1;
+    }
+    out.write(reinterpret_cast<const char*>(file->data()),
+              static_cast<std::streamsize>(file->size()));
+    if (!out) {
+        std::println(stderr, "error: write failed");
+        return 1;
+    }
     const std::string shape =
         scanned->substreams_per_unit > 1
             ? std::format("{} substreams", scanned->substreams_per_unit)
@@ -1177,9 +1647,12 @@ void gather_frame(const LoadedSources& sources, std::size_t start,
 // is visible rather than something to be discovered later on the meters.
 // `label` is whatever resolve_layout printed for this plan - a named
 // layout's label, or the channel list a custom selection was parsed from.
-void print_routing(const plan::Plan& p, const plan::Routing& routing, std::string_view label) {
+// `out` defaults to stdout; see print_channel_summary's comment just above -
+// the same reasoning applies here.
+void print_routing(const plan::Plan& p, const plan::Routing& routing, std::string_view label,
+                   FILE* out = stdout) {
     if (routing.is_permutation()) {
-        std::println("  source carried directly into {}", label);
+        std::println(out, "  source carried directly into {}", label);
         return;
     }
     const auto names = plan::coded_channel_names(plan::resolve(p));
@@ -1194,9 +1667,9 @@ void print_routing(const plan::Plan& p, const plan::Routing& routing, std::strin
             silent += names[static_cast<std::size_t>(c)];
         }
     }
-    std::println("  {} source channels rendered onto {}", routing.source_channels, label);
+    std::println(out, "  {} source channels rendered onto {}", routing.source_channels, label);
     if (!silent.empty()) {
-        std::println("  silent (the source carries nothing that belongs there): {}", silent);
+        std::println(out, "  silent (the source carries nothing that belongs there): {}", silent);
     }
 }
 
@@ -1204,11 +1677,14 @@ void print_routing(const plan::Plan& p, const plan::Routing& routing, std::strin
 // exercise field placement; only recorded-style material exercises the coding
 // decisions, which is what the Annex E tools are judged on.
 // The same encode as run_eac3_encode below, but for a possibly multi-source
-// run (src=/map= given). Loudness auto-measurement is not supported here
-// yet - measuring the right audio needs the RENDERED bed/programme content,
-// not raw per-source channels, since which channel is "L" or "Ls" now
-// depends on the assignment rather than file order; dialnorm/dialnorm2 must
-// be given explicitly until that lands.
+// run (src=/map= given). dialnorm=auto/dialnorm2=auto measure the RENDERED
+// bed/programme content (post map=/routing, in coded-channel order) rather
+// than raw per-source channels, since which channel is "L"/"Ls" - or, for
+// 1+1, which is Ch1/Ch2 - depends on the assignment rather than file order.
+// So the whole programme is routed once as a measurement pre-pass before the
+// loop below routes it again to actually encode it - see route_frame's own
+// comment for why sharing that one lambda keeps the two passes from ever
+// disagreeing about what "routed" means.
 int run_eac3_encode_multi(std::string_view in_path, std::string_view out_path,
                           std::uint32_t bitrate, std::string_view tools,
                           std::string_view layout, std::string_view vbr, const Options& meta) {
@@ -1248,21 +1724,13 @@ int run_eac3_encode_multi(std::string_view in_path, std::string_view out_path,
     if (!vbr_or_error(vbr, p.vbr)) {
         return 1;
     }
-    if (p.meta.measure_dialnorm || p.meta.measure_dialnorm2) {
-        std::println(stderr,
-                     "error: dialnorm=auto/dialnorm2=auto are not yet supported with src=/"
-                     "map= - pass dialnorm=<1..31> (and dialnorm2=<1..31> for 1+1) explicitly");
-        return 1;
-    }
 
     const auto routing = routing_for_sources(p, *sources, meta.map_spec);
     if (!routing) {
         return 1;
     }
 
-    ac3::eac3::AccessUnitEncoder encoder{plan::eac3_config(p)};
     const auto nchans = static_cast<std::size_t>(routing->coded_channels);
-    assert(static_cast<int>(nchans) == encoder.channel_count());
     const std::size_t total = sources->total_frames;
     const auto source_channels = static_cast<std::size_t>(routing->source_channels);
 
@@ -1276,13 +1744,88 @@ int run_eac3_encode_multi(std::string_view in_path, std::string_view out_path,
         out[c] = block[c];
         views[c] = block[c];
     }
-    std::vector<std::vector<std::byte>> frames;
-    for (std::size_t start = 0; start < total; start += ac3::kSamplesPerFrame) {
+    // Renders one frame's worth of every source's samples onto the coded
+    // channels `out`/`views` alias - shared by the measurement pre-pass below
+    // and the real encode loop after it, so the two can never render this
+    // programme two different ways.
+    auto route_frame = [&](std::size_t start) {
         gather_frame(*sources, start, source);
         for (std::size_t c = 0; c < source_channels; ++c) {
             in[c] = source[c];
         }
         plan::render(*routing, in, out, ac3::kSamplesPerFrame);
+    };
+
+    const auto cp = plan::resolve(p);
+    const bool dual_mono = cp.bed_acmod == ac3::Acmod::kDualMono;
+    const bool want_dialnorm = p.meta.measure_dialnorm;
+    // dialnorm2 only means anything under 1+1 - silently inert otherwise,
+    // exactly like run_eac3_encode's identical check for its one file.
+    const bool want_dialnorm2 = dual_mono && p.meta.measure_dialnorm2;
+    if (want_dialnorm || want_dialnorm2) {
+        // §5.4.2.8's BS.1770 pass has to measure what the encoder actually
+        // receives - the routed/rendered coded channels, not each source's
+        // own raw layout, since map= can permute, trim or fold several
+        // sources onto them - so this renders the entire programme once
+        // purely to measure it. Dual mono gets one single-channel meter per
+        // programme (Ch1/Ch2 are unrelated, §E1.3 - see
+        // measured_dialnorm_channel's own comment); every other target gets
+        // one whole-programme meter, the same BS.1770 channel weighting
+        // measured_dialnorm uses for the single-file case.
+        std::optional<ac3::meta::LoudnessMeter> whole;
+        std::optional<ac3::meta::LoudnessMeter> ch1;
+        std::optional<ac3::meta::LoudnessMeter> ch2;
+        if (dual_mono) {
+            if (want_dialnorm) {
+                ch1.emplace(*sr, ac3::Acmod::k1_0, false);
+            }
+            if (want_dialnorm2) {
+                ch2.emplace(*sr, ac3::Acmod::k1_0, false);
+            }
+        } else if (want_dialnorm) {
+            whole.emplace(*sr, cp.bed_acmod, cp.bed_lfe);
+        }
+        for (std::size_t start = 0; start < total; start += ac3::kSamplesPerFrame) {
+            route_frame(start);
+            if (whole) {
+                whole->push(views);
+            }
+            if (ch1) {
+                const std::array<std::span<const float>, 1> v{views[0]};
+                ch1->push(v);
+            }
+            if (ch2) {
+                const std::array<std::span<const float>, 1> v{views[1]};
+                ch2->push(v);
+            }
+        }
+        if (want_dialnorm) {
+            const auto measured = dual_mono ? finish_measurement(*ch1, "Ch1", "dialnorm")
+                                            : finish_measurement(*whole, {}, "dialnorm");
+            if (!measured) {
+                std::println(stderr, "error: {}no audio above the -70 LKFS absolute gate; "
+                                     "pass dialnorm=<1..31> explicitly",
+                             dual_mono ? "Ch1 has " : "");
+                return 1;
+            }
+            p.meta.dialnorm = *measured;
+        }
+        if (want_dialnorm2) {
+            const auto measured2 = finish_measurement(*ch2, "Ch2", "dialnorm2");
+            if (!measured2) {
+                std::println(stderr, "error: Ch2 has no audio above the -70 LKFS absolute gate; "
+                                     "pass dialnorm2=<1..31> explicitly");
+                return 1;
+            }
+            p.meta.dialnorm2 = *measured2;
+        }
+    }
+
+    ac3::eac3::AccessUnitEncoder encoder{plan::eac3_config(p)};
+    assert(static_cast<int>(nchans) == encoder.channel_count());
+    std::vector<std::vector<std::byte>> frames;
+    for (std::size_t start = 0; start < total; start += ac3::kSamplesPerFrame) {
+        route_frame(start);
         auto unit = encoder.encode_access_unit(views);
         if (!unit) {
             std::println(stderr, "error: the encoder cannot express this configuration");
@@ -1339,7 +1882,7 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
         }
         return run_eac3_encode_multi(in_path, out_path, bitrate, tools, layout, vbr, meta);
     }
-    auto wav = ac3::io::read_wav(std::string{in_path});
+    auto wav = read_wav_arg(in_path);
     if (!wav) {
         std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(wav.error()));
         return 1;
@@ -1378,17 +1921,27 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
         return 1;
     }
     const auto cp = plan::resolve(p);
+    const bool dual_mono = cp.bed_acmod == ac3::Acmod::kDualMono;
     if (p.meta.measure_dialnorm) {
-        const auto measured = measured_dialnorm(*wav, *sr, cp.bed_acmod, cp.bed_lfe);
+        // Dual mono has no "whole programme" a single BS.1770 pass can mean -
+        // Ch1 and Ch2 are unrelated (§E1.3, no downmix between them), so this
+        // measures Ch1's own channel alone, exactly like Ch2 just below,
+        // rather than folding both into one measured_dialnorm() call the way
+        // every other layout can.
+        const auto measured = dual_mono
+                                  ? measured_dialnorm_channel(wav->channels[0], *sr, "Ch1",
+                                                              "dialnorm")
+                                  : measured_dialnorm(*wav, *sr, cp.bed_acmod, cp.bed_lfe);
         if (!measured) {
-            std::println(stderr, "error: no audio above the -70 LKFS absolute gate; "
-                                 "pass dialnorm=<1..31> explicitly");
+            std::println(stderr, "error: {}no audio above the -70 LKFS absolute gate; "
+                                 "pass dialnorm=<1..31> explicitly",
+                         dual_mono ? "Ch1 has " : "");
             return 1;
         }
         p.meta.dialnorm = *measured;
     }
-    if (cp.bed_acmod == ac3::Acmod::kDualMono && p.meta.measure_dialnorm2) {
-        const auto measured2 = measured_dialnorm_channel(wav->channels[1], *sr);
+    if (dual_mono && p.meta.measure_dialnorm2) {
+        const auto measured2 = measured_dialnorm_channel(wav->channels[1], *sr, "Ch2", "dialnorm2");
         if (!measured2) {
             std::println(stderr, "error: Ch2 has no audio above the -70 LKFS absolute gate; "
                                  "pass dialnorm2=<1..31> explicitly");
@@ -1456,6 +2009,10 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
     if (!write_frames(out_path, frames)) {
         return 1;
     }
+    // See run_encode's identical status_stream() comment: out_path == "-"
+    // means the E-AC-3 bytes just written own stdout, so this report goes to
+    // stderr instead.
+    const auto status = status_stream(out_path);
     if (p.vbr) {
         // bitrate_kbps is only the nominal reference vbr's tool heuristics
         // used, not a target - what a VBR run actually spent is the sizes it
@@ -1473,19 +2030,22 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
                                                         static_cast<double>(frames.size());
         const double mean_kbps = mean_bytes * 8.0 * static_cast<double>(wav->sample_rate) /
                                  (1000.0 * ac3::kSamplesPerFrame);
-        std::println("encoded {} E-AC-3 access units (vbr {}, {} Hz, {}, {} coded channels, "
+        std::println(status,
+                     "encoded {} E-AC-3 access units (vbr {}, {} Hz, {}, {} coded channels, "
                      "tools: {}) to {}",
                      frames.size(), plan::format_vbr(p.vbr), wav->sample_rate, label, nchans,
                      plan::format_tools(p.tools), out_path);
-        std::println("  access unit size: {}-{} bytes, {:.0f} bytes mean (~{:.0f} kbps mean)",
+        std::println(status,
+                     "  access unit size: {}-{} bytes, {:.0f} bytes mean (~{:.0f} kbps mean)",
                      min_bytes, max_bytes, mean_bytes, mean_kbps);
     } else {
-        std::println("encoded {} E-AC-3 access units ({} kbps, {} Hz, {}, {} coded channels, "
+        std::println(status,
+                     "encoded {} E-AC-3 access units ({} kbps, {} Hz, {}, {} coded channels, "
                      "tools: {}) to {}",
                      frames.size(), bitrate, wav->sample_rate, label, nchans,
                      plan::format_tools(p.tools), out_path);
     }
-    print_routing(p, *routing, label);
+    print_routing(p, *routing, label, status);
     return 0;
 }
 
@@ -1776,7 +2336,7 @@ int run_atmos_path(std::string_view out_path, std::string_view paths_path, std::
 int run_atmos_encode(std::string_view in_path, std::string_view out_path,
                      std::uint32_t bitrate, std::uint32_t objects,
                      const Options& meta, std::string_view paths_path = {}) {
-    const auto wav = ac3::io::read_wav(std::string{in_path});
+    const auto wav = read_wav_arg(in_path);
     if (!wav) {
         std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(wav.error()));
         return 1;
@@ -1930,12 +2490,17 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
     if (!write_frames(out_path, out)) {
         return 1;
     }
-    std::println("encoded {} E-AC-3 access units ({} kbps, {} Hz) to {}", out.size(), bitrate,
-                 wav->sample_rate, out_path);
-    std::println("  {} objects from {} source channels + the bed's LFE = {} objects, "
+    // See run_encode's identical status_stream() comment: out_path == "-"
+    // means the E-AC-3 bytes just written own stdout, so this report goes to
+    // stderr instead.
+    const auto status = status_stream(out_path);
+    std::println(status, "encoded {} E-AC-3 access units ({} kbps, {} Hz) to {}", out.size(),
+                bitrate, wav->sample_rate, out_path);
+    std::println(status,
+                 "  {} objects from {} source channels + the bed's LFE = {} objects, "
                  "JOC over a 5.1 downmix",
                  count, wav->channels.size(), ac3::oba::object_count(encoder.program()));
-    print_channel_summary(meter);
+    print_channel_summary(meter, status);
     return 0;
 }
 
@@ -2128,10 +2693,18 @@ int run_record(std::string_view out_path, std::uint32_t seconds, std::uint32_t b
 
     capture.stop();
     const auto stats = capture.stats();
-    if (!write_frames(out_path, frames)) {
+    // record is always plain AC-3 stereo (see the deinterleave above, which
+    // only ever fills `planar`'s two channels) - the same track shape 'mkv'
+    // would derive by scanning this file back, just already known here.
+    const matroska::AudioTrack track{.codec_id = std::string{matroska::kCodecAc3},
+                                     .sample_rate = capture.sample_rate(),
+                                     .channels = 2,
+                                     .samples_per_frame = ac3::kSamplesPerFrame};
+    if (!write_frames_or_mux(out_path, meta.matroska_container, track, frames)) {
         return 1;
     }
-    std::println("wrote {} frames ({} kbps) to {}", frames.size(), bitrate, out_path);
+    std::println("wrote {} frames ({} kbps) to {}{}", frames.size(), bitrate, out_path,
+                 meta.matroska_container ? " (Matroska)" : "");
     std::println("captured {} frames, {} silence-filled, {} dropped", stats.frames_captured,
                  stats.frames_silence_filled, stats.frames_dropped);
     print_channel_summary(meter);
@@ -2141,7 +2714,8 @@ int run_record(std::string_view out_path, std::uint32_t seconds, std::uint32_t b
 // The same encode as run_encode below, but for a possibly multi-source run
 // (src=/map= given) - see run_eac3_encode_multi for why this is a separate
 // function rather than a shared path with the classic single-file one, and
-// why loudness auto-measurement is not supported here yet.
+// for the shape of its dialnorm=auto/dialnorm2=auto measurement pre-pass,
+// which this mirrors exactly.
 int run_encode_multi(std::string_view in_path, std::string_view out_path, std::uint32_t bitrate,
                      bool couple, std::string_view layout, const Options& meta) {
     auto sources = load_sources(in_path, meta.sources, meta.offsets);
@@ -2181,21 +2755,12 @@ int run_encode_multi(std::string_view in_path, std::string_view out_path, std::u
         std::println(stderr, "error: {}", plan::describe(*bad));
         return 1;
     }
-    if (p.meta.measure_dialnorm || p.meta.measure_dialnorm2) {
-        std::println(stderr,
-                     "error: dialnorm=auto/dialnorm2=auto are not yet supported with src=/"
-                     "map= - pass dialnorm=<1..31> (and dialnorm2=<1..31> for 1+1) explicitly");
-        return 1;
-    }
 
     const auto routing = routing_for_sources(p, *sources, meta.map_spec);
     if (!routing) {
         return 1;
     }
 
-    const auto config = plan::ac3_config(p);
-    auto encoder = std::make_unique<ac3::FrameEncoder>(config);
-    ac3::analysis::LevelMeter meter{config.acmod, config.lfe, sources->sample_rate};
     const auto nchans = static_cast<std::size_t>(routing->coded_channels);
     const std::size_t total = sources->total_frames;
     const auto source_channels = static_cast<std::size_t>(routing->source_channels);
@@ -2211,14 +2776,90 @@ int run_encode_multi(std::string_view in_path, std::string_view out_path, std::u
         out[c] = block[c];
         views[c] = block[c];
     }
-    std::vector<std::vector<std::byte>> frames;
-    for (std::size_t start = 0; start < total; start += ac3::kSamplesPerFrame) {
-        const auto valid = std::min<std::size_t>(ac3::kSamplesPerFrame, total - start);
+    // Renders one frame's worth of every source's samples onto the coded
+    // channels `out`/`views` alias - shared by the measurement pre-pass below
+    // and the real encode loop after it, so the two can never render this
+    // programme two different ways.
+    auto route_frame = [&](std::size_t start) {
         gather_frame(*sources, start, source);
         for (std::size_t c = 0; c < source_channels; ++c) {
             in[c] = source[c];
         }
         plan::render(*routing, in, out, ac3::kSamplesPerFrame);
+    };
+
+    const auto cp = plan::resolve(p);
+    const bool dual_mono = cp.bed_acmod == ac3::Acmod::kDualMono;
+    const bool want_dialnorm = p.meta.measure_dialnorm;
+    // dialnorm2 only means anything under 1+1 - silently inert otherwise,
+    // exactly like run_encode's identical check for its one file.
+    const bool want_dialnorm2 = dual_mono && p.meta.measure_dialnorm2;
+    if (want_dialnorm || want_dialnorm2) {
+        // §5.4.2.8's BS.1770 pass has to measure what the encoder actually
+        // receives - the routed/rendered coded channels, not each source's
+        // own raw layout, since map= can permute, trim or fold several
+        // sources onto them - so this renders the entire programme once
+        // purely to measure it. Dual mono gets one single-channel meter per
+        // programme (Ch1/Ch2 are unrelated, §E1.3 - see
+        // measured_dialnorm_channel's own comment); every other target gets
+        // one whole-programme meter, the same BS.1770 channel weighting
+        // measured_dialnorm uses for the single-file case.
+        std::optional<ac3::meta::LoudnessMeter> whole;
+        std::optional<ac3::meta::LoudnessMeter> ch1;
+        std::optional<ac3::meta::LoudnessMeter> ch2;
+        if (dual_mono) {
+            if (want_dialnorm) {
+                ch1.emplace(*sr, ac3::Acmod::k1_0, false);
+            }
+            if (want_dialnorm2) {
+                ch2.emplace(*sr, ac3::Acmod::k1_0, false);
+            }
+        } else if (want_dialnorm) {
+            whole.emplace(*sr, cp.bed_acmod, cp.bed_lfe);
+        }
+        for (std::size_t start = 0; start < total; start += ac3::kSamplesPerFrame) {
+            route_frame(start);
+            if (whole) {
+                whole->push(views);
+            }
+            if (ch1) {
+                const std::array<std::span<const float>, 1> v{views[0]};
+                ch1->push(v);
+            }
+            if (ch2) {
+                const std::array<std::span<const float>, 1> v{views[1]};
+                ch2->push(v);
+            }
+        }
+        if (want_dialnorm) {
+            const auto measured = dual_mono ? finish_measurement(*ch1, "Ch1", "dialnorm")
+                                            : finish_measurement(*whole, {}, "dialnorm");
+            if (!measured) {
+                std::println(stderr, "error: {}no audio above the -70 LKFS absolute gate; "
+                                     "pass dialnorm=<1..31> explicitly",
+                             dual_mono ? "Ch1 has " : "");
+                return 1;
+            }
+            p.meta.dialnorm = *measured;
+        }
+        if (want_dialnorm2) {
+            const auto measured2 = finish_measurement(*ch2, "Ch2", "dialnorm2");
+            if (!measured2) {
+                std::println(stderr, "error: Ch2 has no audio above the -70 LKFS absolute gate; "
+                                     "pass dialnorm2=<1..31> explicitly");
+                return 1;
+            }
+            p.meta.dialnorm2 = *measured2;
+        }
+    }
+
+    const auto config = plan::ac3_config(p);
+    auto encoder = std::make_unique<ac3::FrameEncoder>(config);
+    ac3::analysis::LevelMeter meter{config.acmod, config.lfe, sources->sample_rate};
+    std::vector<std::vector<std::byte>> frames;
+    for (std::size_t start = 0; start < total; start += ac3::kSamplesPerFrame) {
+        const auto valid = std::min<std::size_t>(ac3::kSamplesPerFrame, total - start);
+        route_frame(start);
         for (std::size_t c = 0; c < nchans; ++c) {
             metered[c] = std::span{block[c]}.first(valid);
         }
@@ -2253,7 +2894,7 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
         }
         return run_encode_multi(in_path, out_path, bitrate, couple, layout, meta);
     }
-    auto wav = ac3::io::read_wav(std::string{in_path});
+    auto wav = read_wav_arg(in_path);
     if (!wav) {
         std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(wav.error()));
         return 1;
@@ -2301,19 +2942,29 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
     // which is why it happens here rather than inside the frame encoder. It
     // gets the OUTPUT layout, because the BS.1770 channel weighting depends on
     // which coded positions are surrounds.
+    const auto cp = plan::resolve(p);
+    const bool dual_mono = cp.bed_acmod == ac3::Acmod::kDualMono;
     if (p.meta.measure_dialnorm) {
-        const auto cp = plan::resolve(p);
-        const auto measured = measured_dialnorm(*wav, *sr, cp.bed_acmod, cp.bed_lfe);
+        // Dual mono has no "whole programme" a single BS.1770 pass can mean -
+        // Ch1 and Ch2 are unrelated (§E1.3, no downmix between them), so this
+        // measures Ch1's own channel alone, exactly like Ch2 just below,
+        // rather than folding both into one measured_dialnorm() call the way
+        // every other layout can.
+        const auto measured = dual_mono
+                                  ? measured_dialnorm_channel(wav->channels[0], *sr, "Ch1",
+                                                              "dialnorm")
+                                  : measured_dialnorm(*wav, *sr, cp.bed_acmod, cp.bed_lfe);
         if (!measured) {
             std::println(stderr,
-                         "error: no audio above the -70 LKFS absolute gate; "
-                         "pass dialnorm=<1..31> explicitly");
+                         "error: {}no audio above the -70 LKFS absolute gate; "
+                         "pass dialnorm=<1..31> explicitly",
+                         dual_mono ? "Ch1 has " : "");
             return 1;
         }
         p.meta.dialnorm = *measured;
     }
-    if (plan::resolve(p).bed_acmod == ac3::Acmod::kDualMono && p.meta.measure_dialnorm2) {
-        const auto measured2 = measured_dialnorm_channel(wav->channels[1], *sr);
+    if (dual_mono && p.meta.measure_dialnorm2) {
+        const auto measured2 = measured_dialnorm_channel(wav->channels[1], *sr, "Ch2", "dialnorm2");
         if (!measured2) {
             std::println(stderr,
                          "error: Ch2 has no audio above the -70 LKFS absolute gate; "
@@ -2394,11 +3045,14 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
     if (!write_frames(out_path, frames)) {
         return 1;
     }
-    std::println("encoded {} frames ({} kbps, {} Hz, {}) to {}", frames.size(), bitrate,
-                 wav->sample_rate, ac3::analysis::layout_name(config.acmod, config.lfe),
-                 out_path);
-    print_routing(p, *routing, label);
-    print_channel_summary(meter);
+    // status_stream(out_path): stderr instead of stdout when out_path is "-"
+    // - the AC-3 bytes just written above already own stdout in that case,
+    // and this report must not land in the middle of them.
+    const auto status = status_stream(out_path);
+    std::println(status, "encoded {} frames ({} kbps, {} Hz, {}) to {}", frames.size(), bitrate,
+                wav->sample_rate, ac3::analysis::layout_name(config.acmod, config.lfe), out_path);
+    print_routing(p, *routing, label, status);
+    print_channel_summary(meter, status);
     return 0;
 }
 
@@ -2466,16 +3120,20 @@ int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path
     // Dual mono has no Table E2.5 location to order by - decode_access_unit
     // leaves `layout` empty for exactly this case - so Ch1 and Ch2 go out in
     // coded order, the same identity write_wav_f32 falls back to itself.
+    // status_stream(out_path): stderr instead of stdout when out_path is "-"
+    // - the WAV bytes the write below produces already own stdout in that
+    // case, and this report must not land in the middle of them.
+    const auto status = status_stream(out_path);
     if (first.acmod == ac3::Acmod::kDualMono) {
-        const auto written = ac3::io::write_wav_f32(std::string{out_path}, pcm,
-                                                    sample_rate_hz(first.sample_rate));
+        const auto written = write_wav_f32_arg(out_path, pcm, sample_rate_hz(first.sample_rate));
         if (!written) {
             std::println(stderr, "error: {}", ac3::io::describe(written.error()));
             return 1;
         }
-        std::println("decoded {} E-AC-3 access units ({} substreams each) -> {}", units->size(),
-                     first.substream_count, out_path);
-        std::println("  {} channels, {} Hz: Ch1 Ch2 (1+1 dual mono - two programmes, not a "
+        std::println(status, "decoded {} E-AC-3 access units ({} substreams each) -> {}",
+                     units->size(), first.substream_count, out_path);
+        std::println(status,
+                     "  {} channels, {} Hz: Ch1 Ch2 (1+1 dual mono - two programmes, not a "
                      "soundfield)",
                      pcm.size(), sample_rate_hz(first.sample_rate));
         return 0;
@@ -2484,8 +3142,7 @@ int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path
     // decoded here and re-encoded lands every channel back where it started.
     const auto map = plan::wav_order(
         std::span{first.layout.items}.first(static_cast<std::size_t>(first.layout.count)));
-    const auto written = ac3::io::write_wav_f32(std::string{out_path}, pcm,
-                                                sample_rate_hz(first.sample_rate), map);
+    const auto written = write_wav_f32_arg(out_path, pcm, sample_rate_hz(first.sample_rate), map);
     if (!written) {
         std::println(stderr, "error: {}", ac3::io::describe(written.error()));
         return 1;
@@ -2495,9 +3152,9 @@ int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path
         speakers += ac3::eac3::chanmap::name(first.layout[static_cast<int>(index)]);
         speakers += ' ';
     }
-    std::println("decoded {} E-AC-3 access units ({} substreams each) -> {}", units->size(),
-                 first.substream_count, out_path);
-    std::println("  {} channels, {} Hz: {}", map.size(), sample_rate_hz(first.sample_rate),
+    std::println(status, "decoded {} E-AC-3 access units ({} substreams each) -> {}",
+                 units->size(), first.substream_count, out_path);
+    std::println(status, "  {} channels, {} Hz: {}", map.size(), sample_rate_hz(first.sample_rate),
                  speakers);
     return 0;
 }
@@ -2578,36 +3235,407 @@ int run_decode(std::string_view in_path, std::string_view out_path,
         return 1;
     }
     const auto map = ac3::io::wav_channel_order(first.acmod, first.lfe);
-    const auto written = ac3::io::write_wav_f32(std::string{out_path}, pcm,
-                                                sample_rate_hz(first.sample_rate), map);
+    const auto written = write_wav_f32_arg(out_path, pcm, sample_rate_hz(first.sample_rate), map);
     if (!written) {
         std::println(stderr, "error: {}", ac3::io::describe(written.error()));
         return 1;
     }
-    std::println("decoded {} frames -> {} ({}, {} Hz)", frames->size(), out_path,
+    // status_stream(out_path): stderr instead of stdout when out_path is "-"
+    // - the WAV bytes just written above already own stdout in that case,
+    // and this report must not land in the middle of them.
+    const auto status = status_stream(out_path);
+    std::println(status, "decoded {} frames -> {} ({}, {} Hz)", frames->size(), out_path,
                  ac3::analysis::layout_name(first.acmod, first.lfe),
                  sample_rate_hz(first.sample_rate));
-    std::println("metadata: dialnorm {} (dialogue at -{} dBFS)", first.dialnorm,
+    std::println(status, "metadata: dialnorm {} (dialogue at -{} dBFS)", first.dialnorm,
                  first.dialnorm);
     if (first.dialnorm2) {
-        std::println("          dialnorm2 {} (Ch2, dialogue at -{} dBFS){}", *first.dialnorm2,
-                     *first.dialnorm2, first.compr2 ? ", compr2 present" : "");
+        std::println(status, "          dialnorm2 {} (Ch2, dialogue at -{} dBFS){}",
+                     *first.dialnorm2, *first.dialnorm2, first.compr2 ? ", compr2 present" : "");
     }
-    std::println("          dynrng {:+.2f} .. {:+.2f} dB{}", dynrng_min_db, dynrng_max_db,
+    std::println(status, "          dynrng {:+.2f} .. {:+.2f} dB{}", dynrng_min_db, dynrng_max_db,
                  meta.drc_scale != 0.0 ? std::format(", applied at scale {}", meta.drc_scale)
                                        : ", not applied");
     if (compr_frames > 0) {
-        std::println("          compr  {:+.2f} .. {:+.2f} dB over {} frames{}", compr_min_db,
-                     compr_max_db, compr_frames,
+        std::println(status, "          compr  {:+.2f} .. {:+.2f} dB over {} frames{}",
+                     compr_min_db, compr_max_db, compr_frames,
                      meta.p.heavy ? ", applied" : ", not applied");
     } else {
-        std::println("          compr  absent");
+        std::println(status, "          compr  absent");
     }
     // The have_first check above already returned if the frame loop never
     // ran, and it is that same loop's first iteration that emplaces meter.
     // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
-    print_channel_summary(*meter);
+    print_channel_summary(*meter, status);
     return 0;
+}
+
+// --- qc (roadmap C2) --------------------------------------------------------
+// Bitstream-aware loudness QC: decode a whole stream, measure it with the
+// real BS.1770-4/EBU Tech 3342 meter (the same ac3::meta::LoudnessMeter
+// dialnorm=auto already uses), and compare the result against what the
+// stream's own dialnorm/compr claim and, optionally, a named delivery-spec
+// gate (ac3::meta::qc_preset - see ac3/meta/qc.hpp for the cited sources).
+
+// One decoded programme this command measures and reports on - the whole
+// soundfield for every layout except 1+1 dual mono, which is two of these
+// (Ch1, Ch2): §E1.3 makes them unrelated, unmixed programmes sharing one
+// syncframe rather than a single soundfield BS.1770 could measure as one, the
+// same reason measured_dialnorm_channel exists alongside measured_dialnorm
+// above.
+struct QcProgrammeResult {
+    std::string_view label = {};  // "" (whole programme) or "Ch1"/"Ch2" for 1+1
+    // Every field below has an explicit default member initializer, even the
+    // ones std::optional's own default constructor would already give -
+    // every construction of this type in this file is a PARTIAL designated
+    // initializer (only the fields relevant at that call site named), and
+    // GCC's -Wmissing-field-initializers (on under -Wextra, and this project
+    // builds -Werror) fires on any member without one, regardless of what
+    // its type's own default constructor would produce.
+    std::optional<double> integrated_lkfs = std::nullopt;
+    std::optional<double> lra_lu = std::nullopt;
+    std::optional<double> true_peak_dbtp = std::nullopt;
+    int dialnorm = 31;
+    std::optional<std::uint8_t> compr = std::nullopt;
+};
+
+struct QcResult {
+    std::string_view codec_label;  // "AC-3" / "E-AC-3"
+    std::string_view unit_label;   // "frame(s)" / "access unit(s)"
+    std::string layout_label;
+    std::uint32_t sample_rate_hz = 0;
+    std::size_t unit_count = 0;
+    double seconds = 0.0;
+    std::vector<QcProgrammeResult> programmes;
+};
+
+// AC-3 (bsid <= 8): straightforward per-frame decode, same loop shape as
+// run_decode above, feeding ac3::meta::LoudnessMeter instead of accumulating
+// PCM - qc never writes audio out, so there is nothing to buffer.
+std::optional<QcResult> measure_qc_ac3(std::span<const std::byte> stream) {
+    const auto frames = ac3::split_frames(stream);
+    if (!frames || frames->empty()) {
+        std::println(stderr, "error: not a valid AC-3 stream");
+        return std::nullopt;
+    }
+    ac3::FrameDecoder decoder;
+    QcResult result;
+    result.codec_label = "AC-3";
+    result.unit_label = "frame(s)";
+    result.unit_count = frames->size();
+
+    bool have_first = false;
+    bool dual_mono = false;
+    std::optional<ac3::meta::LoudnessMeter> meter;      // whole programme
+    std::optional<ac3::meta::LoudnessMeter> meter_ch1;  // dual mono only
+    std::optional<ac3::meta::LoudnessMeter> meter_ch2;
+
+    for (const auto& frame : *frames) {
+        const auto decoded = decoder.decode_frame(frame);
+        if (!decoded) {
+            std::println(stderr, "error: {}", ac3::describe(decoded.error()));
+            return std::nullopt;
+        }
+        if (!have_first) {
+            have_first = true;
+            dual_mono = decoded->acmod == ac3::Acmod::kDualMono;
+            result.sample_rate_hz = sample_rate_hz(decoded->sample_rate);
+            if (dual_mono) {
+                result.layout_label = "1+1 dual mono";
+                meter_ch1.emplace(decoded->sample_rate, ac3::Acmod::k1_0, false);
+                meter_ch2.emplace(decoded->sample_rate, ac3::Acmod::k1_0, false);
+                result.programmes.push_back(
+                    QcProgrammeResult{.label = "Ch1", .dialnorm = decoded->dialnorm,
+                                      .compr = decoded->compr});
+                result.programmes.push_back(QcProgrammeResult{
+                    .label = "Ch2", .dialnorm = decoded->dialnorm2.value_or(31),
+                    .compr = decoded->compr2});
+            } else {
+                result.layout_label =
+                    std::string{ac3::analysis::layout_name(decoded->acmod, decoded->lfe)};
+                meter.emplace(decoded->sample_rate, decoded->acmod, decoded->lfe);
+                result.programmes.push_back(
+                    QcProgrammeResult{.dialnorm = decoded->dialnorm, .compr = decoded->compr});
+            }
+        }
+        if (dual_mono) {
+            const std::array<std::span<const float>, 1> ch1{decoded->channels[0]};
+            const std::array<std::span<const float>, 1> ch2{decoded->channels[1]};
+            meter_ch1->push(ch1);
+            meter_ch2->push(ch2);
+        } else {
+            std::vector<std::span<const float>> views;
+            views.reserve(decoded->channels.size());
+            for (const auto& channel : decoded->channels) {
+                views.emplace_back(channel);
+            }
+            meter->push(views);
+        }
+    }
+    if (dual_mono) {
+        result.programmes[0].integrated_lkfs = meter_ch1->integrated_lkfs();
+        result.programmes[0].lra_lu = meter_ch1->loudness_range();
+        result.programmes[0].true_peak_dbtp = meter_ch1->true_peak_dbtp();
+        result.programmes[1].integrated_lkfs = meter_ch2->integrated_lkfs();
+        result.programmes[1].lra_lu = meter_ch2->loudness_range();
+        result.programmes[1].true_peak_dbtp = meter_ch2->true_peak_dbtp();
+    } else {
+        result.programmes[0].integrated_lkfs = meter->integrated_lkfs();
+        result.programmes[0].lra_lu = meter->loudness_range();
+        result.programmes[0].true_peak_dbtp = meter->true_peak_dbtp();
+    }
+    result.seconds = static_cast<double>(result.unit_count) *
+                     static_cast<double>(ac3::kSamplesPerFrame) /
+                     static_cast<double>(result.sample_rate_hz);
+    return result;
+}
+
+// E-AC-3 (bsid 11-16): measures the INDEPENDENT substream's own bed audio
+// only, never a dependent's - the same "bed acmod/lfe, never the wider
+// rendered layout" scope run_encode/run_eac3_encode's own pre-encode
+// measured_dialnorm(cp.bed_acmod, cp.bed_lfe, ...) pass already uses (see
+// above). BS.1770's channel weighting is defined over Table 5.8 acmod/lfe,
+// which a dependent substream's own extension channels (height, wide, Ts,
+// etc.) are not members of - the bed is always a Table 5.8 layout, so
+// measuring it is what makes this comparable to the encoder's own dialnorm
+// derivation for the identical programme. Dual mono (1+1) is always a lone
+// independent substream with no dependents (decoder.hpp's own doc comment on
+// DecodedAccessUnit), so the same independent-substream-only filtering
+// naturally covers it too, exactly like the AC-3 path above.
+//
+// Walked at the raw-syncframe level (ac3::split_frames, NOT split_access_units
+// - decoder.hpp's own doc comment on split_frames says it "handles both
+// generations"), calling Eac3Decoder::decode_substream directly on every
+// frame so dependent-substream frames are still decoded (consuming their own
+// overlap-add state and catching any parse error) even though this only ever
+// measures what comes back independent.
+std::optional<QcResult> measure_qc_eac3(std::span<const std::byte> stream) {
+    const auto frames = ac3::split_frames(stream);
+    if (!frames || frames->empty()) {
+        std::println(stderr, "error: not a valid E-AC-3 stream");
+        return std::nullopt;
+    }
+    ac3::Eac3Decoder decoder;
+    QcResult result;
+    result.codec_label = "E-AC-3";
+    result.unit_label = "access unit(s)";
+
+    bool have_first = false;
+    bool dual_mono = false;
+    std::optional<ac3::meta::LoudnessMeter> meter;
+    std::optional<ac3::meta::LoudnessMeter> meter_ch1;
+    std::optional<ac3::meta::LoudnessMeter> meter_ch2;
+
+    // Shared by the main decode loop below and the end-of-stream flush() -
+    // both hand this a released, independent-or-dependent DecodedSubstream;
+    // only an independent one is ever measured (see this function's own
+    // comment above).
+    auto ingest = [&](const ac3::DecodedSubstream& sub) {
+        if (sub.strmtyp == ac3::eac3::StreamType::kDependent) {
+            return;
+        }
+        if (!have_first) {
+            have_first = true;
+            dual_mono = sub.acmod == ac3::Acmod::kDualMono;
+            result.sample_rate_hz = sample_rate_hz(sub.sample_rate);
+            if (dual_mono) {
+                result.layout_label = "1+1 dual mono";
+                meter_ch1.emplace(sub.sample_rate, ac3::Acmod::k1_0, false);
+                meter_ch2.emplace(sub.sample_rate, ac3::Acmod::k1_0, false);
+                result.programmes.push_back(QcProgrammeResult{
+                    .label = "Ch1", .dialnorm = sub.dialnorm, .compr = sub.compr});
+                result.programmes.push_back(QcProgrammeResult{
+                    .label = "Ch2", .dialnorm = sub.dialnorm2.value_or(31), .compr = sub.compr2});
+            } else {
+                result.layout_label = std::string{ac3::analysis::layout_name(sub.acmod, sub.lfe)};
+                meter.emplace(sub.sample_rate, sub.acmod, sub.lfe);
+                result.programmes.push_back(
+                    QcProgrammeResult{.dialnorm = sub.dialnorm, .compr = sub.compr});
+            }
+        }
+        ++result.unit_count;
+        if (dual_mono) {
+            const std::array<std::span<const float>, 1> ch1{sub.channels[0]};
+            const std::array<std::span<const float>, 1> ch2{sub.channels[1]};
+            meter_ch1->push(ch1);
+            meter_ch2->push(ch2);
+        } else {
+            std::vector<std::span<const float>> views;
+            views.reserve(sub.channels.size());
+            for (const auto& channel : sub.channels) {
+                views.emplace_back(channel);
+            }
+            meter->push(views);
+        }
+    };
+
+    for (const auto& frame : *frames) {
+        const auto decoded = decoder.decode_substream(frame);
+        if (!decoded) {
+            std::println(stderr, "error: decode failed (code {})",
+                         static_cast<int>(decoded.error()));
+            return std::nullopt;
+        }
+        // §3.7: this substream's frame is being held back pending transient
+        // pre-noise processing (Eac3Decoder::decode_substream's own doc
+        // comment) - nothing new to ingest yet, not an error.
+        if (decoded->has_value()) {
+            ingest(**decoded);
+        }
+    }
+    // Whatever transient pre-noise processing was still holding back at
+    // end-of-stream, same convention run_decode_eac3 follows.
+    for (const auto& sub : decoder.flush()) {
+        ingest(sub);
+    }
+
+    if (!have_first) {
+        std::println(stderr, "error: no independent substream frames");
+        return std::nullopt;
+    }
+    if (dual_mono) {
+        result.programmes[0].integrated_lkfs = meter_ch1->integrated_lkfs();
+        result.programmes[0].lra_lu = meter_ch1->loudness_range();
+        result.programmes[0].true_peak_dbtp = meter_ch1->true_peak_dbtp();
+        result.programmes[1].integrated_lkfs = meter_ch2->integrated_lkfs();
+        result.programmes[1].lra_lu = meter_ch2->loudness_range();
+        result.programmes[1].true_peak_dbtp = meter_ch2->true_peak_dbtp();
+    } else {
+        result.programmes[0].integrated_lkfs = meter->integrated_lkfs();
+        result.programmes[0].lra_lu = meter->loudness_range();
+        result.programmes[0].true_peak_dbtp = meter->true_peak_dbtp();
+    }
+    result.seconds = static_cast<double>(result.unit_count) *
+                     static_cast<double>(ac3::kSamplesPerFrame) /
+                     static_cast<double>(result.sample_rate_hz);
+    return result;
+}
+
+// Prints one programme's measurement (the empty-label whole-programme case,
+// or "Ch1"/"Ch2" for 1+1 dual mono) and, if `preset_arg` names one (or
+// "all"), checks it against the requested preset(s). Returns true iff every
+// requested gate passed (or none was requested at all) - run_qc's own exit
+// code is exactly this, ANDed across every programme it reports.
+bool report_qc_programme(const QcProgrammeResult& p, const std::optional<std::string>& preset_arg) {
+    const std::string heading = p.label.empty() ? std::string{} : std::format("{}: ", p.label);
+    std::println("{}measured (BS.1770-4 gated / EBU Tech 3342 / BS.1770-4 Annex 2):", heading);
+    if (p.integrated_lkfs) {
+        std::println("  integrated loudness  {:>+8.2f} LKFS", *p.integrated_lkfs);
+        std::println("  loudness range       {}", p.lra_lu ? std::format("{:>7.2f} LU", *p.lra_lu)
+                                                             : std::string{"n/a"});
+    } else {
+        std::println("  integrated loudness  no audio above the -70 LKFS absolute gate");
+        std::println("  loudness range       n/a");
+    }
+    std::println("  true peak            {}",
+                 p.true_peak_dbtp ? std::format("{:>+8.2f} dBTP", *p.true_peak_dbtp)
+                                   : std::string{"n/a"});
+    std::println("{}embedded metadata:", heading);
+    std::println("  dialnorm             {:>3}  (claims dialogue at {:.2f} LKFS)", p.dialnorm,
+                 -static_cast<double>(p.dialnorm));
+    if (p.compr) {
+        std::println("  compr                present, {:+.2f} dB",
+                     ac3::meta::to_db(ac3::meta::compr_gain(*p.compr)));
+    } else {
+        std::println("  compr                absent");
+    }
+    if (p.integrated_lkfs) {
+        // §5.4.2.8: dialnorm states how far dialogue sits below digital
+        // 100%, so the stream's own claimed programme level is simply its
+        // negation - delta is measured minus that claim, positive meaning
+        // the real programme is louder than dialnorm says.
+        const double claimed_lkfs = -static_cast<double>(p.dialnorm);
+        const double delta = *p.integrated_lkfs - claimed_lkfs;
+        const int implied = ac3::meta::dialnorm_from_lkfs(*p.integrated_lkfs);
+        std::println("{}dialnorm check:", heading);
+        std::println("  claimed              {:>+8.2f} LKFS  (from dialnorm {})", claimed_lkfs,
+                     p.dialnorm);
+        std::println("  delta                {:>+8.2f} dB    (measured - claimed; positive = "
+                     "measured is louder)",
+                     delta);
+        std::println("  measurement-derived dialnorm would be {}{}", implied,
+                     implied == p.dialnorm ? " (matches)" : std::format(", not {}", p.dialnorm));
+    }
+
+    if (!preset_arg) {
+        return true;
+    }
+    bool all_pass = true;
+    std::println("{}gates:", heading);
+    const auto check_one = [&](ac3::meta::QcPresetId id) {
+        const auto preset = ac3::meta::qc_preset(id);
+        const auto name = ac3::meta::qc_preset_name(id);
+        const auto verdict = ac3::meta::evaluate_qc_gate(preset, p.integrated_lkfs, p.true_peak_dbtp);
+        std::println("  {}:", name);
+        if (p.integrated_lkfs) {
+            std::println("    loudness   target {:+.1f} +/-{:.1f} LKFS   measured {:+.2f} LKFS   "
+                         "delta {:+.2f} LU   {}",
+                         preset.target_lkfs, preset.tolerance_lu, *p.integrated_lkfs,
+                         *verdict.loudness_delta_lu, verdict.loudness_pass ? "PASS" : "FAIL");
+        } else {
+            std::println("    loudness   target {:+.1f} +/-{:.1f} LKFS   measured n/a   FAIL",
+                         preset.target_lkfs, preset.tolerance_lu);
+        }
+        if (p.true_peak_dbtp) {
+            std::println("    true peak  limit  <= {:+.1f} dBTP        measured {:+.2f} dBTP        "
+                         "{}",
+                         preset.max_true_peak_dbtp, *p.true_peak_dbtp,
+                         verdict.true_peak_pass ? "PASS" : "FAIL");
+        } else {
+            std::println("    true peak  limit  <= {:+.1f} dBTP        measured n/a   FAIL",
+                         preset.max_true_peak_dbtp);
+        }
+        std::println("    verdict: {}", verdict.pass() ? "PASS" : "FAIL");
+        if (!verdict.pass()) {
+            all_pass = false;
+        }
+    };
+    if (*preset_arg == "all") {
+        for (const auto id : ac3::meta::kQcPresetIds) {
+            check_one(id);
+        }
+    } else {
+        ac3::meta::QcPresetId id{};
+        if (ac3::meta::parse_qc_preset(*preset_arg, id)) {
+            check_one(id);
+        } else {
+            // parse_options already validates preset= against
+            // kQcPresetNames/"all" before dispatch ever reaches here (see
+            // its own "preset" handling) - kept as a defensive fallback
+            // rather than an assert, since main.cpp has no
+            // exception-based unreachable() convention of its own.
+            std::println(stderr, "error: unknown qc preset '{}'", *preset_arg);
+            all_pass = false;
+        }
+    }
+    return all_pass;
+}
+
+int run_qc(std::string_view in_path, const std::optional<std::string>& preset_arg) {
+    const auto stream = read_all(in_path);
+    if (stream.empty()) {
+        std::println(stderr, "error: cannot read {}", in_path);
+        return 1;
+    }
+    const auto bsid = ac3::stream_bsid(stream);
+    if (!bsid) {
+        std::println(stderr, "error: {} is too short to hold a syncframe", in_path);
+        return 1;
+    }
+    const auto result = *bsid > 8 ? measure_qc_eac3(stream) : measure_qc_ac3(stream);
+    if (!result) {
+        return 1;
+    }
+    std::println("qc: {} ({}, {}, {} Hz, {} {}, {:.2f} s)", in_path, result->codec_label,
+                 result->layout_label, result->sample_rate_hz, result->unit_count,
+                 result->unit_label, result->seconds);
+    bool all_pass = true;
+    for (const auto& programme : result->programmes) {
+        if (!report_qc_programme(programme, preset_arg)) {
+            all_pass = false;
+        }
+    }
+    return all_pass ? 0 : 1;
 }
 
 // E-AC-3's own level report. The rendered layout is a chanmap rather than an
@@ -3137,10 +4165,14 @@ int run_monitor(std::string_view in_path, int device_index) {
             std::println(stderr, "error: {} is not a valid E-AC-3 stream", in_path);
             return 1;
         }
-        ac3::Eac3Decoder decoder;
+        // Heap-allocated (PREfast's C6262, alert #9): Eac3Decoder grew
+        // several KB of per-block scratch members (alert #63's fix), which
+        // pushed this one-shot stack declaration over the threshold - same
+        // pattern as PR #50.
+        auto decoder = std::make_unique<ac3::Eac3Decoder>();
         std::vector<std::size_t> order;
         for (const auto& unit : *units) {
-            const auto decoded = decoder.decode_access_unit(unit);
+            const auto decoded = decoder->decode_access_unit(unit);
             if (!decoded) {
                 std::println(stderr, "error: decode failed (code {})",
                              static_cast<int>(decoded.error()));
@@ -3633,11 +4665,22 @@ int run_live(std::string_view out_path, int capture_device, std::uint32_t second
                      pstats.bursts_submitted, pstats.bursts_rendered, pstats.underruns);
     }
     const auto stats = capture.stats();
-    if (!write_frames(out_path, frames)) {
+    // Object mode's unit_bytes are the 5.1-bed access unit (matching what a
+    // legacy decoder hears, same as the meter above); channel mode is always
+    // plain 2-channel AC-3 (encode_frame above only ever sees
+    // views.first(2)) - the same track shape 'mkv' would derive by scanning
+    // this file back, just already known here.
+    const matroska::AudioTrack track{
+        .codec_id = std::string{atmos ? matroska::kCodecEac3 : matroska::kCodecAc3},
+        .sample_rate = rate_hz,
+        .channels = atmos ? 6 : 2,
+        .samples_per_frame = ac3::kSamplesPerFrame};
+    if (!write_frames_or_mux(out_path, meta.matroska_container, track, frames)) {
         return 1;
     }
-    std::println("wrote {} {} ({} kbps) to {}", frames.size(),
-                 atmos ? "E-AC-3 access units" : "AC-3 frames", bitrate, out_path);
+    std::println("wrote {} {} ({} kbps) to {}{}", frames.size(),
+                 atmos ? "E-AC-3 access units" : "AC-3 frames", bitrate, out_path,
+                 meta.matroska_container ? " (Matroska)" : "");
     std::println("captured {} frames, {} silence-filled, {} dropped", stats.frames_captured,
                  stats.frames_silence_filled, stats.frames_dropped);
     if (slave_drift.has_value()) {
@@ -3743,7 +4786,7 @@ struct Command {
     int (*run)(const Args&);
 };
 
-constexpr std::array<Command, 21> kCommands{{
+constexpr std::array<Command, 25> kCommands{{
     {"silence", 2, "<out.ac3> [seconds] [bitrate_kbps]", "", Needs::kNothing,
      [](const Args& x) { return run_silence(x.str(1), x.u32(2, 5), x.u32(3, 192)); }},
     {"sine", 2, "<out.ac3> [seconds] [bitrate_kbps] [freq_hz] [amp_pct] [layout]", "",
@@ -3823,10 +4866,22 @@ constexpr std::array<Command, 21> kCommands{{
      [](const Args& x) { return run_levels(x.str(1)); }},
     {"loudness", 2, "<in.wav>", "BS.1770-4 loudness -> dialnorm", Needs::kNothing,
      [](const Args& x) { return run_loudness(x.str(1)); }},
+    {"qc", 2, "<in.ac3|in.ec3> [preset=<name>|all]",
+     "bitstream-aware loudness QC: measured loudness vs. embedded dialnorm/compr, optional "
+     "preset gate",
+     Needs::kNothing, [](const Args& x) { return run_qc(x.str(1), x.meta.qc_preset); }},
     {"spdif", 3, "<in.ac3> <out.wav>", "IEC 61937 wrap as playable PCM16 WAV", Needs::kNothing,
      [](const Args& x) { return run_spdif(x.str(1), x.str(2)); }},
     {"mkv", 3, "<in.ac3|in.ec3> <out.mkv>", "wrap as a playable Matroska file", Needs::kNothing,
      [](const Args& x) { return run_mkv(x.str(1), x.str(2)); }},
+    {"mp4", 3, "<in.ac3|in.ec3> <out.mp4>",
+     "wrap as a playable MP4 with a spec-correct dac3/dec3 box", Needs::kNothing,
+     [](const Args& x) { return run_mp4(x.str(1), x.str(2)); }},
+    {"fmp4", 3, "<in.ac3|in.ec3> <out_dir> [frames_per_fragment]",
+     "fragmented MP4/CMAF + HLS/DASH manifests, ready for a packager", Needs::kNothing,
+     [](const Args& x) { return run_fmp4(x.str(1), x.str(2), x.u32(3, 48)); }},
+    {"ts", 3, "<in.ac3|in.ec3> <out.ts>", "wrap as an MPEG-2 Transport Stream (DVB profile)",
+     Needs::kNothing, [](const Args& x) { return run_ts(x.str(1), x.str(2)); }},
     {"devices", 1, "", "input and loopback capture endpoints", Needs::kCapture,
      [](const Args&) { return run_devices(); }},
     {"outputs", 1, "", "render endpoints + AC-3/E-AC-3 passthrough support", Needs::kPassthrough,
@@ -3883,6 +4938,11 @@ void print_usage() {
         std::println("'spdif' in particular reaches a receiver without any audio backend at all.");
     }
     std::println("");
+    std::println("'-' in place of <in.wav>, <out.ac3>, <out.ec3>, <in.ac3|in.ec3> or <out.wav>");
+    std::println("       means stdin (an input path) or stdout (an output path) - encode,");
+    std::println("       eac3-encode, atmos-encode and decode only. e.g.:");
+    std::println("       ac3cli encode - - 448 couple < in.wav > out.ac3");
+    std::println("");
     std::println("live monitor_device/passthrough_device: -2 (default) leaves that leg off,");
     std::println("       -1 is the default render endpoint, N picks one from 'outputs'.");
     std::println("       Either or both may run alongside the file this always writes.");
@@ -3894,6 +4954,9 @@ void print_usage() {
     std::println("       clock master, paced exactly as it always has been; capture2= adds a");
     std::println("       second, independently-clocked device whose stream is resampled to");
     std::println("       track the master, with the measured drift printed at session end.");
+    std::println("record/live container=mkv: write straight to Matroska (a single command)");
+    std::println("       instead of the bare elementary stream both write by default; 'mkv'");
+    std::println("       remains the way to wrap an ALREADY-encoded file after the fact.");
     std::println("monitor/live --monitor play the 5.1 BED of an Atmos-mode stream: the in-repo");
     std::println("       decoder's E-AC-3 scope is A/52 Annex E syntax, not TS 103 420's object");
     std::println("       layer, so this is what a legacy decoder hears, not unmixed objects.");
@@ -3957,6 +5020,18 @@ void print_usage() {
     std::println("itself — so it cannot be told the wrong ones. E-AC-3 dependent substreams");
     std::println("are grouped into their access unit and counted as the channels they render.");
     std::println("");
+    std::println("fmp4 writes a fragmented MP4/CMAF init segment plus one media segment per");
+    std::println("fragment (frames_per_fragment access units each, default 48 - about 1.5s at");
+    std::println("48 kHz), alongside an HLS media+master playlist pair and a DASH MPD, all");
+    std::println("pointing at the same segments (CMAF's whole point) — ready for a real HLS/");
+    std::println("DASH origin or packager. Dolby Atmos content signals CHANNELS=\"<N>/JOC\" in");
+    std::println("the HLS playlists automatically, per Apple's HLS Authoring Specification.");
+    std::println("");
+    std::println("ts wraps the same elementary stream as an MPEG-2 Transport Stream (PAT + PMT");
+    std::println("+ one PES-wrapped audio PID), identified per the DVB profile — stream_type");
+    std::println("0x06 plus the AC3_descriptor or Enhanced_AC3_descriptor ETSI EN 300 468 Annex D");
+    std::println("defines, not ATSC's — with PCR stamped on the audio PID every access unit.");
+    std::println("");
     std::println("Without a layout, encode and eac3-encode follow the source: 1 -> mono,");
     std::println("2 -> stereo, 3 to 6 -> 5.1, 8 -> 7.1, 10 -> 5.1.4, 12 -> 7.1.4. Commands");
     std::println("that carry PCM report per-channel levels when they finish; 'record' meters");
@@ -3965,6 +5040,13 @@ void print_usage() {
     std::println("");
     std::println("For decode, drc=<scale> applies §7.7.1 partial compression (0 = ignore,");
     std::println("1 = as encoded) and 'heavy' prefers compr where the stream carries it.");
+    std::println("");
+    std::println("qc measures a stream's real BS.1770-4/EBU Tech 3342 loudness and compares it");
+    std::println("       against the dialnorm/compr it embeds - preset=<name> also gates that");
+    std::println("       measurement against a named delivery spec ({}),", ac3::meta::kQcPresetNames);
+    std::println("       or preset=all checks every one; omitting preset= just measures and");
+    std::println("       reports, with no pass/fail verdict. Exit code is 0 only when every");
+    std::println("       requested gate passes (or none was requested and decode succeeded).");
 }
 
 }  // namespace

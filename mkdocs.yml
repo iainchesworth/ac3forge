@@ -57,6 +57,8 @@ markdown_extensions:
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.inlinehilite
+  - pymdownx.tasklist:
+      custom_checkbox: true
   - tables
   - toc:
       permalink: true
@@ -69,6 +71,7 @@ nav:
       - Platform notes:
           - Windows: platforms/windows.md
           - Linux: platforms/linux.md
+          - Raspberry Pi: platforms/raspberry-pi.md
           - macOS (TBD): platforms/macos.md
           - Android (NVIDIA Shield): platforms/android.md
   - Concepts:
@@ -88,6 +91,7 @@ nav:
       - Metadata: library/metadata.md
       - Muxing & sinks: library/muxing-and-sinks.md
       - File I/O: library/file-io.md
+      - ADM / BW64 reading: library/adm.md
       - Object signing: library/signing.md
       - Header map: library/header-map.md
   - CLI reference:
@@ -103,10 +107,12 @@ nav:
       - Metadata: gui/metadata.md
       - Objects & motion: gui/objects-and-motion.md
       - Live capture & session: gui/live-session.md
+      - QC a stream: gui/qc.md
   - Project:
       - Contributing: contributing.md
       - Releasing: releasing.md
       - History: project/history.md
+      - Roadmap: roadmap.md
       - Quality trend: quality-trend.md
       - Performance trend: performance-trend.md
       - Landscape: landscape.md

@@ -30,6 +30,15 @@ that produced it — after the numbers are still recorded here. See
 `REGRESSION_DROP_DB`/`HARD_REGRESSION_DROP_DB` in
 `scripts/append-external-comparison-history.py`.
 
+**MOS** is a perceptual-quality prediction alongside the waveform-level SNR —
+[ViSQOL](https://github.com/google/visqol)'s MOS-LQO (Mean Opinion Score -
+Listening Quality Objective) in audio mode, 1 (bad) to a ceiling around 4.75,
+via the `visqol-python` package (see `perceptual_score()` in
+`tools/quality_race.py` for why ViSQOL over PEAQ and why that package
+specifically). It's read-only here — no regression check, unlike SNR — and
+shows `-` on any row a CI run produced without `visqol-python` installed in
+that job's environment, not a real zero score.
+
 <div id="tool-trend-app">
   <p class="tool-trend-status">Loading trend data…</p>
 </div>
@@ -332,6 +341,7 @@ that produced it — after the numbers are still recorded here. See
           <td>${r.variant}</td>
           <td>${r.snr_db.toFixed(2)} dB</td>
           <td>${r.lsd_db === null ? "-" : r.lsd_db.toFixed(2) + " dB"}</td>
+          <td>${r.mos_lqo == null ? "-" : r.mos_lqo.toFixed(2)}</td>
           <td>${deltaCell(r.vs_ffmpeg_snr_db)}</td>
           <td>${deltaCell(r.vs_dee_snr_db)}</td>
           <td>${releaseBadge}</td>
@@ -343,7 +353,7 @@ that produced it — after the numbers are still recorded here. See
       return '<p class="tool-trend-status">No rows in the current view - try a different leg/branch/variant combination.</p>';
     }
     return `<div class="tool-trend-table-wrap"><table>
-      <thead><tr><th>Date</th><th>Branch</th><th>Commit</th><th>Variant</th><th>SNR</th><th>LSD</th><th>vs FFmpeg</th><th>vs DEE</th><th>Release</th><th></th></tr></thead>
+      <thead><tr><th>Date</th><th>Branch</th><th>Commit</th><th>Variant</th><th>SNR</th><th>LSD</th><th>MOS</th><th>vs FFmpeg</th><th>vs DEE</th><th>Release</th><th></th></tr></thead>
       <tbody>${trs}</tbody>
     </table></div>`;
   }

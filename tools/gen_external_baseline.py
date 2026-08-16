@@ -9,6 +9,13 @@ but is likewise kept out of the per-commit path so a build never depends on
 either tool being present. Run this locally, review the manifest diff it
 produces, commit it.
 
+Each score also carries a MOS-LQO prediction (score_tool(), via
+quality_race.py's perceptual_score()/ViSQOL) when `visqol-python` is
+installed in the environment this runs in - "mos_lqo": null in the manifest
+otherwise, same graceful-degradation contract as everywhere else this
+project uses it. Installing it here is a one-time, local, opt-in choice by
+whoever regenerates the baseline; it is never required to run this script.
+
 Three fixed legs, matched to bitrate points already established elsewhere
 in this repo so the numbers are comparable to existing tables:
 
@@ -215,13 +222,13 @@ def invoke_ours(wav, kbps, is_eac3, out):
         run([CLI, "encode", str(wav), str(out), str(kbps)])
 
 
-def decode_scores_ffmpeg_fixed(original, coded, wav_path):
+def decode_scores_ffmpeg_fixed(original, coded, wav_path, perceptual=False):
     """decode_scores' FFmpeg-decode step, scaled for the short checked-in
     fixtures (see score_fixed) instead of make_material()'s ~10s material -
     not strict (-xerror), since these are foreign encoders' own output, not
     something whose exact bitstream layout this project is checking."""
     run(["ffmpeg", "-v", "error", "-y", "-i", str(coded), "-c:a", "pcm_f32le", str(wav_path)])
-    return score_fixed(original, read_wav_f32(wav_path))
+    return score_fixed(original, read_wav_f32(wav_path), perceptual=perceptual)
 
 
 def score_tool(original, coded, wav_scratch, is_eac3, decoder):
@@ -240,15 +247,24 @@ def score_tool(original, coded, wav_scratch, is_eac3, decoder):
     encoder's legal-but-different choices before" rather than a channel-
     count-shaped problem this script can cheaply detect and route around -
     worth its own investigation another time, not blocking here.
+
+    Requests a MOS-LQO score too (perceptual_score() in quality_race.py) -
+    unlike lsd_db/hf_db it isn't gated on is_eac3, since ViSQOL scores
+    perceived quality in general rather than a specific Annex E tool's
+    banded envelope. None when visqol-python isn't installed, same
+    graceful-degradation contract as everywhere else it's used - this
+    script staying runnable without it matters here too, DEE alone is
+    already the hard local-only requirement.
     """
     if decoder == "ours":
-        snr, lsd, hf = decode_scores_ours_fixed(original, coded, wav_scratch)
+        snr, lsd, hf, mos = decode_scores_ours_fixed(original, coded, wav_scratch, perceptual=True)
     else:
-        snr, lsd, hf = decode_scores_ffmpeg_fixed(original, coded, wav_scratch)
+        snr, lsd, hf, mos = decode_scores_ffmpeg_fixed(original, coded, wav_scratch, perceptual=True)
     return {
         "snr_db": float(snr),
         "lsd_db": float(lsd) if is_eac3 else None,
         "hf_db": float(hf) if is_eac3 else None,
+        "mos_lqo": None if mos is None else float(mos),
         "decoded_with": decoder,
     }
 
@@ -274,8 +290,8 @@ def main():
     }
 
     print(f"{'leg':<18} | {'tool':<20} | {'SNR dB':>7} | {'LSD dB':>6} | "
-          f"{'HF dB':>6} | {'kbps':>6}")
-    print("-" * 76)
+          f"{'HF dB':>6} | {'MOS':>4} | {'kbps':>6}")
+    print("-" * 85)
 
     for leg in LEGS:
         name, codec, ext, kbps = leg["name"], leg["codec"], leg["ext"], leg["kbps"]
@@ -306,7 +322,7 @@ def main():
             if tool_label == "dee" and name in UNVERIFIED_DEE_LEGS:
                 scores[tool_label] = {"status": "unverified", "reason": UNVERIFIED_DEE_LEGS[name]}
                 print(f"{name:<18} | {tool_label:<20} | {'unverified':>7} | "
-                      f"{'-':>6} | {'-':>6} | {'-':>6}")
+                      f"{'-':>6} | {'-':>6} | {'-':>4} | {'-':>6}")
                 continue
             wav_scratch = SCRATCH / f"{name}_{tool_label}.wav"
             entry = score_tool(original, coded, wav_scratch, is_eac3, decoder)
@@ -314,8 +330,9 @@ def main():
             scores[tool_label] = entry
             lsd_str = "-" if entry["lsd_db"] is None else f"{entry['lsd_db']:.2f}"
             hf_str = "-" if entry["hf_db"] is None else f"{entry['hf_db']:+.1f}"
+            mos_str = "-" if entry["mos_lqo"] is None else f"{entry['mos_lqo']:.2f}"
             print(f"{name:<18} | {tool_label:<20} | {entry['snr_db']:>7.2f} | "
-                  f"{lsd_str:>6} | {hf_str:>6} | {entry['measured_kbps']:>6.1f}")
+                  f"{lsd_str:>6} | {hf_str:>6} | {mos_str:>4} | {entry['measured_kbps']:>6.1f}")
 
         manifest["legs"][name] = {
             "codec": codec,

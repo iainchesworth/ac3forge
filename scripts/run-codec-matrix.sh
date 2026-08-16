@@ -6,7 +6,7 @@
 # encoder/decoder logic in isolation; this script covers the combinations a
 # real user's command line would hit - every layout, every Annex E tool
 # token, both Atmos container modes, and the metadata options - round-tripped
-# through encode -> decode -> levels/loudness/spdif/mkv.
+# through encode -> decode -> levels/loudness/spdif/mkv/mp4.
 #
 # Every stream this script produces also gets FFmpeg's independent strict
 # decode (CONTRIBUTING.md's "Oracles" list, #2) alongside the in-repo
@@ -291,9 +291,49 @@ run levels bootstrap_51.wav
 run levels enc_stereo.ac3
 run levels eac3enc_none.ec3
 run loudness bootstrap_51.wav
+# qc (roadmap C2): bitstream-aware loudness QC over an already-encoded
+# stream. Measure-only (no preset=) always exits 0 on a clean decode, same
+# as every other `run` call in this script. preset=/preset=all additionally
+# gate the measurement against a named delivery spec - a real PASS/FAIL
+# verdict this synthetic 440 Hz test tone has no reason to hit (it was never
+# mastered to -23/-24/-27 LKFS), so its exit code is captured rather than
+# trusted the way `run` trusts a clean 0 everywhere else here; this still
+# proves the option parses and the whole measure-then-gate path runs to
+# completion on both AC-3 and E-AC-3, which is what this script checks.
+run qc bootstrap_51.ac3
+run qc eac3enc_none.ec3
+count=$((count + 1))
+echo "[$count] qc bootstrap_51.ac3 preset=all (verdict not asserted - see comment above)"
+"$CLI" qc bootstrap_51.ac3 preset=all >/dev/null || true
 run spdif ac3_stereo.ac3 spdif_out.wav
 run mkv enc_51.ac3 enc_51.mkv
 run mkv eac3enc_none.ec3 eac3enc_none.mkv
 run mkv atmos_4.ec3 atmos_4.mkv
+run mp4 enc_51.ac3 enc_51.mp4
+run mp4 eac3enc_none.ec3 eac3enc_none.mp4
+run mp4 atmos_4.ec3 atmos_4.mp4
+# fmp4 writes a directory (init segment + media segments + HLS/DASH
+# manifests) rather than one file - atmos_4.ec3 in particular exercises the
+# HLS CHANNELS="<N>/JOC" path (mp4/hls.hpp), since that stream carries Dolby
+# Atmos objects. Concatenating the init segment with every media segment and
+# strict-decoding the result, and strict-decoding the HLS media playlist
+# directly, both through FFmpeg's own demuxers, is a stronger check than the
+# plain exit-code one every other 'run' call gets here - exactly the
+# fragment-boundary/manifest-signaling logic a single-fragment or synthetic
+# test cannot exercise.
+run fmp4 enc_51.ac3 fmp4_51 4
+run fmp4 eac3enc_none.ec3 fmp4_eac3 4
+run fmp4 atmos_4.ec3 fmp4_atmos 4
+# ls -v (natural/version sort) matters here, not a plain glob: a plain
+# 'segment*.m4s' glob sorts lexicographically ("segment10.m4s" before
+# "segment2.m4s"), which would concatenate fragments out of sequence order -
+# every moof's mfhd sequence_number/tfdt needs to stay monotonic for a real
+# decoder to accept the result.
+cat fmp4_atmos/init.mp4 $(ls -v fmp4_atmos/segment*.m4s) > fmp4_atmos_combined.mp4
+run_ffmpeg_check fmp4_atmos_combined.mp4
+run_ffmpeg_check fmp4_atmos/audio.m3u8
+run ts enc_51.ac3 enc_51.ts
+run ts eac3enc_none.ec3 eac3enc_none.ts
+run ts atmos_4.ec3 atmos_4.ts
 
 echo "codec matrix: $count commands completed cleanly in $WORKDIR"

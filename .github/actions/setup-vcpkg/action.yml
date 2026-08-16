@@ -94,11 +94,17 @@ runs:
           vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ inputs.vcpkg-commit }}-
           vcpkg-${{ runner.os }}-${{ runner.arch }}-
 
+    # runner.arch in the key, matching the binaries cache above - found missing
+    # for real bringing up the arm64 Linux legs: without it, an arm64 runner's
+    # restore-keys fallback can match a downloads cache an x64 runner
+    # populated (or vice versa), silently handing vcpkg the wrong architecture's
+    # previously-downloaded tool binaries for anything not covered by an exact
+    # key hit.
     - name: Cache vcpkg downloads
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ~/.cache/vcpkg/downloads
-        key: vcpkg-downloads-${{ runner.os }}-${{ inputs.vcpkg-commit }}-${{ hashFiles('vcpkg.json') }}
+        key: vcpkg-downloads-${{ runner.os }}-${{ runner.arch }}-${{ inputs.vcpkg-commit }}-${{ hashFiles('vcpkg.json') }}
         restore-keys: |
-          vcpkg-downloads-${{ runner.os }}-${{ inputs.vcpkg-commit }}-
-          vcpkg-downloads-${{ runner.os }}-
+          vcpkg-downloads-${{ runner.os }}-${{ runner.arch }}-${{ inputs.vcpkg-commit }}-
+          vcpkg-downloads-${{ runner.os }}-${{ runner.arch }}-

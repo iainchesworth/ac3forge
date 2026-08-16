@@ -3,7 +3,11 @@
 Synthesizes stereo program material (tones with vibrato, a sweep, filtered
 noise, correlated near-mono content for rematrixing, tone bursts), encodes it
 with both encoders, decodes both with FFmpeg (the neutral referee), aligns by
-cross-correlation, and reports SNR vs the original.
+cross-correlation, and reports SNR vs the original - plus a MOS-LQO column
+(ViSQOL audio mode, see perceptual_score()'s own docstring for why ViSQOL
+over PEAQ and which package) on the modes that print or export a table.
+Gracefully "-" when `visqol-python` isn't installed - it never becomes a
+required dependency just to run a quality race.
 
 Modes:
   ac3        - our AC-3 encoder vs FFmpeg's, at 192-448 kbps
@@ -39,6 +43,7 @@ Set AC3CLI to override the ac3cli binary (see CLI below); CI always does.
 """
 
 import json
+import math
 import os
 import struct
 import subprocess
@@ -262,7 +267,102 @@ def spectral_scores(o, d):
     return float(np.mean(lsd)), 10 * np.log10((hf_d + 1e-20) / (hf_o + 1e-20))
 
 
-def decode_scores(original, coded, wav_path, strict=True):
+# --- Perceptual quality (ViSQOL) ---------------------------------------------
+#
+# SNR and the Bark-banded LSD/HF measures above are waveform- and envelope-
+# level proxies for what a listener actually hears. ViSQOL (Google's Virtual
+# Speech Quality Objective Listener, https://github.com/google/visqol) scores
+# that more directly: a full-reference perceptual model that predicts a
+# MOS-LQO (Mean Opinion Score - Listening Quality Objective), 1 (bad) to
+# audio mode's ~4.75 ceiling.
+#
+# Chosen over PEAQ (ITU-R BS.1387): the PEAQ algorithm itself is FRAND-
+# licensed ITU IP, not something this clean-room project wants to take a
+# dependency on (see docs/concepts/object-signing.md for the same reasoning
+# applied to Dolby's own authentication tag), and the one credible open
+# implementation, GstPEAQ, documents its own non-conformance to the BS.1387-1
+# tolerance and ships only as a GStreamer/C plugin - no Python surface, a
+# heavier and less certain dependency than ViSQOL's Apache-2.0 Python package
+# for a column that has to stay optional.
+#
+# Google's own google/visqol repo has no published PyPI wheel: its Python API
+# is `pip install .` after a Bazel + TensorFlow source build (confirmed
+# against the repo's own README, not assumed), which is not viable as an
+# optional dependency for a casual local run or a CI container. `visqol-
+# python` (PyPI, Apache-2.0, https://github.com/talker93/visqol-python) is a
+# pure-Python reimplementation with prebuilt wheels and no Bazel/C++
+# toolchain requirement; its own conformance suite scores audio-mode output
+# within 0.0002 MOS-LQO of the reference C++ implementation across its test
+# vectors. It bundles the audio-mode SVR model file, so no separate model
+# download is needed once the package itself is installed - verified
+# locally: identical audio scores ~4.73, a heavily noised copy scores 1.0,
+# confirming the number actually moves with quality rather than being a
+# stub.
+#
+# Optional exactly like AC3FORGE_WITH_ALSA (src/audio/CMakeLists.txt): a
+# missing `visqol-python` install skips this column with one clear message,
+# printed once, and never fails the run. Nobody running a quality race
+# locally should be forced to install it, and CI does not either - see
+# ffmpeg-validate's own comment in .github/workflows/ci.yml for why.
+try:
+    from visqol import VisqolApi
+except ImportError:
+    VisqolApi = None
+
+_visqol_api = None
+_visqol_warned = False
+
+
+def perceptual_score(o, d, rate=RATE):
+    """MOS-LQO via ViSQOL audio mode, or None if it isn't available.
+
+    o/d are aligned original/decoded arrays from align()/score_fixed, any
+    channel count. Downmixed to mono by hand (plain channel average) before
+    scoring rather than handed through as-is: measure_from_arrays() accepts
+    a multi-channel array without erroring, but a real 6-channel A/B scored
+    3.38 through its own internal handling against 1.60 for the identical
+    pair downmixed by hand first - undocumented and not something to rely
+    on. A plain mean matches ViSQOL audio mode's documented file-based
+    behaviour ("down-mixes multi-channel to mono") and is at least a mixdown
+    this function can promise callers.
+
+    None on three distinct causes: the package isn't installed, the call
+    itself raised (some native/runtime failure), or it returned a
+    non-finite score - observed for real with a fully-silent degraded
+    signal (NaN, not an exception) rather than assumed. The first two are
+    each logged once per run, not once per row, so a long table doesn't
+    repeat the same line; the non-finite case is quiet on purpose - it can
+    legitimately recur per row (e.g. several silent-segment rows in the
+    same run) without being a "the tool is unavailable" condition worth
+    repeating a message for.
+    """
+    global _visqol_api, _visqol_warned
+    if VisqolApi is None:
+        if not _visqol_warned:
+            print("  (visqol-python not installed - skipping the perceptual-quality "
+                  "column; pip install visqol-python to enable it)")
+            _visqol_warned = True
+        return None
+    if _visqol_api is None:
+        _visqol_api = VisqolApi()
+        _visqol_api.create(mode="audio")
+    mono_o = np.ascontiguousarray((o.mean(axis=1) if o.ndim > 1 else o), dtype=np.float64)
+    mono_d = np.ascontiguousarray((d.mean(axis=1) if d.ndim > 1 else d), dtype=np.float64)
+    try:
+        mos = float(_visqol_api.measure_from_arrays(mono_o, mono_d, sample_rate=rate).moslqo)
+    except Exception as exc:  # noqa: BLE001 - see graceful-degradation reasoning above
+        if not _visqol_warned:
+            print(f"  (visqol scoring failed ({exc}) - skipping the perceptual-quality column)")
+            _visqol_warned = True
+        return None
+    return mos if math.isfinite(mos) else None
+
+
+def _fmt_mos(mos):
+    return "-" if mos is None else f"{mos:.2f}"
+
+
+def decode_scores(original, coded, wav_path, strict=True, perceptual=False):
     """Decode with FFmpeg (the neutral referee) and score against the source."""
     cmd = ["ffmpeg", "-v", "error", "-y"]
     if strict:
@@ -279,10 +379,11 @@ def decode_scores(original, coded, wav_path, strict=True):
     o, d, _ = align(original, read_wav_f32(wav_path))
     snr = 10 * np.log10(np.sum(o**2) / max(np.sum((d - o) ** 2), 1e-30))
     lsd, hf = spectral_scores(o, d)
-    return snr, lsd, hf
+    mos = perceptual_score(o, d) if perceptual else None
+    return snr, lsd, hf, mos
 
 
-def decode_scores_ours(original, coded, wav_path):
+def decode_scores_ours(original, coded, wav_path, perceptual=False):
     """Decode with THIS project's own decoder and score against the source.
 
     Enhanced coupling (ecpl) and transient pre-noise processing (tpn) change
@@ -302,7 +403,8 @@ def decode_scores_ours(original, coded, wav_path):
     o, d, _ = align(original, read_wav_f32(wav_path))
     snr = 10 * np.log10(np.sum(o**2) / max(np.sum((d - o) ** 2), 1e-30))
     lsd, hf = spectral_scores(o, d)
-    return snr, lsd, hf
+    mos = perceptual_score(o, d) if perceptual else None
+    return snr, lsd, hf, mos
 
 
 # The committed fixed fixtures (reference_51.wav, reference_stereo.wav) are
@@ -313,20 +415,21 @@ def decode_scores_ours(original, coded, wav_path):
 FIXED_ALIGN = dict(skip=int(0.2 * RATE), probe_len=8192, window_extra=16384)
 
 
-def score_fixed(original, decoded):
+def score_fixed(original, decoded, perceptual=False):
     """SNR + spectral scores between two already-decoded PCM arrays, using
     FIXED_ALIGN rather than align()'s make_material()-scaled defaults."""
     o, d, _ = align(original, decoded, **FIXED_ALIGN)
     snr = 10 * np.log10(np.sum(o**2) / max(np.sum((d - o) ** 2), 1e-30))
     lsd, hf = spectral_scores(o, d)
-    return snr, lsd, hf
+    mos = perceptual_score(o, d) if perceptual else None
+    return snr, lsd, hf, mos
 
 
-def decode_scores_ours_fixed(original, coded, wav_path):
+def decode_scores_ours_fixed(original, coded, wav_path, perceptual=False):
     """decode_scores_ours, scaled for the short checked-in fixtures (see
     score_fixed) instead of make_material()'s synthesized ~10s material."""
     run([CLI, "decode", coded, wav_path])
-    return score_fixed(original, read_wav_f32(wav_path))
+    return score_fixed(original, read_wav_f32(wav_path), perceptual=perceptual)
 
 
 def measured_kbps(path, seconds):
@@ -334,8 +437,9 @@ def measured_kbps(path, seconds):
 
 
 def race_ac3(original, source, seconds):
-    print(f"{'kbps':>5} | {'ours dB':>8} | {'ffmpeg dB':>9} | {'gap':>6}")
-    print("-" * 38)
+    print(f"{'kbps':>5} | {'ours dB':>8} | {'ffmpeg dB':>9} | {'gap':>6} | "
+          f"{'ours MOS':>8} | {'ffmpeg MOS':>10}")
+    print("-" * 61)
     worst_gap = -1e9
     for kbps in (192, 256, 320, 448):
         ours = BUILD / f"race_ours_{kbps}.ac3"
@@ -343,13 +447,17 @@ def race_ac3(original, source, seconds):
         run([CLI, "encode", source, ours, str(kbps)])
         run(["ffmpeg", "-v", "error", "-y", "-i", source, "-c:a", "ac3",
              "-b:a", f"{kbps}k", theirs])
-        ours_snr, _, _ = decode_scores(original, ours, BUILD / f"race_ours_{kbps}.wav")
-        ff_snr, _, _ = decode_scores(original, theirs, BUILD / f"race_ff_{kbps}.wav",
-                                     strict=False)
+        ours_snr, _, _, ours_mos = decode_scores(original, ours, BUILD / f"race_ours_{kbps}.wav",
+                                                  perceptual=True)
+        ff_snr, _, _, ff_mos = decode_scores(original, theirs, BUILD / f"race_ff_{kbps}.wav",
+                                             strict=False, perceptual=True)
         gap = ff_snr - ours_snr
         worst_gap = max(worst_gap, gap)
-        print(f"{kbps:>5} | {ours_snr:>8.2f} | {ff_snr:>9.2f} | {gap:>+6.2f}")
+        print(f"{kbps:>5} | {ours_snr:>8.2f} | {ff_snr:>9.2f} | {gap:>+6.2f} | "
+              f"{_fmt_mos(ours_mos):>8} | {_fmt_mos(ff_mos):>10}")
     print(f"\nworst gap vs ffmpeg: {worst_gap:+.2f} dB (positive = ffmpeg better)")
+    print("MOS-LQO (ViSQOL audio mode, 1-4.75): '-' means visqol-python isn't installed -")
+    print("see perceptual_score()'s own docstring.")
 
 
 # One column per E-AC-3 variant: the label, and the tool token handed to
@@ -367,8 +475,8 @@ EAC3_SELF_VARIANTS = [("ecpl", "cpl+ecpl"), ("tpn", "tpn"), ("ecpl+tpn", "cpl+ec
 
 def race_eac3(original, source, seconds, rates=(96, 128, 192)):
     print(f"{'kbps':>5} | {'variant':<10} | {'SNR dB':>7} | {'LSD dB':>6} | "
-          f"{'HF dB':>6} | {'rate':>6}")
-    print("-" * 60)
+          f"{'HF dB':>6} | {'MOS':>4} | {'rate':>6}")
+    print("-" * 62)
     for kbps in rates:
         for label, tools in EAC3_VARIANTS + [("ffmpeg", "ffmpeg")]:
             coded = BUILD / f"race_e_{label}_{kbps}.ec3"
@@ -380,12 +488,12 @@ def race_eac3(original, source, seconds, rates=(96, 128, 192)):
                 if tools:
                     cmd.append(tools)
                 run(cmd)
-            snr, lsd, hf = decode_scores(original, coded,
-                                         BUILD / f"race_e_{label}_{kbps}.wav",
-                                         strict=tools != "ffmpeg")
+            snr, lsd, hf, mos = decode_scores(original, coded,
+                                              BUILD / f"race_e_{label}_{kbps}.wav",
+                                              strict=tools != "ffmpeg", perceptual=True)
             rate = measured_kbps(coded, seconds)
             print(f"{kbps:>5} | {label:<10} | {snr:>7.2f} | {lsd:>6.2f} | "
-                  f"{hf:>+6.1f} | {rate:>6.1f}")
+                  f"{hf:>+6.1f} | {_fmt_mos(mos):>4} | {rate:>6.1f}")
         print()
 
 
@@ -472,7 +580,7 @@ def race_ci(original, source, original_51, source_51):
     print(f"=== AC-3 @ {CI_STEREO_KBPS} kbps ===")
     ac3_path = BUILD / f"ci_ac3_{CI_STEREO_KBPS}.ac3"
     run([CLI, "encode", source, ac3_path, str(CI_STEREO_KBPS)])
-    snr, _, _ = decode_scores(original, ac3_path, BUILD / "ci_ac3.wav")
+    snr, _, _, _ = decode_scores(original, ac3_path, BUILD / "ci_ac3.wav")
     if not gate(f"ac3 @ {CI_STEREO_KBPS}kbps", snr >= CI_AC3_MIN_SNR_DB,
                 f"SNR {snr:.2f} dB (floor {CI_AC3_MIN_SNR_DB})"):
         failures.append("ac3")
@@ -488,8 +596,8 @@ def race_ci(original, source, original_51, source_51):
             if tools:
                 cmd.append(tools)
             run(cmd)
-            snr, lsd, _ = decode_scores(original_pcm, coded,
-                                        BUILD / f"ci_eac3_{label}_{variant}.wav")
+            snr, lsd, _, _ = decode_scores(original_pcm, coded,
+                                           BUILD / f"ci_eac3_{label}_{variant}.wav")
             min_snr, max_lsd = CI_EAC3_THRESHOLDS[label][variant]
             ok = snr >= min_snr and lsd <= max_lsd
             if not gate(f"eac3-{label} {variant} @ {kbps}kbps", ok,
@@ -501,8 +609,8 @@ def race_ci(original, source, original_51, source_51):
         for variant, tools in EAC3_SELF_VARIANTS:
             coded = BUILD / f"ci_eac3_{label}_{variant}_{kbps}.ec3"
             run([CLI, "eac3-encode", source_wav, coded, str(kbps), tools])
-            snr, lsd, _ = decode_scores_ours(original_pcm, coded,
-                                             BUILD / f"ci_eac3_{label}_{variant}.wav")
+            snr, lsd, _, _ = decode_scores_ours(original_pcm, coded,
+                                                BUILD / f"ci_eac3_{label}_{variant}.wav")
             min_snr, max_lsd = CI_EAC3_SELF_THRESHOLDS[label][variant]
             ok = snr >= min_snr and lsd <= max_lsd
             if not gate(f"eac3-{label} {variant} @ {kbps}kbps (self)", ok,
@@ -564,8 +672,8 @@ def race_trend(json_out=None):
     just the numbers - persistence to quality-history is a later mode.
     """
     print(f"{'leg':<18} | {'row':<10} | {'SNR dB':>7} | {'LSD dB':>6} | "
-          f"{'HF dB':>6} | {'kbps':>6}")
-    print("-" * 68)
+          f"{'HF dB':>6} | {'MOS':>4} | {'kbps':>6}")
+    print("-" * 75)
 
     results = []
     ext = {"ac3": "ac3", "eac3": "ec3"}
@@ -583,26 +691,33 @@ def race_trend(json_out=None):
         for row_label, tools in rows:
             cache_key = tools if is_eac3 else None
             if cache_key in landscape_cache:
-                snr, lsd, hf, kbps_measured = landscape_cache[cache_key]
+                snr, lsd, hf, mos, kbps_measured = landscape_cache[cache_key]
             else:
                 coded = BUILD / f"trend_{name}_{row_label}.{ext[codec]}"
                 _trend_encode(wav, kbps, codec, tools, coded)
                 wav_scratch = BUILD / f"trend_{name}_{row_label}.wav"
-                snr, lsd, hf = decode_scores_ours_fixed(original, coded, wav_scratch)
+                snr, lsd, hf, mos = decode_scores_ours_fixed(original, coded, wav_scratch,
+                                                              perceptual=True)
                 kbps_measured = measured_kbps(coded, seconds)
-                landscape_cache[cache_key] = (snr, lsd, hf, kbps_measured)
+                landscape_cache[cache_key] = (snr, lsd, hf, mos, kbps_measured)
 
             lsd_out = float(lsd) if is_eac3 else None
             hf_out = float(hf) if is_eac3 else None
+            # Unlike LSD/HF (spectral_scores' own docstring: banded envelope
+            # measures that only mean something for the Annex E tools that
+            # trade waveform fidelity for it), ViSQOL's MOS-LQO is a general
+            # quality prediction - meaningful on the AC-3 leg's "landscape"
+            # row too, so it isn't nulled by is_eac3 the way lsd/hf are.
+            mos_out = None if mos is None else float(mos)
             results.append({
                 "leg": name, "codec": codec, "bitrate_kbps": kbps, "variant": row_label,
-                "snr_db": float(snr), "lsd_db": lsd_out, "hf_db": hf_out,
+                "snr_db": float(snr), "lsd_db": lsd_out, "hf_db": hf_out, "mos_lqo": mos_out,
                 "measured_kbps": float(kbps_measured),
             })
             lsd_str = "-" if lsd_out is None else f"{lsd_out:.2f}"
             hf_str = "-" if hf_out is None else f"{hf_out:+.1f}"
             print(f"{name:<18} | {row_label:<10} | {snr:>7.2f} | {lsd_str:>6} | "
-                  f"{hf_str:>6} | {kbps_measured:>6.1f}")
+                  f"{hf_str:>6} | {_fmt_mos(mos_out):>4} | {kbps_measured:>6.1f}")
         print()
 
     if json_out is not None:

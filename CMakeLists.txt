@@ -72,6 +72,49 @@ option(AC3FORGE_BUILD_EXAMPLES "Build the documented library examples" ON)
 # directly - it configures a dedicated build/fuzz directory with the right
 # compiler.
 option(AC3FORGE_BUILD_FUZZERS "Build libFuzzer harnesses (Clang only; see fuzz/)" OFF)
+# Every other library component (matroska::matroska, mp4::mp4, mpegts::mpegts) gets its own
+# AC3FORGE_BUILD_<NAME> option, defaulting ON so nothing changes for today's direct/CPack builds.
+# This is what lets a vcpkg port expose a component as an opt-in feature - see
+# cmake/InstallLibrary.cmake's matching install()/export() gate.
+option(AC3FORGE_BUILD_MATROSKA "Build the standalone Matroska container writer (src/matroska)" ON)
+option(AC3FORGE_BUILD_MP4 "Build the standalone MP4/ISOBMFF container writer (src/mp4)" ON)
+option(AC3FORGE_BUILD_MPEGTS "Build the standalone MPEG-TS container writer (src/mpegts)" ON)
+
+# src/cli, src/gui, tests/ and examples/ all link matroska::matroska, mp4::mp4 and
+# mpegts::mpegts unconditionally - none of them are written to cope with any of the three being
+# absent. AC3FORGE_BUILD_MATROSKA=OFF, AC3FORGE_BUILD_MP4=OFF or AC3FORGE_BUILD_MPEGTS=OFF only
+# make sense with all four also OFF (this is the shape a vcpkg build without the matching
+# feature actually uses - mp4/mpegts have no vcpkg feature of their own yet, see
+# cmake/InstallLibrary.cmake); catch the unsupported combination here with a clear message
+# rather than letting it fail deep inside one of those subdirectories with a "target not found"
+# error.
+if(NOT AC3FORGE_BUILD_MATROSKA AND (AC3FORGE_BUILD_CLI OR AC3FORGE_BUILD_GUI OR AC3FORGE_BUILD_TESTS OR AC3FORGE_BUILD_EXAMPLES))
+    message(FATAL_ERROR "AC3FORGE_BUILD_MATROSKA=OFF requires AC3FORGE_BUILD_CLI, "
+        "AC3FORGE_BUILD_GUI, AC3FORGE_BUILD_TESTS and AC3FORGE_BUILD_EXAMPLES to all be OFF too - "
+        "they all link matroska::matroska unconditionally.")
+endif()
+if(NOT AC3FORGE_BUILD_MP4 AND (AC3FORGE_BUILD_CLI OR AC3FORGE_BUILD_GUI OR AC3FORGE_BUILD_TESTS OR AC3FORGE_BUILD_EXAMPLES))
+    message(FATAL_ERROR "AC3FORGE_BUILD_MP4=OFF requires AC3FORGE_BUILD_CLI, "
+        "AC3FORGE_BUILD_GUI, AC3FORGE_BUILD_TESTS and AC3FORGE_BUILD_EXAMPLES to all be OFF too - "
+        "they all link mp4::mp4 unconditionally.")
+endif()
+if(NOT AC3FORGE_BUILD_MPEGTS AND (AC3FORGE_BUILD_CLI OR AC3FORGE_BUILD_GUI OR
+                                  AC3FORGE_BUILD_TESTS OR AC3FORGE_BUILD_EXAMPLES))
+    message(FATAL_ERROR "AC3FORGE_BUILD_MPEGTS=OFF requires AC3FORGE_BUILD_CLI, "
+        "AC3FORGE_BUILD_GUI, AC3FORGE_BUILD_TESTS and AC3FORGE_BUILD_EXAMPLES to all be OFF too - "
+        "they all link mpegts::mpegts unconditionally.")
+endif()
+
+# ac3adm::ac3adm (src/ac3adm) is a READER, not a writer like the three container modules above -
+# roadmap item B1 phase 1 ("ADM BWF reader feeding the JOC encoder", see ROADMAP.md), parsing
+# BW64/RF64 + the Audio Definition Model rather than muxing a container. Unlike
+# matroska/mp4/mpegts, it defaults OFF rather than ON and is genuinely additive: nothing in
+# src/cli, src/gui, tests/ or examples/ links it unconditionally, so every one of those builds
+# identically whether this is on or off. The reason for the different default is its
+# dependency footprint - see src/ac3adm/CMakeLists.txt's own header comment - libadm needs
+# several Boost header libraries, resolved through a dedicated opt-in vcpkg feature
+# (-DVCPKG_MANIFEST_FEATURES=adm, see vcpkg.json) that a normal build never pulls in.
+option(AC3FORGE_BUILD_ADM "Build the standalone BW64/RF64 + ADM parser (src/ac3adm) - needs Boost, see vcpkg.json's \"adm\" feature" OFF)
 
 # enable_testing() has to run before ANY add_subdirectory() that might contain
 # an add_test() call, not merely before tests/ itself - CTest silently drops
@@ -105,14 +148,53 @@ add_subdirectory(src/audio)
 add_subdirectory(src/signing)
 
 # A standalone container writer, kept apart from the codec on purpose: it
-# depends on nothing of ac3::forge and knows nothing about AC-3.
-add_subdirectory(src/matroska)
+# depends on nothing of ac3::forge and knows nothing about AC-3. Gated by
+# AC3FORGE_BUILD_MATROSKA (default ON) so it can be opted out of - a vcpkg
+# port maps this straight to its own "matroska" feature.
+if(AC3FORGE_BUILD_MATROSKA)
+    add_subdirectory(src/matroska)
+endif()
 
-# install()/find_package(ac3forge) support for ac3::forge and
-# matroska::matroska - after both add_subdirectory() calls above (needs
-# their targets to exist), before include(Packaging) (CPack's library
-# component packages exactly what gets install()'d here). Deliberately not
-# ac3::audio - see cmake/InstallLibrary.cmake's own header comment.
+# A second standalone container writer, same shape and same reasoning as
+# src/matroska above - see src/mp4/CMakeLists.txt's own header. Gated by
+# AC3FORGE_BUILD_MP4 (default ON, see the FATAL_ERROR guard above).
+if(AC3FORGE_BUILD_MP4)
+    add_subdirectory(src/mp4)
+endif()
+
+# A third standalone container writer, same shape as src/matroska above but
+# for MPEG-2 Transport Stream rather than Matroska. Gated by AC3FORGE_BUILD_MPEGTS
+# (default ON, see the option() and its FATAL_ERROR guard above) so it can be
+# opted out of the same way matroska is expected to become opt-out-able too.
+if(AC3FORGE_BUILD_MPEGTS)
+    add_subdirectory(src/mpegts)
+endif()
+
+# A standalone BW64/RF64 + Audio Definition Model parser - reader, not writer, but the same
+# "depends on nothing of ac3::forge" shape as the three container writers above. Gated by
+# AC3FORGE_BUILD_ADM (default OFF, unlike the three above - see the option() itself for why).
+if(AC3FORGE_BUILD_ADM)
+    add_subdirectory(src/ac3adm)
+
+    # ac3::admbridge - roadmap item B1 phase 2: maps ac3adm's parsed ADM graph onto
+    # ac3::oba::AtmosEncoder. Depends on BOTH ac3::forge (added above) and ac3adm::ac3adm (just
+    # added), so it is meaningless without AC3FORGE_BUILD_ADM - gated by the same flag rather
+    # than a new option of its own; see src/adm_bridge/CMakeLists.txt's own header comment for
+    # the full reasoning, including why this is a separate module from either side.
+    add_subdirectory(src/adm_bridge)
+endif()
+
+# install()/find_package(ac3forge) support for ac3::forge, matroska::matroska,
+# mp4::mp4 and mpegts::mpegts - after every add_subdirectory() call above (needs their targets to
+# exist), before include(Packaging) (CPack's library component packages exactly what gets
+# install()'d here). Deliberately not ac3::audio, and deliberately not ac3adm::ac3adm either -
+# see cmake/InstallLibrary.cmake's own header comment for the former; ac3adm is left out of the
+# installed package for the same "FetchContent'd third-party code, not this project's own" reason
+# it stays out of docs/library/index.md's zero-dependency claim (see src/ac3adm/CMakeLists.txt's
+# header comment) plus the added complexity of re-exporting libbw64/libadm's own transitive
+# targets through this package - AC3FORGE_BUILD_ADM users consume ac3adm::ac3adm from an in-tree
+# add_subdirectory() build, not from a `find_package(ac3forge)` installed one, for now. ac3::admbridge
+# (src/adm_bridge) is excluded for the same reason - it transitively depends on ac3adm::ac3adm.
 include(InstallLibrary)
 
 if(AC3FORGE_BUILD_CLI)

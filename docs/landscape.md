@@ -160,12 +160,13 @@ number a real user of either tool actually gets, not an internal detail.
           <td>${deltaCell(r.vs_ffmpeg_snr_db)}</td>
           <td>${deltaCell(r.vs_dee_snr_db)}</td>
           <td>${r.lsd_db === null ? "-" : r.lsd_db.toFixed(2) + " dB"}</td>
+          <td>${r.mos_lqo == null ? "-" : r.mos_lqo.toFixed(2)}</td>
           <td>${r.baseline_version !== undefined ? "v" + r.baseline_version : "-"}</td>
         </tr>`;
       })
       .join("");
     return `<div class="landscape-table-wrap"><table>
-      <thead><tr><th>Release</th><th>Date</th><th>Commit</th><th>Leg</th><th>ac3forge SNR</th><th>vs FFmpeg</th><th>vs DEE</th><th>LSD</th><th>Baseline</th></tr></thead>
+      <thead><tr><th>Release</th><th>Date</th><th>Commit</th><th>Leg</th><th>ac3forge SNR</th><th>vs FFmpeg</th><th>vs DEE</th><th>LSD</th><th>MOS</th><th>Baseline</th></tr></thead>
       <tbody>${trs}</tbody>
     </table></div>`;
   }
@@ -197,6 +198,16 @@ automatically, and never runs in CI. The **Baseline** column names which
 version of it a given release's numbers were compared against, so a jump in
 that column marks where the external side of the comparison changed, not
 ac3forge's own encoder.
+
+**MOS** is [ViSQOL](https://github.com/google/visqol)'s MOS-LQO (Mean
+Opinion Score - Listening Quality Objective) in audio mode, a perceptual-
+quality prediction from 1 (bad) to a ceiling around 4.75 — see [Tool
+comparison trend](tool-comparison-trend.md#reading-it) for why ViSQOL over
+PEAQ. It's ac3forge's own score only, not a delta like the SNR columns
+either side of it, and shows `-` on a release whose CI run (or whoever ran
+`gen_external_baseline.py` for that baseline version) didn't have
+`visqol-python` installed — same graceful-degradation contract every other
+use of it in this project follows, not a real zero.
 
 ## Where the data lives
 
