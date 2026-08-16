@@ -276,7 +276,7 @@ TEST_CASE("valid_surround_mix_level: exactly the three reserved surround codes a
     CHECK(ac3::meta::valid_surround_mix_level(MixLevel::kSilent));
 }
 
-TEST_CASE("lfe_mix_level_db: §E2.3.1.11's 10 - code formula across its full 0..31 range",
+TEST_CASE("lfe_mix_level_db: section E2.3.1.11's 10 - code formula across its full 0..31 range",
          "[mixing]") {
     CHECK(ac3::meta::lfe_mix_level_db(0) == 10.0);
     CHECK(ac3::meta::lfe_mix_level_db(10) == 0.0);
