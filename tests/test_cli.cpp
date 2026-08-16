@@ -1739,3 +1739,99 @@ TEST_CASE("eac3-silence threads its layout argument through to the reported labe
         CHECK(rms(channel, 0, channel.size()) == 0.0);
     }
 }
+
+// decode's own object-layer gap (PRs #168/#169 made Eac3Decoder actually
+// populate DecodedAccessUnit::object_metadata/object_audio; nothing on the
+// CLI side read either field until now): a plain decode should report the
+// object count it found, and objects_dir should export each JOC-
+// reconstructed object as its own genuinely non-silent mono WAV - distinct
+// from the bed and, since every 'atmos' object gets its own tone, from each
+// other too.
+TEST_CASE("decode reports the object layer of an Atmos stream and exports it with objects_dir",
+          "[cli][decode][atmos]") {
+    const auto dir = scratch_dir();
+    const auto ec3_path = dir / "decode_atmos_objects.ec3";
+    REQUIRE(run_cli("atmos \"" + ec3_path.string() + "\" 1 448 3 4 objects",
+                    dir / "decode_atmos_objects_encode.log") == 0);
+
+    // Plain decode, no objects_dir: the summary line is there, no export happens.
+    const auto wav_path = dir / "decode_atmos_objects.wav";
+    const auto plain_log = dir / "decode_atmos_objects_plain.log";
+    REQUIRE(
+        run_cli("decode \"" + ec3_path.string() + "\" \"" + wav_path.string() + "\"", plain_log) ==
+        0);
+    const auto plain_text = read_log(plain_log);
+    INFO(plain_text);
+    CHECK(plain_text.find("3 dynamic objects") != std::string::npos);
+    CHECK(plain_text.find("4 objects") != std::string::npos);
+    CHECK(plain_text.find("JOC audio reconstructed") != std::string::npos);
+    CHECK(plain_text.find("wrote") == std::string::npos);
+
+    // Same stream, with objects_dir: one object_NN.wav per dynamic object.
+    const auto objects_dir = dir / "decode_atmos_objects_out";
+    fs::remove_all(objects_dir);
+    const auto export_log = dir / "decode_atmos_objects_export.log";
+    REQUIRE(run_cli("decode \"" + ec3_path.string() + "\" \"" + wav_path.string() + "\" \"" +
+                        objects_dir.string() + "\"",
+                    export_log) == 0);
+    const auto export_text = read_log(export_log);
+    INFO(export_text);
+    CHECK(export_text.find("wrote 3 object WAV(s)") != std::string::npos);
+
+    std::vector<std::vector<float>> object_channels;
+    for (int i = 0; i < 3; ++i) {
+        const auto object_path = objects_dir / ("object_0" + std::to_string(i) + ".wav");
+        REQUIRE(fs::exists(object_path));
+        const auto decoded = ac3::io::read_wav(object_path.string());
+        REQUIRE(decoded.has_value());
+        REQUIRE(decoded->channels.size() == 1);
+        REQUIRE(decoded->frame_count() > 0);
+        CHECK(rms(decoded->channels[0], 0, decoded->channels[0].size()) > 0.0);
+        object_channels.push_back(decoded->channels[0]);
+    }
+    // Three distinct orbiting tones in, so not every object should have
+    // decoded to the same waveform - compared as a bool for the same reason
+    // the atmos-encode motion-vs-static test above does (stringifying a
+    // multi-thousand-sample diff on failure is slow and was seen to crash).
+    CHECK(object_channels[0] != object_channels[1]);
+    CHECK(object_channels[1] != object_channels[2]);
+}
+
+TEST_CASE("decode objects_dir warns instead of exporting when there is no object audio to export",
+          "[cli][decode][atmos]") {
+    const auto dir = scratch_dir();
+
+    SECTION("plain AC-3 has no object layer at all") {
+        const auto ac3_path = dir / "decode_objects_plain_ac3.ac3";
+        REQUIRE(run_cli("sine \"" + ac3_path.string() + "\" 1 192 1000 50 stereo",
+                        dir / "decode_objects_plain_ac3_encode.log") == 0);
+        const auto wav_path = dir / "decode_objects_plain_ac3.wav";
+        const auto objects_dir = dir / "decode_objects_plain_ac3_out";
+        fs::remove_all(objects_dir);
+        const auto log = dir / "decode_objects_plain_ac3.log";
+        REQUIRE(run_cli("decode \"" + ac3_path.string() + "\" \"" + wav_path.string() + "\" \"" +
+                            objects_dir.string() + "\"",
+                        log) == 0);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(text.find("no object layer") != std::string::npos);
+        CHECK_FALSE(fs::exists(objects_dir));
+    }
+
+    SECTION("bed51 mode carries no object container to reconstruct from") {
+        const auto ec3_path = dir / "decode_objects_bed51.ec3";
+        REQUIRE(run_cli("atmos \"" + ec3_path.string() + "\" 1 448 3 4 bed51",
+                        dir / "decode_objects_bed51_encode.log") == 0);
+        const auto wav_path = dir / "decode_objects_bed51.wav";
+        const auto objects_dir = dir / "decode_objects_bed51_out";
+        fs::remove_all(objects_dir);
+        const auto log = dir / "decode_objects_bed51.log";
+        REQUIRE(run_cli("decode \"" + ec3_path.string() + "\" \"" + wav_path.string() + "\" \"" +
+                            objects_dir.string() + "\"",
+                        log) == 0);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(text.find("no reconstructed object audio to export") != std::string::npos);
+        CHECK_FALSE(fs::exists(objects_dir));
+    }
+}
