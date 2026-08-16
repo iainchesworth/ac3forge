@@ -80,6 +80,15 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   now decodes what it encodes): mean recovered position error of 0.02 room units — essentially the
   quantizer's own step size — and 18-22 dB audio-tracking SNR per object across 59 frames of real
   circular motion, not a single static frame.
+- **`ac3cli decode` now surfaces the object layer the two entries above taught `Eac3Decoder` to
+  read.** Until now nothing on the CLI side looked at `object_metadata`/`object_audio` at all — a
+  decoded Atmos stream's objects were parsed in the library and then silently dropped on the
+  floor. A plain `decode` now reports the object count found (`N dynamic objects + the bed's LFE
+  = M objects`) alongside the existing channel/dialnorm summary, whether or not JOC actually
+  reconstructed audio for them; a new `objects_dir` argument additionally exports each
+  reconstructed object as its own single-channel `object_NN.wav`. `ac3cli monitor` reports the
+  same object-count line (it still only plays the 5.1 bed — object playback isn't part of what
+  that command does).
 - **`ac3gui` gains "Inspect objects…"** (header, beside "QC a stream…"), the decode-side counterpart
   to the Objects tab's own authoring room view: opens an already-encoded E-AC-3 file and shows the
   OAMD positions/gain and JOC-reconstructed audio `Eac3Decoder` actually recovers from it, scrubbed

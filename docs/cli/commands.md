@@ -20,7 +20,7 @@ Usage:
   ac3cli eac3-silence <out.ec3> [seconds] [bitrate_kbps] [layout]
   ac3cli eac3-sine    <out.ec3> [seconds] [bitrate_kbps] [freq_hz] [amp_pct] [layout]
   ac3cli eac3-encode  <in.wav> <out.ec3> [bitrate_kbps] [tools] [layout] [vbr] [in2.wav] (in2.wav: layout 1+1's Ch2, when Ch1 is a separate mono file; or use src=/map= for more than one source)
-  ac3cli decode       <in.ac3|in.ec3> <out.wav>               (AC-3 or E-AC-3; bsid decides)
+  ac3cli decode       <in.ac3|in.ec3> <out.wav> [objects_dir] (AC-3 or E-AC-3; bsid decides. objects_dir (E-AC-3 Atmos only): export each JOC-reconstructed object as its own object_NN.wav there)
   ac3cli levels       <in.wav|in.ac3|in.ec3>                  (per-channel peak/RMS report)
   ac3cli loudness     <in.wav>                                (BS.1770-4 loudness -> dialnorm)
   ac3cli qc           <in.ac3|in.ec3> [preset=<name>|all]     (bitstream-aware loudness QC: measured loudness vs. embedded dialnorm/compr, optional preset gate)
@@ -156,7 +156,7 @@ for the same pipeline as a minimal, standalone, self-fixturing program.
 
 | Command | What it does |
 |---|---|
-| `decode` | AC-3 or E-AC-3 → WAV; `bsid` in the stream decides which decoder runs |
+| `decode` | AC-3 or E-AC-3 → WAV; `bsid` in the stream decides which decoder runs. For an Atmos E-AC-3 stream, reports the object count found and, with `objects_dir`, exports each JOC-reconstructed object as its own `object_NN.wav` there |
 | `levels` | Per-channel peak/RMS report — takes a WAV or an encoded stream |
 | `loudness` | BS.1770-4 gated loudness on a WAV, reported as the `dialnorm` it implies |
 | `qc` | Bitstream-aware loudness QC: decodes an already-encoded AC-3/E-AC-3 stream, measures it with the real BS.1770-4/EBU Tech 3342 meter, and compares the result against the stream's own embedded `dialnorm`/`compr` and, optionally, a named delivery-spec gate |
@@ -169,6 +169,12 @@ ac3cli decode out.ec3 out.wav
 
 ```bash
 ac3cli decode - - < out.ac3 > out.wav
+```
+
+For an Atmos stream, add `objects_dir` to also export each object's reconstructed audio:
+
+```bash
+ac3cli decode atmos.ec3 bed.wav objects/
 ```
 
 `qc` is `loudness`'s bitstream-aware counterpart: `loudness` measures a *source* WAV before encoding, `qc` measures what a stream actually *delivers* after encoding and decoding it back, and checks that against what the stream's own metadata claims:
@@ -220,7 +226,7 @@ each OS.
 | `outputs` | Lists render endpoints and whether each supports AC-3/E-AC-3 passthrough |
 | `record` | Captures from a device straight to an AC-3 file, metering live — `container=mkv` writes straight to Matroska instead |
 | `play` | Exclusive-mode IEC 61937 passthrough of an existing file — `bsid` decides AC-3 vs. E-AC-3 |
-| `monitor` | Decodes an existing file and plays it on an ordinary, non-bitstreamed output — the shared-mode preview path. For an Atmos-mode stream, this plays the 5.1 **bed**: the decoder reads TS 103 420's object layer (OAMD/JOC) but this path does not render objects, so this is what a legacy decoder hears, not unmixed objects. |
+| `monitor` | Decodes an existing file and plays it on an ordinary, non-bitstreamed output — the shared-mode preview path. For an Atmos-mode stream, this plays the 5.1 **bed** and reports the object count found: the decoder reads TS 103 420's object layer (OAMD/JOC) but this path does not render or export objects, so this is what a legacy decoder hears, not unmixed objects — use `decode` with `objects_dir` for the object audio itself. |
 | `live` | Capture → encode → optional live monitor and/or IEC 61937 passthrough, running continuously, still writing the file `record` always has; optionally a second, clock-conformed capture device via `capture2=`, or straight to Matroska via `container=mkv` |
 
 `live`'s device arguments: `monitor_device`/`passthrough_device` take `-2` (default, leaves that
