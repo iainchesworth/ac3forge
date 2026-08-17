@@ -753,8 +753,18 @@ jobs:
       # validate.in and this lock regenerated - a deliberate later step once
       # that dependency's own track record justifies pinning it into every CI
       # run, not a default of this PR.
+      #
+      # --ignore-installed: matplotlib (added for render_spectrograms()) pulls
+      # in `packaging` transitively, which ubuntu:26.04's base image already
+      # has as an apt-installed package with no RECORD file - pip's own
+      # in-place-upgrade path refuses to touch a package it can't prove the
+      # contents of ("Cannot uninstall packaging ... no RECORD file was
+      # found", confirmed for real in this job's own first CI run). This
+      # flag tells pip to install fresh into site-packages over top of it
+      # rather than trying to uninstall first - fine in a throwaway
+      # container that gets discarded after the job either way.
       - name: Install numpy
-        run: pip install --quiet --break-system-packages --require-hashes -r requirements-ffmpeg-validate.txt
+        run: pip install --quiet --break-system-packages --ignore-installed --require-hashes -r requirements-ffmpeg-validate.txt
 
       - name: Report ffmpeg version
         run: ffmpeg -version | head -1
