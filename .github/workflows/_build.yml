@@ -73,14 +73,117 @@ on:
         required: false
       ANDROID_KEY_PASSWORD:
         required: false
+      ORG_RUNNERS_TOKEN:
+        description: >-
+          Optional org-scoped PAT/App token with "Self-hosted runners: read" on
+          iainchesworthlabs, letting check-runners see runners registered at the org level
+          (see iainchesworthlabs/ci-runners) rather than just this repo's own runner list.
+          Unset -> that half of the live check is skipped, not an error; the repo-level
+          check alone still works once a runner is registered directly against this repo.
+        required: false
 
 permissions:
   contents: read
 
 jobs:
+  # Decides, per OS, whether the Windows/Linux legs below should build on a
+  # self-hosted runner or fall back to GitHub-hosted - "available" meaning a
+  # matching self-hosted runner is actually online and idle right now, not
+  # just "one exists somewhere". See docs/ci-self-hosted-runners.md for the
+  # full design; the short version:
+  #   - a fork PR never gets a self-hosted label, full stop - untrusted code
+  #     must never land on a persistent runner, no live check needed.
+  #   - vars.RUNNER_LINUX_MODE / RUNNER_WINDOWS_MODE (`auto` default,
+  #     `self-hosted`, or `github-hosted`) let a forced mode skip the live
+  #     check entirely - an explicit override is trusted outright.
+  #   - `auto` checks this repo's own registered runners (works today, empty
+  #     until a runner is actually registered against ac3forge) and, if the
+  #     optional ORG_RUNNERS_TOKEN secret is set, the iainchesworthlabs org's
+  #     runners too (what actually matters once the org migration in
+  #     iainchesworthlabs/ci-runners lands - see that repo for the fleet
+  #     itself, which this workflow only consumes, never provisions).
+  # Any API failure degrades to GitHub-hosted rather than failing the job -
+  # this check being unavailable is never a reason to block CI.
+  check-runners:
+    name: Check self-hosted runner availability
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      linux_runner: ${{ steps.decide.outputs.linux_runner }}
+      windows_runner: ${{ steps.decide.outputs.windows_runner }}
+    steps:
+      - name: Decide runner labels per OS
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORG_TOKEN: ${{ secrets.ORG_RUNNERS_TOKEN }}
+          REPO: ${{ github.repository }}
+          ORG: iainchesworthlabs
+          IS_FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+          LINUX_MODE: ${{ vars.RUNNER_LINUX_MODE || 'auto' }}
+          WINDOWS_MODE: ${{ vars.RUNNER_WINDOWS_MODE || 'auto' }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          HOSTED_LINUX='["ubuntu-latest"]'
+          HOSTED_WINDOWS='["windows-latest"]'
+          SELF_LINUX='["self-hosted","Linux","X64"]'
+          SELF_WINDOWS='["self-hosted","Windows","X64"]'
+
+          # Untrusted fork-PR code never touches self-hosted infra - decided
+          # here, before either mode override or the live check even run.
+          if [ "$IS_FORK_PR" = "true" ]; then
+            echo "linux_runner=$HOSTED_LINUX" >> "$GITHUB_OUTPUT"
+            echo "windows_runner=$HOSTED_WINDOWS" >> "$GITHUB_OUTPUT"
+            echo "Fork PR - both legs stay on GitHub-hosted runners."
+            exit 0
+          fi
+
+          # At least one online, idle runner carrying both "self-hosted" and
+          # $2 (the OS label) in $1's runner list. Never fails the job: a
+          # missing/errored API response (e.g. no runner registered against
+          # this repo yet, or ORG_TOKEN unset) just means "not found".
+          runner_available() {
+            local scope="$1" os_label="$2" json count
+            json="$(gh api "$scope/actions/runners" --jq '.runners' 2>/dev/null)" || return 1
+            count="$(printf '%s' "$json" | jq "[.[] | select(.status==\"online\" and .busy==false and any(.labels[]; .name==\"self-hosted\") and any(.labels[]; .name==\"$os_label\"))] | length" 2>/dev/null)" || return 1
+            [ "${count:-0}" -gt 0 ]
+          }
+
+          decide_for_os() {
+            local mode="$1" os_label="$2" hosted="$3" self_hosted="$4"
+            case "$mode" in
+              self-hosted)   printf '%s' "$self_hosted"; return ;;
+              github-hosted) printf '%s' "$hosted"; return ;;
+            esac
+            # auto: repo-level first (works today with zero extra setup),
+            # then org-level if a token for it was provisioned.
+            if runner_available "repos/$REPO" "$os_label"; then
+              printf '%s' "$self_hosted"; return
+            fi
+            if [ -n "${ORG_TOKEN:-}" ] && GH_TOKEN="$ORG_TOKEN" runner_available "orgs/$ORG" "$os_label"; then
+              printf '%s' "$self_hosted"; return
+            fi
+            printf '%s' "$hosted"
+          }
+
+          linux_runner="$(decide_for_os "$LINUX_MODE" "Linux" "$HOSTED_LINUX" "$SELF_LINUX")"
+          windows_runner="$(decide_for_os "$WINDOWS_MODE" "Windows" "$HOSTED_WINDOWS" "$SELF_WINDOWS")"
+          echo "linux_runner=$linux_runner" >> "$GITHUB_OUTPUT"
+          echo "windows_runner=$windows_runner" >> "$GITHUB_OUTPUT"
+          echo "Linux: mode=$LINUX_MODE -> $linux_runner"
+          echo "Windows: mode=$WINDOWS_MODE -> $windows_runner"
+
   build:
     name: ${{ matrix.name }}
-    runs-on: ${{ matrix.runner }}
+    needs: check-runners
+    # Fork PRs never reach self-hosted (check-runners' own fork-PR branch
+    # already forces hosted labels for them) - this is belt-and-braces so a
+    # gap in that logic can't silently hand a fork PR a self-hosted runner.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ${{ fromJSON(matrix.runner) }}
     # Ubuntu 26.04 for the Linux legs, where the distro archive carries gcc-15
     # and LLVM 21 outright. This is a pin, not a convenience: on ubuntu-latest
     # (24.04 at the time of writing) the LLVM script has to fall back to
@@ -97,7 +200,7 @@ jobs:
       matrix:
         include:
           - name: "Windows MSVC"
-            runner: windows-latest
+            runner: ${{ needs.check-runners.outputs.windows_runner }}
             preset: windows-msvc
             # VS 2026 Build Tools / MSVC 14.5x, from the aka.ms/vs/18/stable
             # channel. Pinned by channel, not exact version: the runner image
@@ -109,7 +212,7 @@ jobs:
             gold_reference: true
 
           - name: "Windows LLVM (clang-cl)"
-            runner: windows-latest
+            runner: ${{ needs.check-runners.outputs.windows_runner }}
             preset: windows-llvm
             msvc: true          # clang-cl targets the MSVC ABI: same headers, same libs
             llvm: true
@@ -125,7 +228,7 @@ jobs:
           # neither switch (Qt present/absent, ALSA present/absent) differs
           # between compilers, so paying for either twice would buy nothing.
           - name: "Linux GCC"
-            runner: ubuntu-latest
+            runner: ${{ needs.check-runners.outputs.linux_runner }}
             container: ubuntu:26.04
             preset: linux-gcc
             gcc: true
@@ -136,7 +239,7 @@ jobs:
             gold_reference: true
 
           - name: "Linux LLVM (clang)"
-            runner: ubuntu-latest
+            runner: ${{ needs.check-runners.outputs.linux_runner }}
             container: ubuntu:26.04
             preset: linux-llvm
             llvm: true
@@ -153,7 +256,7 @@ jobs:
           # carries alsa_fallback (compiler and architecture both don't affect
           # that switch - see linux-gcc's own comment).
           - name: "Linux GCC (arm64)"
-            runner: ubuntu-24.04-arm
+            runner: '["ubuntu-24.04-arm"]'
             container: ubuntu:26.04
             preset: linux-gcc-arm64
             gcc: true
@@ -164,7 +267,7 @@ jobs:
             gold_reference: true
 
           - name: "Linux LLVM (arm64)"
-            runner: ubuntu-24.04-arm
+            runner: '["ubuntu-24.04-arm"]'
             container: ubuntu:26.04
             preset: linux-llvm-arm64
             llvm: true
@@ -183,7 +286,7 @@ jobs:
           # and there should not be one - a sanitizer-instrumented debug build
           # is a diagnostic tool, not something to ship.
           - name: "Linux LLVM ASan+UBSan"
-            runner: ubuntu-latest
+            runner: '["ubuntu-latest"]'
             container: ubuntu:26.04
             preset: linux-llvm-asan-ubsan
             llvm: true
@@ -201,7 +304,7 @@ jobs:
           # whatever AppleClang Xcode ships instead of the Homebrew LLVM
           # every other leg's pinned equivalent aims for.
           - name: "macOS LLVM (Homebrew)"
-            runner: macos-latest
+            runner: '["macos-latest"]'
             preset: macos-llvm
             llvm: true
             packageable: true
@@ -278,7 +381,12 @@ jobs:
       # whatever is newest and would drift off the pin.
       - name: Install LLVM 21 (Windows)
         if: matrix.llvm && runner.os == 'Windows'
-        shell: pwsh
+        # Windows PowerShell (always present on self-hosted + GitHub-hosted), NOT
+        # pwsh/PowerShell 7 which the self-hosted runner image does not ship -
+        # same reasoning as ./.github/actions/setup-msvc-env. GitHub-hosted
+        # windows-latest ships pwsh too, which is why this only surfaced once a
+        # job actually landed on a self-hosted Windows runner.
+        shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           $version = '21.1.8'

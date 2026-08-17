@@ -474,12 +474,16 @@ jobs:
     uses: ./.github/workflows/_build.yml
     # contents: write is only actually used by _build.yml's quality-trend job
     # (persist_quality_trend gates it to direct develop/main pushes below);
-    # every other job in that reusable workflow keeps the workflow-level
-    # `contents: read` it already declares - a callee job's own `permissions:`
-    # can only narrow what the caller grants here, never widen it, so this is
-    # the one place that ceiling has to be raised.
+    # actions: read is only actually used by check-runners, to list this
+    # repo's (and optionally iainchesworthlabs org's) self-hosted runners -
+    # see docs/ci-self-hosted-runners.md. Every other job in that reusable
+    # workflow keeps the workflow-level `contents: read` it already declares
+    # - a callee job's own `permissions:` can only narrow what the caller
+    # grants here, never widen it, so this is the one place that ceiling has
+    # to be raised.
     permissions:
       contents: write
+      actions: read
     with:
       # Computed here, not inside _build.yml: github.event_name/github.ref
       # reflect the reusable workflow's own call context once inside it, and
@@ -496,6 +500,10 @@ jobs:
       # this one secret is forwarded here; the APK-keystore secrets stay on
       # release.yml's call, which is the only path that packages a release APK.
       ATMOS_SIGNING_KEY: ${{ secrets.ATMOS_SIGNING_KEY }}
+      # Optional; see _build.yml's own description of this secret. Absent
+      # today (no such repo secret is provisioned yet) resolves empty, which
+      # check-runners already treats as "skip the org-level check".
+      ORG_RUNNERS_TOKEN: ${{ secrets.ORG_RUNNERS_TOKEN }}
 
   # Persists this run's encoder throughput numbers (docs/performance-trend.md)
   # so they outlive the CI log that produced them - the trend-tracking half of
