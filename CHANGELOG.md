@@ -48,6 +48,16 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   delta.** These tools trade waveform fidelity for banded envelope fidelity deliberately, so a
   single-metric headline reported a working tool as a straight loss.
 
+### Fixed
+
+- **AC-3 encoder: a delta bit allocation that ended part-way through a frame produced an
+  undecodable stream.** `deltbaie = 0` means "keep the previous block's delta bit allocation",
+  not "no delta" (A/52 §5.4.3.47), so a channel whose exponent run stopped wanting a correction
+  mid-frame was never told to drop it. The decoder kept applying the stale correction, its bit
+  allocation diverged from the encoder's, and every field after that point was read at the wrong
+  bit offset — a stream both this project's decoder and FFmpeg reject. Real material hit this at
+  several bitrates, 64 and 96 kbit/s stereo among them. E-AC-3 was unaffected.
+
 ## [0.6.0-beta.1] - 2026-08-17
 
 Fifth tagged release. The main change is Atmos object *decode*: earlier releases could only

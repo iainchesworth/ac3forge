@@ -958,20 +958,82 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
             }
         }
         // §5.4.3.47-57: this encoder never reuses ('00') a previous block's
-        // delta state - it always resends fresh ('01') when a run wants a
-        // correction, or says '10' (no delta) otherwise - so deltbaie itself
-        // only needs to be 1 when at least one stream has something to say
-        // this block.
+        // delta state per stream - it always resends fresh ('01') when a run
+        // wants a correction, or says '10' (no delta) otherwise.
         const auto stream_delta = [&](int s) -> const DeltaSegments& {
             const auto& p = plan[static_cast<std::size_t>(s)];
             return p.runs[static_cast<std::size_t>(
                               p.run_of_block[static_cast<std::size_t>(block)])]
                 .delta;
         };
-        bool any_delta = cplinu && stream_delta(cpl_stream).deltnseg > 0;
-        for (int ch = 0; ch < nfchans && !any_delta; ++ch) {
-            any_delta = stream_delta(ch).deltnseg > 0;
-        }
+        // That covers the per-stream codes, but not the deltbaie bit that
+        // gates them: deltbaie == 0 does NOT mean "no delta this block".
+        // Outside block 0 it means "keep whatever delta state the previous
+        // block left in place" (§5.4.3.47, and §7.2.2.6's "the delta bit
+        // allocation values are not updated"); only in block 0 does it clear
+        // every stream. So a stream that carried a delta in the previous
+        // block and wants none now has to be TOLD, with an explicit '10' - a
+        // silent deltbaie == 0 leaves the decoder applying the stale
+        // correction while this encoder's own allocation has already dropped
+        // it. The two allocations then disagree, the mantissa fields are
+        // sized differently on each side, and every field after that point is
+        // read at the wrong bit offset. That is a stream neither this
+        // project's decoder nor FFmpeg will accept: it surfaces a block or
+        // two later as an exponent walking outside 0..24, or a grouped
+        // exponent above 124, both of which are §7.10.2 error conditions.
+        const auto delta_wants = [&](int s, int b) {
+            const auto& p = plan[static_cast<std::size_t>(s)];
+            return p.runs[static_cast<std::size_t>(
+                              p.run_of_block[static_cast<std::size_t>(b)])]
+                       .delta.deltnseg > 0;
+        };
+        // So the rule stays what it was - emit when some stream has a
+        // correction to send this block - plus one addition: emit also when
+        // nobody wants one but the decoder is still holding the last one,
+        // purely to say '10' at it. Tracking just "is the decoder holding
+        // something" is enough to place that: whenever any stream wants a
+        // correction this block the emit happens anyway, and an emit rewrites
+        // EVERY stream's code, so a held correction can never be a stale
+        // *version* of one - only an unwanted leftover.
+        //
+        // Replayed from block 0 rather than carried in a variable: this
+        // emitter runs twice per block - once into the bit counter of
+        // measure_side_bits, once for real - and steps 8/9 may clear or
+        // restore a run's delta in between, so the answer has to stay a pure
+        // function of the plan as it stands right now. streams is at most
+        // 5 fbw + LFE + coupling.
+        const auto delta_needs_emit = [&](int upto) {
+            std::array<bool, 8> held{};  // what the decoder is holding
+            bool emit = false;
+            for (int b = 0; b <= upto; ++b) {
+                bool wanted = cplinu && delta_wants(cpl_stream, b);
+                for (int ch = 0; ch < nfchans && !wanted; ++ch) {
+                    wanted = delta_wants(ch, b);
+                }
+                bool leftover = false;
+                if (!wanted) {
+                    leftover = cplinu && held[static_cast<std::size_t>(cpl_stream)];
+                    for (int ch = 0; ch < nfchans && !leftover; ++ch) {
+                        leftover = held[static_cast<std::size_t>(ch)];
+                    }
+                }
+                emit = wanted || leftover;
+                if (emit) {
+                    // Every stream's code is sent, so the decoder's state
+                    // becomes exactly what this block asked for.
+                    if (cplinu) {
+                        held[static_cast<std::size_t>(cpl_stream)] = delta_wants(cpl_stream, b);
+                    }
+                    for (int ch = 0; ch < nfchans; ++ch) {
+                        held[static_cast<std::size_t>(ch)] = delta_wants(ch, b);
+                    }
+                } else if (b == 0) {
+                    held.fill(false);  // deltbaie == 0 in block 0 clears
+                }
+            }
+            return emit;
+        };
+        const bool any_delta = delta_needs_emit(block);
         w.put(any_delta ? 1 : 0, 1);  // deltbaie
         if (any_delta) {
             // §5.4.3.47's own syntax table sends every stream's 2-bit
