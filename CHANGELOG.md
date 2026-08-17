@@ -24,6 +24,24 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 
 ### Changed
 
+- **The AC-3 encoder now weighs delta bit allocation against what it costs at every layout, not
+  only when coupling is active.** A delta segment is 12 bits of side information taken from the
+  same budget that would otherwise buy a higher composite SNR offset, so the encoder already
+  re-ran its offset search with delta cleared and kept whichever pass came out higher — but only
+  when a coupling channel existed, because that is where a failing test first exposed it. Nothing
+  in that reasoning is about coupling, and the layouts that never couple were the ones paying
+  most: 5.1 at 448 kbit/s was emitting about ten segments per block, 724 bits per frame, 5% of
+  the whole frame. On the 5.1 reference this is worth 0.7 dB.
+- **The AC-3 encoder raises `dbpbcod` from the §8.2.12 recommendation of 2 to 3.** `dbpbcod` sets
+  the knee below which §7.2.2.5 lifts a band's excitation, so raising it steers bits away from
+  bands holding almost no energy and towards the ones that do. Measured on three materials
+  (the 5.1 and stereo fixtures and the synthesized full-band decorrelated 5.1) at 192/256/320/
+  384/448/640 kbit/s, it improves SNR in every case — by 5.9 dB at 192 kbit/s on the 5.1
+  reference, where there are fewest bits to misplace — with ViSQOL MOS flat or better throughout.
+  The other four parameters are unchanged: `floorcod` turns out never to bind, and `fgaincod`,
+  though worth more still at high rates, regresses at 192 kbit/s.
+- Together these move the AC-3 5.1 landscape leg at 448 kbit/s from 36.02 dB to 39.13 dB, from
+  2.98 dB behind FFmpeg 8.0.1 to 0.15 dB ahead of it, with MOS unchanged at 3.67.
 - **Coupling is now dropped, rather than moved down in frequency, when spectral extension leaves
   it no room.** §E3.3.1 derives the coupling end frequency from `spxbegf`; when that landed below
   the requested `cplbegf` the encoder used to slide `cplbegf` down to meet it, which silently

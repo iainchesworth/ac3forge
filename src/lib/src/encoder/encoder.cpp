@@ -371,7 +371,46 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     const std::uint32_t total_bytes = words * 2;
     const std::uint32_t total_bits = total_bytes * 8;
     const std::uint32_t words58 = frame_size_58_words(words);
-    const BitAllocCodes codes{};  // §8.2.12 basic-encoder defaults
+    // §8.2.12's basic-encoder defaults, with one departure: dbpbcod.
+    //
+    // dbpbcod picks dbknee (Table 7.9), and §7.2.2.5 adds
+    // (dbknee - bndpsd) >> 2 to the excitation of every band quieter than the
+    // knee. Raising it therefore lifts the mask over quiet bands only, which
+    // steers bits from bands that hold almost no energy towards the ones that
+    // do. The spec's own recommendation is 2; every rate and every material
+    // measured here prefers 3, and the win is large where it matters most -
+    // the low rates, which have the fewest bits to misplace:
+    //
+    //             192    256    320    384    448    640 kbit/s
+    //   5.1 fixture   +5.90  +4.75  +3.18  +2.46  +2.39  +1.17 dB
+    //   5.1 synth     +1.69  +1.66    -    +1.10  +1.44  +1.33 dB
+    //   stereo fixture +0.36  +0.08    -    +1.55  +4.48  +2.49 dB
+    //
+    // ViSQOL MOS is flat or better in every one of those cells, which is the
+    // check that matters: this is exactly the kind of change that can buy
+    // waveform SNR by de-prioritising quiet bands and sound worse for it.
+    // Measured on three materials, including quality_race's synthesized
+    // full-band decorrelated 5.1, because this project has already been
+    // caught once by a "win" that was really a property of one band-limited
+    // fixture (see chbwcod below).
+    //
+    // The other four are left alone deliberately. floorcod turns out to be
+    // inert - the floor never binds at any rate on any material tried, so all
+    // eight values encode identically. sdcycod/fdcycod/sgaincod move the
+    // result by tenths. fgaincod is the one real temptation: fgaincod 1 is
+    // worth another +2 dB at 448 and +7 dB at 640, but it REGRESSES at
+    // 192 kbit/s (-0.22 dB on synthesized stereo) and costs 0.09 MOS at
+    // 320 on the 5.1 fixture, so it is not a default - it would need to be
+    // rate-dependent, and that wants its own measurement pass.
+    //
+    // Searching these per frame was considered and rejected: the only
+    // in-loop quality criterion this encoder has is the composite SNR offset
+    // step 9 maximises, and that number is not comparable between two
+    // different code sets, because each set produces a different masking
+    // curve for the offset to sit on. A sound search would have to
+    // reconstruct and measure real distortion per candidate, which is a far
+    // larger change than the uniform win above justifies.
+    const BitAllocCodes codes{.dbpbcod = 3};
 
     // --- 1. MDCT per channel per block -------------------------------------
     AC3_ZONE_BEGIN(zone_mdct, "step1_mdct");
@@ -1197,23 +1236,31 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     // delta segment is side-info bits taken out of the same budget that
     // would otherwise buy a higher offset, and a correction that lowers the
     // mask in one band asks for MORE mantissa precision there, not less.
-    // Coupling is where this bites hardest, because "coupling must not cost
-    // more bits than the channels it replaces" (test_encoder.cpp) is a
+    // Coupling is where this was first caught, because "coupling must not
+    // cost more bits than the channels it replaces" (test_encoder.cpp) is a
     // standing promise this encoder makes about the resulting composite
     // offset, and it broke - at 96 kbit/s stereo, no exotic layout required -
     // the moment delta became eligible during coupling (see step 5's
-    // comment). So whenever coupling is active and there is still a delta
-    // queued to send (step 8's fit-based fallback may already have cleared
-    // every one of them), the search is repeated with delta fully cleared,
-    // and whichever pass reaches the higher composite offset wins - a tie
-    // keeps delta, since at equal offset it is a strictly free correction.
+    // comment). But nothing in the reasoning above is about coupling: a
+    // delta segment costs the same 12 bits, out of the same budget, whether
+    // or not a coupling channel exists. Gating the check on cplinu just meant
+    // the one layout that never couples never got it - and that is where it
+    // cost the most. At 448 kbit/s 5.1 this encoder emitted about ten
+    // segments per block, 724 bits per frame (5% of the whole frame), and
+    // paid for them with roughly 44 composite offset units across every
+    // channel; measured against FFmpeg on the same file, dropping them is
+    // worth over 2 dB. So whenever there is a delta queued to send (step 8's
+    // fit-based fallback may already have cleared every one of them), the
+    // search is repeated with delta fully cleared, and whichever pass reaches
+    // the higher composite offset wins - a tie keeps delta, since at equal
+    // offset it is a strictly free correction.
     bool any_delta = false;
     for (const auto& p : plan) {
         for (const auto& run : p.runs) {
             any_delta = any_delta || run.delta.deltnseg > 0;
         }
     }
-    if (cplinu && any_delta) {
+    if (any_delta) {
         std::vector<std::vector<DeltaSegments>> saved(plan.size());
         for (std::size_t s = 0; s < plan.size(); ++s) {
             saved[s].resize(plan[s].runs.size());
