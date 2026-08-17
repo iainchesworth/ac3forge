@@ -243,6 +243,25 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     // Bandwidth: explicit config, or a bitrate-aware default. This comes
     // before the coupling decision because coupling inherits it - see
     // default_cplendf.
+    //
+    // Do not tune this against the checked-in fixtures. Swept 2026-08-17 over
+    // chbwcod 24..60 at 192-640 kbit/s on both of them, and narrowing looks
+    // like a large win on every metric this repo measures: 5.1 at 448 gains
+    // 2.1 dB of SNR at chbwcod 28, and even log-spectral distance improves
+    // (5.43 -> 5.26). It is an artifact. chbwcod 28 codes to 14.7 kHz, and
+    // reference_51.wav carries 1.1e-4 of its energy above that (it is built
+    // from FIR-smoothed noise), so discarding the top 9 kHz costs almost
+    // nothing there while freeing bits everywhere else. Real programme
+    // material is not band-limited like that, and a 14.7 kHz AC-3 encoder at
+    // 448 kbit/s would be plainly worse to listen to while scoring better
+    // here.
+    //
+    // The other direction was measured too, and the current rule is right:
+    // forcing full bandwidth (chbwcod 60) is worth -0.004 dB at 448 - the
+    // rule already reaches 59 there - and -0.83 dB at 384, where the extra
+    // band costs more in quantisation noise than the energy it recovers.
+    // Trading bandwidth for precision as the rate falls is what this does,
+    // and it is doing it correctly.
     int chbwcod = config_.chbwcod;
     if (chbwcod < 0) {
         const int per_channel_kbps =
