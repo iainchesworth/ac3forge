@@ -53,6 +53,8 @@ add_custom_command(TARGET ac3forge_wasm_decode POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/index.html"
         "${CMAKE_CURRENT_SOURCE_DIR}/demo.js"
+        "${CMAKE_CURRENT_SOURCE_DIR}/favicon.svg"
+        "${CMAKE_CURRENT_SOURCE_DIR}/favicon-32.png"
         "${CMAKE_BINARY_DIR}/bin/wasm_decode_demo"
     COMMAND "${CMAKE_COMMAND}" -E make_directory
         "${CMAKE_BINARY_DIR}/bin/wasm_decode_demo/assets"
