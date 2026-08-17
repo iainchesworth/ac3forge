@@ -15,6 +15,9 @@
     <application
         android:allowBackup="false"
         android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:banner="@drawable/banner"
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
 
         <activity
@@ -27,10 +30,20 @@
                 <!-- LEANBACK_LAUNCHER, not just LAUNCHER: this is what puts
                      the app on the Android TV home screen row. Omitting it
                      leaves the app installed but nowhere a remote-only user
-                     could ever find it. -->
+                     could ever find it. android:banner above is what actually
+                     shows in that row - without one, Android falls back to a
+                     poorly-scaled android:icon instead. -->
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Reached only from MainActivity's KEYCODE_INFO handler - not
+             exported, no launcher intent-filter of its own. -->
+        <activity
+            android:name=".AboutActivity"
+            android:exported="false"
+            android:label="About"
+            android:screenOrientation="landscape" />
 
     </application>
 

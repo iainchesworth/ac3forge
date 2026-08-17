@@ -532,7 +532,7 @@ class MainActivity : Activity() {
                     text = "Stick/D-pad: push the lead object off its course, it drifts back " +
                         "when you let go   •   Right stick / L1+R1: height   •   Press A/center: " +
                         "D-pad up/down toggles between depth and height   •   Pause: isolate the " +
-                        "lead   •   Play: bring the ambient tones back\n" +
+                        "lead   •   Play: bring the ambient tones back   •   Info: About\n" +
                         "● lead (yours to push around)   ● ● two ambient tones, always on their " +
                         "own course"
                     textSize = 12f
@@ -677,6 +677,15 @@ class MainActivity : Activity() {
     }
 
     override fun onKeyDown(keyCode: Int, keyEvent: KeyEvent?): Boolean {
+        // The TV remote's dedicated "info" button - checked before
+        // inputController (which doesn't recognize this code anyway) since
+        // this is a MainActivity-level UI reaction, the same reasoning
+        // onUserInputActivity's own comment gives for keeping UI reactions
+        // here rather than inside InputController.
+        if (keyCode == KeyEvent.KEYCODE_INFO) {
+            startActivity(Intent(this, AboutActivity::class.java))
+            return true
+        }
         if (keyEvent != null && inputController.onKeyDown(keyCode, keyEvent)) {
             return true
         }

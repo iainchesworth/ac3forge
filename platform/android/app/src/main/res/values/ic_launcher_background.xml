@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The adaptive-icon background layer (mipmap-anydpi-v26/ic_launcher*.xml)
+     - same #0b1220 as assets/icon/generate_icons.py's BG constant, so the
+     adaptive icon matches the legacy mipmap-*/ic_launcher.png exactly
+     rather than drifting to a second, slightly-different dark. -->
+<resources>
+    <color name="ic_launcher_background">#0B1220</color>
+</resources>
