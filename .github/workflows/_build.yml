@@ -381,7 +381,12 @@ jobs:
       # whatever is newest and would drift off the pin.
       - name: Install LLVM 21 (Windows)
         if: matrix.llvm && runner.os == 'Windows'
-        shell: pwsh
+        # Windows PowerShell (always present on self-hosted + GitHub-hosted), NOT
+        # pwsh/PowerShell 7 which the self-hosted runner image does not ship -
+        # same reasoning as ./.github/actions/setup-msvc-env. GitHub-hosted
+        # windows-latest ships pwsh too, which is why this only surfaced once a
+        # job actually landed on a self-hosted Windows runner.
+        shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           $version = '21.1.8'
