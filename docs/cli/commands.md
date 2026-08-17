@@ -149,7 +149,7 @@ bare non-zero exit.
 
 See [ADM / BW64 reading](../library/adm.md) and [ADM → Atmos bridging](../library/adm-bridge.md)
 for the parser and the mapping layer this command drives, and
-[`examples/encode_adm.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/encode_adm.cpp)
+[`examples/encode_adm.cpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/encode_adm.cpp)
 for the same pipeline as a minimal, standalone, self-fixturing program.
 
 ### Decoding & inspection

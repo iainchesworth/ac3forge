@@ -190,7 +190,7 @@ platform/compiler fragment matches your machine.
 | `AC3FORGE_SANITIZERS` | empty | Comma-separated `-fsanitize=` value, e.g. `address,undefined` — see `cmake/Sanitizers.cmake`. Empty is a no-op; GCC/Clang only, MSVC is a configure error. Set via the `-asan-ubsan` preset above rather than by hand. |
 | `AC3FORGE_ENABLE_COVERAGE` | `OFF` | `--coverage` gcov instrumentation over every target it's linked into — see `cmake/Coverage.cmake`. Off is a no-op; GCC/Clang only, other compilers get a configure-time warning and no instrumentation. Set via the `-coverage` preset above rather than by hand. |
 | `AC3FORGE_ENABLE_TRACY` | `OFF` | Tracy profiler instrumentation (`ac3::tracy` — see `cmake/Tracy.cmake`). Needs vcpkg's `profiling` manifest feature (`-DVCPKG_MANIFEST_FEATURES=profiling`), which supplies Tracy itself; off is a no-op. |
-| `AC3FORGE_BUILD_FUZZERS` | `OFF` | Build the libFuzzer harnesses under `fuzz/`. Clang only (GCC and MSVC ship no libFuzzer); use `fuzz/run.sh` rather than this option directly — it configures a dedicated `build/fuzz` with the right compiler. See [`fuzz/README.md`](https://github.com/iainchesworth/ac3forge/blob/main/fuzz/README.md). |
+| `AC3FORGE_BUILD_FUZZERS` | `OFF` | Build the libFuzzer harnesses under `fuzz/`. Clang only (GCC and MSVC ship no libFuzzer); use `fuzz/run.sh` rather than this option directly — it configures a dedicated `build/fuzz` with the right compiler. See [`fuzz/README.md`](https://github.com/iainchesworthlabs/ac3forge/blob/main/fuzz/README.md). |
 
 Building the library and CLI alone, with neither Qt nor vcpkg involved:
 
@@ -529,7 +529,7 @@ build-android (the Shield app's debug APK) — the four Linux build legs install
 Qt6/ALSA packages and build/smoke-test the GUI too. ffmpeg-validate is a
 separate, CLI-only linux-llvm build that runs FFmpeg as an independent oracle against the full
 layout/tool/metadata option space (see
-[CONTRIBUTING.md's Oracles section](https://github.com/iainchesworth/ac3forge/blob/main/CONTRIBUTING.md#oracles)) — a different question from the
+[CONTRIBUTING.md's Oracles section](https://github.com/iainchesworthlabs/ac3forge/blob/main/CONTRIBUTING.md#oracles)) — a different question from the
 [gold-reference gate](#gold-reference-correctness-gate) below, which every leg runs against one
 fixed sample to check output *quality*; ffmpeg-validate instead checks that every option
 combination produces a *structurally correct* stream at all, plus a numeric fidelity floor for

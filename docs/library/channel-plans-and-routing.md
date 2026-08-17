@@ -27,7 +27,7 @@ const auto config = ac3::plan::eac3_config(plan);      // AccessUnitConfig, read
 ac3::eac3::AccessUnitEncoder encoder{config};
 ```
 
-Full program: [`examples/custom_layout.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/custom_layout.cpp)
+Full program: [`examples/custom_layout.cpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/custom_layout.cpp)
 — 5.1 plus a top-surround channel and a front-wide pair, a layout no `LayoutId` names, built and
 encoded the same way a caller with an unusual speaker set would.
 
@@ -69,7 +69,7 @@ const auto routing = ac3::plan::route(target, sources, assignment);
 ac3::plan::render(*routing, source_views, coded_views, ac3::kSamplesPerFrame);
 ```
 
-Full program: [`examples/multi_source_assignment.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/multi_source_assignment.cpp)
+Full program: [`examples/multi_source_assignment.cpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/multi_source_assignment.cpp)
 — a stereo music bed and a separate mono voiceover, combined onto one 5.1 stream.
 
 `Destination::kind` is a closed set: `kUnassigned`, `kLocation`, `kObject`, `kObjectMono` (a

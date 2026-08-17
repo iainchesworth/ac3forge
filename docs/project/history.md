@@ -3,7 +3,7 @@
 How the codec was built, in the order it was built. This is a record of what was implemented
 and what evidence closed each step, kept out of the README because a landing page is not a
 development log. Nothing here supersedes the current [capability and limitation
-tables](https://github.com/iainchesworth/ac3forge/blob/main/README.md#what-it-does) — where the two disagree, the README is right and this file
+tables](https://github.com/iainchesworthlabs/ac3forge/blob/main/README.md#what-it-does) — where the two disagree, the README is right and this file
 is stale.
 
 Milestone numbering is as it was used during development. Milestone 4 was folded into 5.
@@ -57,7 +57,7 @@ variation), 2/0 rematrixing (§7.5.3 minimum-power rule, with the decoder-side u
 bit-rate-aware bandwidth defaults.
 
 This is the point at which output quality passed FFmpeg's encoder on the SNR metric. Current
-numbers and method are in the [README](https://github.com/iainchesworth/ac3forge/blob/main/README.md#validation); `ac3cli encode`
+numbers and method are in the [README](https://github.com/iainchesworthlabs/ac3forge/blob/main/README.md#validation); `ac3cli encode`
 gained arbitrary stereo WAV input here. Decoder parity held on rematrix-active material at max
 difference 1.1e-5.
 
@@ -320,7 +320,7 @@ than a separate system — `ac3::plan::channel_plan_for(id)` is a one-line looku
   green CI legs.
 - libFuzzer harnesses (`fuzz/`) over every untrusted-input entry point — `scan`, both decoders,
   WAV reading — Clang-only and off by default (`AC3FORGE_BUILD_FUZZERS`); see
-  [`fuzz/README.md`](https://github.com/iainchesworth/ac3forge/blob/main/fuzz/README.md). Runs on every push (`fuzz-regress`, seed/regression
+  [`fuzz/README.md`](https://github.com/iainchesworthlabs/ac3forge/blob/main/fuzz/README.md). Runs on every push (`fuzz-regress`, seed/regression
   replay only) and nightly (`fuzz-nightly`, bounded mutation).
 - Dual mono (`acmod` 0, "1+1"): two independent single-channel programmes sharing one
   syncframe rather than a channel layout, on both encoders and both decoders, with their own

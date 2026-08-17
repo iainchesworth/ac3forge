@@ -1,7 +1,7 @@
 # Quality trend
 
 Every push to `develop` or `main` that gets through the [gold-reference
-gate](https://github.com/iainchesworth/ac3forge/blob/main/scripts/verify-gold-reference.sh)
+gate](https://github.com/iainchesworthlabs/ac3forge/blob/main/scripts/verify-gold-reference.sh)
 (encode the checked-in golden 5.1 WAV, strict-decode with FFmpeg and with
 `ac3cli`'s own decoder, delay-compensated SNR between the two) has its
 per-channel numbers appended to history instead of only living in that run's
@@ -51,7 +51,7 @@ un-recorded just because it also failed. See `REGRESSION_DROP_DB` and
 
 <script>
 (function () {
-  const REPO = "iainchesworth/ac3forge";
+  const REPO = "iainchesworthlabs/ac3forge";
   const HISTORY_BRANCH = "quality-history";
   const TRACKS = [
     { branch: "develop", color: "#7c4dff" },
@@ -597,7 +597,7 @@ entire tree on every deploy, which would silently discard anything appended
 there outside of what `mkdocs build` itself generates. This page fetches the
 two files directly from `raw.githubusercontent.com` client-side, so a new
 `develop` push shows up here without waiting on a docs deploy (which,
-per [docs.yml](https://github.com/iainchesworth/ac3forge/blob/main/.github/workflows/docs.yml),
+per [docs.yml](https://github.com/iainchesworthlabs/ac3forge/blob/main/.github/workflows/docs.yml),
 only runs on push to `main`).
 
 History is written by a job in `_build.yml` that runs after every

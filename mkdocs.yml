@@ -1,8 +1,8 @@
 site_name: ac3forge
 site_description: A clean-room AC-3 / E-AC-3 / Dolby Atmos encoder and decoder in C++23
-site_url: https://iainchesworth.github.io/ac3forge/
-repo_url: https://github.com/iainchesworth/ac3forge
-repo_name: iainchesworth/ac3forge
+site_url: https://iainchesworthlabs.github.io/ac3forge/
+repo_url: https://github.com/iainchesworthlabs/ac3forge
+repo_name: iainchesworthlabs/ac3forge
 edit_uri: edit/develop/docs/
 
 docs_dir: docs

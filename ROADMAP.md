@@ -40,11 +40,11 @@ mixes are delivered as master files.
   standalone `ac3adm::ac3adm` BW64/RF64 + ADM parser, ITU-R BS.2088-1 + BS.2076-2) and phase 2
   (the `ac3::admbridge` object/bed mapping layer onto `AtmosEncoder`, including BS.2076-2 §10.3
   position/gain automation and the polar/Cartesian → room-anchored coordinate conversion) are both
-  done** — see [`src/ac3adm/`](https://github.com/iainchesworth/ac3forge/tree/main/src/ac3adm) and
-  `docs/library/adm.md`, and [`src/adm_bridge/`](https://github.com/iainchesworth/ac3forge/tree/main/src/adm_bridge)
+  done** — see [`src/ac3adm/`](https://github.com/iainchesworthlabs/ac3forge/tree/main/src/ac3adm) and
+  `docs/library/adm.md`, and [`src/adm_bridge/`](https://github.com/iainchesworthlabs/ac3forge/tree/main/src/adm_bridge)
   and `docs/library/adm-bridge.md`. **Phase 3 (driving both together end to end) is also done** —
   the `ac3cli atmos-adm` command (`src/cli/main.cpp`) and
-  [`examples/encode_adm.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/encode_adm.cpp).
+  [`examples/encode_adm.cpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/encode_adm.cpp).
   `ac3cli` still builds and works identically whether `AC3FORGE_BUILD_ADM` is on or off, just with
   or without this one command — with no preprocessor conditional anywhere
   (`scripts/check-platform-macros.ps1` forbids one under `src/`, feature flags included):
@@ -126,7 +126,7 @@ decoded an AC-3/E-AC-3 bitstream and verified its loudness metadata against meas
   panned slice of the bed. Both #168 and #169 are merged to `develop`.
 - [ ] **F4 (M)** — Package-manager presence: a vcpkg port, a Homebrew formula, a winget
   manifest. **The vcpkg port is staged in-tree** — see
-  [`packaging/vcpkg-port/ac3forge/`](https://github.com/iainchesworth/ac3forge/tree/main/packaging/vcpkg-port/ac3forge),
+  [`packaging/vcpkg-port/ac3forge/`](https://github.com/iainchesworthlabs/ac3forge/tree/main/packaging/vcpkg-port/ac3forge),
   with the submission and per-release update flow documented in `docs/releasing.md`; what
   remains is the `microsoft/vcpkg` registry submission itself, plus Homebrew and winget. The
   root `vcpkg.json`'s `version` field is a deliberate placeholder (the build's version derives

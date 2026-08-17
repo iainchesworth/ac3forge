@@ -12,13 +12,13 @@ Mapping the graph this module parses onto `ac3::oba::AtmosEncoder` is a separate
 [`ac3::admbridge`](adm-bridge.md) (done); driving the two together end to end — a real ADM BWF
 master straight to a DD+ JOC E-AC-3 stream — is also done: `ac3cli atmos-adm` (see
 [Commands](../cli/commands.md)) and
-[`examples/encode_adm.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/encode_adm.cpp). This page and
-[`examples/read_adm.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/read_adm.cpp) only demonstrate this module's own API — opening a file and walking the
+[`examples/encode_adm.cpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/encode_adm.cpp). This page and
+[`examples/read_adm.cpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/read_adm.cpp) only demonstrate this module's own API — opening a file and walking the
 parsed graph; `encode_adm.cpp` is the one that shows the full pipeline.
 
 **Opt-in, unlike every other module in this library.** `AC3FORGE_BUILD_ADM` defaults **off**, and
 turning it on additionally needs `-DVCPKG_MANIFEST_FEATURES=adm` (see
-[`vcpkg.json`](https://github.com/iainchesworth/ac3forge/blob/main/vcpkg.json)) to resolve its Boost dependency:
+[`vcpkg.json`](https://github.com/iainchesworthlabs/ac3forge/blob/main/vcpkg.json)) to resolve its Boost dependency:
 
 ```bash
 cmake --preset config-windows-msvc-debug -DAC3FORGE_BUILD_ADM=ON -DVCPKG_MANIFEST_FEATURES=adm
@@ -48,7 +48,7 @@ for (const auto& object : document->model.objects) {
 }
 ```
 
-Full program: [`examples/read_adm.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/read_adm.cpp) — writes a small but genuinely valid BW64 fixture (adapted
+Full program: [`examples/read_adm.cpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/read_adm.cpp) — writes a small but genuinely valid BW64 fixture (adapted
 from Recommendation ITU-R BS.2076-2's own worked "Car" object example) to a temp file, since a
 real ADM BWF master is production audio this project has no license to embed, then parses it
 back and prints what it found.
@@ -64,7 +64,7 @@ back and prints what it found.
   `audioContent` → `audioObject` → `audioPackFormat`/`audioChannelFormat` (with its
   `audioBlockFormat` time-divisions — position, gain, width/height/depth, `channelLock`,
   `jumpPosition`, HOA order/degree/normalization) → `audioStreamFormat`/`audioTrackFormat` →
-  `audioTrackUID`. See [`ac3adm/model.hpp`](https://github.com/iainchesworth/ac3forge/blob/main/src/ac3adm/include/ac3adm/model.hpp) for exactly which sub-elements are carried and which
+  `audioTrackUID`. See [`ac3adm/model.hpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/src/ac3adm/include/ac3adm/model.hpp) for exactly which sub-elements are carried and which
   are deliberately out of phase 1's scope (`zoneExclusion`, `objectDivergence`, `screenRef`, the
   Matrix/Binaural-specific sub-elements, and loudness metadata — `ac3::meta::loudness` already
   measures loudness independently).
@@ -85,17 +85,17 @@ above), `chna` (the join table, one `ChnaEntry` per physical-track-to-ADM-ID row
 (the decoded PCM, one `std::vector<float>` per channel, same `[-1, 1)` normalization convention
 `ac3::io::WavData` uses). `AdmError` covers open/parse failure — `kCannotOpen`, `kNotRiff`,
 `kMissingFmt`, `kMissingData`, `kUnsupportedFormat`, `kMalformedXml`, `kMalformedAdm`, `kOther`;
-see [`ac3adm/ac3adm.hpp`](https://github.com/iainchesworth/ac3forge/blob/main/src/ac3adm/include/ac3adm/ac3adm.hpp) for the full list. In practice, the two libraries underneath this
+see [`ac3adm/ac3adm.hpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/src/ac3adm/include/ac3adm/ac3adm.hpp) for the full list. In practice, the two libraries underneath this
 module (see below) report almost everything through one broad exception family each, so most
 real failures currently surface as `kCannotOpen` (bad/truncated container), `kMalformedXml` (axml
 isn't well-formed XML) or `kMalformedAdm` (well-formed XML that isn't a valid ADM document) — see
-[`src/ac3adm/src/adm.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/src/ac3adm/src/adm.cpp)'s own comments for exactly which library exception maps to which `AdmError`.
+[`src/ac3adm/src/adm.cpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/src/ac3adm/src/adm.cpp)'s own comments for exactly which library exception maps to which `AdmError`.
 
 ## Built on the EBU's own reference implementations
 
 Unlike every other module in this project, `ac3adm::ac3adm` is not a from-scratch, dependency-free
 implementation. It is a thin translation layer over two vendored third-party libraries, fetched
-via CMake `FetchContent` (see [`src/ac3adm/CMakeLists.txt`](https://github.com/iainchesworth/ac3forge/blob/main/src/ac3adm/CMakeLists.txt)):
+via CMake `FetchContent` (see [`src/ac3adm/CMakeLists.txt`](https://github.com/iainchesworthlabs/ac3forge/blob/main/src/ac3adm/CMakeLists.txt)):
 
 - **[libbw64](https://github.com/ebu/libbw64)** (Apache-2.0, header-only, no dependency of its
   own) — the BW64/RF64 chunk-walking and PCM-decoding layer.
@@ -105,7 +105,7 @@ via CMake `FetchContent` (see [`src/ac3adm/CMakeLists.txt`](https://github.com/i
 Both are maintained by the BBC/IRT team that also authored the underlying ITU-R Recommendations
 (BS.2088-1, BS.2076-2) themselves — using them means this module's own code only has to translate
 an already-validated object graph into `ac3adm`'s own types
-([`src/ac3adm/src/adm_model.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/src/ac3adm/src/adm_model.cpp)), rather than re-implementing container-walking and XML/schema
+([`src/ac3adm/src/adm_model.cpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/src/ac3adm/src/adm_model.cpp)), rather than re-implementing container-walking and XML/schema
 validation this project has no comparative advantage in getting exactly right on the first try.
 An earlier attempt at exactly that hand-rolled approach is what prompted switching to these
 libraries instead.
@@ -144,7 +144,7 @@ at open time (`"format unsupported: <tag>"`), which this module surfaces as `Adm
 kCannotOpen`. A float32 source file is rejected, not silently misread as integer PCM. Virtually
 every real ADM BWF master is 16- or 24-bit integer PCM in practice (EBU Tech 3306/BS.2088-1
 Annex 2 §2's own PCM-only framing), so adding float32 support has not been worth doing for
-phase 1 — see [`ac3adm/model.hpp`](https://github.com/iainchesworth/ac3forge/blob/main/src/ac3adm/include/ac3adm/model.hpp)'s own `PcmAudio` comment.
+phase 1 — see [`ac3adm/model.hpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/src/ac3adm/include/ac3adm/model.hpp)'s own `PcmAudio` comment.
 
 ---
 
