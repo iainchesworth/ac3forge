@@ -51,3 +51,9 @@ the library pages excerpt from — each page's "Full program" link lands on one 
 |---|---|---|
 | [`wav_roundtrip`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/wav_roundtrip.cpp) | Real WAV in → encode → decode → WAV out, crossing the WAV↔A/52 channel order both ways. | [File I/O](file-io.md) |
 | [`read_adm`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/read_adm.cpp) | Open an ADM BW64 file and print the parsed graph — needs `-DAC3FORGE_BUILD_ADM=ON`. | [ADM / BW64 reading](adm.md) |
+
+## C API
+
+| Example | What it shows | Discussed in |
+|---|---|---|
+| [`capi_encode_decode`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/capi_encode_decode.c) | Encode/decode AC-3 through `ac3forge_c/ac3forge.h` — plain C, not C++, so the build itself proves the header is C-usable. | [C API](c-api.md) |

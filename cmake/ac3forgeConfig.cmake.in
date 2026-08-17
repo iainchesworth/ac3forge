@@ -20,6 +20,9 @@ endif()
 if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/mpegtsTargets.cmake")
     include("${CMAKE_CURRENT_LIST_DIR}/mpegtsTargets.cmake")
 endif()
+if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/capiTargets.cmake")
+    include("${CMAKE_CURRENT_LIST_DIR}/capiTargets.cmake")
+endif()
 
 # A package built with the default AC3FORGE_INSTALL_BOTH_LINKAGES=ON (the direct-build/CPack
 # SDK) has both ac3::forge_static and ac3::forge_shared and deliberately gets no bare ac3::forge
@@ -49,6 +52,11 @@ if(TARGET mpegts::mpegts_shared AND NOT TARGET mpegts::mpegts_static)
     add_library(mpegts::mpegts ALIAS mpegts::mpegts_shared)
 elseif(TARGET mpegts::mpegts_static AND NOT TARGET mpegts::mpegts_shared)
     add_library(mpegts::mpegts ALIAS mpegts::mpegts_static)
+endif()
+if(TARGET ac3::forge_c_shared AND NOT TARGET ac3::forge_c_static)
+    add_library(ac3::forge_c ALIAS ac3::forge_c_shared)
+elseif(TARGET ac3::forge_c_static AND NOT TARGET ac3::forge_c_shared)
+    add_library(ac3::forge_c ALIAS ac3::forge_c_static)
 endif()
 
 check_required_components(ac3forge)

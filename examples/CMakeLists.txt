@@ -164,6 +164,38 @@ if(BUILD_SHARED_LIBS AND WIN32 AND AC3FORGE_BUILD_ADM)
         DEPENDS read_adm encode_adm)
 endif()
 
+# capi_encode_decode (roadmap F1) is a plain C source, not C++ - the .c extension is what actually
+# proves ac3forge_c/ac3forge.h compiles under a C toolchain rather than merely under a C++ one
+# parsing valid-C syntax, so it cannot join the foreach()/AC3FORGE_EXAMPLES list above (that loop
+# hardcodes add_executable(${example} "${example}.cpp")) and gets its own block instead. It links
+# ac3::forge_c only, never ac3::forge - the whole point of the C API is that a consumer needs
+# nothing else - so it is not covered by any DLL-copy target above either and gets its own, same
+# shape as read_adm/encode_adm's.
+if(AC3FORGE_BUILD_CAPI)
+    # The only C (not C++) source anywhere in this tree - the project() call in the root
+    # CMakeLists.txt only declares CXX, so the C compiler has to be brought in explicitly before
+    # CMake will generate a compile rule for a .c file at all.
+    enable_language(C)
+    add_executable(capi_encode_decode capi_encode_decode.c)
+    target_link_libraries(capi_encode_decode PRIVATE ac3::forge_c ac3::warnings)
+    set_target_properties(capi_encode_decode PROPERTIES
+        FOLDER examples
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/examples")
+
+    if(BUILD_SHARED_LIBS AND WIN32)
+        add_custom_target(examples_copy_capi_runtime_dlls
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "$<TARGET_RUNTIME_DLLS:capi_encode_decode>"
+                "${CMAKE_BINARY_DIR}/bin/examples"
+            COMMAND_EXPAND_LISTS
+            DEPENDS capi_encode_decode)
+    endif()
+
+    if(AC3FORGE_BUILD_TESTS)
+        add_test(NAME "example.capi_encode_decode" COMMAND capi_encode_decode)
+    endif()
+endif()
+
 # Run them under ctest when tests are on, so "the examples still work" is
 # checked by the same command as everything else.
 if(AC3FORGE_BUILD_TESTS)

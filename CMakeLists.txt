@@ -116,6 +116,13 @@ endif()
 # (-DVCPKG_MANIFEST_FEATURES=adm, see vcpkg.json) that a normal build never pulls in.
 option(AC3FORGE_BUILD_ADM "Build the standalone BW64/RF64 + ADM parser (src/ac3adm) - needs Boost, see vcpkg.json's \"adm\" feature" OFF)
 
+# ac3forge_c (src/capi) - roadmap item F1: the C API over ac3::forge's encode/decode core. Depends
+# on nothing but ac3::forge_static (see src/capi/CMakeLists.txt's own header comment on why it
+# always embeds the static codec rather than tracking BUILD_SHARED_LIBS), so - unlike
+# AC3FORGE_BUILD_ADM - there is no extra dependency footprint to opt out of; default ON matches
+# matroska/mp4/mpegts above, not ADM.
+option(AC3FORGE_BUILD_CAPI "Build the C API over the encode/decode core (src/capi)" ON)
+
 # enable_testing() has to run before ANY add_subdirectory() that might contain
 # an add_test() call, not merely before tests/ itself - CTest silently drops
 # an add_test() registered from a directory processed earlier in the same
@@ -191,6 +198,13 @@ if(AC3FORGE_BUILD_ADM)
     # than a new option of its own; see src/adm_bridge/CMakeLists.txt's own header comment for
     # the full reasoning, including why this is a separate module from either side.
     add_subdirectory(src/adm_bridge)
+endif()
+
+# ac3forge_c (roadmap F1) - after src/lib so ac3::forge_static exists to embed, gated by its own
+# AC3FORGE_BUILD_CAPI option (see the option() above) the same way matroska/mp4/mpegts are gated by
+# theirs.
+if(AC3FORGE_BUILD_CAPI)
+    add_subdirectory(src/capi)
 endif()
 
 # install()/find_package(ac3forge) support for ac3::forge, matroska::matroska,
