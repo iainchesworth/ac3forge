@@ -49,7 +49,7 @@ all three steps in one command, and what to do when no compiler is found.
 ## Write your first encoder
 
 Two headers and about a dozen lines to encode a frame. This is excerpted from
-[`examples/encode_ac3.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/encode_ac3.cpp),
+[`examples/encode_ac3.cpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/encode_ac3.cpp),
 with the error handling elided:
 
 ```cpp

@@ -18,7 +18,7 @@ depend on them.
 
 !!! note "Status"
     The API is not stable — releases so far are 0.x betas; the
-    [changelog](https://github.com/iainchesworth/ac3forge/blob/main/CHANGELOG.md) records what
+    [changelog](https://github.com/iainchesworthlabs/ac3forge/blob/main/CHANGELOG.md) records what
     each contains. Green and required in CI on Windows (MSVC, clang-cl), Linux (GCC and Clang,
     x64 and arm64) and macOS (Homebrew LLVM) — CLI and GUI alike everywhere except macOS, which
     builds the CLI only — plus an ASan+UBSan leg, clang-tidy static analysis, a line/branch

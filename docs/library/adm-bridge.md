@@ -1,12 +1,12 @@
 # ADM → Atmos bridging: `ac3::admbridge`
 
 `ac3/admbridge/bridge.hpp`, `ac3/admbridge/coordinates.hpp`, library `ac3::admbridge`. Roadmap item
-B1 phase 2 of 3 (see [ROADMAP.md](https://github.com/iainchesworth/ac3forge/blob/main/ROADMAP.md)): maps the ADM object graph
+B1 phase 2 of 3 (see [ROADMAP.md](https://github.com/iainchesworthlabs/ac3forge/blob/main/ROADMAP.md)): maps the ADM object graph
 [`ac3adm::ac3adm`](adm.md) (phase 1) parses from a BW64/ADM master onto
 [`ac3::oba::AtmosEncoder`](spatial-and-atmos.md)'s input shape — one `ac3::oba::ObjectPath` plus
 one mono PCM span per bed speaker feed or dynamic object, ready to drive `encode_frame()` in a
 loop. This module is the mapping/bridge library and its tests only; driving it end to end is
-phase 3 — `ac3cli atmos-adm` and [`examples/encode_adm.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/encode_adm.cpp), both **done**, see
+phase 3 — `ac3cli atmos-adm` and [`examples/encode_adm.cpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/encode_adm.cpp), both **done**, see
 [Commands](../cli/commands.md).
 
 **Opt-in, gated by the same flag as `ac3adm::ac3adm`.** `ac3::admbridge` depends on both

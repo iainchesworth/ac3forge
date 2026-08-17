@@ -5,7 +5,7 @@ Three separate mechanisms, not one, and it matters which is which:
 - **The hard gate**: `ac3perf` (`tests/performance/test_performance.cpp`) asserts the
   encoder stays faster than real time (with a 2x safety margin), on every push and
   every PR. A failure here blocks CI outright - see
-  [CI Status](https://github.com/iainchesworth/ac3forge/blob/main/.github/workflows/ci.yml).
+  [CI Status](https://github.com/iainchesworthlabs/ac3forge/blob/main/.github/workflows/ci.yml).
   Not run under the ASan/UBSan leg: instrumented code has nothing useful to say about
   throughput at any slack factor, so that leg excludes the `Performance` label entirely
   (`CMakePresets.json`'s `test-linux-llvm-asan-ubsan` preset).
@@ -86,7 +86,7 @@ of per-commit numbers.
 
 <script>
 (function () {
-  const REPO = "iainchesworth/ac3forge";
+  const REPO = "iainchesworthlabs/ac3forge";
   const HISTORY_BRANCH = "quality-history";
   const BRANCHES = ["develop", "main"];
   // How many of each (branch, leg, config)'s most recent rows to show in the
@@ -319,7 +319,7 @@ CI (see above); a flagged row here is an invitation to look, not a broken build.
 
 <script>
 (function () {
-  const REPO = "iainchesworth/ac3forge";
+  const REPO = "iainchesworthlabs/ac3forge";
   const HISTORY_BRANCH = "quality-history";
   const BRANCHES = ["develop", "main"];
   // Fewer rows per series than the whole-frame tables' 20: there are a dozen-plus

@@ -8,7 +8,7 @@
     issue (Homebrew's unpinned `llvm` formula flagging Catch2's `__COUNTER__` usage under
     `-Wc2y-extensions` — see `cmake/CompilerWarnings.cmake`), fixed in one commit, followed by two
     consecutive clean runs. The `continue-on-error` escape hatch has since been removed
-    (see [`.github/workflows/_build.yml`](https://github.com/iainchesworth/ac3forge/blob/develop/.github/workflows/_build.yml)),
+    (see [`.github/workflows/_build.yml`](https://github.com/iainchesworthlabs/ac3forge/blob/develop/.github/workflows/_build.yml)),
     so a `macos-llvm` failure blocks like every other required leg now.
 
 ## Toolchain

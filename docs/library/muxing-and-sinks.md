@@ -27,7 +27,7 @@ const matroska::AudioTrack track{
 const auto file = matroska::mux(track, frames);
 ```
 
-Full program: [`examples/mux_mkv.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/mux_mkv.cpp).
+Full program: [`examples/mux_mkv.cpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/mux_mkv.cpp).
 
 `mux` returns the whole file as bytes and does no file I/O, which keeps it testable without a
 disk. It writes one audio track, one SimpleBlock per frame, clusters closed on a time budget,
@@ -83,7 +83,7 @@ const mp4::AudioTrack track{
 const auto file = mp4::mux(track, frames);
 ```
 
-Full program: [`examples/mux_mp4.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/mux_mp4.cpp).
+Full program: [`examples/mux_mp4.cpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/mux_mp4.cpp).
 
 `mux` returns the whole file as bytes and does no file I/O, the same as `matroska::mux`. It
 writes `ftyp`/`moov`/`mdat` for one audio track, one sample per chunk, `stts`/`stsz`/`stco` built
@@ -123,7 +123,7 @@ const mpegts::AudioTrack track{
 const auto file = mpegts::mux(track, frames);
 ```
 
-Full program: [`examples/mux_ts.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/mux_ts.cpp).
+Full program: [`examples/mux_ts.cpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/mux_ts.cpp).
 
 `mux` returns the whole 188-byte-aligned Transport Stream as bytes, no file I/O, same testability
 reasoning as `matroska::mux`. It writes a single program — one PAT, one PMT (repeated
@@ -174,7 +174,7 @@ const auto master_playlist = mp4::build_hls_master_playlist(
 const auto dash_snippet = mp4::build_dash_adaptation_set(track, fragmented->media_segments);
 ```
 
-Full program: [`examples/mux_fmp4.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/mux_fmp4.cpp).
+Full program: [`examples/mux_fmp4.cpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/mux_fmp4.cpp).
 
 Both manifest flavors get the `CODECS`/`codecs` attribute right: `mp4::hls_codec_string` (and
 `build_dash_adaptation_set` internally) use the bare `ac-3`/`ec-3` sample-entry fourcc unmodified
@@ -306,7 +306,7 @@ std::printf("peak %.1f dBFS  rms %.1f dBFS\n", stats.peak_db(), stats.rms_db());
 const auto energy = ac3::analysis::energy_vector(meter.levels(), acmod);
 ```
 
-Full program: [`examples/level_metering.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/level_metering.cpp)
+Full program: [`examples/level_metering.cpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/level_metering.cpp)
 — decodes a 5.1 stream and reports both the per-channel peak/RMS and the soundfield's energy
 vector.
 

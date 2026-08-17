@@ -33,7 +33,7 @@ is the sole exception project-wide — see the note above — and for that reaso
 installed `find_package(ac3forge)` package at all; consume it via `add_subdirectory` in-tree.)
 
 **vcpkg.** A port lives in this repo at
-[`packaging/vcpkg-port/ac3forge/`](https://github.com/iainchesworth/ac3forge/tree/main/packaging/vcpkg-port/ac3forge) and is pending
+[`packaging/vcpkg-port/ac3forge/`](https://github.com/iainchesworthlabs/ac3forge/tree/main/packaging/vcpkg-port/ac3forge) and is pending
 submission to the curated `microsoft/vcpkg` registry (see
 [docs/releasing.md](../releasing.md#vcpkg-port)) — until that lands, point vcpkg at it directly
 with `--overlay-ports`/`VCPKG_OVERLAY_PORTS` (works from any clone of this repo, no waiting on
@@ -64,7 +64,7 @@ below directly — `ac3::audio` exists to serve this project's own CLI/GUI, not 
 third party is expected to link.
 
 Nearly every code block in this section is an excerpt from a program in
-[`examples/`](https://github.com/iainchesworth/ac3forge/tree/main/examples) — see
+[`examples/`](https://github.com/iainchesworthlabs/ac3forge/tree/main/examples) — see
 [Example programs](examples.md) for the full list. What the build compiles and `ctest` runs is
 the programs, not the excerpts: an example cannot stop working silently, but an excerpt is
 re-synced by hand and can drift. Each page's "Full program" link is the canonical form.

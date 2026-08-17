@@ -85,7 +85,7 @@ run from any branch - use it to validate a packaging change before merging.
 previous tag - a first draft only. Curating it to the established pattern is a required step,
 not optional polish:
 
-1. Update [CHANGELOG.md](https://github.com/iainchesworth/ac3forge/blob/main/CHANGELOG.md) first, if it isn't already current - a `## [x.y.z] -
+1. Update [CHANGELOG.md](https://github.com/iainchesworthlabs/ac3forge/blob/main/CHANGELOG.md) first, if it isn't already current - a `## [x.y.z] -
    YYYY-MM-DD` section (moved down from `## [Unreleased]` if the changes were already logged
    there), [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. This is the
    authoritative, human-curated record; the GitHub Release body mirrors it, not the other way
@@ -102,7 +102,7 @@ not optional polish:
    5. `**Full Changelog**: …/compare/v<prev>...v<this>` (keep the one `--generate-notes`
       produced; omit for the first release - there is no previous tag).
    6. For a prerelease, a trailing `> **Pre-release.**` caveat blockquote noting the biggest
-      open gap (see [Known gaps](https://github.com/iainchesworth/ac3forge/blob/main/CHANGELOG.md#known-gaps) in the matching CHANGELOG.md
+      open gap (see [Known gaps](https://github.com/iainchesworthlabs/ac3forge/blob/main/CHANGELOG.md#known-gaps) in the matching CHANGELOG.md
       section).
 3. Apply it:
 
@@ -116,7 +116,7 @@ not optional polish:
 ## vcpkg port
 
 A vcpkg port for `ac3forge` is staged in-tree at
-[`packaging/vcpkg-port/ac3forge/`](https://github.com/iainchesworth/ac3forge/tree/main/packaging/vcpkg-port/ac3forge)
+[`packaging/vcpkg-port/ac3forge/`](https://github.com/iainchesworthlabs/ac3forge/tree/main/packaging/vcpkg-port/ac3forge)
 (`vcpkg.json`,
 `portfile.cmake`, `usage`) and is pending submission to the curated `microsoft/vcpkg` registry -
 see [docs/library/index.md](library/index.md) for how a consumer uses it either
@@ -343,7 +343,7 @@ Then, in the GitHub repo, go to Settings > Secrets and variables > Actions and a
 
 ```bash
 # Provenance (keyless, ties the bytes to this exact repo/workflow/commit)
-gh attestation verify ac3forge-0.2.0-win64.zip --repo iainchesworth/ac3forge
+gh attestation verify ac3forge-0.2.0-win64.zip --repo iainchesworthlabs/ac3forge
 
 # GPG (ties the bytes to the maintainer's key, once one is provisioned)
 gpg --import ac3forge-signing-key.asc

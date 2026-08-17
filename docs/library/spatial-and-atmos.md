@@ -32,7 +32,7 @@ const std::array<std::span<const float>, 1> audio{std::span<const float>{source}
 renderer.render_block(audio, block_out);
 ```
 
-Full program: [`examples/spatial_objects.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/spatial_objects.cpp).
+Full program: [`examples/spatial_objects.cpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/spatial_objects.cpp).
 
 `pan_azimuth(deg)` and `pan_room(x, y)` expose the panner directly if you want the gains
 without the renderer. Both are energy-normalized pairwise (VBAP on the horizontal ring),
@@ -71,7 +71,7 @@ placement[obj] = {
 const auto unit = encoder.encode_frame(views, placement);
 ```
 
-Full program: [`examples/atmos_objects.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/atmos_objects.cpp).
+Full program: [`examples/atmos_objects.cpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/atmos_objects.cpp).
 
 | `AtmosConfig` | Default | Notes |
 |---|---|---|
@@ -119,7 +119,7 @@ const auto placement = ac3::oba::evaluate_placements(paths, seconds);
 const auto unit = encoder.encode_frame(views, placement);
 ```
 
-Full program: [`examples/scripted_object_motion.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/scripted_object_motion.cpp).
+Full program: [`examples/scripted_object_motion.cpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/scripted_object_motion.cpp).
 
 `ObjectPath` is a `std::variant` of the two kinds behind one `evaluate(time_s)` interface, so a
 caller (CLI, GUI) doesn't need to know which one it holds. This layer is scoped to
@@ -143,7 +143,7 @@ never both.
 ac3::oba::AtmosEncoder encoder{{.bitrate_kbps = 448, .emit_object_metadata = false}, kObjects};
 ```
 
-Full program: [`examples/atmos_fallback.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/atmos_fallback.cpp)
+Full program: [`examples/atmos_fallback.cpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/atmos_fallback.cpp)
 — encodes the same objects both ways and confirms both decode as an ordinary 5.1 bed.
 
 The stream size is unaffected either way — this is CBR, so `frmsiz` follows `bitrate_kbps`

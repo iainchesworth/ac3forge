@@ -83,7 +83,7 @@ ac3::signing::VerifySummary v = ac3::signing::verify_atmos_stream(stream, key);
 // v.valid == n, v.mismatch == 0, assuming `stream` and `key` are unchanged.
 ```
 
-Full program: [`examples/object_signing.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/object_signing.cpp)
+Full program: [`examples/object_signing.cpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/object_signing.cpp)
 — encodes a two-object Atmos stream and signs it; see [Object signing](../library/signing.md)
 in the library reference for the rest of the API surface.
 
