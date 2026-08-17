@@ -141,6 +141,14 @@ if(AC3FORGE_AUDIO_BACKEND STREQUAL "alsa")
     # interface and deliberately not installed - it is on the include path for
     # this target only, and only in this configuration.
     target_include_directories(ac3tests PRIVATE "${AC3FORGE_AUDIO_BACKEND_DIR}")
+elseif(AC3FORGE_AUDIO_BACKEND STREQUAL "pipewire")
+    target_sources(ac3tests PRIVATE platform/pipewire/test_pipewire_support.cpp)
+    target_include_directories(ac3tests PRIVATE "${AC3FORGE_AUDIO_BACKEND_DIR}")
+    # test_pipewire_support.cpp includes pipewire_support.hpp directly, which
+    # in turn includes PipeWire's own headers - the same PkgConfig::PipeWire
+    # target src/audio/CMakeLists.txt linked ac3audio against, needed again
+    # here since this is a separate translation unit in a separate target.
+    target_link_libraries(ac3tests PRIVATE PkgConfig::PipeWire)
 elseif(AC3FORGE_AUDIO_BACKEND STREQUAL "android")
     # Desktop-hosted ac3tests never actually selects the android backend (it
     # only exists under NDK cross-compilation, which this target is not) -

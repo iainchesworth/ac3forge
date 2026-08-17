@@ -557,11 +557,15 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
             // (deltoffst, deltlen, deltba); bounds are checked here, before
             // compute_bit_allocation ever sees them, since deltoffst/deltlen
             // are attacker-controlled and mask[] is exactly 50 bands wide.
+            // band_start is bin_to_band(cplstrtmant) for the coupling
+            // channel's segments, 0 for an fbw channel's - matching
+            // compute_bit_allocation()'s own band-cursor origin (see its
+            // note on the coupling channel's start band not being 0).
             const auto parse_segments =
-                [&r]() -> std::expected<DeltaSegments, DecodeError> {
+                [&r](int band_start) -> std::expected<DeltaSegments, DecodeError> {
                 DeltaSegments segs;
                 segs.deltnseg = static_cast<int>(r.read(3)) + 1;
-                int band = 0;
+                int band = band_start;
                 for (int seg = 0; seg < segs.deltnseg; ++seg) {
                     segs.deltoffst[static_cast<std::size_t>(seg)] =
                         static_cast<std::uint8_t>(r.read(5));
@@ -609,7 +613,7 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
                 }
             }
             if (cplinu && cplcode == 1) {
-                auto segs = parse_segments();
+                auto segs = parse_segments(bin_to_band(cplstrtmant));
                 if (!segs) {
                     return std::unexpected(segs.error());
                 }
@@ -620,7 +624,7 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
             for (int ch = 0; ch < nfchans; ++ch) {
                 const int chcode = chcodes[static_cast<std::size_t>(ch)];
                 if (chcode == 1) {
-                    auto segs = parse_segments();
+                    auto segs = parse_segments(0);
                     if (!segs) {
                         return std::unexpected(segs.error());
                     }

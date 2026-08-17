@@ -20,6 +20,10 @@ namespace ac3 {
 
 namespace {
 
+// How far the LFE's own lfefsnroffst is raised above the shared fine offset
+// the rest of the frame gets. See the long note at its use.
+constexpr int kLfeFineOffsetBump = 4;
+
 constexpr bool has_three_front(Acmod acmod) {
     const auto value = static_cast<std::uint8_t>(acmod);
     return (value & 0x1) != 0 && acmod != Acmod::k1_0;
@@ -42,13 +46,26 @@ constexpr ExpStrategy strategy_for_span(int span) {
 
 // Exponent-set change detection (§8.2.8: "when the variation exceeds a
 // threshold, new exponents will be sent").
+//
+// The threshold is a judgement about COST, so it is not one number. A full-
+// bandwidth channel's set is 4 + 7*ngrps bits - about 590 at D15 over a
+// 250-coefficient band - and spending that mid-frame has to buy back more
+// than it costs, so it waits for the exponents to have really moved: a mean
+// change above two steps, 12 dB per bin.
+//
+// The LFE's set is always two groups, 18 bits, thirty times cheaper. Holding
+// it to the same bar means almost never refreshing it, and the frame's one
+// set is then the per-bin minimum across six blocks - a scale chosen by the
+// loudest of them. Any block quieter than that is quantized against the wrong
+// scale for the sake of not spending 18 bits. So the LFE refreshes as soon as
+// its exponents move at all, which is the trade its own cost argues for.
 bool needs_new_exponents(std::span<const std::uint8_t> current,
-                         std::span<const std::uint8_t> reference) {
+                         std::span<const std::uint8_t> reference, bool is_lfe) {
     long long diff = 0;
     for (std::size_t i = 0; i < current.size(); ++i) {
         diff += std::abs(static_cast<int>(current[i]) - static_cast<int>(reference[i]));
     }
-    return diff > 2 * static_cast<long long>(current.size());
+    return diff > (is_lfe ? 0 : 2 * static_cast<long long>(current.size()));
 }
 
 // Where coupling should start when the caller does not say. Sub-band 4 - bin
@@ -377,7 +394,46 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     const std::uint32_t total_bytes = words * 2;
     const std::uint32_t total_bits = total_bytes * 8;
     const std::uint32_t words58 = frame_size_58_words(words);
-    const BitAllocCodes codes{};  // §8.2.12 basic-encoder defaults
+    // §8.2.12's basic-encoder defaults, with one departure: dbpbcod.
+    //
+    // dbpbcod picks dbknee (Table 7.9), and §7.2.2.5 adds
+    // (dbknee - bndpsd) >> 2 to the excitation of every band quieter than the
+    // knee. Raising it therefore lifts the mask over quiet bands only, which
+    // steers bits from bands that hold almost no energy towards the ones that
+    // do. The spec's own recommendation is 2; every rate and every material
+    // measured here prefers 3, and the win is large where it matters most -
+    // the low rates, which have the fewest bits to misplace:
+    //
+    //             192    256    320    384    448    640 kbit/s
+    //   5.1 fixture   +5.90  +4.75  +3.18  +2.46  +2.39  +1.17 dB
+    //   5.1 synth     +1.69  +1.66    -    +1.10  +1.44  +1.33 dB
+    //   stereo fixture +0.36  +0.08    -    +1.55  +4.48  +2.49 dB
+    //
+    // ViSQOL MOS is flat or better in every one of those cells, which is the
+    // check that matters: this is exactly the kind of change that can buy
+    // waveform SNR by de-prioritising quiet bands and sound worse for it.
+    // Measured on three materials, including quality_race's synthesized
+    // full-band decorrelated 5.1, because this project has already been
+    // caught once by a "win" that was really a property of one band-limited
+    // fixture (see chbwcod below).
+    //
+    // The other four are left alone deliberately. floorcod turns out to be
+    // inert - the floor never binds at any rate on any material tried, so all
+    // eight values encode identically. sdcycod/fdcycod/sgaincod move the
+    // result by tenths. fgaincod is the one real temptation: fgaincod 1 is
+    // worth another +2 dB at 448 and +7 dB at 640, but it REGRESSES at
+    // 192 kbit/s (-0.22 dB on synthesized stereo) and costs 0.09 MOS at
+    // 320 on the 5.1 fixture, so it is not a default - it would need to be
+    // rate-dependent, and that wants its own measurement pass.
+    //
+    // Searching these per frame was considered and rejected: the only
+    // in-loop quality criterion this encoder has is the composite SNR offset
+    // step 9 maximises, and that number is not comparable between two
+    // different code sets, because each set produces a different masking
+    // curve for the offset to sit on. A sound search would have to
+    // reconstruct and measure real distortion per candidate, which is a far
+    // larger change than the uniform win above justifies.
+    const BitAllocCodes codes{.dbpbcod = 3};
 
     // --- 1. MDCT per channel per block -------------------------------------
     AC3_ZONE_BEGIN(zone_mdct, "step1_mdct");
@@ -648,26 +704,50 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         const int begin = stream_start(s);
         const int end = stream_end(s);
 
+        // Every stream, LFE included. The LFE used to be excluded here and
+        // sent one exponent set for the whole frame, which is legal - §5.4.3.15
+        // makes lfeexpstr a single bit, present or reuse - but reads its one
+        // bit as though it could only ever say "reuse". A frame's exponents
+        // are the per-bin MINIMUM across the blocks they cover, so one set for
+        // six blocks is a set chosen by the loudest of them, and every quieter
+        // block is then quantized against a scale meant for something louder.
+        //
+        // On tests/golden/audio/reference_51.wav the LFE moves 10-16 dB inside
+        // a single frame, and the cost of pinning it to the loudest block was
+        // 12 dB of channel SNR against FFmpeg - on a channel carrying a third
+        // of that fixture's signal power, which made it 56% of the whole
+        // encode's noise. A refresh costs 4 + 7*2 = 18 bits (the LFE's
+        // exponent set is always two groups), against 14336 bits in a
+        // 448 kbit/s frame.
+        //
+        // Worth +1.6 dB at 448 kbit/s on its own, and it does not overlap the
+        // delta-bit-allocation/dbpbcod work: measured on top of that branch it
+        // still adds +0.11 to +1.27 dB across 192-640 kbit/s, +0.58 at 448.
+        // The two fix different things - that one stopped the frame spending
+        // bits on a correction nobody had weighed, this one stops the LFE
+        // being quantized against a scale meant for a louder block.
+        //
+        // See tools/check_ac3_allocation.py, which is what found it.
         std::vector<int> starts{0};
-        if (!is_lfe) {
-            const auto* reference = &block_exps[static_cast<std::size_t>(s) * kBlocksPerFrame];
-            for (int block = 1; block < kBlocksPerFrame; ++block) {
-                const auto& current = block_exps[static_cast<std::size_t>(s) * kBlocksPerFrame +
-                                                 static_cast<std::size_t>(block)];
-                // §7.9's block-switched block is isolated into its own
-                // single-block run on both sides - entering forces a
-                // boundary here, leaving forces one at the next block -
-                // which strategy_for_span(1) below then resolves to D45
-                // automatically, matching §8.2.2's "a channel that is
-                // block-switched uses the D45 exponent strategy."
-                const bool switch_boundary =
-                    s < nfchans &&
-                    (blksw[static_cast<std::size_t>(s)][static_cast<std::size_t>(block)] ||
-                     blksw[static_cast<std::size_t>(s)][static_cast<std::size_t>(block - 1)]);
-                if (needs_new_exponents(current, *reference) || switch_boundary) {
-                    starts.push_back(block);
-                    reference = &current;
-                }
+        const auto* reference = &block_exps[static_cast<std::size_t>(s) * kBlocksPerFrame];
+        for (int block = 1; block < kBlocksPerFrame; ++block) {
+            const auto& current = block_exps[static_cast<std::size_t>(s) * kBlocksPerFrame +
+                                             static_cast<std::size_t>(block)];
+            // §7.9's block-switched block is isolated into its own
+            // single-block run on both sides - entering forces a
+            // boundary here, leaving forces one at the next block -
+            // which strategy_for_span(1) below then resolves to D45
+            // automatically, matching §8.2.2's "a channel that is
+            // block-switched uses the D45 exponent strategy." The LFE is
+            // never block-switched, so the guard below simply never fires
+            // for it.
+            const bool switch_boundary =
+                s < nfchans &&
+                (blksw[static_cast<std::size_t>(s)][static_cast<std::size_t>(block)] ||
+                 blksw[static_cast<std::size_t>(s)][static_cast<std::size_t>(block - 1)]);
+            if (needs_new_exponents(current, *reference, is_lfe) || switch_boundary) {
+                starts.push_back(block);
+                reference = &current;
             }
         }
         starts.push_back(kBlocksPerFrame);
@@ -779,6 +859,52 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     std::vector<std::vector<std::uint8_t>> stream_bap(static_cast<std::size_t>(streams));
     int csnroffst = 0;
     int fsnroffst = 0;
+
+    // The snroffste block gives the LFE its own 4-bit lfefsnroffst, alongside
+    // each fbw channel's chfsnroffst and the coupling channel's cplfsnroffst,
+    // and this encoder was writing the shared fine offset into it - the same
+    // value every fbw channel gets. That is legal, and it is what FFmpeg does too (its
+    // lfefsnroffst matches its chfsnroffst in every block of its own 448 kbit/s
+    // 5.1 stream), but it leaves the LFE a price-taker in a search it cannot
+    // influence: step 9 picks the one composite offset at which the frame's
+    // TOTAL mantissa cost fits, and that total is set by channels of ~250 bins
+    // each. The LFE's 7 bins (kLfeEndmant) are rounding error in that
+    // sum, so the offset that governs the LFE's precision is decided entirely
+    // by channels 36 times its size - and when the frame tightens, the LFE
+    // loses precision at the same rate as they do despite costing a fraction as
+    // much to serve.
+    //
+    // Raising only its own field corrects that asymmetry, and it is cheap for
+    // the same reason it was mispriced: at 448 kbit/s 5.1 the LFE holds 2.5% of
+    // the frame's mantissa bits, so +4 fine steps moves about 12 bits per frame
+    // out of 14336 and leaves the frame's total mantissa cost unchanged to
+    // within a bit.
+    //
+    // +4 measured on two materials (the committed fixture and quality_race's
+    // synthesized full-band decorrelated 5.1) at 192/256/320/384/448/640:
+    // LFE +0.04 to +5.70 dB, overall SNR up at every one of the twelve points
+    // (worst +0.00), ViSQOL MOS flat (worst -0.005, best +0.004). At 448 on the
+    // fixture the LFE goes from 5.20 dB behind FFmpeg 8.0.1 to 1.77 behind.
+    // The response plateaus by about +6 fine steps and the 4-bit field clamps
+    // it regardless, so this cannot run away on unusual material.
+    //
+    // Independent of, and complementary to, the LFE exponent-refresh fix: with
+    // both, the LFE at 448 reaches 0.71 dB AHEAD of FFmpeg. That one stops the
+    // LFE being quantized against a scale meant for a louder block; this one
+    // stops it being allocated by a search that cannot see it.
+    //
+    // The LFE's other private field, lfefgaincod, was measured as
+    // the alternative and rejected: raising it to 6 or 7 is worth far more SNR
+    // (LFE +11 to +18 dB at 448) but it pushes the LFE to 55-72 dB, well past
+    // any use, and pays for it out of the wideband channels - MOS regressed up
+    // to -0.05 on the synthesized material. Unlike this one it is not
+    // self-limiting. It stays at the shared value.
+    const auto lfe_fine = [&](int composite) {
+        // A zero composite is §7.2.2.1.1's frame-wide mute; leave it alone, or
+        // the condition stops being frame-wide.
+        return composite <= 0 ? composite & 15
+                              : std::clamp((composite & 15) + kLfeFineOffsetBump, 0, 15);
+    };
 
     // `trace` is non-null only on the REAL write of a block, never on the
     // measurement pass below - see step 11 for what it records and why every
@@ -957,8 +1083,9 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                 w.put(static_cast<std::uint32_t>(codes.fgaincod), 3);
             }
             if (config_.lfe) {
-                w.put(static_cast<std::uint32_t>(fsnroffst), 4);
-                w.put(static_cast<std::uint32_t>(codes.fgaincod), 3);
+                w.put(static_cast<std::uint32_t>(lfe_fine(csnroffst * 16 + fsnroffst)),
+                      4);                                            // lfefsnroffst
+                w.put(static_cast<std::uint32_t>(codes.fgaincod), 3);  // lfefgaincod
             }
         }
         if (cplinu) {
@@ -1162,8 +1289,11 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         AC3_ZONE_SCOPED_N("bits_at");
         for (int s = 0; s < streams; ++s) {
             auto& p = plan[static_cast<std::size_t>(s)];
-            // Every stream shares one fsnroffst here, so the frame-wide
-            // §7.2.2.1.1 condition reduces to the composite being zero.
+            const bool is_lfe = s < nchans && s >= nfchans;
+            // Only the LFE's fine offset can differ; the §7.2.2.1.1 mute is
+            // frame-wide, and lfe_fine() leaves a zero composite alone so the
+            // condition stays "the composite is zero" for every stream.
+            const int fine = is_lfe ? lfe_fine(composite) : composite & 15;
             for (std::size_t run = 0; run < p.runs.size(); ++run) {
                 const BitAllocRegion region{.start = stream_start(s),
                                             .coupling = s == cpl_stream,
@@ -1174,7 +1304,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                 auto& bap = run_bap[static_cast<std::size_t>(s)][run];
                 bap.assign(p.runs[run].decoded.size(), 0);
                 compute_bit_allocation(p.runs[run].decoded, config_.sample_rate, codes,
-                                       composite >> 4, composite & 15, bap, region);
+                                       composite >> 4, fine, bap, region);
             }
         }
         std::uint32_t total = 0;
@@ -1219,23 +1349,31 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     // delta segment is side-info bits taken out of the same budget that
     // would otherwise buy a higher offset, and a correction that lowers the
     // mask in one band asks for MORE mantissa precision there, not less.
-    // Coupling is where this bites hardest, because "coupling must not cost
-    // more bits than the channels it replaces" (test_encoder.cpp) is a
+    // Coupling is where this was first caught, because "coupling must not
+    // cost more bits than the channels it replaces" (test_encoder.cpp) is a
     // standing promise this encoder makes about the resulting composite
     // offset, and it broke - at 96 kbit/s stereo, no exotic layout required -
     // the moment delta became eligible during coupling (see step 5's
-    // comment). So whenever coupling is active and there is still a delta
-    // queued to send (step 8's fit-based fallback may already have cleared
-    // every one of them), the search is repeated with delta fully cleared,
-    // and whichever pass reaches the higher composite offset wins - a tie
-    // keeps delta, since at equal offset it is a strictly free correction.
+    // comment). But nothing in the reasoning above is about coupling: a
+    // delta segment costs the same 12 bits, out of the same budget, whether
+    // or not a coupling channel exists. Gating the check on cplinu just meant
+    // the one layout that never couples never got it - and that is where it
+    // cost the most. At 448 kbit/s 5.1 this encoder emitted about ten
+    // segments per block, 724 bits per frame (5% of the whole frame), and
+    // paid for them with roughly 44 composite offset units across every
+    // channel; measured against FFmpeg on the same file, dropping them is
+    // worth over 2 dB. So whenever there is a delta queued to send (step 8's
+    // fit-based fallback may already have cleared every one of them), the
+    // search is repeated with delta fully cleared, and whichever pass reaches
+    // the higher composite offset wins - a tie keeps delta, since at equal
+    // offset it is a strictly free correction.
     bool any_delta = false;
     for (const auto& p : plan) {
         for (const auto& run : p.runs) {
             any_delta = any_delta || run.delta.deltnseg > 0;
         }
     }
-    if (cplinu && any_delta) {
+    if (any_delta) {
         std::vector<std::vector<DeltaSegments>> saved(plan.size());
         for (std::size_t s = 0; s < plan.size(); ++s) {
             saved[s].resize(plan[s].runs.size());
