@@ -12,6 +12,22 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 
 ## [Unreleased]
 
+## [0.7.0-beta.1] - 2026-08-17
+
+Sixth tagged release. The main change is an AC-3 quality push: three independent fixes to the
+encoder's bit allocation — weighing delta segments against their own cost at every layout, raising
+`dbpbcod` past the spec's own recommendation, and giving the LFE its own fine SNR offset instead
+of a shared one — move the 5.1 landscape leg at 448 kbit/s from 2.98 dB behind FFmpeg 8.0.1 to
+0.72 dB ahead of it, with perceptual quality unchanged. Finding and fixing those relied on new
+verification infrastructure landing alongside them: a fuzz harness over the encoder's own input
+space (as opposed to only the decoder's), an opt-in encoder/decoder mirror self-check, and a codec
+matrix now driven by real programme material rather than synthetic tones — which is what caught a
+stale coupling-channel delta cursor and a frame-ending mid-delta bug that had escaped every
+existing gate. Also landing this release: a native PipeWire audio backend for Linux, a shared app
+icon and About dialogs across every GUI surface, and an E-AC-3 `auto` tool set that picks
+coupling/spectral extension/AHT from the per-channel bitrate instead of taking on/off flags as
+given.
+
 ### Added
 
 - **An opt-in AC-3 encoder/decoder mirror self-check (`ac3::verify`)**, which decodes every frame
@@ -57,6 +73,13 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   is outside this library's control — see `src/platform/pipewire/passthrough.cpp` and
   `docs/building.md`'s "Why ALSA still comes first" for the full account, including why ALSA
   keeps precedence over PipeWire when both are present.
+- **A shared app icon and About dialogs across every GUI surface.** One procedurally-generated
+  mark (`assets/icon/generate_icons.py`, Pillow-based, plus a matching hand-authored SVG) now
+  backs `ac3gui`'s window/taskbar icon and packaged `.exe`/`.app` icon, Shield's launcher icon and
+  Android-TV Leanback banner, and the WASM demo's favicon. `ac3gui` gained an About dialog and
+  Shield an About screen (reached via the TV remote's Info button), both showing real build
+  version/git provenance through the existing `ac3::version_details()`, alongside a GPLv3 notice
+  and font attribution.
 
 ### Changed
 
@@ -106,6 +129,10 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 - **The landscape page shows SNR, LSD and MOS side by side, each with its own vs-FFmpeg/vs-DEE
   delta.** These tools trade waveform fidelity for banded envelope fidelity deliberately, so a
   single-metric headline reported a working tool as a straight loss.
+- **The quality landscape page (`docs/landscape.md`) now shows a spectrogram alongside its
+  SNR/LSD/MOS numbers** — one stacked original/ac3forge/FFmpeg/DEE image per tracked leg,
+  refreshed each release promotion, so there's a visual reference next to the trend numbers, not
+  only figures.
 - **The CI quality gate now includes an AC-3 5.1 leg.** It was stereo-only, which left the LFE and
   the full channel count with no absolute gate — two separate faults have now shipped through that
   hole. The floor is deliberately loose: the gate decodes with FFmpeg under `-xerror`, so a
@@ -113,6 +140,12 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 - **A new `tools/check_ac3_allocation.py`** reports per-channel and per-band SNR against FFmpeg at
   a matched bitrate, to say *which* part of an allocation gap is worth chasing rather than only
   that one exists. It is what found the LFE fault below.
+- **The AC-3 codec matrix (`scripts/run-codec-matrix.sh`) now sweeps real programme material,
+  not only synthetic tones.** A stationary sine keeps near-identical exponents in every block, so
+  a defect that only appears at a mid-frame exponent-run boundary — exactly the shape of the
+  `deltbaie` bug below — was structurally unreachable at any bitrate or layout. The golden
+  stereo/5.1 fixtures now run the full encode sweep too, decoded by both this project's decoder
+  and FFmpeg's strict decode.
 
 ### Fixed
 
@@ -142,6 +175,20 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   allocation never reads. Both FFmpeg and Dolby's own reference decoder require the cursor to
   start at the channel's own start band instead; this project's decoder shared the encoder's
   reading, so the round trip never noticed. Found by the encoder input-space fuzz harness above.
+
+### Known gaps
+
+- Objects still will not decode as *objects* in Dolby's own decoder or hardware — unchanged from
+  0.6.0-beta.1; `verify-objects` checks a stream against its own signature, not Dolby's gate.
+- Exclusive-mode S/PDIF/HDMI passthrough has not been confirmed against real bitstreaming
+  hardware on any platform, ALSA or PipeWire — the new PipeWire path additionally depends on the
+  target node's `iec958Codecs` having been enabled by the session manager, which is outside this
+  library's control.
+- `fscod2` audio content has no external decode oracle at all — verified only by this project's
+  own encoder/decoder round trip.
+
+See [Validation](docs/verification.md) for the full account of what is and isn't independently
+verified.
 
 ## [0.6.0-beta.1] - 2026-08-17
 
