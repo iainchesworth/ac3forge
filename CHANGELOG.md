@@ -48,6 +48,25 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   allocation diverged from the encoder's, and every field after that point was read at the wrong
   bit offset — a stream both this project's decoder and FFmpeg reject. Real material hit this at
   several bitrates, 64 and 96 kbit/s stereo among them. E-AC-3 was unaffected.
+- **AC-3 encoder: the LFE sent one exponent set per frame however much its level moved.** A
+  frame's exponents are the per-bin minimum across the blocks they cover, so a single set for six
+  blocks is a set chosen by the loudest of them and every quieter block was then quantized
+  against a scale meant for something louder. §5.4.3.15 makes `lfeexpstr` a single bit, and the
+  encoder was reading that bit as though it could only ever say "reuse". On the 5.1 reference the
+  LFE moves 10–16 dB inside one frame, which cost 12 dB of LFE channel SNR — 56% of the whole
+  encode's noise power, on a channel carrying a third of its signal. Worth +0.3 to +3.8 dB
+  overall across 192–640 kbit/s (+1.6 at 448), for 18 bits per refresh against a 14336-bit frame.
+  Stereo is unaffected, having no LFE.
+
+### Changed (tooling)
+
+- **The CI quality gate now includes an AC-3 5.1 leg.** It was stereo-only, which left the LFE
+  and the full channel count with no absolute gate — two separate faults have now shipped through
+  that hole. The floor is deliberately loose: the gate decodes with FFmpeg under `-xerror`, so a
+  malformed frame fails it as a hard decode error, which is the failure mode both faults had.
+- **`tools/check_ac3_allocation.py`** reports per-channel and per-band SNR against FFmpeg at a
+  matched bitrate, to say *which* part of an allocation gap is worth chasing rather than only
+  that one exists.
 
 ## [0.6.0-beta.1] - 2026-08-17
 

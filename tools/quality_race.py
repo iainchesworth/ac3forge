@@ -555,6 +555,20 @@ CI_EAC3_THRESHOLDS = {
 }
 CI_AC3_MIN_SNR_DB = 30.0
 
+# The AC-3 gate was stereo-only for a long time, which left 5.1 - and with it
+# the LFE and the coupling-eligible channel count - with no absolute gate at
+# all. Two separate faults have now shipped through that hole: a stale delta
+# bit allocation that made real 5.1 streams undecodable, and an LFE pinned to
+# one exponent set per frame. Neither was visible to a stereo encode.
+#
+# The floor is deliberately loose - this material scores about 19.9 dB at
+# 448 - because the point is not to police a fraction of a dB. decode_scores()
+# runs FFmpeg with -xerror, so a malformed frame fails this gate as a hard
+# decode error long before the SNR number is even reached, and that is the
+# failure mode both of those bugs actually had.
+CI_AC3_51_KBPS = 448
+CI_AC3_51_MIN_SNR_DB = 15.0
+
 # Same shape as CI_EAC3_THRESHOLDS, for EAC3_SELF_VARIANTS - measured against
 # a real build (2026-08-12) via decode_scores_ours: stereo/192kbps scored
 # 37.6 dB SNR / 4.6 dB LSD (ecpl) and 24.1-24.2 dB SNR / 4.6-5.5 dB LSD (tpn,
@@ -593,6 +607,14 @@ def race_ci(original, source, original_51, source_51):
     if not gate(f"ac3 @ {CI_STEREO_KBPS}kbps", snr >= CI_AC3_MIN_SNR_DB,
                 f"SNR {snr:.2f} dB (floor {CI_AC3_MIN_SNR_DB})"):
         failures.append("ac3")
+
+    print(f"=== AC-3 5.1 @ {CI_AC3_51_KBPS} kbps ===")
+    ac3_51_path = BUILD / f"ci_ac3_51_{CI_AC3_51_KBPS}.ac3"
+    run([CLI, "encode", source_51, ac3_51_path, str(CI_AC3_51_KBPS)])
+    snr_51, _, _, _ = decode_scores(original_51, ac3_51_path, BUILD / "ci_ac3_51.wav")
+    if not gate(f"ac3 5.1 @ {CI_AC3_51_KBPS}kbps", snr_51 >= CI_AC3_51_MIN_SNR_DB,
+                f"SNR {snr_51:.2f} dB (floor {CI_AC3_51_MIN_SNR_DB})"):
+        failures.append("ac3-51")
 
     for label, source_wav, original_pcm, kbps in (
         ("stereo", source, original, CI_STEREO_KBPS),

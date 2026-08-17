@@ -42,13 +42,26 @@ constexpr ExpStrategy strategy_for_span(int span) {
 
 // Exponent-set change detection (§8.2.8: "when the variation exceeds a
 // threshold, new exponents will be sent").
+//
+// The threshold is a judgement about COST, so it is not one number. A full-
+// bandwidth channel's set is 4 + 7*ngrps bits - about 590 at D15 over a
+// 250-coefficient band - and spending that mid-frame has to buy back more
+// than it costs, so it waits for the exponents to have really moved: a mean
+// change above two steps, 12 dB per bin.
+//
+// The LFE's set is always two groups, 18 bits, thirty times cheaper. Holding
+// it to the same bar means almost never refreshing it, and the frame's one
+// set is then the per-bin minimum across six blocks - a scale chosen by the
+// loudest of them. Any block quieter than that is quantized against the wrong
+// scale for the sake of not spending 18 bits. So the LFE refreshes as soon as
+// its exponents move at all, which is the trade its own cost argues for.
 bool needs_new_exponents(std::span<const std::uint8_t> current,
-                         std::span<const std::uint8_t> reference) {
+                         std::span<const std::uint8_t> reference, bool is_lfe) {
     long long diff = 0;
     for (std::size_t i = 0; i < current.size(); ++i) {
         diff += std::abs(static_cast<int>(current[i]) - static_cast<int>(reference[i]));
     }
-    return diff > 2 * static_cast<long long>(current.size());
+    return diff > (is_lfe ? 0 : 2 * static_cast<long long>(current.size()));
 }
 
 // Where coupling should start when the caller does not say. Sub-band 4 - bin
@@ -642,26 +655,50 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         const int begin = stream_start(s);
         const int end = stream_end(s);
 
+        // Every stream, LFE included. The LFE used to be excluded here and
+        // sent one exponent set for the whole frame, which is legal - §5.4.3.15
+        // makes lfeexpstr a single bit, present or reuse - but reads its one
+        // bit as though it could only ever say "reuse". A frame's exponents
+        // are the per-bin MINIMUM across the blocks they cover, so one set for
+        // six blocks is a set chosen by the loudest of them, and every quieter
+        // block is then quantized against a scale meant for something louder.
+        //
+        // On tests/golden/audio/reference_51.wav the LFE moves 10-16 dB inside
+        // a single frame, and the cost of pinning it to the loudest block was
+        // 12 dB of channel SNR against FFmpeg - on a channel carrying a third
+        // of that fixture's signal power, which made it 56% of the whole
+        // encode's noise. A refresh costs 4 + 7*2 = 18 bits (the LFE's
+        // exponent set is always two groups), against 14336 bits in a
+        // 448 kbit/s frame.
+        //
+        // Worth +1.6 dB at 448 kbit/s on its own, and it does not overlap the
+        // delta-bit-allocation/dbpbcod work: measured on top of that branch it
+        // still adds +0.11 to +1.27 dB across 192-640 kbit/s, +0.58 at 448.
+        // The two fix different things - that one stopped the frame spending
+        // bits on a correction nobody had weighed, this one stops the LFE
+        // being quantized against a scale meant for a louder block.
+        //
+        // See tools/check_ac3_allocation.py, which is what found it.
         std::vector<int> starts{0};
-        if (!is_lfe) {
-            const auto* reference = &block_exps[static_cast<std::size_t>(s) * kBlocksPerFrame];
-            for (int block = 1; block < kBlocksPerFrame; ++block) {
-                const auto& current = block_exps[static_cast<std::size_t>(s) * kBlocksPerFrame +
-                                                 static_cast<std::size_t>(block)];
-                // §7.9's block-switched block is isolated into its own
-                // single-block run on both sides - entering forces a
-                // boundary here, leaving forces one at the next block -
-                // which strategy_for_span(1) below then resolves to D45
-                // automatically, matching §8.2.2's "a channel that is
-                // block-switched uses the D45 exponent strategy."
-                const bool switch_boundary =
-                    s < nfchans &&
-                    (blksw[static_cast<std::size_t>(s)][static_cast<std::size_t>(block)] ||
-                     blksw[static_cast<std::size_t>(s)][static_cast<std::size_t>(block - 1)]);
-                if (needs_new_exponents(current, *reference) || switch_boundary) {
-                    starts.push_back(block);
-                    reference = &current;
-                }
+        const auto* reference = &block_exps[static_cast<std::size_t>(s) * kBlocksPerFrame];
+        for (int block = 1; block < kBlocksPerFrame; ++block) {
+            const auto& current = block_exps[static_cast<std::size_t>(s) * kBlocksPerFrame +
+                                             static_cast<std::size_t>(block)];
+            // §7.9's block-switched block is isolated into its own
+            // single-block run on both sides - entering forces a
+            // boundary here, leaving forces one at the next block -
+            // which strategy_for_span(1) below then resolves to D45
+            // automatically, matching §8.2.2's "a channel that is
+            // block-switched uses the D45 exponent strategy." The LFE is
+            // never block-switched, so the guard below simply never fires
+            // for it.
+            const bool switch_boundary =
+                s < nfchans &&
+                (blksw[static_cast<std::size_t>(s)][static_cast<std::size_t>(block)] ||
+                 blksw[static_cast<std::size_t>(s)][static_cast<std::size_t>(block - 1)]);
+            if (needs_new_exponents(current, *reference, is_lfe) || switch_boundary) {
+                starts.push_back(block);
+                reference = &current;
             }
         }
         starts.push_back(kBlocksPerFrame);
