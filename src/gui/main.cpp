@@ -1,7 +1,9 @@
 #include <QFont>
 #include <QFontDatabase>
 #include <QGuiApplication>
+#include <QIcon>
 #include <QQmlApplicationEngine>
+#include <QQmlContext>
 #include <QQuickStyle>
 #include <QQuickWindow>
 #include <QSettings>
@@ -17,6 +19,7 @@
 #include <print>
 #include <vector>
 
+#include "ac3/version.hpp"
 #include "encoder_controller.hpp"
 
 // Headless self-checks, the reason the offscreen platform plugin is deployed
@@ -510,6 +513,17 @@ int main(int argc, char* argv[]) {
     QGuiApplication app(argc, argv);
     QGuiApplication::setApplicationName(QStringLiteral("ac3forge"));
     QGuiApplication::setOrganizationName(QStringLiteral("ac3forge"));
+    QGuiApplication::setApplicationVersion(
+        QString::fromUtf8(ac3::version_string.data(), static_cast<qsizetype>(ac3::version_string.size())));
+
+    // The build-tree/taskbar/alt-tab icon - independent of the packaged
+    // Windows .rc/macOS .icns wiring in CMakeLists.txt, which only takes
+    // effect once the binary is actually installed/bundled. Two sizes so
+    // Qt picks the closer match rather than scaling a single one both ways.
+    QIcon appIcon;
+    appIcon.addFile(QStringLiteral(":/icons/ac3forge-32.png"));
+    appIcon.addFile(QStringLiteral(":/icons/ac3forge-256.png"));
+    QGuiApplication::setWindowIcon(appIcon);
 
     // A smoke run must neither INHERIT the user's saved session (session
     // restore runs at window creation - a restored object-mode session under
@@ -552,6 +566,11 @@ int main(int argc, char* argv[]) {
     QObject::connect(
         &engine, &QQmlApplicationEngine::objectCreationFailed, &app,
         [] { QCoreApplication::exit(EXIT_FAILURE); }, Qt::QueuedConnection);
+    // Build-time-immutable text (version/git provenance), so a plain
+    // context property is enough - AboutDialog.qml reads it directly,
+    // no C++ round trip needed for something that never changes at runtime.
+    engine.rootContext()->setContextProperty(
+        QStringLiteral("appVersionDetails"), QString::fromStdString(ac3::version_details()));
     engine.loadFromModule("Ac3Forge", "Main");
 
     const auto args = QGuiApplication::arguments();
