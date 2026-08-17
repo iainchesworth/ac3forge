@@ -171,6 +171,45 @@ options, temporarily swap the `vcpkg_from_github()` block in a scratch copy of `
 for `set(SOURCE_PATH "<absolute path to this checkout>")`, run the same three commands against
 that scratch copy, and discard it once validated - never commit that substitution.
 
+## Publishing to PyPI
+
+Roadmap **F2**: Python bindings (`python/`, see
+[docs/library/python-api.md](library/python-api.md)) as the `ac3forge` PyPI package, with wheels
+for Windows, macOS and Linux built by `.github/workflows/wheels.yml` via `cibuildwheel`. That
+workflow's `build` job runs continuously (every push/PR touching `python/**`, same "buildable is
+checked continuously" reasoning as `windows-msvc`'s packaging smoke test above) and always
+uploads the wheels it builds as a workflow artifact — that part needs no provisioning and already
+works today.
+
+**Publishing them to PyPI is off until a maintainer provisions it**, the same shape as GPG signing
+and the Android release keystore below: `wheels.yml`'s `publish` job is gated on both a `v*` tag
+push and the `pypi` GitHub environment existing, and uses
+[PyPI trusted publishing](https://docs.pypi.org/trusted-publishers/) (OIDC) rather than a stored
+API token — there is no `PYPI_API_TOKEN` secret to leak in the first place. **Nobody should ever
+generate a long-lived PyPI API token and paste it into a chat with an agent or into a GitHub
+secret** — trusted publishing exists specifically so that never has to happen.
+
+One-time setup, done by a maintainer directly on pypi.org and on GitHub:
+
+1. On PyPI, either publish the very first `ac3forge` release by hand (`python -m build python/`
+   then `twine upload`, using a temporary scoped token deleted immediately after) to create the
+   project, or use PyPI's **pending publisher** mechanism (Your projects → Publishing →
+   "Add a pending publisher") to pre-register the trusted publisher for a project name that does
+   not exist yet — the second path needs no manual upload at all and is the one to prefer.
+2. Either way, register the trusted publisher against this repository: owner
+   `iainchesworthlabs`, repository `ac3forge`, workflow `wheels.yml`, environment `pypi`.
+3. In the GitHub repo, create an environment named `pypi` (Settings → Environments) — no secrets
+   need adding to it; its existence and name are what PyPI's trusted-publisher registration keys
+   against, and `wheels.yml`'s `publish` job declares `environment: pypi` so the job has somewhere
+   to request the OIDC token from. Optionally add required reviewers on the environment for a
+   manual approval gate before a publish actually runs.
+
+Once both sides are set up, pushing a `v*` tag (the same tag that triggers `release.yml`, see
+[Option A](#option-a-tag-based-release-the-normal-path) above) also triggers `wheels.yml`'s
+`publish` job for that tag. Until then, the job's `environment: pypi` reference simply has
+nowhere to authorize against and the workflow run for that job fails cleanly at the permission
+check — the `build` job (and its artifact) is unaffected either way.
+
 ## What gets published
 
 One package per OS **and architecture**, not one per compiler-toolchain leg: `_build.yml`'s matrix

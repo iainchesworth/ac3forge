@@ -12,6 +12,16 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 
 ## [Unreleased]
 
+### Added
+
+- **Python bindings (`ac3forge` on PyPI)**, roadmap F2: a pybind11 module bound directly onto
+  `ac3::FrameEncoder`, `ac3::FrameDecoder`, `ac3::Eac3Decoder` and `ac3::oba::AtmosEncoder` —
+  numpy-friendly PCM, Python exceptions in place of `std::expected`. `.github/workflows/wheels.yml`
+  builds wheels for Windows, macOS and Linux via `cibuildwheel`; publishing to PyPI itself is
+  wired up but stays off until a maintainer provisions PyPI trusted publishing — see
+  [docs/releasing.md](docs/releasing.md#publishing-to-pypi). See
+  [docs/library/python-api.md](docs/library/python-api.md).
+
 ## [0.8.0-beta.1] - 2026-08-17
 
 Seventh tagged release. The repository moved from `iainchesworth/ac3forge` to

@@ -1,0 +1,99 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "pybind11>=2.13", "setuptools_scm>=8"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "ac3forge"
+dynamic = ["version"]
+description = "Clean-room AC-3/E-AC-3 (Dolby Digital/Digital Plus) encoder and decoder, with Atmos object encode/decode"
+readme = "README.md"
+license = "GPL-3.0-only"
+requires-python = ">=3.10"
+authors = [{ name = "ac3forge contributors" }]
+keywords = ["ac3", "eac3", "dolby-digital", "atmos", "audio", "codec"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Multimedia :: Sound/Audio :: Conversion",
+    "Programming Language :: C++",
+    "Programming Language :: Python :: 3",
+]
+dependencies = ["numpy>=1.24"]
+
+[project.urls]
+Homepage = "https://github.com/iainchesworthlabs/ac3forge"
+Documentation = "https://iainchesworthlabs.github.io/ac3forge/library/python-api/"
+Repository = "https://github.com/iainchesworthlabs/ac3forge"
+Changelog = "https://github.com/iainchesworthlabs/ac3forge/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[tool.scikit-build]
+# The repo root, not this directory - python/CMakeLists.txt is add_subdirectory()'d from there
+# (see the root CMakeLists.txt's AC3FORGE_BUILD_PYTHON block) the same way every other optional
+# component is, rather than standing up a second, independent top-level CMake project that would
+# have to re-derive the version/compiler-warnings/sanitizer setup the real root already owns.
+cmake.source-dir = ".."
+cmake.build-type = "Release"
+wheel.packages = ["src/ac3forge"]
+minimum-version = "0.10"
+build-dir = "build/{wheel_tag}"
+# Restricts `cmake --install` to python/CMakeLists.txt's own COMPONENT python - see that file's
+# comment on install(TARGETS _ac3forge ...) for why this is needed at all: without it, the
+# unconditional SDK install() rules in cmake/InstallLibrary.cmake (headers, .lib/.dll, CMake
+# package config) ride along into the wheel too.
+install.components = ["python"]
+
+[tool.scikit-build.cmake.define]
+# Only ac3::forge and this extension - everything else this tree can build is irrelevant to a
+# Python wheel and would only cost build time (CLI/GUI need Qt; tests need Catch2; the container
+# writers/ADM parser are for muxing/ADM ingest, no part of the F2 binding surface).
+AC3FORGE_BUILD_PYTHON = "ON"
+AC3FORGE_BUILD_CLI = "OFF"
+AC3FORGE_BUILD_GUI = "OFF"
+AC3FORGE_BUILD_TESTS = "OFF"
+AC3FORGE_BUILD_EXAMPLES = "OFF"
+AC3FORGE_BUILD_FUZZERS = "OFF"
+AC3FORGE_BUILD_ADM = "OFF"
+AC3FORGE_BUILD_MATROSKA = "OFF"
+AC3FORGE_BUILD_MP4 = "OFF"
+AC3FORGE_BUILD_MPEGTS = "OFF"
+# One self-contained extension module in the wheel, no side-by-side ac3forge.dll/.so to
+# redistribute - see python/CMakeLists.txt's own comment on ac3::forge resolving to forge_static.
+BUILD_SHARED_LIBS = "OFF"
+
+[tool.scikit-build.metadata.version]
+# Same "the tag is the only source of truth" philosophy as cmake/GitVersionDerivation.cmake,
+# applied independently on the Python-packaging side - setuptools_scm runs its own `git describe`
+# rather than threading the CMake-derived PROJECT_VERSION_FULL back into project metadata. A
+# v0.8.0-beta.1 tag renders as the PEP 440 version 0.8.0b1 - see docs/library/python-api.md.
+provider = "scikit_build_core.metadata.setuptools_scm"
+
+[tool.setuptools_scm]
+root = ".."
+# Same reasoning as cmake/GitVersionDerivation.cmake's own 0.0.0-dev fallback: a checkout with no
+# reachable v* tag at all (a source tarball with no .git, not any real CI leg - wheels.yml always
+# fetches full tag history, see that workflow's own comment) should still build a usable wheel
+# rather than aborting.
+fallback_version = "0.0.0.dev0"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.cibuildwheel]
+build = "cp310-* cp311-* cp312-* cp313-* cp314-*"
+skip = "*-musllinux* pp*"
+test-extras = ["test"]
+test-command = "pytest {project}/tests"
+manylinux-x86_64-image = "manylinux_2_28"
+manylinux-aarch64-image = "manylinux_2_28"
+
+[tool.cibuildwheel.linux]
+archs = ["x86_64"]
+
+[tool.cibuildwheel.macos]
+archs = ["arm64"]
+
+[tool.cibuildwheel.windows]
+archs = ["AMD64"]
