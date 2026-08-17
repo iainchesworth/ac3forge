@@ -28,7 +28,7 @@ runner-label set for Linux and one for Windows, and the matrix picks those up vi
    force `self-hosted` and nothing is actually online, the job queues and waits, which is
    the expected cost of an explicit override.
 3. **`auto` runs a live check**, in two parts, either one sufficient:
-   - This repo's own registered runners (`GET /repos/iainchesworth/ac3forge/actions/runners`,
+   - This repo's own registered runners (`GET /repos/iainchesworthlabs/ac3forge/actions/runners`,
      using the workflow's own `GITHUB_TOKEN` - no extra setup). Empty until a runner is
      actually registered directly against this repo, which may never happen under the
      org-level model `ci-runners` uses.
