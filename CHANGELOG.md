@@ -12,6 +12,18 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 
 ## [Unreleased]
 
+### Added
+
+- **A native PipeWire audio backend for Linux** (`src/audio/src/platform/pipewire/`,
+  `AC3FORGE_WITH_PIPEWIRE`), selected via pkg-config when ALSA's headers are not present.
+  Live capture and monitor playback are genuine `pw_stream` PCM; IEC 61937 bitstream passthrough
+  negotiates PipeWire's own compressed-format API for real
+  (`SPA_MEDIA_SUBTYPE_iec958`/`spa_format_audio_iec958_build()`/`PW_STREAM_FLAG_EXCLUSIVE`), but
+  depends on the target node's `iec958Codecs` having been enabled by the session manager, which
+  is outside this library's control — see `src/platform/pipewire/passthrough.cpp` and
+  `docs/building.md`'s "Why ALSA still comes first" for the full account, including why ALSA
+  keeps precedence over PipeWire when both are present.
+
 ## [0.6.0-beta.1] - 2026-08-17
 
 Fifth tagged release. The main change is Atmos object *decode*: earlier releases could only

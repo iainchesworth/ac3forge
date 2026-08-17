@@ -97,8 +97,13 @@ decoded an AC-3/E-AC-3 bitstream and verified its loudness metadata against meas
 - [x] **E1 (L)** — macOS CoreAudio backend. At drafting time every live-audio command was a
   stub on macOS; the build and gold-reference gates passed, but there was no capture,
   playback, or passthrough.
-- [ ] **E2 (M)** — PipeWire backend, named in `docs/building.md` as the natural second Linux
-  backend.
+- [x] **E2 (M)** — PipeWire backend, named in `docs/building.md` as the natural second Linux
+  backend. Landed with a real, honest scope: capture and monitor playback are genuine native
+  `pw_stream` PCM; IEC 61937 passthrough negotiates for real (`SPA_MEDIA_SUBTYPE_iec958`,
+  confirmed against a real shipped client) but is contingent on the target node's `iec958Codecs`
+  being enabled by the session manager, which this library cannot do on a caller's behalf — see
+  `src/platform/pipewire/passthrough.cpp`. ALSA keeps first precedence when both are present;
+  see `docs/building.md`'s "Why ALSA still comes first".
 - [ ] **E3 (S)** — Confirm exclusive-mode passthrough against real bitstreaming hardware —
   the standing "Known gaps" bullet from 0.5.0 — and update `docs/verification.md`.
 - [x] **E4 (M)** — Linux aarch64 CI leg, keeping the hardware-tuned transforms honest off
