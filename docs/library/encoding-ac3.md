@@ -30,7 +30,7 @@ for (int frame = 0; frame < 31; ++frame) {  // 48000 / 1536, near enough
 }
 ```
 
-Full program: [`examples/encode_ac3.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/encode_ac3.cpp).
+Full program: [`examples/encode_ac3.cpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/encode_ac3.cpp).
 
 ## `EncoderConfig`
 

@@ -1,15 +1,15 @@
 # ac3forge
 
 <!-- Build & code health -->
-[![CI](https://github.com/iainchesworth/ac3forge/actions/workflows/ci.yml/badge.svg)](https://github.com/iainchesworth/ac3forge/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/iainchesworth/ac3forge/actions/workflows/codeql.yml/badge.svg)](https://github.com/iainchesworth/ac3forge/actions/workflows/codeql.yml)
-[![MSVC Code Analysis](https://github.com/iainchesworth/ac3forge/actions/workflows/msvc-analysis.yml/badge.svg)](https://github.com/iainchesworth/ac3forge/actions/workflows/msvc-analysis.yml)
-[![OSV-Scanner](https://github.com/iainchesworth/ac3forge/actions/workflows/osv-scanner.yml/badge.svg)](https://github.com/iainchesworth/ac3forge/actions/workflows/osv-scanner.yml)
-[![Zizmor](https://github.com/iainchesworth/ac3forge/actions/workflows/zizmor.yml/badge.svg)](https://github.com/iainchesworth/ac3forge/actions/workflows/zizmor.yml)
+[![CI](https://github.com/iainchesworthlabs/ac3forge/actions/workflows/ci.yml/badge.svg)](https://github.com/iainchesworthlabs/ac3forge/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/iainchesworthlabs/ac3forge/actions/workflows/codeql.yml/badge.svg)](https://github.com/iainchesworthlabs/ac3forge/actions/workflows/codeql.yml)
+[![MSVC Code Analysis](https://github.com/iainchesworthlabs/ac3forge/actions/workflows/msvc-analysis.yml/badge.svg)](https://github.com/iainchesworthlabs/ac3forge/actions/workflows/msvc-analysis.yml)
+[![OSV-Scanner](https://github.com/iainchesworthlabs/ac3forge/actions/workflows/osv-scanner.yml/badge.svg)](https://github.com/iainchesworthlabs/ac3forge/actions/workflows/osv-scanner.yml)
+[![Zizmor](https://github.com/iainchesworthlabs/ac3forge/actions/workflows/zizmor.yml/badge.svg)](https://github.com/iainchesworthlabs/ac3forge/actions/workflows/zizmor.yml)
 <!-- Supply chain & project meta -->
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/iainchesworth/ac3forge/badge)](https://scorecard.dev/viewer/?uri=github.com/iainchesworth/ac3forge)
-[![Latest release](https://img.shields.io/github/v/release/iainchesworth/ac3forge?include_prereleases&sort=semver)](https://github.com/iainchesworth/ac3forge/releases/latest)
-[![Docs](https://img.shields.io/badge/docs-published-2f7d7b)](https://iainchesworth.github.io/ac3forge/)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/iainchesworthlabs/ac3forge/badge)](https://scorecard.dev/viewer/?uri=github.com/iainchesworthlabs/ac3forge)
+[![Latest release](https://img.shields.io/github/v/release/iainchesworthlabs/ac3forge?include_prereleases&sort=semver)](https://github.com/iainchesworthlabs/ac3forge/releases/latest)
+[![Docs](https://img.shields.io/badge/docs-published-2f7d7b)](https://iainchesworthlabs.github.io/ac3forge/)
 [![C++23](https://img.shields.io/badge/C%2B%2B-23-blue)](docs/building.md)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
@@ -21,7 +21,7 @@ Nothing here links FFmpeg or any other codec library. The FFmpeg command-line to
 during development as an independent decoder to check output against; the build does not
 depend on them.
 
-**Documentation:** [iainchesworth.github.io/ac3forge](https://iainchesworth.github.io/ac3forge/)
+**Documentation:** [iainchesworthlabs.github.io/ac3forge](https://iainchesworthlabs.github.io/ac3forge/)
 — a beginner's guide to the formats, a developer quick start, the full library and CLI
 reference, and a step-by-step GUI guide with screenshots. This file is a short pointer into it,
 not a copy of it; where the two disagree, the docs are current and this file is what's stale.
@@ -165,7 +165,7 @@ generators in `tools/`.
 
 ## Documentation
 
-[iainchesworth.github.io/ac3forge](https://iainchesworth.github.io/ac3forge/) is built from
+[iainchesworthlabs.github.io/ac3forge](https://iainchesworthlabs.github.io/ac3forge/) is built from
 `docs/` with mkdocs. Locally, the same pages:
 
 | Document | Contents |

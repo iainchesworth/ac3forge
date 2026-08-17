@@ -1,6 +1,6 @@
 # A worked scene: the station broadcast
 
-[`examples/station_broadcast.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/station_broadcast.cpp)
+[`examples/station_broadcast.cpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/station_broadcast.cpp)
 is the library's fully worked Atmos example: a complete 115-second scene —
 synthesis, motion, mix, and encode — in one compiled program with no binary
 assets. Everything the other pages introduce piecemeal appears here doing a

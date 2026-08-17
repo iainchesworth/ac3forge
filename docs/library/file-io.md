@@ -26,7 +26,7 @@ for (std::size_t k = 0; k < layout->wav_index.size(); ++k) {
 }
 ```
 
-Full program: [`examples/wav_roundtrip.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/wav_roundtrip.cpp)
+Full program: [`examples/wav_roundtrip.cpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/wav_roundtrip.cpp)
 — writes a 5.1 WAV, reads it back, encodes and decodes it, and writes the decoded result out
 as a second WAV.
 

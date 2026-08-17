@@ -13,7 +13,7 @@ const ac3::signing::SigningKey key{key_bytes};   // the operator's own, at runti
 const int signed_count = ac3::signing::sign_atmos_stream(stream, key);
 ```
 
-Full program: [`examples/object_signing.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/object_signing.cpp)
+Full program: [`examples/object_signing.cpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/object_signing.cpp)
 — encodes a two-object Atmos stream, then signs it. The key used there is a literal stand-in
 for the example's own sake, not a real key for any real decoder — a real one is always the
 operator's to provision at runtime (an environment variable or a `signing-key=<path>` file in

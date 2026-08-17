@@ -3,7 +3,7 @@
 The commit-level half of the external-encoder landscape comparison — see
 [Landscape](landscape.md) for the release-facing headline number. Every push
 to `develop` or `main` encodes the same three fixed legs
-[`tools/gen_external_baseline.py`](https://github.com/iainchesworth/ac3forge/blob/main/tools/gen_external_baseline.py)
+[`tools/gen_external_baseline.py`](https://github.com/iainchesworthlabs/ac3forge/blob/main/tools/gen_external_baseline.py)
 measures FFmpeg's and Dolby DEE's encoders against, scores this build's own
 output through `ac3cli`'s own decoder (no FFmpeg, no DEE, at CI time — see
 `tools/quality_race.py`'s `trend` mode), and appends the numbers here. It
@@ -23,7 +23,7 @@ It carries `vs_ffmpeg`/`vs_dee` columns —
 the delta against the committed baseline's numbers for the *same* leg — that
 the other rows don't, since only `landscape` has a matching external number
 to compare against. A leg whose DEE score is still marked unverified in
-[`tests/golden/external-baseline/manifest.json`](https://github.com/iainchesworth/ac3forge/blob/main/tests/golden/external-baseline/manifest.json)
+[`tests/golden/external-baseline/manifest.json`](https://github.com/iainchesworthlabs/ac3forge/blob/main/tests/golden/external-baseline/manifest.json)
 (see that file's own header) shows no `vs_dee` value rather than one
 computed against a number that was never real.
 
@@ -77,7 +77,7 @@ that job's environment, not a real zero score.
 
 <script>
 (function () {
-  const REPO = "iainchesworth/ac3forge";
+  const REPO = "iainchesworthlabs/ac3forge";
   const HISTORY_BRANCH = "quality-history";
   const TRACKS = [
     { branch: "develop", color: "#7c4dff" },
@@ -529,7 +529,7 @@ out, and a 🏷 badge marking a row whose commit was tagged as a release.
 **vs FFmpeg** / **vs DEE** are only populated on `landscape` rows — the
 delta between this build's own `all`-tools E-AC-3 encode (or AC-3's
 automatic-everything encode) and the corresponding tool's number in the
-checked-in [external baseline](https://github.com/iainchesworth/ac3forge/blob/main/tests/golden/external-baseline/manifest.json)
+checked-in [external baseline](https://github.com/iainchesworthlabs/ac3forge/blob/main/tests/golden/external-baseline/manifest.json)
 for that same leg, at the `baseline_version` recorded alongside it. A blank
 cell on a `landscape` row means that leg's DEE score is still marked
 unverified in the baseline manifest, not that the delta was zero.

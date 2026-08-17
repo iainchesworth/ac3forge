@@ -39,7 +39,7 @@ number a real user of either tool actually gets, not an internal detail.
 
 <script>
 (function () {
-  const REPO = "iainchesworth/ac3forge";
+  const REPO = "iainchesworthlabs/ac3forge";
   const HISTORY_BRANCH = "quality-history";
   // Releases only ever happen on main (releasing.md's own promotion flow),
   // so unlike quality-trend.md/tool-comparison-trend.md there is only one
@@ -220,15 +220,15 @@ decodes of the same material at the same bitrate.
 
 <div class="landscape-spectrograms">
   <figure>
-    <img src="https://raw.githubusercontent.com/iainchesworth/ac3forge/quality-history/spectrograms/ac3-51-448.png" alt="ac3-51-448 spectrogram: original vs ac3forge vs FFmpeg" loading="lazy">
+    <img src="https://raw.githubusercontent.com/iainchesworthlabs/ac3forge/quality-history/spectrograms/ac3-51-448.png" alt="ac3-51-448 spectrogram: original vs ac3forge vs FFmpeg" loading="lazy">
     <figcaption>ac3-51-448 (AC-3, 5.1 @ 448 kbit/s) — no DEE row: DEE's own decode of discrete 5.1 input drops a channel on the current baseline build, see the table's own <strong>n/a</strong> note.</figcaption>
   </figure>
   <figure>
-    <img src="https://raw.githubusercontent.com/iainchesworth/ac3forge/quality-history/spectrograms/eac3-stereo-192.png" alt="eac3-stereo-192 spectrogram: original vs ac3forge vs FFmpeg vs DEE" loading="lazy">
+    <img src="https://raw.githubusercontent.com/iainchesworthlabs/ac3forge/quality-history/spectrograms/eac3-stereo-192.png" alt="eac3-stereo-192 spectrogram: original vs ac3forge vs FFmpeg vs DEE" loading="lazy">
     <figcaption>eac3-stereo-192 (E-AC-3, stereo @ 192 kbit/s)</figcaption>
   </figure>
   <figure>
-    <img src="https://raw.githubusercontent.com/iainchesworth/ac3forge/quality-history/spectrograms/eac3-51-256.png" alt="eac3-51-256 spectrogram: original vs ac3forge vs FFmpeg" loading="lazy">
+    <img src="https://raw.githubusercontent.com/iainchesworthlabs/ac3forge/quality-history/spectrograms/eac3-51-256.png" alt="eac3-51-256 spectrogram: original vs ac3forge vs FFmpeg" loading="lazy">
     <figcaption>eac3-51-256 (E-AC-3, 5.1 @ 256 kbit/s) — no DEE row, same reason as ac3-51-448.</figcaption>
   </figure>
 </div>

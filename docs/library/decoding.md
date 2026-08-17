@@ -49,7 +49,7 @@ for (const auto unit : scanned->access_units) {
 }
 ```
 
-Full program: [`examples/decode_stream.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/decode_stream.cpp).
+Full program: [`examples/decode_stream.cpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/decode_stream.cpp).
 
 Both decoders keep overlap-add state, so feed frames in order. `Eac3Decoder` keys its state on
 `strmtyp` and `substreamid` together, because a dependent's id lives in its own numbering
@@ -153,7 +153,7 @@ for (std::size_t i = 0; i < frames->size(); ++i) {
 }
 ```
 
-Full program: [`examples/decode_robustness.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/decode_robustness.cpp)
+Full program: [`examples/decode_robustness.cpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/decode_robustness.cpp)
 — corrupts one frame in the middle of an otherwise-good eight-frame stream and confirms the
 other seven still decode.
 

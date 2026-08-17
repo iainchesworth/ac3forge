@@ -39,10 +39,10 @@ In rough order of strength:
    option list; it exists because an encoder defect that produced streams both decoders reject
    needed a specific input shape to reach, and so escaped every other check on this page. Bounded
    on every pull request, deeper nightly. See
-   [fuzz/README.md](https://github.com/iainchesworth/ac3forge/blob/main/fuzz/README.md).
+   [fuzz/README.md](https://github.com/iainchesworthlabs/ac3forge/blob/main/fuzz/README.md).
 
 Contributor-facing detail on which oracle to reach for and how — including the exact FFmpeg
-flags and the CI jobs that run them — is in [Oracles](https://github.com/iainchesworth/ac3forge/blob/main/CONTRIBUTING.md#oracles).
+flags and the CI jobs that run them — is in [Oracles](https://github.com/iainchesworthlabs/ac3forge/blob/main/CONTRIBUTING.md#oracles).
 
 ## Quality
 
@@ -144,8 +144,8 @@ project's own encoder/decoder round trip and the independent Python parser
 **`compr` in E-AC-3 has no external oracle.** FFmpeg's Annex E header parser reads `compre` and
 then skips the word, so `-heavy_compr` changes nothing on an E-AC-3 stream however good the
 metadata is. It is covered bit-by-bit instead
-([tests/test_drc.cpp](https://github.com/iainchesworth/ac3forge/blob/main/tests/test_drc.cpp),
-[tools/eac3_parse.py](https://github.com/iainchesworth/ac3forge/blob/main/tools/eac3_parse.py)).
+([tests/test_drc.cpp](https://github.com/iainchesworthlabs/ac3forge/blob/main/tests/test_drc.cpp),
+[tools/eac3_parse.py](https://github.com/iainchesworthlabs/ac3forge/blob/main/tools/eac3_parse.py)).
 
 ## What's confirmed against real hardware, and what isn't
 

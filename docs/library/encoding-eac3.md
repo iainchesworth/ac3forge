@@ -162,7 +162,7 @@ const auto unit = encoder.encode_access_unit(views);
 stream.insert(stream.end(), unit->bytes.begin(), unit->bytes.end());
 ```
 
-Full program: [`examples/encode_eac3.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/encode_eac3.cpp).
+Full program: [`examples/encode_eac3.cpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/encode_eac3.cpp).
 
 Constraints: at most 8 dependents; a dependent may not disagree with its parent on sample
 rate; and the locations a `chanmap` names must add up to the channels its `acmod` and `lfeon`
