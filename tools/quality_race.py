@@ -463,8 +463,8 @@ def race_ac3(original, source, seconds):
 # One column per E-AC-3 variant: the label, and the tool token handed to
 # `ac3cli eac3-encode`. "none" is the tool-free coding path the Annex E tools
 # have to beat to earn their place.
-EAC3_VARIANTS = [("none", None), ("cpl", "cpl"), ("spx", "spx"), ("aht", "aht"),
-                 ("cpl+spx", "cpl+spx"), ("all", "all")]
+EAC3_VARIANTS = [("none", None), ("auto", "auto"), ("cpl", "cpl"), ("spx", "spx"),
+                 ("aht", "aht"), ("cpl+spx", "cpl+spx"), ("all", "all")]
 
 # Enhanced coupling and transient pre-noise processing: FFmpeg has no reading
 # of either's syntax at all (see decode_scores_ours' docstring), so these are
@@ -526,9 +526,17 @@ CI_51_KBPS = 256
 # fidelity for the banded envelope on purpose (see spectral_scores'
 # docstring) - that is why their SNR floors are lower and LSD ceilings
 # higher than "none"/"cpl" rather than every row sharing one bar.
+# "auto" resolves to a different tool set per leg - at these two rates it
+# picks aht for stereo (192 kbit/s, 96 per channel) and cpl+spx+aht for 5.1
+# (256 kbit/s, 51 per channel) - so its floor is that set's floor rather than
+# a number of its own. Measured 2026-08-17 against a real build: stereo
+# 40.42 dB SNR / 5.96 dB LSD, 5.1 14.08 dB / 7.70 dB, both comfortably inside
+# the bars below. A change to the rate policy that silently flipped either leg
+# to the wrong set would land well under them.
 CI_EAC3_THRESHOLDS = {
     "stereo": {
         "none": (28.0, 7.5),
+        "auto": (28.0, 8.0),
         "cpl": (28.0, 7.0),
         "spx": (26.0, 7.0),
         "aht": (28.0, 8.0),
@@ -537,6 +545,7 @@ CI_EAC3_THRESHOLDS = {
     },
     "51": {
         "none": (10.0, 11.0),
+        "auto": (9.0, 10.5),
         "cpl": (10.0, 10.0),
         "spx": (9.0, 9.5),
         "aht": (10.0, 11.0),
@@ -660,13 +669,20 @@ def _trend_encode(wav, kbps, codec, tools, out):
 
 def race_trend(json_out=None):
     """One "landscape" row per leg - AC-3's automatic tools, or E-AC-3's
-    "all" (cpl+spx+aht - the number comparable to FFmpeg's/DEE's own
-    automatic best-effort choices, same reasoning as
-    gen_external_baseline.py's invoke_ours) - plus one row per applicable
-    EAC3_VARIANTS/EAC3_SELF_VARIANTS entry on the two E-AC-3 legs, the
-    commit-level per-tool detail. "landscape" and the "all" variant row are
-    the same encode for E-AC-3 (this CLI has no separate "auto, pick per
-    content" heuristic beyond "all" today) - computed once, not twice.
+    "auto" (the tool set this encoder picks from the per-channel rate - the
+    number comparable to FFmpeg's/DEE's own automatic best-effort choices,
+    same reasoning as gen_external_baseline.py's invoke_ours) - plus one row
+    per applicable EAC3_VARIANTS/EAC3_SELF_VARIANTS entry on the two E-AC-3
+    legs, the commit-level per-tool detail. "landscape" and the "auto"
+    variant row are the same encode for E-AC-3 - computed once, not twice.
+
+    This used to report "all" instead, which forced every tool on at every
+    rate. That is a real tool set a caller can still ask for, and it is
+    still one of the variant rows, but it is not what a stream should use:
+    at 192 kbit/s stereo it costs about 10 dB of SNR against simply not
+    coupling or extending, while at 256 kbit/s 5.1 the same tools are worth
+    about 10 dB the other way. Reporting the forced set as the headline
+    number measured a choice this encoder was not making.
 
     Compute-only: no pass/fail gate here (that is what `ci` mode is for),
     just the numbers - persistence to quality-history is a later mode.
@@ -683,7 +699,7 @@ def race_trend(json_out=None):
         original = read_wav_any(wav)
         seconds = len(original) / RATE
 
-        rows = [("landscape", "all" if is_eac3 else None)]
+        rows = [("landscape", "auto" if is_eac3 else None)]
         if is_eac3:
             rows += list(EAC3_VARIANTS) + list(EAC3_SELF_VARIANTS)
 

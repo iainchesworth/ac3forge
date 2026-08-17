@@ -36,11 +36,21 @@ quality_race.py's perceptual_score()) when the environment that produced
 trend.json had `visqol-python` installed - null otherwise, same graceful-
 degradation contract as everywhere else this project uses it, not a second
 regression-gated metric: no trailing-window/soft/hard-regression handling
-for it, mirroring lsd_db/hf_db's own read-only treatment here. vs_ffmpeg_
-mos_lqo/vs_dee_mos_lqo are added on `landscape` rows the same way vs_*_snr_db
-is, but only when *both* sides of the comparison have a real mos_lqo -
-tools/gen_external_baseline.py's manifest predates this column for every
-baseline generated before it, so most rows simply won't have the key yet.
+for it, mirroring lsd_db/hf_db's own read-only treatment here.
+
+`landscape` rows carry a vs_ffmpeg/vs_dee delta for all three of the
+metrics that have one on both sides - snr_db, lsd_db and mos_lqo - so the
+comparison can be read on more than waveform SNR alone. These tools trade
+waveform fidelity for banded envelope fidelity on purpose, and a single-
+metric headline reports that trade as a straight loss. Each delta appears
+only when *both* sides have a real number: mos_lqo predates no baseline
+generated before tools/gen_external_baseline.py grew the column (so most
+rows will not have it yet), and lsd_db is null on the AC-3 leg, where
+race_trend does not score it at all.
+
+Every vs_* key is ours-minus-theirs, including the LSD one where lower is
+better - the arithmetic stays uniform and the presentation layer decides
+which direction is good.
 
 stdlib-only (json/argparse/pathlib), matching every other append-*.py
 script's no-new-CI-provisioning reasoning. Takes commit and commit-date as
@@ -152,6 +162,12 @@ def main() -> int:
                     score = leg_baseline["scores"][tool]
                     if score is not None:
                         entry[f"vs_{tool}_snr_db"] = row["snr_db"] - score["snr_db"]
+                        # LSD is "lower is better", unlike the two either side
+                        # of it - the sign is left as ours-minus-theirs all
+                        # the same, so every vs_* key in this file means the
+                        # same arithmetic and the reader decides polarity.
+                        if entry["lsd_db"] is not None and score.get("lsd_db") is not None:
+                            entry[f"vs_{tool}_lsd_db"] = entry["lsd_db"] - score["lsd_db"]
                         if entry["mos_lqo"] is not None and score.get("mos_lqo") is not None:
                             entry[f"vs_{tool}_mos_lqo"] = entry["mos_lqo"] - score["mos_lqo"]
         lines.append(json.dumps(entry, sort_keys=True))

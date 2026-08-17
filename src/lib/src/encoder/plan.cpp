@@ -607,6 +607,8 @@ bool parse_tools(std::string_view text, Tools& out) {
             if (out.spxbegf < 0) {
                 return false;
             }
+        } else if (token == "auto") {
+            out.auto_tools = true;
         } else if (token == "cpl") {
             out.coupling = true;
         } else if (token == "ecpl") {
@@ -659,6 +661,25 @@ std::string format_tools(const Tools& tools) {
         }
         out += token;
     };
+    // `auto` decides the on/off tokens rather than sitting alongside them, so
+    // it prints instead of them - but the band-edge pins it still honours
+    // print as usual, since those are the part a caller kept control of.
+    if (tools.auto_tools) {
+        add("auto");
+        if (tools.cplbegf >= 0) {
+            add("cpl:" + std::to_string(tools.cplbegf));
+        }
+        if (tools.spxbegf >= 0) {
+            add("spx:" + std::to_string(tools.spxbegf));
+        }
+        if (tools.gaqmod >= 0) {
+            add("aht:" + std::to_string(tools.gaqmod));
+        }
+        if (!tools.fast_mdct) {
+            add("nofastmdct");
+        }
+        return out;
+    }
     if (tools.coupling) {
         add(tools.cplbegf >= 0 ? "cpl:" + std::to_string(tools.cplbegf) : std::string{"cpl"});
         if (tools.enhanced) {
@@ -920,6 +941,7 @@ EncoderConfig ac3_config(const Plan& plan) {
 namespace {
 
 void apply_tools(const Tools& tools, eac3::FrameConfig& config) {
+    config.auto_tools = tools.auto_tools;
     config.coupling = tools.coupling && fullbw_channel_count(config.acmod) >= 2;
     config.cplbegf = tools.cplbegf;
     config.enhanced = tools.enhanced;
