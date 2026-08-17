@@ -5,9 +5,16 @@ sharing table extraction with gen_bitalloc_tables.py so both implementations
 draw from the same source of truth: the standard's own text. Generates
 bit-exact golden bap vectors for the C++ engine's unit tests.
 
-Includes the known spec erratum fix in calc_lowcomp (§7.2.2.4 pseudocode has
-a stray semicolon after `if ((b0 + 256) == b1)`; the universally implemented
-intent - matching the bin >= 7 branch's structure - is else-if chaining).
+Includes two known spec erratum fixes:
+
+- calc_lowcomp (§7.2.2.4 pseudocode has a stray semicolon after
+  `if ((b0 + 256) == b1)`; the universally implemented intent - matching the
+  bin >= 7 branch's structure - is else-if chaining).
+- The §7.2.2.6 delta bit allocation band cursor (see bit_alloc()'s own note):
+  the pseudocode initializes `band = 0` literally, but on the coupling
+  channel - whose own band range does not start at 0 - both FFmpeg and
+  Dolby's own reference decoder (dlbac3dec, verified directly via gst-launch)
+  require band to start at bndstrt instead, or they reject the stream.
 
 Run from the repo root:  python tools/bitalloc_ref.py
 """
@@ -172,7 +179,14 @@ def bit_alloc(exps, fscod, sdcycod, fdcycod, sgaincod, dbpbcod, floorcod,
     # 7.2.2.6: delta bit allocation. mask[]/psd[] units are 128 per exponent
     # step, exactly one Table 5.17 6 dB step, so `delta` is added with no
     # unit conversion.
-    band = 0
+    #
+    # band starts at bndstrt, not the pseudocode's literal 0: mask[] here is
+    # this routine's own global-indexed array, so on the coupling channel (the
+    # one channel whose bndstrt isn't 0) a literal band=0 would require every
+    # deltoffst to encode an absolute band number - which both FFmpeg and
+    # Dolby's reference decoder reject in practice (module docstring). For
+    # fbw/LFE (bndstrt == 0) this is unchanged from the literal reading.
+    band = bndstrt
     for seg in range(deltnseg):
         band += deltoffst[seg]
         code = deltba[seg]
@@ -270,13 +284,13 @@ def main():
     add_case("DeltaMultiSeg", rand253, fscod=2, csnr=15, fsnr=15, sd=0, fd=3,
              sg=3, db=0, fg=7, deltoffst=(2, 4, 3), deltlen=(3, 2, 6),
              deltba=(6, 1, 4))
-    # deltoffst[0] is an ABSOLUTE band number (§5.4.3.55), not a bin - derive
-    # the channel's own band range from masktab rather than guess, since a
-    # coupling channel's start band is not the same number as its start BIN
-    # (37 here maps to band 31, spanning to band 44).
-    cpl_bndstrt = T["masktab"][37]
+    # deltoffst[0] is relative to the coupling channel's OWN start band
+    # (bndstrt = masktab[37] = 31 here), not an absolute band number - see
+    # bit_alloc()'s note on the delta cursor. A deltoffst[0] of 0 lands the
+    # first segment right at bndstrt, the same target band the old
+    # (absolute-band) reading of this case reached via deltoffst[0]=31.
     add_case("DeltaOnCoupling", [24] * 121, start=37, coupling=True, cplfleak=3,
-             cplsleak=3, csnr=22, fsnr=9, deltoffst=(cpl_bndstrt, 2),
+             cplsleak=3, csnr=22, fsnr=9, deltoffst=(0, 2),
              deltlen=(8, 3), deltba=(5, 2))
 
     parts = [

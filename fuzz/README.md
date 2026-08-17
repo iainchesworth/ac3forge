@@ -193,17 +193,6 @@ Scope: AC-3 `encode` only. E-AC-3's own configuration space - the Annex E tool
 tokens, VBR, the wider layouts - is a real remaining gap, deliberately left
 open rather than half-covered.
 
-**It has an open finding.** On the commit that added it, roughly one case in
-seven hundred fails at the FFmpeg stage with `error in bit allocation` while
-`ac3cli decode` accepts the same stream - always with coupling on.
-`choose_delta_segments` writes delta bit allocation offsets from band 0 while
-FFmpeg's cursor starts at the channel's own start band, so on the coupling
-channel (the only one whose start band is not 0) the segments land past band
-50 and hit FFmpeg's range guard; `compute_bit_allocation` starts at band 0
-too, so encoder and decoder here agree with each other and the round trip
-never notices. Both CI callers are `continue-on-error` until that is fixed -
-see the note on `ci.yml`'s encoder-space step, and delete both lines together.
-
 ## Running locally
 
 ```bash
@@ -301,8 +290,7 @@ job in this file - everything it needs is already built and pinned there, and
 unlike `fuzz-short` it runs on pull requests rather than push only, because it
 is cheap enough relative to the job it rides on.
 
-`fuzz-short`, `fuzz-differential`, `fuzz-nightly` and `encoder-space-nightly`
-run with
+`fuzz-short`, `fuzz-differential` and `fuzz-nightly` run with
 `continue-on-error: true`, the same convention `ci.yml` uses for its other
 unproven legs: none has multiple clean fuzzing runs behind it yet. That is a
 question of track record, and it is not settled by the build being

@@ -37,6 +37,14 @@ struct BitAllocCodes {
 [[nodiscard]] AC3FORGE_EXPORT int fast_gain(int fgaincod);
 [[nodiscard]] AC3FORGE_EXPORT int slow_gain(int sgaincod);
 
+// Table 7.13: the 50-band mask()/bndpsd() index a bitstream bin belongs to.
+// Exposed because a caller validating delta bit allocation segments before
+// compute_bit_allocation() ever sees them (deltoffst/deltlen are
+// attacker-controlled bitstream fields) needs the same channel-start band
+// this routine derives internally as bndstrt, rather than a second copy of
+// Table 7.13 guessing at the same value.
+[[nodiscard]] AC3FORGE_EXPORT int bin_to_band(int bin);
+
 // §7.2.2.1: the composite SNR offset.
 [[nodiscard]] constexpr int snr_offset(int csnroffst, int fsnroffst) {
     return (((csnroffst - 15) << 4) + fsnroffst) << 2;
@@ -106,7 +114,9 @@ AC3FORGE_EXPORT void compute_bit_allocation(std::span<const std::uint8_t> exps,
 // from bin 0 exactly like compute_bit_allocation's own `exps`/`bap`; `start`
 // is that call's BitAllocRegion::start (0 for fbw/LFE, cplstrtmant for
 // coupling) — the segments this returns are meant to populate that same
-// region's `delta` field.
+// region's `delta` field. The returned deltoffst[0] is relative to the
+// channel's own start band (bin_to_band(start)), matching how
+// compute_bit_allocation() applies it back — see that function's own note.
 [[nodiscard]] AC3FORGE_EXPORT DeltaSegments choose_delta_segments(
     std::span<const double> coefficients, std::span<const std::uint8_t> exps, int start);
 

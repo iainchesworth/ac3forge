@@ -25,12 +25,7 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   and FFmpeg's strict decode. Motivated by the `deltbaie` defect below, which produced streams
   both decoders reject and escaped every existing gate; reverting that fix, the harness finds
   rejected streams within seconds. Runs bounded on every pull request (in the FFmpeg-oracle
-  job) and deeper nightly, mirroring how `fuzz.yml` already splits short from nightly. It has
-  already surfaced a further, still-unfixed defect of its own: with coupling on, roughly one
-  stream in seven hundred is refused by FFmpeg's bit allocation while this project's decoder
-  accepts it, because the coupling channel's delta bit allocation offsets are written relative
-  to band 0 rather than to that channel's own start band. Both CI callers are non-blocking
-  until that is fixed.
+  job) and deeper nightly, mirroring how `fuzz.yml` already splits short from nightly.
 
 - **A new `auto` E-AC-3 tool set, which picks coupling/spectral extension/AHT from the
   per-channel bitrate** instead of taking the on/off flags as given. Every Annex E tool trades
@@ -114,6 +109,16 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   encode's noise power, on a channel carrying a third of its signal. Worth +0.3 to +3.8 dB
   overall across 192–640 kbit/s (+1.6 at 448), for 18 bits per refresh against a 14336-bit frame.
   Stereo is unaffected, having no LFE.
+
+- **AC-3 coupling channel: delta bit allocation could push corrections past band 50, or land
+  them somewhere the decoder never reads.** `choose_delta_segments()` and
+  `compute_bit_allocation()` (`src/lib/src/core/bitalloc.cpp`) both started their §7.2.2.6 delta
+  band cursor at band 0 regardless of which band a channel's own allocation starts at — harmless
+  for fbw/LFE (start band 0), but the coupling channel starts higher, so a literal band-0 cursor
+  either overshoot band 50 or wrote corrections into mask bands the coupling channel's own
+  allocation never reads. Both FFmpeg and Dolby's own reference decoder require the cursor to
+  start at the channel's own start band instead; this project's decoder shared the encoder's
+  reading, so the round trip never noticed. Found by the encoder input-space fuzz harness above.
 
 ## [0.6.0-beta.1] - 2026-08-17
 

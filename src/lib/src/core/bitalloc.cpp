@@ -108,6 +108,10 @@ int slow_gain(int sgaincod) {
     return kSlowGain[static_cast<std::size_t>(std::clamp(sgaincod, 0, 3))];
 }
 
+int bin_to_band(int bin) {
+    return kMaskTab[static_cast<std::size_t>(bin)];
+}
+
 void compute_bit_allocation(std::span<const std::uint8_t> exps, SampleRate sample_rate,
                             const BitAllocCodes& codes, int csnroffst, int fsnroffst,
                             std::span<std::uint8_t> bap, const BitAllocRegion& region) {
@@ -231,14 +235,34 @@ void compute_bit_allocation(std::span<const std::uint8_t> exps, SampleRate sampl
     // added directly with no unit conversion. `region.delta.deltnseg == 0`
     // (the default) makes this a no-op, matching the spec's own recommended
     // reset state.
+    //
+    // The spec pseudocode initializes `band = 0` literally, but mask[] here
+    // is this routine's own global-indexed array (Table 7.13's bin-to-band
+    // map, the same one bndstrt/bndend above come from) - for the coupling
+    // channel, whose bndstrt is not 0, a literal reading would need every
+    // deltoffst to encode an absolute band number, which two independent
+    // real-world decoders disagree with: both FFmpeg's ff_ac3_bit_alloc_calc_mask()
+    // and Dolby's own reference decoder (dlbac3dec, verified directly via
+    // gst-launch) reject a coupling-channel delta stream built on that
+    // reading and accept one where band starts at bndstrt instead - the
+    // same kind of pseudocode erratum as calc_lowcomp's stray semicolon
+    // above. choose_delta_segments() below matches this.
     {
-        int band = 0;
+        int band = bndstrt;
         for (int seg = 0; seg < region.delta.deltnseg; ++seg) {
             band += region.delta.deltoffst[static_cast<std::size_t>(seg)];
             const int code = region.delta.deltba[static_cast<std::size_t>(seg)];
             const int delta = (code >= 4 ? code - 3 : code - 4) << 7;
             const int len = region.delta.deltlen[static_cast<std::size_t>(seg)];
-            assert(band >= 0 && band + len <= 50);
+            // Bitstream-level bounds are enforced by the decoder's own
+            // parser before this ever runs (deltoffst/deltlen are
+            // attacker-controlled, mask[] is exactly 50 bands wide) - this
+            // is a defense-in-depth backstop that must hold even in the
+            // CI static-analysis build, which defines NDEBUG and would
+            // silently compile an assert here away.
+            if (band < 0 || band + len > 50) {
+                break;
+            }
             for (int k = 0; k < len; ++k) {
                 mask[static_cast<std::size_t>(band)] += delta;
                 ++band;
@@ -345,8 +369,12 @@ DeltaSegments choose_delta_segments(std::span<const double> coefficients,
     // segment-count truncation above already prioritised by magnitude, so
     // this second, band-order-driven cutoff only ever bites the tail of an
     // already-large run and is documented rather than silently mis-encoded.
+    //
+    // cursor starts at bndstrt, not 0: see compute_bit_allocation()'s
+    // matching note on its own delta band cursor for why. For fbw/LFE
+    // (bndstrt == 0) this is unchanged.
     DeltaSegments out;
-    int cursor = 0;
+    int cursor = bndstrt;
     for (const auto& run : runs) {
         int band = run.band;
         int remaining = run.length;
