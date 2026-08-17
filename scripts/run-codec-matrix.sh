@@ -51,6 +51,12 @@ case "$CLI" in
     /*) ;;
     *) CLI="$PWD/$CLI" ;;
 esac
+# The golden fixtures are read from the repo, but every path below is used
+# after the `cd "$WORKDIR"` on the next lines. Resolve them now, from this
+# script's own location rather than $PWD, so it does not matter where the
+# script was invoked from.
+FIXTURES="$(cd "$(dirname "${BASH_SOURCE[0]}")/../tests/golden/audio" && pwd)"
+
 WORKDIR="${2:-$(mktemp -d)}"
 mkdir -p "$WORKDIR"
 cd "$WORKDIR"
@@ -108,6 +114,53 @@ for layout in mono stereo 51; do
     run encode bootstrap_51.wav "enc_${layout}.ac3" 256 "$layout"
     run decode "enc_${layout}.ac3" "enc_${layout}.wav"
     run_ffmpeg_check "enc_${layout}.ac3"
+done
+
+# --- AC-3: real programme material, across each layout's whole rate range --
+# Everything above drives AC-3 from `sine`, `silence`, or bootstrap_51.wav -
+# which is itself a decoded sine. Synthetic material cannot reach a whole
+# class of encoder state, and not because of some missing option: a
+# stationary tone puts near-identical exponents in every block, so
+# needs_new_exponents never splits a frame into several exponent runs, and
+# any defect that only appears at a mid-frame run boundary is structurally
+# unreachable - at every layout, and at every bitrate.
+#
+# The deltbaie stale-delta defect was exactly that shape. A delta bit
+# allocation that stopped part-way through a frame was never cleared, so the
+# decoder went on applying it, its allocation diverged from the encoder's,
+# and every field after that point was read at the wrong bit offset. It
+# produced streams neither this project's decoder nor FFmpeg would accept,
+# and it survived this matrix, the fidelity gate and the whole unit suite -
+# because none of them ever fed the encoder real programme material. Sweeping
+# the rate range on sine would not have caught it either; only the material
+# axis does.
+#
+# So: the golden fixtures, swept rather than pinned to one comfortable rate,
+# each stream decoded by BOTH the in-repo decoder and FFmpeg. The rate lists
+# are each layout's real lower bound for this material - 5.1 needs 96 kbit/s
+# before a frame can carry its own headers, stereo and 1+1 need 48, mono
+# reaches the full range. E-AC-3 is not repeated here: quality_race.py's CI
+# gate already round-trips these same fixtures through eac3-encode across its
+# tool variants, so that path is not blind the way this one was.
+for kbps in 48 64 96 128 160 192 256 384 448 640; do
+    run encode "$FIXTURES/reference_stereo.wav" "real_stereo_${kbps}.ac3" "$kbps" stereo
+    run decode "real_stereo_${kbps}.ac3" "real_stereo_${kbps}.wav"
+    run_ffmpeg_check "real_stereo_${kbps}.ac3"
+done
+for kbps in 32 64 96 192 448 640; do
+    run encode "$FIXTURES/reference_stereo.wav" "real_mono_${kbps}.ac3" "$kbps" mono
+    run decode "real_mono_${kbps}.ac3" "real_mono_${kbps}.wav"
+    run_ffmpeg_check "real_mono_${kbps}.ac3"
+done
+for kbps in 48 96 192 640; do
+    run encode "$FIXTURES/reference_stereo.wav" "real_dualmono_${kbps}.ac3" "$kbps" 1+1
+    run decode "real_dualmono_${kbps}.ac3" "real_dualmono_${kbps}.wav"
+    run_ffmpeg_check "real_dualmono_${kbps}.ac3"
+done
+for kbps in 96 128 192 256 384 448 640; do
+    run encode "$FIXTURES/reference_51.wav" "real_51_${kbps}.ac3" "$kbps" 51
+    run decode "real_51_${kbps}.ac3" "real_51_${kbps}.wav"
+    run_ffmpeg_check "real_51_${kbps}.ac3"
 done
 run encode bootstrap_51.wav enc_drc.ac3 256 51 drc=film-standard
 run_ffmpeg_check enc_drc.ac3
