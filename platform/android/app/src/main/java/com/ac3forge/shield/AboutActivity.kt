@@ -1,6 +1,7 @@
 package com.ac3forge.shield
 
 import android.app.Activity
+import android.content.pm.PackageManager
 import android.graphics.Typeface
 import android.os.Bundle
 import android.util.Log
@@ -25,6 +26,20 @@ private const val TAG = "ShieldAtmosDemo"
 class AboutActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // PackageManager, not BuildConfig: this project doesn't set
+        // android.buildFeatures.buildConfig = true (off by default since
+        // AGP 8.0), and turning it on just for this one screen's two fields
+        // isn't worth the extra generated-sources build step. This also
+        // reads the actually-installed APK's version rather than a
+        // compile-time constant, which is the more honest source anyway.
+        @Suppress("DEPRECATION") // versionCode: no minSdk-26-safe replacement (longVersionCode needs API 28)
+        val (appVersionName, appVersionCode) = try {
+            val info = packageManager.getPackageInfo(packageName, 0)
+            info.versionName to info.versionCode
+        } catch (e: PackageManager.NameNotFoundException) {
+            "(unknown)" to 0
+        }
 
         val version = try {
             NativeBridge.nativeVersionString()
@@ -64,7 +79,7 @@ class AboutActivity : Activity() {
 
             addView(kicker("VERSION"))
             addView(body(
-                "App: ${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE})\n" +
+                "App: $appVersionName (build $appVersionCode)\n" +
                     "ac3::forge (native): $version",
             ))
 
