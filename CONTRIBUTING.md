@@ -157,9 +157,12 @@ Ranked by how much they prove. Prefer the strongest one available for what you a
    "is the output correct" but "does anything exercise this at all". It reads the CLI's own
    canonical option lists (its usage text, and the "unknown layout"/"unknown tool set" messages a
    bad argument hits) and fails if a layout, Annex E tool token or command the CLI accepts is
-   never mentioned in `run-codec-matrix.sh`. So a new layout, tool token or command needs a
-   matching matrix entry in the same change, or CI says so — see that script's own header for
-   what it does and does not catch.
+   never exercised by `run-codec-matrix.sh`. Most of those are presence checks — the token has to
+   appear somewhere in the script — but Annex E tool tokens are read only from the tool sets the
+   matrix actually encodes with, after a token that appeared only as an unrelated option's *value*
+   produced a false pass. So a new layout, tool token or command needs a matching matrix entry in
+   the same change, or CI says so — see that script's own header for what it does and does not
+   catch.
 3. **The Python references in `tools/`.** Independent transcriptions of the same spec text.
    Weaker than a decoder — two transcriptions can share a misreading — but they catch slips a
    self-consistent round trip cannot.
