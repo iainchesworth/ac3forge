@@ -166,6 +166,12 @@ FrameEncoder::FrameEncoder(const EncoderConfig& config) : config_(config) {
 std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     std::span<const std::span<const float>> channels) {
     AC3_ZONE_SCOPED_N("ac3::FrameEncoder::encode_frame");
+    // Before the first early return below, so a caller that keeps one trace
+    // across a whole file never reads the previous frame's state back out of
+    // a call that produced no frame at all.
+    if (config_.trace != nullptr) {
+        config_.trace->reset();
+    }
     const auto index = bitrate_index(config_.bitrate_kbps);
     if (!index) {
         return std::unexpected(FrameError::kInvalidBitrate);
@@ -900,7 +906,12 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                               : std::clamp((composite & 15) + kLfeFineOffsetBump, 0, 15);
     };
 
-    const auto emit_block_side_info = [&](BitWriter& w, int block) {
+    // `trace` is non-null only on the REAL write of a block, never on the
+    // measurement pass below - see step 11 for what it records and why every
+    // value it holds has to be one this emitter actually put on the wire
+    // rather than one re-derived alongside it.
+    const auto emit_block_side_info = [&](BitWriter& w, int block,
+                                          verify::BlockTrace* trace = nullptr) {
         const bool first = block == 0;
         for (int ch = 0; ch < nfchans; ++ch) {
             w.put(blksw[static_cast<std::size_t>(ch)][static_cast<std::size_t>(block)] ? 1 : 0,
@@ -1107,7 +1118,9 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         // read at the wrong bit offset. That is a stream neither this
         // project's decoder nor FFmpeg will accept: it surfaces a block or
         // two later as an exponent walking outside 0..24, or a grouped
-        // exponent above 124, both of which are §7.10.2 error conditions.
+        // exponent above 124, both of which are §7.10.2 error conditions -
+        // which is why ac3/verify/mirror.hpp compares the two sides' models
+        // directly instead of waiting for one of those guards to fire.
         const auto delta_wants = [&](int s, int b) {
             const auto& p = plan[static_cast<std::size_t>(s)];
             return p.runs[static_cast<std::size_t>(
@@ -1161,6 +1174,15 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
             return emit;
         };
         const bool any_delta = delta_needs_emit(block);
+        // Recorded HERE, from the variable that is about to be written, and
+        // not re-derived in step 11 next to the rest of the trace: a trace
+        // entry that computes its own answer independently of the emitter is
+        // no longer a record of what this encoder DID, and the one thing this
+        // whole facility must not do is disagree with the bit stream while
+        // agreeing with itself.
+        if (trace != nullptr) {
+            trace->deltbaie = any_delta;
+        }
         w.put(any_delta ? 1 : 0, 1);  // deltbaie
         if (any_delta) {
             // §5.4.3.47's own syntax table sends every stream's 2-bit
@@ -1481,8 +1503,46 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     w.put(0, 1);  // timecod2e
     w.put(0, 1);  // addbsie
 
+    // The self-check's encoder-side view (ac3/verify/mirror.hpp). Recorded
+    // HERE and nowhere else: this is the only pass over the blocks where
+    // everything it reports is final. `w` is the real writer, so bit_count()
+    // is the offset a decoder must arrive at; steps 8 and 9 have finished
+    // clearing and restoring plan[].delta; and run_bap holds the allocation at
+    // the winning composite offset, which is the same array step 10 above just
+    // sized every mantissa field from. Reading any of it from inside
+    // emit_block_side_info would be wrong on both counts - that lambda also
+    // runs into measure_side_bits' throwaway counter, before those passes have
+    // settled.
+    if (config_.trace != nullptr) {
+        config_.trace->fbw_channels = nfchans;
+        config_.trace->coded_channels = nchans;
+    }
+
     for (int block = 0; block < kBlocksPerFrame; ++block) {
-        emit_block_side_info(w, block);
+        verify::BlockTrace* trace = nullptr;
+        if (config_.trace != nullptr) {
+            trace = &config_.trace->blocks[static_cast<std::size_t>(block)];
+            trace->entered = true;
+            trace->bit_offset = w.bit_count();
+            trace->streams.resize(static_cast<std::size_t>(streams));
+            for (int s = 0; s < streams; ++s) {
+                const auto& p = plan[static_cast<std::size_t>(s)];
+                const auto run = static_cast<std::size_t>(
+                    p.run_of_block[static_cast<std::size_t>(block)]);
+                auto& stream = trace->streams[static_cast<std::size_t>(s)];
+                stream.exponents = p.runs[run].decoded;
+                stream.bap = run_bap[static_cast<std::size_t>(s)][run];
+                // Step 5 leaves the LFE's delta default-constructed, which is
+                // exactly what a decoder holds for it (§5.4.3.49 gives the LFE
+                // no delta field at all), so no special case is needed here.
+                stream.delta = p.runs[run].delta;
+            }
+            trace->allocated = true;
+        }
+
+        // deltbaie is filled in by the emitter itself rather than above, since
+        // only the emitter knows what it wrote.
+        emit_block_side_info(w, block, trace);
 
         const std::uint16_t skip = plan_pad.skip_bytes[static_cast<std::size_t>(block)];
         w.put(skip > 0 ? 1 : 0, 1);  // skiple

@@ -145,6 +145,12 @@ std::expected<std::vector<std::span<const std::byte>>, DecodeError> split_access
 
 std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
     std::span<const std::byte> frame) {
+    // Before the first early return, for the same reason FrameEncoder resets
+    // its own: a caller reusing one trace across a file must never read a
+    // previous frame's state out of a call that decoded nothing.
+    if (config_.trace != nullptr) {
+        config_.trace->reset();
+    }
     if (frame.size() < 6) {
         return std::unexpected(DecodeError::kTruncated);
     }
@@ -279,7 +285,23 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
     std::vector<std::vector<double>> cplco(static_cast<std::size_t>(nfchans));
     std::vector<bool> phsflg;
 
+    // The self-check's decoder-side view (ac3/verify/mirror.hpp). nfchans and
+    // nchans are frame-wide, so the shape is settled here; the per-block half
+    // is filled twice below - the block-boundary bit position on entry, the
+    // per-stream state once the allocation for the block exists - so that a
+    // frame this decoder ends up REFUSING still leaves behind the offsets it
+    // reached, which is what localises a desync to a block.
+    if (config_.trace != nullptr) {
+        config_.trace->fbw_channels = nfchans;
+        config_.trace->coded_channels = nchans;
+    }
+
     for (int block = 0; block < kBlocksPerFrame; ++block) {
+        if (config_.trace != nullptr) {
+            auto& trace = config_.trace->blocks[static_cast<std::size_t>(block)];
+            trace.entered = true;
+            trace.bit_offset = r.bit_position();
+        }
         std::array<bool, 5> blksw{};  // AC-3's widest acmod (3/2) has 5 fbw channels
         for (int ch = 0; ch < nfchans; ++ch) {
             blksw[static_cast<std::size_t>(ch)] = r.read(1) != 0;
@@ -525,7 +547,12 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
                 cplsleak = static_cast<int>(r.read(3));
             }
         }
-        if (r.read(1) != 0) {  // deltbaie
+        // Held in a named variable rather than tested inline: the self-check
+        // records it, and what §5.4.3.47 makes of a CLEAR one (keep the
+        // previous block's state, except in block 0) is exactly the rule an
+        // encoder can get wrong invisibly.
+        const bool deltbaie = r.read(1) != 0;
+        if (deltbaie) {
             // §5.4.3.48-57: a segment set is (deltnseg+1) triples of
             // (deltoffst, deltlen, deltba); bounds are checked here, before
             // compute_bit_allocation ever sees them, since deltoffst/deltlen
@@ -649,6 +676,24 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
             compute_bit_allocation(exps[static_cast<std::size_t>(s)], sample_rate, codes,
                                    csnroffst, fsnroffst[static_cast<std::size_t>(s)],
                                    bap[static_cast<std::size_t>(s)], region);
+        }
+
+        // The other half of the self-check's per-block record: everything the
+        // encoder's own model claims about this block, as this side derived it
+        // from the wire. Placed after the allocation rather than after the
+        // audio, so a block whose mantissas turn out to be unreadable still
+        // reports the state that decided how wide they were.
+        if (config_.trace != nullptr) {
+            auto& trace = config_.trace->blocks[static_cast<std::size_t>(block)];
+            trace.deltbaie = deltbaie;
+            trace.streams.resize(static_cast<std::size_t>(streams));
+            for (int s = 0; s < streams; ++s) {
+                auto& stream = trace.streams[static_cast<std::size_t>(s)];
+                stream.exponents = exps[static_cast<std::size_t>(s)];
+                stream.bap = bap[static_cast<std::size_t>(s)];
+                stream.delta = delta[static_cast<std::size_t>(s)];
+            }
+            trace.allocated = true;
         }
 
         // Mantissas -> coefficients. §5.3.3 orders them by fbw channel, with

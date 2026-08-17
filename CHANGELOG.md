@@ -14,6 +14,21 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 
 ### Added
 
+- **An opt-in AC-3 encoder/decoder mirror self-check (`ac3::verify`)**, which decodes every frame
+  the encoder just emitted with this project's own decoder and diffs the decoder's model against
+  the encoder's own — per-block bit offset, decoded exponents, bit allocation and delta correction.
+  Motivated by a bug where `deltbaie == 0` was written to mean "no delta this block" instead of
+  §5.4.3.47's "keep the previous block's" — the decoder kept a stale correction, mantissa fields
+  were then sized differently on each side, and the failure surfaced two blocks later as an
+  exponent walking outside 0..24, misdirecting the investigation into the wrong file entirely. The
+  self-check catches that class of bug structurally, at the block where the two models first part
+  company, rather than at whatever `§7.10.2` guard the misaligned bits happen to trip first. Off by
+  default (`EncoderConfig::trace`/`DecoderConfig::trace` are null pointers, costing one branch per
+  block and no allocation); `ac3::verify::MirrorEncoder` drives the encode-decode-compare loop for
+  a caller that wants it. AC-3 (`FrameEncoder`/`FrameDecoder`) only for now — E-AC-3 computes its
+  delta bit allocation once per frame rather than carrying it block to block, so it is not exposed
+  to this specific bug class, and Annex E's dependent-substream/transient-pre-noise holdback
+  machinery would need its own instrumentation design rather than reusing this one as-is.
 - **A property/fuzz harness over the AC-3 encoder's own input space**
   (`tools/fuzz_encoder_space.py`). Every fuzzing target this project had mutates an
   already-encoded bitstream, which asks whether the *decoder* survives corrupt input; the codec
@@ -26,7 +41,6 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   both decoders reject and escaped every existing gate; reverting that fix, the harness finds
   rejected streams within seconds. Runs bounded on every pull request (in the FFmpeg-oracle
   job) and deeper nightly, mirroring how `fuzz.yml` already splits short from nightly.
-
 - **A new `auto` E-AC-3 tool set, which picks coupling/spectral extension/AHT from the
   per-channel bitrate** instead of taking the on/off flags as given. Every Annex E tool trades
   waveform fidelity for a band it can describe more cheaply than it can code, so each is a win

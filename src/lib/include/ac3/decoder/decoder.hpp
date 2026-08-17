@@ -17,6 +17,7 @@
 #include "ac3/export.hpp"
 #include "ac3/oba/joc.hpp"
 #include "ac3/oba/oamd.hpp"
+#include "ac3/verify/mirror.hpp"
 
 // The in-repo AC-3 / E-AC-3 decoder — the validation pyramid's strongest
 // correctness anchor (fully normative, shares tables/bit-allocation/exponents/
@@ -92,6 +93,15 @@ struct DecoderConfig {
     // dynrng for any syncframe that carries no compr, so this composes with
     // drc_scale rather than replacing it.
     bool heavy_compression = false;
+    // --- self-check (ac3/verify/mirror.hpp) --------------------------------
+    // The decoder's half of EncoderConfig::trace: when set, decode_frame()
+    // records the same per-block, per-stream state it derived from the wire,
+    // so the two models can be diffed. Null by default, at the same cost as
+    // the encoder's - one branch per block. Filled INCREMENTALLY, so a frame
+    // the decoder ends up refusing still leaves behind everything it read
+    // before the refusal, which is the case the comparison is most useful in.
+    // AC-3 only (FrameDecoder); Eac3Decoder does not write one.
+    verify::FrameTrace* trace = nullptr;
 };
 
 struct DecodedFrame {
