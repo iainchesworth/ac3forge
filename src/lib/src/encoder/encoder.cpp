@@ -410,8 +410,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     // curve for the offset to sit on. A sound search would have to
     // reconstruct and measure real distortion per candidate, which is a far
     // larger change than the uniform win above justifies.
-    BitAllocCodes codes{};
-    codes.dbpbcod = 3;
+    const BitAllocCodes codes{.dbpbcod = 3};
 
     // --- 1. MDCT per channel per block -------------------------------------
     AC3_ZONE_BEGIN(zone_mdct, "step1_mdct");
