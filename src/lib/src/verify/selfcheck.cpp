@@ -1,7 +1,5 @@
 #include "ac3/verify/selfcheck.hpp"
 
-#include <utility>
-
 namespace ac3::verify {
 
 namespace {
@@ -27,7 +25,7 @@ DecoderConfig decoder_config(FrameTrace* trace) {
 }  // namespace
 
 MirrorEncoder::MirrorEncoder(EncoderConfig config)
-    : encoder_(with_trace(std::move(config), &encoder_trace_)),
+    : encoder_(with_trace(config, &encoder_trace_)),
       decoder_(decoder_config(&decoder_trace_)) {}
 
 std::expected<CheckedFrame, FrameError> MirrorEncoder::encode_frame(
