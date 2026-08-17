@@ -14,6 +14,24 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 
 ### Added
 
+- **A property/fuzz harness over the AC-3 encoder's own input space**
+  (`tools/fuzz_encoder_space.py`). Every fuzzing target this project had mutates an
+  already-encoded bitstream, which asks whether the *decoder* survives corrupt input; the codec
+  matrix walks a hand-enumerated list of command lines against one bootstrap tone. Neither has
+  any notion of option *combinations*, and neither varies the input material. This one draws
+  random legal encoder configurations crossed with adversarial PCM whose character can change
+  part-way through a frame — which is what drives exponent-run splits, block switching and the
+  delta bit allocation — then holds every resulting stream against both this project's decoder
+  and FFmpeg's strict decode. Motivated by the `deltbaie` defect below, which produced streams
+  both decoders reject and escaped every existing gate; reverting that fix, the harness finds
+  rejected streams within seconds. Runs bounded on every pull request (in the FFmpeg-oracle
+  job) and deeper nightly, mirroring how `fuzz.yml` already splits short from nightly. It has
+  already surfaced a further, still-unfixed defect of its own: with coupling on, roughly one
+  stream in seven hundred is refused by FFmpeg's bit allocation while this project's decoder
+  accepts it, because the coupling channel's delta bit allocation offsets are written relative
+  to band 0 rather than to that channel's own start band. Both CI callers are non-blocking
+  until that is fixed.
+
 - **A new `auto` E-AC-3 tool set, which picks coupling/spectral extension/AHT from the
   per-channel bitrate** instead of taking the on/off flags as given. Every Annex E tool trades
   waveform fidelity for a band it can describe more cheaply than it can code, so each is a win

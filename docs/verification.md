@@ -25,12 +25,20 @@ In rough order of strength:
    several real bugs — the EMDF container belonging in a skip field rather than the aux field,
    `codecdatae=0`, a dynamic-object-only programme with the LFE as an object but not a JOC
    output, and metadata flag arrays transmitted index-0-first.
-5. **Fuzzing.** The libFuzzer harnesses under `fuzz/` drive the codec's untrusted-input entry
-   points looking for crashes and undefined behaviour (ASan+UBSan), and two differential
-   harnesses decode each mutated stream with both this project's decoder and FFmpeg's and diff
-   the PCM. CI runs both: the `Fuzz Regress` job replays the checked-in seed and regression
-   corpora on every push and PR, and the `Fuzz Differential` job adds a bounded mutation budget
-   on pushes. See
+5. **Fuzzing, in both directions.** Into the decoder: the libFuzzer harnesses under `fuzz/` drive
+   the codec's untrusted-input entry points looking for crashes and undefined behaviour
+   (ASan+UBSan), and two differential harnesses decode each mutated stream with both this
+   project's decoder and FFmpeg's and diff the PCM. CI runs both: the `Fuzz Regress` job replays
+   the checked-in seed and regression corpora on every push and PR, and the `Fuzz Differential`
+   job adds a bounded mutation budget on pushes.
+
+   Out of the encoder: `tools/fuzz_encoder_space.py` draws random legal encoder configurations
+   crossed with adversarial PCM — transients, silence↔loud transitions inside one frame, spectral
+   jumps between blocks, dense harmonics, clipping — and holds every stream it produces against
+   both decoders. This is the one check here that varies the *input material* rather than the
+   option list; it exists because an encoder defect that produced streams both decoders reject
+   needed a specific input shape to reach, and so escaped every other check on this page. Bounded
+   on every pull request, deeper nightly. See
    [fuzz/README.md](https://github.com/iainchesworth/ac3forge/blob/main/fuzz/README.md).
 
 Contributor-facing detail on which oracle to reach for and how — including the exact FFmpeg
