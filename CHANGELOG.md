@@ -40,8 +40,11 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   reference, where there are fewest bits to misplace — with ViSQOL MOS flat or better throughout.
   The other four parameters are unchanged: `floorcod` turns out never to bind, and `fgaincod`,
   though worth more still at high rates, regresses at 192 kbit/s.
-- Together these move the AC-3 5.1 landscape leg at 448 kbit/s from 36.02 dB to 39.13 dB, from
-  2.98 dB behind FFmpeg 8.0.1 to 0.15 dB ahead of it, with MOS unchanged at 3.67.
+- Together with the LFE exponent fix below, these move the AC-3 5.1 landscape leg at 448 kbit/s
+  from 36.02 dB to 39.71 dB — from 2.98 dB behind FFmpeg 8.0.1 to 0.72 dB ahead of it — with MOS
+  unchanged at 3.67. The three are independent and were each measured separately: the delta cost
+  check and `dbpbcod` account for 39.13 dB between them, and the LFE fix adds the remaining
+  0.58 dB on top.
 - **Coupling is now dropped, rather than moved down in frequency, when spectral extension leaves
   it no room.** §E3.3.1 derives the coupling end frequency from `spxbegf`; when that landed below
   the requested `cplbegf` the encoder used to slide `cplbegf` down to meet it, which silently
@@ -56,6 +59,13 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 - **The landscape page shows SNR, LSD and MOS side by side, each with its own vs-FFmpeg/vs-DEE
   delta.** These tools trade waveform fidelity for banded envelope fidelity deliberately, so a
   single-metric headline reported a working tool as a straight loss.
+- **The CI quality gate now includes an AC-3 5.1 leg.** It was stereo-only, which left the LFE and
+  the full channel count with no absolute gate — two separate faults have now shipped through that
+  hole. The floor is deliberately loose: the gate decodes with FFmpeg under `-xerror`, so a
+  malformed frame fails it as a hard decode error, which is the failure mode both faults had.
+- **A new `tools/check_ac3_allocation.py`** reports per-channel and per-band SNR against FFmpeg at
+  a matched bitrate, to say *which* part of an allocation gap is worth chasing rather than only
+  that one exists. It is what found the LFE fault below.
 
 ### Fixed
 
@@ -75,16 +85,6 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   encode's noise power, on a channel carrying a third of its signal. Worth +0.3 to +3.8 dB
   overall across 192–640 kbit/s (+1.6 at 448), for 18 bits per refresh against a 14336-bit frame.
   Stereo is unaffected, having no LFE.
-
-### Changed (tooling)
-
-- **The CI quality gate now includes an AC-3 5.1 leg.** It was stereo-only, which left the LFE
-  and the full channel count with no absolute gate — two separate faults have now shipped through
-  that hole. The floor is deliberately loose: the gate decodes with FFmpeg under `-xerror`, so a
-  malformed frame fails it as a hard decode error, which is the failure mode both faults had.
-- **`tools/check_ac3_allocation.py`** reports per-channel and per-band SNR against FFmpeg at a
-  matched bitrate, to say *which* part of an allocation gap is worth chasing rather than only
-  that one exists.
 
 ## [0.6.0-beta.1] - 2026-08-17
 
