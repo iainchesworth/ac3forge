@@ -35,8 +35,13 @@ Modes:
                half that actually invokes FFmpeg/DEE): encodes the three
                committed fixed legs with THIS build and scores everything
                through this project's own decoder, so it needs neither
-               FFmpeg nor DEE. Compute-only, no gate; see race_trend().
-               `--json-out PATH` writes the rows as JSON.
+               FFmpeg's nor DEE's own encoder. Compute-only, no gate; see
+               race_trend(). `--json-out PATH` writes the rows as JSON.
+               `--spectrogram-dir PATH` additionally renders one PNG per leg
+               (original/ac3forge/FFmpeg/DEE spectrograms) via
+               render_spectrograms() - this part DOES need an `ffmpeg`
+               binary, only ever to decode the already-committed
+               tests/golden/external-baseline/ bitstreams, never to encode.
 
 Usage (repo root, after building):  python tools/quality_race.py [mode]
 Set AC3CLI to override the ac3cli binary (see CLI below); CI always does.
@@ -742,6 +747,107 @@ def race_trend(json_out=None):
         print(f"wrote {json_out}")
 
 
+# --- Spectrogram images (docs/landscape.md's visual supplement) -------------
+#
+# Renders one PNG per TREND_LEGS entry - stacked original/ac3forge/FFmpeg/DEE
+# panels - for CI to persist to the quality-history branch alongside the
+# JSON trend numbers above. Deliberately a separate function, called only
+# when a caller passes `trend --spectrogram-dir`, not part of race_trend's
+# own per-leg loop: it re-reads what that loop already wrote to BUILD rather
+# than threading image state through the scoring path, and it never invokes
+# FFmpeg's or DEE's own encoders - only decodes the committed
+# tests/golden/external-baseline/<leg>/*.{ac3,ec3} bitstreams, the same
+# never-runs-in-CI boundary docs/landscape.md documents for the numbers.
+
+
+def _decode_baseline(coded_path, tag):
+    scratch = BUILD / f"spectrogram_{tag}.wav"
+    run(["ffmpeg", "-v", "error", "-y", "-i", str(coded_path), "-c:a", "pcm_f32le", str(scratch)])
+    return read_wav_f32(scratch)
+
+
+def _plot_spectrogram(ax, mono, title):
+    """Uses _spectrogram() - the same STFT helper spectral_scores() already
+    uses for LSD - rather than matplotlib's own specgram, so this file has
+    one STFT recipe (NFFT/window/hop), not two disagreeing ones."""
+    spec = _spectrogram(np.ascontiguousarray(mono))  # frames x bins, magnitude-squared
+    db = 10 * np.log10(np.maximum(spec.T, 1e-12))
+    freqs = np.fft.rfftfreq(NFFT, 1.0 / RATE)
+    hop = NFFT // 2
+    times = np.arange(spec.shape[0]) * hop / RATE
+    ax.pcolormesh(times, freqs, db, cmap="magma", vmin=-100, vmax=-10, shading="auto")
+    ax.set_ylim(0, 20000)
+    ax.set_ylabel("Hz")
+    ax.set_title(title, fontsize=10, loc="left")
+
+
+def render_spectrograms(out_dir):
+    """One PNG per TREND_LEGS entry: original / ac3forge / FFmpeg / DEE
+    spectrograms stacked. Must run after race_trend()'s own per-leg loop has
+    already produced BUILD/trend_<leg>_landscape.wav - this reads that file
+    rather than re-encoding.
+
+    DEE's row is skipped per-leg when tests/golden/external-baseline/
+    manifest.json marks that leg's DEE score "unverified" (currently both
+    5.1 legs, DEE's own Ls-channel-drop bug - see that file) - showing a
+    spectrogram next to numbers the project itself doesn't trust would be
+    worse than not showing it.
+
+    matplotlib is imported here, not at module scope, so every other mode in
+    this file stays matplotlib-free; only a caller that actually asks for
+    spectrograms needs it installed.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    manifest = json.loads((REPO / "tests" / "golden" / "external-baseline" / "manifest.json").read_text())
+    ext = {"ac3": "ac3", "eac3": "ec3"}
+    baseline_dir = REPO / "tests" / "golden" / "external-baseline"
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    for leg in TREND_LEGS:
+        name, codec, wav = leg["name"], leg["codec"], leg["wav"]
+        original = read_wav_any(wav)
+        ours_wav = BUILD / f"trend_{name}_landscape.wav"
+        if not ours_wav.exists():
+            raise SystemExit(f"{ours_wav} missing - render_spectrograms must run after "
+                              f"race_trend()'s own encode/decode loop for this leg")
+
+        _, d_ours, _ = align(original, read_wav_f32(ours_wav), **FIXED_ALIGN)
+        panels = [("original", original), ("ac3forge", d_ours)]
+
+        leg_scores = manifest["legs"][name]["scores"]
+        for tool_label in ("ffmpeg", "dee"):
+            entry = leg_scores.get(tool_label, {})
+            if entry.get("status") == "unverified":
+                continue
+            coded = baseline_dir / name / f"{tool_label}.{ext[codec]}"
+            if not coded.exists():
+                continue
+            decoded = _decode_baseline(coded, f"{name}_{tool_label}")
+            _, d, _ = align(original, decoded, **FIXED_ALIGN)
+            panels.append((tool_label, d))
+
+        # Same span for every row - align()'s own overlap trim can differ by
+        # a handful of samples between calls.
+        n = min(p[1].shape[0] for p in panels)
+
+        fig, axes = plt.subplots(len(panels), 1, figsize=(11, 2.0 * len(panels)), sharex=True)
+        if len(panels) == 1:
+            axes = [axes]
+        for ax, (label, data) in zip(axes, panels):
+            mono = data[:n].mean(axis=1) if data.ndim > 1 else data[:n]
+            _plot_spectrogram(ax, mono, f"{name} - {label}")
+        axes[-1].set_xlabel("seconds")
+        fig.tight_layout()
+        out_path = out_dir / f"{name}.png"
+        fig.savefig(out_path, dpi=130)
+        plt.close(fig)
+        print(f"wrote {out_path}")
+
+
 DRP = Path(r"C:\Program Files\Dolby\Dolby Reference Player")
 
 
@@ -1016,6 +1122,9 @@ def main():
         if "--json-out" in sys.argv:
             json_out = Path(sys.argv[sys.argv.index("--json-out") + 1])
         race_trend(json_out=json_out)
+        if "--spectrogram-dir" in sys.argv:
+            spectrogram_dir = Path(sys.argv[sys.argv.index("--spectrogram-dir") + 1])
+            render_spectrograms(spectrogram_dir)
     else:
         raise SystemExit(
             f"unknown race '{which}' "
