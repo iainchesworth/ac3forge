@@ -35,8 +35,13 @@ Modes:
                half that actually invokes FFmpeg/DEE): encodes the three
                committed fixed legs with THIS build and scores everything
                through this project's own decoder, so it needs neither
-               FFmpeg nor DEE. Compute-only, no gate; see race_trend().
-               `--json-out PATH` writes the rows as JSON.
+               FFmpeg's nor DEE's own encoder. Compute-only, no gate; see
+               race_trend(). `--json-out PATH` writes the rows as JSON.
+               `--spectrogram-dir PATH` additionally renders one PNG per leg
+               (original/ac3forge/FFmpeg/DEE spectrograms) via
+               render_spectrograms() - this part DOES need an `ffmpeg`
+               binary, only ever to decode the already-committed
+               tests/golden/external-baseline/ bitstreams, never to encode.
 
 Usage (repo root, after building):  python tools/quality_race.py [mode]
 Set AC3CLI to override the ac3cli binary (see CLI below); CI always does.
@@ -463,8 +468,8 @@ def race_ac3(original, source, seconds):
 # One column per E-AC-3 variant: the label, and the tool token handed to
 # `ac3cli eac3-encode`. "none" is the tool-free coding path the Annex E tools
 # have to beat to earn their place.
-EAC3_VARIANTS = [("none", None), ("cpl", "cpl"), ("spx", "spx"), ("aht", "aht"),
-                 ("cpl+spx", "cpl+spx"), ("all", "all")]
+EAC3_VARIANTS = [("none", None), ("auto", "auto"), ("cpl", "cpl"), ("spx", "spx"),
+                 ("aht", "aht"), ("cpl+spx", "cpl+spx"), ("all", "all")]
 
 # Enhanced coupling and transient pre-noise processing: FFmpeg has no reading
 # of either's syntax at all (see decode_scores_ours' docstring), so these are
@@ -526,9 +531,17 @@ CI_51_KBPS = 256
 # fidelity for the banded envelope on purpose (see spectral_scores'
 # docstring) - that is why their SNR floors are lower and LSD ceilings
 # higher than "none"/"cpl" rather than every row sharing one bar.
+# "auto" resolves to a different tool set per leg - at these two rates it
+# picks aht for stereo (192 kbit/s, 96 per channel) and cpl+spx+aht for 5.1
+# (256 kbit/s, 51 per channel) - so its floor is that set's floor rather than
+# a number of its own. Measured 2026-08-17 against a real build: stereo
+# 40.42 dB SNR / 5.96 dB LSD, 5.1 14.08 dB / 7.70 dB, both comfortably inside
+# the bars below. A change to the rate policy that silently flipped either leg
+# to the wrong set would land well under them.
 CI_EAC3_THRESHOLDS = {
     "stereo": {
         "none": (28.0, 7.5),
+        "auto": (28.0, 8.0),
         "cpl": (28.0, 7.0),
         "spx": (26.0, 7.0),
         "aht": (28.0, 8.0),
@@ -537,6 +550,7 @@ CI_EAC3_THRESHOLDS = {
     },
     "51": {
         "none": (10.0, 11.0),
+        "auto": (9.0, 10.5),
         "cpl": (10.0, 10.0),
         "spx": (9.0, 9.5),
         "aht": (10.0, 11.0),
@@ -545,6 +559,20 @@ CI_EAC3_THRESHOLDS = {
     },
 }
 CI_AC3_MIN_SNR_DB = 30.0
+
+# The AC-3 gate was stereo-only for a long time, which left 5.1 - and with it
+# the LFE and the coupling-eligible channel count - with no absolute gate at
+# all. Two separate faults have now shipped through that hole: a stale delta
+# bit allocation that made real 5.1 streams undecodable, and an LFE pinned to
+# one exponent set per frame. Neither was visible to a stereo encode.
+#
+# The floor is deliberately loose - this material scores about 19.9 dB at
+# 448 - because the point is not to police a fraction of a dB. decode_scores()
+# runs FFmpeg with -xerror, so a malformed frame fails this gate as a hard
+# decode error long before the SNR number is even reached, and that is the
+# failure mode both of those bugs actually had.
+CI_AC3_51_KBPS = 448
+CI_AC3_51_MIN_SNR_DB = 15.0
 
 # Same shape as CI_EAC3_THRESHOLDS, for EAC3_SELF_VARIANTS - measured against
 # a real build (2026-08-12) via decode_scores_ours: stereo/192kbps scored
@@ -584,6 +612,14 @@ def race_ci(original, source, original_51, source_51):
     if not gate(f"ac3 @ {CI_STEREO_KBPS}kbps", snr >= CI_AC3_MIN_SNR_DB,
                 f"SNR {snr:.2f} dB (floor {CI_AC3_MIN_SNR_DB})"):
         failures.append("ac3")
+
+    print(f"=== AC-3 5.1 @ {CI_AC3_51_KBPS} kbps ===")
+    ac3_51_path = BUILD / f"ci_ac3_51_{CI_AC3_51_KBPS}.ac3"
+    run([CLI, "encode", source_51, ac3_51_path, str(CI_AC3_51_KBPS)])
+    snr_51, _, _, _ = decode_scores(original_51, ac3_51_path, BUILD / "ci_ac3_51.wav")
+    if not gate(f"ac3 5.1 @ {CI_AC3_51_KBPS}kbps", snr_51 >= CI_AC3_51_MIN_SNR_DB,
+                f"SNR {snr_51:.2f} dB (floor {CI_AC3_51_MIN_SNR_DB})"):
+        failures.append("ac3-51")
 
     for label, source_wav, original_pcm, kbps in (
         ("stereo", source, original, CI_STEREO_KBPS),
@@ -660,13 +696,20 @@ def _trend_encode(wav, kbps, codec, tools, out):
 
 def race_trend(json_out=None):
     """One "landscape" row per leg - AC-3's automatic tools, or E-AC-3's
-    "all" (cpl+spx+aht - the number comparable to FFmpeg's/DEE's own
-    automatic best-effort choices, same reasoning as
-    gen_external_baseline.py's invoke_ours) - plus one row per applicable
-    EAC3_VARIANTS/EAC3_SELF_VARIANTS entry on the two E-AC-3 legs, the
-    commit-level per-tool detail. "landscape" and the "all" variant row are
-    the same encode for E-AC-3 (this CLI has no separate "auto, pick per
-    content" heuristic beyond "all" today) - computed once, not twice.
+    "auto" (the tool set this encoder picks from the per-channel rate - the
+    number comparable to FFmpeg's/DEE's own automatic best-effort choices,
+    same reasoning as gen_external_baseline.py's invoke_ours) - plus one row
+    per applicable EAC3_VARIANTS/EAC3_SELF_VARIANTS entry on the two E-AC-3
+    legs, the commit-level per-tool detail. "landscape" and the "auto"
+    variant row are the same encode for E-AC-3 - computed once, not twice.
+
+    This used to report "all" instead, which forced every tool on at every
+    rate. That is a real tool set a caller can still ask for, and it is
+    still one of the variant rows, but it is not what a stream should use:
+    at 192 kbit/s stereo it costs about 10 dB of SNR against simply not
+    coupling or extending, while at 256 kbit/s 5.1 the same tools are worth
+    about 10 dB the other way. Reporting the forced set as the headline
+    number measured a choice this encoder was not making.
 
     Compute-only: no pass/fail gate here (that is what `ci` mode is for),
     just the numbers - persistence to quality-history is a later mode.
@@ -683,7 +726,7 @@ def race_trend(json_out=None):
         original = read_wav_any(wav)
         seconds = len(original) / RATE
 
-        rows = [("landscape", "all" if is_eac3 else None)]
+        rows = [("landscape", "auto" if is_eac3 else None)]
         if is_eac3:
             rows += list(EAC3_VARIANTS) + list(EAC3_SELF_VARIANTS)
 
@@ -724,6 +767,107 @@ def race_trend(json_out=None):
         Path(json_out).parent.mkdir(parents=True, exist_ok=True)
         Path(json_out).write_text(json.dumps({"rows": results}, indent=2) + "\n")
         print(f"wrote {json_out}")
+
+
+# --- Spectrogram images (docs/landscape.md's visual supplement) -------------
+#
+# Renders one PNG per TREND_LEGS entry - stacked original/ac3forge/FFmpeg/DEE
+# panels - for CI to persist to the quality-history branch alongside the
+# JSON trend numbers above. Deliberately a separate function, called only
+# when a caller passes `trend --spectrogram-dir`, not part of race_trend's
+# own per-leg loop: it re-reads what that loop already wrote to BUILD rather
+# than threading image state through the scoring path, and it never invokes
+# FFmpeg's or DEE's own encoders - only decodes the committed
+# tests/golden/external-baseline/<leg>/*.{ac3,ec3} bitstreams, the same
+# never-runs-in-CI boundary docs/landscape.md documents for the numbers.
+
+
+def _decode_baseline(coded_path, tag):
+    scratch = BUILD / f"spectrogram_{tag}.wav"
+    run(["ffmpeg", "-v", "error", "-y", "-i", str(coded_path), "-c:a", "pcm_f32le", str(scratch)])
+    return read_wav_f32(scratch)
+
+
+def _plot_spectrogram(ax, mono, title):
+    """Uses _spectrogram() - the same STFT helper spectral_scores() already
+    uses for LSD - rather than matplotlib's own specgram, so this file has
+    one STFT recipe (NFFT/window/hop), not two disagreeing ones."""
+    spec = _spectrogram(np.ascontiguousarray(mono))  # frames x bins, magnitude-squared
+    db = 10 * np.log10(np.maximum(spec.T, 1e-12))
+    freqs = np.fft.rfftfreq(NFFT, 1.0 / RATE)
+    hop = NFFT // 2
+    times = np.arange(spec.shape[0]) * hop / RATE
+    ax.pcolormesh(times, freqs, db, cmap="magma", vmin=-100, vmax=-10, shading="auto")
+    ax.set_ylim(0, 20000)
+    ax.set_ylabel("Hz")
+    ax.set_title(title, fontsize=10, loc="left")
+
+
+def render_spectrograms(out_dir):
+    """One PNG per TREND_LEGS entry: original / ac3forge / FFmpeg / DEE
+    spectrograms stacked. Must run after race_trend()'s own per-leg loop has
+    already produced BUILD/trend_<leg>_landscape.wav - this reads that file
+    rather than re-encoding.
+
+    DEE's row is skipped per-leg when tests/golden/external-baseline/
+    manifest.json marks that leg's DEE score "unverified" (currently both
+    5.1 legs, DEE's own Ls-channel-drop bug - see that file) - showing a
+    spectrogram next to numbers the project itself doesn't trust would be
+    worse than not showing it.
+
+    matplotlib is imported here, not at module scope, so every other mode in
+    this file stays matplotlib-free; only a caller that actually asks for
+    spectrograms needs it installed.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    manifest = json.loads((REPO / "tests" / "golden" / "external-baseline" / "manifest.json").read_text())
+    ext = {"ac3": "ac3", "eac3": "ec3"}
+    baseline_dir = REPO / "tests" / "golden" / "external-baseline"
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    for leg in TREND_LEGS:
+        name, codec, wav = leg["name"], leg["codec"], leg["wav"]
+        original = read_wav_any(wav)
+        ours_wav = BUILD / f"trend_{name}_landscape.wav"
+        if not ours_wav.exists():
+            raise SystemExit(f"{ours_wav} missing - render_spectrograms must run after "
+                              f"race_trend()'s own encode/decode loop for this leg")
+
+        _, d_ours, _ = align(original, read_wav_f32(ours_wav), **FIXED_ALIGN)
+        panels = [("original", original), ("ac3forge", d_ours)]
+
+        leg_scores = manifest["legs"][name]["scores"]
+        for tool_label in ("ffmpeg", "dee"):
+            entry = leg_scores.get(tool_label, {})
+            if entry.get("status") == "unverified":
+                continue
+            coded = baseline_dir / name / f"{tool_label}.{ext[codec]}"
+            if not coded.exists():
+                continue
+            decoded = _decode_baseline(coded, f"{name}_{tool_label}")
+            _, d, _ = align(original, decoded, **FIXED_ALIGN)
+            panels.append((tool_label, d))
+
+        # Same span for every row - align()'s own overlap trim can differ by
+        # a handful of samples between calls.
+        n = min(p[1].shape[0] for p in panels)
+
+        fig, axes = plt.subplots(len(panels), 1, figsize=(11, 2.0 * len(panels)), sharex=True)
+        if len(panels) == 1:
+            axes = [axes]
+        for ax, (label, data) in zip(axes, panels):
+            mono = data[:n].mean(axis=1) if data.ndim > 1 else data[:n]
+            _plot_spectrogram(ax, mono, f"{name} - {label}")
+        axes[-1].set_xlabel("seconds")
+        fig.tight_layout()
+        out_path = out_dir / f"{name}.png"
+        fig.savefig(out_path, dpi=130)
+        plt.close(fig)
+        print(f"wrote {out_path}")
 
 
 DRP = Path(r"C:\Program Files\Dolby\Dolby Reference Player")
@@ -1000,6 +1144,9 @@ def main():
         if "--json-out" in sys.argv:
             json_out = Path(sys.argv[sys.argv.index("--json-out") + 1])
         race_trend(json_out=json_out)
+        if "--spectrogram-dir" in sys.argv:
+            spectrogram_dir = Path(sys.argv[sys.argv.index("--spectrogram-dir") + 1])
+            render_spectrograms(spectrogram_dir)
     else:
         raise SystemExit(
             f"unknown race '{which}' "

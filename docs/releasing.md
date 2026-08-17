@@ -11,15 +11,22 @@ ac3forge derives its version from git tags, the same way aqualink-automate does.
 `cmake/GitVersionDerivation.cmake` runs `git describe --tags --match "v*"` **before**
 `project()` in the top-level `CMakeLists.txt` and feeds the result straight into
 `project(ac3forge VERSION ...)` - the tag is the single source of truth. Nothing in the tree
-hardcodes a version to bump by hand: not `CMakeLists.txt`, and not `vcpkg.json`'s `"version"`
-field, which is a deliberate placeholder never read for anything but satisfying vcpkg's manifest
-schema (its own `$comment` says so; the staged port's `version-semver` is what tracks releases -
-see [vcpkg port](#vcpkg-port) below).
+hardcodes a version to bump by hand: not `CMakeLists.txt`, and not the root `vcpkg.json`, which
+carries no `"version"` field at all - per vcpkg's own schema that field is only required for a
+manifest describing a *library* (a port), and this one just declares this project's own
+build-time dependencies (Catch2, optionally Boost/Tracy). The staged port's `version-semver` is
+what actually tracks releases - see [vcpkg port](#vcpkg-port) below.
 
 So the order is just:
 
 1. Merge to `main`.
 2. Tag.
+3. Sync `main` back into `develop`: `gh pr create --base develop --head main`, then merge it the
+   same way as any other PR. This isn't optional cleanup - `git describe --tags` walks ancestry
+   from HEAD, so a tag that exists only on `main`'s side of history is invisible to a `develop`
+   build. Skipping this step after the v0.6.0-beta.1 promotion (#180) left `develop` builds
+   reporting a stale `v0.5.0-beta.1-...` version - visible in `ac3gui`'s About dialog - until the
+   gap was closed with #192.
 
 No version-bump commit, no file to keep in sync - tagging *is* the release decision.
 

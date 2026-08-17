@@ -205,6 +205,11 @@ struct CodedChannel {
 // than assumed - and encoding the same material with and without one is the
 // only way to say whether it earned its place.
 struct Tools {
+    // Let the encoder pick the tool set from the per-channel rate instead of
+    // taking the flags below as given - see eac3::FrameConfig::auto_tools for
+    // what it decides and why. The band-edge pins (cplbegf/spxbegf/gaqmod)
+    // still apply to whatever it turns on; the on/off flags do not.
+    bool auto_tools = false;
     bool coupling = false;
     int cplbegf = -1;
     // §E3.5: the alternate coupling mode - 22 sub-bands, amplitude/angle/
@@ -236,11 +241,17 @@ struct Tools {
     // used a coding tool is a bitstream question this flag never touches.
     bool fast_mdct = true;
 
-    [[nodiscard]] bool any() const { return coupling || spx || aht || transient_prenoise; }
+    // `auto` counts: it may well turn a tool on, and the caller needs E-AC-3
+    // either way for the choice to be available at all.
+    [[nodiscard]] bool any() const {
+        return auto_tools || coupling || spx || aht || transient_prenoise;
+    }
 };
 
 inline constexpr std::string_view kToolsSyntax =
-    "none | cpl | spx | aht | tpn | nofastmdct | all (cpl:N / spx:N pin a band edge, aht:N the "
+    "none | auto | cpl | spx | aht | tpn | nofastmdct | all (auto picks the tool set from the "
+    "per-channel rate and ignores the on/off tokens, which is what a stream should normally "
+    "use; cpl:N / spx:N pin a band edge, aht:N the "
     "gain mode, ecpl selects enhanced coupling instead of standard, tpn selects transient "
     "pre-noise processing, nofastmdct forces the direct-form forward MDCT instead of the "
     "default §7.9.4 fast path - the fast MDCT is not a coding tool, so 'none'/'all' leave it "

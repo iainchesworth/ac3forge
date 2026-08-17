@@ -142,6 +142,8 @@ target_sources(forge_objects
         src/oba/oamd.cpp
         src/sinks/iec61937.cpp
         src/spatial/spatial.cpp
+        src/verify/mirror.cpp
+        src/verify/selfcheck.cpp
         src/version.cpp)
 
 add_dependencies(forge_objects ac3forge_version)

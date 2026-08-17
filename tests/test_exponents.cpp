@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <random>
@@ -92,6 +93,106 @@ TEST_CASE("hand-computed D25 case incl. absolute-exponent lowering", "[exponents
 
     const auto decoded = decode_all(encoded, ac3::ExpStrategy::kD25, 7);
     CHECK(decoded == std::vector<std::uint8_t>{7, 5, 5, 5, 5, 3, 3});
+}
+
+TEST_CASE("decoded exponents stay in 0..24 for adversarial profiles", "[exponents]") {
+    // §7.2.2.2 requires every decoded exponent to land in 0..24, and this
+    // project's own decoder rejects a frame that breaks it (decoder.cpp's
+    // kInvalidStream guard) - the mantissa reconstruction shifts by the
+    // exponent, so an out-of-range value is undefined behaviour, not merely
+    // wrong audio. The random sweep below samples uniformly and so never
+    // builds the shape that actually stresses the differential chain: a
+    // steep monotone rise, where clamping each delta to +-2 means the
+    // reconstruction cannot track the profile exactly and drifts. Wide (D45)
+    // groups widen that gap further, because the group-minimum preprocessing
+    // discards three of every four bins. These profiles pin that the drift
+    // can only ever go DOWNWARD, for every strategy and every legal endmant.
+    std::vector<int> legal_endmant{7};
+    for (int cbw = 0; cbw <= 60; ++cbw) {
+        legal_endmant.push_back(((cbw + 12) * 3) + 37);
+    }
+    for (int cplbegf = 0; cplbegf <= 14; ++cplbegf) {
+        legal_endmant.push_back(37 + 12 * cplbegf);
+    }
+
+    for (const auto strategy :
+         {ac3::ExpStrategy::kD15, ac3::ExpStrategy::kD25, ac3::ExpStrategy::kD45}) {
+        for (const int endmant : legal_endmant) {
+            const auto size = static_cast<std::size_t>(endmant);
+
+            // Build the stress shapes for this size.
+            std::vector<std::vector<std::uint8_t>> profiles;
+            const auto add = [&](std::vector<std::uint8_t> p) { profiles.push_back(std::move(p)); };
+
+            add(std::vector<std::uint8_t>(size, ac3::kMaxExponent));  // digital silence
+            add(std::vector<std::uint8_t>(size, 0));                  // full scale everywhere
+
+            for (const int slope : {1, 2, 3, 6, 12, 24}) {
+                for (const int from : {0, endmant / 2, endmant - 12, endmant - 4, endmant - 1}) {
+                    if (from < 0) {
+                        continue;
+                    }
+                    // A steep rise that only starts partway up the band - the
+                    // "quiet top end" shape the slew limiter has to absorb.
+                    std::vector<std::uint8_t> rise(size);
+                    for (int bin = 0; bin < endmant; ++bin) {
+                        const int v = bin <= from ? 0 : (bin - from) * slope;
+                        rise[static_cast<std::size_t>(bin)] =
+                            static_cast<std::uint8_t>(std::min(v, ac3::kMaxExponent));
+                    }
+                    add(rise);
+
+                    // And its mirror: a steep fall, which the backward pass
+                    // has to absorb by lowering the absolute exponent.
+                    std::vector<std::uint8_t> fall(size);
+                    for (int bin = 0; bin < endmant; ++bin) {
+                        const int v = bin <= from ? ac3::kMaxExponent
+                                                  : ac3::kMaxExponent - (bin - from) * slope;
+                        fall[static_cast<std::size_t>(bin)] =
+                            static_cast<std::uint8_t>(std::max(v, 0));
+                    }
+                    add(fall);
+                }
+            }
+
+            // Defence in depth: raw exponents ABOVE the documented 0..24
+            // precondition must still not be able to produce an illegal
+            // stream. The group-minimum preprocessing seeds each position at
+            // kMaxExponent, so out-of-contract input is clamped rather than
+            // carried into the differential chain.
+            add(std::vector<std::uint8_t>(size, 255));
+            {
+                std::vector<std::uint8_t> past(size);
+                for (int bin = 0; bin < endmant; ++bin) {
+                    past[static_cast<std::size_t>(bin)] =
+                        static_cast<std::uint8_t>(std::min(10 + 3 * bin, 255));
+                }
+                add(past);
+            }
+
+            for (std::size_t p = 0; p < profiles.size(); ++p) {
+                CAPTURE(static_cast<int>(strategy), endmant, p);
+                const auto& raw = profiles[p];
+
+                const auto encoded = ac3::encode_exponents(raw, strategy);
+                CHECK(encoded.absolute <= ac3::kMaxAbsoluteExponent);
+                REQUIRE(static_cast<int>(encoded.groups.size()) ==
+                        ac3::exponent_group_count(strategy, endmant));
+                // A grouped value above 124 is not a legal triple of mapped
+                // values (§7.10.2 error condition 17) - it means some
+                // differential escaped the +-2 range Table 7.1 can carry.
+                for (const auto g : encoded.groups) {
+                    CHECK(g <= 124);
+                }
+
+                const auto decoded = decode_all(encoded, strategy, endmant);
+                for (int bin = 0; bin < endmant; ++bin) {
+                    CAPTURE(bin);
+                    CHECK(decoded[static_cast<std::size_t>(bin)] <= ac3::kMaxExponent);
+                }
+            }
+        }
+    }
 }
 
 TEST_CASE("encode/decode properties over random exponent sets", "[exponents]") {

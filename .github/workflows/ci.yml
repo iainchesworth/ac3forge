@@ -753,8 +753,18 @@ jobs:
       # validate.in and this lock regenerated - a deliberate later step once
       # that dependency's own track record justifies pinning it into every CI
       # run, not a default of this PR.
+      #
+      # --ignore-installed: matplotlib (added for render_spectrograms()) pulls
+      # in `packaging` transitively, which ubuntu:26.04's base image already
+      # has as an apt-installed package with no RECORD file - pip's own
+      # in-place-upgrade path refuses to touch a package it can't prove the
+      # contents of ("Cannot uninstall packaging ... no RECORD file was
+      # found", confirmed for real in this job's own first CI run). This
+      # flag tells pip to install fresh into site-packages over top of it
+      # rather than trying to uninstall first - fine in a throwaway
+      # container that gets discarded after the job either way.
       - name: Install numpy
-        run: pip install --quiet --break-system-packages --require-hashes -r requirements-ffmpeg-validate.txt
+        run: pip install --quiet --break-system-packages --ignore-installed --require-hashes -r requirements-ffmpeg-validate.txt
 
       - name: Report ffmpeg version
         run: ffmpeg -version | head -1
@@ -786,6 +796,52 @@ jobs:
       - name: Matrix coverage (every CLI option is exercised somewhere)
         run: python3 tools/check_matrix_coverage.py --cli build/config-linux-llvm/bin/ac3cli
 
+      # The generator half of this job's question. Everything above walks a
+      # HAND-ENUMERATED set of command lines against one bootstrap tone: the
+      # matrix says which options exist, the coverage check says each one is
+      # named somewhere, and neither has any notion of option COMBINATIONS or
+      # of the input material. tools/fuzz_encoder_space.py draws random legal
+      # configurations crossed with adversarial PCM whose character changes
+      # part-way through a frame, and holds every resulting stream against
+      # both decoders - see that file's own header for the encoder defect
+      # (PR #186) that escaped every gate above and takes seconds to find
+      # this way.
+      #
+      # The envelope check runs first and is cheap: it re-measures the
+      # per-layout rate floors the generator draws from, so a run cannot pass
+      # by drawing configurations the encoder was never going to accept.
+      #
+      # Bounded to ~2 minutes here, on top of a job that already runs several
+      # minutes, so a pull request is not slowed noticeably. The deeper run is
+      # fuzz.yml's nightly encoder-space job. Unseeded on purpose: a fixed
+      # seed would walk the same few hundred configurations every run forever,
+      # which is a regression test, not a search. Every failure prints the
+      # exact seed that produced it and --replay reruns just that case, so a
+      # random run is still fully reproducible after the fact.
+      #
+      # This half DOES gate: it is deterministic, it takes seconds, and a
+      # failure means either the encoder now refuses configurations it used to
+      # fit or the generator is drawing outside the accepted space - in which
+      # case the search step below would come back "clean" having encoded
+      # almost nothing.
+      - name: Encoder acceptance envelope (the rate floors the search draws from)
+        env:
+          AC3CLI: build/config-linux-llvm/bin/ac3cli
+        run: python3 tools/fuzz_encoder_space.py --check-envelope
+
+      - name: Encoder input-space fuzz (bounded, both decoders)
+        env:
+          AC3CLI: build/config-linux-llvm/bin/ac3cli
+        run: python3 tools/fuzz_encoder_space.py --seconds 120
+
+      - name: Upload failing encoder-space inputs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: encoder-space-artifacts
+          path: fuzz-encoder-artifacts/
+          if-no-files-found: ignore
+
       # Compute-only: scores this build against the same three fixed legs
       # tools/gen_external_baseline.py measures FFmpeg/DEE against, using
       # this project's own decoder throughout (see quality_race.py's
@@ -793,10 +849,20 @@ jobs:
       # runs here. Not yet persisted to quality-history (a later phase);
       # this step only produces the artifact so the numbers are visible
       # per-run before that lands.
+      #
+      # --spectrogram-dir renders docs/landscape.md's visual supplement
+      # (one PNG per leg: original/ac3forge/FFmpeg/DEE spectrograms stacked)
+      # in the same invocation, straight off the encode/decode this step is
+      # already doing - see render_spectrograms()'s own docstring for why
+      # this is a second flag on this call, not a separate step that would
+      # otherwise re-encode all three legs from scratch. It does still need
+      # an `ffmpeg` binary (already installed above, for the codec-matrix
+      # steps) to decode the committed external-baseline bitstreams - never
+      # to encode.
       - name: External-encoder landscape trend (compute-only)
         env:
           AC3CLI: build/config-linux-llvm/bin/ac3cli
-        run: python3 tools/quality_race.py trend --json-out results/trend.json
+        run: python3 tools/quality_race.py trend --json-out results/trend.json --spectrogram-dir results/spectrograms
 
       - name: Upload landscape trend
         if: always()
@@ -804,6 +870,13 @@ jobs:
         with:
           name: external-encoder-landscape-trend
           path: results/trend.json
+
+      - name: Upload quality spectrograms
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: quality-spectrograms
+          path: results/spectrograms
 
   # Persists ffmpeg-validate's landscape-trend numbers (see that job's own
   # comment) to the quality-history branch, same mechanism as
@@ -835,6 +908,17 @@ jobs:
         with:
           name: external-encoder-landscape-trend
           path: results
+
+      # Only actually persisted below on `main` (see "Copy quality
+      # spectrograms into history" below), but downloaded unconditionally -
+      # harmless on a develop run, and keeps this step identical regardless
+      # of branch rather than adding an `if` two different ways to the same
+      # artifact.
+      - name: Download quality spectrograms
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: quality-spectrograms
+          path: results/spectrograms
 
       # Same mechanic as persist-performance-trend's identical step: plain
       # git over an HTTPS remote carrying the token, not actions/checkout,
@@ -878,6 +962,24 @@ jobs:
             --branch "$BRANCH" \
             --commit "$COMMIT_SHA" \
             --commit-date "$commit_date"
+
+      # main-only: main only ever advances on a release promotion in this
+      # repo's GitFlow model, so this is already release cadence, not an
+      # extra gate - see docs/landscape.md's own release-by-release framing.
+      # Unlike the JSONL append above, a fresh PNG every push doesn't
+      # delta-compress the way small JSON text does, so this deliberately
+      # does NOT run on every develop push the way the numbers do; the
+      # numbers' own cadence is untouched. Overwrites the same three files
+      # in place each time (no per-commit accumulation) - there's no
+      # per-release image history, only "latest", which is what
+      # docs/landscape.md's img tags read.
+      - name: Copy quality spectrograms into history
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p history/spectrograms
+          cp results/spectrograms/*.png history/spectrograms/
 
       - name: Commit and push external-comparison-history update
         shell: bash

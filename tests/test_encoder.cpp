@@ -825,3 +825,70 @@ TEST_CASE("fast_mdct changes output only at the quantization-decision level",
     // "clearly the same audio" while still catching a real regression.
     CHECK(snr > 60.0);
 }
+
+TEST_CASE("a delta correction that ends mid-frame is cleared explicitly", "[encoder][bitalloc]") {
+    // §5.4.3.47/§7.2.2.6: deltbaie == 0 does NOT mean "no delta bit
+    // allocation this block". Outside block 0 it means "keep whatever delta
+    // state the previous block left in place" - only block 0 clears. A frame
+    // whose exponent runs split mid-frame can want a correction in its early
+    // blocks and none in its later ones, and if the encoder just drops
+    // deltbaie to 0 at that boundary the decoder goes on applying the stale
+    // correction. Its bit allocation then disagrees with the encoder's, the
+    // mantissa fields are sized differently on each side, and every field
+    // after that point is read at the wrong bit offset - surfacing a block or
+    // two later as an exponent walking outside 0..24, or a grouped exponent
+    // above 124 (§7.10.2 error conditions). Decoding is the check; this is
+    // exactly how the bug showed up against real material, and FFmpeg
+    // rejected the same streams for the same reason.
+    //
+    // The material is built to force that boundary. §7.2.2.6's correction is
+    // driven by the gap between the masking curve built from a run's shared
+    // exponents and one built from its real coefficients, so the head - four
+    // blocks of dense, sharply peaked harmonics - reliably earns one. The
+    // tail is digital silence, where that gap is zero by construction
+    // (choose_delta_segments takes the real psd FROM the exponent psd for a
+    // zero-magnitude bin), so the run it starts wants no correction at all.
+    // That is exactly the mid-frame "had a delta, now has none" transition
+    // the defect mishandles.
+    auto split_frame = [](std::uint64_t start, int head_blocks, double head_gain) {
+        std::vector<float> pcm(static_cast<std::size_t>(ac3::kSamplesPerFrame));
+        for (int block = 0; block < head_blocks; ++block) {
+            for (int i = 0; i < ac3::kSamplesPerBlock; ++i) {
+                const int idx = block * ac3::kSamplesPerBlock + i;
+                const double t =
+                    static_cast<double>(start + static_cast<std::uint64_t>(idx)) / 48000.0;
+                double v = 0.0;
+                for (int k = 1; k <= 28; ++k) {
+                    v += std::sin(2.0 * std::numbers::pi * 240.0 * k * t) / k;
+                }
+                pcm[static_cast<std::size_t>(idx)] = static_cast<float>(head_gain * v);
+            }
+        }
+        return pcm;  // remaining blocks stay exactly zero
+    };
+
+    // Low rates are where the allocator is tightest and the correction is
+    // most often worth its bits, but the defect is not rate-specific.
+    for (const std::uint32_t kbps : {64u, 96u, 128u, 192u}) {
+        for (const auto acmod : {ac3::Acmod::k1_0, ac3::Acmod::k2_0}) {
+            CAPTURE(kbps, static_cast<int>(acmod));
+            ac3::FrameEncoder encoder{{.bitrate_kbps = kbps, .acmod = acmod}};
+            ac3::FrameDecoder decoder;
+            std::uint64_t n = 0;
+            for (int frame = 0; frame < 24; ++frame) {
+                CAPTURE(frame);
+                // Walk where the silence starts, and how loud the head is, so
+                // the run boundary lands in a different block from frame to
+                // frame instead of settling into one shape.
+                const int head_blocks = 1 + frame % 5;
+                const double head_gain = 0.25 + 0.12 * static_cast<double>(frame % 4);
+                const auto pcm = split_frame(n, head_blocks, head_gain);
+                n += static_cast<std::uint64_t>(ac3::kSamplesPerFrame);
+                const auto encoded = encode_same(encoder, pcm);
+                REQUIRE(encoded.has_value());
+                const auto decoded = decoder.decode_frame(*encoded);
+                REQUIRE(decoded.has_value());
+            }
+        }
+    }
+}

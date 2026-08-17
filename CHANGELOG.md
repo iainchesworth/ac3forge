@@ -12,6 +12,184 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 
 ## [Unreleased]
 
+## [0.7.0-beta.1] - 2026-08-17
+
+Sixth tagged release. The main change is an AC-3 quality push: three independent fixes to the
+encoder's bit allocation — weighing delta segments against their own cost at every layout, raising
+`dbpbcod` past the spec's own recommendation, and giving the LFE its own fine SNR offset instead
+of a shared one — move the 5.1 landscape leg at 448 kbit/s from 2.98 dB behind FFmpeg 8.0.1 to
+0.72 dB ahead of it, with perceptual quality unchanged. Finding and fixing those relied on new
+verification infrastructure landing alongside them: a fuzz harness over the encoder's own input
+space (as opposed to only the decoder's), an opt-in encoder/decoder mirror self-check, and a codec
+matrix now driven by real programme material rather than synthetic tones — which is what caught a
+stale coupling-channel delta cursor and a frame-ending mid-delta bug that had escaped every
+existing gate. Also landing this release: a native PipeWire audio backend for Linux, a shared app
+icon and About dialogs across every GUI surface, and an E-AC-3 `auto` tool set that picks
+coupling/spectral extension/AHT from the per-channel bitrate instead of taking on/off flags as
+given.
+
+### Added
+
+- **An opt-in AC-3 encoder/decoder mirror self-check (`ac3::verify`)**, which decodes every frame
+  the encoder just emitted with this project's own decoder and diffs the decoder's model against
+  the encoder's own — per-block bit offset, decoded exponents, bit allocation and delta correction.
+  Motivated by a bug where `deltbaie == 0` was written to mean "no delta this block" instead of
+  §5.4.3.47's "keep the previous block's" — the decoder kept a stale correction, mantissa fields
+  were then sized differently on each side, and the failure surfaced two blocks later as an
+  exponent walking outside 0..24, misdirecting the investigation into the wrong file entirely. The
+  self-check catches that class of bug structurally, at the block where the two models first part
+  company, rather than at whatever `§7.10.2` guard the misaligned bits happen to trip first. Off by
+  default (`EncoderConfig::trace`/`DecoderConfig::trace` are null pointers, costing one branch per
+  block and no allocation); `ac3::verify::MirrorEncoder` drives the encode-decode-compare loop for
+  a caller that wants it. AC-3 (`FrameEncoder`/`FrameDecoder`) only for now — E-AC-3 computes its
+  delta bit allocation once per frame rather than carrying it block to block, so it is not exposed
+  to this specific bug class, and Annex E's dependent-substream/transient-pre-noise holdback
+  machinery would need its own instrumentation design rather than reusing this one as-is.
+- **A property/fuzz harness over the AC-3 encoder's own input space**
+  (`tools/fuzz_encoder_space.py`). Every fuzzing target this project had mutates an
+  already-encoded bitstream, which asks whether the *decoder* survives corrupt input; the codec
+  matrix walks a hand-enumerated list of command lines against one bootstrap tone. Neither has
+  any notion of option *combinations*, and neither varies the input material. This one draws
+  random legal encoder configurations crossed with adversarial PCM whose character can change
+  part-way through a frame — which is what drives exponent-run splits, block switching and the
+  delta bit allocation — then holds every resulting stream against both this project's decoder
+  and FFmpeg's strict decode. Motivated by the `deltbaie` defect below, which produced streams
+  both decoders reject and escaped every existing gate; reverting that fix, the harness finds
+  rejected streams within seconds. Runs bounded on every pull request (in the FFmpeg-oracle
+  job) and deeper nightly, mirroring how `fuzz.yml` already splits short from nightly.
+- **A new `auto` E-AC-3 tool set, which picks coupling/spectral extension/AHT from the
+  per-channel bitrate** instead of taking the on/off flags as given. Every Annex E tool trades
+  waveform fidelity for a band it can describe more cheaply than it can code, so each is a win
+  below some rate and a loss above it — `auto` applies the measured crossovers (56 kbit/s per
+  channel for spectral extension; `12 + 14n` for coupling, whose saving scales with how many
+  channels share the band). It still honours an explicit `cpl:N`/`spx:N`/`aht:N` band-edge pin,
+  so geometry stays steerable without taking over the decision.
+- **A native PipeWire audio backend for Linux** (`src/audio/src/platform/pipewire/`,
+  `AC3FORGE_WITH_PIPEWIRE`), selected via pkg-config when ALSA's headers are not present.
+  Live capture and monitor playback are genuine `pw_stream` PCM; IEC 61937 bitstream passthrough
+  negotiates PipeWire's own compressed-format API for real
+  (`SPA_MEDIA_SUBTYPE_iec958`/`spa_format_audio_iec958_build()`/`PW_STREAM_FLAG_EXCLUSIVE`), but
+  depends on the target node's `iec958Codecs` having been enabled by the session manager, which
+  is outside this library's control — see `src/platform/pipewire/passthrough.cpp` and
+  `docs/building.md`'s "Why ALSA still comes first" for the full account, including why ALSA
+  keeps precedence over PipeWire when both are present.
+- **A shared app icon and About dialogs across every GUI surface.** One procedurally-generated
+  mark (`assets/icon/generate_icons.py`, Pillow-based, plus a matching hand-authored SVG) now
+  backs `ac3gui`'s window/taskbar icon and packaged `.exe`/`.app` icon, Shield's launcher icon and
+  Android-TV Leanback banner, and the WASM demo's favicon. `ac3gui` gained an About dialog and
+  Shield an About screen (reached via the TV remote's Info button), both showing real build
+  version/git provenance through the existing `ac3::version_details()`, alongside a GPLv3 notice
+  and font attribution.
+
+### Changed
+
+- **The AC-3 encoder now gives the LFE its own fine SNR offset instead of copying the one every
+  other channel gets.** The bitstream carries a separate `lfefsnroffst`, but this encoder wrote
+  the shared value into it, which left the LFE a price-taker in a search it cannot influence: the
+  offset search picks the one value at which the frame's *total* mantissa cost fits, and that
+  total is set by channels of about 250 bins each. The LFE's 7 bins are rounding error in that
+  sum, so its precision was decided entirely by channels 36 times its size — and it lost
+  precision at the same rate as them despite costing a fraction as much to serve. Raising only
+  its own field by 4 fine steps moves about 12 bits per frame at 448 kbit/s and leaves the
+  frame's total mantissa cost unchanged. Measured on two materials (the 5.1 fixture and the
+  synthesized full-band decorrelated 5.1) at 192/256/320/384/448/640 kbit/s: LFE SNR up at every
+  point, by as much as 5.7 dB, overall SNR never lower, ViSQOL MOS flat.
+- **The AC-3 encoder now weighs delta bit allocation against what it costs at every layout, not
+  only when coupling is active.** A delta segment is 12 bits of side information taken from the
+  same budget that would otherwise buy a higher composite SNR offset, so the encoder already
+  re-ran its offset search with delta cleared and kept whichever pass came out higher — but only
+  when a coupling channel existed, because that is where a failing test first exposed it. Nothing
+  in that reasoning is about coupling, and the layouts that never couple were the ones paying
+  most: 5.1 at 448 kbit/s was emitting about ten segments per block, 724 bits per frame, 5% of
+  the whole frame. On the 5.1 reference this is worth 0.7 dB.
+- **The AC-3 encoder raises `dbpbcod` from the §8.2.12 recommendation of 2 to 3.** `dbpbcod` sets
+  the knee below which §7.2.2.5 lifts a band's excitation, so raising it steers bits away from
+  bands holding almost no energy and towards the ones that do. Measured on three materials
+  (the 5.1 and stereo fixtures and the synthesized full-band decorrelated 5.1) at 192/256/320/
+  384/448/640 kbit/s, it improves SNR in every case — by 5.9 dB at 192 kbit/s on the 5.1
+  reference, where there are fewest bits to misplace — with ViSQOL MOS flat or better throughout.
+  The other four parameters are unchanged: `floorcod` turns out never to bind, and `fgaincod`,
+  though worth more still at high rates, regresses at 192 kbit/s.
+- Together with the LFE exponent fix below, these move the AC-3 5.1 landscape leg at 448 kbit/s
+  from 36.02 dB to 39.71 dB — from 2.98 dB behind FFmpeg 8.0.1 to 0.72 dB ahead of it — with MOS
+  unchanged at 3.67. The three are independent and were each measured separately: the delta cost
+  check and `dbpbcod` account for 39.13 dB between them, and the LFE fix adds the remaining
+  0.58 dB on top.
+- **Coupling is now dropped, rather than moved down in frequency, when spectral extension leaves
+  it no room.** §E3.3.1 derives the coupling end frequency from `spxbegf`; when that landed below
+  the requested `cplbegf` the encoder used to slide `cplbegf` down to meet it, which silently
+  coupled from 8.0 kHz where the rate model had asked for 10.2 kHz and made every coefficient
+  above 8.0 kHz parametric. On the stereo reference at 192 kbit/s this was worth 6.8 dB of SNR
+  (21.6 → 28.5 dB with all tools forced on).
+- **The landscape comparison now reports `auto` rather than a forced `all`.** The headline number
+  is meant to be what a real user of this encoder gets, the same standard applied to FFmpeg's and
+  DEE's own automatic choices; `all` was a configuration this encoder would never itself choose.
+  Against FFmpeg 8.0.1 the E-AC-3 stereo leg moves from −11.19 dB to −0.83 dB, and the 5.1 leg is
+  unchanged at +0.49 dB.
+- **The landscape page shows SNR, LSD and MOS side by side, each with its own vs-FFmpeg/vs-DEE
+  delta.** These tools trade waveform fidelity for banded envelope fidelity deliberately, so a
+  single-metric headline reported a working tool as a straight loss.
+- **The quality landscape page (`docs/landscape.md`) now shows a spectrogram alongside its
+  SNR/LSD/MOS numbers** — one stacked original/ac3forge/FFmpeg/DEE image per tracked leg,
+  refreshed each release promotion, so there's a visual reference next to the trend numbers, not
+  only figures.
+- **The CI quality gate now includes an AC-3 5.1 leg.** It was stereo-only, which left the LFE and
+  the full channel count with no absolute gate — two separate faults have now shipped through that
+  hole. The floor is deliberately loose: the gate decodes with FFmpeg under `-xerror`, so a
+  malformed frame fails it as a hard decode error, which is the failure mode both faults had.
+- **A new `tools/check_ac3_allocation.py`** reports per-channel and per-band SNR against FFmpeg at
+  a matched bitrate, to say *which* part of an allocation gap is worth chasing rather than only
+  that one exists. It is what found the LFE fault below.
+- **The AC-3 codec matrix (`scripts/run-codec-matrix.sh`) now sweeps real programme material,
+  not only synthetic tones.** A stationary sine keeps near-identical exponents in every block, so
+  a defect that only appears at a mid-frame exponent-run boundary — exactly the shape of the
+  `deltbaie` bug below — was structurally unreachable at any bitrate or layout. The golden
+  stereo/5.1 fixtures now run the full encode sweep too, decoded by both this project's decoder
+  and FFmpeg's strict decode.
+
+### Fixed
+
+- **AC-3 encoder: a delta bit allocation that ended part-way through a frame produced an
+  undecodable stream.** `deltbaie = 0` means "keep the previous block's delta bit allocation",
+  not "no delta" (A/52 §5.4.3.47), so a channel whose exponent run stopped wanting a correction
+  mid-frame was never told to drop it. The decoder kept applying the stale correction, its bit
+  allocation diverged from the encoder's, and every field after that point was read at the wrong
+  bit offset — a stream both this project's decoder and FFmpeg reject. Real material hit this at
+  several bitrates, 64 and 96 kbit/s stereo among them. E-AC-3 was unaffected.
+- **AC-3 encoder: the LFE sent one exponent set per frame however much its level moved.** A
+  frame's exponents are the per-bin minimum across the blocks they cover, so a single set for six
+  blocks is a set chosen by the loudest of them and every quieter block was then quantized
+  against a scale meant for something louder. §5.4.3.15 makes `lfeexpstr` a single bit, and the
+  encoder was reading that bit as though it could only ever say "reuse". On the 5.1 reference the
+  LFE moves 10–16 dB inside one frame, which cost 12 dB of LFE channel SNR — 56% of the whole
+  encode's noise power, on a channel carrying a third of its signal. Worth +0.3 to +3.8 dB
+  overall across 192–640 kbit/s (+1.6 at 448), for 18 bits per refresh against a 14336-bit frame.
+  Stereo is unaffected, having no LFE.
+
+- **AC-3 coupling channel: delta bit allocation could push corrections past band 50, or land
+  them somewhere the decoder never reads.** `choose_delta_segments()` and
+  `compute_bit_allocation()` (`src/lib/src/core/bitalloc.cpp`) both started their §7.2.2.6 delta
+  band cursor at band 0 regardless of which band a channel's own allocation starts at — harmless
+  for fbw/LFE (start band 0), but the coupling channel starts higher, so a literal band-0 cursor
+  either overshoot band 50 or wrote corrections into mask bands the coupling channel's own
+  allocation never reads. Both FFmpeg and Dolby's own reference decoder require the cursor to
+  start at the channel's own start band instead; this project's decoder shared the encoder's
+  reading, so the round trip never noticed. Found by the encoder input-space fuzz harness above.
+
+### Known gaps
+
+- Objects still will not decode as *objects* in Dolby's own decoder or hardware — unchanged from
+  0.6.0-beta.1; `verify-objects` checks a stream against its own signature, not Dolby's gate.
+- Exclusive-mode S/PDIF/HDMI passthrough has not been confirmed against real bitstreaming
+  hardware on any platform, ALSA or PipeWire — the new PipeWire path additionally depends on the
+  target node's `iec958Codecs` having been enabled by the session manager, which is outside this
+  library's control.
+- `fscod2` audio content has no external decode oracle at all — verified only by this project's
+  own encoder/decoder round trip.
+
+See [Validation](docs/verification.md) for the full account of what is and isn't independently
+verified.
+
 ## [0.6.0-beta.1] - 2026-08-17
 
 Fifth tagged release. The main change is Atmos object *decode*: earlier releases could only

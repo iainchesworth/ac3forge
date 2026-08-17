@@ -1046,6 +1046,10 @@ ApplicationWindow {
         id: objectInspectorDialog
     }
 
+    AboutDialog {
+        id: aboutDialog
+    }
+
     Dialog {
         id: codecWarnDialog
         modal: true
@@ -1348,6 +1352,11 @@ ApplicationWindow {
             Button {
                 text: qsTr("Preferences")
                 onClicked: preferencesDialog.open()
+            }
+            Button {
+                objectName: "aboutOpenButton"
+                text: qsTr("About")
+                onClicked: aboutDialog.open()
             }
         }
         Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 2; color: Theme.divider }

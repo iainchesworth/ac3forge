@@ -149,6 +149,50 @@ corpora rather than duplicating those files (`fuzz/run.sh`'s
 `seed_source_for`) - same bytes, same decode path, just with an extra
 comparison bolted on.
 
+## The other direction: the encoder's input space
+
+Everything above mutates an already-encoded bitstream. That answers "does the
+DECODER survive corrupt input", and it is the whole of what this directory
+covered for a long time. The mirror-image question - "does the ENCODER, driven
+across its own legal configuration space by adversarial but perfectly valid
+audio, ever emit a stream a decoder refuses" - is
+**`tools/fuzz_encoder_space.py`**, and nothing here asks it.
+
+It is not a libFuzzer target and not part of `fuzz/run.sh`: it drives the real
+`ac3cli`, so it needs the ordinary CLI build rather than this directory's
+sanitizer/libFuzzer toolchain, and its failure signal is a decoder refusing a
+stream rather than a sanitizer report. Per case it draws a random legal
+encoder configuration (layout, bitrate, coupling, DRC, heavy compression,
+dialnorm, downmix levels, forward-MDCT path), draws adversarial PCM built per
+256-sample BLOCK so a frame's character can change part-way through it,
+encodes, and then decodes the result with BOTH `ac3cli decode` and FFmpeg's
+strict decode - the same invocation `scripts/run-codec-matrix.sh` uses. A
+refusal from either fails the case.
+
+Why it exists: PR #186 fixed an encoder defect (`deltbaie == 0` means "retain
+the previous block's delta bit allocation", not "no delta") that produced
+streams both decoders reject, and it escaped ctest, the codec matrix, the
+gold-reference gate and every job in this file. Reaching it needs dense
+harmonic content followed by digital silence inside one frame - an input
+SHAPE, not an option combination, which is why enumerating options more
+thoroughly would never have found it. The harness finds it in seconds; that
+was verified by reverting the fix and running it (see the file's own header).
+
+```bash
+AC3CLI=build/config-linux-llvm/bin/ac3cli python3 tools/fuzz_encoder_space.py --seconds 120
+python3 tools/fuzz_encoder_space.py --check-envelope      # re-measure the rate floors it draws from
+python3 tools/fuzz_encoder_space.py --replay <case-seed>  # rerun one exact failing case
+```
+
+Every case is a pure function of one 64-bit case seed, printed beside any
+failure, so a random run stays fully reproducible after the fact. Failing
+inputs are kept under `fuzz-encoder-artifacts/` (gitignored, and regenerable
+from the seed).
+
+Scope: AC-3 `encode` only. E-AC-3's own configuration space - the Annex E tool
+tokens, VBR, the wider layouts - is a real remaining gap, deliberately left
+open rather than half-covered.
+
 ## Running locally
 
 ```bash
@@ -234,6 +278,17 @@ gitignored; `fuzz/run.sh` creates it on demand.
 - `fuzz-nightly` - a 10-minute-per-harness mutation budget on a daily
   schedule, plus `workflow_dispatch` with a configurable budget for an
   on-demand deeper run. Crash-only harnesses only - see `fuzz-differential`.
+- `encoder-space-nightly` - the encoder input-space search above, on the same
+  daily schedule and `workflow_dispatch`, with a 15-minute default budget.
+  Shares none of the machinery of the other four (no libFuzzer, no sanitizer
+  runtime, not in `fuzz/run.sh`): it builds the plain `linux-llvm` CLI with
+  vcpkg and a pinned `ffmpeg`, the way `ci.yml`'s `ffmpeg-validate` job does.
+
+The bounded per-PR counterpart to `encoder-space-nightly` is a step in
+`ci.yml`'s `ffmpeg-validate` job (~2 minutes, plus the envelope check), not a
+job in this file - everything it needs is already built and pinned there, and
+unlike `fuzz-short` it runs on pull requests rather than push only, because it
+is cheap enough relative to the job it rides on.
 
 `fuzz-short`, `fuzz-differential` and `fuzz-nightly` run with
 `continue-on-error: true`, the same convention `ci.yml` uses for its other

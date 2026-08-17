@@ -1,5 +1,10 @@
 # numpy for ci.yml's ffmpeg-validate job (tools/quality_race.py and friends).
+# matplotlib is for that job's spectrogram-rendering step only
+# (quality_race.py's render_spectrograms(), `trend --spectrogram-dir`) - see
+# that function's own docstring for why this is fine to add directly here
+# unlike visqol-python, which stays deliberately out of this lock.
 # Regenerate the lock after any change here with:
 #   python -m piptools compile --generate-hashes --strip-extras \
 #     --output-file=requirements-ffmpeg-validate.txt requirements-ffmpeg-validate.in
 numpy
+matplotlib
