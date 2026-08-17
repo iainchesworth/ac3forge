@@ -211,6 +211,47 @@ number a real user of either tool actually gets, not an internal detail.
 })();
 </script>
 
+## Spectrograms
+
+A visual supplement to the table above — one image per leg, each stacking
+the original source against ac3forge's own decode and, where the baseline
+has a trustworthy score for it (see **n/a** below), FFmpeg's and DEE's own
+decodes of the same material at the same bitrate.
+
+<div class="landscape-spectrograms">
+  <figure>
+    <img src="https://raw.githubusercontent.com/iainchesworth/ac3forge/quality-history/spectrograms/ac3-51-448.png" alt="ac3-51-448 spectrogram: original vs ac3forge vs FFmpeg" loading="lazy">
+    <figcaption>ac3-51-448 (AC-3, 5.1 @ 448 kbit/s) — no DEE row: DEE's own decode of discrete 5.1 input drops a channel on the current baseline build, see the table's own <strong>n/a</strong> note.</figcaption>
+  </figure>
+  <figure>
+    <img src="https://raw.githubusercontent.com/iainchesworth/ac3forge/quality-history/spectrograms/eac3-stereo-192.png" alt="eac3-stereo-192 spectrogram: original vs ac3forge vs FFmpeg vs DEE" loading="lazy">
+    <figcaption>eac3-stereo-192 (E-AC-3, stereo @ 192 kbit/s)</figcaption>
+  </figure>
+  <figure>
+    <img src="https://raw.githubusercontent.com/iainchesworth/ac3forge/quality-history/spectrograms/eac3-51-256.png" alt="eac3-51-256 spectrogram: original vs ac3forge vs FFmpeg" loading="lazy">
+    <figcaption>eac3-51-256 (E-AC-3, 5.1 @ 256 kbit/s) — no DEE row, same reason as ac3-51-448.</figcaption>
+  </figure>
+</div>
+
+<style>
+.landscape-spectrograms { display: flex; flex-direction: column; gap: 1.5em; margin: 1.5em 0; }
+.landscape-spectrograms figure { margin: 0; }
+.landscape-spectrograms img { width: 100%; height: auto; border: 1px solid var(--md-default-fg-color--lightest); border-radius: 0.2em; }
+.landscape-spectrograms figcaption { font-size: 0.85em; color: var(--md-default-fg-color--light); margin-top: 0.4em; }
+</style>
+
+These are **not** tied to any specific release row above — there is only a
+single "latest" image per leg, regenerated on every push to `main` (i.e.
+every release promotion, same cadence as a row landing in the table), never
+one per historical release. If the image looks newer than the table row
+you're comparing it against, it is: the images have no history of their own,
+only a current snapshot. They come from the same `quality-history` branch
+mechanism as the table's own numbers (see "Where the data lives" below) —
+generated in CI by `tools/quality_race.py`'s `render_spectrograms()`
+(`trend --spectrogram-dir`), decoding this build's own encode plus the
+committed `tests/golden/external-baseline/` FFmpeg/DEE bitstreams — never
+invoking FFmpeg's or DEE's own encoder, same boundary as the numbers.
+
 ## Reading it
 
 Each row is one (tagged release, leg) result — a release cuts one commit on
