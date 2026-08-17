@@ -165,8 +165,17 @@ done
 # Both the in-repo decoder and FFmpeg read every one of these now - two
 # independent decoders agreeing is stronger proof these Annex-E-tool encodes
 # are spec-correct than either checked alone.
-for tools in cpl spx aht all "spx+aht" "cpl:4+spx:5" "aht:0" "all+atten:2" "all+noatten" \
-             "all+nofastmdct"; do
+#
+# "auto" belongs in this group rather than the one above because of the rate
+# this loop runs at: 192 kbit/s over 5.1 is 38 kbit/s per full-bandwidth
+# channel, below both of the ceilings in eac3_frame.cpp, so it turns coupling,
+# spectral extension and AHT all on and its stream is nothing like "none"'s.
+# It is also the tool set the landscape comparison reports, which makes it the
+# one most worth holding an independent decoder against. "auto+spx:5" covers
+# the other half of that decision - a caller pinning the band edge while
+# leaving the on/off choice to the rate policy.
+for tools in cpl spx aht all auto "auto+spx:5" "spx+aht" "cpl:4+spx:5" "aht:0" "all+atten:2" \
+             "all+noatten" "all+nofastmdct"; do
     safe=$(echo "$tools" | tr ':+' '__')
     run eac3-encode bootstrap_51.wav "eac3enc_${safe}.ec3" 192 "$tools" 51
     run decode "eac3enc_${safe}.ec3" "eac3enc_${safe}.wav"

@@ -14,6 +14,13 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 
 ### Added
 
+- **A new `auto` E-AC-3 tool set, which picks coupling/spectral extension/AHT from the
+  per-channel bitrate** instead of taking the on/off flags as given. Every Annex E tool trades
+  waveform fidelity for a band it can describe more cheaply than it can code, so each is a win
+  below some rate and a loss above it — `auto` applies the measured crossovers (56 kbit/s per
+  channel for spectral extension; `12 + 14n` for coupling, whose saving scales with how many
+  channels share the band). It still honours an explicit `cpl:N`/`spx:N`/`aht:N` band-edge pin,
+  so geometry stays steerable without taking over the decision.
 - **A native PipeWire audio backend for Linux** (`src/audio/src/platform/pipewire/`,
   `AC3FORGE_WITH_PIPEWIRE`), selected via pkg-config when ALSA's headers are not present.
   Live capture and monitor playback are genuine `pw_stream` PCM; IEC 61937 bitstream passthrough
@@ -23,6 +30,23 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   is outside this library's control — see `src/platform/pipewire/passthrough.cpp` and
   `docs/building.md`'s "Why ALSA still comes first" for the full account, including why ALSA
   keeps precedence over PipeWire when both are present.
+
+### Changed
+
+- **Coupling is now dropped, rather than moved down in frequency, when spectral extension leaves
+  it no room.** §E3.3.1 derives the coupling end frequency from `spxbegf`; when that landed below
+  the requested `cplbegf` the encoder used to slide `cplbegf` down to meet it, which silently
+  coupled from 8.0 kHz where the rate model had asked for 10.2 kHz and made every coefficient
+  above 8.0 kHz parametric. On the stereo reference at 192 kbit/s this was worth 6.8 dB of SNR
+  (21.6 → 28.5 dB with all tools forced on).
+- **The landscape comparison now reports `auto` rather than a forced `all`.** The headline number
+  is meant to be what a real user of this encoder gets, the same standard applied to FFmpeg's and
+  DEE's own automatic choices; `all` was a configuration this encoder would never itself choose.
+  Against FFmpeg 8.0.1 the E-AC-3 stereo leg moves from −11.19 dB to −0.83 dB, and the 5.1 leg is
+  unchanged at +0.49 dB.
+- **The landscape page shows SNR, LSD and MOS side by side, each with its own vs-FFmpeg/vs-DEE
+  delta.** These tools trade waveform fidelity for banded envelope fidelity deliberately, so a
+  single-metric headline reported a working tool as a straight loss.
 
 ## [0.6.0-beta.1] - 2026-08-17
 

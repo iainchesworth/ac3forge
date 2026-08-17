@@ -431,7 +431,9 @@ struct EcplBandFit {
     return {.amp = final_amp, .angle = angle0, .chaos_code = best_code};
 }
 
-// Where coupling should start when the caller does not say. Sub-band 4 - bin
+// Where coupling starts once it IS in use and the caller has not said - the
+// geometry half of the decision, with WHETHER to couple left to
+// default_cplbegf below. Sub-band 4 - bin
 // 85, 8.0 kHz at 48 kHz - is the floor, because that is roughly where
 // per-channel waveform detail stops being what a listener is hearing. Below
 // it the envelope metric keeps improving and waveform SNR falls off a cliff;
@@ -443,12 +445,67 @@ struct EcplBandFit {
 // caller who trusts banded envelope fidelity over waveform fidelity has good
 // reason to go lower. At 96 kbit/s stereo, coupling from sub-band 0 scores a
 // full dB better on log-spectral distance than not coupling at all.
-[[nodiscard]] int default_cplbegf(std::uint32_t bitrate_kbps, int nfchans) {
+[[nodiscard]] int cplbegf_geometry(std::uint32_t bitrate_kbps, int nfchans) {
     const int per_channel = static_cast<int>(bitrate_kbps) / std::max(nfchans, 1);
     return std::clamp(4 + (per_channel - 48) / 24, 4, 10);
 }
 
-// Where synthesis should take over when the caller does not say. Spectral
+// The rate policy's answer when a tool buys less than it costs - see
+// default_cplbegf/default_spxbegf below. Only `auto` acts on it; a caller who
+// names a tool explicitly still gets it, at the geometry helper's start
+// sub-band.
+constexpr int kToolOff = -1;
+
+// Above this per-channel rate coupling stops paying for itself. It is not one
+// number, because coupling's saving scales with how many channels share the
+// coupled band: n channels become one shared channel plus n coordinate sets,
+// so 2 channels save about half the high-band coefficients and 5 save about
+// four fifths. The more channels, the longer it keeps earning its place.
+//
+// Measured on both checked-in fixtures across a bitrate sweep, as the
+// marginal gain of adding coupling to an AHT encode (tests/golden/audio/
+// reference_stereo.wav and reference_51.wav, scored through this project's
+// own decoder):
+//
+//   nfchans 2:  +0.6 dB at 32 kbit/s per channel, -2.6 at 48  -> ~40
+//   nfchans 5:  +1.4 dB at 77 kbit/s per channel, -0.9 at 90  -> ~82
+//
+// 12 + 14n runs through both. Only n = 2 and n = 5 were measured; values
+// between and above them are that line's extrapolation - directionally right
+// (more channels, more saving) but not themselves observed.
+[[nodiscard]] constexpr int coupling_rate_ceiling(int nfchans) {
+    return 12 + 14 * nfchans;
+}
+
+// Above this per-channel rate spectral extension stops paying for itself.
+// Unlike coupling's ceiling this one does not move with the channel count -
+// synthesis replaces a band outright rather than sharing it, so what it saves
+// does not depend on how many channels are in the frame.
+//
+// Measured the same way, as the marginal gain of adding spectral extension -
+// both on its own and on top of coupling, the latter being the tighter of the
+// two because coupling has already taken the same band's cost out:
+//
+//   on AHT:      +1.5 dB at 48 kbit/s per channel, -0.0 at 64
+//   on AHT+cpl:  +0.4 dB at 48 kbit/s per channel, -0.1 at 64
+//
+// so the crossover sits just below 64 either way, and 56 is the midpoint of
+// the bracket containing it.
+inline constexpr int kSpxRateCeiling = 56;
+
+// Where coupling should start when `auto` is choosing, or kToolOff when it
+// should not be used at all.
+[[nodiscard]] int default_cplbegf(std::uint32_t bitrate_kbps, int nfchans) {
+    const int per_channel = static_cast<int>(bitrate_kbps) / std::max(nfchans, 1);
+    if (per_channel >= coupling_rate_ceiling(nfchans)) {
+        return kToolOff;
+    }
+    return cplbegf_geometry(bitrate_kbps, nfchans);
+}
+
+// Where synthesis takes over once it IS in use and the caller has not said -
+// the geometry half, with WHETHER to extend left to default_spxbegf below.
+// Spectral
 // extension is the crudest of the tools - a copied band with noise stirred in
 // and an envelope painted back on - so it belongs as high as the rate allows.
 //
@@ -458,7 +515,7 @@ struct EcplBandFit {
 // 192 kbit/s. Lower start frequencies keep improving the envelope and give up
 // waveform fidelity fast, which is a trade a caller can still ask for through
 // FrameConfig::spxbegf but is not one to make on their behalf.
-[[nodiscard]] int default_spxbegf(std::uint32_t bitrate_kbps, int nfchans) {
+[[nodiscard]] int spxbegf_geometry(std::uint32_t bitrate_kbps, int nfchans) {
     const int per_channel = static_cast<int>(bitrate_kbps) / std::max(nfchans, 1);
     if (per_channel < 40) {
         return 3;  // coefficient 85, 8.0 kHz
@@ -467,6 +524,16 @@ struct EcplBandFit {
         return 4;  // coefficient 97, 9.1 kHz
     }
     return 5;  // coefficient 109, 10.2 kHz
+}
+
+// Where synthesis should take over when `auto` is choosing, or kToolOff when
+// it should not be used at all.
+[[nodiscard]] int default_spxbegf(std::uint32_t bitrate_kbps, int nfchans) {
+    const int per_channel = static_cast<int>(bitrate_kbps) / std::max(nfchans, 1);
+    if (per_channel >= kSpxRateCeiling) {
+        return kToolOff;
+    }
+    return spxbegf_geometry(bitrate_kbps, nfchans);
 }
 
 // The copy source has to be a band the decoder actually has: it must sit
@@ -1432,11 +1499,18 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     }
     auto& cpl = payload.cpl;
     auto& spx = payload.spx;
-    spx.in_use = config_.spx;
+    // `auto` asks the rate policy whether each tool is worth its cost here;
+    // otherwise the caller's own flags stand. The policy answers either
+    // kToolOff or the geometry helper's own value, so only the on/off
+    // question needs it - the start sub-band below comes from the geometry
+    // helper either way. See FrameConfig::auto_tools.
+    spx.in_use = config_.auto_tools
+                     ? default_spxbegf(tool_reference_kbps, nfchans) != kToolOff
+                     : config_.spx;
     if (spx.in_use) {
         spx.begf = std::clamp(config_.spxbegf >= 0
                                   ? config_.spxbegf
-                                  : default_spxbegf(tool_reference_kbps, nfchans),
+                                  : spxbegf_geometry(tool_reference_kbps, nfchans),
                               0, 7);
         // Synthesis runs to sub-band 17, coefficient 229 - 21.5 kHz at 48 kHz.
         // Nothing is coded or synthesized above it, which is a bandwidth no
@@ -1541,9 +1615,14 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
 
     // §E2.2.3 gates the whole coupling element on acmod > 0x1, so 1/0 and the
     // rejected 1+1 cannot couple however the caller asks.
-    cpl.in_use =
-        config_.coupling && static_cast<std::uint8_t>(config_.acmod) > 0x1 && !any_switched;
-    cpl.enhanced = cpl.in_use && config_.enhanced;
+    const bool want_coupling =
+        config_.auto_tools ? default_cplbegf(tool_reference_kbps, nfchans) != kToolOff
+                           : config_.coupling;
+    cpl.in_use = want_coupling && static_cast<std::uint8_t>(config_.acmod) > 0x1 && !any_switched;
+    // Enhanced coupling is a different reconstruction of the same region, not
+    // a rate decision of its own, so `auto` never reaches for it - a caller
+    // who wants it asks for it, and keeps the on/off decision with it.
+    cpl.enhanced = cpl.in_use && config_.enhanced && !config_.auto_tools;
     if (cpl.enhanced) {
         // begf is read as ecplbegf here, the same field reused rather than
         // duplicated - config_.cplbegf's existing rate-dependent default
@@ -1553,7 +1632,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         // the-bottom) sub-band table.
         cpl.begf = std::clamp(config_.cplbegf >= 0
                                   ? config_.cplbegf
-                                  : default_cplbegf(tool_reference_kbps, nfchans),
+                                  : cplbegf_geometry(tool_reference_kbps, nfchans),
                               0, 15);
         cpl.ecpl_begin_subbnd = ecpl_begin_subbnd(cpl.begf);
         if (spx.in_use) {
@@ -1581,7 +1660,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     } else if (cpl.in_use) {
         cpl.begf = std::clamp(config_.cplbegf >= 0
                                   ? config_.cplbegf
-                                  : default_cplbegf(tool_reference_kbps, nfchans),
+                                  : cplbegf_geometry(tool_reference_kbps, nfchans),
                               0, 15);
         // Without spectral extension, coupling runs to the top of the coded
         // spectrum: chbwcod is gone for a coupled channel, so the coupling end
@@ -1589,15 +1668,29 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         // rather than saving its bits.
         cpl.endf = 15;
         if (spx.in_use) {
-            // §E3.3.1 derives cplendf from spxbegf and stops transmitting it.
-            // The value may be negative, which is legal because it is never
-            // sent - but it can leave no room for coupling at all, and it can
-            // leave less room than the requested cplbegf wants.
+            // §E3.3.1 derives cplendf from spxbegf and stops transmitting it,
+            // so the coupling region cannot reach above where synthesis
+            // starts however the caller asks. The derived value may be
+            // negative, which is legal because it is never sent.
+            //
+            // When it lands below the requested cplbegf there is no coupling
+            // region at that frequency, and the answer is to drop coupling -
+            // NOT to slide cplbegf down to meet it. Sliding is what this used
+            // to do, and it silently coupled far lower than the rate model
+            // chose: at 192 kbit/s stereo cplbegf_geometry asks for sub-band
+            // 6 (bin 109, 10.2 kHz), spxbegf 4 derives cplendf 2, and the old
+            // std::min moved coupling to sub-band 4 - bin 85, 8.0 kHz. Every
+            // coefficient above 8.0 kHz then became parametric (coupling to
+            // 9.1 kHz, synthesis above), which on tests/golden/audio/
+            // reference_stereo.wav bounds waveform SNR near 23 dB whatever
+            // the quantizer does. Measured on that file: 21.6 dB coupled-and-
+            // extended against 28.4 dB for spectral extension alone.
+            //
+            // This is the same policy the enhanced-coupling branch above
+            // already applies to ecplendf, now shared by both.
             cpl.endf = derived_cplendf(spx.begf);
-            if (cpl.endf + 2 < 0) {
+            if (cpl.begf > cpl.endf + 2) {
                 cpl.in_use = false;  // synthesis starts below where coupling could
-            } else {
-                cpl.begf = std::min(cpl.begf, cpl.endf + 2);
             }
         }
         if (cpl.in_use) {
@@ -1958,7 +2051,16 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         payload.chans[static_cast<std::size_t>(ch)].blksw = blksw[static_cast<std::size_t>(ch)];
     }
     AC3_ZONE_BEGIN(zone_aht_select, "step4b_aht_select");
-    for (int s = 0; s < streams && config_.aht; ++s) {
+    // `auto` always permits AHT. Unlike coupling and spectral extension it
+    // does not replace a band with a description of one - it is a second
+    // transform over coefficients that are still coded - and it is already
+    // decided per channel per frame by whether it actually pays there, so
+    // there is no rate above which it stops being worth offering. Measured
+    // across the same sweep the other two ceilings came from, it beat a
+    // no-tools encode at every rate on both fixtures bar one (5.1 at
+    // 128 kbit/s per channel, where it came out 0.3 dB behind).
+    const bool aht_permitted = config_.aht || config_.auto_tools;
+    for (int s = 0; s < streams && aht_permitted; ++s) {
         auto& plan = payload.chans[static_cast<std::size_t>(s)];
         // A block-switched channel's transform already varies within the
         // frame by design - the opposite of AHT's own "stationary" premise -
