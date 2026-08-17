@@ -83,6 +83,7 @@ add_executable(ac3tests
     test_plan.cpp
     test_resampler.cpp
     test_ring_buffer.cpp
+    test_selfcheck.cpp
     test_signing.cpp
     test_spatial.cpp
     test_tables.cpp
@@ -98,6 +99,15 @@ add_executable(ac3tests
 # target's include path only, the same pattern the alsa backend's internal
 # header uses below.
 target_include_directories(ac3tests PRIVATE "${CMAKE_SOURCE_DIR}/src/signing/src")
+
+# test_selfcheck.cpp runs the encoder/decoder mirror check (ac3::verify) over the
+# committed programme-material fixtures rather than a synthetic signal - the delta bit
+# allocation state it compares only ends part-way through a frame on material that really
+# does change character mid-frame, which is what made those files the reproduction for the
+# bug this check exists to catch. Passed as a path rather than resolved from argv[0]: ctest
+# runs the binary from the build tree, which is nowhere near the fixtures.
+target_compile_definitions(ac3tests
+    PRIVATE "AC3FORGE_GOLDEN_AUDIO_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/golden/audio\"")
 
 # ---------------------------------------------------------------------------
 # Toolchain hook: keep a failing assert from opening a modal dialog that hangs

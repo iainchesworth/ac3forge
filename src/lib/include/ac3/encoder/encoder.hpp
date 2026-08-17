@@ -14,6 +14,7 @@
 #include "ac3/export.hpp"
 #include "ac3/meta/drc.hpp"
 #include "ac3/meta/mixing.hpp"
+#include "ac3/verify/mirror.hpp"
 
 // The AC-3 encoder: any audio coding mode (mono through 3/2) plus optional
 // LFE, long blocks, optional channel coupling, 2/0 rematrixing, adaptive
@@ -78,6 +79,20 @@ struct EncoderConfig {
     // heavy-compression peak detector consults them whatever acmod is.
     meta::CentreMixLevel cmixlev = meta::CentreMixLevel::kMinus4_5dB;
     meta::SurroundMixLevel surmixlev = meta::SurroundMixLevel::kMinus6dB;
+
+    // --- self-check (ac3/verify/mirror.hpp) --------------------------------
+    // When set, encode_frame() records its own model of the decoder - the bit
+    // offset at each block boundary, and each stream's decoded exponents, bit
+    // allocation and delta correction - into this trace, for comparison
+    // against a real decode of the same frame. Null by default, and null
+    // costs one branch per block and no allocation: the encoder's behaviour
+    // and output are identical either way, this only reads state it already
+    // has. A runtime pointer rather than a build-time switch because that is
+    // how every other optional behaviour in this struct is expressed, and
+    // because a check that needs a special build is a check nobody runs.
+    // MirrorEncoder (ac3/verify/selfcheck.hpp) drives the whole comparison;
+    // this is for a caller wanting to place the decode themselves.
+    verify::FrameTrace* trace = nullptr;
 };
 
 class AC3FORGE_EXPORT FrameEncoder {
