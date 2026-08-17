@@ -289,15 +289,6 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     container: ubuntu:26.04
-    # Experimental on the same terms as the three jobs above, plus one
-    # concrete open finding it reports against develop today: an AC-3 coupling
-    # channel's delta bit allocation offsets are written from band 0 while
-    # FFmpeg's cursor starts at the channel's own start band, so FFmpeg
-    # refuses those frames with "error in bit allocation" while this project's
-    # decoder - which shares the encoder's band-0 cursor - accepts them. See
-    # the fuller note on ci.yml's own encoder-space step, and delete both
-    # continue-on-error lines together once it is fixed.
-    continue-on-error: true
     env:
       AC3CLI: build/config-linux-llvm/bin/ac3cli
       ENCODER_SPACE_SECONDS: ${{ github.event.inputs.encoder_space_seconds || 900 }}
@@ -341,10 +332,8 @@ jobs:
       - name: Encoder input-space fuzz (deeper budget, both decoders)
         run: python3 tools/fuzz_encoder_space.py --seconds "$ENCODER_SPACE_SECONDS"
 
-      # always(), not failure(): this job is continue-on-error, so a failing
-      # case leaves the job green and failure() would never fire.
       - name: Upload failing inputs
-        if: always()
+        if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: encoder-space-nightly-artifacts

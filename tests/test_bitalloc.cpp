@@ -81,6 +81,68 @@ TEST_CASE("choose_delta_segments is silent when content matches its exponents",
     CHECK(segs.deltnseg == 0);
 }
 
+TEST_CASE("choose_delta_segments targets bands relative to the channel's own "
+         "start, not band 0",
+         "[bitalloc]") {
+    // Coupling channel starting at bin 37 - Table 7.13 maps that to band 31
+    // (ac3::bin_to_band(37) == 31), the one case where a channel's own start
+    // band is not 0, which is exactly where an absolute-band-0 cursor and a
+    // channel-relative one diverge. A `cursor = 0` bug emits deltoffst[0] ==
+    // 32 (the absolute band number); the fix emits deltoffst[0] == 1 (band
+    // 32's offset from bndstrt == 31).
+    constexpr int kStart = 37;
+    constexpr int kEnd = 46;  // bands 31, 32, 33 (Table 7.12: 3 bins each)
+    constexpr int kExp = 10;
+    std::vector<std::uint8_t> exps(kEnd, 0);
+    std::fill(exps.begin() + kStart, exps.end(), static_cast<std::uint8_t>(kExp));
+    const double baseline = std::pow(2.0, -1.0 - kExp);
+    std::vector<double> coeffs(kEnd, 0.0);
+    std::fill(coeffs.begin() + kStart, coeffs.end(), baseline);
+    // Boost band 32 only (bins 40..42): +6 dB, one Table 5.17 step.
+    for (int bin = 40; bin < 43; ++bin) {
+        coeffs[static_cast<std::size_t>(bin)] = baseline * 2.0;
+    }
+    const auto segs = ac3::choose_delta_segments(coeffs, exps, kStart);
+    REQUIRE(segs.deltnseg == 1);
+    CHECK(segs.deltoffst[0] == 1);
+    CHECK(segs.deltlen[0] == 1);
+    CHECK(segs.deltba[0] == 4);  // +6 dB
+}
+
+TEST_CASE("compute_bit_allocation applies delta at the coupling channel's own "
+         "bands, not band 0",
+         "[bitalloc]") {
+    // Same shape bug as the choose_delta_segments case above, checked from
+    // the decoder side: a delta segment addressed at the coupling channel's
+    // OWN first band (offset 0 from bndstrt) must change that band's bap -
+    // under a `band = 0` bug it lands on mask[0..], which this channel's
+    // masking-curve loop never populates and the final bap loop (which
+    // starts at bndstrt) never reads, so the correction would silently do
+    // nothing and bap_with_delta would equal bap_without_delta.
+    constexpr int kStart = 37;   // bndstrt == 31
+    constexpr int kEnd = 121;
+    constexpr int kExp = 10;     // loud enough that mask perturbation moves bap
+    std::vector<std::uint8_t> exps(kEnd, 0);
+    std::fill(exps.begin() + kStart, exps.end(), static_cast<std::uint8_t>(kExp));
+    const ac3::BitAllocCodes codes{};
+    const ac3::BitAllocRegion base_region{
+        .start = kStart, .coupling = true, .cplfleak = 3, .cplsleak = 3};
+    std::vector<std::uint8_t> bap_without(kEnd);
+    ac3::compute_bit_allocation(exps, ac3::SampleRate::k48000, codes, 22, 9, bap_without,
+                                base_region);
+
+    ac3::BitAllocRegion delta_region = base_region;
+    delta_region.delta = {.deltnseg = 1,
+                          .deltoffst = {0},
+                          .deltlen = {3},
+                          .deltba = {7}};  // +24 dB, at bndstrt's own first 3 bands
+    std::vector<std::uint8_t> bap_with(kEnd);
+    ac3::compute_bit_allocation(exps, ac3::SampleRate::k48000, codes, 22, 9, bap_with,
+                                delta_region);
+
+    CHECK(bap_with != bap_without);
+}
+
 TEST_CASE("monotonicity: more snr offset never allocates fewer bits", "[bitalloc]") {
     // The SNR search's binary search relies on this.
     std::vector<std::uint8_t> exps(253);

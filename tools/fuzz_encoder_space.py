@@ -50,21 +50,6 @@ failure is reproducible from the one number printed with it - see --replay.
 The master seed only decides which case seeds get drawn; it is printed at the
 start of every run, failure or not.
 
-Known open finding, as of the commit that added this file. Roughly one case in
-seven hundred fails at the `ffmpeg` stage with "error in bit allocation" while
-`ac3cli decode` accepts the same stream, always with coupling on.
-choose_delta_segments (src/lib/src/core/bitalloc.cpp) writes delta bit
-allocation offsets with its cursor starting at band 0; FFmpeg starts its
-cursor at the channel's own start band, so on the coupling channel - the only
-one whose start band is not 0 - the segments land past band 50 and hit
-FFmpeg's range guard. compute_bit_allocation() starts at band 0 as well, so
-this encoder and this decoder agree with each other and the round trip never
-notices, which is exactly what an independent oracle is for. Seeding that
-cursor at bndstrt clears every reproducer, but that is a diagnosis and not a
-fix: the decoder needs the matching change, and which reading §7.2.2.6 intends
-has to be settled first. Until then both CI callers of this harness are
-continue-on-error - see the note on ci.yml's own encoder-space step.
-
 Scope: AC-3 (`ac3cli encode`) only. The bug that motivated this is AC-3-only
 (E-AC-3 computes its delta bit allocation once per frame and its decoder
 clears at block 0, so its state cannot go stale between blocks), and AC-3's
