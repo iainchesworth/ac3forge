@@ -25,7 +25,12 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   and FFmpeg's strict decode. Motivated by the `deltbaie` defect below, which produced streams
   both decoders reject and escaped every existing gate; reverting that fix, the harness finds
   rejected streams within seconds. Runs bounded on every pull request (in the FFmpeg-oracle
-  job) and deeper nightly, mirroring how `fuzz.yml` already splits short from nightly.
+  job) and deeper nightly, mirroring how `fuzz.yml` already splits short from nightly. It has
+  already surfaced a further, still-unfixed defect of its own: with coupling on, roughly one
+  stream in seven hundred is refused by FFmpeg's bit allocation while this project's decoder
+  accepts it, because the coupling channel's delta bit allocation offsets are written relative
+  to band 0 rather than to that channel's own start band. Both CI callers are non-blocking
+  until that is fixed.
 
 - **A new `auto` E-AC-3 tool set, which picks coupling/spectral extension/AHT from the
   per-channel bitrate** instead of taking the on/off flags as given. Every Annex E tool trades
