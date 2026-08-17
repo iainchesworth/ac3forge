@@ -20,6 +20,10 @@ namespace ac3 {
 
 namespace {
 
+// How far the LFE's own lfefsnroffst is raised above the shared fine offset
+// the rest of the frame gets. See the long note at its use.
+constexpr int kLfeFineOffsetBump = 4;
+
 constexpr bool has_three_front(Acmod acmod) {
     const auto value = static_cast<std::uint8_t>(acmod);
     return (value & 0x1) != 0 && acmod != Acmod::k1_0;
@@ -813,6 +817,52 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     int csnroffst = 0;
     int fsnroffst = 0;
 
+    // The snroffste block gives the LFE its own 4-bit lfefsnroffst, alongside
+    // each fbw channel's chfsnroffst and the coupling channel's cplfsnroffst,
+    // and this encoder was writing the shared fine offset into it - the same
+    // value every fbw channel gets. That is legal, and it is what FFmpeg does too (its
+    // lfefsnroffst matches its chfsnroffst in every block of its own 448 kbit/s
+    // 5.1 stream), but it leaves the LFE a price-taker in a search it cannot
+    // influence: step 9 picks the one composite offset at which the frame's
+    // TOTAL mantissa cost fits, and that total is set by channels of ~250 bins
+    // each. The LFE's 7 bins (kLfeEndmant) are rounding error in that
+    // sum, so the offset that governs the LFE's precision is decided entirely
+    // by channels 36 times its size - and when the frame tightens, the LFE
+    // loses precision at the same rate as they do despite costing a fraction as
+    // much to serve.
+    //
+    // Raising only its own field corrects that asymmetry, and it is cheap for
+    // the same reason it was mispriced: at 448 kbit/s 5.1 the LFE holds 2.5% of
+    // the frame's mantissa bits, so +4 fine steps moves about 12 bits per frame
+    // out of 14336 and leaves the frame's total mantissa cost unchanged to
+    // within a bit.
+    //
+    // +4 measured on two materials (the committed fixture and quality_race's
+    // synthesized full-band decorrelated 5.1) at 192/256/320/384/448/640:
+    // LFE +0.04 to +5.70 dB, overall SNR up at every one of the twelve points
+    // (worst +0.00), ViSQOL MOS flat (worst -0.005, best +0.004). At 448 on the
+    // fixture the LFE goes from 5.20 dB behind FFmpeg 8.0.1 to 1.77 behind.
+    // The response plateaus by about +6 fine steps and the 4-bit field clamps
+    // it regardless, so this cannot run away on unusual material.
+    //
+    // Independent of, and complementary to, the LFE exponent-refresh fix: with
+    // both, the LFE at 448 reaches 0.71 dB AHEAD of FFmpeg. That one stops the
+    // LFE being quantized against a scale meant for a louder block; this one
+    // stops it being allocated by a search that cannot see it.
+    //
+    // The LFE's other private field, lfefgaincod, was measured as
+    // the alternative and rejected: raising it to 6 or 7 is worth far more SNR
+    // (LFE +11 to +18 dB at 448) but it pushes the LFE to 55-72 dB, well past
+    // any use, and pays for it out of the wideband channels - MOS regressed up
+    // to -0.05 on the synthesized material. Unlike this one it is not
+    // self-limiting. It stays at the shared value.
+    const auto lfe_fine = [&](int composite) {
+        // A zero composite is §7.2.2.1.1's frame-wide mute; leave it alone, or
+        // the condition stops being frame-wide.
+        return composite <= 0 ? composite & 15
+                              : std::clamp((composite & 15) + kLfeFineOffsetBump, 0, 15);
+    };
+
     const auto emit_block_side_info = [&](BitWriter& w, int block) {
         const bool first = block == 0;
         for (int ch = 0; ch < nfchans; ++ch) {
@@ -985,8 +1035,9 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                 w.put(static_cast<std::uint32_t>(codes.fgaincod), 3);
             }
             if (config_.lfe) {
-                w.put(static_cast<std::uint32_t>(fsnroffst), 4);
-                w.put(static_cast<std::uint32_t>(codes.fgaincod), 3);
+                w.put(static_cast<std::uint32_t>(lfe_fine(csnroffst * 16 + fsnroffst)),
+                      4);                                            // lfefsnroffst
+                w.put(static_cast<std::uint32_t>(codes.fgaincod), 3);  // lfefgaincod
             }
         }
         if (cplinu) {
@@ -1179,8 +1230,11 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         AC3_ZONE_SCOPED_N("bits_at");
         for (int s = 0; s < streams; ++s) {
             auto& p = plan[static_cast<std::size_t>(s)];
-            // Every stream shares one fsnroffst here, so the frame-wide
-            // §7.2.2.1.1 condition reduces to the composite being zero.
+            const bool is_lfe = s < nchans && s >= nfchans;
+            // Only the LFE's fine offset can differ; the §7.2.2.1.1 mute is
+            // frame-wide, and lfe_fine() leaves a zero composite alone so the
+            // condition stays "the composite is zero" for every stream.
+            const int fine = is_lfe ? lfe_fine(composite) : composite & 15;
             for (std::size_t run = 0; run < p.runs.size(); ++run) {
                 const BitAllocRegion region{.start = stream_start(s),
                                             .coupling = s == cpl_stream,
@@ -1191,7 +1245,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                 auto& bap = run_bap[static_cast<std::size_t>(s)][run];
                 bap.assign(p.runs[run].decoded.size(), 0);
                 compute_bit_allocation(p.runs[run].decoded, config_.sample_rate, codes,
-                                       composite >> 4, composite & 15, bap, region);
+                                       composite >> 4, fine, bap, region);
             }
         }
         std::uint32_t total = 0;

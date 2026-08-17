@@ -24,6 +24,17 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 
 ### Changed
 
+- **The AC-3 encoder now gives the LFE its own fine SNR offset instead of copying the one every
+  other channel gets.** The bitstream carries a separate `lfefsnroffst`, but this encoder wrote
+  the shared value into it, which left the LFE a price-taker in a search it cannot influence: the
+  offset search picks the one value at which the frame's *total* mantissa cost fits, and that
+  total is set by channels of about 250 bins each. The LFE's 7 bins are rounding error in that
+  sum, so its precision was decided entirely by channels 36 times its size — and it lost
+  precision at the same rate as them despite costing a fraction as much to serve. Raising only
+  its own field by 4 fine steps moves about 12 bits per frame at 448 kbit/s and leaves the
+  frame's total mantissa cost unchanged. Measured on two materials (the 5.1 fixture and the
+  synthesized full-band decorrelated 5.1) at 192/256/320/384/448/640 kbit/s: LFE SNR up at every
+  point, by as much as 5.7 dB, overall SNR never lower, ViSQOL MOS flat.
 - **The AC-3 encoder now weighs delta bit allocation against what it costs at every layout, not
   only when coupling is active.** A delta segment is 12 bits of side information taken from the
   same budget that would otherwise buy a higher composite SNR offset, so the encoder already
