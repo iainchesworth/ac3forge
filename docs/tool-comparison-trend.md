@@ -12,10 +12,14 @@ competitive with the outside world" but "did this specific Annex E tool get
 better or worse as the code changed" — one row per (leg, tool-set), not just
 the single black-box number a real user actually gets.
 
-The `landscape` row is E-AC-3's `all` tools (`cpl+spx+aht`) — the
-configuration comparable to FFmpeg's/DEE's own automatic best-effort choices
-(AC-3 has no such toggle; coupling, rematrixing and delta bit allocation are
-unconditionally automatic there). It carries `vs_ffmpeg`/`vs_dee` columns —
+The `landscape` row is E-AC-3's `auto` tools — the set this encoder picks
+from the per-channel rate, and so the configuration comparable to FFmpeg's/
+DEE's own automatic best-effort choices (AC-3 has no such toggle; coupling,
+rematrixing and delta bit allocation are unconditionally automatic there).
+It is the same encode as the `auto` variant row, which is why those two
+lines coincide exactly; the remaining rows are the forced sets `auto` is
+choosing between, which is what makes the cost of each one legible here.
+It carries `vs_ffmpeg`/`vs_dee` columns —
 the delta against the committed baseline's numbers for the *same* leg — that
 the other rows don't, since only `landscape` has a matching external number
 to compare against. A leg whose DEE score is still marked unverified in
@@ -93,7 +97,7 @@ that job's environment, not a real zero score.
   // (no tool tokens exist for it); the others simply never appear for that
   // leg, so the checkboxes below are the same list regardless of which leg
   // is selected, and rows for a variant the leg doesn't have just don't show.
-  const ALL_VARIANTS = ["landscape", "none", "cpl", "spx", "aht", "cpl+spx", "all", "ecpl", "tpn", "ecpl+tpn"];
+  const ALL_VARIANTS = ["landscape", "none", "auto", "cpl", "spx", "aht", "cpl+spx", "all", "ecpl", "tpn", "ecpl+tpn"];
   // Fixed color per variant, same reasoning as quality-trend.md's LEGS - a
   // variant's line keeps the same color across renders instead of shuffling
   // with whichever variants happen to have data for the selected leg (AC-3's
@@ -101,6 +105,7 @@ that job's environment, not a real zero score.
   const VARIANT_COLORS = {
     landscape: "#7c4dff",
     none: "#00acc1",
+    auto: "#8d6e63",
     cpl: "#43a047",
     spx: "#fb8c00",
     aht: "#e53935",

@@ -38,10 +38,34 @@ project or someone building on `ac3::signing` elsewhere.
     protection-tag bits zeroed. The tag is written into `protection_bits_primary` and `crc2` is
     recomputed. Frames with no object container are left untouched.
 
+## Verifying a tag this signer wrote
+
+`ac3::signing` also checks its own tag: `verify_atmos_frame`/`verify_atmos_stream` recompute the
+same HMAC over the same frame regions and compare it against what a frame's
+`protection_bits_primary` already holds, without modifying anything. That is useful for round-trip
+testing, catching tampering or corruption of this project's own signed test assets, and CI/delivery
+QC — **it is not an interoperability path to a real Dolby-licensed decoder**. Only that decoder's
+own proprietary auth gate decides whether a licensed player accepts a stream's objects; this
+library has no visibility into that gate at all, and checking this library's own tag says nothing
+about whether a Dolby decoder would too. See [What this is not](#what-this-is-not) below.
+
+A frame with no EMDF object container is neither "verified" nor "failed" — there is nothing in it
+to check — so `verify_atmos_frame` returns one of three outcomes, not a bool:
+
+| `VerifyResult` | Meaning |
+|---|---|
+| `kNoContainer` | no EMDF object container in this frame — nothing to verify |
+| `kValid` | container present, tag matches the supplied key |
+| `kMismatch` | container present, tag does **not** match the supplied key |
+
+`verify_atmos_stream` walks every syncframe and returns a `VerifySummary` (`valid` / `mismatch` /
+`no_container` counts) — the aggregate shape, mirroring `sign_atmos_stream`'s own frame-count
+return, rather than a per-frame vector callers would otherwise have to reduce themselves.
+
 ## Using the library (any consumer)
 
 Any code that links `ac3::signing` gets a key-less signer and must construct a key to use it. The
-whole API surface is the key type plus two sign calls:
+whole API surface is the key type plus the sign/verify calls:
 
 ```cpp
 #include "ac3/signing/signing_key.hpp"
@@ -53,6 +77,10 @@ auto loaded = ac3::signing::load_signing_key("/path/key"); // file/env resolver
 
 // Sign a whole E-AC-3 elementary stream in place; returns the frames signed.
 int n = ac3::signing::sign_atmos_stream(stream, key);
+
+// Check it back, without modifying the stream.
+ac3::signing::VerifySummary v = ac3::signing::verify_atmos_stream(stream, key);
+// v.valid == n, v.mismatch == 0, assuming `stream` and `key` are unchanged.
 ```
 
 Full program: [`examples/object_signing.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/object_signing.cpp)
@@ -97,6 +125,27 @@ hard refusal on a validating decoder rather than a graceful fallback — you'll 
 `mode bed51` there so the stream omits the container and plays as 5.1 everywhere. See
 [CLI metadata options](../cli/metadata-options.md).
 
+`decode`/`monitor` have the mirror-image option, `verify-objects`, to check a stream's tag instead
+of writing one:
+
+```bash
+ac3cli decode signed.ec3 out.wav verify-objects signing-key=/path/to/atmos.key
+```
+
+- Checking is **just as opt-in as signing**: `verify-objects` is off by default, and a `decode` or
+  `monitor` invocation with no `verify-objects` plays a signed stream exactly like an unsigned one —
+  it never routes through the checker at all. `Eac3Decoder` itself never gains any knowledge of
+  `ac3::signing`; the check runs separately, over the same raw stream bytes, and only when the
+  operator asks for it.
+- With `verify-objects` and a key, every frame's tag is checked and a summary is reported
+  (`N valid, M mismatched, K unsigned`). Any mismatch is a hard failure — the command refuses,
+  exactly like `sign-objects` refuses a request with no key — rather than decoding some frames and
+  silently skipping others: a signed stream is either verified or the command refuses, never a
+  silent partial pass.
+- `verify-objects` with no key anywhere is the same hard error `sign-objects` gives.
+- A frame with no object container (a plain AC-3/E-AC-3 stream, or an Atmos `bed51` stream) reports
+  as unsigned, not as a mismatch — there is nothing in it to check.
+
 ### Shield app (on-device signing)
 
 The Shield demo signs each frame on the device, so its key has to be present in the APK as a bundled
@@ -128,6 +177,12 @@ the app streams the unsigned `bed51`-equivalent, always safe on any receiver.
 - **Not a reconstruction of Dolby's own tag algorithm.** The construction here is derived from the
   public container layout, not from a licensed decoder. Whether a given decoder accepts a tag
   depends on the key *you* supply matching that decoder's expectation.
+- **`verify-objects`/`verify_atmos_stream` are not a Dolby-decoder compatibility check either.**
+  They check this library's own tag, computed with a key *you* supply — useful for round-trip
+  testing and catching tampering in this project's own signed assets, but a `kValid` result says
+  nothing about whether any particular licensed decoder would accept the same stream, and a
+  `kMismatch` says nothing about why a licensed decoder might refuse one. Nothing in this project
+  reconstructs or replicates Dolby's own gate — see the opening paragraph above.
 - **Not required for object motion to be audible.** `AtmosEncoder` pans every object into the
   transmitted 5.1 bed regardless of signing, so movement is audible on any decoder — signing is
   what lets a validating decoder reconstruct the objects as *discrete, height-rendered* sources

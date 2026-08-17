@@ -1,8 +1,11 @@
-# vcpkg port for ac3forge - installs the library only (ac3::forge, plus
-# matroska::matroska behind the "matroska" feature). Never the CLI, GUI,
-# tests, examples or fuzz harnesses - the root CMakeLists.txt's
-# AC3FORGE_BUILD_CLI/GUI/TESTS/EXAMPLES/FUZZERS options make that a plain
-# OFF each, no vcpkg-specific patching needed.
+# vcpkg port for ac3forge - installs the library only (ac3::forge, plus matroska::matroska,
+# mp4::mp4 and mpegts::mpegts behind their own default-on features). Never the CLI, GUI, tests,
+# examples or fuzz harnesses - the root CMakeLists.txt's
+# AC3FORGE_BUILD_CLI/GUI/TESTS/EXAMPLES/FUZZERS options make that a plain OFF each, no
+# vcpkg-specific patching needed. ac3adm::ac3adm (the ADM/BW64 reader) is deliberately NOT a
+# feature here - it isn't part of the find_package(ac3forge) package at all (needs Boost,
+# consumed only via in-tree add_subdirectory - see docs/library/index.md), so there is nothing
+# for a vcpkg feature to install.
 #
 # Staged here (packaging/vcpkg-port/ac3forge/) for local --overlay-ports
 # validation before being copied into a microsoft/vcpkg fork as
@@ -12,21 +15,23 @@ vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO iainchesworth/ac3forge
     REF "v${VERSION}"
-    # Computed directly from https://github.com/iainchesworth/ac3forge/archive/refs/tags/v0.5.0-beta.1.tar.gz
+    # Computed directly from https://github.com/iainchesworth/ac3forge/archive/refs/tags/v0.6.0-beta.1.tar.gz
     # (sha512sum) rather than assumed. If `vcpkg install` reports a mismatch
     # on the first real run, GitHub's archive generation differs from this -
     # trust vcpkg's reported hash over this one and update it here.
-    SHA512 675d428654800e2b08bfa1c572cc7e769df8ba322d31836383360b197029e52c8f0443c2954481621d18a526965acc605a882a82456cd5232493d39c174bed5f
+    SHA512 899532cbf73e702c87e6b5a56ca7ae5bfb6f1b82006bf41419298e4321dbcc9d8f91acc4ac0b48bca7f50f9bd3066b2d85f00cef243eafce6b6c99f2c2e13d9f
     HEAD_REF main
 )
 
 # One vcpkg feature <-> one AC3FORGE_BUILD_<NAME> CMake option. This is the
-# pattern a future optional component (e.g. mp4) extends - see
-# cmake/InstallLibrary.cmake's header comment in the main repo.
+# pattern a future optional component extends - see cmake/InstallLibrary.cmake's
+# header comment in the main repo.
 vcpkg_check_features(
     OUT_FEATURE_OPTIONS FEATURE_OPTIONS
     FEATURES
         matroska AC3FORGE_BUILD_MATROSKA
+        mp4      AC3FORGE_BUILD_MP4
+        mpegts   AC3FORGE_BUILD_MPEGTS
 )
 
 # DERIVED_VERSION_OVERRIDE: cmake/GitVersionDerivation.cmake normally derives

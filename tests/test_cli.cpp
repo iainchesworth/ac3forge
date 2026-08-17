@@ -744,6 +744,91 @@ TEST_CASE("sign-objects reaches atmos, atmos-path and atmos-encode alike",
     }
 }
 
+// verify-objects mirrors sign-objects' UX on the read side: decode/monitor
+// check each frame's EMDF object signature against signing-key= (same option
+// sign-objects already uses) instead of just decoding blind. This is a
+// deliberate opt-in design (see docs/concepts/object-signing.md and
+// Eac3Decoder's own stance that the protection field is opaque per spec) -
+// the last SECTION here is the one that matters most: decoding the very same
+// signed stream with no verify-objects token at all must succeed exactly as
+// it always has, proving the bypass is real and not just documented.
+TEST_CASE("verify-objects checks a decode against the signer's own tag",
+          "[cli][atmos][signing][verify]") {
+    const auto dir = scratch_dir();
+    const auto key_path = dir / "verify_objects_test.key";
+    const auto wrong_key_path = dir / "verify_objects_wrong.key";
+    {
+        std::ofstream key{key_path, std::ios::binary};
+        REQUIRE(key.is_open());
+        key << "not-a-real-key-just-test-material";
+    }
+    {
+        std::ofstream key{wrong_key_path, std::ios::binary};
+        REQUIRE(key.is_open());
+        key << "a-completely-different-key-for-mismatch";
+    }
+
+    const auto signed_ec3 = dir / "verify_objects_signed.ec3";
+    const auto signed_log = dir / "verify_objects_signed.log";
+    const auto sign_rc =
+        run_cli("atmos \"" + signed_ec3.string() +
+                    "\" 1 448 2 4 objects sign-objects signing-key=\"" + key_path.string() + "\"",
+                signed_log);
+    REQUIRE(sign_rc == 0);
+    REQUIRE(fs::exists(signed_ec3));
+
+    SECTION("the same key verifies every frame and the decode succeeds") {
+        const auto out_wav = dir / "verify_objects_ok.wav";
+        const auto log = dir / "verify_objects_ok.log";
+        const auto rc = run_cli("decode \"" + signed_ec3.string() + "\" \"" + out_wav.string() +
+                                    "\" verify-objects signing-key=\"" + key_path.string() + "\"",
+                                log);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(rc == 0);
+        CHECK(fs::exists(out_wav));
+        CHECK(text.find("valid") != std::string::npos);
+        CHECK(text.find("0 mismatched") != std::string::npos);
+    }
+
+    SECTION("a wrong key mismatches and the command refuses") {
+        const auto out_wav = dir / "verify_objects_wrong_key.wav";
+        const auto log = dir / "verify_objects_wrong_key.log";
+        const auto rc = run_cli("decode \"" + signed_ec3.string() + "\" \"" + out_wav.string() +
+                                    "\" verify-objects signing-key=\"" +
+                                    wrong_key_path.string() + "\"",
+                                log);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(rc != 0);
+        CHECK(text.find("mismatch") != std::string::npos);
+    }
+
+    SECTION("verify-objects with no key anywhere is a hard error, same shape as sign-objects") {
+        const auto out_wav = dir / "verify_objects_no_key.wav";
+        const auto log = dir / "verify_objects_no_key.log";
+        const auto rc = run_cli(
+            "decode \"" + signed_ec3.string() + "\" \"" + out_wav.string() + "\" verify-objects",
+            log);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(rc != 0);
+        CHECK(text.find("needs a key") != std::string::npos);
+    }
+
+    SECTION("decoding the same signed stream WITHOUT verify-objects still succeeds - the "
+           "bypass") {
+        const auto out_wav = dir / "verify_objects_bypass.wav";
+        const auto log = dir / "verify_objects_bypass.log";
+        const auto rc =
+            run_cli("decode \"" + signed_ec3.string() + "\" \"" + out_wav.string() + "\"", log);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(rc == 0);
+        CHECK(fs::exists(out_wav));
+    }
+}
+
 // keep-partial (item 34): a bare trailing token, same style as heavy/
 // mixmeta/sign-objects, that keeps whatever frames a failed encode already
 // produced at <name>.partial.<ext> instead of discarding them - see
@@ -1737,6 +1822,102 @@ TEST_CASE("eac3-silence threads its layout argument through to the reported labe
     REQUIRE(decoded->frame_count() > 0);
     for (const auto& channel : decoded->channels) {
         CHECK(rms(channel, 0, channel.size()) == 0.0);
+    }
+}
+
+// decode's own object-layer gap (PRs #168/#169 made Eac3Decoder actually
+// populate DecodedAccessUnit::object_metadata/object_audio; nothing on the
+// CLI side read either field until now): a plain decode should report the
+// object count it found, and objects_dir should export each JOC-
+// reconstructed object as its own genuinely non-silent mono WAV - distinct
+// from the bed and, since every 'atmos' object gets its own tone, from each
+// other too.
+TEST_CASE("decode reports the object layer of an Atmos stream and exports it with objects_dir",
+          "[cli][decode][atmos]") {
+    const auto dir = scratch_dir();
+    const auto ec3_path = dir / "decode_atmos_objects.ec3";
+    REQUIRE(run_cli("atmos \"" + ec3_path.string() + "\" 1 448 3 4 objects",
+                    dir / "decode_atmos_objects_encode.log") == 0);
+
+    // Plain decode, no objects_dir: the summary line is there, no export happens.
+    const auto wav_path = dir / "decode_atmos_objects.wav";
+    const auto plain_log = dir / "decode_atmos_objects_plain.log";
+    REQUIRE(
+        run_cli("decode \"" + ec3_path.string() + "\" \"" + wav_path.string() + "\"", plain_log) ==
+        0);
+    const auto plain_text = read_log(plain_log);
+    INFO(plain_text);
+    CHECK(plain_text.find("3 dynamic objects") != std::string::npos);
+    CHECK(plain_text.find("4 objects") != std::string::npos);
+    CHECK(plain_text.find("JOC audio reconstructed") != std::string::npos);
+    CHECK(plain_text.find("wrote") == std::string::npos);
+
+    // Same stream, with objects_dir: one object_NN.wav per dynamic object.
+    const auto objects_dir = dir / "decode_atmos_objects_out";
+    fs::remove_all(objects_dir);
+    const auto export_log = dir / "decode_atmos_objects_export.log";
+    REQUIRE(run_cli("decode \"" + ec3_path.string() + "\" \"" + wav_path.string() + "\" \"" +
+                        objects_dir.string() + "\"",
+                    export_log) == 0);
+    const auto export_text = read_log(export_log);
+    INFO(export_text);
+    CHECK(export_text.find("wrote 3 object WAV(s)") != std::string::npos);
+
+    std::vector<std::vector<float>> object_channels;
+    for (int i = 0; i < 3; ++i) {
+        const auto object_path = objects_dir / ("object_0" + std::to_string(i) + ".wav");
+        REQUIRE(fs::exists(object_path));
+        const auto decoded = ac3::io::read_wav(object_path.string());
+        REQUIRE(decoded.has_value());
+        REQUIRE(decoded->channels.size() == 1);
+        REQUIRE(decoded->frame_count() > 0);
+        CHECK(rms(decoded->channels[0], 0, decoded->channels[0].size()) > 0.0);
+        object_channels.push_back(decoded->channels[0]);
+    }
+    // Three distinct orbiting tones in, so not every object should have
+    // decoded to the same waveform - compared as a bool for the same reason
+    // the atmos-encode motion-vs-static test above does (stringifying a
+    // multi-thousand-sample diff on failure is slow and was seen to crash).
+    CHECK(object_channels[0] != object_channels[1]);
+    CHECK(object_channels[1] != object_channels[2]);
+}
+
+TEST_CASE("decode objects_dir warns instead of exporting when there is no object audio to export",
+          "[cli][decode][atmos]") {
+    const auto dir = scratch_dir();
+
+    SECTION("plain AC-3 has no object layer at all") {
+        const auto ac3_path = dir / "decode_objects_plain_ac3.ac3";
+        REQUIRE(run_cli("sine \"" + ac3_path.string() + "\" 1 192 1000 50 stereo",
+                        dir / "decode_objects_plain_ac3_encode.log") == 0);
+        const auto wav_path = dir / "decode_objects_plain_ac3.wav";
+        const auto objects_dir = dir / "decode_objects_plain_ac3_out";
+        fs::remove_all(objects_dir);
+        const auto log = dir / "decode_objects_plain_ac3.log";
+        REQUIRE(run_cli("decode \"" + ac3_path.string() + "\" \"" + wav_path.string() + "\" \"" +
+                            objects_dir.string() + "\"",
+                        log) == 0);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(text.find("no object layer") != std::string::npos);
+        CHECK_FALSE(fs::exists(objects_dir));
+    }
+
+    SECTION("bed51 mode carries no object container to reconstruct from") {
+        const auto ec3_path = dir / "decode_objects_bed51.ec3";
+        REQUIRE(run_cli("atmos \"" + ec3_path.string() + "\" 1 448 3 4 bed51",
+                        dir / "decode_objects_bed51_encode.log") == 0);
+        const auto wav_path = dir / "decode_objects_bed51.wav";
+        const auto objects_dir = dir / "decode_objects_bed51_out";
+        fs::remove_all(objects_dir);
+        const auto log = dir / "decode_objects_bed51.log";
+        REQUIRE(run_cli("decode \"" + ec3_path.string() + "\" \"" + wav_path.string() + "\" \"" +
+                            objects_dir.string() + "\"",
+                        log) == 0);
+        const auto text = read_log(log);
+        INFO(text);
+        CHECK(text.find("no reconstructed object audio to export") != std::string::npos);
+        CHECK_FALSE(fs::exists(objects_dir));
     }
 }
 

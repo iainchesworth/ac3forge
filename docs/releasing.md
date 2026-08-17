@@ -11,10 +11,11 @@ ac3forge derives its version from git tags, the same way aqualink-automate does.
 `cmake/GitVersionDerivation.cmake` runs `git describe --tags --match "v*"` **before**
 `project()` in the top-level `CMakeLists.txt` and feeds the result straight into
 `project(ac3forge VERSION ...)` - the tag is the single source of truth. Nothing in the tree
-hardcodes a version to bump by hand: not `CMakeLists.txt`, and not `vcpkg.json`'s `"version"`
-field, which is a deliberate placeholder never read for anything but satisfying vcpkg's manifest
-schema (its own `$comment` says so; the staged port's `version-semver` is what tracks releases -
-see [vcpkg port](#vcpkg-port) below).
+hardcodes a version to bump by hand: not `CMakeLists.txt`, and not the root `vcpkg.json`, which
+carries no `"version"` field at all - per vcpkg's own schema that field is only required for a
+manifest describing a *library* (a port), and this one just declares this project's own
+build-time dependencies (Catch2, optionally Boost/Tracy). The staged port's `version-semver` is
+what actually tracks releases - see [vcpkg port](#vcpkg-port) below.
 
 So the order is just:
 
@@ -113,9 +114,19 @@ A vcpkg port for `ac3forge` is staged in-tree at
 (`vcpkg.json`,
 `portfile.cmake`, `usage`) and is pending submission to the curated `microsoft/vcpkg` registry -
 see [docs/library/index.md](library/index.md) for how a consumer uses it either
-way. It installs the library only (`ac3::forge`, plus `matroska::matroska` behind the `matroska`
-feature - see `cmake/InstallLibrary.cmake`'s `AC3FORGE_BUILD_MATROSKA`/
-`AC3FORGE_INSTALL_BOTH_LINKAGES` options), never the CLI/GUI/tests/examples/fuzzers.
+way. It installs the library only (`ac3::forge`, plus `matroska::matroska`/`mp4::mp4`/
+`mpegts::mpegts` behind their own default-on `matroska`/`mp4`/`mpegts` features - see
+`cmake/InstallLibrary.cmake`'s `AC3FORGE_BUILD_MATROSKA`/`AC3FORGE_BUILD_MP4`/
+`AC3FORGE_BUILD_MPEGTS`/`AC3FORGE_INSTALL_BOTH_LINKAGES` options), never the
+CLI/GUI/tests/examples/fuzzers. `ac3adm::ac3adm` (the ADM/BW64 reader) has no vcpkg feature and
+never will while it stays outside `find_package(ac3forge)` entirely - see
+[docs/library/index.md](library/index.md).
+
+Any future optional library component follows the same three-step recipe this repo's own
+`AC3FORGE_BUILD_<NAME>` options already establish: add the CMake option and its
+`cmake/InstallLibrary.cmake` guard first (that part isn't vcpkg-specific), then add a same-named
+feature to `packaging/vcpkg-port/ac3forge/vcpkg.json` and one line to `portfile.cmake`'s
+`vcpkg_check_features()` call.
 
 **Every release tag, once the port has been merged upstream**, needs a follow-up PR to
 `microsoft/vcpkg` - the curated registry has no mechanism to track a moving `main`, so a new
@@ -142,7 +153,17 @@ vcpkg install ac3forge[core] --classic --overlay-ports=packaging/vcpkg-port --tr
 `--classic` is required from inside this repo - the root `vcpkg.json` (manifest mode, for this
 project's *own* build-time dependencies) would otherwise shadow the package-name argument.
 Check for a clean post-build lint (no "not used"/"missing usage" warnings) and that
-`ac3forge[core]` installs without `matroska::matroska` at all, not just unlinked.
+`ac3forge[core]` installs without `matroska::matroska`/`mp4::mp4`/`mpegts::mpegts` at all, not
+just unlinked.
+
+Fetching a real tag only exercises whatever `AC3FORGE_BUILD_*` options actually existed in that
+tagged source - `vcpkg_from_github()`'s `REF` always points at an already-released tag, so a
+CMake option added since the last tag (as happened here: `AC3FORGE_BUILD_MP4`/
+`AC3FORGE_BUILD_MPEGTS` landed in `develop` after `v0.5.0-beta.1`) can't be exercised through a
+real fetch until the *next* tag contains it. To validate a port change against unreleased CMake
+options, temporarily swap the `vcpkg_from_github()` block in a scratch copy of `portfile.cmake`
+for `set(SOURCE_PATH "<absolute path to this checkout>")`, run the same three commands against
+that scratch copy, and discard it once validated - never commit that substitution.
 
 ## What gets published
 
