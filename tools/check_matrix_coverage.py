@@ -38,13 +38,34 @@ directly, via the same error-message path real bad input hits:
              script exists to catch - and only the CLI's own usage text
              said the [vbr] argument existed at all.
 
-Coverage itself is a presence check, not a scoped one: each canonical token
-just has to appear as a whole word somewhere in the matrix script. That is
-looser than confirming it is in the *right* loop, but it is what makes this
-check itself hard to fool by accident, and false negatives (a token that
-"looks" covered but isn't really exercised) are far cheaper here than false
-positives (a real gap that stays invisible) - see CONTRIBUTING.md's
-validation discipline.
+Coverage is a presence check for commands, layouts, Atmos modes and vbr: each
+canonical token just has to appear as a whole word somewhere in the matrix
+script. That is looser than confirming it is in the *right* loop, but it is
+what makes those checks hard to fool by accident, and a false FAIL (a token
+that really is exercised but the check cannot see it) is far cheaper here than
+a false PASS (a real gap that stays invisible) - see CONTRIBUTING.md's
+validation discipline. Those four have shown no collisions: their token sets
+are distinctive enough that appearing anywhere in the script means what it
+looks like it means.
+
+The tools check is the one exception, and it is scoped rather than
+whole-file. The presence check assumed a token could only collide with a token
+- another option name, some identifier. What it did not anticipate was a token
+colliding with an unrelated option *VALUE*: on 2026-08-17 the new `auto` tool
+set was reported covered while it had no matrix leg at all, because the
+metadata option `dialnorm=auto` elsewhere in the script supplied the whole-word
+match. `auto` has a real leg now, but the shape of that failure is permanent -
+any short tool token added later can collide the same way with any value
+anywhere in the script. So tool tokens are gathered from the two places a tool
+set is actually USED (matrix_tool_tokens below): every `for tools in ...` loop
+header, and the tools argument of literal `run eac3-encode <wav> <out> <rate>
+<tools> <layout>` calls. Being named there means being encoded with; being
+named anywhere else no longer counts. The other four checks are deliberately
+left on the looser whole-file test - narrowing a check that has never been
+fooled would just add a way for it to be wrong.
+
+All five checks match against the script with `#` comments stripped, so a
+token that appears only in prose never counts as coverage.
 
 Usage (repo root, after building):
   python tools/check_matrix_coverage.py [--cli path] [--matrix path]
@@ -136,6 +157,25 @@ def tool_names(cli: str, tmp: Path) -> set[str]:
     return tokens
 
 
+def strip_comments(matrix_text: str) -> str:
+    """The matrix script with its '#' comments removed, so a token that only
+    ever appears in prose does not read as coverage.
+
+    A '#' opens a comment in shell only at the start of a word, so that is all
+    this strips - and the matrix script has no '#' inside a quoted string for
+    the simplification to get wrong anyway. If it ever grows one, stripping too
+    much can only turn a covered token into a reported gap: loud and false, the
+    direction this whole script is built to fail in."""
+    return re.sub(r"(?m)(?:^|(?<=\s))#.*$", "", matrix_text)
+
+
+def join_continuations(matrix_text: str) -> str:
+    """Backslash-continued lines rejoined into one, so a `for tools in ...`
+    list wrapped across two lines is read whole rather than truncated at the
+    wrap (the E-AC-3 tool loop is wrapped exactly that way today)."""
+    return re.sub(r"\\\n\s*", " ", matrix_text)
+
+
 def covered(matrix_text: str, token: str) -> bool:
     return re.search(rf"\b{re.escape(token)}\b", matrix_text) is not None
 
@@ -143,6 +183,48 @@ def covered(matrix_text: str, token: str) -> bool:
 def commands_invoked(matrix_text: str) -> set[str]:
     return set(re.findall(
         r"\brun(?:_tolerate_eac3_tool_unsupported)?\s+([a-z][a-z0-9-]*)", matrix_text))
+
+
+def matrix_tool_tokens(matrix_text: str) -> set[str]:
+    """Every tool token the matrix actually ENCODES WITH, rather than every one
+    it happens to contain - see the module docstring for the false pass that
+    made this check the one scoped exception.
+
+    Two sources, which between them are the only ways this script chooses a
+    tool set:
+
+      for tools in none "atten:2" noatten nofastmdct; do      <- the loop lists
+      run eac3-encode in.wav out.ec3 256 all "$layout"        <- literal calls
+
+    A '+'-joined set contributes each of its parts ("all+nofastmdct" covers
+    both), and a ':'-parameterised token contributes its bare name ("cpl:4"
+    covers cpl), matching how parse_tools reads them. A field that is a shell
+    expansion ("$tools") names no token and is skipped - the loop header it
+    came from is what supplied the real ones."""
+    text = join_continuations(strip_comments(matrix_text))
+    fields: list[str] = []
+    # Every `for tools in <list>; do` header. There are three today (the
+    # round-trips-like-none set, the full Annex E tool set, and the ecpl/tpn
+    # set that has no FFmpeg oracle) - 'tpn' is canonical and reachable only
+    # from the third, so this deliberately finds them all rather than a fixed
+    # pair.
+    for body in re.findall(r"^\s*for\s+tools\s+in\s+(.*?)\s*;\s*do\b", text, re.M):
+        fields.extend(re.findall(r'"[^"]*"|\'[^\']*\'|\S+', body))
+    # The tools argument of a literal `run eac3-encode <wav> <out> <rate>
+    # <tools> <layout>` call.
+    for m in re.finditer(r"^\s*run\s+eac3-encode(?:\s+\S+){3}\s+(\S+)\s+\S+", text, re.M):
+        fields.append(m.group(1))
+
+    tokens = set()
+    for field in fields:
+        field = field.strip("\"'")
+        if "$" in field or not field:
+            continue
+        for part in field.split("+"):
+            name = part.split(":")[0].strip()
+            if name:
+                tokens.add(name)
+    return tokens
 
 
 def check(name: str, canonical: set[str], missing: set[str]) -> None:
@@ -167,7 +249,9 @@ def main() -> None:
     if not Path(cli).exists():
         raise SystemExit(f"ac3cli not found at {cli} - build first, or pass --cli")
     matrix_path = REPO / args.matrix if not Path(args.matrix).is_absolute() else Path(args.matrix)
-    matrix_text = matrix_path.read_text()
+    # Prose is not coverage: every check below sees the script without its
+    # comments, including the whole-file presence test the other four use.
+    matrix_text = strip_comments(matrix_path.read_text())
 
     with tempfile.TemporaryDirectory(prefix="ac3matrixcov_") as tmp_str:
         tmp = Path(tmp_str)
@@ -187,9 +271,16 @@ def main() -> None:
         missing = {t for t in eac3_layouts if not covered(matrix_text, t)}
         check("eac3-layouts", eac3_layouts, missing)
 
-        print("Annex E tools - ac3cli eac3-encode's own accepted set (minus 'none')")
+        print("Annex E tools - ac3cli eac3-encode's own accepted set (minus 'none'),"
+              " matched against the tool sets the matrix encodes with")
         tools = tool_names(cli, tmp) - {"none"}
-        missing = {t for t in tools if not covered(matrix_text, t)}
+        encoded_with = matrix_tool_tokens(matrix_text)
+        if not encoded_with:
+            raise SystemExit(
+                "found no tool sets at all in the matrix script - either it stopped using "
+                "`for tools in ...` / `run eac3-encode ...`, or matrix_tool_tokens() no "
+                "longer recognises how it does; fix that before trusting this check")
+        missing = tools - encoded_with
         check("annex-e-tools", tools, missing)
 
         print("Atmos modes - no CLI introspection; small hardcoded set, see module docstring")
