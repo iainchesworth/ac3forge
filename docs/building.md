@@ -13,6 +13,7 @@ Every command here has been run on the configuration described under
 | vcpkg | any recent | Supplies Catch2 (needed only when tests are on); with `-DVCPKG_MANIFEST_FEATURES=adm`, the Boost header libraries `AC3FORGE_BUILD_ADM=ON` needs; and with `-DVCPKG_MANIFEST_FEATURES=profiling`, the Tracy profiler `AC3FORGE_ENABLE_TRACY=ON` needs — see [Options](#options). None of the three is required for a default build. |
 | Qt | 6.5+ prebuilt | GUI only. **Never from vcpkg** — see [Qt](#qt). |
 | ALSA (`libasound2-dev`) | any recent | Linux only, optional. Live capture/monitor/passthrough — see [Linux audio](#linux-audio). |
+| PipeWire (`libpipewire-0.3-dev`) | any recent | Linux only, optional, used only when ALSA is not — see [Linux audio](#linux-audio). |
 | Python 3 + numpy | 3.11+ | Only for `tools/`; not part of the build. |
 | FFmpeg CLI | 8.x | Only for validation scripts; not part of the build. |
 
@@ -184,7 +185,8 @@ platform/compiler fragment matches your machine.
 | `AC3FORGE_BUILD_MP4` | `ON` | Build `mp4::mp4` (`src/mp4`), the standalone MP4/ISOBMFF container writer. Same all-off constraint as `AC3FORGE_BUILD_MATROSKA`. |
 | `AC3FORGE_BUILD_MPEGTS` | `ON` | Build `mpegts::mpegts` (`src/mpegts`), the standalone MPEG-TS container writer. Same all-off constraint as `AC3FORGE_BUILD_MATROSKA`. |
 | `AC3FORGE_BUILD_ADM` | `OFF` | Build `ac3adm::ac3adm` (`src/ac3adm`), the standalone BW64/RF64 + ADM parser — see [ADM / BW64 reading](library/adm.md). Off by default, unlike every other library component: it vendors libbw64/libadm via `FetchContent`, and libadm needs several Boost header libraries, resolved separately via `-DVCPKG_MANIFEST_FEATURES=adm` (`vcpkg.json`'s `adm` feature) — turning this `ON` without also selecting that feature fails with a clear configure-time message rather than a bare "Boost not found". |
-| `AC3FORGE_WITH_ALSA` | `AUTO` | Linux only. `AUTO` builds the ALSA audio backend when libasound's headers are present; `ON` requires them; `OFF` never builds it. See [Linux audio](#linux-audio). |
+| `AC3FORGE_WITH_ALSA` | `AUTO` | Linux only. `AUTO` builds the ALSA audio backend when libasound's headers are present; `ON` requires them; `OFF` never builds it. Takes precedence over `AC3FORGE_WITH_PIPEWIRE` when both are found — see [Linux audio](#linux-audio). |
+| `AC3FORGE_WITH_PIPEWIRE` | `AUTO` | Linux only. `AUTO` builds the PipeWire audio backend when libpipewire-0.3's headers are present *and* ALSA was not selected; `ON` requires the headers (independently of ALSA); `OFF` never builds it. See [Linux audio](#linux-audio). |
 | `AC3FORGE_SANITIZERS` | empty | Comma-separated `-fsanitize=` value, e.g. `address,undefined` — see `cmake/Sanitizers.cmake`. Empty is a no-op; GCC/Clang only, MSVC is a configure error. Set via the `-asan-ubsan` preset above rather than by hand. |
 | `AC3FORGE_ENABLE_COVERAGE` | `OFF` | `--coverage` gcov instrumentation over every target it's linked into — see `cmake/Coverage.cmake`. Off is a no-op; GCC/Clang only, other compilers get a configure-time warning and no instrumentation. Set via the `-coverage` preset above rather than by hand. |
 | `AC3FORGE_ENABLE_TRACY` | `OFF` | Tracy profiler instrumentation (`ac3::tracy` — see `cmake/Tracy.cmake`). Needs vcpkg's `profiling` manifest feature (`-DVCPKG_MANIFEST_FEATURES=profiling`), which supplies Tracy itself; off is a no-op. |
@@ -267,57 +269,87 @@ Three of ac3forge's features touch the sound hardware — live capture (`ac3cli 
 `play`). Everything else is file I/O and needs no audio stack at all; `ac3cli spdif` in
 particular reaches an AV receiver by writing a WAV, on any machine.
 
-On Linux those three are implemented over **ALSA**, and the dependency is one package:
+On Linux those three are implemented over **ALSA** when its headers are present, and over
+**PipeWire** when they are not but PipeWire's are — see [Why ALSA still comes
+first](#why-alsa-still-comes-first) for the precedence between them. Installing ALSA's headers
+is one package:
 
 ```bash
 sudo apt-get install libasound2-dev
 ```
 
-(`alsa-lib-devel` on Fedora, `alsa-lib` on Arch.) Nothing else is needed: no PipeWire or
-PulseAudio development headers, no vcpkg port, no runtime daemon. Recording from the ALSA
-`default` device goes through PipeWire or PulseAudio automatically wherever one is running,
-because that is what those install themselves as.
+(`alsa-lib-devel` on Fedora, `alsa-lib` on Arch.) Nothing else is needed: no PulseAudio
+development headers, no vcpkg port, no runtime daemon. Recording from the ALSA `default` device
+goes through PipeWire or PulseAudio automatically wherever one is running, because that is what
+those install themselves as.
 
-The dependency is **optional and detected**. Configure reports which way it went:
+PipeWire's headers are the alternative, for a machine without ALSA's:
+
+```bash
+sudo apt-get install libpipewire-0.3-dev
+```
+
+(`pipewire-devel` on Fedora.) Located via pkg-config rather than a CMake find module, since
+PipeWire ships none of its own.
+
+Both dependencies are **optional and detected**. Configure reports which one it picked:
 
 ```
 -- ALSA 1.2.15.3: live capture, monitor playback and IEC 61937 passthrough enabled
 --   Audio backend  : alsa
 ```
 
-Without the headers, configure succeeds anyway and says so; the build then selects
+```
+-- PipeWire 1.6.2: live capture and monitor playback enabled; IEC 61937 passthrough negotiates
+   for real but needs a compressed codec enabled on the target node by the session manager first
+   - see src/platform/pipewire/passthrough.cpp
+--   Audio backend  : pipewire
+```
+
+Without either set of headers, configure succeeds anyway and says so; the build then selects
 `src/audio/src/platform/posix/`, whose entry points all return `kNoBackend`, and `ac3cli` marks
 the affected commands `UNAVAILABLE HERE` in its usage rather than pretending they exist. Pass
-`-DAC3FORGE_WITH_ALSA=ON` to turn a missing libasound into a configure error instead, which is
-what a packaging build wants.
+`-DAC3FORGE_WITH_ALSA=ON` and/or `-DAC3FORGE_WITH_PIPEWIRE=ON` to turn a missing set of headers
+into a configure error instead, which is what a packaging build wants.
 
-#### Why ALSA and not PipeWire
+#### Why ALSA still comes first
 
-Capture and monitor playback are ordinary PCM and every Linux audio API can do them. Passthrough
-is the discriminator, and it is what the whole project is for: sending an AC-3 or E-AC-3
-elementary stream down an S/PDIF or HDMI link so the receiver decodes it.
+Capture and monitor playback are ordinary PCM and both backends do them for real — native
+`pw_stream` on PipeWire's side, not its ALSA-compatibility shim. Passthrough is the
+discriminator, and it is what the whole project is for: sending an AC-3 or E-AC-3 elementary
+stream down an S/PDIF or HDMI link so the receiver decodes it.
 
 That is not a "format" on Linux the way it is on Windows. A bitstream is opened as plain 16-bit
 stereo PCM, and what tells the receiver these bytes are Dolby Digital rather than music is the
 IEC 60958 **channel status** travelling beside them — specifically the non-audio bit, AES0
 bit 1. ALSA is where that bit is expressed (as arguments on the device name,
-`iec958:CARD=PCH,DEV=0,AES0=0x06,…`). PulseAudio's `PA_STREAM_PASSTHROUGH` and PipeWire's
-`SPA_MEDIA_SUBTYPE_iec958` are both real, and both end in the same ALSA call made by a daemon
-instead of by us. So ALSA is not merely the lowest common denominator here — it is the layer
-the other two are built on, it is present on every Linux system including ones running no sound
-server at all, and its device string is what gives unmixed access to the hardware.
+`iec958:CARD=PCH,DEV=0,AES0=0x06,…`), and it works the moment compatible hardware exists — no
+extra configuration.
 
-The cost is coexistence: opening a device directly takes it exclusively, so a running sound
-server has to have released it. That is the same bargain WASAPI exclusive mode strikes on
-Windows, for the same reason — a mixer that resamples or volume-scales a burst stream turns it
-into noise. A PipeWire backend would be a reasonable second one to add (as a sibling directory
-under `src/audio/src/platform/`, selected the same way); it would buy politeness, not capability.
+PipeWire has its own real, current, native mechanism for the same thing —
+`SPA_MEDIA_SUBTYPE_iec958`, `spa_format_audio_iec958_build()`, `PW_STREAM_FLAG_EXCLUSIVE` — not
+aspirational API surface; `src/platform/pipewire/passthrough.cpp`'s own header comment cites a
+real shipped client (Kodi's PipeWire passthrough support) that negotiates exactly this way. What
+it does not have is ALSA's "just works": a PipeWire sink only offers a compressed codec once its
+`iec958Codecs` control has been populated by the session manager (a WirePlumber ALSA-monitor
+rule, or a one-off `pw-cli` call) — configuration this library has no portable way to perform on
+a caller's behalf. On a stock desktop where nobody has touched that setting, every PipeWire sink
+honestly has no compressed codec enabled, even though the exact same hardware is reachable
+directly through ALSA underneath the very PipeWire daemon that's running.
+
+That is why ALSA keeps first precedence in `src/audio/CMakeLists.txt` whenever both are found,
+rather than PipeWire winning by default for being the modern norm on most current desktops:
+preferring it unconditionally would silently regress `ac3cli outputs`/`play` on exactly the
+common case where nobody has configured `iec958Codecs`. The explicit escape hatch for a machine
+where PipeWire's compressed codecs genuinely are configured is
+`-DAC3FORGE_WITH_ALSA=OFF -DAC3FORGE_WITH_PIPEWIRE=ON`, the same shape `-DAC3FORGE_WITH_ALSA=OFF`
+alone already has today.
 
 #### What has and has not been verified
 
-Verified on WSL2 Ubuntu 26.04 with gcc 15.2 and clang 21.1, in every configuration: with
-libasound present and absent, and under ASan+UBSan with leak detection. The full suite passes
-in all of them. The device-independent halves of the backend — device-name construction,
+**ALSA.** Verified on WSL2 Ubuntu 26.04 with gcc 15.2 and clang 21.1, in every configuration:
+with libasound present and absent, and under ASan+UBSan with leak detection. The full suite
+passes in all of them. The device-independent halves of the backend — device-name construction,
 channel-status derivation, the negotiation, the render and capture threads, start/stop, and the
 error mapping — were additionally driven end to end against ALSA's software `null` PCM.
 
@@ -328,6 +360,18 @@ on Linux is bitstreaming to a real receiver: WSL2 has no sound devices and no ke
 modules, so nothing here has been played to an actual S/PDIF or HDMI output, and no AV receiver
 has been asked to lock onto the result. Whether a given output accepts a bitstream is
 per-device anyway — `ac3cli outputs` probes each one and says.
+
+**PipeWire.** Verified on the same WSL2 Ubuntu 26.04 host with libpipewire-0.3 1.6.2, gcc 15.2
+and clang 21.1, with `-DAC3FORGE_WITH_ALSA=OFF -DAC3FORGE_WITH_PIPEWIRE=ON` forcing the
+selection (WSL2's image has both sets of headers installed, and ALSA wins by default — see
+above). The full suite passes on both compilers. There is no PipeWire session running in that
+environment at all (no `pipewire`/`wireplumber` daemon, confirmed by `pw_context_connect()`
+failing fast rather than hanging), so `enumerate_devices()`/`enumerate_render_devices()` were
+exercised against that "no session" path — returning an empty list rather than erroring, the
+PipeWire-side equivalent of ALSA's "no sound card" case — not against a real graph with real
+nodes to enumerate, negotiate with, or bitstream to. Nothing here has connected to a live
+PipeWire session, requested a compressed format from a real node, or been played to a real
+receiver.
 
 ## Qt
 
@@ -463,11 +507,13 @@ The Linux instructions were run on:
 | CMake | ≥ 3.28, Ninja generator |
 | Qt | 6.10.2, apt-packaged (`qt6-base-dev`, `qt6-declarative-dev`) |
 | ALSA | `libasound2-dev`, both present and as the no-ALSA fallback — see [Linux audio](#linux-audio) |
+| PipeWire | `libpipewire-0.3-dev` 1.6.2, present and forced selected (`-DAC3FORGE_WITH_ALSA=OFF -DAC3FORGE_WITH_PIPEWIRE=ON`) — see [Linux audio](#linux-audio) |
 | vcpkg | checkout at `/opt/vcpkg` |
 
 Result: configure, build and `ctest` all clean on both compilers, GUI and ALSA both included.
 The base suite is `ac3tests` and `ac3perf`'s Catch2 cases plus one ctest entry per example
-program; `AC3FORGE_WITH_ALSA`'s `tests/platform/alsa/` adds 14 entries, and the GUI's Qt Quick
+program; `AC3FORGE_WITH_ALSA`'s `tests/platform/alsa/` adds 14 entries (or, on a build that
+selected pipewire/ instead, `tests/platform/pipewire/` adds 5), and the GUI's Qt Quick
 Test harness (`ac3gui_qmltests`, `src/gui/tests/CMakeLists.txt`) adds one more — unlike every
 other GUI-related target, that one harness *does* register its own `ctest` entry, gated on both
 `AC3FORGE_BUILD_GUI` and `AC3FORGE_BUILD_TESTS`. A Linux build with neither ALSA nor the GUI

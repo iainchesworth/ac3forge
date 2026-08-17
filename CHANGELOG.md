@@ -39,6 +39,15 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   channel for spectral extension; `12 + 14n` for coupling, whose saving scales with how many
   channels share the band). It still honours an explicit `cpl:N`/`spx:N`/`aht:N` band-edge pin,
   so geometry stays steerable without taking over the decision.
+- **A native PipeWire audio backend for Linux** (`src/audio/src/platform/pipewire/`,
+  `AC3FORGE_WITH_PIPEWIRE`), selected via pkg-config when ALSA's headers are not present.
+  Live capture and monitor playback are genuine `pw_stream` PCM; IEC 61937 bitstream passthrough
+  negotiates PipeWire's own compressed-format API for real
+  (`SPA_MEDIA_SUBTYPE_iec958`/`spa_format_audio_iec958_build()`/`PW_STREAM_FLAG_EXCLUSIVE`), but
+  depends on the target node's `iec958Codecs` having been enabled by the session manager, which
+  is outside this library's control — see `src/platform/pipewire/passthrough.cpp` and
+  `docs/building.md`'s "Why ALSA still comes first" for the full account, including why ALSA
+  keeps precedence over PipeWire when both are present.
 
 ### Changed
 

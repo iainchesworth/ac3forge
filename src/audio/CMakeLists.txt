@@ -51,14 +51,14 @@ target_link_libraries(ac3audio PRIVATE ac3::forge ac3::warnings)
 # sources.
 #
 # The axis is the audio subsystem rather than the operating system, because
-# that is where the answers actually differ: windows/ is WASAPI, alsa/ is
-# ALSA, macos/ is CoreAudio, and posix/ is the one that says no to
-# everything (Linux only, now that macOS has its own directory - see below).
-# posix/'s existence is not tied to the OS the way the other three are,
-# which is the point - a Linux host without libasound's development headers
-# falls back to it and still builds a complete library, so the ALSA
-# dependency is optional rather than required. A future pipewire/ is a
-# directory and a branch below, and nothing else.
+# that is where the answers actually differ: windows/ is WASAPI, alsa/ and
+# pipewire/ are Linux's two real backends, macos/ is CoreAudio, and posix/ is
+# the one that says no to everything (Linux only, now that macOS has its own
+# directory - see below). posix/'s existence is not tied to the OS the way
+# the other three are, which is the point - a Linux host with neither
+# libasound's nor libpipewire's development headers falls back to it and
+# still builds a complete library, so both Linux dependencies are optional
+# rather than required.
 #
 # AC3FORGE_AUDIO_BACKEND names the selected directory and is published to the
 # parent scope: tests/CMakeLists.txt reads it to add that backend's own
@@ -96,21 +96,22 @@ if(LINUX)
     # -----------------------------------------------------------------------
     # ALSA, if its headers are here.
     #
-    # ALSA is the Linux backend rather than PipeWire or PulseAudio because of
-    # passthrough specifically: bitstreaming AC-3 means opening a device with
-    # the IEC 60958 non-audio bit set, and ALSA is both the layer that
-    # expresses that and the layer the other two reach it through. See the
-    # essay at the top of src/platform/alsa/passthrough.cpp.
+    # ALSA is the Linux backend rather than PulseAudio because of passthrough
+    # specifically: bitstreaming AC-3 means opening a device with the IEC
+    # 60958 non-audio bit set, and ALSA is both the layer that expresses that
+    # and the layer PulseAudio (and, per the PipeWire block below,
+    # ordinarily PipeWire too) reaches it through. See the essay at the top
+    # of src/platform/alsa/passthrough.cpp.
     #
     # Optional, and detected rather than assumed. libasound2-dev (Debian and
     # Ubuntu) or alsa-lib-devel (Fedora) is a small and universally packaged
     # dependency, but a machine that has not installed it must still
     # configure and build - ac3::forge, the codec itself, does not need a
     # sound card to exist. So AC3FORGE_WITH_ALSA defaults to AUTO: a missing
-    # ALSA falls back to posix/ with a message saying what was lost, and
-    # only -DAC3FORGE_WITH_ALSA=ON turns that into an error - which is what a
-    # packaging build wants, so a machine that has quietly lost the headers
-    # fails loudly rather than shipping a binary with no audio in it.
+    # ALSA falls back to pipewire/ or posix/ with a message saying what was
+    # lost, and only -DAC3FORGE_WITH_ALSA=ON turns that into an error - which
+    # is what a packaging build wants, so a machine that has quietly lost the
+    # headers fails loudly rather than shipping a binary with no audio in it.
     #
     # find_package(ALSA) is CMake's own module, not a vcpkg port: this is a
     # system library that comes with the distribution, and vcpkg.json stays
@@ -128,6 +129,85 @@ if(LINUX)
         find_package(ALSA)
     endif()
 
+    # -----------------------------------------------------------------------
+    # PipeWire, if its headers are here.
+    #
+    # A real second Linux backend, not a shim over the one above: capture.cpp
+    # and monitor.cpp are native pw_stream PCM, and passthrough.cpp genuinely
+    # does negotiate compressed IEC 61937 formats through PipeWire's own API
+    # (SPA_MEDIA_SUBTYPE_iec958, spa_format_audio_iec958_build(),
+    # PW_STREAM_FLAG_EXCLUSIVE) - see the essay at the top of
+    # src/platform/pipewire/passthrough.cpp for what that can and cannot
+    # promise in practice, which is the real reason ALSA keeps first
+    # precedence below rather than "PipeWire is what most desktops run
+    # today" winning by default.
+    #
+    # Same AUTO/ON/OFF shape as AC3FORGE_WITH_ALSA and resolved the same
+    # independent way - probed (or required, or skipped) on its own, with no
+    # regard for whether ALSA was also found - so each option's own meaning
+    # never depends on the other's outcome; only the SELECTION below (which
+    # one of a found ALSA/PipeWire/neither actually gets compiled) considers
+    # both at once.
+    #
+    # pkg-config, not find_package(): PipeWire ships no CMake config package
+    # of its own, only a pkg-config .pc file (libpipewire-0.3, from
+    # libpipewire-0.3-dev on Debian/Ubuntu or pipewire-devel on Fedora) - the
+    # same system-library-not-a-vcpkg-port reasoning as ALSA, via CMake's
+    # own FindPkgConfig module instead of a dedicated Find module because
+    # upstream provides no such module to find.
+    # -----------------------------------------------------------------------
+    set(AC3FORGE_WITH_PIPEWIRE "AUTO" CACHE STRING
+        "PipeWire backend: AUTO uses it when found, ON requires it, OFF never builds it")
+    set_property(CACHE AC3FORGE_WITH_PIPEWIRE PROPERTY STRINGS AUTO ON OFF)
+
+    if(AC3FORGE_WITH_PIPEWIRE STREQUAL "OFF")
+        set(PipeWire_FOUND FALSE)
+    else()
+        find_package(PkgConfig)
+        if(PkgConfig_FOUND)
+            # GLOBAL: tests/CMakeLists.txt links PkgConfig::PipeWire too (its
+            # own translation unit needs PipeWire's headers), and tests/ is a
+            # sibling of this directory under the top-level CMakeLists.txt,
+            # not a descendant - an imported target created without GLOBAL is
+            # only visible to this directory and its own subdirectories, so
+            # tests/ would not see it otherwise.
+            if(AC3FORGE_WITH_PIPEWIRE STREQUAL "ON")
+                pkg_check_modules(PipeWire REQUIRED IMPORTED_TARGET GLOBAL libpipewire-0.3)
+            else()
+                pkg_check_modules(PipeWire QUIET IMPORTED_TARGET GLOBAL libpipewire-0.3)
+            endif()
+        elseif(AC3FORGE_WITH_PIPEWIRE STREQUAL "ON")
+            message(FATAL_ERROR
+                "AC3FORGE_WITH_PIPEWIRE=ON but pkg-config itself was not found, and it is what "
+                "locates libpipewire-0.3. Install pkg-config, or set AC3FORGE_WITH_PIPEWIRE=AUTO "
+                "or =OFF.")
+        else()
+            set(PipeWire_FOUND FALSE)
+        endif()
+    endif()
+
+    # -----------------------------------------------------------------------
+    # Selection: three possible directories now, so one precedence rule picks
+    # exactly one. ALSA wins whenever both are present - not because PipeWire
+    # is somehow lesser, but because ALSA's passthrough works unconditionally
+    # the moment compatible hardware exists, while PipeWire's compressed
+    # codec support has to have been separately enabled on the target node by
+    # the session manager first (see src/platform/pipewire/passthrough.cpp's
+    # header comment) - so preferring PipeWire by default on every machine
+    # that merely has both sets of headers installed would silently regress
+    # 'ac3cli outputs'/'play' on the common case where nobody has touched
+    # that setting, even though the very ALSA device those commands want is
+    # sitting right there, underneath the PipeWire daemon that's running.
+    # Capture and monitor playback are equally real on both, so passthrough
+    # is the only thing this ordering is actually deciding.
+    #
+    # The escape hatch for a machine where PipeWire is deliberately preferred
+    # anyway (its compressed codecs ARE configured, say) is explicit rather
+    # than inferred from which cache variable looks "more default":
+    # -DAC3FORGE_WITH_ALSA=OFF -DAC3FORGE_WITH_PIPEWIRE=ON forces the
+    # selection the other way, the same way -DAC3FORGE_WITH_ALSA=OFF alone
+    # already forces posix/ today.
+    # -----------------------------------------------------------------------
     if(ALSA_FOUND)
         target_sources(ac3audio
             PRIVATE
@@ -140,6 +220,20 @@ if(LINUX)
         message(STATUS
             "ALSA ${ALSA_VERSION_STRING}: live capture, monitor playback and IEC 61937 "
             "passthrough enabled")
+    elseif(PipeWire_FOUND)
+        target_sources(ac3audio
+            PRIVATE
+                src/platform/pipewire/audio_backend.cpp
+                src/platform/pipewire/capture.cpp
+                src/platform/pipewire/monitor.cpp
+                src/platform/pipewire/passthrough.cpp)
+        target_link_libraries(ac3audio PRIVATE PkgConfig::PipeWire)
+        set(AC3FORGE_AUDIO_BACKEND pipewire)
+        message(STATUS
+            "PipeWire ${PipeWire_VERSION}: live capture and monitor playback enabled; IEC "
+            "61937 passthrough negotiates for real but needs a compressed codec enabled on "
+            "the target node by the session manager first - see "
+            "src/platform/pipewire/passthrough.cpp")
     else()
         target_sources(ac3audio
             PRIVATE
@@ -149,10 +243,11 @@ if(LINUX)
                 src/platform/posix/passthrough.cpp)
         set(AC3FORGE_AUDIO_BACKEND posix)
         message(STATUS
-            "ALSA headers not found; building without live capture, monitor playback or "
-            "IEC 61937 passthrough. Install libasound2-dev (Debian/Ubuntu) or alsa-lib-devel "
-            "(Fedora) to enable them, or set -DAC3FORGE_WITH_ALSA=ON to make their absence "
-            "an error.")
+            "Neither ALSA nor PipeWire headers were found; building without live capture, "
+            "monitor playback or IEC 61937 passthrough. Install libasound2-dev/alsa-lib-devel "
+            "or libpipewire-0.3-dev/pipewire-devel to enable them, or set "
+            "-DAC3FORGE_WITH_ALSA=ON / -DAC3FORGE_WITH_PIPEWIRE=ON to make their absence an "
+            "error.")
     endif()
 endif(LINUX)
 
