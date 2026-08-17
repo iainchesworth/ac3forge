@@ -12,6 +12,50 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 
 ## [Unreleased]
 
+## [0.8.0-beta.1] - 2026-08-17
+
+Seventh tagged release. The repository moved from `iainchesworth/ac3forge` to
+`iainchesworthlabs/ac3forge`; this release cuts over to the new location and closes out
+everything left stale by that move. No AC-3/E-AC-3/Atmos codec or CLI/GUI behavior changed.
+
+### Added
+
+- **CI can build on a self-hosted runner when one is actually online and idle**, per OS, falling
+  back to GitHub-hosted otherwise — never as an all-or-nothing switch, and never for fork PRs,
+  which always stay on GitHub-hosted regardless of runner availability. See
+  [docs/ci-self-hosted-runners.md](docs/ci-self-hosted-runners.md) for the live-check and
+  override design.
+
+### Fixed
+
+- **The published docs site was about to go stale at its own URL.** GitHub's repo-transfer
+  redirect covers `github.com/<owner>/<repo>` paths (blob/tree/actions/releases), but the default
+  GitHub Pages URL is owner-scoped with no such redirect — `iainchesworth.github.io/ac3forge`
+  would 404 once this repo's `gh-pages` branch (now under `iainchesworthlabs`) next deployed.
+  Docs now publish to and link from `iainchesworthlabs.github.io/ac3forge`.
+- **Dependabot auto-merge silently stopped working after the transfer.**
+  `dependabot-auto-merge.yml`'s repository guard hardcoded the pre-transfer
+  `iainchesworth/ac3forge` slug; since `github.repository` now reports
+  `iainchesworthlabs/ac3forge`, the job's `if` condition never matched, so no Dependabot PR
+  auto-merged since the move.
+- Roughly 40 hardcoded `iainchesworth/ac3forge` repo-path links across docs,
+  README/ROADMAP/CONTRIBUTING/SECURITY, `mkdocs.yml`, and the vcpkg portfile updated to
+  `iainchesworthlabs/ac3forge`. PR/issue references that predate the transfer
+  (`docs/wasm-demo.md`'s `#168`/`#169` links) were deliberately left as-is — GitHub's redirect
+  still serves them, and rewriting would misrepresent when they were filed.
+
+### Known gaps
+
+- Objects still will not decode as *objects* in Dolby's own decoder or hardware — unchanged from
+  0.6.0-beta.1; `verify-objects` checks a stream against its own signature, not Dolby's gate.
+- Exclusive-mode S/PDIF/HDMI passthrough has not been confirmed against real bitstreaming
+  hardware on any platform, ALSA or PipeWire.
+- `fscod2` audio content has no external decode oracle at all — verified only by this project's
+  own encoder/decoder round trip.
+
+See [Validation](docs/verification.md) for the full account of what is and isn't independently
+verified.
+
 ## [0.7.0-beta.1] - 2026-08-17
 
 Sixth tagged release. The main change is an AC-3 quality push: three independent fixes to the
