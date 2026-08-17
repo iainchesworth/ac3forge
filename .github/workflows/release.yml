@@ -171,9 +171,12 @@ jobs:
     # so that job never actually runs for a release, but GitHub validates a
     # reusable workflow's job permissions statically regardless of a job's own
     # `if:`, so the ceiling still has to be raised or this call is rejected
-    # outright before any job starts.
+    # outright before any job starts. actions: read is the same story for
+    # check-runners - see ci.yml's identical override and
+    # docs/ci-self-hosted-runners.md.
     permissions:
       contents: write
+      actions: read
     with:
       do_package: true
       # Full history + tags: GitVersionDerivation.cmake's `git describe` needs
@@ -192,6 +195,9 @@ jobs:
     # reaches the github-release job below to get uploaded anywhere.
     secrets:
       ATMOS_SIGNING_KEY: ${{ secrets.ATMOS_SIGNING_KEY }}
+      # Optional; see _build.yml's own description. Absent today, same as
+      # ci.yml's identical forward.
+      ORG_RUNNERS_TOKEN: ${{ secrets.ORG_RUNNERS_TOKEN }}
       ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
       ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
       ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
