@@ -147,6 +147,12 @@ decoded an AC-3/E-AC-3 bitstream and verified its loudness metadata against meas
   coverage of their own argv wiring and got some.
 - [x] **G3 (M)** — Differential decoder fuzzing against FFmpeg: feed the same mutated frames
   to both decoders and diff the PCM.
+- [x] **G4 (M)** — Encoder input-space fuzzing: random legal encoder configurations crossed
+  with adversarial audio, every stream produced held against both decoders
+  (`tools/fuzz_encoder_space.py`). Added after the `deltbaie` defect — a stream both decoders
+  reject — got through every gate above, because reaching it needed a specific input shape
+  rather than an untried option combination. AC-3 `encode` only; E-AC-3's own configuration
+  space (Annex E tool tokens, VBR, the wider layouts) is still uncovered.
 
 ## Deliberately not on the list
 

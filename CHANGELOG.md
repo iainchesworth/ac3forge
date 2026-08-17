@@ -14,6 +14,24 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 
 ### Added
 
+- **A property/fuzz harness over the AC-3 encoder's own input space**
+  (`tools/fuzz_encoder_space.py`). Every fuzzing target this project had mutates an
+  already-encoded bitstream, which asks whether the *decoder* survives corrupt input; the codec
+  matrix walks a hand-enumerated list of command lines against one bootstrap tone. Neither has
+  any notion of option *combinations*, and neither varies the input material. This one draws
+  random legal encoder configurations crossed with adversarial PCM whose character can change
+  part-way through a frame — which is what drives exponent-run splits, block switching and the
+  delta bit allocation — then holds every resulting stream against both this project's decoder
+  and FFmpeg's strict decode. Motivated by the `deltbaie` defect below, which produced streams
+  both decoders reject and escaped every existing gate; reverting that fix, the harness finds
+  rejected streams within seconds. Runs bounded on every pull request (in the FFmpeg-oracle
+  job) and deeper nightly, mirroring how `fuzz.yml` already splits short from nightly. It has
+  already surfaced a further, still-unfixed defect of its own: with coupling on, roughly one
+  stream in seven hundred is refused by FFmpeg's bit allocation while this project's decoder
+  accepts it, because the coupling channel's delta bit allocation offsets are written relative
+  to band 0 rather than to that channel's own start band. Both CI callers are non-blocking
+  until that is fixed.
+
 - **A new `auto` E-AC-3 tool set, which picks coupling/spectral extension/AHT from the
   per-channel bitrate** instead of taking the on/off flags as given. Every Annex E tool trades
   waveform fidelity for a band it can describe more cheaply than it can code, so each is a win
@@ -49,8 +67,11 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   reference, where there are fewest bits to misplace — with ViSQOL MOS flat or better throughout.
   The other four parameters are unchanged: `floorcod` turns out never to bind, and `fgaincod`,
   though worth more still at high rates, regresses at 192 kbit/s.
-- Together these move the AC-3 5.1 landscape leg at 448 kbit/s from 36.02 dB to 39.13 dB, from
-  2.98 dB behind FFmpeg 8.0.1 to 0.15 dB ahead of it, with MOS unchanged at 3.67.
+- Together with the LFE exponent fix below, these move the AC-3 5.1 landscape leg at 448 kbit/s
+  from 36.02 dB to 39.71 dB — from 2.98 dB behind FFmpeg 8.0.1 to 0.72 dB ahead of it — with MOS
+  unchanged at 3.67. The three are independent and were each measured separately: the delta cost
+  check and `dbpbcod` account for 39.13 dB between them, and the LFE fix adds the remaining
+  0.58 dB on top.
 - **Coupling is now dropped, rather than moved down in frequency, when spectral extension leaves
   it no room.** §E3.3.1 derives the coupling end frequency from `spxbegf`; when that landed below
   the requested `cplbegf` the encoder used to slide `cplbegf` down to meet it, which silently
@@ -65,6 +86,13 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 - **The landscape page shows SNR, LSD and MOS side by side, each with its own vs-FFmpeg/vs-DEE
   delta.** These tools trade waveform fidelity for banded envelope fidelity deliberately, so a
   single-metric headline reported a working tool as a straight loss.
+- **The CI quality gate now includes an AC-3 5.1 leg.** It was stereo-only, which left the LFE and
+  the full channel count with no absolute gate — two separate faults have now shipped through that
+  hole. The floor is deliberately loose: the gate decodes with FFmpeg under `-xerror`, so a
+  malformed frame fails it as a hard decode error, which is the failure mode both faults had.
+- **A new `tools/check_ac3_allocation.py`** reports per-channel and per-band SNR against FFmpeg at
+  a matched bitrate, to say *which* part of an allocation gap is worth chasing rather than only
+  that one exists. It is what found the LFE fault below.
 
 ### Fixed
 
@@ -75,6 +103,15 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   allocation diverged from the encoder's, and every field after that point was read at the wrong
   bit offset — a stream both this project's decoder and FFmpeg reject. Real material hit this at
   several bitrates, 64 and 96 kbit/s stereo among them. E-AC-3 was unaffected.
+- **AC-3 encoder: the LFE sent one exponent set per frame however much its level moved.** A
+  frame's exponents are the per-bin minimum across the blocks they cover, so a single set for six
+  blocks is a set chosen by the loudest of them and every quieter block was then quantized
+  against a scale meant for something louder. §5.4.3.15 makes `lfeexpstr` a single bit, and the
+  encoder was reading that bit as though it could only ever say "reuse". On the 5.1 reference the
+  LFE moves 10–16 dB inside one frame, which cost 12 dB of LFE channel SNR — 56% of the whole
+  encode's noise power, on a channel carrying a third of its signal. Worth +0.3 to +3.8 dB
+  overall across 192–640 kbit/s (+1.6 at 448), for 18 bits per refresh against a 14336-bit frame.
+  Stereo is unaffected, having no LFE.
 
 ## [0.6.0-beta.1] - 2026-08-17
 

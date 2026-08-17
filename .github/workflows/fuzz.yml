@@ -1,4 +1,8 @@
-# ac3forge fuzzing. Four jobs over the same libFuzzer harnesses in fuzz/:
+# ac3forge fuzzing. Five jobs. Four of them share the libFuzzer harnesses in
+# fuzz/ and all mutate an ALREADY-ENCODED bitstream - they ask whether the
+# DECODER survives corrupt input. The fifth (encoder-space-nightly) asks the
+# opposite question, about the ENCODER, and shares none of that machinery; see
+# its own comment below.
 #
 #   fuzz-regress       Replays fuzz/seeds/ and fuzz/regressions/ with -runs=0
 #                      (no mutation) - a correctness gate: every regression
@@ -26,6 +30,22 @@
 #                      for an on-demand deeper run with a custom budget. Does
 #                      NOT include the differential harnesses - see
 #                      fuzz-differential above.
+#   encoder-space-     The ENCODER's input space rather than the decoder's:
+#   nightly            random legal encoder configurations crossed with
+#                      adversarial PCM, every resulting stream held against
+#                      both this project's decoder and FFmpeg's strict decode.
+#                      Not a libFuzzer target and not part of fuzz/run.sh - it
+#                      drives the real ac3cli, so it builds the CLI the way
+#                      ci.yml's ffmpeg-validate job does rather than the
+#                      sanitizer/libFuzzer toolchain the other four need. The
+#                      short per-PR counterpart is a step in that same
+#                      ffmpeg-validate job, not a job here, because everything
+#                      it needs is already built and pinned there.
+#                      See tools/fuzz_encoder_space.py for why this exists:
+#                      an encoder defect (PR #186) that produced streams BOTH
+#                      decoders reject, and that every other gate in this repo
+#                      missed because reaching it needs a specific input SHAPE
+#                      no hand-written matrix would enumerate.
 #
 # This is a bounded, time-boxed run, not continuous (OSS-Fuzz-style) fuzzing
 # infrastructure - see fuzz/README.md.
@@ -67,6 +87,10 @@ on:
         description: "Mutation budget per harness, in seconds"
         type: number
         default: 600
+      encoder_space_seconds:
+        description: "Encoder input-space budget, in seconds"
+        type: number
+        default: 900
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
@@ -245,4 +269,84 @@ jobs:
         with:
           name: fuzz-nightly-artifacts
           path: fuzz/artifacts/
+          if-no-files-found: ignore
+
+  # The deeper half of the encoder input-space search - see this file's header
+  # for what it is and why it shares nothing with the four jobs above. Its
+  # bounded per-PR counterpart is a step in ci.yml's ffmpeg-validate job.
+  #
+  # Toolchain-wise this is ffmpeg-validate, not a fuzzing job: LLVM plus vcpkg
+  # plus a pinned ffmpeg, building the plain linux-llvm preset. No sanitizer
+  # runtime archives, no libFuzzer, no fuzz/run.sh - the search happens in
+  # Python, against the real CLI, and the failure signal is a decoder refusing
+  # a stream rather than a sanitizer report.
+  #
+  # ffmpeg is pinned to the same exact ubuntu:26.04 archive build ffmpeg-
+  # validate pins, and for the same reason: an oracle whose behaviour drifts
+  # under the gate it backs is not an oracle.
+  encoder-space-nightly:
+    name: Encoder Space Nightly (random legal configs x adversarial audio)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    container: ubuntu:26.04
+    # Experimental on the same terms as the three jobs above, plus one
+    # concrete open finding it reports against develop today: an AC-3 coupling
+    # channel's delta bit allocation offsets are written from band 0 while
+    # FFmpeg's cursor starts at the channel's own start band, so FFmpeg
+    # refuses those frames with "error in bit allocation" while this project's
+    # decoder - which shares the encoder's band-0 cursor - accepts them. See
+    # the fuller note on ci.yml's own encoder-space step, and delete both
+    # continue-on-error lines together once it is fixed.
+    continue-on-error: true
+    env:
+      AC3CLI: build/config-linux-llvm/bin/ac3cli
+      ENCODER_SPACE_SECONDS: ${{ github.event.inputs.encoder_space_seconds || 900 }}
+    steps:
+      - name: Bootstrap container
+        run: |
+          set -eu
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends \
+            build-essential ca-certificates cmake curl git gnupg lsb-release \
+            ninja-build pkg-config python3 software-properties-common \
+            tar unzip wget zip \
+            ffmpeg=7:8.0.1-3ubuntu2
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install LLVM 21
+        run: bash .github/toolchain/03-llvm-toolchain.sh
+
+      - uses: ./.github/actions/setup-vcpkg
+        with:
+          vcpkg-commit: "eaca4a577b6b678c6e10252754b6988a61746c19"
+
+      - name: Report ffmpeg version
+        run: ffmpeg -version | head -1
+
+      - name: Configure
+        run: cmake --preset config-linux-llvm
+
+      - name: Build ac3cli
+        run: cmake --build --preset build-linux-llvm --target ac3cli -- -k 0
+
+      # First, because a run that draws configurations the encoder was never
+      # going to accept would come back green having encoded almost nothing.
+      - name: Acceptance envelope (the rate floors the generator draws from)
+        run: python3 tools/fuzz_encoder_space.py --check-envelope
+
+      - name: Encoder input-space fuzz (deeper budget, both decoders)
+        run: python3 tools/fuzz_encoder_space.py --seconds "$ENCODER_SPACE_SECONDS"
+
+      # always(), not failure(): this job is continue-on-error, so a failing
+      # case leaves the job green and failure() would never fire.
+      - name: Upload failing inputs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: encoder-space-nightly-artifacts
+          path: fuzz-encoder-artifacts/
           if-no-files-found: ignore
