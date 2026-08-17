@@ -1,6 +1,6 @@
 # Self-hosted CI runners
 
-The four plain Windows/Linux legs in [`_build.yml`](https://github.com/iainchesworth/ac3forge/blob/main/.github/workflows/_build.yml)'s
+The four plain Windows/Linux legs in [`_build.yml`](https://github.com/iainchesworthlabs/ac3forge/blob/main/.github/workflows/_build.yml)'s
 `build` matrix (Windows MSVC, Windows LLVM, Linux GCC, Linux LLVM) can run on a self-hosted
 runner instead of a GitHub-hosted one - but only when one is actually online and idle right
 now, never as an all-or-nothing switch. macOS and the two arm64 Linux legs always stay on
