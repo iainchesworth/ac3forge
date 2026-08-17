@@ -25,6 +25,10 @@ number a real user of either tool actually gets, not an internal detail.
 .landscape-table-wrap { overflow-x: auto; }
 #landscape-app table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
 #landscape-app th, #landscape-app td { padding: 0.4em 0.7em; text-align: left; border-bottom: 1px solid var(--md-default-fg-color--lightest); white-space: nowrap; }
+#landscape-app th { vertical-align: bottom; }
+/* One rule per metric group, so the three blocks read as blocks rather than
+   as nine loose columns. */
+.landscape-group-start { border-left: 1px solid var(--md-default-fg-color--lighter); }
 .landscape-release { text-decoration: none; font-weight: 600; }
 .landscape-release:hover { text-decoration: underline; }
 .landscape-prerelease { font-weight: 400; font-style: italic; color: var(--md-default-fg-color--light); }
@@ -116,10 +120,20 @@ number a real user of either tool actually gets, not an internal detail.
     return `https://github.com/${REPO}/commit/${sha}`;
   }
 
-  function deltaCell(value) {
+  // Every vs_* value in the history file is ours-minus-theirs. For SNR and
+  // MOS that means higher is better; for LSD - a distance - it is the other
+  // way round, so the colour is chosen here rather than baked into the sign.
+  function deltaCell(value, opts) {
+    const { lowerIsBetter = false, unit = " dB", digits = 2 } = opts || {};
     if (value === undefined || value === null) return '<span class="landscape-na">n/a</span>';
-    const cls = value >= 0 ? "landscape-delta-up" : "landscape-delta-down";
-    return `<span class="${cls}">${value >= 0 ? "+" : ""}${value.toFixed(2)} dB</span>`;
+    const better = lowerIsBetter ? value <= 0 : value >= 0;
+    const cls = better ? "landscape-delta-up" : "landscape-delta-down";
+    return `<span class="${cls}">${value >= 0 ? "+" : ""}${value.toFixed(digits)}${unit}</span>`;
+  }
+
+  function valueCell(value, unit, digits) {
+    if (value === undefined || value === null) return '<span class="landscape-na">-</span>';
+    return `${value.toFixed(digits)}${unit}`;
   }
 
   function buildBaselineInfo(manifest) {
@@ -156,17 +170,34 @@ number a real user of either tool actually gets, not an internal detail.
           <td>${(release.date || r.commit_date).slice(0, 10)}</td>
           <td><a href="${commitUrl(r.commit)}">${shortSha(r.commit)}</a></td>
           <td>${r.leg}</td>
-          <td>${r.snr_db.toFixed(2)} dB</td>
+          <td class="landscape-group-start">${valueCell(r.snr_db, " dB", 2)}</td>
           <td>${deltaCell(r.vs_ffmpeg_snr_db)}</td>
           <td>${deltaCell(r.vs_dee_snr_db)}</td>
-          <td>${r.lsd_db === null ? "-" : r.lsd_db.toFixed(2) + " dB"}</td>
-          <td>${r.mos_lqo == null ? "-" : r.mos_lqo.toFixed(2)}</td>
-          <td>${r.baseline_version !== undefined ? "v" + r.baseline_version : "-"}</td>
+          <td class="landscape-group-start">${valueCell(r.lsd_db, " dB", 2)}</td>
+          <td>${deltaCell(r.vs_ffmpeg_lsd_db, { lowerIsBetter: true })}</td>
+          <td>${deltaCell(r.vs_dee_lsd_db, { lowerIsBetter: true })}</td>
+          <td class="landscape-group-start">${valueCell(r.mos_lqo, "", 2)}</td>
+          <td>${deltaCell(r.vs_ffmpeg_mos_lqo, { unit: "" })}</td>
+          <td>${deltaCell(r.vs_dee_mos_lqo, { unit: "" })}</td>
+          <td class="landscape-group-start">${r.baseline_version !== undefined ? "v" + r.baseline_version : "-"}</td>
         </tr>`;
       })
       .join("");
     return `<div class="landscape-table-wrap"><table>
-      <thead><tr><th>Release</th><th>Date</th><th>Commit</th><th>Leg</th><th>ac3forge SNR</th><th>vs FFmpeg</th><th>vs DEE</th><th>LSD</th><th>MOS</th><th>Baseline</th></tr></thead>
+      <thead>
+        <tr>
+          <th rowspan="2">Release</th><th rowspan="2">Date</th><th rowspan="2">Commit</th><th rowspan="2">Leg</th>
+          <th colspan="3" class="landscape-group-start">SNR — waveform (higher better)</th>
+          <th colspan="3" class="landscape-group-start">LSD — envelope (lower better)</th>
+          <th colspan="3" class="landscape-group-start">MOS — perceptual (higher better)</th>
+          <th rowspan="2" class="landscape-group-start">Baseline</th>
+        </tr>
+        <tr>
+          <th class="landscape-group-start">ac3forge</th><th>vs FFmpeg</th><th>vs DEE</th>
+          <th class="landscape-group-start">ac3forge</th><th>vs FFmpeg</th><th>vs DEE</th>
+          <th class="landscape-group-start">ac3forge</th><th>vs FFmpeg</th><th>vs DEE</th>
+        </tr>
+      </thead>
       <tbody>${trs}</tbody>
     </table></div>`;
   }
@@ -184,12 +215,35 @@ number a real user of either tool actually gets, not an internal detail.
 
 Each row is one (tagged release, leg) result — a release cuts one commit on
 `main`, and that commit contributes up to three rows (the AC-3 5.1, E-AC-3
-stereo, and E-AC-3 5.1 legs). **vs FFmpeg** / **vs DEE** are the delta
-between ac3forge's own SNR and that tool's number for the same leg at the
-baseline version shown — positive (green) means ac3forge scored higher.
+stereo, and E-AC-3 5.1 legs).
+
+Three metrics are shown side by side, each with its own **vs FFmpeg** /
+**vs DEE** delta against that tool's number for the same leg at the baseline
+version shown. Green always means ac3forge came out better, which is a
+*higher* number for SNR and MOS and a *lower* one for LSD — the stored
+deltas are all plainly ours-minus-theirs, and only the colouring knows which
+way each metric points.
+
+No one of the three is the headline, and that is deliberate. E-AC-3's
+coupling and spectral extension trade waveform fidelity for banded envelope
+fidelity **on purpose** — that is what they are for — so waveform SNR alone
+reports a working tool as a straight loss, while LSD alone rewards one that
+has thrown the waveform away. Reading all three together is the only way the
+comparison says something true about the encoder rather than about the
+metric. (The per-tool detail behind that trade is in
+[Tool comparison trend](tool-comparison-trend.md).)
+
 **n/a** on a `vs DEE` cell means that leg's DEE score is still marked
 unverified in the baseline manifest (see that file's own header for why),
-not that the comparison came out even.
+not that the comparison came out even. **-** in an ac3forge cell means the
+metric was not scored for that row at all: LSD is a measure of what the
+Annex E tools trade away, so it is scored on the E-AC-3 legs only and the
+AC-3 row leaves it blank, while MOS — a general quality prediction — is
+scored on all three legs but is absent from any run whose environment lacked
+`visqol-python`. A delta is shown only where both sides
+have a real number, so a baseline generated before
+`gen_external_baseline.py` grew its MOS column leaves those cells **n/a**
+even where ac3forge's own MOS is present.
 
 The baseline itself — FFmpeg's and DEE's actual encoded output — is
 regenerated locally, occasionally, and reviewed by hand as a normal PR (see
@@ -203,11 +257,14 @@ ac3forge's own encoder.
 Opinion Score - Listening Quality Objective) in audio mode, a perceptual-
 quality prediction from 1 (bad) to a ceiling around 4.75 — see [Tool
 comparison trend](tool-comparison-trend.md#reading-it) for why ViSQOL over
-PEAQ. It's ac3forge's own score only, not a delta like the SNR columns
-either side of it, and shows `-` on a release whose CI run (or whoever ran
-`gen_external_baseline.py` for that baseline version) didn't have
-`visqol-python` installed — same graceful-degradation contract every other
-use of it in this project follows, not a real zero.
+PEAQ. It shows `-` on a release whose CI run didn't have `visqol-python`
+installed — same graceful-degradation contract every other use of it in this
+project follows, not a real zero — and its `vs` cells need the baseline side
+too, so they stay **n/a** until a baseline version generated by a
+`gen_external_baseline.py` run that had ViSQOL available lands. Of the three
+metrics it is the only one that tries to answer "which sounds better", which
+is why it is worth having beside the two that answer narrower questions
+exactly.
 
 ## Where the data lives
 
