@@ -1,0 +1,14 @@
+<!--
+  Hand-authored vector matching assets/icon/generate_icons.py's procedural
+  mark (rounded-square badge, 3-bar equalizer/waveform glyph). Kept as a
+  separate file rather than generated from the script because nothing in
+  this environment can rasterize SVG - see generate_icons.py's own header
+  comment. Used where a raster doesn't fit well: the WASM demo favicon.
+  If the mark's design changes, update both files together.
+-->
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+  <rect x="0" y="0" width="256" height="256" rx="56" fill="#0b1220"/>
+  <rect x="48.65" y="84.36" width="44.58" height="87.28" rx="22.29" fill="#60a5fa"/>
+  <rect x="105.71" y="48.65" width="44.58" height="158.70" rx="22.29" fill="#60a5fa"/>
+  <rect x="162.77" y="84.36" width="44.58" height="87.28" rx="22.29" fill="#60a5fa"/>
+</svg>
