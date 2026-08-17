@@ -148,6 +148,23 @@ struct FrameConfig {
     // at all and a receiver falls back on its own defaults.
     std::optional<meta::MixMetadata> mixing = std::nullopt;
     // --- Annex E coding tools -----------------------------------------------
+    // Let the encoder choose the tool set from the per-channel rate, instead
+    // of taking the `coupling`/`spx`/`aht` flags below as given.
+    //
+    // Every one of these tools trades waveform fidelity for a band it can
+    // describe more cheaply than it can code, so each is a win below some
+    // per-channel rate and a loss above it - and the crossovers are far apart
+    // (coupling's moves with the channel count, spectral extension's does
+    // not). Turning them all on at every rate is what "all" does, and at
+    // 192 kbit/s stereo that costs about 10 dB of SNR against simply not
+    // using them; turning them all off gives up about the same at
+    // 256 kbit/s 5.1. This asks for neither, and picks per rate.
+    //
+    // It overrides the individual flags rather than combining with them: when
+    // it is set they are not read at all. cplbegf/spxbegf/gaqmod still apply
+    // to whatever it does turn on, so a caller can steer the geometry without
+    // taking over the on/off decision.
+    bool auto_tools = false;
     // Channel coupling (§E3.3, §7.4). Needs two full-bandwidth channels to
     // share anything, so it is ignored for mono. Above the coupling frequency
     // the coupled channels stop carrying coefficients of their own and a
@@ -180,9 +197,11 @@ struct FrameConfig {
     //
     // With coupling also in use this value FIXES the coupling end frequency:
     // §E3.3.1 stops transmitting cplendf and derives it from spxbegf, so that
-    // coupling ends exactly where synthesis begins. cplbegf is clamped down if
-    // it would leave the coupling region empty, and coupling is dropped
-    // outright if there is no room for it at all.
+    // coupling ends exactly where synthesis begins. When that derived end
+    // lands below where cplbegf asks coupling to start there is no coupling
+    // region at that frequency, and coupling is dropped for the frame -
+    // rather than slid down to meet it, which would couple lower than either
+    // the caller or the rate default asked for.
     int spxbegf = -1;
     // Spectral extension attenuation (§E3.6.4.2.3): a five-tap notch across
     // the seam where the coded band meets the synthesized one, and across
