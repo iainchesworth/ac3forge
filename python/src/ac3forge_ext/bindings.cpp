@@ -54,7 +54,13 @@ class KwargBinder {
     template <typename V>
     KwargBinder& field(const char* name, V T::*member) {
         if (kwargs_.contains(name)) {
-            value_.*member = kwargs_[name].cast<V>();
+            // kwargs_[name] is an access through the implicit this-> of a class template, so
+            // two-phase lookup treats it as dependent regardless of kwargs_'s own (non-dependent)
+            // declared type - Clang enforces the standard's `template` disambiguator here and
+            // rejects the call without it; MSVC/GCC merely tolerate the omission as a
+            // permissive extension. Confirmed the hard way: this built clean on both of those
+            // and only failed in CI's real AppleClang leg.
+            value_.*member = kwargs_[name].template cast<V>();
             seen_.insert(name);
         }
         return *this;

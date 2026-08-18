@@ -85,7 +85,11 @@ testpaths = ["tests"]
 build = "cp310-* cp311-* cp312-* cp313-* cp314-*"
 skip = "*-musllinux* pp*"
 test-extras = ["test"]
-test-command = "pytest {project}/tests"
+# {project} is the repo ROOT (this repo's top-level tests/ is the unrelated C++ Catch2 suite,
+# which is why this must be {package} - confirmed the hard way: {project}/tests collected 0 items
+# in CI against that directory instead of python/tests/). {package} is package-dir (python/,
+# wheels.yml's own pypa/cibuildwheel step), so {package}/tests is python/tests/.
+test-command = "pytest {package}/tests"
 manylinux-x86_64-image = "manylinux_2_28"
 manylinux-aarch64-image = "manylinux_2_28"
 
