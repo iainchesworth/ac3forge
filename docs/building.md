@@ -384,8 +384,8 @@ MacPorts prefixes, and so on — newest kit first, and then defers to Qt's own c
 Linux and macOS preset still forces `AC3FORGE_BUILD_GUI=OFF` by default — pass
 `-DAC3FORGE_BUILD_GUI=ON` explicitly on a machine that has Qt 6.5+, which is verified to work on
 Linux both locally (see [GUI on Linux](#gui-on-linux) above) and in CI, which installs a Qt6 kit
-and turns the flag on for the four Linux build legs (x64 and arm64, GCC and Clang). macOS has
-never been tried. See
+and turns the flag on for the four Linux build legs (x64 and arm64, GCC and Clang) plus
+`macos-llvm` (Homebrew's `qt` formula — see [macOS](platforms/macos.md#gui-on-macos)). See
 [Verified configuration](#verified-configuration). If your kit is somewhere else, say so explicitly and it
 wins over the search — the project's own `-DAC3FORGE_QT_ROOT=` (or the `AC3FORGE_QT_ROOT`,
 `QT_ROOT_DIR` or `QTDIR` environment variables) is the preferred way:
@@ -423,8 +423,8 @@ The equivalent `pack-<platform>` preset exists for every entry in the platform m
 (`pack-windows-llvm`, `pack-linux-gcc`, `pack-linux-llvm`, `pack-linux-gcc-arm64`,
 `pack-linux-llvm-arm64`, `pack-macos-llvm`). A pack preset reuses whatever the matching build
 tree was configured with — on a non-Windows preset that includes the GUI only if you opted in
-(`-DAC3FORGE_BUILD_GUI=ON`, which is exactly what CI's Linux packaging legs pass — see
-[GUI on Linux](#gui-on-linux)). Beyond `windows-msvc`'s continuous per-push packaging, the
+(`-DAC3FORGE_BUILD_GUI=ON`, which is exactly what CI's Linux and macOS packaging legs pass — see
+[GUI on Linux](#gui-on-linux) and [macOS](platforms/macos.md#gui-on-macos)). Beyond `windows-msvc`'s continuous per-push packaging, the
 `release_package` legs have run for real on tagged releases, and `pack-linux-gcc-arm64` has
 additionally been run by hand on a real Raspberry Pi 4B with the resulting `.deb` inspected —
 see [Raspberry Pi](platforms/raspberry-pi.md#verified-configuration). Packages land in
@@ -542,9 +542,7 @@ comment in `ci.yml` for the thresholds and why they sit below the measured basel
 
 No macOS host exists for this project, so `config-macos-llvm`/`config-macos-llvm-debug` are only
 ever exercised by CI (`macos-latest`, Apple Silicon) — never locally. That CI leg is green:
-configure, build and `ctest` all clean — the full suite minus the GUI harness (no GUI leg on
-macOS yet, so no `ac3gui_qmltests` entry there — see the Linux note above), using a
-Homebrew-installed LLVM
+configure, build and `ctest` all clean, using a Homebrew-installed LLVM
 (`cmake/toolchains/macos.llvm.toolchain.cmake` prefers it over Apple's bundled clang) rather than
 a version-pinned one — Homebrew's core `llvm` formula has no versioned sibling the way
 apt.llvm.org or the official Windows installer do, so unlike the other LLVM legs this one tracks
@@ -552,15 +550,20 @@ whatever Homebrew currently ships. The gold-reference correctness gate
 (`scripts/verify-gold-reference.sh` — see [Gold-reference correctness gate](#gold-reference-correctness-gate)
 below) also passes: real SNR numbers from that CI run were 61.81/61.82 dB on macOS, against
 67.84/67.82 dB on Linux and Windows for the same material - a real but modest cross-compiler
-floating-point difference, comfortably clear of the 30 dB gate.
+floating-point difference, comfortably clear of the 30 dB gate. `macos-llvm` now builds the GUI
+too (Homebrew's `qt` formula — see [GUI on macOS](platforms/macos.md#gui-on-macos)), which adds
+`ac3gui_qmltests` to that same suite the same way it does on Linux; that addition is new and not
+yet covered by the numbers above - see this leg's latest run rather than trusting a claim of
+"green" here for it specifically until one has actually landed.
 
 `src/audio/CMakeLists.txt` selects a real CoreAudio backend on macOS (`src/audio/src/platform/macos/`,
 built on the Audio HAL — `AudioObjectID`/`AudioDeviceIOProc` — the same layer WASAPI and ALSA
 occupy on their own platforms), not the no-backend stub it fell back to before. `AC3FORGE_BUILD_GUI`
-still defaults off there (no CI leg builds `ac3gui` on macOS yet), so the GUI remains untested on
-macOS specifically — but capture, monitor playback and IEC 61937 passthrough now compile and link
-for real, and `ac3tests` exercises the backend's device-free logic (format matching, sample
-conversion) directly. What CI cannot exercise is a real device: the hosted runner enumerates
+still defaults off there (`macos-llvm` opts it on in CI the same way the Linux legs do — see
+[GUI on macOS](platforms/macos.md#gui-on-macos)) — capture, monitor playback and IEC 61937
+passthrough compile and link for real either way, and `ac3tests` exercises the backend's
+device-free logic (format matching, sample conversion) directly. What CI cannot exercise is a
+real device: the hosted runner enumerates
 whatever HAL objects macOS itself reports and touches nothing beyond that, same as ALSA's own
 "verified headless" story below — see [Linux audio](#linux-audio) for the general shape of what
 that does and does not prove, and [macOS](platforms/macos.md) for the backend's own header
