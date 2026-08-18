@@ -160,6 +160,15 @@ jobs:
           fi
           echo "No quarantined signer in the tree."
 
+  # Single source of truth for the tool-version pins several jobs below need
+  # for their own direct setup-vcpkg call (build-and-test gets its copy from
+  # _build.yml's own internal job of the same name instead) - see
+  # docs/ci-self-hosted-runners.md and _toolchain-versions.yml's own header.
+  toolchain-versions:
+    uses: ./.github/workflows/_toolchain-versions.yml
+    permissions:
+      contents: read
+
   # Classify the change so a docs-only edit skips a five-platform matrix. This
   # is a job rather than a workflow-level paths-ignore on purpose: a filtered-out
   # workflow never runs, so the required "CI Status" check below would sit
@@ -242,7 +251,7 @@ jobs:
   # is the starting point, not an aspiration.
   static-analysis:
     name: Static Analysis (clang-tidy)
-    needs: changes
+    needs: [changes, toolchain-versions]
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     container: ubuntu:26.04
@@ -265,7 +274,7 @@ jobs:
 
       - uses: ./.github/actions/setup-vcpkg
         with:
-          vcpkg-commit: "eaca4a577b6b678c6e10252754b6988a61746c19"
+          vcpkg-commit: ${{ needs.toolchain-versions.outputs.vcpkg_commit }}
 
       - name: Configure
         shell: bash
@@ -308,7 +317,7 @@ jobs:
   # hosted run above is the number this gate is actually calibrated against.
   coverage:
     name: Coverage (Linux, GCC)
-    needs: changes
+    needs: [changes, toolchain-versions]
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     container: ubuntu:26.04
@@ -331,7 +340,7 @@ jobs:
 
       - uses: ./.github/actions/setup-vcpkg
         with:
-          vcpkg-commit: "eaca4a577b6b678c6e10252754b6988a61746c19"
+          vcpkg-commit: ${{ needs.toolchain-versions.outputs.vcpkg_commit }}
 
       # ubuntu:26.04's python3-pip enforces PEP 668 (no bare `pip install` at
       # system scope) - --break-system-packages is safe here specifically
@@ -427,7 +436,7 @@ jobs:
   # AC3FORGE_BUILD_GUI already defaults OFF on this preset.
   adm-validate:
     name: ADM Module (Linux, GCC)
-    needs: changes
+    needs: [changes, toolchain-versions]
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     container: ubuntu:26.04
@@ -450,7 +459,7 @@ jobs:
 
       - uses: ./.github/actions/setup-vcpkg
         with:
-          vcpkg-commit: "eaca4a577b6b678c6e10252754b6988a61746c19"
+          vcpkg-commit: ${{ needs.toolchain-versions.outputs.vcpkg_commit }}
 
       - name: Configure
         shell: bash
@@ -532,7 +541,7 @@ jobs:
   # with no auth.
   persist-performance-trend:
     name: Publish performance trend
-    needs: build-and-test
+    needs: [build-and-test, toolchain-versions]
     if: github.event_name == 'push' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     container: ubuntu:26.04
@@ -561,7 +570,7 @@ jobs:
 
       - uses: ./.github/actions/setup-vcpkg
         with:
-          vcpkg-commit: "eaca4a577b6b678c6e10252754b6988a61746c19"
+          vcpkg-commit: ${{ needs.toolchain-versions.outputs.vcpkg_commit }}
 
       - name: Configure
         run: cmake --preset config-linux-gcc
@@ -718,7 +727,7 @@ jobs:
   # to the vcpkg commit and the LLVM/GCC versions.
   ffmpeg-validate:
     name: FFmpeg Validate
-    needs: changes
+    needs: [changes, toolchain-versions]
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     container: ubuntu:26.04
@@ -743,7 +752,7 @@ jobs:
 
       - uses: ./.github/actions/setup-vcpkg
         with:
-          vcpkg-commit: "eaca4a577b6b678c6e10252754b6988a61746c19"
+          vcpkg-commit: ${{ needs.toolchain-versions.outputs.vcpkg_commit }}
 
       # requirements-ffmpeg-validate.txt is a pip-compile --generate-hashes
       # lock (see its own header for how to regenerate) so this install is

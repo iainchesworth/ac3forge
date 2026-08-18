@@ -28,10 +28,6 @@ name: Reusable Build
 on:
   workflow_call:
     inputs:
-      vcpkg-commit:
-        description: "microsoft/vcpkg commit to pin (see .github/actions/setup-vcpkg)."
-        type: string
-        default: "eaca4a577b6b678c6e10252754b6988a61746c19"
       do_package:
         description: "Package every packageable matrix leg (best-effort), not just windows-msvc. Set by release.yml."
         type: boolean
@@ -176,9 +172,18 @@ jobs:
           echo "Linux: mode=$LINUX_MODE -> $linux_runner"
           echo "Windows: mode=$WINDOWS_MODE -> $windows_runner"
 
+  # Single source of truth for the tool-version pins the "Report and assert
+  # toolchain versions" step below (and the setup-vcpkg/install-qt-action
+  # steps) check the runner against - see docs/ci-self-hosted-runners.md and
+  # _toolchain-versions.yml's own header.
+  toolchain-versions:
+    uses: ./.github/workflows/_toolchain-versions.yml
+    permissions:
+      contents: read
+
   build:
     name: ${{ matrix.name }}
-    needs: check-runners
+    needs: [check-runners, toolchain-versions]
     # Fork PRs never reach self-hosted (check-runners' own fork-PR branch
     # already forces hosted labels for them) - this is belt-and-braces so a
     # gap in that logic can't silently hand a fork PR a self-hosted runner.
@@ -468,38 +473,47 @@ jobs:
         if: runner.os == 'Windows'
         uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
         with:
-          version: "6.8.3"
+          version: ${{ needs.toolchain-versions.outputs.qt_version }}
           cache: true
 
-      # CMakePresets.json is version 6 and the project needs >= 3.28. Every
-      # current runner image is well past that; assert rather than discover it
-      # through a confusing "unknown preset field" error.
+      # CMakePresets.json declares the project's real minimum (cmakeMinimumRequired);
+      # this asserts the RUNNER actually meets it rather than letting a stale image
+      # fail later with a confusing "unknown preset field" error. gcc/llvm/msvc are
+      # asserted the same way, all against the pins toolchain-versions resolved
+      # above - see docs/ci-self-hosted-runners.md.
       - name: Report and assert toolchain versions
         shell: bash
+        env:
+          GCC_VERSION: ${{ needs.toolchain-versions.outputs.gcc_version }}
+          LLVM_VERSION: ${{ needs.toolchain-versions.outputs.llvm_version }}
+          MSVC_TOOLSET: ${{ needs.toolchain-versions.outputs.msvc_toolset }}
+          CMAKE_MIN: ${{ needs.toolchain-versions.outputs.cmake_min }}
         run: |
           set -euo pipefail
           cmake --version
           ninja --version
           # Let CMake do its own version comparison rather than parsing it in sh.
-          cat > "${RUNNER_TEMP}/assert-cmake-version.cmake" <<'EOF'
-          if(CMAKE_VERSION VERSION_LESS 3.28)
-            message(FATAL_ERROR "CMake ${CMAKE_VERSION} is too old; ac3forge needs >= 3.28")
+          # Unquoted heredoc so $CMAKE_MIN expands - \$CMAKE_VERSION stays escaped
+          # so it's still CMake's own variable, not a (unset) shell one.
+          cat > "${RUNNER_TEMP}/assert-cmake-version.cmake" <<EOF
+          if(CMAKE_VERSION VERSION_LESS ${CMAKE_MIN})
+            message(FATAL_ERROR "CMake \${CMAKE_VERSION} is too old; ac3forge needs >= ${CMAKE_MIN}")
           endif()
           EOF
           cmake -P "${RUNNER_TEMP}/assert-cmake-version.cmake"
           case "${{ matrix.preset }}" in
             linux-gcc|linux-gcc-arm64)
                           g++ --version | head -1
-                          g++ --version | head -1 | grep -q ' 15\.' || { echo "::error::expected g++ 15"; exit 1; } ;;
+                          g++ --version | head -1 | grep -q " ${GCC_VERSION}\." || { echo "::error::expected g++ ${GCC_VERSION}"; exit 1; } ;;
             linux-llvm|linux-llvm-arm64|linux-llvm-asan-ubsan)
                           clang++ --version | head -1
-                          clang++ --version | head -1 | grep -qE 'version 21\.' || { echo "::error::expected clang 21"; exit 1; } ;;
+                          clang++ --version | head -1 | grep -qE "version ${LLVM_VERSION}\." || { echo "::error::expected clang ${LLVM_VERSION}"; exit 1; } ;;
             windows-llvm) clang-cl --version | head -1
-                          clang-cl --version | head -1 | grep -qE 'version 21\.' || { echo "::error::expected clang-cl 21"; exit 1; } ;;
+                          clang-cl --version | head -1 | grep -qE "version ${LLVM_VERSION}\." || { echo "::error::expected clang-cl ${LLVM_VERSION}"; exit 1; } ;;
             windows-msvc) echo "MSVC toolset: ${VCToolsVersion:-unknown}"
                           case "${VCToolsVersion:-}" in
-                            14.5*) ;;
-                            *) echo "::error::expected an MSVC 14.5x toolset, got '${VCToolsVersion:-unset}'"; exit 1 ;;
+                            ${MSVC_TOOLSET}*) ;;
+                            *) echo "::error::expected an MSVC ${MSVC_TOOLSET}x toolset, got '${VCToolsVersion:-unset}'"; exit 1 ;;
                           esac ;;
             # No hard version assert here unlike the other LLVM legs: Homebrew's
             # llvm formula has no versioned pin to check against (see the
@@ -510,7 +524,7 @@ jobs:
 
       - uses: ./.github/actions/setup-vcpkg
         with:
-          vcpkg-commit: ${{ inputs.vcpkg-commit }}
+          vcpkg-commit: ${{ needs.toolchain-versions.outputs.vcpkg_commit }}
 
       # ---------------------------------------------------------------------
       # Configure / build / test

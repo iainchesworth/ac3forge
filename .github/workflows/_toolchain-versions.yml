@@ -1,0 +1,97 @@
+# Reusable single source of truth for the pinned CI tool versions this repo's
+# GitHub-hosted (and, where applicable, self-hosted) legs must match. Every
+# workflow that used to hardcode a "vcpkg-commit: eaca4a5..." / "version:
+# 6.8.3" string - _build.yml, ci.yml, msvc-analysis.yml, fuzz.yml, codeql.yml -
+# instead calls this once as its own `toolchain-versions` job and reads
+# `needs.toolchain-versions.outputs.*` - one value to bump instead of hunting
+# down every hardcoded copy.
+#
+# This does not duplicate a value that already has a canonical home elsewhere:
+# GCC/LLVM majors are read straight out of .github/toolchain/02-gcc-toolchain.sh
+# and 03-llvm-toolchain.sh (the scripts that actually install them, copied
+# verbatim from aqualink-automate so both projects pin the same toolchain),
+# CMake's minimum out of CMakePresets.json's cmakeMinimumRequired, and vcpkg's
+# baseline out of vcpkg.json's builtin-baseline. Only msvc_toolset and qt -
+# which have no other file that already pins them - live directly in
+# .github/toolchain-versions.json. See that file's own header and
+# docs/ci-self-hosted-runners.md for the full design.
+name: Resolve pinned toolchain versions
+
+on:
+  workflow_call:
+    outputs:
+      gcc_version:
+        description: 'Pinned GCC major version, e.g. "15" (from .github/toolchain/02-gcc-toolchain.sh).'
+        value: ${{ jobs.resolve.outputs.gcc_version }}
+      llvm_version:
+        description: 'Pinned LLVM/Clang major version, e.g. "21" (from .github/toolchain/03-llvm-toolchain.sh).'
+        value: ${{ jobs.resolve.outputs.llvm_version }}
+      msvc_toolset:
+        description: 'Pinned MSVC toolset prefix, e.g. "14.5" (from .github/toolchain-versions.json).'
+        value: ${{ jobs.resolve.outputs.msvc_toolset }}
+      qt_version:
+        description: 'Pinned Qt version, e.g. "6.8.3" (from .github/toolchain-versions.json).'
+        value: ${{ jobs.resolve.outputs.qt_version }}
+      cmake_min:
+        description: 'Minimum CMake version, e.g. "3.28" (from CMakePresets.json''s cmakeMinimumRequired).'
+        value: ${{ jobs.resolve.outputs.cmake_min }}
+      vcpkg_commit:
+        description: 'Pinned microsoft/vcpkg commit (from vcpkg.json''s builtin-baseline).'
+        value: ${{ jobs.resolve.outputs.vcpkg_commit }}
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    name: Resolve pinned toolchain versions
+    runs-on: ubuntu-latest
+    outputs:
+      gcc_version: ${{ steps.read.outputs.gcc_version }}
+      llvm_version: ${{ steps.read.outputs.llvm_version }}
+      msvc_toolset: ${{ steps.read.outputs.msvc_toolset }}
+      qt_version: ${{ steps.read.outputs.qt_version }}
+      cmake_min: ${{ steps.read.outputs.cmake_min }}
+      vcpkg_commit: ${{ steps.read.outputs.vcpkg_commit }}
+    steps:
+      # Sparse + shallow: this job only ever needs these five files, not the
+      # full tree or submodules.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github/toolchain-versions.json
+            .github/toolchain/02-gcc-toolchain.sh
+            .github/toolchain/03-llvm-toolchain.sh
+            CMakePresets.json
+            vcpkg.json
+          sparse-checkout-cone-mode: false
+
+      - name: Read pinned versions
+        id: read
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          msvc_toolset="$(jq -r '.msvc_toolset' .github/toolchain-versions.json)"
+          qt_version="$(jq -r '.qt' .github/toolchain-versions.json)"
+
+          # Read the compiler pins from the scripts that actually install
+          # them, rather than duplicating the numbers here (see this
+          # workflow's own header).
+          gcc_version="$(grep -oP '^GCC_VERSION=\K.*' .github/toolchain/02-gcc-toolchain.sh)"
+          llvm_version="$(grep -oP '^LLVM_VERSION=\K.*' .github/toolchain/03-llvm-toolchain.sh)"
+
+          cmake_min="$(jq -r '"\(.cmakeMinimumRequired.major).\(.cmakeMinimumRequired.minor)"' CMakePresets.json)"
+          vcpkg_commit="$(jq -r '."builtin-baseline"' vcpkg.json)"
+
+          {
+            echo "gcc_version=$gcc_version"
+            echo "llvm_version=$llvm_version"
+            echo "msvc_toolset=$msvc_toolset"
+            echo "qt_version=$qt_version"
+            echo "cmake_min=$cmake_min"
+            echo "vcpkg_commit=$vcpkg_commit"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Pinned toolchain versions: gcc=$gcc_version llvm=$llvm_version msvc=$msvc_toolset qt=$qt_version cmake>=$cmake_min vcpkg=$vcpkg_commit"
