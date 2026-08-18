@@ -102,10 +102,36 @@ target_link_libraries(ac3gui_qmltests
 # log, or a developer's terminal. Without this, a red CI run shows nothing
 # but "failed" and someone has to already know this flag exists to find out
 # what broke.
+# QSG_RENDER_LOOP=basic on APPLE only: the macos-llvm CI leg's first-ever run
+# building the GUI (see .github/workflows/_build.yml) hung this test outright
+# - ctest's "Start 1: ac3gui_qml_tests" with zero further output for the
+# entire 6-hour job timeout, no crash, no QML warning. Qt Quick's default
+# "threaded" render loop opens a dedicated render thread synchronized with
+# the GUI thread at each frame; that handshake is a known deadlock risk under
+# a platform plugin with no real compositor to drive vsync/frame callbacks,
+# and QSG_RENDER_LOOP=basic (single-threaded, synchronous render-on-sync) is
+# the standard workaround. Linux's offscreen plugin does not appear to hit
+# this (linux-gcc/linux-llvm's own gui: true legs pass today without it), so
+# this is scoped to APPLE rather than applied everywhere untested. Unverified
+# until a real macos-llvm run confirms it - see docs/platforms/macos.md.
+set(AC3_GUI_QMLTESTS_ENV "QT_QPA_PLATFORM=offscreen;QT_FORCE_STDERR_LOGGING=1")
+if(APPLE)
+    list(APPEND AC3_GUI_QMLTESTS_ENV "QSG_RENDER_LOOP=basic")
+endif()
+
 add_test(NAME ac3gui_qml_tests
     COMMAND ac3gui_qmltests -input "${CMAKE_CURRENT_SOURCE_DIR}/tests/qml" -platform offscreen)
 set_tests_properties(ac3gui_qml_tests PROPERTIES
-    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_FORCE_STDERR_LOGGING=1"
+    ENVIRONMENT "${AC3_GUI_QMLTESTS_ENV}"
+    # A safety net independent of whatever actually caused the macOS hang
+    # above: 300s is generous headroom over the ~15s the full suite takes
+    # today (see docs/building.md's Verified configuration), but bounds a
+    # future hang to minutes of CI time instead of the 6-hour GitHub Actions
+    # job ceiling a hang otherwise silently consumes. A CTest TIMEOUT still
+    # counts as a captured failure, so outputOnFailure (CMakePresets.json's
+    # test presets) prints whatever the process wrote before it was killed -
+    # unlike an external job-level cancellation, which discards it.
+    TIMEOUT 300
     LABELS "gui")
 
 # ---------------------------------------------------------------------------

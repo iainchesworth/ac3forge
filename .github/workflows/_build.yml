@@ -184,6 +184,17 @@ jobs:
     # gap in that logic can't silently hand a fork PR a self-hosted runner.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ${{ fromJSON(matrix.runner) }}
+    # A backstop against GitHub's own 360-minute default: the macos-llvm
+    # leg's first-ever GUI run hung in the Test step and silently consumed
+    # the full 6 hours before being force-cancelled (see
+    # src/gui/tests/CMakeLists.txt's QSG_RENDER_LOOP comment for the
+    # hypothesis and the per-test TIMEOUT that now also bounds that specific
+    # case). This is deliberately generous - the slowest leg observed so far
+    # (windows-llvm, packaging included on windows-msvc) is ~22 minutes - so
+    # it should never fire for a legitimately slow-but-working run, only for
+    # a genuine hang anywhere in the job, known or not-yet-known.
+    timeout-minutes: 90
+
     # Ubuntu 26.04 for the Linux legs, where the distro archive carries gcc-15
     # and LLVM 21 outright. This is a pin, not a convenience: on ubuntu-latest
     # (24.04 at the time of writing) the LLVM script has to fall back to
@@ -663,16 +674,33 @@ jobs:
         # bin/ac3gui - the property Linux never sets and Windows doesn't need
         # (WIN32_EXECUTABLE controls the console-vs-GUI subsystem there, not
         # where the .exe lands).
+        #
+        # QSG_RENDER_LOOP=basic and the perl-alarm wrapper are both macOS-only
+        # and both about the same hang the "Test" step hit on this leg's
+        # first-ever GUI run (see src/gui/tests/CMakeLists.txt's identical
+        # QSG_RENDER_LOOP comment for the render-loop-deadlock hypothesis).
+        # ac3gui --smoke drives the same QQmlApplicationEngine/QQuickWindow
+        # path ac3gui_qmltests does, so it is at equal risk and had no bound
+        # of its own - a hang here would silently eat the rest of this leg's
+        # 6-hour job ceiling exactly like the Test step did. `perl` (not
+        # `timeout`, which macOS's BSD userland doesn't ship) is on every
+        # macOS runner image by default.
         run: |
           set -euo pipefail
           bin="build/config-${{ matrix.preset }}/bin/ac3gui"
           if [ "$RUNNER_OS" = "macOS" ]; then
             bin="build/config-${{ matrix.preset }}/bin/ac3gui.app/Contents/MacOS/ac3gui"
+            export QSG_RENDER_LOOP=basic
           fi
-          "$bin" --smoke \
-            fuzz/seeds/fuzz_wav_read/roundtrip-stereo.wav \
-            "${RUNNER_TEMP}/ac3gui-smoke.ac3" \
-            "${RUNNER_TEMP}/ac3gui-smoke.png"
+          smoke_args=(--smoke
+            fuzz/seeds/fuzz_wav_read/roundtrip-stereo.wav
+            "${RUNNER_TEMP}/ac3gui-smoke.ac3"
+            "${RUNNER_TEMP}/ac3gui-smoke.png")
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            perl -e 'alarm shift; exec @ARGV' 120 "$bin" "${smoke_args[@]}"
+          else
+            "$bin" "${smoke_args[@]}"
+          fi
 
       # Sanitizers only catch what actually executes. ctest's cases exercise
       # encoder/decoder logic in isolation; this drives the real CLI across
