@@ -171,6 +171,160 @@ options, temporarily swap the `vcpkg_from_github()` block in a scratch copy of `
 for `set(SOURCE_PATH "<absolute path to this checkout>")`, run the same three commands against
 that scratch copy, and discard it once validated - never commit that substitution.
 
+## Publishing to PyPI
+
+Roadmap **F2**: Python bindings (`python/`, see
+[docs/library/python-api.md](library/python-api.md)) as the `ac3forge` PyPI package, with wheels
+for Windows, macOS and Linux built by `.github/workflows/wheels.yml` via `cibuildwheel`. That
+workflow's `build` job runs continuously (every push/PR touching `python/**`, same "buildable is
+checked continuously" reasoning as `windows-msvc`'s packaging smoke test above) and always
+uploads the wheels it builds as a workflow artifact — that part needs no provisioning and already
+works today.
+
+**Publishing them to PyPI is off until a maintainer provisions it**, the same shape as GPG signing
+and the Android release keystore below: `wheels.yml`'s `publish` job is gated on both a `v*` tag
+push and the `pypi` GitHub environment existing, and uses
+[PyPI trusted publishing](https://docs.pypi.org/trusted-publishers/) (OIDC) rather than a stored
+API token — there is no `PYPI_API_TOKEN` secret to leak in the first place. **Nobody should ever
+generate a long-lived PyPI API token and paste it into a chat with an agent or into a GitHub
+secret** — trusted publishing exists specifically so that never has to happen.
+
+One-time setup, done by a maintainer directly on pypi.org and on GitHub:
+
+1. On PyPI, either publish the very first `ac3forge` release by hand (`python -m build python/`
+   then `twine upload`, using a temporary scoped token deleted immediately after) to create the
+   project, or use PyPI's **pending publisher** mechanism (Your projects → Publishing →
+   "Add a pending publisher") to pre-register the trusted publisher for a project name that does
+   not exist yet — the second path needs no manual upload at all and is the one to prefer.
+2. Either way, register the trusted publisher against this repository: owner
+   `iainchesworthlabs`, repository `ac3forge`, workflow `wheels.yml`, environment `pypi`.
+3. In the GitHub repo, create an environment named `pypi` (Settings → Environments) — no secrets
+   need adding to it; its existence and name are what PyPI's trusted-publisher registration keys
+   against, and `wheels.yml`'s `publish` job declares `environment: pypi` so the job has somewhere
+   to request the OIDC token from. Optionally add required reviewers on the environment for a
+   manual approval gate before a publish actually runs.
+
+Once both sides are set up, pushing a `v*` tag (the same tag that triggers `release.yml`, see
+[Option A](#option-a-tag-based-release-the-normal-path) above) also triggers `wheels.yml`'s
+`publish` job for that tag. Until then, the job's `environment: pypi` reference simply has
+nowhere to authorize against and the workflow run for that job fails cleanly at the permission
+check — the `build` job (and its artifact) is unaffected either way.
+
+## Homebrew formula
+
+A Homebrew formula for `ac3cli` is staged in-tree at
+[`packaging/homebrew/Formula/ac3forge.rb`](https://github.com/iainchesworthlabs/ac3forge/blob/main/packaging/homebrew/Formula/ac3forge.rb)
+and is pending publication to a personal tap (`homebrew-ac3forge`) - see
+[`packaging/homebrew/README.md`](https://github.com/iainchesworthlabs/ac3forge/blob/main/packaging/homebrew/README.md)
+for why a personal tap rather than a `homebrew-core` submission. Unlike the vcpkg port, this
+packages the CLI (`ac3cli`), not the library: `AC3FORGE_BUILD_CLI=ON` with GUI/tests/examples/
+fuzzers off, built from the release source tarball. The GUI (`ac3gui`) is not packaged here - a
+Homebrew Cask, not a Formula, is the right shape for a bundled `.app`, and needs its own
+follow-up.
+
+**Every release tag** needs a follow-up update to the formula, same shape as the vcpkg port's:
+
+1. Bump `packaging/homebrew/Formula/ac3forge.rb`'s `url` to the new tag and `sha256` to match
+   (`sha256sum` the tag's release tarball - the same tarball the vcpkg port's `SHA512` already
+   points at, just a different digest algorithm).
+2. Validate locally first (see below) before touching a tap - a formula change that fails
+   `brew audit` is slower to iterate on there than here.
+3. Copy the updated formula into the `homebrew-ac3forge` tap's `Formula/ac3forge.rb` and push.
+
+**Validating the formula locally**, from a macOS machine with Homebrew installed:
+
+```bash
+brew install --build-from-source ./packaging/homebrew/Formula/ac3forge.rb
+brew test ac3forge
+brew audit --formula ./packaging/homebrew/Formula/ac3forge.rb
+brew uninstall ac3forge
+```
+
+There is no Homebrew on any of this project's CI runners or on Windows/Linux dev machines, so
+this validation is manual and macOS-only - there is nothing here to automate against, unlike
+the vcpkg `--overlay-ports` flow above.
+
+## winget manifest
+
+A winget manifest for `ac3forge` (`ac3cli` and `ac3gui` together, from the existing release
+`.zip`) is staged in-tree at
+[`packaging/winget/manifests/`](https://github.com/iainchesworthlabs/ac3forge/tree/main/packaging/winget/manifests),
+at the exact `manifests/<first-letter>/<publisher>/<package>/<version>/` path a
+`microsoft/winget-pkgs` submission uses, so the version directory can be copied straight into a
+fork of that repo. It uses `InstallerType: zip` with `NestedInstallerType: portable` against the
+release's `ac3forge-X.Y.Z-win64.zip` rather than a dedicated installer - that archive already
+contains both `bin/ac3cli.exe` and `bin/ac3gui.exe` (CPack's `runtime` component - see [What
+gets published](#what-gets-published) below), and this release doesn't produce an NSIS `.exe`
+(`makensis` wasn't on the runner - see `cmake/Packaging.cmake`). If a future release does
+produce one, switch `InstallerType` to `nullsoft` and drop `NestedInstallerType`/
+`NestedInstallerFiles` at that point rather than keeping both paths maintained.
+
+**Every release tag** needs a new version directory, since winget-pkgs versions each release
+independently rather than tracking a moving tag the way vcpkg's `version-semver` does:
+
+1. Copy `packaging/winget/manifests/i/iainchesworthlabs/ac3forge/<prev-version>/` to a new
+   `<new-version>/` directory, updating `PackageVersion` in all three files to match.
+2. Update the installer manifest's `InstallerUrl` to the new release's `win64.zip` and
+   `InstallerSha256` to match (`sha256sum` the zip - winget wants SHA256, unlike the
+   `SHA512SUMS` `release.yml` publishes for every artifact, see [What gets
+   published](#what-gets-published) below).
+3. Validate locally first (see below) before touching a fork.
+4. Copy the new version directory into the `microsoft/winget-pkgs` fork at the matching
+   `manifests/i/iainchesworthlabs/ac3forge/<new-version>/` path and open the submission PR.
+
+**Validating the manifest locally**, with the `winget` CLI (ships with Windows 10/11):
+
+```bash
+winget validate --manifest packaging/winget/manifests/i/iainchesworthlabs/ac3forge/<version>
+```
+
+## Conan recipe
+
+A Conan (2.x) recipe for `ac3forge` is staged in-tree at
+[`packaging/conan/`](https://github.com/iainchesworthlabs/ac3forge/tree/main/packaging/conan)
+(`conanfile.py`, `conandata.yml`, `test_package/`) and is pending submission to ConanCenter
+(`conan-center-index`). Scoped the same as the vcpkg port - the library only (`ac3::forge`,
+plus `matroska::matroska`/`mp4::mp4`/`mpegts::mpegts` behind their own default-on `matroska`/
+`mp4`/`mpegts` options), never the CLI/GUI/tests/examples/fuzzers - with one Conan option per
+`AC3FORGE_BUILD_<NAME>` CMake option, the same pattern the vcpkg port's `vcpkg_check_features()`
+call already establishes. Rather than asking Conan's `CMakeDeps` generator to synthesise a
+second CMake package config, the recipe sets `cmake_find_mode` to `"none"` and points consumers
+at the config `cmake/InstallLibrary.cmake` already installs - see `conanfile.py`'s
+`package_info()` comment. A consumer's `find_package(ac3forge CONFIG REQUIRED)` and
+`target_link_libraries(main PRIVATE ac3::forge)` calls are identical to the vcpkg or plain
+`cmake --install` case (see [docs/library/index.md](library/index.md)), Conan or not.
+
+**Every release tag**, once the recipe has been merged upstream, needs a follow-up PR to
+`conan-center-index` - ConanCenter has no mechanism to track a moving `main` either, same as
+vcpkg's curated registry:
+
+1. Add a new entry to `packaging/conan/conandata.yml`'s `sources` map, keyed by the new
+   version, with the tag's release tarball `url` and `sha256` (same tarball the vcpkg port's
+   `SHA512` and the Homebrew formula's `sha256` already point at, just fetched fresh).
+2. Validate locally first (see below) before touching the upstream fork.
+3. Copy the updated recipe into the `conan-center-index` fork's `recipes/ac3forge/`, add the
+   new version to that recipe's own `config.yml`, and open the version-bump PR.
+
+**Validating the recipe locally**, any time `packaging/conan/` or the CMake options it drives
+change (whether or not a release is involved):
+
+```bash
+conan create packaging/conan --version <version> -s compiler.cppstd=23
+conan create packaging/conan --version <version> -s compiler.cppstd=23 -o "&:shared=True"
+conan create packaging/conan --version <version> -s compiler.cppstd=23 -o "&:matroska=False" -o "&:mp4=False" -o "&:mpegts=False"
+```
+
+`-s compiler.cppstd=23` is required - a bare default profile's `compiler.cppstd` predates
+C++23 on most Conan installs, and `check_min_cppstd(self, 23)` in `conanfile.py` fails fast
+rather than configuring a build that would fail deep inside compilation instead. Each command
+above builds `test_package/`, which links `ac3::forge` and runs it, exercising the exact
+`find_package(ac3forge)` path a real consumer uses - a passing `conan create` is a stronger
+signal than a configure-only check for that reason. Fetching a real tag only exercises whatever
+`AC3FORGE_BUILD_*` options actually existed in that tagged source, same caveat as the vcpkg
+port's local-source-override technique above - `packaging/conan/conandata.yml` would need the
+same scratch-entry treatment (a local `url` pointing at this checkout instead of a GitHub
+tarball) to validate a CMake option added since the last tag.
+
 ## What gets published
 
 One package per OS **and architecture**, not one per compiler-toolchain leg: `_build.yml`'s matrix

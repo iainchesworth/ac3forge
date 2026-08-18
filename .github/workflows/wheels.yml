@@ -1,0 +1,94 @@
+# Python wheels for the ac3forge PyPI package (roadmap F2, python/) - separate from
+# _build.yml/ci.yml's C++ matrix, which knows nothing about Python packaging. Builds via
+# cibuildwheel, configured from python/pyproject.toml's own [tool.cibuildwheel] table so a local
+# `cibuildwheel python` run matches this workflow exactly rather than drifting from workflow-only
+# YAML settings.
+#
+# The build job runs continuously (every push/PR touching python/**) and always uploads wheels as
+# an artifact - "buildable and testable" is checked the same way _build.yml's continuous
+# windows-msvc packaging smoke test checks "packageable". Publishing to PyPI is a second, gated
+# job - see docs/releasing.md's "Publishing to PyPI" for what has to be provisioned before it can
+# run at all.
+name: Python Wheels
+
+on:
+  pull_request:
+    paths:
+      - "python/**"
+      - "src/lib/**"
+      - "examples/python/**"
+      - "CMakeLists.txt"
+      - ".github/workflows/wheels.yml"
+  push:
+    branches: [develop, main]
+    paths:
+      - "python/**"
+      - "src/lib/**"
+      - "examples/python/**"
+      - "CMakeLists.txt"
+      - ".github/workflows/wheels.yml"
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+concurrency:
+  group: wheels-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build wheels (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # setuptools_scm (python/pyproject.toml's version provider) needs real tag history to
+          # derive a real version the same way cmake/GitVersionDerivation.cmake's own `git
+          # describe` does on the C++ side - a shallow clone here would build every wheel as an
+          # indistinguishable 0.0.0 rather than a real per-commit dev version.
+          fetch-depth: 0
+
+      - name: Build wheels
+        uses: pypa/cibuildwheel@1828c10ab37f080699c7b81cea34097c684a7074 # v4.2.0
+        with:
+          package-dir: python
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  # Off until a maintainer provisions PyPI trusted publishing and creates the `pypi` GitHub
+  # environment this job targets - see docs/releasing.md. Until then this job's environment
+  # reference has nothing to authorize against and the run fails cleanly at that step; the build
+  # job above and its wheel artifacts are unaffected either way.
+  publish:
+    name: Publish to PyPI
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Download wheels
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: dist

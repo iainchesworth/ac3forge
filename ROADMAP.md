@@ -112,10 +112,23 @@ decoded an AC-3/E-AC-3 bitstream and verified its loudness metadata against meas
 
 ## F. API reach and distribution
 
-- [ ] **F1 (L)** — C API over the encode/decode core: a stable, minimal C-callable surface
-  for bindings and embedding.
-- [ ] **F2 (L)** — Python bindings on PyPI, with wheels for the three desktop platforms.
-  Depends on F1, or goes pybind11-direct.
+- [x] **F1 (L)** — C API over the encode/decode core: a stable, minimal C-callable surface
+  for bindings and embedding. `src/capi/` (`ac3::forge_c`, plain C11 header
+  `ac3forge_c/ac3forge.h`) covers AC-3 encode/decode, E-AC-3 decode (substream and access
+  unit), Atmos encode, and OAMD/JOC object metadata/audio accessors, through opaque handles
+  and `ac3forge_status_t` codes — no C++ type or exception ever crosses the boundary. Both
+  the static and shared variants always statically embed the codec, unlike `ac3::forge`
+  itself, so a binding or embedder only ever needs to load one library. Covered by
+  `examples/capi_encode_decode.c` (compiled as genuine C, proving the header is actually
+  C-usable) and `tests/test_capi.cpp`. See `docs/library/c-api.md`.
+- [x] **F2 (L)** — Python bindings on PyPI, with wheels for the three desktop platforms. Landed
+  pybind11-direct (the roadmap's own fallback), not waiting on F1: `python/` binds straight onto
+  `ac3::FrameEncoder`/`FrameDecoder`/`Eac3Decoder`/`oba::AtmosEncoder`, numpy-friendly PCM and
+  Python exceptions in place of `std::expected`. `.github/workflows/wheels.yml` builds wheels for
+  Windows, macOS and Linux via `cibuildwheel` on every push; the PyPI publish job itself is wired
+  (trusted publishing, no stored token) but stays inert until a maintainer provisions the `pypi`
+  GitHub environment — see `docs/releasing.md`'s "Publishing to PyPI". See
+  `docs/library/python-api.md`.
 - [x] **F3 (L)** — WASM build plus a browser demo that decodes E-AC-3 + JOC and renders
   object motion; could double as the documentation site's live demo. `ac3::forge`'s
   AC-3/E-AC-3 decode path builds under Emscripten (`config-wasm-emscripten` preset), and a
@@ -125,13 +138,28 @@ decoded an AC-3/E-AC-3 bitstream and verified its loudness metadata against meas
   object" control that plays that object's own real JOC-reconstructed audio (#169), not its
   panned slice of the bed. Both #168 and #169 are merged to `develop`.
 - [ ] **F4 (M)** — Package-manager presence: a vcpkg port, a Homebrew formula, a winget
-  manifest. **The vcpkg port is staged in-tree** — see
+  manifest, plus a Conan recipe (an addition beyond the original scope, approved
+  separately). **All four are staged in-tree** — vcpkg at
   [`packaging/vcpkg-port/ac3forge/`](https://github.com/iainchesworthlabs/ac3forge/tree/main/packaging/vcpkg-port/ac3forge),
-  with the submission and per-release update flow documented in `docs/releasing.md`; what
-  remains is the `microsoft/vcpkg` registry submission itself, plus Homebrew and winget. The
-  root `vcpkg.json`'s `version` field is a deliberate placeholder (the build's version derives
-  from git tags, and releases are tracked by the port's own `version-semver`), not something
-  to fix.
+  Homebrew at
+  [`packaging/homebrew/`](https://github.com/iainchesworthlabs/ac3forge/tree/main/packaging/homebrew),
+  winget at
+  [`packaging/winget/`](https://github.com/iainchesworthlabs/ac3forge/tree/main/packaging/winget),
+  and Conan at
+  [`packaging/conan/`](https://github.com/iainchesworthlabs/ac3forge/tree/main/packaging/conan)
+  — with the submission and per-release update flow for each documented in
+  `docs/releasing.md`. What remains is the external submission itself, one per tool: the
+  `microsoft/vcpkg` registry, a personal Homebrew tap (`homebrew-ac3forge` - a
+  `homebrew-core` submission is a later, separate decision with its own notability bar, see
+  `packaging/homebrew/README.md`), `microsoft/winget-pkgs`, and ConanCenter
+  (`conan-center-index`). Scope differs by tool, deliberately: vcpkg and Conan package the
+  library only (`ac3::forge` + the container writers), matching what `find_package(ac3forge)`
+  consumers need; Homebrew and winget package the end-user tools instead (`ac3cli` for
+  Homebrew; `ac3cli` and `ac3gui` together for winget, from the existing release `.zip`) since
+  that is what those two ecosystems are for. The root `vcpkg.json`'s `version` field is a
+  deliberate placeholder (the build's version derives from git tags, and releases are tracked
+  by each staged manifest's own version field - `version-semver` for vcpkg, `url`/`sha256` for
+  Homebrew, `PackageVersion` for winget, `conandata.yml` for Conan), not something to fix.
 - [ ] **F5 (M)** — API freeze → v1.0.0: the SemVer commitment, a deprecation policy, ABI
   notes.
 

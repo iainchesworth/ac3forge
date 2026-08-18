@@ -123,6 +123,13 @@ option(AC3FORGE_BUILD_ADM "Build the standalone BW64/RF64 + ADM parser (src/ac3a
 # matroska/mp4/mpegts above, not ADM.
 option(AC3FORGE_BUILD_CAPI "Build the C API over the encode/decode core (src/capi)" ON)
 
+# Roadmap F2: the pybind11 extension module (python/) - off by default like AC3FORGE_BUILD_ADM
+# above, and for the same reason: nothing under src/, src/cli, src/gui, tests/ or examples/ links
+# it or is affected by it either way. A normal C++ build (and every existing CI leg) is unchanged
+# with this OFF. Turned ON by python/pyproject.toml's own cmake.define when scikit-build-core
+# drives the configure for `pip install`/cibuildwheel - see python/CMakeLists.txt.
+option(AC3FORGE_BUILD_PYTHON "Build the pybind11 Python extension module (python/)" OFF)
+
 # enable_testing() has to run before ANY add_subdirectory() that might contain
 # an add_test() call, not merely before tests/ itself - CTest silently drops
 # an add_test() registered from a directory processed earlier in the same
@@ -220,6 +227,14 @@ endif()
 # (src/adm_bridge) is excluded for the same reason - it transitively depends on ac3adm::ac3adm.
 include(InstallLibrary)
 
+# The pybind11 extension module - after ac3::forge exists (it links straight against it, the
+# same way examples/ does), independent of everything below: it needs none of CLI/GUI/tests/
+# examples and isn't consumed via find_package(ac3forge), so it doesn't need to come before or
+# after InstallLibrary for any reason other than "ac3::forge must already be a target".
+if(AC3FORGE_BUILD_PYTHON)
+    add_subdirectory(python)
+endif()
+
 if(AC3FORGE_BUILD_CLI)
     add_subdirectory(src/cli)
 endif()
@@ -265,6 +280,7 @@ message(STATUS "  Build CLI      : ${AC3FORGE_BUILD_CLI}")
 message(STATUS "  Build GUI      : ${AC3FORGE_BUILD_GUI}")
 message(STATUS "  Build tests    : ${AC3FORGE_BUILD_TESTS}")
 message(STATUS "  Build examples : ${AC3FORGE_BUILD_EXAMPLES}")
+message(STATUS "  Build Python   : ${AC3FORGE_BUILD_PYTHON}")
 # Which src/audio/src/platform/ directory was compiled, and so whether 'record'
 # and 'play' work in this build at all - see the platform tree in
 # src/audio/CMakeLists.txt. 'posix' is the one that means no.
