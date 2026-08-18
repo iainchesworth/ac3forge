@@ -29,10 +29,12 @@ staying library-only but pointed the other way: Homebrew formulae are for end-us
 `ac3forge-*-Darwin.dmg` (`cmake/Packaging.cmake`). A Cask, not a Formula, is the right shape
 for a bundled `.app` — Homebrew formulae build from source, and a Qt6 GUI app is idiomatically
 distributed prebuilt and signed (or, here, prebuilt and *not* Apple-signed — see the cask's own
-`caveats` block). `Casks/ac3gui.rb` is **not yet installable for real**: it needs a release
-whose macOS build actually contains `ac3gui.app`, which needs the `macos-llvm` CI leg to build
-the GUI at all first — see [docs/platforms/macos.md](../../docs/platforms/macos.md#gui-on-macos)
-and the cask file's own header comment for exactly what's still pending.
+`caveats` block). `Casks/ac3gui.rb` now points at a real release: `v0.8.0-beta.2` is the first
+tag whose `macos-llvm` CI leg builds `AC3FORGE_BUILD_GUI=ON` (see
+[docs/platforms/macos.md](../../docs/platforms/macos.md#gui-on-macos)), so it's the first
+`ac3forge-*-Darwin.dmg` that actually contains `ac3gui.app` — `version`/`sha256` are pinned from
+that release, not placeholders. Every release after this one still needs the same per-release
+bump the sibling Formula gets; see the cask file's own header comment.
 
 ## Validating locally
 
@@ -51,12 +53,14 @@ tooling in this repo's CI, so this validation is manual, macOS-only, and not aut
 see [docs/releasing.md](../../docs/releasing.md#homebrew-formula-and-cask) for the per-release update
 flow.
 
-The cask can't be validated the same way yet — `brew audit --cask` would still catch style
-issues, but `brew install --cask` needs a real, downloadable `.dmg` behind its `url`, and
-`sha256 :no_check` is a placeholder (see the cask file's header). Once a real release exists:
+The cask now points at a real, downloadable `.dmg` (v0.8.0-beta.2), so it can be validated the
+same way, from a macOS machine with Homebrew installed:
 
 ```bash
 brew audit --cask ./packaging/homebrew/Casks/ac3gui.rb
 brew install --cask ./packaging/homebrew/Casks/ac3gui.rb
 brew uninstall --cask ac3gui
 ```
+
+Not yet run for real — this repo's CI has no Homebrew, same as the Formula above, so this is
+manual and macOS-only too. Run it before copying the cask into the tap.
