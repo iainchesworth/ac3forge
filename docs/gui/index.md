@@ -4,7 +4,10 @@
 Qt Quick front end over the same
 `ac3::forge` library documented under [Library](../library/index.md) — nothing in the GUI has
 logic the library doesn't also expose, and every setting it makes maps onto an equivalent
-[`ac3cli`](../cli/index.md) invocation shown live at the bottom of the window.
+[`ac3cli`](../cli/index.md) invocation shown live at the bottom of the window. See
+[Installing](../cli/index.md#installing) for how to get it — winget ships `ac3gui` alongside
+`ac3cli` in one package; Homebrew doesn't package the GUI, and every platform's release archive
+carries it too.
 
 The screenshots in this guide are of the current two-pane "workbench" layout, drawn in the
 default **Signal** palette's light mode. The app ships four palettes — Signal (the design
