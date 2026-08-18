@@ -359,6 +359,82 @@ detail the later, more polished papers only gesture at.
   `samples_per_access_unit`) — later tuning during MLP's evolution into TrueHD, not a conflict
   to resolve.
 
+### The wire-format source hunt
+
+A six-angle verified sweep (patent family, standards bodies, academic literature, community
+documentation, Dolby's own channels, and the archive sites that yielded the earlier papers)
+settled where `block_data()`'s syntax can and cannot come from.
+
+**Nothing public contains the shipping FBA syntax.** Confirmed exhaustively: no AES paper (a
+41-result "Meridian Lossless Packing" sweep plus a 12-result "TrueHD" sweep), no standards body
+(no SDO has ever published the codec itself), no community documentation (MultimediaWiki's MLP
+page stops at exactly the framing layer this project already implements), and Dolby's retired
+developer portal — per a Wayback CDX enumeration of its whole TrueHD assets folder — never
+hosted more than the two PDFs already in `docs/reference/`.
+
+**Free, and now in hand:**
+
+- **WO 96/37048 A2** (Craven & Gerzon, the PCT parent of the already-read US 6,891,482 B2) —
+  uniquely in the family, its as-filed text carries actual entropy-code tables (Table 2's
+  Laplacian 4-bit Huffman code; Table 3's 17 Huffman tables selected by per-block peak level;
+  Table 7's PCM fallback code) and block-header figures (Figs. 18a/18b: Huffman table number,
+  LSB word, bit-precision field, FIR/IIR coefficients a1–a3/b1–b3, filter initialization
+  state). This is 1995 *proto*-MLP, not the shipping syntax — but it is the only bit-level
+  entropy/header material anywhere public, and the natural skeleton to build the remaining DSP
+  primitives against. Cited by number, not archived (the PDF is a 166-page scanned facsimile;
+  the tables are legible in Google Patents' page text).
+- **Malcolm Law's Dolby-era TrueHD patents** — US 9,826,327, US 9,794,712, US 10,068,577:
+  Atmos-substream semantics straight from Dolby (seed-plus-delta interpolated primitive
+  matrices; legacy coefficient range [-2, 2) versus a maximum of 128 in the adaptive-audio
+  syntax; 24- versus 32-bit datapaths; the four-substream hierarchy; channel assignment once
+  per restart interval).
+- **WO 2016/018787 A1** — the Atmos-in-TrueHD framing model: object metadata packaged as
+  Evolution (EMDF) frames carrying OAMD, framed into 40-sample access units, with the exact
+  sample-offset arithmetic and per-rate scale factors. Combined with ETSI TS 102 366 Annex H
+  (EMDF — **already implemented in this repo as `ac3::emdf`**) and ETSI TS 103 420 (bit-level
+  OAMD payload syntax — already exercised by the JOC work), Phase 3's metadata path is now
+  substantially publicly specified: the open question shrinks from "how does Atmos ride in
+  `EXTRA_DATA()` at all" to the TrueHD-specific wrapper details around an EMDF+OAMD payload
+  this codebase can already build.
+- **Five documents added to `docs/reference/`**: the AES 17th Conference (1999) version of the
+  MLP system paper; Meridian's 62-page **MLP Encoder User Guide** (the only public document
+  describing the real encoder's behaviour: channel-assignment rules, the lossless 6→2 downmix,
+  data-rate control, the proofing decoder); the Tokyo "Lossless Compression for DVD-Audio"
+  companion paper; and both ARA proposals every MLP paper cites.
+
+**Purchasable, recommended** (AES E-Library, $33 each for non-members, free with membership):
+
+- Craven, Law, Stuart, Wilson — *"Hierarchical Lossless Transmission of Surround Sound Using
+  MLP"*, AES 24th International Conference (Banff, June 2003), e-lib id 12297. The one
+  designer-authored MLP paper still unread; substream/matrix-hierarchy semantics.
+- Craven, Law, Stuart — *"Lossless Compression Using IIR Prediction Filters"*, preprint 4415,
+  e-lib id 7364. **Reinstated** after being dropped earlier on citation-trail reasoning: the
+  sweep confirms it is the closest published source for predictor coefficient quantization and
+  state handling — exactly the fields `block_data()` has to encode.
+
+**The core reference, obtainable with real-world effort:** the DVD Forum's *"Packed PCM: MLP
+Reference Information"* — a 69-page annex to *DVD Specifications for Read-Only Disc, Part 4* —
+is the document DVD-Audio implementers actually worked from, and the only named,
+non-licensee-channel document credibly containing block-header/block-data layout, coefficient
+encoding, and the entropy tables. DVD FLLC dissolved on 31 January 2025 and deposited its
+format books at Japan's **National Diet Library** (Tokyo Main Library, call number M361-D120);
+it can be read in person or partially copied via NDL's overseas remote photoduplication service
+(per-page fees plus shipping — tens of dollars, not thousands; Japanese copyright practice
+limits each request to roughly half the work, so a full copy takes two staged requests).
+Caveats: it specifies the DVD-Audio variant (FBB sync `0xF8726FBB`) — the core block machinery
+is shared but TrueHD's FBA deltas are not covered — and the pages may carry legacy
+confidentiality markings, so a quick legal sanity-check is prudent before quoting verbatim
+in-repo.
+
+**Ruled out:** the HD DVD-era *"MLP Reference Information v1.0"* (August 2005) — the exact
+TrueHD-generation reference, named by IANA's `audio/vnd.dolby.mlp` registration — has no
+surviving official channel (FLLC dissolved; not in the NDL deposit). Dolby's *"Dolby TrueHD
+Consumer Decoder (with MAT)"* licensee deliverable is the authoritative living source, but its
+NDA and bundled reference source code sit badly with an open clean-room project. DeepWiki's
+FFmpeg-derived pages are machine paraphrases of `mlpdec.c`/`mlpenc.c` and are excluded as
+equivalent to reading that source; MultimediaWiki carries the same provenance flag but contains
+nothing beyond the already-implemented framing layer anyway.
+
 ## v1 scope
 
 Given the size of the gap above, initial implementation targets the fully-specified 2/6/8-channel
@@ -387,17 +463,30 @@ for citation:
   Explicitly does not cover the core audio encoding/decoding algorithm.
 
 **Core compression algorithm** — see [Candidate sources for the core
-algorithm](#candidate-sources-for-the-core-algorithm) and [What the AES papers
-add](#what-the-aes-papers-add-to-the-patent-account) above for what each says; two read in full
-this session and saved:
+algorithm](#candidate-sources-for-the-core-algorithm), [What the AES papers
+add](#what-the-aes-papers-add-to-the-patent-account), and [The wire-format source
+hunt](#the-wire-format-source-hunt) above for what each says:
 
 - Gerzon, Craven, Stuart, Law, Wilson, *"The MLP Lossless Compression System for PCM Audio"*,
-  *J. Audio Eng. Soc.*, Vol. 52, No. 3, 2004 March.
+  *J. Audio Eng. Soc.*, Vol. 52, No. 3, 2004 March — read in full.
 - Stuart, Craven, Gerzon, Law, Wilson, *"MLP Lossless Compression"*, AES 9th Regional
-  Convention, Tokyo.
+  Convention, Tokyo — read in full.
+- Craven, Gerzon, *"Lossless Coding for Audio Discs"*, *J. Audio Eng. Soc.*, Vol. 44, No. 9,
+  1996 September — read in full.
+- Gerzon, Craven, Stuart, Law, Wilson, *"The MLP Lossless Compression System"*, AES 17th
+  International Conference (High-Quality Audio Coding), 1999 — conference predecessor of the
+  JAES 2004 paper; pending a diff-read.
+- Meridian Audio, *MLP Encoder User Guide* (62 pp.) — the real encoder's behavioural
+  constraints; pending a full read.
+- Stuart, Craven, Law, *"Lossless Compression for DVD-Audio"*, AES 9th Regional Convention,
+  Tokyo (companion paper) — DVD-Audio application overview.
+- Acoustic Renaissance for Audio, *"A Proposal for the High-Quality Audio Application of
+  High-Density CD Carriers"* (v1.3) and *"DVD: Application of Hierarchically Encoded Surround
+  Sound"* — the design-requirements documents every MLP paper cites.
 
-The two patents (US 6,891,482 B2, US 7,193,538 B2) are fully public via Google Patents/USPTO and
-not duplicated into `docs/reference/` — no download needed, just the patent number.
+Patents (US 6,891,482 B2, US 7,193,538 B2, WO 96/37048 A2, US 9,826,327 B2, US 9,794,712 B2,
+US 10,068,577 B2, WO 2016/018787 A1) are fully public via Google Patents/USPTO/FPO and not
+duplicated into `docs/reference/` — no download needed, just the patent number.
 
 !!! note "Trademarks"
     "Dolby", "Dolby TrueHD" and "MLP Lossless" are trademarks of Dolby Laboratories. ac3forge is
