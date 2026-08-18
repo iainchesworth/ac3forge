@@ -21,6 +21,16 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   wired up but stays off until a maintainer provisions PyPI trusted publishing — see
   [docs/releasing.md](docs/releasing.md#publishing-to-pypi). See
   [docs/library/python-api.md](docs/library/python-api.md).
+- **`ac3gui` now builds and tests on macOS.** The `macos-llvm` CI leg was CLI-only since it was
+  promoted out of experimental; it now installs Homebrew's `qt` formula and builds the GUI the
+  same opt-in way the four Linux legs do, `ac3gui_qmltests` and a headless `ac3gui --smoke`
+  included. Getting there needed two real fixes for hangs under Qt's offscreen platform plugin,
+  not just turning the option on — see [docs/platforms/macos.md](docs/platforms/macos.md#gui-on-macos).
+  `cmake/Packaging.cmake` needed no change: the macOS `.dmg` now carries `ac3gui.app` for free.
+- **A Homebrew Cask for `ac3gui`** is staged at `packaging/homebrew/Casks/ac3gui.rb`, alongside
+  the existing CLI-only Formula — a Cask, not a Formula, being the right shape for a prebuilt
+  `.app`. Not yet published to the `homebrew-ac3forge` tap; see
+  [docs/releasing.md](docs/releasing.md#homebrew-formula-and-cask).
 
 ## [0.8.0-beta.1] - 2026-08-17
 
