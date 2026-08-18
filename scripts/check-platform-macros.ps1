@@ -18,6 +18,18 @@
 #
 # Include guards are not affected: the codebase uses #pragma once.
 #
+# One other narrow exception, added for src/capi/include/ac3forge_c/ac3forge.h
+# (roadmap F1): `#ifdef __cplusplus` / `extern "C" {` / `#endif` is the
+# standard idiom that lets one header be included from both a C and a C++
+# translation unit, which a C-callable public header genuinely needs -
+# `extern "C"` is not even legal syntax outside `#ifdef __cplusplus`, since a
+# .c file's compiler does not know the token. This is a LANGUAGE-DIALECT
+# marker, not a platform or feature branch - the thing this check exists to
+# forbid - so a bare `#ifdef __cplusplus ... #endif` pair (no #else/#elif
+# inside it) is tracked separately below and excluded from violations; every
+# other conditional, including one that merely mentions __cplusplus in an
+# #if/#elif expression alongside something else, is still flagged.
+#
 # Usage:  ./scripts/check-platform-macros.ps1 [-Root <repo-root>]
 # Exit:   0 = clean, 1 = violation(s) found, 2 = bad invocation.
 
@@ -31,7 +43,8 @@ $ErrorActionPreference = 'Stop'
 # block out, or a feature-flag #ifdef, are just as unwelcome as a platform one.
 # `#define` is NOT matched -- constants and macros are ordinary C++ -- and
 # neither is #include or #pragma.
-$pattern = '^\s*#\s*(if|ifdef|ifndef|elif|elifdef|elifndef|else|endif)\b'
+$directivePattern = '^\s*#\s*(if|ifdef|ifndef|elif|elifdef|elifndef|else|endif)\b'
+$cplusplusGuardPattern = '^\s*#\s*ifdef\s+__cplusplus\b'
 
 $srcRoot = Join-Path $Root 'src'
 if (-not (Test-Path $srcRoot)) {
@@ -43,11 +56,32 @@ $files = Get-ChildItem -Path $srcRoot -Recurse -File -Include '*.h', '*.hpp', '*
 
 $violations = @()
 foreach ($file in $files) {
-    foreach ($m in (Select-String -Path $file.FullName -Pattern $pattern -AllMatches -CaseSensitive)) {
+    # Per-file stack tracking ONLY whether each currently-open conditional is
+    # exactly a plain `#ifdef __cplusplus` guard, so its matching `#endif` can
+    # be recognised too - a bare regex match on `#endif` alone cannot tell
+    # which opening directive it closes.
+    $guardStack = New-Object System.Collections.Generic.Stack[bool]
+    foreach ($m in (Select-String -Path $file.FullName -Pattern $directivePattern -AllMatches -CaseSensitive)) {
+        $line = $m.Line.Trim()
+        $isOpen = $line -match '^\s*#\s*(if|ifdef|ifndef)\b'
+        $isEndif = $line -match '^\s*#\s*endif\b'
+
+        if ($isOpen) {
+            $isCplusplusGuard = $line -match $cplusplusGuardPattern
+            $guardStack.Push($isCplusplusGuard)
+            if ($isCplusplusGuard) {
+                continue
+            }
+        } elseif ($isEndif -and $guardStack.Count -gt 0) {
+            if ($guardStack.Pop()) {
+                continue
+            }
+        }
+
         $violations += [pscustomobject]@{
             Path = [System.IO.Path]::GetRelativePath($Root, $file.FullName).Replace('\', '/')
             Line = $m.LineNumber
-            Text = $m.Line.Trim()
+            Text = $line
         }
     }
 }

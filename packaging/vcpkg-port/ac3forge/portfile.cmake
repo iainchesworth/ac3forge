@@ -15,11 +15,11 @@ vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO iainchesworthlabs/ac3forge
     REF "v${VERSION}"
-    # Computed directly from https://github.com/iainchesworthlabs/ac3forge/archive/refs/tags/v0.6.0-beta.1.tar.gz
+    # Computed directly from https://github.com/iainchesworthlabs/ac3forge/archive/refs/tags/v0.8.0-beta.1.tar.gz
     # (sha512sum) rather than assumed. If `vcpkg install` reports a mismatch
     # on the first real run, GitHub's archive generation differs from this -
     # trust vcpkg's reported hash over this one and update it here.
-    SHA512 899532cbf73e702c87e6b5a56ca7ae5bfb6f1b82006bf41419298e4321dbcc9d8f91acc4ac0b48bca7f50f9bd3066b2d85f00cef243eafce6b6c99f2c2e13d9f
+    SHA512 9e822cb43c7db45527757ebc619a63a125626b527f641d4f49dbbff1f851d452e3c686bc7731b3ec282a7d63307ad1aa61eeb6c6cb79fd00c44fc0112c04aa51
     HEAD_REF main
 )
 

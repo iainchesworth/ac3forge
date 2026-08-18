@@ -35,6 +35,10 @@ number a real user of either tool actually gets, not an internal detail.
 .landscape-delta-up { color: #2e7d32; font-weight: 600; }
 .landscape-delta-down { color: #c62828; font-weight: 600; }
 .landscape-na { color: var(--md-default-fg-color--light); font-style: italic; }
+/* Alternated per release (not per row) so a release's 1-3 leg rows read as
+   one band, and skimming down the table shows release boundaries at a
+   glance rather than a flat wall of same-looking rows. */
+.landscape-stripe-b { background: color-mix(in srgb, var(--md-default-fg-color) 6%, transparent); }
 </style>
 
 <script>
@@ -155,6 +159,8 @@ number a real user of either tool actually gets, not an internal detail.
     if (rows.length === 0) {
       return '<p class="landscape-status">No tagged-release rows yet - this fills in as releases are cut on main after this page landed.</p>';
     }
+    let prevTag = null;
+    let groupIndex = -1;
     const trs = rows
       .slice()
       .sort((a, b) => {
@@ -165,7 +171,12 @@ number a real user of either tool actually gets, not an internal detail.
       })
       .map((r) => {
         const release = releasesBySha[r.commit];
-        return `<tr>
+        if (release.tag !== prevTag) {
+          groupIndex++;
+          prevTag = release.tag;
+        }
+        const stripeCls = groupIndex % 2 === 1 ? " class=\"landscape-stripe-b\"" : "";
+        return `<tr${stripeCls}>
           <td><a class="landscape-release" href="${release.url}">🏷 ${release.name}</a>${release.prerelease ? ' <span class="landscape-prerelease">(prerelease)</span>' : ""}</td>
           <td>${(release.date || r.commit_date).slice(0, 10)}</td>
           <td><a href="${commitUrl(r.commit)}">${shortSha(r.commit)}</a></td>
@@ -256,7 +267,9 @@ invoking FFmpeg's or DEE's own encoder, same boundary as the numbers.
 
 Each row is one (tagged release, leg) result — a release cuts one commit on
 `main`, and that commit contributes up to three rows (the AC-3 5.1, E-AC-3
-stereo, and E-AC-3 5.1 legs).
+stereo, and E-AC-3 5.1 legs). Alternating row shading marks where one
+release's rows end and the next begins, so a release's leg rows read as one
+band rather than blending into the wall of numbers below.
 
 Three metrics are shown side by side, each with its own **vs FFmpeg** /
 **vs DEE** delta against that tool's number for the same leg at the baseline

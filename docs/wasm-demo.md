@@ -29,10 +29,10 @@ Everything: the decode, the audio, the per-channel bed energy driving the two
 speaker rings (solid = ear-level, dashed = ceiling — ported from the desktop
 GUI's `SoundfieldView.qml`), and — for a stream carrying Atmos objects — each
 object's real decoded position (OAMD,
-[`ac3::forge#168`](https://github.com/iainchesworth/ac3forge/pull/168)) moving
+[`ac3::forge#168`](https://github.com/iainchesworthlabs/ac3forge/pull/168)) moving
 in the top-down/elevation room view, plus a "solo object" control that plays
 that object's own real JOC-reconstructed audio
-([`ac3::forge#169`](https://github.com/iainchesworth/ac3forge/pull/169)) — not
+([`ac3::forge#169`](https://github.com/iainchesworthlabs/ac3forge/pull/169)) — not
 a re-panned approximation of its slice of the bed, its actual isolated
 waveform. Drop in your own `.ec3`/`.ac3` file to decode something other than
 the bundled fixture; a plain (non-Atmos) stream simply has zero objects.

@@ -55,6 +55,18 @@ want a subset, or only the codec. `ac3adm::ac3adm` has no vcpkg feature — see 
 it isn't part of this installed package at all. Once merged into `microsoft/vcpkg`, the same two
 snippets work with a plain `vcpkg install ac3forge` — no `--overlay-ports` needed.
 
+**Conan.** A recipe lives in this repo at
+[`packaging/conan/`](https://github.com/iainchesworthlabs/ac3forge/tree/main/packaging/conan)
+and is pending submission to ConanCenter (see
+[docs/releasing.md](../releasing.md#conan-recipe)) — until that lands, `conan create
+packaging/conan --version <tag>` from a clone of this repo builds it straight into your local
+Conan cache, after which a consumer's `conanfile.txt`/`conanfile.py` `requires = "ac3forge/<tag>"`
+resolves it the same way a published package would. Same scope and features as the
+vcpkg port above (`matroska`/`mp4`/`mpegts`, all on by default — `-o ac3forge/*:matroska=False`
+etc. to drop one), and the same two `find_package`/`target_link_libraries` snippets: the recipe
+installs `ac3forge`'s own CMake package config rather than generating a second one, so a Conan
+consumer's CMakeLists.txt looks identical to a vcpkg or plain-installed one.
+
 Live audio — capture, monitor playback, IEC 61937 passthrough — is `ac3::audio`
 (`src/audio/`), a separate target `ac3cli`/`ac3gui` link alongside `ac3::forge` for their own
 live-audio commands. It is **not** part of the distributed package: it isn't installed, isn't
@@ -89,6 +101,10 @@ re-synced by hand and can drift. Each page's "Full program" link is the canonica
   `ac3::oba::AtmosEncoder` (same opt-in flag).
 - [Object signing](signing.md) — `ac3::signing`, the EMDF protection tag.
 - [Header map](header-map.md) — every public header and what lives in it.
+- [C API](c-api.md) — `ac3::forge_c`, a stable, minimal C-callable surface over encode/decode for
+  bindings and embedding (roadmap item F1).
+- [Python bindings](python-api.md) — the `ac3forge` PyPI package, pybind11-direct over
+  `ac3::FrameEncoder`/`FrameDecoder`/`Eac3Decoder`/`oba::AtmosEncoder`.
 
 ## Conventions
 

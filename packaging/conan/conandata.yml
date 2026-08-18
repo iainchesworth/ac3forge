@@ -1,0 +1,11 @@
+# Source archive per version. Computed directly (sha256sum) from the same
+# release tarball the vcpkg port's portfile.cmake pins by SHA512 - see that
+# file's comment. If a build reports a mismatch, trust Conan's reported
+# hash over this one and update it here.
+#
+# One entry per released version this recipe has been validated against -
+# see docs/releasing.md#conan-recipe for the per-release update flow.
+sources:
+  "0.8.0-beta.1":
+    url: "https://github.com/iainchesworthlabs/ac3forge/archive/refs/tags/v0.8.0-beta.1.tar.gz"
+    sha256: "69da9af8c2afe1b3eb37695378219d45391779d69fc2b44b2353935c769c09ee"

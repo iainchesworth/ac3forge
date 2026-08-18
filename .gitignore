@@ -15,8 +15,13 @@ CMakeUserPresets.json
 .cache/
 *.user
 
-# Python tooling for golden-vector generation
+# Python tooling for golden-vector generation, and the python/ bindings package (build/ above
+# already covers python/build/; __pycache__/ already covers every test/tool's bytecode cache)
 __pycache__/
+.pytest_cache/
+*.egg-info/
+python/dist/
+wheelhouse/
 
 # Downloaded standards documents (free from ATSC/ETSI; not redistributed here)
 docs/spec/
