@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 PackageIdentifier: iainchesworthlabs.ac3forge
 PackageVersion: 0.8.0-beta.1
 PackageLocale: en-US
@@ -26,4 +27,4 @@ ReleaseNotesUrl: https://github.com/iainchesworthlabs/ac3forge/releases/tag/v0.8
 # version manifest's DefaultLocale: en-US names it as such - winget-pkgs
 # requires the two to agree.
 ManifestType: defaultLocale
-ManifestVersion: 1.6.0
+ManifestVersion: 1.12.0

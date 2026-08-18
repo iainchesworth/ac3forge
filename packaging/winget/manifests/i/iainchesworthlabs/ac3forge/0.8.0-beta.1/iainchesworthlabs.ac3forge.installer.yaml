@@ -7,6 +7,7 @@
 # that archive with no separate installer to build - see
 # docs/releasing.md#winget-manifest for what changes this if a real NSIS
 # installer becomes available for a future release.
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
 PackageIdentifier: iainchesworthlabs.ac3forge
 PackageVersion: 0.8.0-beta.1
 InstallerLocale: en-US
@@ -30,4 +31,4 @@ Installers:
     # update it here, same policy as the vcpkg port's SHA512 comment.
     InstallerSha256: 18CEEC80A3BE305B44D7927D2B722EE82D35CB111A0BBFCC714C1EA3883F4E44
 ManifestType: installer
-ManifestVersion: 1.6.0
+ManifestVersion: 1.12.0
