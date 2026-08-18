@@ -2,6 +2,7 @@
 
 #include <QCoreApplication>
 #include <QObject>
+#include <QQuickStyle>
 #include <QSettings>
 #include <QTemporaryDir>
 
@@ -32,6 +33,32 @@ public slots:
     void applicationAvailable() {
         QCoreApplication::setOrganizationName(QStringLiteral("ac3forge-tests"));
         QCoreApplication::setApplicationName(QStringLiteral("ac3gui_qmltests"));
+
+        // main.cpp forces Fusion before its engine loads any QML - see that
+        // file's own comment: it renders identically on every platform,
+        // where the native style would restyle controls at runtime. This
+        // binary never did, which matters for more than looks: without it,
+        // Qt Quick Controls resolves to the platform's native style, whose
+        // native-theme queries are the documented cause of a real,
+        // reproducible hang under the offscreen QPA platform (see
+        // src/gui/qml/Main.qml's "native Button inside a Repeater fed real
+        // data" comment for the first occurrence, on Windows). That
+        // occurrence was worked around locally in QML; a second one surfaced
+        // here on macOS - not in the Repeater that fix already covers, but
+        // in addDeviceBox (Main.qml), a plain native ComboBox populated from
+        // EncoderController.captureDevices once a live capture session with
+        // a real device selects it. Matching main.cpp's style here removes
+        // the native-theme code path this binary was the only place still
+        // exercising, rather than chasing each control it happens to affect
+        // one at a time - and it is also more correct on its own terms: the
+        // QML under test customizes several controls' contentItem (e.g.
+        // Main.qml:1584, the exact line the "current style does not support
+        // customization" QWARN below names), which only works under a
+        // non-native style - Fusion, same as the shipped app - so this
+        // binary had been exercising a style ac3gui never actually ships
+        // with.
+        QQuickStyle::setStyle(QStringLiteral("Fusion"));
+
         scratch_.emplace();
         QSettings::setDefaultFormat(QSettings::IniFormat);
         QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, scratch_->path());
