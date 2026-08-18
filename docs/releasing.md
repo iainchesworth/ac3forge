@@ -224,11 +224,11 @@ The GUI (`ac3gui`) is a separate Homebrew Cask,
 [`packaging/homebrew/Casks/ac3gui.rb`](https://github.com/iainchesworthlabs/ac3forge/blob/main/packaging/homebrew/Casks/ac3gui.rb)
 - a Cask, not a Formula, is the right shape for a bundled, prebuilt `.app` the way `ac3gui.app`
 already ships in every platform's release archive (`cmake/Packaging.cmake`'s DragNDrop `.dmg` on
-macOS). It's staged the same way the formula is, but **is not yet installable for real**: no
-tagged release has ever contained a macOS `ac3gui` build, because `macos-llvm` only started
-building the GUI at all once [GUI on macOS](platforms/macos.md#gui-on-macos) landed. The cask's
-`version`/`sha256` are placeholders until the first release tag cut after that - see the cask
-file's own header comment.
+macOS). It's staged the same way the formula is. `v0.8.0-beta.2` is the first tagged release
+whose macOS build actually contains `ac3gui` - `macos-llvm` only started building the GUI at all
+once [GUI on macOS](platforms/macos.md#gui-on-macos) landed - so the cask's `version`/`sha256`
+are now pinned from a real release rather than placeholders; see the cask file's own header
+comment.
 
 **Every release tag** needs a follow-up update to the formula, same shape as the vcpkg port's:
 
@@ -239,11 +239,11 @@ file's own header comment.
    `brew audit` is slower to iterate on there than here.
 3. Copy the updated formula into the `homebrew-ac3forge` tap's `Formula/ac3forge.rb` and push.
 
-Once the cask is real (see above), the same three steps apply to it: bump `version` to the new
-tag and `sha256` to the release's `ac3forge-*-Darwin.dmg` (`sha256sum` it, or trust CPack's own
-published `.dmg.sha512` after converting digest algorithms), validate locally, then copy
-`packaging/homebrew/Casks/ac3gui.rb` into the tap's `Casks/ac3gui.rb` and push - both files ship
-from the same tap.
+The same three steps apply to the cask now that it tracks a real release too: bump `version` to
+the new tag and `sha256` to the release's `ac3forge-*-Darwin.dmg` (`sha256sum` it, or trust
+CPack's own published `.dmg.sha512` after converting digest algorithms), validate locally, then
+copy `packaging/homebrew/Casks/ac3gui.rb` into the tap's `Casks/ac3gui.rb` and push - both files
+ship from the same tap.
 
 **Validating the formula locally**, from a macOS machine with Homebrew installed:
 
@@ -254,9 +254,8 @@ brew audit --formula ./packaging/homebrew/Formula/ac3forge.rb
 brew uninstall ac3forge
 ```
 
-**Validating the cask locally**, once it points at a real release (see
-[`packaging/homebrew/README.md`](https://github.com/iainchesworthlabs/ac3forge/blob/main/packaging/homebrew/README.md)
-for why `sha256 :no_check` blocks a real install today):
+**Validating the cask locally**, the same way, once you have a macOS machine with Homebrew
+installed - not yet run for real, same caveat as the formula above:
 
 ```bash
 brew audit --cask ./packaging/homebrew/Casks/ac3gui.rb
