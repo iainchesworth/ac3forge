@@ -210,6 +210,14 @@ if(AC3FORGE_BUILD_ADM AND TARGET ac3cli)
     target_sources(ac3tests PRIVATE test_cli_atmos_adm.cpp)
 endif()
 
+# ac3::forge_c is an optional component (AC3FORGE_BUILD_CAPI, default ON - see the root
+# CMakeLists.txt) - test_capi.cpp (roadmap F1) only exists to build when it was actually built,
+# the same shape as the AC3FORGE_BUILD_ADM-gated sources above.
+if(AC3FORGE_BUILD_CAPI)
+    target_sources(ac3tests PRIVATE test_capi.cpp)
+    target_link_libraries(ac3tests PRIVATE ac3::forge_c)
+endif()
+
 target_include_directories(ac3tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 
 target_link_libraries(ac3tests

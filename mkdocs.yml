@@ -96,6 +96,7 @@ nav:
       - ADM → Atmos bridging: library/adm-bridge.md
       - Object signing: library/signing.md
       - Header map: library/header-map.md
+      - C API: library/c-api.md
       - Python bindings: library/python-api.md
   - CLI reference:
       - Overview: cli/index.md

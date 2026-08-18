@@ -63,16 +63,19 @@ if(AC3FORGE_INSTALL_BOTH_LINKAGES)
     set(_ac3forge_matroska_install_targets matroska_objects matroska_static matroska_shared)
     set(_ac3forge_mp4_install_targets mp4_objects mp4_static mp4_shared)
     set(_ac3forge_mpegts_install_targets mpegts_objects mpegts_static mpegts_shared)
+    set(_ac3forge_capi_install_targets capi_objects capi_static capi_shared)
 elseif(BUILD_SHARED_LIBS)
     set(_ac3forge_forge_install_targets forge_objects forge_shared)
     set(_ac3forge_matroska_install_targets matroska_objects matroska_shared)
     set(_ac3forge_mp4_install_targets mp4_objects mp4_shared)
     set(_ac3forge_mpegts_install_targets mpegts_objects mpegts_shared)
+    set(_ac3forge_capi_install_targets capi_objects capi_shared)
 else()
     set(_ac3forge_forge_install_targets forge_objects forge_static)
     set(_ac3forge_matroska_install_targets matroska_objects matroska_static)
     set(_ac3forge_mp4_install_targets mp4_objects mp4_static)
     set(_ac3forge_mpegts_install_targets mpegts_objects mpegts_static)
+    set(_ac3forge_capi_install_targets capi_objects capi_static)
 endif()
 
 # Two separate EXPORT sets, not the one combined set an earlier draft of this
@@ -175,6 +178,27 @@ if(AC3FORGE_BUILD_MPEGTS)
         COMPONENT library)
 endif()
 
+# ac3::forge_c is an optional component (AC3FORGE_BUILD_CAPI, see the root CMakeLists.txt) - same
+# shape as matroska::matroska/mp4::mp4/mpegts::mpegts above. Roadmap item F1's whole point is a
+# stable C-callable surface for OTHER toolchains, so its header (ac3forge_c/ac3forge.h) installs
+# to its own include/ac3forge_c/ subdirectory rather than under include/ac3/ - a C or non-C++
+# consumer has no reason to see (or accidentally #include) any C++ header this package ships.
+if(AC3FORGE_BUILD_CAPI)
+    install(TARGETS ${_ac3forge_capi_install_targets}
+        EXPORT capiTargets
+        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT library
+        LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT libruntime NAMELINK_COMPONENT library
+        ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT library)
+
+    install(DIRECTORY "${PROJECT_SOURCE_DIR}/src/capi/include/"
+        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+        COMPONENT library)
+
+    install(FILES "${CMAKE_BINARY_DIR}/src/capi/generated/ac3forge_c/export.h"
+        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/ac3forge_c"
+        COMPONENT library)
+endif()
+
 # The config file find_package(ac3forge) actually loads. No find_dependency()
 # calls needed in ac3forgeConfig.cmake.in: with the platform-audio code
 # physically in a separate, non-exported target (ac3::audio), the installed
@@ -229,6 +253,14 @@ if(AC3FORGE_BUILD_MPEGTS)
     install(EXPORT mpegtsTargets
         FILE mpegtsTargets.cmake
         NAMESPACE mpegts::
+        DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/ac3forge"
+        COMPONENT library)
+endif()
+
+if(AC3FORGE_BUILD_CAPI)
+    install(EXPORT capiTargets
+        FILE capiTargets.cmake
+        NAMESPACE ac3::
         DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/ac3forge"
         COMPONENT library)
 endif()

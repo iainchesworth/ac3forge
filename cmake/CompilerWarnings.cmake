@@ -6,6 +6,14 @@
 # into every first-party target (library, apps, tests). Third-party code (Qt,
 # Catch2) is pulled in as SYSTEM headers by their package configs, so these
 # flags never fire on dependency code.
+#
+# examples/capi_encode_decode.c (roadmap F1's C API example) is the one C,
+# not C++, source in the whole tree, and it links this same target like every
+# other first-party one - so the warning lists below are split into a common
+# set (valid for both languages) and a C++-only set gated behind
+# $<COMPILE_LANGUAGE:CXX>. Without that gate, GCC/Clang hard-error on a C
+# compile ("command-line option '-Wnon-virtual-dtor' is valid for C++/ObjC++
+# but not for C") rather than silently ignoring the C++-specific flags.
 # ---------------------------------------------------------------------------
 
 add_library(ac3_warnings INTERFACE)
@@ -17,9 +25,6 @@ set(AC3_GNU_CLANG_WARNINGS
     -Wpedantic
     -Werror
     -Wshadow
-    -Wnon-virtual-dtor
-    -Woverloaded-virtual
-    -Wold-style-cast
     -Wcast-align
     -Wunused
     -Wconversion
@@ -29,9 +34,20 @@ set(AC3_GNU_CLANG_WARNINGS
     -Wimplicit-fallthrough
     -Wformat=2)
 
+# C++-only: no equivalent concept in C (virtual dtors, overloaded virtuals,
+# the C++-style-cast-vs-C-style-cast distinction).
+set(AC3_GNU_CLANG_CXX_ONLY_WARNINGS
+    -Wnon-virtual-dtor
+    -Woverloaded-virtual
+    -Wold-style-cast)
+
 set(AC3_MSVC_WARNINGS
     /W4
-    /WX
+    /WX)
+
+# /permissive- is a C++ conformance switch, gated to CXX below the same way
+# the GNU/Clang C++-only set is - see this file's header comment.
+set(AC3_MSVC_CXX_ONLY_WARNINGS
     /permissive-)
 
 # clang-cl reports CXX_COMPILER_ID "Clang" but binds -Wall to MSVC's /Wall
@@ -43,9 +59,6 @@ set(AC3_CLANG_CL_WARNINGS
     -Wpedantic
     -Werror
     -Wshadow
-    -Wnon-virtual-dtor
-    -Woverloaded-virtual
-    -Wold-style-cast
     -Wcast-align
     -Wunused
     -Wconversion
@@ -55,12 +68,21 @@ set(AC3_CLANG_CL_WARNINGS
     -Wimplicit-fallthrough
     -Wformat=2)
 
+set(AC3_CLANG_CL_CXX_ONLY_WARNINGS
+    -Wnon-virtual-dtor
+    -Woverloaded-virtual
+    -Wold-style-cast)
+
 if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
-    target_compile_options(ac3_warnings INTERFACE ${AC3_CLANG_CL_WARNINGS})
+    target_compile_options(ac3_warnings INTERFACE
+        ${AC3_CLANG_CL_WARNINGS}
+        "$<$<COMPILE_LANGUAGE:CXX>:${AC3_CLANG_CL_CXX_ONLY_WARNINGS}>")
 else()
     target_compile_options(ac3_warnings INTERFACE
         "$<$<CXX_COMPILER_ID:MSVC>:${AC3_MSVC_WARNINGS}>"
-        "$<$<OR:$<CXX_COMPILER_ID:GNU>,$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>>:${AC3_GNU_CLANG_WARNINGS}>")
+        "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:MSVC>>:${AC3_MSVC_CXX_ONLY_WARNINGS}>"
+        "$<$<OR:$<CXX_COMPILER_ID:GNU>,$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>>:${AC3_GNU_CLANG_WARNINGS}>"
+        "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<OR:$<CXX_COMPILER_ID:GNU>,$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>>>:${AC3_GNU_CLANG_CXX_ONLY_WARNINGS}>")
 endif()
 
 # -Wpedantic on a sufficiently new Clang (first seen on macOS via Homebrew's

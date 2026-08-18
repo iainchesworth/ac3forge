@@ -112,8 +112,15 @@ decoded an AC-3/E-AC-3 bitstream and verified its loudness metadata against meas
 
 ## F. API reach and distribution
 
-- [ ] **F1 (L)** — C API over the encode/decode core: a stable, minimal C-callable surface
-  for bindings and embedding.
+- [x] **F1 (L)** — C API over the encode/decode core: a stable, minimal C-callable surface
+  for bindings and embedding. `src/capi/` (`ac3::forge_c`, plain C11 header
+  `ac3forge_c/ac3forge.h`) covers AC-3 encode/decode, E-AC-3 decode (substream and access
+  unit), Atmos encode, and OAMD/JOC object metadata/audio accessors, through opaque handles
+  and `ac3forge_status_t` codes — no C++ type or exception ever crosses the boundary. Both
+  the static and shared variants always statically embed the codec, unlike `ac3::forge`
+  itself, so a binding or embedder only ever needs to load one library. Covered by
+  `examples/capi_encode_decode.c` (compiled as genuine C, proving the header is actually
+  C-usable) and `tests/test_capi.cpp`. See `docs/library/c-api.md`.
 - [x] **F2 (L)** — Python bindings on PyPI, with wheels for the three desktop platforms. Landed
   pybind11-direct (the roadmap's own fallback), not waiting on F1: `python/` binds straight onto
   `ac3::FrameEncoder`/`FrameDecoder`/`Eac3Decoder`/`oba::AtmosEncoder`, numpy-friendly PCM and
