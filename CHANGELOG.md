@@ -12,6 +12,12 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 
 ## [Unreleased]
 
+## [0.8.0-beta.2] - 2026-08-19
+
+Eighth tagged release. `ac3gui` builds and packages on macOS for the first time — every
+platform's release archive now carries a real GUI, not just Windows/Linux's — plus Python
+bindings on PyPI and a C API over the encode/decode core.
+
 ### Added
 
 - **Python bindings (`ac3forge` on PyPI)**, roadmap F2: a pybind11 module bound directly onto
@@ -21,16 +27,34 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   wired up but stays off until a maintainer provisions PyPI trusted publishing — see
   [docs/releasing.md](docs/releasing.md#publishing-to-pypi). See
   [docs/library/python-api.md](docs/library/python-api.md).
-- **`ac3gui` now builds and tests on macOS.** The `macos-llvm` CI leg was CLI-only since it was
-  promoted out of experimental; it now installs Homebrew's `qt` formula and builds the GUI the
-  same opt-in way the four Linux legs do, `ac3gui_qmltests` and a headless `ac3gui --smoke`
-  included. Getting there needed two real fixes for hangs under Qt's offscreen platform plugin,
-  not just turning the option on — see [docs/platforms/macos.md](docs/platforms/macos.md#gui-on-macos).
-  `cmake/Packaging.cmake` needed no change: the macOS `.dmg` now carries `ac3gui.app` for free.
+- **A C API over the encode/decode core** (roadmap F1), for consumers that can't link C++23
+  directly.
+- **`ac3gui` now builds, tests and packages on macOS.** The `macos-llvm` CI leg was CLI-only
+  since it was promoted out of experimental; it now installs Homebrew's `qt` formula and builds
+  the GUI the same opt-in way the four Linux legs do, `ac3gui_qmltests` and a headless
+  `ac3gui --smoke` included, and this release's `ac3forge-0.8.0-Darwin.dmg` carries `ac3gui.app`
+  for the first time. Getting there needed two real fixes for hangs under Qt's offscreen platform
+  plugin, not just turning the option on — see
+  [docs/platforms/macos.md](docs/platforms/macos.md#gui-on-macos).
 - **A Homebrew Cask for `ac3gui`** is staged at `packaging/homebrew/Casks/ac3gui.rb`, alongside
   the existing CLI-only Formula — a Cask, not a Formula, being the right shape for a prebuilt
   `.app`. Not yet published to the `homebrew-ac3forge` tap; see
   [docs/releasing.md](docs/releasing.md#homebrew-formula-and-cask).
+
+### Known gaps
+
+- The macOS `ac3gui.app` is not Apple-notarized or code-signed — this release signs artifacts
+  with GPG and attests provenance via Sigstore/OIDC, neither of which satisfies Gatekeeper.
+  Expect a "developer cannot be verified" prompt on first launch.
+- Objects still will not decode as *objects* in Dolby's own decoder or hardware — unchanged from
+  0.6.0-beta.1; `verify-objects` checks a stream against its own signature, not Dolby's gate.
+- Exclusive-mode S/PDIF/HDMI passthrough has not been confirmed against real bitstreaming
+  hardware on any platform, ALSA, PipeWire or CoreAudio.
+- `fscod2` audio content has no external decode oracle at all — verified only by this project's
+  own encoder/decoder round trip.
+
+See [Validation](docs/verification.md) for the full account of what is and isn't independently
+verified.
 
 ## [0.8.0-beta.1] - 2026-08-17
 
