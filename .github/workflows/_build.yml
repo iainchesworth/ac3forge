@@ -184,6 +184,17 @@ jobs:
     # gap in that logic can't silently hand a fork PR a self-hosted runner.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ${{ fromJSON(matrix.runner) }}
+    # A backstop against GitHub's own 360-minute default: the macos-llvm
+    # leg's first-ever GUI run hung in the Test step and silently consumed
+    # the full 6 hours before being force-cancelled (see
+    # src/gui/tests/CMakeLists.txt's QSG_RENDER_LOOP comment for the
+    # hypothesis and the per-test TIMEOUT that now also bounds that specific
+    # case). This is deliberately generous - the slowest leg observed so far
+    # (windows-llvm, packaging included on windows-msvc) is ~22 minutes - so
+    # it should never fire for a legitimately slow-but-working run, only for
+    # a genuine hang anywhere in the job, known or not-yet-known.
+    timeout-minutes: 90
+
     # Ubuntu 26.04 for the Linux legs, where the distro archive carries gcc-15
     # and LLVM 21 outright. This is a pin, not a convenience: on ubuntu-latest
     # (24.04 at the time of writing) the LLVM script has to fall back to
@@ -303,10 +314,26 @@ jobs:
           # runner would not fail to configure - it would silently build with
           # whatever AppleClang Xcode ships instead of the Homebrew LLVM
           # every other leg's pinned equivalent aims for.
+          #
+          # gui: true builds ac3gui here too, same meaning as the Linux gui:
+          # true legs above: CMakePresets.json's macos-llvm preset defaults
+          # AC3FORGE_BUILD_GUI off for the same "Qt kit not assumed present"
+          # reason as Linux, not because ac3gui cannot be built on macOS -
+          # cmake/FindQt6.cmake already carries Homebrew's Qt6 prefixes
+          # (/opt/homebrew/opt/qt, /opt/homebrew/opt/qt6) and
+          # src/gui/CMakeLists.txt's APPLE branch (MACOSX_BUNDLE,
+          # qt_generate_deploy_qml_app_script under `if(WIN32 OR APPLE)`) was
+          # already written for this, just never exercised. "Install Qt6
+          # (macOS GUI)" below installs Homebrew's "qt" formula, which bundles
+          # qtdeclarative (and so qmlcachegen) the same way the Linux apt
+          # packages do. cmake/Packaging.cmake's DragNDrop generator needs no
+          # change either - it already packages whatever install() rules ran,
+          # ac3gui's included, once AC3FORGE_BUILD_GUI is ON.
           - name: "macOS LLVM (Homebrew)"
             runner: '["macos-latest"]'
             preset: macos-llvm
             llvm: true
+            gui: true
             packageable: true
             release_package: true
             gold_reference: true
@@ -339,12 +366,25 @@ jobs:
       # qt_add_qml_module needs; without them the GUI configure step fails
       # rather than quietly building without AOT-compiled QML.
       - name: Install Qt6 (Linux GUI)
-        if: matrix.gui
+        if: matrix.gui && runner.os == 'Linux'
         run: |
           set -eu
           export DEBIAN_FRONTEND=noninteractive
           apt-get install -y -qq --no-install-recommends \
             qt6-base-dev qt6-base-dev-tools qt6-declarative-dev qt6-declarative-dev-tools
+
+      # Homebrew's "qt" formula is the umbrella Qt6 package (unlike apt's
+      # split qt6-base-dev/qt6-declarative-dev): one install pulls in
+      # QtDeclarative/QtQuick and their build-time tooling (qmlcachegen)
+      # alongside QtCore/QtGui, so there is no second "-dev-tools" formula to
+      # add the way there is on Linux. cmake/FindQt6.cmake already searches
+      # /opt/homebrew/opt/qt and /opt/homebrew/opt/qt6 (Apple Silicon's
+      # Homebrew prefix, which is what macos-latest runners are), so no
+      # -DAC3FORGE_QT_ROOT/CMAKE_PREFIX_PATH override is needed here the way
+      # Windows' prebuilt-kit install does.
+      - name: Install Qt6 (macOS GUI)
+        if: matrix.gui && runner.os == 'macOS'
+        run: brew install qt
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -526,9 +566,9 @@ jobs:
       #     local search roots do not cover, so it has to be passed in
       #     explicitly rather than relying on auto-detection the way a local
       #     build does.
-      #   - -DAC3FORGE_BUILD_GUI=ON on the `gui: true` Linux legs, which
-      #     default the GUI off (see CMakePresets.json) so a machine that
-      #     hasn't installed Qt still builds everything else.
+      #   - -DAC3FORGE_BUILD_GUI=ON on the `gui: true` Linux and macOS legs,
+      #     which default the GUI off (see CMakePresets.json) so a machine
+      #     that hasn't installed Qt still builds everything else.
       - name: Configure
         shell: bash
         # VERSION_TAG_INPUT goes through env:, not straight into the script
@@ -628,11 +668,39 @@ jobs:
         shell: bash
         env:
           QT_QPA_PLATFORM: offscreen
-        run: >
-          build/config-${{ matrix.preset }}/bin/ac3gui --smoke
-          fuzz/seeds/fuzz_wav_read/roundtrip-stereo.wav
-          "${RUNNER_TEMP}/ac3gui-smoke.ac3"
-          "${RUNNER_TEMP}/ac3gui-smoke.png"
+        # src/gui/CMakeLists.txt sets MACOSX_BUNDLE ON unconditionally, but it
+        # is a no-op everywhere except APPLE, where it moves the built
+        # executable to bin/ac3gui.app/Contents/MacOS/ac3gui instead of plain
+        # bin/ac3gui - the property Linux never sets and Windows doesn't need
+        # (WIN32_EXECUTABLE controls the console-vs-GUI subsystem there, not
+        # where the .exe lands).
+        #
+        # QSG_RENDER_LOOP=basic and the perl-alarm wrapper are both macOS-only
+        # and both about the same hang the "Test" step hit on this leg's
+        # first-ever GUI run (see src/gui/tests/CMakeLists.txt's identical
+        # QSG_RENDER_LOOP comment for the render-loop-deadlock hypothesis).
+        # ac3gui --smoke drives the same QQmlApplicationEngine/QQuickWindow
+        # path ac3gui_qmltests does, so it is at equal risk and had no bound
+        # of its own - a hang here would silently eat the rest of this leg's
+        # 6-hour job ceiling exactly like the Test step did. `perl` (not
+        # `timeout`, which macOS's BSD userland doesn't ship) is on every
+        # macOS runner image by default.
+        run: |
+          set -euo pipefail
+          bin="build/config-${{ matrix.preset }}/bin/ac3gui"
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            bin="build/config-${{ matrix.preset }}/bin/ac3gui.app/Contents/MacOS/ac3gui"
+            export QSG_RENDER_LOOP=basic
+          fi
+          smoke_args=(--smoke
+            fuzz/seeds/fuzz_wav_read/roundtrip-stereo.wav
+            "${RUNNER_TEMP}/ac3gui-smoke.ac3"
+            "${RUNNER_TEMP}/ac3gui-smoke.png")
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            perl -e 'alarm shift; exec @ARGV' 120 "$bin" "${smoke_args[@]}"
+          else
+            "$bin" "${smoke_args[@]}"
+          fi
 
       # Sanitizers only catch what actually executes. ctest's cases exercise
       # encoder/decoder logic in isolation; this drives the real CLI across

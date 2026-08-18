@@ -40,7 +40,9 @@
 #                                     -Wc2y-extensions - see
 #                                     cmake/CompilerWarnings.cmake), fixed in
 #                                     one commit, then two consecutive clean
-#                                     runs. No longer experimental.
+#                                     runs. No longer experimental. GUI now
+#                                     on too (Homebrew's qt formula), same
+#                                     opt-in shape as the Linux legs.
 #
 # ---------------------------------------------------------------------------
 # Gold-reference correctness gate (added alongside the macos-llvm promotion)

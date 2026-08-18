@@ -57,8 +57,33 @@ Drop `-debug` from all three preset names for a Release build; the `ci-macos-llv
 preset chains the same three steps in one command. Homebrew's `llvm` formula must be installed
 (CI runs `brew install llvm`), and `VCPKG_ROOT` must point at a vcpkg checkout — it supplies
 Catch2, plus Boost and Tracy only if you opt into the `adm`/`profiling` features (see
-[building.md](../building.md)). `AC3FORGE_BUILD_GUI` defaults **OFF** here, as on Linux — no CI
-leg builds `ac3gui` on macOS, so the GUI remains untested on macOS specifically.
+[building.md](../building.md)). `AC3FORGE_BUILD_GUI` defaults **OFF** here, as on Linux — see
+[GUI on macOS](#gui-on-macos) below to opt in.
+
+## GUI on macOS
+
+`config-macos-llvm` defaults `AC3FORGE_BUILD_GUI` to `OFF` for the same reason the Linux presets
+do (see [GUI on Linux](../building.md#gui-on-linux)): a Qt kit isn't assumed present on every
+Mac, not because `ac3gui` cannot be built here. `cmake/FindQt6.cmake` already searches Homebrew's
+Apple Silicon prefixes (`/opt/homebrew/opt/qt`, `/opt/homebrew/opt/qt6`), and
+`src/gui/CMakeLists.txt`'s `APPLE` branch — `MACOSX_BUNDLE`, the `.icns` bundle icon, and
+`qt_generate_deploy_qml_app_script()` for packaging — was written for this from the start; it
+was simply never exercised until the `macos-llvm` CI leg turned the option on. Opt in explicitly
+once Qt is installed:
+
+```bash
+brew install qt
+cmake --preset config-macos-llvm-debug -DAC3FORGE_BUILD_GUI=ON
+```
+
+Homebrew's `qt` formula is the umbrella Qt6 package — one install pulls in QtDeclarative/QtQuick
+and their build-time tooling (`qmlcachegen`) alongside QtCore/QtGui, unlike apt's split
+`qt6-base-dev`/`qt6-declarative-dev` packages. The built app is a bundle,
+`build/config-macos-llvm/bin/ac3gui.app`; `ac3gui --smoke` (the same headless check the other
+platforms run — see [Verified configuration](../building.md#verified-configuration)) lives at
+`ac3gui.app/Contents/MacOS/ac3gui`, not directly under `bin/`, because `MACOSX_BUNDLE` relocates
+the executable there — the same property Windows' `WIN32_EXECUTABLE` sits beside but which only
+takes effect on `APPLE`.
 
 ## Packaging
 
@@ -71,22 +96,32 @@ NSIS is on Windows and DEB/RPM are on Linux. `macos-llvm` is one of the four `re
 legs (alongside `windows-msvc`, `linux-gcc` and `linux-gcc-arm64`) that package on a real tagged
 release (`release.yml`, `do_package: true`). That path has been exercised for real: four beta
 releases, v0.2.0-beta.1 through v0.5.0-beta.1, have shipped through the tag-triggered workflow,
-macOS packages included. No stable (non-beta) release has been tagged yet. See
+macOS packages included. `cmake/Packaging.cmake` needed no change for `ac3gui` to join that
+`.dmg`: which targets end up in a package is decided entirely by which `install()` rules ran, and
+`ac3gui`'s already runs whenever `AC3FORGE_BUILD_GUI` is `ON` — the DragNDrop generator itself is
+unconditional on `APPLE`, GUI or not. No stable (non-beta) release has been tagged yet. See
 [Packaging](../building.md#packaging).
 
 ## CI: what has and has not been verified
 
-Build, `ctest` (the full suite — no GUI leg on macOS yet, so no `ac3gui_qmltests` entry; see
-[Verified configuration](../building.md#verified-configuration) for how the suite's composition
-differs from Windows/Linux) and the [gold-reference correctness
+Build, `ctest` (see [Verified configuration](../building.md#verified-configuration) for how the
+suite's composition differs from Windows/Linux) and the [gold-reference correctness
 gate](../building.md#gold-reference-correctness-gate) all pass on real GitHub Actions runners —
-not a simulation or a local guess. Real SNR numbers from that CI run: 61.81/61.82 dB on macOS,
-against 67.84/67.82 dB on Linux and Windows for the same material — a real but modest
-cross-compiler floating-point difference (Homebrew LLVM's libm vs. glibc's/MSVC's), comfortably
-clear of the gate's 30 dB floor.
+not a simulation or a local guess. `ac3gui_qmltests` now registers and passes here too: 582
+ctest entries total, 100% passing, that one entry in 39.74s of a 56.81s total run - the leg's
+first-ever GUI run, confirmed clean on a second push after two real fixes (`QSG_RENDER_LOOP=basic`
+for a Qt Quick render-loop deadlock, and forcing the `Fusion` style in the test binary for a
+native-`ComboBox`-under-offscreen hang - see [GUI on macOS](#gui-on-macos) above and
+`src/gui/tests/CMakeLists.txt`/`qml_test_main.cpp` for the full detail). Real SNR numbers from
+the CI run that first proved the gate on macOS: 61.81/61.82 dB, against 67.84/67.82 dB on Linux
+and Windows for the same material — a real but modest cross-compiler floating-point difference
+(Homebrew LLVM's libm vs. glibc's/MSVC's), comfortably clear of the gate's 30 dB floor. That
+number predates the GUI leg and is unaffected by it — the codec paths it measures don't change
+when `ac3gui` is built alongside them.
 
 ---
 
 If you get a Mac, that's still useful information for this project — running these instructions
-on real local hardware, or trying the GUI on macOS for the first time, would be genuinely new.
-Consider filing an issue with what you found.
+on real local hardware, or actually launching `ac3gui.app` and using it (CI's `--smoke` run
+proves it starts, loads its QML and drives a real encode headlessly, not that the interactive
+experience is right), would be genuinely new. Consider filing an issue with what you found.

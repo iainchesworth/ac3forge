@@ -102,10 +102,45 @@ target_link_libraries(ac3gui_qmltests
 # log, or a developer's terminal. Without this, a red CI run shows nothing
 # but "failed" and someone has to already know this flag exists to find out
 # what broke.
+# QSG_RENDER_LOOP=basic on APPLE only: the macos-llvm CI leg's first-ever run
+# building the GUI (see .github/workflows/_build.yml) hung this test outright
+# - ctest's "Start 1: ac3gui_qml_tests" with zero further output for the
+# entire 6-hour job timeout, no crash, no QML warning. Qt Quick's default
+# "threaded" render loop opens a dedicated render thread synchronized with
+# the GUI thread at each frame; that handshake is a known deadlock risk under
+# a platform plugin with no real compositor to drive vsync/frame callbacks,
+# and QSG_RENDER_LOOP=basic (single-threaded, synchronous render-on-sync) is
+# the standard workaround. Confirmed to matter for real: with a bounded
+# TIMEOUT added (below) but this env var not yet, the very next run reached
+# the SAME "zero output" state and was killed by that timeout instead of the
+# 6-hour ceiling - still stuck at the first test. With this var added, the
+# same run reached test #30+ before hitting a second, unrelated hang (see
+# qml_test_main.cpp's own comment on that one - a native-style/offscreen
+# issue this harness alone was exposed to, now fixed there instead of here).
+# Linux's offscreen plugin does not appear to hit the render-loop deadlock
+# (linux-gcc/linux-llvm's own gui: true legs pass today without it), so this
+# stays scoped to APPLE rather than applied everywhere untested.
+set(AC3_GUI_QMLTESTS_ENV "QT_QPA_PLATFORM=offscreen;QT_FORCE_STDERR_LOGGING=1")
+if(APPLE)
+    list(APPEND AC3_GUI_QMLTESTS_ENV "QSG_RENDER_LOOP=basic")
+endif()
+
 add_test(NAME ac3gui_qml_tests
     COMMAND ac3gui_qmltests -input "${CMAKE_CURRENT_SOURCE_DIR}/tests/qml" -platform offscreen)
 set_tests_properties(ac3gui_qml_tests PROPERTIES
-    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_FORCE_STDERR_LOGGING=1"
+    ENVIRONMENT "${AC3_GUI_QMLTESTS_ENV}"
+    # A safety net independent of whatever actually caused the macOS hangs
+    # above: 600s is generous headroom over the ~15s the full suite takes on
+    # Windows today (see docs/building.md's Verified configuration) - macOS
+    # CI has never completed this test yet, so that baseline isn't proven to
+    # transfer, hence more slack than a bare "15s plus margin" would give -
+    # but it still bounds a future hang to minutes of CI time instead of the
+    # 6-hour GitHub Actions job ceiling a hang otherwise silently consumes. A
+    # CTest TIMEOUT still counts as a captured failure, so outputOnFailure
+    # (CMakePresets.json's test presets) prints whatever the process wrote
+    # before it was killed - unlike an external job-level cancellation,
+    # which discards it entirely, exactly how this hang was first found.
+    TIMEOUT 600
     LABELS "gui")
 
 # ---------------------------------------------------------------------------
