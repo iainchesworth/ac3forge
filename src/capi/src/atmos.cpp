@@ -6,6 +6,20 @@
 
 using ac3forge_c::guard;
 
+// Kept outside extern "C" below - see encoder.cpp's identical comment on
+// -Wreturn-type-c-linkage.
+namespace {
+ac3::oba::AtmosConfig atmos_config_to_cpp(const ac3forge_atmos_config_t& config) {
+    return ac3::oba::AtmosConfig{.sample_rate = ac3forge_c::to_cpp(config.sample_rate),
+                                  .bitrate_kbps = config.bitrate_kbps,
+                                  .dialnorm = config.dialnorm,
+                                  .num_bands_idx = config.num_bands_idx,
+                                  .fine_quant = config.fine_quant != 0,
+                                  .emit_object_metadata = config.emit_object_metadata != 0,
+                                  .fast_mdct = config.fast_mdct != 0};
+}
+}  // namespace
+
 extern "C" {
 
 void ac3forge_atmos_config_init(ac3forge_atmos_config_t* config) {
@@ -21,18 +35,6 @@ void ac3forge_atmos_config_init(ac3forge_atmos_config_t* config) {
                                        .emit_object_metadata = defaults.emit_object_metadata ? 1 : 0,
                                        .fast_mdct = defaults.fast_mdct ? 1 : 0};
 }
-
-namespace {
-ac3::oba::AtmosConfig atmos_config_to_cpp(const ac3forge_atmos_config_t& config) {
-    return ac3::oba::AtmosConfig{.sample_rate = ac3forge_c::to_cpp(config.sample_rate),
-                                  .bitrate_kbps = config.bitrate_kbps,
-                                  .dialnorm = config.dialnorm,
-                                  .num_bands_idx = config.num_bands_idx,
-                                  .fine_quant = config.fine_quant != 0,
-                                  .emit_object_metadata = config.emit_object_metadata != 0,
-                                  .fast_mdct = config.fast_mdct != 0};
-}
-}  // namespace
 
 ac3forge_status_t ac3forge_atmos_encoder_create(const ac3forge_atmos_config_t* config,
                                                  int object_count,

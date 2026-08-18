@@ -1,5 +1,4 @@
-#ifndef AC3FORGE_C_H
-#define AC3FORGE_C_H
+#pragma once
 
 #include <stddef.h>
 #include <stdint.h>
@@ -80,7 +79,11 @@ AC3FORGEC_API const char* ac3forge_status_message(ac3forge_status_t status);
  * Version
  * --------------------------------------------------------------------- */
 
-typedef struct ac3forge_version {
+/* Tagged ac3forge_version_info rather than ac3forge_version: GCC's -Wshadow
+ * (built C++) treats a struct tag and a same-named free function as the
+ * function "hiding" the tag's implicit constructor-like name. The typedef
+ * name below is what callers actually use. */
+typedef struct ac3forge_version_info {
     int major;
     int minor;
     int patch;
@@ -607,5 +610,3 @@ AC3FORGEC_API ac3forge_status_t ac3forge_atmos_encoder_encode_frame(
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
-
-#endif /* AC3FORGE_C_H */

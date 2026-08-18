@@ -5,6 +5,15 @@
 
 using ac3forge_c::guard;
 
+// Kept outside extern "C" below - see encoder.cpp's identical comment on
+// -Wreturn-type-c-linkage.
+namespace {
+ac3::DecoderConfig decoder_config_to_cpp(const ac3forge_decoder_config_t& config) {
+    return ac3::DecoderConfig{.drc_scale = config.drc_scale,
+                               .heavy_compression = config.heavy_compression != 0};
+}
+}  // namespace
+
 extern "C" {
 
 void ac3forge_decoder_config_init(ac3forge_decoder_config_t* config) {
@@ -15,13 +24,6 @@ void ac3forge_decoder_config_init(ac3forge_decoder_config_t* config) {
     *config = ac3forge_decoder_config_t{.drc_scale = defaults.drc_scale,
                                          .heavy_compression = defaults.heavy_compression ? 1 : 0};
 }
-
-namespace {
-ac3::DecoderConfig decoder_config_to_cpp(const ac3forge_decoder_config_t& config) {
-    return ac3::DecoderConfig{.drc_scale = config.drc_scale,
-                               .heavy_compression = config.heavy_compression != 0};
-}
-}  // namespace
 
 ac3forge_status_t ac3forge_decoder_create(const ac3forge_decoder_config_t* config,
                                            ac3forge_decoder_t** out_decoder) {

@@ -7,6 +7,42 @@
 using ac3forge_c::guard;
 using ac3forge_c::to_cpp;
 
+// Kept outside extern "C" below: a C-linkage function returning a C++ class
+// by value (ac3::EncoderConfig, here) is diagnosed by Clang
+// (-Wreturn-type-c-linkage) as ABI-incompatible with C, which this helper
+// genuinely is not meant to be - it is a private implementation detail, never
+// declared in ac3forge.h.
+namespace {
+
+ac3::EncoderConfig encoder_config_to_cpp(const ac3forge_encoder_config_t& config) {
+    ac3::EncoderConfig out;
+    out.sample_rate = to_cpp(config.sample_rate);
+    out.bitrate_kbps = config.bitrate_kbps;
+    out.dialnorm = config.dialnorm;
+    out.dialnorm2 = config.has_dialnorm2 ? std::optional<int>(config.dialnorm2) : std::nullopt;
+    out.chbwcod = config.chbwcod;
+    out.acmod = to_cpp(config.acmod);
+    out.lfe = config.lfe != 0;
+    out.coupling = config.coupling != 0;
+    out.cplbegf = config.cplbegf;
+    out.cplendf = config.cplendf;
+    out.fast_mdct = config.fast_mdct != 0;
+    out.drc = config.has_drc ? std::optional<ac3::meta::Profile>(ac3::meta::profile(to_cpp(config.drc_profile)))
+                              : std::nullopt;
+    out.heavy = config.has_heavy ? std::optional<ac3::meta::HeavyConfig>(to_cpp(config.heavy))
+                                  : std::nullopt;
+    out.drc2 = config.has_drc2
+                   ? std::optional<ac3::meta::Profile>(ac3::meta::profile(to_cpp(config.drc2_profile)))
+                   : std::nullopt;
+    out.heavy2 = config.has_heavy2 ? std::optional<ac3::meta::HeavyConfig>(to_cpp(config.heavy2))
+                                    : std::nullopt;
+    out.cmixlev = to_cpp(config.cmixlev);
+    out.surmixlev = to_cpp(config.surmixlev);
+    return out;
+}
+
+}  // namespace
+
 extern "C" {
 
 void ac3forge_encoder_config_init(ac3forge_encoder_config_t* config) {
@@ -40,37 +76,6 @@ void ac3forge_encoder_config_init(ac3forge_encoder_config_t* config) {
     ac3forge_heavy_config_init(&config->heavy);
     ac3forge_heavy_config_init(&config->heavy2);
 }
-
-namespace {
-
-ac3::EncoderConfig encoder_config_to_cpp(const ac3forge_encoder_config_t& config) {
-    ac3::EncoderConfig out;
-    out.sample_rate = to_cpp(config.sample_rate);
-    out.bitrate_kbps = config.bitrate_kbps;
-    out.dialnorm = config.dialnorm;
-    out.dialnorm2 = config.has_dialnorm2 ? std::optional<int>(config.dialnorm2) : std::nullopt;
-    out.chbwcod = config.chbwcod;
-    out.acmod = to_cpp(config.acmod);
-    out.lfe = config.lfe != 0;
-    out.coupling = config.coupling != 0;
-    out.cplbegf = config.cplbegf;
-    out.cplendf = config.cplendf;
-    out.fast_mdct = config.fast_mdct != 0;
-    out.drc = config.has_drc ? std::optional<ac3::meta::Profile>(ac3::meta::profile(to_cpp(config.drc_profile)))
-                              : std::nullopt;
-    out.heavy = config.has_heavy ? std::optional<ac3::meta::HeavyConfig>(to_cpp(config.heavy))
-                                  : std::nullopt;
-    out.drc2 = config.has_drc2
-                   ? std::optional<ac3::meta::Profile>(ac3::meta::profile(to_cpp(config.drc2_profile)))
-                   : std::nullopt;
-    out.heavy2 = config.has_heavy2 ? std::optional<ac3::meta::HeavyConfig>(to_cpp(config.heavy2))
-                                    : std::nullopt;
-    out.cmixlev = to_cpp(config.cmixlev);
-    out.surmixlev = to_cpp(config.surmixlev);
-    return out;
-}
-
-}  // namespace
 
 ac3forge_status_t ac3forge_encoder_create(const ac3forge_encoder_config_t* config,
                                            ac3forge_encoder_t** out_encoder) {
