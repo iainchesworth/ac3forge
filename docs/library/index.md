@@ -101,6 +101,8 @@ re-synced by hand and can drift. Each page's "Full program" link is the canonica
   `ac3::oba::AtmosEncoder` (same opt-in flag).
 - [Object signing](signing.md) — `ac3::signing`, the EMDF protection tag.
 - [Header map](header-map.md) — every public header and what lives in it.
+- [Python bindings](python-api.md) — the `ac3forge` PyPI package, pybind11-direct over
+  `ac3::FrameEncoder`/`FrameDecoder`/`Eac3Decoder`/`oba::AtmosEncoder`.
 
 ## Conventions
 

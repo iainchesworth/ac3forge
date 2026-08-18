@@ -51,3 +51,13 @@ the library pages excerpt from — each page's "Full program" link lands on one 
 |---|---|---|
 | [`wav_roundtrip`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/wav_roundtrip.cpp) | Real WAV in → encode → decode → WAV out, crossing the WAV↔A/52 channel order both ways. | [File I/O](file-io.md) |
 | [`read_adm`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/read_adm.cpp) | Open an ADM BW64 file and print the parsed graph — needs `-DAC3FORGE_BUILD_ADM=ON`. | [ADM / BW64 reading](adm.md) |
+
+## Python
+
+Not part of `AC3FORGE_BUILD_EXAMPLES`/`ctest` above — a separate, Python-only program backing
+[Python bindings](python-api.md), run directly (`python examples/python/encode_decode_roundtrip.py`)
+rather than built.
+
+| Example | What it shows | Discussed in |
+|---|---|---|
+| [`encode_decode_roundtrip.py`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/python/encode_decode_roundtrip.py) | The same 5.1 encode `encode_ac3.cpp` does, plus decoding it straight back, through the `ac3forge` package. | [Python bindings](python-api.md) |

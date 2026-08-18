@@ -114,8 +114,14 @@ decoded an AC-3/E-AC-3 bitstream and verified its loudness metadata against meas
 
 - [ ] **F1 (L)** — C API over the encode/decode core: a stable, minimal C-callable surface
   for bindings and embedding.
-- [ ] **F2 (L)** — Python bindings on PyPI, with wheels for the three desktop platforms.
-  Depends on F1, or goes pybind11-direct.
+- [x] **F2 (L)** — Python bindings on PyPI, with wheels for the three desktop platforms. Landed
+  pybind11-direct (the roadmap's own fallback), not waiting on F1: `python/` binds straight onto
+  `ac3::FrameEncoder`/`FrameDecoder`/`Eac3Decoder`/`oba::AtmosEncoder`, numpy-friendly PCM and
+  Python exceptions in place of `std::expected`. `.github/workflows/wheels.yml` builds wheels for
+  Windows, macOS and Linux via `cibuildwheel` on every push; the PyPI publish job itself is wired
+  (trusted publishing, no stored token) but stays inert until a maintainer provisions the `pypi`
+  GitHub environment — see `docs/releasing.md`'s "Publishing to PyPI". See
+  `docs/library/python-api.md`.
 - [x] **F3 (L)** — WASM build plus a browser demo that decodes E-AC-3 + JOC and renders
   object motion; could double as the documentation site's live demo. `ac3::forge`'s
   AC-3/E-AC-3 decode path builds under Emscripten (`config-wasm-emscripten` preset), and a
