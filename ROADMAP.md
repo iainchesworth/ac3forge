@@ -131,13 +131,28 @@ decoded an AC-3/E-AC-3 bitstream and verified its loudness metadata against meas
   object" control that plays that object's own real JOC-reconstructed audio (#169), not its
   panned slice of the bed. Both #168 and #169 are merged to `develop`.
 - [ ] **F4 (M)** — Package-manager presence: a vcpkg port, a Homebrew formula, a winget
-  manifest. **The vcpkg port is staged in-tree** — see
+  manifest, plus a Conan recipe (an addition beyond the original scope, approved
+  separately). **All four are staged in-tree** — vcpkg at
   [`packaging/vcpkg-port/ac3forge/`](https://github.com/iainchesworthlabs/ac3forge/tree/main/packaging/vcpkg-port/ac3forge),
-  with the submission and per-release update flow documented in `docs/releasing.md`; what
-  remains is the `microsoft/vcpkg` registry submission itself, plus Homebrew and winget. The
-  root `vcpkg.json`'s `version` field is a deliberate placeholder (the build's version derives
-  from git tags, and releases are tracked by the port's own `version-semver`), not something
-  to fix.
+  Homebrew at
+  [`packaging/homebrew/`](https://github.com/iainchesworthlabs/ac3forge/tree/main/packaging/homebrew),
+  winget at
+  [`packaging/winget/`](https://github.com/iainchesworthlabs/ac3forge/tree/main/packaging/winget),
+  and Conan at
+  [`packaging/conan/`](https://github.com/iainchesworthlabs/ac3forge/tree/main/packaging/conan)
+  — with the submission and per-release update flow for each documented in
+  `docs/releasing.md`. What remains is the external submission itself, one per tool: the
+  `microsoft/vcpkg` registry, a personal Homebrew tap (`homebrew-ac3forge` - a
+  `homebrew-core` submission is a later, separate decision with its own notability bar, see
+  `packaging/homebrew/README.md`), `microsoft/winget-pkgs`, and ConanCenter
+  (`conan-center-index`). Scope differs by tool, deliberately: vcpkg and Conan package the
+  library only (`ac3::forge` + the container writers), matching what `find_package(ac3forge)`
+  consumers need; Homebrew and winget package the end-user tools instead (`ac3cli` for
+  Homebrew; `ac3cli` and `ac3gui` together for winget, from the existing release `.zip`) since
+  that is what those two ecosystems are for. The root `vcpkg.json`'s `version` field is a
+  deliberate placeholder (the build's version derives from git tags, and releases are tracked
+  by each staged manifest's own version field - `version-semver` for vcpkg, `url`/`sha256` for
+  Homebrew, `PackageVersion` for winget, `conandata.yml` for Conan), not something to fix.
 - [ ] **F5 (M)** — API freeze → v1.0.0: the SemVer commitment, a deprecation policy, ABI
   notes.
 

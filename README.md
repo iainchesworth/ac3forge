@@ -155,7 +155,7 @@ fuzz/           libFuzzer harnesses over untrusted-input entry points (Clang onl
 tools/          Python: spec-table generators, independent reference
                 implementations, the FFmpeg quality race
 scripts/        CI helpers: the gold-reference gate, trend appenders, the codec matrix
-packaging/      the staged (unpublished) vcpkg port
+packaging/      staged (unpublished) vcpkg port, Homebrew formula, winget manifest, Conan recipe
 docs/           the site source — see Documentation below
 ```
 
