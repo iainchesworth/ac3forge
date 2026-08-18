@@ -105,9 +105,14 @@ unconditional on `APPLE`, GUI or not. No stable (non-beta) release has been tagg
 ## CI: what has and has not been verified
 
 Build, `ctest` (see [Verified configuration](../building.md#verified-configuration) for how the
-suite's composition differs from Windows/Linux, including whether `ac3gui_qmltests` registers)
-and the [gold-reference correctness gate](../building.md#gold-reference-correctness-gate) all
-pass on real GitHub Actions runners — not a simulation or a local guess. Real SNR numbers from
+suite's composition differs from Windows/Linux) and the [gold-reference correctness
+gate](../building.md#gold-reference-correctness-gate) all pass on real GitHub Actions runners —
+not a simulation or a local guess. `ac3gui_qmltests` now registers and passes here too: 582
+ctest entries total, 100% passing, that one entry in 39.74s of a 56.81s total run - the leg's
+first-ever GUI run, confirmed clean on a second push after two real fixes (`QSG_RENDER_LOOP=basic`
+for a Qt Quick render-loop deadlock, and forcing the `Fusion` style in the test binary for a
+native-`ComboBox`-under-offscreen hang - see [GUI on macOS](#gui-on-macos) above and
+`src/gui/tests/CMakeLists.txt`/`qml_test_main.cpp` for the full detail). Real SNR numbers from
 the CI run that first proved the gate on macOS: 61.81/61.82 dB, against 67.84/67.82 dB on Linux
 and Windows for the same material — a real but modest cross-compiler floating-point difference
 (Homebrew LLVM's libm vs. glibc's/MSVC's), comfortably clear of the gate's 30 dB floor. That
