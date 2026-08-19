@@ -7,6 +7,7 @@
 #include "ac3/core/bitreader.hpp"
 #include "ac3/core/bitwriter.hpp"
 #include "ac3/export.hpp"
+#include "ac3/mlp/matrix.hpp"
 #include "ac3/mlp/predictor.hpp"
 
 // The per-block layer joining the MLP primitives into a working codec:
@@ -74,5 +75,34 @@ AC3FORGE_EXPORT void encode_block(BitWriter& w, std::span<const std::int32_t> sa
                                   int wordlength, const PredictorCoefficients& coefficients);
 [[nodiscard]] AC3FORGE_EXPORT bool decode_block(BitReader& r, int wordlength,
                                                 std::span<std::int32_t> samples);
+
+// --- multichannel ----------------------------------------------------------
+//
+// WO Fig. 3's encoder-core order, per block: each channel is B1-stripped
+// first ("each channel is shifted to recover unused capacity"), THEN the
+// lossless matrix decorrelates across channels, then "the signal in each
+// channel is de-correlated using a separate predictor for each channel"
+// and entropy-coded per channel (Fig. 26a: "an initial n x n matrix
+// quantizer followed by n separate 1-channel lossless encoding filter
+// arrangements ... using a possibly different set of filter and noise
+// shaping coefficients for each"). Matrix coefficients ride in the block
+// header - the WO's "transmission to the decoder of only n - 1
+// coefficients" per primitive stage, sent dense in channel order here.
+// The payload interleaves codewords per sample across channels (a
+// provisional choice like the field order itself - the WO doesn't pin the
+// interleave; per-sample keeps decoder memory flat, which matches MLP's
+// design pressure).
+struct MultichannelBlockConfig {
+    std::vector<matrix::Step> steps;  // PMQ cascade; may be empty
+    std::vector<PredictorCoefficients> coefficients;  // exactly one per channel
+};
+
+inline constexpr int kMaxBlockChannels = 16;
+
+AC3FORGE_EXPORT void encode_block_channels(BitWriter& w,
+                                           std::span<const std::span<const std::int32_t>> channels,
+                                           int wordlength, const MultichannelBlockConfig& config);
+[[nodiscard]] AC3FORGE_EXPORT bool decode_block_channels(
+    BitReader& r, int wordlength, std::span<const std::span<std::int32_t>> channels);
 
 }  // namespace ac3::mlp

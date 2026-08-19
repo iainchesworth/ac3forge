@@ -1,6 +1,8 @@
 #include "ac3/mlp/stream.hpp"
 
+#include <array>
 #include <cassert>
+#include <numeric>
 
 #include "ac3/core/bitreader.hpp"
 #include "ac3/core/bitwriter.hpp"
@@ -38,15 +40,20 @@ constexpr std::uint8_t kSingleSubstreamInfo = 0x14;
     header.substream_index = 0;
     header.restart_sync_word = kRestartSyncWordSubstream0;
     header.output_timing = output_timing;
-    header.min_chan = 0;  // §4.7.2: one less than the channel number - one channel
-    header.max_chan = 0;
-    header.max_matrix_chan = 0;
+    // §4.7.2: min/max_chan are one less than the channel numbers carried -
+    // this is how a real MLP substream scopes its channels, and how our
+    // decoder learns the channel count in-band.
+    header.min_chan = 0;
+    header.max_chan = static_cast<std::uint8_t>(config.channels - 1);
+    header.max_matrix_chan = static_cast<std::uint8_t>(config.channels - 1);
     // Provisional-semantics fields (see restart_header.hpp): plausible
     // structural values, to be reconciled against layer-3/4 sources.
     header.max_bits_a = static_cast<std::uint8_t>(config.wordlength & 0x1F);
     header.max_bits_b = static_cast<std::uint8_t>(config.wordlength & 0x1F);
     header.lossless_check = 0;
-    header.channel_assignment = {0};
+    header.channel_assignment.resize(static_cast<std::size_t>(config.channels));
+    std::iota(header.channel_assignment.begin(), header.channel_assignment.end(),
+              std::uint8_t{0});
     return header;
 }
 
@@ -55,11 +62,21 @@ constexpr std::uint8_t kSingleSubstreamInfo = 0x14;
 StreamEncoder::StreamEncoder(const StreamConfig& config) : config_(config) {
     assert(config.major_sync_interval >= 8 && config.major_sync_interval <= 128);
     assert(config.wordlength >= 2 && config.wordlength <= 24);
+    assert(config.channels >= 1 && config.channels <= kMaxBlockChannels);
+    if (config_.coefficients.empty()) {
+        // Passthrough predictors everywhere by default.
+        config_.coefficients.resize(static_cast<std::size_t>(config_.channels));
+    }
+    assert(config_.coefficients.size() == static_cast<std::size_t>(config_.channels));
 }
 
-std::vector<std::byte> StreamEncoder::encode_access_unit(std::span<const std::int32_t> samples) {
+std::vector<std::byte> StreamEncoder::encode_access_unit(
+    std::span<const std::span<const std::int32_t>> channels) {
     const auto frame = static_cast<std::size_t>(samples_per_access_unit(config_.sample_rate));
-    assert(samples.size() == frame);
+    assert(channels.size() == static_cast<std::size_t>(config_.channels));
+    for ([[maybe_unused]] const auto& channel : channels) {
+        assert(channel.size() == frame);
+    }
 
     const bool major =
         access_unit_index_ % static_cast<std::uint64_t>(config_.major_sync_interval) == 0;
@@ -69,12 +86,13 @@ std::vector<std::byte> StreamEncoder::encode_access_unit(std::span<const std::in
     // sync only (§2.5), the block itself, the last-block flag, then §2.5's
     // "padding to a 16-bit boundary".
     BitWriter segment;
-    segment.put(1, 1);             // block_header_exists
+    segment.put(1, 1);                // block_header_exists
     segment.put(major ? 1u : 0u, 1);  // restart_header_exists
     if (major) {
         (void)build_restart_header(segment, make_restart_header(config_, timing));
     }
-    encode_block(segment, samples, config_.wordlength, config_.coefficients);
+    encode_block_channels(segment, channels, config_.wordlength,
+                          {config_.matrix, config_.coefficients});
     segment.put(1, 1);  // last_block_in_segment
     const auto segment_bits = segment.bit_count();
     const auto pad = (16 - segment_bits % 16) % 16;
@@ -105,10 +123,10 @@ std::vector<std::byte> StreamEncoder::encode_access_unit(std::span<const std::in
     // substream_directory, one entry: no extra 16-bit DRC word;
     // restart_nonexistent is the INVERSE of "this is a major sync" (§4.5.2);
     // crc_present on, since the segment carries parity+CRC.
-    unit.put(0, 1);                   // extra_substream_word
-    unit.put(major ? 0u : 1u, 1);     // restart_nonexistent
-    unit.put(1, 1);                   // crc_present
-    unit.put(0, 1);                   // reserved
+    unit.put(0, 1);                // extra_substream_word
+    unit.put(major ? 0u : 1u, 1);  // restart_nonexistent
+    unit.put(1, 1);                // crc_present
+    unit.put(0, 1);                // reserved
     // §4.5.4: substream_end_ptr is the offset of substream_end relative to
     // /* start */ (just after the directory), in 16-bit words - and per
     // §3.3.1's label placement, substream_end sits after the parity/CRC.
@@ -124,12 +142,18 @@ std::vector<std::byte> StreamEncoder::encode_access_unit(std::span<const std::in
     return unit.take();
 }
 
+std::vector<std::byte> StreamEncoder::encode_access_unit(std::span<const std::int32_t> samples) {
+    assert(config_.channels == 1);
+    const std::array<std::span<const std::int32_t>, 1> channels{samples};
+    return encode_access_unit(std::span<const std::span<const std::int32_t>>{channels});
+}
+
 StreamDecoder::StreamDecoder(int wordlength) : wordlength_(wordlength) {
     assert(wordlength >= 2 && wordlength <= 24);
 }
 
 bool StreamDecoder::decode_access_unit(std::span<const std::byte> data,
-                                       std::vector<std::int32_t>& samples) {
+                                       std::vector<std::vector<std::int32_t>>& channels) {
     if (data.size() < 8 || data.size() % 2 != 0) {
         return false;
     }
@@ -148,7 +172,7 @@ bool StreamDecoder::decode_access_unit(std::span<const std::byte> data,
     // §3.1: a major sync is identified by the 32 bits at bit offset 32
     // equalling format_sync.
     std::size_t offset = 4;
-    const bool major = data.size() >= 8 && r.read(32) == kFormatSync;
+    const bool major = r.read(32) == kFormatSync;
     if (major) {
         // parse_major_sync_info wants the whole 28-byte structure.
         if (data.size() < offset + 28 + 2) {
@@ -210,10 +234,27 @@ bool StreamDecoder::decode_access_unit(std::span<const std::byte> data,
         if (!parse_restart_header(sr, 0, header)) {
             return false;
         }
+        // The channel count is scoped by the restart header (§4.7.2): one
+        // more than max_chan. v1 keeps min_chan at zero and the matrix span
+        // equal to the channel span.
+        if (header.min_chan != 0 || header.max_matrix_chan != header.max_chan) {
+            return false;
+        }
+        channels_ = header.max_chan + 1;
+    }
+    if (channels_ == 0) {
+        return false;
     }
 
-    samples.resize(static_cast<std::size_t>(samples_per_access_unit(context_.sample_rate)));
-    if (!decode_block(sr, wordlength_, samples)) {
+    const auto frame = static_cast<std::size_t>(samples_per_access_unit(context_.sample_rate));
+    channels.assign(static_cast<std::size_t>(channels_), std::vector<std::int32_t>(frame));
+    std::vector<std::span<std::int32_t>> spans;
+    spans.reserve(channels.size());
+    for (auto& channel : channels) {
+        spans.emplace_back(channel);
+    }
+    if (!decode_block_channels(sr, wordlength_,
+                               std::span<const std::span<std::int32_t>>{spans})) {
         return false;
     }
     if (sr.read(1) != 1) {
@@ -225,6 +266,19 @@ bool StreamDecoder::decode_access_unit(std::span<const std::byte> data,
         }
     }
     return !sr.overflowed() && sr.bit_position() == segment_len * 8;
+}
+
+bool StreamDecoder::decode_access_unit(std::span<const std::byte> data,
+                                       std::vector<std::int32_t>& samples) {
+    std::vector<std::vector<std::int32_t>> channels;
+    if (!decode_access_unit(data, channels)) {
+        return false;
+    }
+    if (channels.size() != 1) {
+        return false;
+    }
+    samples = std::move(channels[0]);
+    return true;
 }
 
 }  // namespace ac3::mlp

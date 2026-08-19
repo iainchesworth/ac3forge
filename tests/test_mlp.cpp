@@ -984,7 +984,7 @@ TEST_CASE("stream: multi-AU round trip with periodic major sync", "[mlp]") {
     config.sample_rate = ac3::mlp::SampleRate::k48000;
     config.wordlength = 24;
     config.major_sync_interval = 8;
-    config.coefficients = ac3::mlp::table1_preset(1);
+    config.coefficients = {ac3::mlp::table1_preset(1)};
 
     ac3::mlp::StreamEncoder encoder(config);
     ac3::mlp::StreamDecoder decoder(24);
@@ -1042,7 +1042,7 @@ TEST_CASE("stream: every sample rate frames and round trips", "[mlp]") {
           ac3::mlp::SampleRate::k88200, ac3::mlp::SampleRate::k176400}) {
         ac3::mlp::StreamConfig config;
         config.sample_rate = rate;
-        config.coefficients = ac3::mlp::table1_preset(2);
+        config.coefficients = {ac3::mlp::table1_preset(2)};
         ac3::mlp::StreamEncoder encoder(config);
         ac3::mlp::StreamDecoder decoder(24);
 
@@ -1061,7 +1061,7 @@ TEST_CASE("stream: every sample rate frames and round trips", "[mlp]") {
 
 TEST_CASE("stream: decoding must start at a major sync", "[mlp]") {
     ac3::mlp::StreamConfig config;
-    config.coefficients = ac3::mlp::table1_preset(1);
+    config.coefficients = {ac3::mlp::table1_preset(1)};
     ac3::mlp::StreamEncoder encoder(config);
 
     std::mt19937 rng(0xDEC0);
@@ -1086,7 +1086,7 @@ TEST_CASE("stream: decoding must start at a major sync", "[mlp]") {
 
 TEST_CASE("stream: corruption anywhere is detected", "[mlp]") {
     ac3::mlp::StreamConfig config;
-    config.coefficients = ac3::mlp::table1_preset(3);
+    config.coefficients = {ac3::mlp::table1_preset(3)};
     ac3::mlp::StreamEncoder encoder(config);
 
     std::mt19937 rng(0xBAD);
@@ -1114,7 +1114,7 @@ TEST_CASE("stream: corruption anywhere is detected", "[mlp]") {
 
 TEST_CASE("stream: digital-black access units stay compact", "[mlp]") {
     ac3::mlp::StreamConfig config;
-    config.coefficients = ac3::mlp::table1_preset(1);
+    config.coefficients = {ac3::mlp::table1_preset(1)};
     ac3::mlp::StreamEncoder encoder(config);
     ac3::mlp::StreamDecoder decoder(24);
 
@@ -1137,4 +1137,192 @@ TEST_CASE("stream: digital-black access units stay compact", "[mlp]") {
     REQUIRE(decoder.decode_access_unit(minor, decoded));
     CHECK(std::all_of(decoded.begin(), decoded.end(),
                       [](std::int32_t v) { return v == 0; }));
+}
+
+// --- multichannel blocks + matrix wiring ----------------------------------
+
+namespace {
+
+std::vector<std::vector<std::int32_t>> random_channels(std::mt19937& rng, std::size_t count,
+                                                       std::size_t length, int bits) {
+    std::vector<std::vector<std::int32_t>> out(count);
+    for (auto& channel : out) {
+        channel = random_samples(rng, length, bits);
+    }
+    return out;
+}
+
+std::vector<std::span<const std::int32_t>> const_spans(
+    const std::vector<std::vector<std::int32_t>>& channels) {
+    std::vector<std::span<const std::int32_t>> out;
+    out.reserve(channels.size());
+    for (const auto& channel : channels) {
+        out.emplace_back(channel);
+    }
+    return out;
+}
+
+void check_multichannel_block_round_trip(const std::vector<std::vector<std::int32_t>>& channels,
+                                         int wordlength,
+                                         const ac3::mlp::MultichannelBlockConfig& config) {
+    const auto spans = const_spans(channels);
+    ac3::BitWriter w;
+    ac3::mlp::encode_block_channels(
+        w, std::span<const std::span<const std::int32_t>>{spans}, wordlength, config);
+    const auto bytes = w.take();
+
+    std::vector<std::vector<std::int32_t>> decoded(channels.size());
+    std::vector<std::span<std::int32_t>> out_spans;
+    for (auto& channel : decoded) {
+        channel.resize(channels[0].size());
+        out_spans.emplace_back(channel);
+    }
+    ac3::BitReader r(bytes);
+    REQUIRE(ac3::mlp::decode_block_channels(
+        r, wordlength, std::span<const std::span<std::int32_t>>{out_spans}));
+    REQUIRE(decoded == channels);
+}
+
+}  // namespace
+
+TEST_CASE("multichannel block: stereo sum/difference matrix round trips", "[mlp]") {
+    std::mt19937 rng(0x2C44);
+    auto channels = random_channels(rng, 2, 160, 24);
+
+    ac3::mlp::MultichannelBlockConfig config;
+    // A lifting-style rotation toward mid/side: ch1 -= ch0, then
+    // ch0 += ch1/2 - the JAES paper's "rotate a stereo mix from left/right
+    // to sum/difference" as two primitive steps.
+    config.steps = {
+        {1, 0, {{0, -1}}},
+        {0, 1, {{1, 1}}},
+    };
+    config.coefficients = {ac3::mlp::table1_preset(1), ac3::mlp::table1_preset(1)};
+    check_multichannel_block_round_trip(channels, 24, config);
+}
+
+TEST_CASE("multichannel block: six channels with a random cascade round trip", "[mlp]") {
+    std::mt19937 rng(0x6C11);
+    std::uniform_int_distribution<std::int32_t> coeff_dist(-64, 64);
+
+    for (int trial = 0; trial < 10; ++trial) {
+        auto channels = random_channels(rng, 6, 160, 20);
+
+        ac3::mlp::MultichannelBlockConfig config;
+        for (int s = 0; s < 4; ++s) {
+            ac3::mlp::matrix::Step step;
+            step.target = s % 6;
+            step.shift = 4;
+            for (int c = 0; c < 6; ++c) {
+                if (c != step.target) {
+                    step.terms.emplace_back(c, coeff_dist(rng));
+                }
+            }
+            config.steps.push_back(std::move(step));
+        }
+        for (int c = 0; c < 6; ++c) {
+            config.coefficients.push_back(ac3::mlp::table1_preset(c % ac3::mlp::kTable1Cases));
+        }
+        check_multichannel_block_round_trip(channels, 20, config);
+    }
+}
+
+TEST_CASE("multichannel block: decorrelating matrix beats no matrix on correlated input",
+          "[mlp]") {
+    // Two nearly-identical channels: subtracting one from the other leaves
+    // a small difference signal, which must code smaller than coding both
+    // full-strength channels - the entire reason the matrix stage exists
+    // (WO: "the encoded data rate is minimised by reducing commonality
+    // between channels").
+    std::mt19937 rng(0xC0);
+    const auto base = random_samples(rng, 576, 20);
+    std::uniform_int_distribution<std::int32_t> noise(-15, 16);
+    std::vector<std::vector<std::int32_t>> channels(2);
+    channels[0] = base;
+    channels[1].resize(base.size());
+    for (std::size_t i = 0; i < base.size(); ++i) {
+        channels[1][i] = base[i] + noise(rng);
+    }
+    const auto spans = const_spans(channels);
+
+    ac3::mlp::MultichannelBlockConfig without;
+    without.coefficients = {ac3::mlp::PredictorCoefficients{}, ac3::mlp::PredictorCoefficients{}};
+
+    ac3::mlp::MultichannelBlockConfig with = without;
+    with.steps = {{1, 0, {{0, -1}}}};  // ch1 -= ch0
+
+    ac3::BitWriter w_without;
+    ac3::mlp::encode_block_channels(
+        w_without, std::span<const std::span<const std::int32_t>>{spans}, 24, without);
+    ac3::BitWriter w_with;
+    ac3::mlp::encode_block_channels(
+        w_with, std::span<const std::span<const std::int32_t>>{spans}, 24, with);
+
+    CHECK(w_with.bit_count() < w_without.bit_count());
+    check_multichannel_block_round_trip(channels, 24, with);
+}
+
+TEST_CASE("multichannel block: a silent channel takes the empty coding", "[mlp]") {
+    std::mt19937 rng(0x510);
+    std::vector<std::vector<std::int32_t>> channels(3);
+    channels[0] = random_samples(rng, 160, 24);
+    channels[1].assign(160, 0);  // digital black
+    channels[2] = random_samples(rng, 160, 24);
+
+    ac3::mlp::MultichannelBlockConfig config;
+    config.coefficients = {ac3::mlp::table1_preset(1), ac3::mlp::table1_preset(1),
+                           ac3::mlp::table1_preset(1)};
+    check_multichannel_block_round_trip(channels, 24, config);
+}
+
+TEST_CASE("stream: six-channel stream with matrix round trips, channel count in-band", "[mlp]") {
+    ac3::mlp::StreamConfig config;
+    config.sample_rate = ac3::mlp::SampleRate::k48000;
+    config.channels = 6;
+    config.matrix = {
+        {1, 0, {{0, -1}}},  // R -= L
+        {4, 0, {{2, -1}}},  // Rs -= Ls (channel indices 2/4 arbitrary here)
+    };
+    for (int c = 0; c < 6; ++c) {
+        config.coefficients.push_back(ac3::mlp::table1_preset(1 + c % 3));
+    }
+
+    ac3::mlp::StreamEncoder encoder(config);
+    ac3::mlp::StreamDecoder decoder(24);
+
+    std::mt19937 rng(0x51C);
+    const auto frame = static_cast<std::size_t>(
+        ac3::mlp::samples_per_access_unit(config.sample_rate));
+
+    for (int au = 0; au < 10; ++au) {
+        CAPTURE(au);
+        const auto channels = random_channels(rng, 6, frame, 24);
+        const auto spans = const_spans(channels);
+        const auto bytes = encoder.encode_access_unit(
+            std::span<const std::span<const std::int32_t>>{spans});
+
+        std::vector<std::vector<std::int32_t>> decoded;
+        REQUIRE(decoder.decode_access_unit(bytes, decoded));
+        REQUIRE(decoded == channels);
+    }
+    CHECK(decoder.channels() == 6);
+}
+
+TEST_CASE("stream: the single-channel convenience API remains a one-channel stream", "[mlp]") {
+    ac3::mlp::StreamConfig config;
+    config.coefficients = {ac3::mlp::table1_preset(2)};
+
+    ac3::mlp::StreamEncoder encoder(config);
+    ac3::mlp::StreamDecoder decoder(24);
+
+    std::mt19937 rng(0x1C11);
+    const auto frame = static_cast<std::size_t>(
+        ac3::mlp::samples_per_access_unit(config.sample_rate));
+    const auto samples = random_samples(rng, frame, 24);
+    const auto bytes = encoder.encode_access_unit(std::span<const std::int32_t>{samples});
+
+    std::vector<std::int32_t> decoded;
+    REQUIRE(decoder.decode_access_unit(bytes, decoded));
+    CHECK(decoded == samples);
+    CHECK(decoder.channels() == 1);
 }

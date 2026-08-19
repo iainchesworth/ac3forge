@@ -295,4 +295,377 @@ bool decode_block(BitReader& r, int wordlength, std::span<std::int32_t> samples)
     return true;
 }
 
+// --- multichannel ----------------------------------------------------------
+
+namespace {
+
+// Provisional multichannel layout (block.hpp's header comment):
+//
+//   channel count - 1     4 bits
+//   matrix step count     4 bits
+//   per step: target 4, shift 4, then (channels - 1) coefficients at 10
+//             bits signed, dense in channel order skipping the target
+//   per channel: b1 5, lsb_word N        (strip happens BEFORE the matrix)
+//   per channel: coding 2, then for non-empty channels n 5, shift 4,
+//                order_a 4, order_b 4, coefficients, init_width 5, init at
+//                init_width bits each. Unlike the single-channel layout's
+//                fixed (N - b1)-bit init, the width is explicit here: init
+//                values are POST-matrix significant words, and the matrix
+//                can grow them past the input wordlength (the WO notes the
+//                same effect for its quantizer cascades: matrixing "will
+//                increase the wordlength of initialisation data").
+//   payload: interleaved per sample across non-empty channels
+
+constexpr int kChannelCountBits = 4;
+constexpr int kStepCountBits = 4;
+constexpr int kStepTargetBits = 4;
+constexpr int kStepShiftBits = 4;
+constexpr int kInitWidthBits = 5;
+
+// The smallest signed field width holding every value in `values` (at
+// least 1 bit).
+[[nodiscard]] int signed_width(std::span<const std::int32_t> values) {
+    int width = 1;
+    for (const auto value : values) {
+        while (value < -(std::int32_t{1} << (width - 1)) ||
+               value >= (std::int32_t{1} << (width - 1))) {
+            ++width;
+        }
+    }
+    return width;
+}
+
+struct ChannelPlan {
+    BlockCoding coding = BlockCoding::kEmpty;
+    int n = 0;
+    std::vector<std::int32_t> residual;
+    std::vector<std::int32_t> init;
+};
+
+// The entropy-mode decision shared with the single-channel path's inline
+// logic: smallest fitting range, PCM forced beyond Table 3's cap, and the
+// WO's PCM-cost comparison otherwise.
+[[nodiscard]] std::pair<BlockCoding, int> choose_coding(std::span<const std::int32_t> residual) {
+    const auto [lo_it, hi_it] = std::minmax_element(residual.begin(), residual.end());
+    int n = 1;
+    while (n < 30 && (*lo_it < -(std::int32_t{1} << n) + 1 || *hi_it > (std::int32_t{1} << n))) {
+        ++n;
+    }
+    if (n > huffman::kMaxN) {
+        return {BlockCoding::kPcm, n};
+    }
+    const int table_n = std::max(n, huffman::kMinN);
+    long long significant_bits = 0;
+    for (const auto v : residual) {
+        significant_bits += huffman::significant_length(v, table_n);
+    }
+    if (static_cast<long long>(residual.size()) * (n + 1) < significant_bits) {
+        return {BlockCoding::kPcm, n};
+    }
+    return {BlockCoding::kSignificant, table_n};
+}
+
+[[nodiscard]] ChannelPlan plan_channel(std::span<const std::int32_t> significant,
+                                       const PredictorCoefficients& coefficients) {
+    ChannelPlan plan;
+    if (std::all_of(significant.begin(), significant.end(),
+                    [](std::int32_t v) { return v == 0; })) {
+        return plan;  // kEmpty
+    }
+    const auto order = std::max(coefficients.a.size(), coefficients.b.size());
+    assert(order <= significant.size());
+    plan.init.assign(significant.begin(),
+                     significant.begin() + static_cast<std::ptrdiff_t>(order));
+    plan.residual.resize(significant.size());
+    PredictorState state{};
+    predict_encode(coefficients, significant, plan.residual, state);
+    const auto [coding, n] = choose_coding(plan.residual);
+    plan.coding = coding;
+    plan.n = n;
+    return plan;
+}
+
+// The decoder half of the WO's state-swap rule, shared shape with
+// decode_block's inline version: init values ARE the first outputs, the
+// matching residuals seed the feedback history.
+void reconstruct_channel(const PredictorCoefficients& coefficients,
+                         std::span<const std::int32_t> init,
+                         std::span<const std::int32_t> residual,
+                         std::span<std::int32_t> significant) {
+    PredictorState state{};
+    for (std::size_t i = 0; i < init.size(); ++i) {
+        significant[i] = init[i];
+        for (std::size_t j = state.input.size() - 1; j > 0; --j) {
+            state.input[j] = state.input[j - 1];
+            state.output[j] = state.output[j - 1];
+        }
+        state.input[0] = significant[i];
+        state.output[0] = residual[i];
+    }
+    predict_decode(coefficients, residual.subspan(init.size()),
+                   significant.subspan(init.size()), state);
+}
+
+}  // namespace
+
+void encode_block_channels(BitWriter& w, std::span<const std::span<const std::int32_t>> channels,
+                           int wordlength, const MultichannelBlockConfig& config) {
+    const auto channel_count = channels.size();
+    assert(channel_count >= 1 && channel_count <= kMaxBlockChannels);
+    assert(config.coefficients.size() == channel_count);
+    assert(config.steps.size() <= 15);
+    assert(!channels[0].empty());
+    const auto length = channels[0].size();
+    for ([[maybe_unused]] const auto& channel : channels) {
+        assert(channel.size() == length);
+        for ([[maybe_unused]] const auto s : channel) {
+            assert(s > -(std::int32_t{1} << (wordlength - 1)) &&
+                   s < (std::int32_t{1} << (wordlength - 1)));
+        }
+    }
+
+    // Per-channel strip, BEFORE the matrix (WO Fig. 3's stage order).
+    std::vector<int> b1(channel_count);
+    std::vector<std::uint32_t> lsb(channel_count);
+    std::vector<std::vector<std::int32_t>> significant(channel_count);
+    for (std::size_t c = 0; c < channel_count; ++c) {
+        b1[c] = detect_b1(channels[c], wordlength);
+        lsb[c] = static_cast<std::uint32_t>(channels[c][0]) & ((1u << b1[c]) - 1);
+        significant[c].resize(length);
+        for (std::size_t i = 0; i < length; ++i) {
+            significant[c][i] =
+                (channels[c][i] - static_cast<std::int32_t>(lsb[c])) >> b1[c];
+        }
+    }
+
+    // The lossless matrix, per sample instant across channels.
+    if (!config.steps.empty()) {
+        std::vector<std::int64_t> instant(channel_count);
+        for (std::size_t i = 0; i < length; ++i) {
+            for (std::size_t c = 0; c < channel_count; ++c) {
+                instant[c] = significant[c][i];
+            }
+            matrix::encode_cascade(config.steps, instant);
+            for (std::size_t c = 0; c < channel_count; ++c) {
+                assert(instant[c] >= INT32_MIN && instant[c] <= INT32_MAX);
+                significant[c][i] = static_cast<std::int32_t>(instant[c]);
+            }
+        }
+    }
+
+    std::vector<ChannelPlan> plans(channel_count);
+    for (std::size_t c = 0; c < channel_count; ++c) {
+        plans[c] = plan_channel(significant[c], config.coefficients[c]);
+    }
+
+    // Header.
+    w.put(static_cast<std::uint32_t>(channel_count - 1), kChannelCountBits);
+    w.put(static_cast<std::uint32_t>(config.steps.size()), kStepCountBits);
+    for (const auto& step : config.steps) {
+        assert(step.target >= 0 && static_cast<std::size_t>(step.target) < channel_count);
+        w.put(static_cast<std::uint32_t>(step.target), kStepTargetBits);
+        assert(step.shift >= 0 && step.shift <= 14);
+        w.put(static_cast<std::uint32_t>(step.shift), kStepShiftBits);
+        // Dense n-1 coefficients in channel order, skipping the target.
+        for (std::size_t c = 0; c < channel_count; ++c) {
+            if (static_cast<int>(c) == step.target) {
+                continue;
+            }
+            std::int32_t numerator = 0;
+            for (const auto& [source, value] : step.terms) {
+                assert(source != step.target);
+                if (source == static_cast<int>(c)) {
+                    numerator = value;
+                }
+            }
+            put_signed(w, numerator, kCoefficientBits);
+        }
+    }
+    for (std::size_t c = 0; c < channel_count; ++c) {
+        w.put(static_cast<std::uint32_t>(b1[c]), kB1Bits);
+        w.put(lsb[c] & ((1u << wordlength) - 1), wordlength);
+    }
+    for (std::size_t c = 0; c < channel_count; ++c) {
+        w.put(static_cast<std::uint32_t>(plans[c].coding), kCodingBits);
+        if (plans[c].coding == BlockCoding::kEmpty) {
+            continue;
+        }
+        const auto& coefficients = config.coefficients[c];
+        w.put(static_cast<std::uint32_t>(plans[c].n), kNBits);
+        w.put(static_cast<std::uint32_t>(coefficients.shift), kShiftBits);
+        w.put(static_cast<std::uint32_t>(coefficients.a.size()), kOrderBits);
+        w.put(static_cast<std::uint32_t>(coefficients.b.size()), kOrderBits);
+        for (const auto value : coefficients.a) {
+            put_signed(w, value, kCoefficientBits);
+        }
+        for (const auto value : coefficients.b) {
+            put_signed(w, value, kCoefficientBits);
+        }
+        const int init_width = signed_width(plans[c].init);
+        w.put(static_cast<std::uint32_t>(init_width), kInitWidthBits);
+        for (const auto value : plans[c].init) {
+            put_signed(w, value, init_width);
+        }
+    }
+
+    // Payload, interleaved per sample across non-empty channels.
+    for (std::size_t i = 0; i < length; ++i) {
+        for (std::size_t c = 0; c < channel_count; ++c) {
+            if (plans[c].coding == BlockCoding::kEmpty) {
+                continue;
+            }
+            if (plans[c].coding == BlockCoding::kPcm) {
+                huffman::encode_pcm(w, plans[c].residual[i], plans[c].n);
+            } else {
+                huffman::encode_significant(w, plans[c].residual[i], plans[c].n);
+            }
+        }
+    }
+}
+
+bool decode_block_channels(BitReader& r, int wordlength,
+                           std::span<const std::span<std::int32_t>> channels) {
+    const auto channel_count = channels.size();
+    if (channel_count == 0 || channels[0].empty()) {
+        return false;
+    }
+    const auto length = channels[0].size();
+
+    if (r.read(kChannelCountBits) + 1 != channel_count) {
+        return false;
+    }
+    const auto step_count = r.read(kStepCountBits);
+    std::vector<matrix::Step> steps(step_count);
+    for (auto& step : steps) {
+        step.target = static_cast<int>(r.read(kStepTargetBits));
+        if (static_cast<std::size_t>(step.target) >= channel_count) {
+            return false;
+        }
+        step.shift = static_cast<int>(r.read(kStepShiftBits));
+        for (std::size_t c = 0; c < channel_count; ++c) {
+            if (static_cast<int>(c) == step.target) {
+                continue;
+            }
+            step.terms.emplace_back(static_cast<int>(c), read_signed(r, kCoefficientBits));
+        }
+    }
+
+    std::vector<int> b1(channel_count);
+    std::vector<std::uint32_t> lsb_word(channel_count);
+    for (std::size_t c = 0; c < channel_count; ++c) {
+        b1[c] = static_cast<int>(r.read(kB1Bits));
+        if (b1[c] >= wordlength) {
+            return false;
+        }
+        lsb_word[c] = r.read(wordlength);
+    }
+
+    std::vector<BlockCoding> coding(channel_count);
+    std::vector<int> n(channel_count);
+    std::vector<PredictorCoefficients> coefficients(channel_count);
+    std::vector<std::vector<std::int32_t>> init(channel_count);
+    for (std::size_t c = 0; c < channel_count; ++c) {
+        const auto raw = r.read(kCodingBits);
+        if (raw > static_cast<std::uint32_t>(BlockCoding::kSignificant)) {
+            return false;
+        }
+        coding[c] = static_cast<BlockCoding>(raw);
+        if (coding[c] == BlockCoding::kEmpty) {
+            continue;
+        }
+        n[c] = static_cast<int>(r.read(kNBits));
+        if (coding[c] == BlockCoding::kSignificant &&
+            (n[c] < huffman::kMinN || n[c] > huffman::kMaxN)) {
+            return false;
+        }
+        if (coding[c] == BlockCoding::kPcm && (n[c] < 1 || n[c] > 30)) {
+            return false;
+        }
+        coefficients[c].shift = static_cast<int>(r.read(kShiftBits));
+        const auto order_a = r.read(kOrderBits);
+        const auto order_b = r.read(kOrderBits);
+        if (order_a > kMaxPredictorOrder || order_b > kMaxPredictorOrder) {
+            return false;
+        }
+        coefficients[c].a.resize(order_a);
+        coefficients[c].b.resize(order_b);
+        for (auto& value : coefficients[c].a) {
+            value = read_signed(r, kCoefficientBits);
+        }
+        for (auto& value : coefficients[c].b) {
+            value = read_signed(r, kCoefficientBits);
+        }
+        const auto order = std::max<std::size_t>(order_a, order_b);
+        if (order > length) {
+            return false;
+        }
+        const auto init_width = r.read(kInitWidthBits);
+        if (init_width < 1 || init_width > 31) {
+            return false;
+        }
+        init[c].resize(order);
+        for (auto& value : init[c]) {
+            value = read_signed(r, static_cast<int>(init_width));
+        }
+    }
+
+    // Payload.
+    std::vector<std::vector<std::int32_t>> residual(channel_count);
+    for (std::size_t c = 0; c < channel_count; ++c) {
+        if (coding[c] != BlockCoding::kEmpty) {
+            residual[c].resize(length);
+        }
+    }
+    for (std::size_t i = 0; i < length; ++i) {
+        for (std::size_t c = 0; c < channel_count; ++c) {
+            if (coding[c] == BlockCoding::kEmpty) {
+                continue;
+            }
+            residual[c][i] = coding[c] == BlockCoding::kPcm
+                                 ? huffman::decode_pcm(r, n[c])
+                                 : huffman::decode_significant(r, n[c]);
+        }
+    }
+    if (r.overflowed()) {
+        return false;
+    }
+
+    // Per-channel reconstruction, matrix inversion, then unstrip.
+    std::vector<std::vector<std::int32_t>> significant(channel_count);
+    for (std::size_t c = 0; c < channel_count; ++c) {
+        significant[c].assign(length, 0);
+        if (coding[c] != BlockCoding::kEmpty) {
+            reconstruct_channel(coefficients[c], init[c], residual[c], significant[c]);
+        }
+    }
+
+    if (!steps.empty()) {
+        std::vector<std::int64_t> instant(channel_count);
+        for (std::size_t i = 0; i < length; ++i) {
+            for (std::size_t c = 0; c < channel_count; ++c) {
+                instant[c] = significant[c][i];
+            }
+            matrix::decode_cascade(steps, instant);
+            for (std::size_t c = 0; c < channel_count; ++c) {
+                if (instant[c] < INT32_MIN || instant[c] > INT32_MAX) {
+                    return false;
+                }
+                significant[c][i] = static_cast<std::int32_t>(instant[c]);
+            }
+        }
+    }
+
+    for (std::size_t c = 0; c < channel_count; ++c) {
+        const int dc_bits = wordlength - b1[c];
+        const auto dc_raw = lsb_word[c] >> b1[c];
+        const auto dc = static_cast<std::int32_t>((dc_raw ^ (1u << (dc_bits - 1)))) -
+                        (std::int32_t{1} << (dc_bits - 1));
+        const auto lsb = static_cast<std::int32_t>(lsb_word[c] & ((1u << b1[c]) - 1));
+        for (std::size_t i = 0; i < length; ++i) {
+            channels[c][i] = ((significant[c][i] + dc) << b1[c]) + lsb;
+        }
+    }
+    return true;
+}
+
 }  // namespace ac3::mlp

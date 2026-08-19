@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "ac3/export.hpp"
+#include "ac3/mlp/matrix.hpp"
 #include "ac3/mlp/mlp_tables.hpp"
 #include "ac3/mlp/predictor.hpp"
 #include "ac3/mlp/sync.hpp"
@@ -41,17 +42,26 @@ struct StreamConfig {
     int wordlength = 24;          // stream-level sample width (v1: a stream
                                   // parameter, not yet carried in-band)
     int major_sync_interval = 8;  // 8..128 per §2.5
-    PredictorCoefficients coefficients{};
+    int channels = 1;             // 1..16; carried in-band via the restart
+                                  // header's max_chan, the way real MLP
+                                  // scopes a substream's channels
+    std::vector<matrix::Step> matrix{};  // PMQ cascade; may be empty
+    // One per channel; leave empty for passthrough predictors everywhere.
+    std::vector<PredictorCoefficients> coefficients{};
 };
 
 class AC3FORGE_EXPORT StreamEncoder {
    public:
     explicit StreamEncoder(const StreamConfig& config);
 
-    // One access unit's worth of samples (samples_per_access_unit(rate)) in,
-    // one complete byte-aligned access unit out. The first call emits a
-    // major sync (a stream must begin with one, §5.1), then every
-    // major_sync_interval-th call after that.
+    // One access unit's worth of samples per channel
+    // (samples_per_access_unit(rate)) in, one complete byte-aligned access
+    // unit out. The first call emits a major sync (a stream must begin with
+    // one, §5.1), then every major_sync_interval-th call after that.
+    [[nodiscard]] std::vector<std::byte> encode_access_unit(
+        std::span<const std::span<const std::int32_t>> channels);
+
+    // Single-channel convenience; requires config.channels == 1.
     [[nodiscard]] std::vector<std::byte> encode_access_unit(
         std::span<const std::int32_t> samples);
 
@@ -70,17 +80,25 @@ class AC3FORGE_EXPORT StreamDecoder {
     // Decodes exactly one access unit (the caller frames the stream into
     // access units via the length field, as a demuxer would). The first
     // access unit fed in must carry a major sync - everything else about
-    // the stream (sample rate, hence block length) is learned from it.
+    // the stream is learned in-band: sample rate (hence block length) from
+    // major_sync_info, channel count from the restart header's max_chan.
     // Returns false on any framing, checksum, or consistency failure.
+    [[nodiscard]] bool decode_access_unit(std::span<const std::byte> data,
+                                          std::vector<std::vector<std::int32_t>>& channels);
+
+    // Single-channel convenience; fails unless the stream carries exactly
+    // one channel.
     [[nodiscard]] bool decode_access_unit(std::span<const std::byte> data,
                                           std::vector<std::int32_t>& samples);
 
     [[nodiscard]] bool has_stream_context() const { return have_context_; }
     [[nodiscard]] SampleRate sample_rate() const { return context_.sample_rate; }
+    [[nodiscard]] int channels() const { return channels_; }
 
    private:
     int wordlength_;
     bool have_context_ = false;
+    int channels_ = 0;
     MajorSyncInfo context_{};
 };
 
