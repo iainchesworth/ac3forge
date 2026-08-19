@@ -435,6 +435,77 @@ FFmpeg-derived pages are machine paraphrases of `mlpdec.c`/`mlpenc.c` and are ex
 equivalent to reading that source; MultimediaWiki carries the same provenance flag but contains
 nothing beyond the already-implemented framing layer anyway.
 
+### The WO 96/37048 deep read — the public base layer
+
+Triggered by the user spotting that US 7,193,538 B2 cites WO 96/37048 as a description of MLP.
+A verbatim-verified read of both documents — with every bit-level table cross-checked against
+the scanned patent pages, not just the OCR — confirms the observation and sharpens it into a
+working layering model.
+
+**What Dolby's own patent asserts.** US 7,193,538 B2 states, verbatim: *"A description of MLP
+may be obtained from DVD Specifications for Read-Only Disc, Part 4: Audio Specifications,
+Packed PCM, MLP Reference Information, Version 1.0. March 1999, **and from WO-A 96/37048**."*
+And stronger, of the prediction/entropy layer: the lossless encoder and decoder cores, in
+preferred embodiments, *"are implemented according to the processes that are disclosed in
+WO-A 96/37048."* The patent cites the WO nineteen times, each time attributing a specific
+technique to it (primitive matrices/PMQs, reverse-order lossless inversion, the determinant-1
+restriction, autodither, eigenvector direction selection, log-spectrum entropy estimation) and
+then stating its own divergence (seeded 23-bit Diamond Dither replacing autodither;
+non-unity-gain PMQs with `lsb_bypass`; 16-bit coefficients in [-2, +2); six PMQs; `ch_assign`;
+the Lossless Check). The honest boundary: the patent never says the WO defines the *shipping
+bitstream* — that is the MLP Reference Information's role — and at least one shipping mechanism
+(FIFO buffering) is attributed to a third document entirely (US 6,023,233 + the AES 1998 paper).
+
+**What the WO actually contains** (verbatim-extracted; scan-verified where OCR was ambiguous):
+
+- **The complete entropy layer.** Table 2's Laplacian 4-bit Huffman code — all sixteen
+  codewords, `-7:00000000` through `0:01`, `1:10`, up to `8:11111111`. Table 3's seventeen-table
+  scheme: table *k* (k = 1..17) covers blocks whose significant words fit
+  `-2^(k+2)+1 < x <= 2^(k+2)`; the top four *varying* digits are coded with the Table 2 code and
+  the remaining k-1 digits follow raw, for k+1..k+7 bits per sample; selection is purely by the
+  block's peak absolute significant-word level. Plus small-signal Tables 4–6 (complete
+  codewords), the error-robust "PCM" Table 7, and an "empty" table for digital-black blocks that
+  suppresses coefficients and initialization entirely. Quoted inefficiency versus optimal
+  coding: ~0.2 bit/sample.
+- **The full per-block header inventory, with bit budgets.** Huffman table number; B1 (count of
+  stripped constant LSBs, "typically requiring 5 bits"); the N-bit LSB word (optionally
+  carrying a DC offset in its leading bits); eight filter/noise-shaper coefficients — 50 bits
+  total for the six a/b coefficients at m/64 precision (ranges like `-192 <= 64a1 <= 192`,
+  packing as 9/9/7/9/9/7), 38 bits at m/16, 4 (or 3) bits for the nine-value integer inner
+  noise shaper, 9 bits for the outer shaper; and per-block initialization = 3(N−B1) bits for
+  the three input samples plus 12 bits of noise-shaper state.
+- **The machinery between header and payload**: the exact PMQ definition (n−1 transmitted
+  coefficients per stage, finite precision with a common divisor); fractional-step quantizer
+  cascades; the short-header/header-repeat mechanism and state-carry-across-blocks (the direct
+  ancestor of restart intervals); block lengths L = 256–1536 (worked example 576; 192/384
+  suggested with repeated headers); the GCD step-size generalization of B1; and a
+  figure-by-figure inventory of all 53 drawing sheets.
+- **What the WO does *not* specify**: byte/word alignment (nothing, anywhere), matrix
+  coefficient bit widths, and any channel/substream/packaging syntax — the format layer.
+
+**The revised layering model.** The public record now decomposes shipping MLP as:
+
+1. **WO 96/37048 (1995)** — the algorithms and proto-format: prediction cores, PMQ matrixing,
+   noise shaping, the entropy tables, the block-header concept. Public, bit-level, now
+   extracted.
+2. **US 7,193,538 and siblings (1999)** — the shipping-MLP deltas: substreams and the
+   2-channel downmix architecture, seeded Diamond Dither, `lsb_bypass` and gain-bearing PMQs,
+   [-2, +2) 16-bit coefficients, `ch_assign`, the Lossless Check, output shift. Public.
+3. **MLP Reference Information (DVD Forum Part 4 annex)** — the normative field layout binding
+   layers 1–2 into the FBB bitstream. Obtainable via the National Diet Library route above.
+4. **TrueHD FBA deltas (2005)** — the `0xBA` syntax generation: 40-sample access units, up to
+   four substreams, the 16-channel presentation, `EXTRA_DATA()`/Atmos. Partially public via
+   the Dolby 2018 PDF (framing — already implemented), Law's Atmos patents, and
+   WO 2016/018787; the residue needs the licensee document or black-box stream analysis.
+
+**Consequences for implementation.** The entropy stage can now be built for real: an
+`ac3::mlp::huffman` module transcribed from WO 96/37048's Tables 2–7, citable table-by-table
+with the same discipline `core/tables.hpp` applies to A/52 — replacing the Rice stand-in. The
+predictor primitive can use the WO's exact coefficient quantization and initialization scheme.
+The unknowns now concentrate almost entirely in the format packaging layer (field order and
+widths of the *shipping* block header, substream interleave, alignment) — exactly what layer 3
+(NDL) and layer 4 (black-box FBA analysis) would resolve.
+
 ## v1 scope
 
 Given the size of the gap above, initial implementation targets the fully-specified 2/6/8-channel
