@@ -9,6 +9,7 @@
 #include "ac3/mlp/block.hpp"
 #include "ac3/mlp/crc.hpp"
 #include "ac3/mlp/restart_header.hpp"
+#include "ac3/mlp/select.hpp"
 
 namespace ac3::mlp {
 
@@ -91,8 +92,13 @@ std::vector<std::byte> StreamEncoder::encode_access_unit(
     if (major) {
         (void)build_restart_header(segment, make_restart_header(config_, timing));
     }
-    encode_block_channels(segment, channels, config_.wordlength,
-                          {config_.matrix, config_.coefficients});
+    if (config_.automatic) {
+        encode_block_channels(segment, channels, config_.wordlength,
+                              select::choose_block_config(channels, config_.wordlength));
+    } else {
+        encode_block_channels(segment, channels, config_.wordlength,
+                              {config_.matrix, config_.coefficients});
+    }
     segment.put(1, 1);  // last_block_in_segment
     const auto segment_bits = segment.bit_count();
     const auto pad = (16 - segment_bits % 16) % 16;

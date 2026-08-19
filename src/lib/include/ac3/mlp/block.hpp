@@ -105,4 +105,25 @@ AC3FORGE_EXPORT void encode_block_channels(BitWriter& w,
 [[nodiscard]] AC3FORGE_EXPORT bool decode_block_channels(
     BitReader& r, int wordlength, std::span<const std::span<std::int32_t>> channels);
 
+// --- hooks for encoder-side selection --------------------------------------
+
+// The entropy decision the block codec itself makes for a residual signal,
+// with its exact payload cost in bits - exported so a coefficient/matrix
+// search can rank candidates by the same measure the encoder will actually
+// pay, rather than by a proxy.
+struct CodingChoice {
+    BlockCoding coding = BlockCoding::kEmpty;
+    int n = 0;
+    long long payload_bits = 0;
+};
+[[nodiscard]] AC3FORGE_EXPORT CodingChoice choose_coding_cost(
+    std::span<const std::int32_t> residual);
+
+// The B1 detection the strip stage uses (WO: "how many B1 of the least
+// significant bits have identical form throughout the block"), exported so
+// selection can reproduce the significant-word domain the block codec will
+// actually encode in.
+[[nodiscard]] AC3FORGE_EXPORT int detect_constant_lsbs(std::span<const std::int32_t> samples,
+                                                       int wordlength);
+
 }  // namespace ac3::mlp

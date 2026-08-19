@@ -17,6 +17,7 @@
 #include "ac3/mlp/predictor.hpp"
 #include "ac3/mlp/restart_header.hpp"
 #include "ac3/mlp/rice.hpp"
+#include "ac3/mlp/select.hpp"
 #include "ac3/mlp/stream.hpp"
 #include "ac3/mlp/sync.hpp"
 
@@ -1325,4 +1326,95 @@ TEST_CASE("stream: the single-channel convenience API remains a one-channel stre
     REQUIRE(decoder.decode_access_unit(bytes, decoded));
     CHECK(decoded == samples);
     CHECK(decoder.channels() == 1);
+}
+
+// --- encoder selection -----------------------------------------------------
+
+TEST_CASE("select: a smooth ramp picks a differencing predictor", "[mlp]") {
+    std::vector<std::int32_t> ramp(576);
+    for (std::size_t i = 0; i < ramp.size(); ++i) {
+        ramp[i] = static_cast<std::int32_t>(i) * 5;
+    }
+    const auto chosen = ac3::mlp::select::choose_predictor(ramp);
+    // Whatever it picked, it must beat passthrough on the exact cost measure.
+    CHECK_FALSE(chosen.a.empty());
+}
+
+TEST_CASE("select: white noise picks passthrough (nothing to predict)", "[mlp]") {
+    std::mt19937 rng(0x5E11);
+    const auto noise = random_samples(rng, 576, 20);
+    const auto chosen = ac3::mlp::select::choose_predictor(noise);
+    // Full-scale white noise is unpredictable; the palette's differencing
+    // and IIR candidates all AMPLIFY it, so passthrough must win.
+    CHECK(chosen.a.empty());
+    CHECK(chosen.b.empty());
+}
+
+TEST_CASE("select: correlated channels get a decorrelating step", "[mlp]") {
+    std::mt19937 rng(0x5E12);
+    const auto base = random_samples(rng, 576, 20);
+    std::uniform_int_distribution<std::int32_t> noise(-15, 16);
+    std::vector<std::vector<std::int32_t>> channels(2);
+    channels[0] = base;
+    channels[1].resize(base.size());
+    for (std::size_t i = 0; i < base.size(); ++i) {
+        channels[1][i] = base[i] + noise(rng);
+    }
+    const auto spans = const_spans(channels);
+    const auto steps = ac3::mlp::select::choose_matrix(
+        std::span<const std::span<const std::int32_t>>{spans});
+    REQUIRE_FALSE(steps.empty());
+}
+
+TEST_CASE("select: independent channels get no matrix", "[mlp]") {
+    std::mt19937 rng(0x5E13);
+    auto channels = random_channels(rng, 2, 576, 20);
+    const auto spans = const_spans(channels);
+    const auto steps = ac3::mlp::select::choose_matrix(
+        std::span<const std::span<const std::int32_t>>{spans});
+    CHECK(steps.empty());
+}
+
+TEST_CASE("stream: automatic mode round trips and beats the naive config", "[mlp]") {
+    // Correlated stereo, gently band-limited so prediction has something to
+    // do: automatic selection must round-trip exactly AND produce smaller
+    // access units than passthrough-everything.
+    std::mt19937 rng(0xA07);
+    const auto frame = static_cast<std::size_t>(
+        ac3::mlp::samples_per_access_unit(ac3::mlp::SampleRate::k48000));
+
+    // A wandering-walk base signal (band-limited-ish), second channel
+    // correlated with it.
+    std::vector<std::vector<std::int32_t>> channels(2, std::vector<std::int32_t>(frame));
+    std::uniform_int_distribution<std::int32_t> walk(-4000, 4000);
+    std::uniform_int_distribution<std::int32_t> noise(-63, 64);
+    std::int32_t value = 0;
+    for (std::size_t i = 0; i < frame; ++i) {
+        value += walk(rng);
+        value = std::clamp(value, -4000000, 4000000);
+        channels[0][i] = value;
+        channels[1][i] = value + noise(rng);
+    }
+    const auto spans = const_spans(channels);
+
+    ac3::mlp::StreamConfig automatic;
+    automatic.channels = 2;
+    automatic.automatic = true;
+    ac3::mlp::StreamEncoder auto_encoder(automatic);
+
+    ac3::mlp::StreamConfig naive;
+    naive.channels = 2;
+    ac3::mlp::StreamEncoder naive_encoder(naive);
+
+    const auto auto_bytes = auto_encoder.encode_access_unit(
+        std::span<const std::span<const std::int32_t>>{spans});
+    const auto naive_bytes = naive_encoder.encode_access_unit(
+        std::span<const std::span<const std::int32_t>>{spans});
+
+    CHECK(auto_bytes.size() < naive_bytes.size());
+
+    ac3::mlp::StreamDecoder decoder(24);
+    std::vector<std::vector<std::int32_t>> decoded;
+    REQUIRE(decoder.decode_access_unit(auto_bytes, decoded));
+    REQUIRE(decoded == channels);
 }

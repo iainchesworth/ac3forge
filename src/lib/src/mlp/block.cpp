@@ -346,23 +346,8 @@ struct ChannelPlan {
 // logic: smallest fitting range, PCM forced beyond Table 3's cap, and the
 // WO's PCM-cost comparison otherwise.
 [[nodiscard]] std::pair<BlockCoding, int> choose_coding(std::span<const std::int32_t> residual) {
-    const auto [lo_it, hi_it] = std::minmax_element(residual.begin(), residual.end());
-    int n = 1;
-    while (n < 30 && (*lo_it < -(std::int32_t{1} << n) + 1 || *hi_it > (std::int32_t{1} << n))) {
-        ++n;
-    }
-    if (n > huffman::kMaxN) {
-        return {BlockCoding::kPcm, n};
-    }
-    const int table_n = std::max(n, huffman::kMinN);
-    long long significant_bits = 0;
-    for (const auto v : residual) {
-        significant_bits += huffman::significant_length(v, table_n);
-    }
-    if (static_cast<long long>(residual.size()) * (n + 1) < significant_bits) {
-        return {BlockCoding::kPcm, n};
-    }
-    return {BlockCoding::kSignificant, table_n};
+    const auto choice = choose_coding_cost(residual);
+    return {choice.coding, choice.n};
 }
 
 [[nodiscard]] ChannelPlan plan_channel(std::span<const std::int32_t> significant,
@@ -666,6 +651,34 @@ bool decode_block_channels(BitReader& r, int wordlength,
         }
     }
     return true;
+}
+
+// --- hooks for encoder-side selection --------------------------------------
+
+CodingChoice choose_coding_cost(std::span<const std::int32_t> residual) {
+    CodingChoice choice;
+    const auto [lo_it, hi_it] = std::minmax_element(residual.begin(), residual.end());
+    int n = 1;
+    while (n < 30 && (*lo_it < -(std::int32_t{1} << n) + 1 || *hi_it > (std::int32_t{1} << n))) {
+        ++n;
+    }
+    const long long pcm_bits = static_cast<long long>(residual.size()) * (n + 1);
+    if (n > huffman::kMaxN) {
+        return {BlockCoding::kPcm, n, pcm_bits};
+    }
+    const int table_n = std::max(n, huffman::kMinN);
+    long long significant_bits = 0;
+    for (const auto v : residual) {
+        significant_bits += huffman::significant_length(v, table_n);
+    }
+    if (pcm_bits < significant_bits) {
+        return {BlockCoding::kPcm, n, pcm_bits};
+    }
+    return {BlockCoding::kSignificant, table_n, significant_bits};
+}
+
+int detect_constant_lsbs(std::span<const std::int32_t> samples, int wordlength) {
+    return detect_b1(samples, wordlength);
 }
 
 }  // namespace ac3::mlp

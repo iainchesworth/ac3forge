@@ -48,6 +48,11 @@ struct StreamConfig {
     std::vector<matrix::Step> matrix{};  // PMQ cascade; may be empty
     // One per channel; leave empty for passthrough predictors everywhere.
     std::vector<PredictorCoefficients> coefficients{};
+    // When set, `matrix` and `coefficients` are ignored and the encoder
+    // chooses both per access unit (select::choose_block_config) - the
+    // WO's own suggested encoder practice of trying preselected filters
+    // per block and keeping whichever is best.
+    bool automatic = false;
 };
 
 class AC3FORGE_EXPORT StreamEncoder {
