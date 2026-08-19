@@ -192,10 +192,10 @@ generators in `tools/`.
 Copyright (C) 2026 Iain Chesworth.
 
 ac3forge is free software: you can redistribute it and/or modify it under the terms of the GNU
-General Public License version 3 as published by the Free Software Foundation. It is
-distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the
-implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the full text in
-[LICENSE](LICENSE).
+General Public License as published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version. It is distributed in the hope that it will be
+useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+FITNESS FOR A PARTICULAR PURPOSE. See the full text in [LICENSE](LICENSE).
 
 GPL-3.0 is copyleft: anything that links this library must be distributed under the GPL too.
 That is a deliberate choice, not an oversight. The licence covers this source only — it grants
