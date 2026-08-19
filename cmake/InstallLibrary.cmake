@@ -65,7 +65,20 @@ if(AC3FORGE_INSTALL_BOTH_LINKAGES)
     set(_ac3forge_mpegts_install_targets mpegts_objects mpegts_static mpegts_shared)
     set(_ac3forge_capi_install_targets capi_objects capi_static capi_shared)
 elseif(BUILD_SHARED_LIBS)
-    set(_ac3forge_forge_install_targets forge_objects forge_shared)
+    # ac3::forge_c (src/capi/CMakeLists.txt) statically embeds ac3::forge_static PRIVATE
+    # unconditionally, regardless of BUILD_SHARED_LIBS - see that file's header comment for why
+    # (a self-contained C ABI, not one that depends on a separately-shipped forge shared
+    # library). capi_objects is an OBJECT library, so that PRIVATE dependency still ends up in
+    # capi_objects's own INTERFACE_LINK_LIBRARIES (OBJECT libraries have no link step of their
+    # own to hide it behind) - and since capi_objects is itself part of capiTargets whenever
+    # AC3FORGE_BUILD_CAPI is ON, forge_static must be in an export set too, or install(EXPORT
+    # capiTargets) fails with "requires target forge_static that is not in any export set."
+    # forge_shared has no such requirement, so it doesn't need the same treatment here.
+    if(AC3FORGE_BUILD_CAPI)
+        set(_ac3forge_forge_install_targets forge_objects forge_static forge_shared)
+    else()
+        set(_ac3forge_forge_install_targets forge_objects forge_shared)
+    endif()
     set(_ac3forge_matroska_install_targets matroska_objects matroska_shared)
     set(_ac3forge_mp4_install_targets mp4_objects mp4_shared)
     set(_ac3forge_mpegts_install_targets mpegts_objects mpegts_shared)
