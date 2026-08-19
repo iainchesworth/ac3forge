@@ -106,14 +106,14 @@ int decode_small(BitReader& r, std::span<const SmallCode> table) {
 }
 
 void encode_pcm(BitWriter& w, std::int32_t x, int n) {
-    assert(n >= 1 && n <= 23);
+    assert(n >= 1 && n <= 30);
     assert(x >= -(std::int32_t{1} << n) + 1 && x <= (std::int32_t{1} << n));
     const auto u = static_cast<std::uint32_t>(x + (std::int32_t{1} << n) - 1);
     w.put(u, n + 1);
 }
 
 std::int32_t decode_pcm(BitReader& r, int n) {
-    assert(n >= 1 && n <= 23);
+    assert(n >= 1 && n <= 30);
     const std::uint32_t u = r.read(n + 1);
     return static_cast<std::int32_t>(u) - (std::int32_t{1} << n) + 1;
 }

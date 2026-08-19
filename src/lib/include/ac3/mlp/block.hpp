@@ -1,0 +1,78 @@
+#pragma once
+
+#include <cstdint>
+#include <span>
+#include <vector>
+
+#include "ac3/core/bitreader.hpp"
+#include "ac3/core/bitwriter.hpp"
+#include "ac3/export.hpp"
+#include "ac3/mlp/predictor.hpp"
+
+// The per-block layer joining the MLP primitives into a working codec:
+// WO 96/37048's Fig. 18a encoder / Fig. 18b decoder. Per block of L
+// samples: detect and strip B1 constant least-significant bits (the "LSB
+// word"), decorrelate the significant words through the lossless predictor,
+// pick an entropy table from the block's peak residual level, and emit
+// header + Huffman-coded payload. The decoder (Fig. 18b) runs it exactly
+// backwards: "First the Huffman table number is read from the header and
+// the relevant Huffman table loaded... The initialisation data and the
+// filter coefficients from the block header are loaded into the lossless
+// decoding filter... [then] insert B1 zero LSBs... add the LSB word."
+//
+// The header carries the WO's documented inventory - Huffman table number,
+// B1, the N-bit LSB word (whose leading N-B1 bits may carry a DC offset),
+// filter coefficients, and initialisation data (the first `order` input
+// significant-words; the matching first `order` outputs are simply the
+// payload's own first samples, per the WO's state-swap rule: "the first n
+// input samples and the first n output samples of the encoding filter ...
+// are used respectively as the first n output samples and the first n
+// input samples of the decoding filter").
+//
+// PROVISIONAL FIELD LAYOUT: the WO specifies the inventory and several
+// individual budgets (5-bit B1, N-bit LSB word, per-coefficient ranges) but
+// not a complete normative field order - that lives in the MLP Reference
+// Information (docs/concepts/truehd-mlp.md, layer 3). The layout here is a
+// self-consistent packing of the WO inventory, documented field by field in
+// block.cpp, and expected to be reconciled or replaced when layer 3/4
+// sources land. Round trips through THIS layout are exact regardless.
+
+namespace ac3::mlp {
+
+// Which entropy mode the block's payload uses. The WO's "empty" table is
+// digital black: no payload, no coefficients, no initialisation ("predictor
+// filter coefficients and initialisation data need not be transmitted").
+enum class BlockCoding : std::uint8_t {
+    kEmpty = 0,        // all-zero block, nothing follows but B1/LSB word
+    kPcm = 1,          // WO Table 7: n+1 raw digits per sample
+    kSignificant = 2,  // WO Tables 2+3: top-4-varying-digits Huffman + raw remainder
+};
+
+struct BlockHeader {
+    BlockCoding coding = BlockCoding::kEmpty;
+    int n = 0;    // Table 3 / PCM range parameter (unused for kEmpty)
+    int b1 = 0;   // stripped constant LSBs, 0..N-1
+    std::uint32_t lsb_word = 0;  // N bits: [DC offset (N-b1) | constant LSB pattern (b1)]
+    PredictorCoefficients coefficients{};  // empty vectors for kEmpty
+    std::vector<std::int32_t> init;        // first max-order input significant words
+};
+
+// Header pack/parse alone, for callers assembling their own payloads.
+// `wordlength` is N (the stream-level sample width, e.g. 20 or 24) - a
+// stream property, not a per-block field, per the WO's worked example.
+AC3FORGE_EXPORT void build_block_header(BitWriter& w, const BlockHeader& header, int wordlength);
+[[nodiscard]] AC3FORGE_EXPORT bool parse_block_header(BitReader& r, int wordlength,
+                                                      BlockHeader& out);
+
+// The assembled block codec. encode_block runs the whole Fig. 18a chain on
+// `samples` (each fitting `wordlength` signed bits, excluding the single
+// most-negative code - the entropy ranges are asymmetric, see huffman.hpp)
+// with the caller's coefficient choice; decode_block reverses it, needing
+// only the block length and wordlength from stream-level context. Returns
+// false on a malformed header.
+AC3FORGE_EXPORT void encode_block(BitWriter& w, std::span<const std::int32_t> samples,
+                                  int wordlength, const PredictorCoefficients& coefficients);
+[[nodiscard]] AC3FORGE_EXPORT bool decode_block(BitReader& r, int wordlength,
+                                                std::span<std::int32_t> samples);
+
+}  // namespace ac3::mlp

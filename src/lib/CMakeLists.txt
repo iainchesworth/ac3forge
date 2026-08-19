@@ -125,6 +125,7 @@ target_sources(forge_objects
         src/encoder/plan.cpp
         src/encoder/transient.cpp
         src/io/elementary.cpp
+        src/mlp/block.cpp
         src/mlp/huffman.cpp
         src/mlp/matrix.cpp
         src/mlp/predictor.cpp

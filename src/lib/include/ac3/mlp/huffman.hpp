@@ -125,7 +125,8 @@ AC3FORGE_EXPORT void encode_small(BitWriter& w, std::span<const SmallCode> table
 // signals) and has the unique property of isolated data errors not
 // affecting the decoding of the rest of the Huffman coded waveform
 // sequence for a block". Unlike Table 3, n is not capped at 19: PCM covers
-// any width up to a 24-bit significant word.
+// widths up to n = 30, because residuals of full-scale audio through an IIR
+// predictor can exceed the input wordlength by a few bits.
 AC3FORGE_EXPORT void encode_pcm(BitWriter& w, std::int32_t x, int n);
 [[nodiscard]] AC3FORGE_EXPORT std::int32_t decode_pcm(BitReader& r, int n);
 

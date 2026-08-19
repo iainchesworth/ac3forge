@@ -9,6 +9,7 @@
 #include <span>
 #include <vector>
 
+#include "ac3/mlp/block.hpp"
 #include "ac3/mlp/crc.hpp"
 #include "ac3/mlp/huffman.hpp"
 #include "ac3/mlp/matrix.hpp"
@@ -821,4 +822,156 @@ TEST_CASE("predictor: seeded history reproduces mid-stream decode (restart seman
     ac3::mlp::predict_decode(coefficients, std::span{residual}.subspan(150), tail, mid_state);
 
     CHECK(std::equal(tail.begin(), tail.end(), samples.begin() + 150));
+}
+
+// --- block codec ----------------------------------------------------------
+
+namespace {
+
+void check_block_round_trip(std::span<const std::int32_t> samples, int wordlength,
+                            const ac3::mlp::PredictorCoefficients& coefficients) {
+    ac3::BitWriter w;
+    ac3::mlp::encode_block(w, samples, wordlength, coefficients);
+    const auto bytes = w.take();
+
+    std::vector<std::int32_t> decoded(samples.size());
+    ac3::BitReader r(bytes);
+    REQUIRE(ac3::mlp::decode_block(r, wordlength, decoded));
+    REQUIRE(std::equal(samples.begin(), samples.end(), decoded.begin()));
+}
+
+}  // namespace
+
+TEST_CASE("block: random 24-bit audio round trips with every Table 1 preset", "[mlp]") {
+    std::mt19937 rng(0x18A);
+    const auto samples = random_samples(rng, 576, 24);
+    for (int preset = 0; preset < ac3::mlp::kTable1Cases; ++preset) {
+        CAPTURE(preset);
+        check_block_round_trip(samples, 24, ac3::mlp::table1_preset(preset));
+    }
+}
+
+TEST_CASE("block: assorted block lengths and wordlengths round trip", "[mlp]") {
+    std::mt19937 rng(0x18B);
+    const auto coefficients = ac3::mlp::table1_preset(1);
+    for (const auto [length, bits] : {std::pair{40, 16}, {160, 20}, {576, 24}, {1536, 24}}) {
+        CAPTURE(length, bits);
+        const auto samples = random_samples(rng, static_cast<std::size_t>(length), bits);
+        check_block_round_trip(samples, bits == 16 ? 20 : bits, coefficients);
+    }
+}
+
+TEST_CASE("block: digital black takes the empty table and stays tiny", "[mlp]") {
+    const std::vector<std::int32_t> silence(576, 0);
+    ac3::BitWriter w;
+    ac3::mlp::encode_block(w, silence, 24, ac3::mlp::table1_preset(1));
+    const auto bytes = w.take();
+    // WO: an empty-table block conveys "no data at all in the Huffman coded
+    // data part" and omits coefficients and initialisation - just the
+    // 2+5+24-bit header stub, well under a handful of bytes.
+    CHECK(bytes.size() <= 4);
+
+    std::vector<std::int32_t> decoded(576, -1);
+    ac3::BitReader r(bytes);
+    REQUIRE(ac3::mlp::decode_block(r, 24, decoded));
+    CHECK(std::all_of(decoded.begin(), decoded.end(),
+                      [](std::int32_t v) { return v == 0; }));
+}
+
+TEST_CASE("block: constant low bits are stripped into the LSB word", "[mlp]") {
+    // 16-bit audio carried in 24-bit words: low 8 bits are a constant zero
+    // pattern, which B1 detection should strip. Compare against the same
+    // signal without padding: the padded encoding should cost no more than
+    // a few header bits extra.
+    std::mt19937 rng(0x18C);
+    const auto narrow = random_samples(rng, 400, 16);
+    std::vector<std::int32_t> padded(narrow.size());
+    for (std::size_t i = 0; i < narrow.size(); ++i) {
+        padded[i] = narrow[i] << 8;
+    }
+
+    const auto coefficients = ac3::mlp::table1_preset(2);
+    check_block_round_trip(padded, 24, coefficients);
+
+    ac3::BitWriter w_narrow;
+    ac3::mlp::encode_block(w_narrow, narrow, 16, coefficients);
+    ac3::BitWriter w_padded;
+    ac3::mlp::encode_block(w_padded, padded, 24, coefficients);
+    CHECK(w_padded.bit_count() <= w_narrow.bit_count() + 16);
+}
+
+TEST_CASE("block: nonzero constant LSB pattern round trips", "[mlp]") {
+    std::mt19937 rng(0x18D);
+    const auto narrow = random_samples(rng, 200, 12);
+    std::vector<std::int32_t> shifted(narrow.size());
+    for (std::size_t i = 0; i < narrow.size(); ++i) {
+        shifted[i] = (narrow[i] << 4) | 0b0110;  // constant nonzero low bits
+    }
+    check_block_round_trip(shifted, 20, ac3::mlp::table1_preset(3));
+}
+
+TEST_CASE("block: a smooth signal compresses well below PCM", "[mlp]") {
+    // A gently-rising ramp from zero is highly predictable; with a
+    // first-order difference the residual is a small constant, so the coded
+    // size should land far under wordlength bits/sample. (A ramp with a
+    // large starting offset would not do as well yet: the first residual
+    // becomes an outlier that widens the whole block's table - the case the
+    // WO's optional residual DC offset exists for, which this encoder does
+    // not implement yet.)
+    std::vector<std::int32_t> samples(576);
+    for (std::size_t i = 0; i < samples.size(); ++i) {
+        samples[i] = static_cast<std::int32_t>(i) * 3;
+    }
+    ac3::mlp::PredictorCoefficients diff;
+    diff.shift = 0;
+    diff.a = {-1};  // first-order difference
+    check_block_round_trip(samples, 24, diff);
+
+    ac3::BitWriter w;
+    ac3::mlp::encode_block(w, samples, 24, diff);
+    CHECK(w.bit_count() < samples.size() * 24 / 3);
+}
+
+TEST_CASE("block: full-scale residuals fall back to PCM and round trip", "[mlp]") {
+    // Alternating near-full-scale 24-bit values through a passthrough
+    // predictor leave residuals wider than Table 3's cap - the PCM path.
+    std::vector<std::int32_t> samples(64);
+    for (std::size_t i = 0; i < samples.size(); ++i) {
+        samples[i] = (i % 2 == 0) ? 8388000 : -8388000;
+    }
+    check_block_round_trip(samples, 24, ac3::mlp::PredictorCoefficients{.shift = 0});
+}
+
+TEST_CASE("block: header pack/parse round trips and rejects corruption", "[mlp]") {
+    ac3::mlp::BlockHeader header;
+    header.coding = ac3::mlp::BlockCoding::kSignificant;
+    header.n = 9;
+    header.b1 = 4;
+    header.lsb_word = 0b1010;
+    header.coefficients = ac3::mlp::table1_preset(6);
+    header.init = {123, -456};
+
+    ac3::BitWriter w;
+    ac3::mlp::build_block_header(w, header, 24);
+    const auto bytes = w.take();
+
+    ac3::mlp::BlockHeader parsed;
+    {
+        ac3::BitReader r(bytes);
+        REQUIRE(ac3::mlp::parse_block_header(r, 24, parsed));
+    }
+    CHECK(parsed.coding == header.coding);
+    CHECK(parsed.n == header.n);
+    CHECK(parsed.b1 == header.b1);
+    CHECK(parsed.lsb_word == header.lsb_word);
+    CHECK(parsed.coefficients.shift == header.coefficients.shift);
+    CHECK(parsed.coefficients.a == header.coefficients.a);
+    CHECK(parsed.coefficients.b == header.coefficients.b);
+    CHECK(parsed.init == header.init);
+
+    // Corrupt the coding field to the reserved value (0b11): reject.
+    auto corrupt = bytes;
+    corrupt[0] |= std::byte{0xC0};
+    ac3::BitReader r(corrupt);
+    CHECK_FALSE(ac3::mlp::parse_block_header(r, 24, parsed));
 }
