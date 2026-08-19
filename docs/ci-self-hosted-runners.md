@@ -66,3 +66,68 @@ the self-hosted image or skips any install step; every leg installs GCC/LLVM/Qt/
 and warms vcpkg's cache identically regardless of which runner it landed on, so a timing
 comparison between the two is measuring the runner, not a shortcut. Pre-baking is a
 reasonable follow-up once there's real data to justify it - not built in advance of that data.
+
+## Toolchain version pins
+
+A runner (self-hosted or GitHub-hosted) picking up a job is one problem; that runner actually
+having the *right versions* of the compiler, CMake, Qt, and vcpkg once it does is a separate
+one. ac3forge ports the manifest-driven version check
+[`aqualink-automate`](https://github.com/iainchesworthlabs/aqualink-automate) and
+[`ci-runners`](https://github.com/iainchesworthlabs/ci-runners) both use, adapted to this
+repo's own architecture (see [Why no separate drift-warning action](#why-no-separate-drift-warning-action)
+below for what differs and why).
+
+1. **One manifest, several sources.**
+   [`.github/toolchain-versions.json`](https://github.com/iainchesworthlabs/ac3forge/blob/main/.github/toolchain-versions.json)
+   holds only the two pins that have no other canonical home in this repo: the MSVC toolset
+   prefix (`msvc_toolset`) and the Qt version (`qt`). Everything else this repo already pins
+   somewhere is read from that real location instead of being duplicated into the manifest
+   too: GCC/LLVM majors come from `.github/toolchain/02-gcc-toolchain.sh` and
+   `03-llvm-toolchain.sh` (the scripts that actually install them - copied verbatim from
+   `aqualink-automate` so both projects track the same toolchain), CMake's minimum from
+   `CMakePresets.json`'s `cmakeMinimumRequired`, and vcpkg's baseline from `vcpkg.json`'s
+   `builtin-baseline`.
+   [`_toolchain-versions.yml`](https://github.com/iainchesworthlabs/ac3forge/blob/main/.github/workflows/_toolchain-versions.yml)
+   is a small reusable `workflow_call` (same shape as the `check-runners` job above) that
+   reads the manifest plus those four other files once and exposes `gcc_version` / `llvm_version` / `msvc_toolset`
+   / `qt_version` / `cmake_min` / `vcpkg_commit` as outputs. Every workflow that used to
+   hardcode a `vcpkg-commit: "eaca4a5..."` or `version: "6.8.3"` literal - `_build.yml`,
+   `ci.yml`, `msvc-analysis.yml`, `fuzz.yml`, `codeql.yml` - instead calls it as its own
+   `toolchain-versions` job and reads `needs.toolchain-versions.outputs.*`. Before this,
+   the vcpkg commit alone was hardcoded independently in nine separate places across five
+   workflow files; bumping it meant finding and editing all nine by hand, with no error if
+   one was missed. **Bump a version by editing whichever of the four files actually owns
+   it** - nothing else in this repo needs to change.
+2. **Runtime assert, on every leg, both runner paths.** `_build.yml`'s existing "Report and
+   assert toolchain versions" step (unchanged in spirit, now manifest-driven) runs `g++`/
+   `clang++`/`clang-cl --version` or reads the MSVC environment's `VCToolsVersion`, compares
+   it against the matching `needs.toolchain-versions.outputs.*` pin, and fails the job with
+   an `::error::` annotation on a mismatch. It runs identically whether the leg landed on a
+   self-hosted or GitHub-hosted runner - see the next section for why that is the right
+   severity here, unlike the warn-only check `aqualink-automate` uses.
+
+### Why no separate drift-warning action
+
+`aqualink-automate` pairs its manifest with a second mechanism,
+[`check-toolchain-drift`](https://github.com/iainchesworthlabs/aqualink-automate/blob/main/.github/actions/check-toolchain-drift/action.yml):
+a composite action that runs *only* on a self-hosted job, compares the installed compiler
+against the pin, and **warns** rather than fails. That shape fits `aqualink-automate` because
+its self-hosted legs *skip* the fresh-install step entirely and build straight against
+whatever `ci-runners`' Packer image happened to bake in - a mismatch there means the shared,
+externally-provisioned image has drifted, which is `ci-runners`' problem to fix, not a reason
+to block a PR against unrelated code.
+
+ac3forge's own design already differs in the one place that matters: every Linux leg runs
+inside a pinned `ubuntu:26.04` **container** (see `build`'s own comment in `_build.yml`), so
+GCC/LLVM/Qt/ffmpeg/Ninja are installed fresh into that container on *every* run, self-hosted
+or GitHub-hosted alike - the host image's own toolchain, pre-baked or not, is never reachable
+from inside it. There is no self-hosted-only drift path for those tools to warn about; a
+mismatch there can only mean this repo's own install step is broken, on both runner types
+equally, which is exactly what should fail the build immediately. The one leg that does
+depend on whatever the host actually has - Windows MSVC, which this workflow never installs,
+only asserts - already fails on both runner paths today, which is the stricter, appropriate
+choice for a leg whose bit-exact gold-reference output can depend on the exact toolset. So the
+manifest above is ported in full; the separate warn-only self-hosted action is deliberately
+not, because there is no scenario in this repo where softening the check for self-hosted
+specifically would be correct. If toolchain pre-baking is ever added per the note above, this
+call is worth revisiting.
