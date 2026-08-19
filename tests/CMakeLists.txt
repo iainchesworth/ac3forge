@@ -72,7 +72,8 @@ add_executable(ac3tests
     test_ring_buffer.cpp
     test_spatial.cpp
     test_tables.cpp
-    test_transient.cpp)
+    test_transient.cpp
+    test_wav.cpp)
 
 # ---------------------------------------------------------------------------
 # Toolchain hook: keep a failing assert from opening a modal dialog that hangs

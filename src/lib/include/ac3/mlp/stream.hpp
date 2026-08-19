@@ -78,9 +78,11 @@ class AC3FORGE_EXPORT StreamEncoder {
 
 class AC3FORGE_EXPORT StreamDecoder {
    public:
-    // `wordlength` matches the encoder's StreamConfig - a stream-level
-    // parameter in the v1 shape.
-    explicit StreamDecoder(int wordlength);
+    // `wordlength` is only a starting default: every restart header carries
+    // the stream's actual sample width in its max_bits fields (the encoder
+    // writes StreamConfig::wordlength there), and the first major sync's
+    // restart overrides this value before any samples are decoded.
+    explicit StreamDecoder(int wordlength = 24);
 
     // Decodes exactly one access unit (the caller frames the stream into
     // access units via the length field, as a demuxer would). The first
@@ -99,6 +101,7 @@ class AC3FORGE_EXPORT StreamDecoder {
     [[nodiscard]] bool has_stream_context() const { return have_context_; }
     [[nodiscard]] SampleRate sample_rate() const { return context_.sample_rate; }
     [[nodiscard]] int channels() const { return channels_; }
+    [[nodiscard]] int wordlength() const { return wordlength_; }
 
    private:
     int wordlength_;

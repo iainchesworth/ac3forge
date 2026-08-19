@@ -247,6 +247,14 @@ bool StreamDecoder::decode_access_unit(std::span<const std::byte> data,
             return false;
         }
         channels_ = header.max_chan + 1;
+        // The encoder records the stream wordlength in the max_bits fields
+        // (the provisional v1 reading of §4.7.2, see restart_header.hpp), so
+        // a restart teaches the decoder its sample width in-band the same way
+        // max_chan teaches it the channel count - the constructor value is
+        // only a starting default.
+        if (header.max_bits_a >= 2 && header.max_bits_a <= 24) {
+            wordlength_ = header.max_bits_a;
+        }
     }
     if (channels_ == 0) {
         return false;

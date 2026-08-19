@@ -105,6 +105,67 @@ std::expected<WavData, WavError> read_wav(const std::string& path) {
     return result;
 }
 
+std::expected<WavPcmData, WavError> read_wav_pcm(const std::string& path) {
+    std::ifstream in{path, std::ios::binary};
+    if (!in) {
+        return std::unexpected(WavError::kCannotOpen);
+    }
+    const std::vector<char> raw{std::istreambuf_iterator<char>(in),
+                                std::istreambuf_iterator<char>()};
+    const std::string_view view{raw.data(), raw.size()};
+    if (raw.size() < 44 || view.substr(0, 4) != "RIFF" || view.substr(8, 4) != "WAVE") {
+        return std::unexpected(WavError::kNotRiffWave);
+    }
+    const auto fmt_at = find_chunk(view, "fmt ");
+    const auto data_at = find_chunk(view, "data");
+    if (fmt_at == std::string_view::npos || data_at == std::string_view::npos) {
+        return std::unexpected(WavError::kNotRiffWave);
+    }
+
+    const std::span<const char> bytes{raw};
+    auto format = read_u16(bytes, fmt_at + 8);
+    const auto channel_count = read_u16(bytes, fmt_at + 10);
+    const auto sample_rate = read_u32(bytes, fmt_at + 12);
+    const auto bits = read_u16(bytes, fmt_at + 22);
+    if (format == 0xFFFE) {
+        format = read_u16(bytes, fmt_at + 32);
+    }
+    if (channel_count == 0 || format != 1 || (bits != 16 && bits != 24)) {
+        return std::unexpected(WavError::kUnsupportedFormat);
+    }
+
+    const auto declared = read_u32(bytes, data_at + 4);
+    const std::size_t payload_at = data_at + 8;
+    const std::size_t available = raw.size() > payload_at ? raw.size() - payload_at : 0;
+    const std::size_t payload = std::min<std::size_t>(declared, available);
+    const std::size_t sample_bytes = bits / 8u;
+    const std::size_t stride = static_cast<std::size_t>(channel_count) * sample_bytes;
+
+    WavPcmData result;
+    result.sample_rate = sample_rate;
+    result.bits = bits;
+    const std::size_t frames = payload / stride;
+    result.channels.assign(channel_count, std::vector<std::int32_t>(frames));
+    for (std::size_t frame = 0; frame < frames; ++frame) {
+        for (std::uint16_t ch = 0; ch < channel_count; ++ch) {
+            const std::size_t at =
+                payload_at + frame * stride + static_cast<std::size_t>(ch) * sample_bytes;
+            if (bits == 16) {
+                result.channels[ch][frame] = static_cast<std::int16_t>(read_u16(bytes, at));
+            } else {
+                auto value = static_cast<std::int32_t>(
+                    static_cast<std::uint32_t>(read_u16(bytes, at)) |
+                    (static_cast<std::uint32_t>(static_cast<std::uint8_t>(bytes[at + 2])) << 16));
+                if ((value & 0x800000) != 0) {
+                    value -= 0x1000000;
+                }
+                result.channels[ch][frame] = value;
+            }
+        }
+    }
+    return result;
+}
+
 std::optional<Ac3Layout> ac3_layout_for(std::size_t wav_channels) {
     // WAV order per channel count, mapped onto the A/52 Table 5.8 array. Only
     // the counts an acmod can express appear; 5.1 is the interesting one,
@@ -187,6 +248,47 @@ std::expected<void, WavError> write_wav_f32(const std::string& path,
         for (const auto source : order) {
             const float value = channels[source][frame];
             out.write(reinterpret_cast<const char*>(&value), 4);
+        }
+    }
+    return {};
+}
+
+std::expected<void, WavError> write_wav_pcm(const std::string& path,
+                                            std::span<const std::vector<std::int32_t>> channels,
+                                            std::uint32_t sample_rate, int bits) {
+    if (channels.empty() || (bits != 16 && bits != 24)) {
+        return std::unexpected(WavError::kUnsupportedFormat);
+    }
+    std::ofstream out{path, std::ios::binary};
+    if (!out) {
+        return std::unexpected(WavError::kCannotOpen);
+    }
+    const auto count = static_cast<std::uint16_t>(channels.size());
+    const auto frames = static_cast<std::uint32_t>(channels.front().size());
+    const auto sample_bytes = static_cast<std::uint32_t>(bits) / 8;
+    const std::uint32_t block_align = count * sample_bytes;
+    const std::uint32_t data_bytes = frames * block_align;
+
+    out.write("RIFF", 4);
+    put_u32(out, 36 + data_bytes);
+    out.write("WAVE", 4);
+    out.write("fmt ", 4);
+    put_u32(out, 16);
+    put_u16(out, 1);  // PCM
+    put_u16(out, count);
+    put_u32(out, sample_rate);
+    put_u32(out, sample_rate * block_align);
+    put_u16(out, static_cast<std::uint16_t>(block_align));
+    put_u16(out, static_cast<std::uint16_t>(bits));
+    out.write("data", 4);
+    put_u32(out, data_bytes);
+    for (std::uint32_t frame = 0; frame < frames; ++frame) {
+        for (const auto& channel : channels) {
+            const auto value = static_cast<std::uint32_t>(channel[frame]);
+            const char sample[3] = {static_cast<char>(value & 0xFF),
+                                    static_cast<char>((value >> 8) & 0xFF),
+                                    static_cast<char>((value >> 16) & 0xFF)};
+            out.write(sample, sample_bytes);
         }
     }
     return {};

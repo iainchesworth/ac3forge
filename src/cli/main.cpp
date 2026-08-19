@@ -32,6 +32,9 @@
 #include "ac3/meta/drc.hpp"
 #include "ac3/meta/loudness.hpp"
 #include "ac3/meta/mixing.hpp"
+#include "ac3/mlp/block.hpp"
+#include "ac3/mlp/mlp_tables.hpp"
+#include "ac3/mlp/stream.hpp"
 #include "ac3/oba/atmos.hpp"
 #include "ac3/oba/motion.hpp"
 #include "ac3/platform/audio_backend.hpp"
@@ -2736,6 +2739,181 @@ int run_live(std::string_view out_path, int capture_device, std::uint32_t second
 }
 
 // ---------------------------------------------------------------------------
+// TrueHD (MLP). Lossless, so these two commands work in integer sample words
+// end to end - the float-normalized WAV path the lossy codecs use would break
+// the bit-exactness the decoder verifies. The .mlp output is the raw
+// access-unit sequence of the bitstream description's §5, with no container.
+// ---------------------------------------------------------------------------
+
+std::optional<ac3::mlp::SampleRate> mlp_sample_rate(std::uint32_t hz) {
+    switch (hz) {
+        case 48000: return ac3::mlp::SampleRate::k48000;
+        case 96000: return ac3::mlp::SampleRate::k96000;
+        case 192000: return ac3::mlp::SampleRate::k192000;
+        case 44100: return ac3::mlp::SampleRate::k44100;
+        case 88200: return ac3::mlp::SampleRate::k88200;
+        case 176400: return ac3::mlp::SampleRate::k176400;
+        default: return std::nullopt;
+    }
+}
+
+int run_truehd_encode(std::string_view in_path, std::string_view out_path) {
+    const auto wav = ac3::io::read_wav_pcm(std::string{in_path});
+    if (!wav) {
+        std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(wav.error()));
+        return 1;
+    }
+    const auto rate = mlp_sample_rate(wav->sample_rate);
+    if (!rate) {
+        std::println(stderr,
+                     "error: {} Hz is not an MLP sample rate "
+                     "(48000/96000/192000 or 44100/88200/176400)",
+                     wav->sample_rate);
+        return 1;
+    }
+    const auto channel_count = wav->channels.size();
+    if (channel_count > static_cast<std::size_t>(ac3::mlp::kMaxBlockChannels)) {
+        std::println(stderr, "error: {} channels (this encoder carries up to {})", channel_count,
+                     ac3::mlp::kMaxBlockChannels);
+        return 1;
+    }
+    const auto frame = static_cast<std::size_t>(ac3::mlp::samples_per_access_unit(*rate));
+    const std::size_t source_frames = wav->frame_count();
+    if (source_frames == 0) {
+        std::println(stderr, "error: {} holds no samples", in_path);
+        return 1;
+    }
+    // An access unit is a fixed number of samples (40 at 48 kHz), so the tail
+    // is filled with silence rather than dropped - the decode gains up to one
+    // access unit of trailing zero samples, never loses audio.
+    const std::size_t padded = (source_frames + frame - 1) / frame * frame;
+    std::vector<std::vector<std::int32_t>> channels = wav->channels;
+    for (auto& channel : channels) {
+        channel.resize(padded, 0);
+    }
+
+    ac3::mlp::StreamConfig config;
+    config.sample_rate = *rate;
+    config.wordlength = wav->bits;
+    config.channels = static_cast<int>(channel_count);
+    config.automatic = true;
+    ac3::mlp::StreamEncoder encoder(config);
+
+    std::ofstream out{std::string{out_path}, std::ios::binary};
+    if (!out) {
+        std::println(stderr, "error: cannot open {}", out_path);
+        return 1;
+    }
+    std::size_t written = 0;
+    for (std::size_t at = 0; at < padded; at += frame) {
+        std::vector<std::span<const std::int32_t>> spans;
+        spans.reserve(channel_count);
+        for (const auto& channel : channels) {
+            spans.emplace_back(std::span<const std::int32_t>{channel}.subspan(at, frame));
+        }
+        const auto unit =
+            encoder.encode_access_unit(std::span<const std::span<const std::int32_t>>{spans});
+        out.write(reinterpret_cast<const char*>(unit.data()),
+                  static_cast<std::streamsize>(unit.size()));
+        written += unit.size();
+    }
+    if (!out) {
+        std::println(stderr, "error: writing {} failed", out_path);
+        return 1;
+    }
+    const std::size_t pcm_bytes =
+        padded * channel_count * static_cast<std::size_t>(wav->bits) / 8;
+    std::println("wrote {} access units to {}", padded / frame, out_path);
+    std::println("{} PCM bytes -> {} MLP bytes ({:.1f}% of source, {}-bit, {} ch, {} Hz)",
+                 pcm_bytes, written, 100.0 * static_cast<double>(written) / pcm_bytes, wav->bits,
+                 channel_count, wav->sample_rate);
+    if (padded != source_frames) {
+        std::println("note: last access unit padded with {} silent samples",
+                     padded - source_frames);
+    }
+    return 0;
+}
+
+int run_truehd_decode(std::string_view in_path, std::string_view out_path) {
+    const auto stream = read_all(in_path);
+    if (stream.empty()) {
+        std::println(stderr, "error: cannot read {}", in_path);
+        return 1;
+    }
+    std::span<const std::byte> data{stream};
+
+    // §5's file format allows a 16-byte SMPTE ST 339 timestamp before the
+    // stream proper. The stream itself must open with a major sync, whose
+    // format_sync sits 4 bytes into the first access unit - so look for it
+    // there, and failing that, one header-skip later.
+    const auto format_sync_at = [&data](std::size_t at) {
+        if (data.size() < at + 8) {
+            return false;
+        }
+        std::uint32_t word = 0;
+        for (std::size_t i = 0; i < 4; ++i) {
+            word = (word << 8) | std::to_integer<std::uint32_t>(data[at + 4 + i]);
+        }
+        return word == ac3::mlp::kFormatSync;
+    };
+    if (!format_sync_at(0) && format_sync_at(16)) {
+        data = data.subspan(16);
+    }
+
+    ac3::mlp::StreamDecoder decoder;
+    std::vector<std::vector<std::int32_t>> channels;
+    std::size_t units = 0;
+    while (!data.empty()) {
+        // mlp_sync's length field frames the stream: the low 12 bits of the
+        // first 16 bits are the access unit's length in 16-bit words.
+        if (data.size() < 8) {
+            std::println(stderr, "error: {}: {} trailing bytes after access unit {}", in_path,
+                         data.size(), units);
+            return 1;
+        }
+        const std::size_t length_words =
+            (std::to_integer<std::size_t>(data[0]) & 0x0F) << 8 |
+            std::to_integer<std::size_t>(data[1]);
+        const std::size_t unit_bytes = length_words * 2;
+        if (unit_bytes < 8 || unit_bytes > data.size()) {
+            std::println(stderr, "error: {}: access unit {} declares {} bytes, {} remain",
+                         in_path, units, unit_bytes, data.size());
+            return 1;
+        }
+        std::vector<std::vector<std::int32_t>> unit_channels;
+        if (!decoder.decode_access_unit(data.first(unit_bytes), unit_channels)) {
+            std::println(stderr, "error: {}: access unit {} failed to decode", in_path, units);
+            return 1;
+        }
+        if (channels.empty()) {
+            channels.resize(unit_channels.size());
+        }
+        for (std::size_t ch = 0; ch < unit_channels.size(); ++ch) {
+            channels[ch].insert(channels[ch].end(), unit_channels[ch].begin(),
+                                unit_channels[ch].end());
+        }
+        data = data.subspan(unit_bytes);
+        ++units;
+    }
+    if (channels.empty()) {
+        std::println(stderr, "error: {} holds no access units", in_path);
+        return 1;
+    }
+
+    const auto rate_hz = ac3::mlp::sample_rate_hz(decoder.sample_rate());
+    const int bits = decoder.wordlength() <= 16 ? 16 : 24;
+    if (const auto result = ac3::io::write_wav_pcm(std::string{out_path}, channels, rate_hz, bits);
+        !result) {
+        std::println(stderr, "error: {}: {}", out_path, ac3::io::describe(result.error()));
+        return 1;
+    }
+    std::println("decoded {} access units: {} samples, {}-bit, {} ch, {} Hz -> {}", units,
+                 channels.front().size(), decoder.wordlength(), channels.size(), rate_hz,
+                 out_path);
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
 // The command table. Every command is one row: its name, how many positional
 // arguments it needs, the argument spec the usage text prints, and the code
 // that runs it.
@@ -2831,7 +3009,7 @@ struct Command {
     int (*run)(const Args&);
 };
 
-constexpr std::array<Command, 21> kCommands{{
+constexpr std::array<Command, 23> kCommands{{
     {"silence", 2, "<out.ac3> [seconds] [bitrate_kbps]", "", Needs::kNothing,
      [](const Args& x) { return run_silence(x.str(1), x.u32(2, 5), x.u32(3, 192)); }},
     {"sine", 2, "<out.ac3> [seconds] [bitrate_kbps] [freq_hz] [amp_pct] [layout]", "",
@@ -2900,6 +3078,10 @@ constexpr std::array<Command, 21> kCommands{{
      }},
     {"decode", 3, "<in.ac3|in.ec3> <out.wav>", "AC-3 or E-AC-3; bsid decides", Needs::kNothing,
      [](const Args& x) { return run_decode(x.str(1), x.str(2), x.meta); }},
+    {"truehd-encode", 3, "<in.wav> <out.mlp>", "lossless MLP; 16/24-bit integer PCM in",
+     Needs::kNothing, [](const Args& x) { return run_truehd_encode(x.str(1), x.str(2)); }},
+    {"truehd-decode", 3, "<in.mlp> <out.wav>", "bit-exact PCM out", Needs::kNothing,
+     [](const Args& x) { return run_truehd_decode(x.str(1), x.str(2)); }},
     {"levels", 2, "<in.wav|in.ac3|in.ec3>", "per-channel peak/RMS report", Needs::kNothing,
      [](const Args& x) { return run_levels(x.str(1)); }},
     {"loudness", 2, "<in.wav>", "BS.1770-4 loudness -> dialnorm", Needs::kNothing,

@@ -13,15 +13,19 @@
 #include "ac3/export.hpp"
 
 // Minimal WAV reading and writing, shared by the CLI and the GUI so neither
-// carries its own copy. Deliberately small: PCM16 and float32 only, which is
-// everything this project produces or consumes.
+// carries its own copy. Deliberately small: the float-normalized path reads
+// PCM16 and float32 (everything the lossy codecs produce or consume), and a
+// separate integer path reads/writes PCM16 and PCM24 exactly - the TrueHD
+// (MLP) commands need the actual sample words, because "lossless" means the
+// decoder must reproduce them bit for bit, and a round trip through
+// [-1, 1) floats is where that guarantee would quietly die.
 
 namespace ac3::io {
 
 enum class WavError : std::uint8_t {
     kCannotOpen,
     kNotRiffWave,
-    kUnsupportedFormat,  // not PCM16 / float32
+    kUnsupportedFormat,  // not a format the requested reader handles
     kTruncated,
 };
 
@@ -38,6 +42,28 @@ struct WavData {
 };
 
 [[nodiscard]] AC3FORGE_EXPORT std::expected<WavData, WavError> read_wav(const std::string& path);
+
+// The integer-exact view: PCM16 or PCM24 sample words, sign-extended into
+// int32 without any scaling, one vector per channel in file order.
+struct WavPcmData {
+    std::uint32_t sample_rate = 0;
+    int bits = 0;  // 16 or 24, as stored in the file
+    std::vector<std::vector<std::int32_t>> channels;
+
+    [[nodiscard]] std::size_t frame_count() const {
+        return channels.empty() ? 0 : channels.front().size();
+    }
+};
+
+[[nodiscard]] AC3FORGE_EXPORT std::expected<WavPcmData, WavError> read_wav_pcm(
+    const std::string& path);
+
+// Integer PCM WAV (format tag 1), 16 or 24 bits, channels interleaved in
+// stored order. Each sample must already fit the chosen width; values are
+// written verbatim, never rescaled.
+[[nodiscard]] AC3FORGE_EXPORT std::expected<void, WavError> write_wav_pcm(
+    const std::string& path, std::span<const std::vector<std::int32_t>> channels,
+    std::uint32_t sample_rate, int bits);
 
 // A WAV file's channel order (the WAVE_FORMAT_EXTENSIBLE convention: FL, FR,
 // FC, LFE, BL, BR) is not A/52 Table 5.8's (L, C, R, SL, SR, LFE), so the two

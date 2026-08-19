@@ -24,9 +24,20 @@ this project currently knows versus still has to work out before it can be built
     header's `max_chan`/`ch_assign`, the way real MLP does. Verified property: correlated
     channels code measurably smaller with the decorrelating matrix than without.
 
+    The encoder now chooses for itself: `StreamConfig::automatic` (`select.hpp`) searches a
+    predictor palette (the difference family plus the WO Table 1 presets) per channel and
+    greedily builds a decorrelating matrix cascade from pairwise least-squares fits, keeping
+    each step only if the *measured* coded size shrinks - the WO's own suggested encoder
+    practice of trying preselected filters per block and keeping whichever wins. And the codec
+    is drivable end to end from the command line: `ac3cli truehd-encode <in.wav> <out.mlp>` /
+    `ac3cli truehd-decode <in.mlp> <out.wav>`, working in integer PCM16/PCM24 sample words
+    throughout (`ac3::io::read_wav_pcm`/`write_wav_pcm` - the float-normalized WAV path would
+    forfeit bit-exactness), writing §5's raw access-unit `.mlp` file shape, framing on the
+    length field to read it back, and learning sample rate, channel count, *and* wordlength
+    in-band on decode.
+
     V1 shape limits, deliberately: one substream, one block per access unit; no noise shaping,
-    FIFO rate control, DC offsets, or end-of-stream terminators; encoder-side coefficient and
-    matrix *selection* is the caller's job (no automatic decorrelation search yet). The block
+    FIFO rate control, DC offsets, or end-of-stream terminators. The block
     header's field order is a documented self-consistent packing of the WO's inventory, NOT the
     shipping layout - interop with real TrueHD decoders still requires the layer-3/4 format
     sources. See [What's confirmed versus what's still
