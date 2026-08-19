@@ -24,12 +24,13 @@
 // solves well, not literally claiming MLP implements textbook Rice coding.
 //
 // This module is kept as a well-defined, testable, near-optimal-for-Laplacian
-// STAND-IN, not a claim to match block_data()'s real codeword format - that
-// needs an actual Huffman table (or table family), not a Rice parameter. See
-// docs/concepts/truehd-mlp.md's "What 'Lossless Coding for Audio Discs' adds"
-// section. What's implemented here is provably correct on its own terms (round-trips any
-// input, matches the well-known public algorithm), independent of whether
-// it turns out to be MLP's literal wire format.
+// STAND-IN, not a claim to match block_data()'s real codeword format. The
+// real mechanism now exists as huffman.hpp, transcribed from WO 96/37048's
+// own tables - use that for anything MLP-shaped; this stays only as an
+// independent comparison point (e.g. for encoder cost experiments). See
+// docs/concepts/truehd-mlp.md. What's implemented here is provably correct
+// on its own terms (round-trips any input, matches the well-known public
+// algorithm), independent of MLP's literal wire format.
 
 namespace ac3::mlp::rice {
 

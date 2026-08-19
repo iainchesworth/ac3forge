@@ -1,15 +1,19 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <random>
+#include <span>
 #include <vector>
 
 #include "ac3/mlp/crc.hpp"
+#include "ac3/mlp/huffman.hpp"
 #include "ac3/mlp/matrix.hpp"
 #include "ac3/mlp/mlp_tables.hpp"
+#include "ac3/mlp/predictor.hpp"
 #include "ac3/mlp/restart_header.hpp"
 #include "ac3/mlp/rice.hpp"
 #include "ac3/mlp/sync.hpp"
@@ -553,4 +557,268 @@ TEST_CASE("matrix: empty cascade is a no-op", "[mlp]") {
     const std::array<ac3::mlp::matrix::Step, 0> steps{};
     ac3::mlp::matrix::encode_cascade(steps, samples);
     CHECK(samples == std::array<std::int64_t, 3>{1, 2, 3});
+}
+
+// --- huffman --------------------------------------------------------------
+
+TEST_CASE("huffman::table2 exhaustive round trip with spec codeword lengths", "[mlp]") {
+    // WO 96/37048 Table 2's own lengths: 8,8,7,6,5,4,3,2 for -7..0 and
+    // 2,3,4,5,6,7,8,8 for 1..8.
+    constexpr std::array<int, 16> kLengths{8, 8, 7, 6, 5, 4, 3, 2, 2, 3, 4, 5, 6, 7, 8, 8};
+    for (int value = ac3::mlp::huffman::kTable2Min; value <= ac3::mlp::huffman::kTable2Max;
+         ++value) {
+        CAPTURE(value);
+        ac3::BitWriter w;
+        ac3::mlp::huffman::encode_table2(w, value);
+        CHECK(static_cast<int>(w.bit_count()) ==
+              kLengths[static_cast<std::size_t>(value + 7)]);
+        CHECK(static_cast<int>(w.bit_count()) == ac3::mlp::huffman::table2_length(value));
+
+        const auto bytes = w.take();
+        ac3::BitReader r(bytes);
+        CHECK(ac3::mlp::huffman::decode_table2(r) == value);
+    }
+}
+
+TEST_CASE("huffman::table2 decodes back-to-back sequences (prefix-free in practice)", "[mlp]") {
+    // Sequential decode of a concatenated stream is the property
+    // prefix-freeness exists to provide - test it directly.
+    std::mt19937 rng(0x1996);
+    std::uniform_int_distribution<int> dist(ac3::mlp::huffman::kTable2Min,
+                                            ac3::mlp::huffman::kTable2Max);
+    std::vector<int> values(500);
+    ac3::BitWriter w;
+    for (auto& v : values) {
+        v = dist(rng);
+        ac3::mlp::huffman::encode_table2(w, v);
+    }
+    const auto bytes = w.take();
+    ac3::BitReader r(bytes);
+    for (const auto v : values) {
+        REQUIRE(ac3::mlp::huffman::decode_table2(r) == v);
+    }
+}
+
+TEST_CASE("huffman::significant word round trip across all seventeen tables", "[mlp]") {
+    std::mt19937 rng(0x37048);
+    for (int n = ac3::mlp::huffman::kMinN; n <= ac3::mlp::huffman::kMaxN; ++n) {
+        CAPTURE(n);
+        const std::int32_t lo = -(std::int32_t{1} << n) + 1;
+        const std::int32_t hi = std::int32_t{1} << n;
+        std::uniform_int_distribution<std::int32_t> dist(lo, hi);
+
+        std::vector<std::int32_t> values{lo, 0, hi};  // boundaries first
+        for (int i = 0; i < 100; ++i) {
+            values.push_back(dist(rng));
+        }
+
+        ac3::BitWriter w;
+        for (const auto v : values) {
+            ac3::mlp::huffman::encode_significant(w, v, n);
+        }
+        const auto bytes = w.take();
+        ac3::BitReader r(bytes);
+        for (const auto v : values) {
+            REQUIRE(ac3::mlp::huffman::decode_significant(r, n) == v);
+        }
+    }
+}
+
+TEST_CASE("huffman::significant_length matches what encode actually writes", "[mlp]") {
+    std::mt19937 rng(0x2026);
+    for (const int n : {3, 7, 12, 19}) {
+        std::uniform_int_distribution<std::int32_t> dist(-(std::int32_t{1} << n) + 1,
+                                                          std::int32_t{1} << n);
+        for (int i = 0; i < 50; ++i) {
+            const auto v = dist(rng);
+            CAPTURE(n, v);
+            ac3::BitWriter w;
+            ac3::mlp::huffman::encode_significant(w, v, n);
+            CHECK(static_cast<int>(w.bit_count()) ==
+                  ac3::mlp::huffman::significant_length(v, n));
+        }
+    }
+}
+
+TEST_CASE("huffman::select_n picks the smallest fitting table", "[mlp]") {
+    CHECK(ac3::mlp::huffman::select_n(-7, 8) == 3);
+    CHECK(ac3::mlp::huffman::select_n(0, 8) == 3);
+    CHECK(ac3::mlp::huffman::select_n(0, 9) == 4);   // 9 > 2^3
+    CHECK(ac3::mlp::huffman::select_n(-8, 0) == 4);  // -8 < -2^3+1
+    CHECK(ac3::mlp::huffman::select_n(-15, 16) == 4);
+    CHECK(ac3::mlp::huffman::select_n(-524287, 524288) == 19);
+}
+
+TEST_CASE("huffman::small tables round trip", "[mlp]") {
+    struct Range {
+        std::span<const ac3::mlp::huffman::SmallCode> table;
+        int lo;
+        int hi;
+    };
+    const std::array<Range, 3> kRanges{{
+        {ac3::mlp::huffman::kTable4, -1, 2},
+        {ac3::mlp::huffman::kTable5, -2, 2},
+        {ac3::mlp::huffman::kTable6, -3, 3},
+    }};
+
+    std::mt19937 rng(0xB752);
+    for (const auto& range : kRanges) {
+        std::uniform_int_distribution<int> dist(range.lo, range.hi);
+        std::vector<int> values(200);
+        ac3::BitWriter w;
+        for (auto& v : values) {
+            v = dist(rng);
+            ac3::mlp::huffman::encode_small(w, range.table, v);
+        }
+        const auto bytes = w.take();
+        ac3::BitReader r(bytes);
+        for (const auto v : values) {
+            REQUIRE(ac3::mlp::huffman::decode_small(r, range.table) == v);
+        }
+    }
+}
+
+TEST_CASE("huffman::pcm round trip, including widths beyond Table 3's cap", "[mlp]") {
+    std::mt19937 rng(0xF872);
+    for (const int n : {1, 5, 19, 23}) {
+        CAPTURE(n);
+        const std::int32_t lo = -(std::int32_t{1} << n) + 1;
+        const std::int32_t hi = std::int32_t{1} << n;
+        std::uniform_int_distribution<std::int32_t> dist(lo, hi);
+        for (int i = 0; i < 50; ++i) {
+            const auto v = i < 2 ? (i == 0 ? lo : hi) : dist(rng);
+            ac3::BitWriter w;
+            ac3::mlp::huffman::encode_pcm(w, v, n);
+            CHECK(static_cast<int>(w.bit_count()) == n + 1);
+            const auto bytes = w.take();
+            ac3::BitReader r(bytes);
+            CHECK(ac3::mlp::huffman::decode_pcm(r, n) == v);
+        }
+    }
+}
+
+// --- predictor ------------------------------------------------------------
+
+namespace {
+
+std::vector<std::int32_t> random_samples(std::mt19937& rng, std::size_t count, int bits) {
+    std::uniform_int_distribution<std::int32_t> dist(-(std::int32_t{1} << (bits - 1)),
+                                                     (std::int32_t{1} << (bits - 1)) - 1);
+    std::vector<std::int32_t> out(count);
+    for (auto& v : out) {
+        v = dist(rng);
+    }
+    return out;
+}
+
+void check_predictor_round_trip(const ac3::mlp::PredictorCoefficients& coefficients,
+                                std::span<const std::int32_t> samples) {
+    ac3::mlp::PredictorState encode_state{};
+    ac3::mlp::PredictorState decode_state{};
+
+    std::vector<std::int32_t> residual(samples.size());
+    ac3::mlp::predict_encode(coefficients, samples, residual, encode_state);
+
+    std::vector<std::int32_t> reconstructed(samples.size());
+    ac3::mlp::predict_decode(coefficients, residual, reconstructed, decode_state);
+
+    REQUIRE(std::equal(samples.begin(), samples.end(), reconstructed.begin()));
+    // The two states must also agree exactly - that is what makes
+    // block-to-block continuation lossless without re-initialisation.
+    CHECK(encode_state.input == decode_state.input);
+    CHECK(encode_state.output == decode_state.output);
+}
+
+}  // namespace
+
+TEST_CASE("predictor: every WO Table 1 preset round trips on 24-bit audio", "[mlp]") {
+    std::mt19937 rng(0x441);
+    const auto samples = random_samples(rng, 576, 24);  // the WO's example block length
+    for (int preset = 0; preset < ac3::mlp::kTable1Cases; ++preset) {
+        CAPTURE(preset);
+        check_predictor_round_trip(ac3::mlp::table1_preset(preset), samples);
+    }
+}
+
+TEST_CASE("predictor: random FIR-only coefficients up to 8th order round trip", "[mlp]") {
+    // Arbitrary A with empty B cannot blow up (no feedback), so the whole
+    // coefficient space is safely testable here.
+    std::mt19937 rng(0x1164);
+    std::uniform_int_distribution<std::int32_t> coeff_dist(-192, 192);
+    std::uniform_int_distribution<std::size_t> order_dist(1, 8);
+
+    for (int trial = 0; trial < 50; ++trial) {
+        ac3::mlp::PredictorCoefficients coefficients;
+        coefficients.shift = 6;  // m/64
+        coefficients.a.resize(order_dist(rng));
+        for (auto& c : coefficients.a) {
+            c = coeff_dist(rng);
+        }
+        const auto samples = random_samples(rng, 200, 20);
+        check_predictor_round_trip(coefficients, samples);
+    }
+}
+
+TEST_CASE("predictor: a stable IIR filter round trips", "[mlp]") {
+    // Mild feedback (well inside stability) exercises the recursive path
+    // with random data without risking residual blow-up.
+    ac3::mlp::PredictorCoefficients coefficients;
+    coefficients.shift = 6;
+    coefficients.a = {-64, 32};  // -1.0, +0.5 in m/64
+    coefficients.b = {32, -16};  // +0.5, -0.25
+
+    std::mt19937 rng(0x31EA);
+    const auto samples = random_samples(rng, 1000, 24);
+    check_predictor_round_trip(coefficients, samples);
+}
+
+TEST_CASE("predictor: state carries across consecutive blocks", "[mlp]") {
+    // Encoding one long run must equal encoding two half runs with the
+    // state carried over - the property the WO's short-header/repeat
+    // mechanism (and MLP's restart intervals) rely on.
+    const auto coefficients = ac3::mlp::table1_preset(5);
+    std::mt19937 rng(0x0B77);
+    const auto samples = random_samples(rng, 400, 24);
+
+    std::vector<std::int32_t> one_shot(samples.size());
+    {
+        ac3::mlp::PredictorState state{};
+        ac3::mlp::predict_encode(coefficients, samples, one_shot, state);
+    }
+
+    std::vector<std::int32_t> split(samples.size());
+    {
+        ac3::mlp::PredictorState state{};
+        const std::span<const std::int32_t> all{samples};
+        const std::span<std::int32_t> out{split};
+        ac3::mlp::predict_encode(coefficients, all.first(200), out.first(200), state);
+        ac3::mlp::predict_encode(coefficients, all.subspan(200), out.subspan(200), state);
+    }
+
+    CHECK(one_shot == split);
+}
+
+TEST_CASE("predictor: seeded history reproduces mid-stream decode (restart semantics)", "[mlp]") {
+    // A decoder joining mid-stream with transmitted initialisation data
+    // must reconstruct exactly - seed a fresh state from the encoder side
+    // and decode only the tail.
+    const auto coefficients = ac3::mlp::table1_preset(2);
+    std::mt19937 rng(0x5838);
+    const auto samples = random_samples(rng, 300, 24);
+
+    ac3::mlp::PredictorState encode_state{};
+    std::vector<std::int32_t> residual(samples.size());
+    ac3::mlp::predict_encode(coefficients, samples, residual, encode_state);
+
+    // Re-encode just the head to capture the state at the split point.
+    ac3::mlp::PredictorState mid_state{};
+    std::vector<std::int32_t> head(150);
+    ac3::mlp::predict_encode(coefficients, std::span{samples}.first(150), head, mid_state);
+
+    // Seed a decoder with that state (what restart initialisation data is
+    // for) and decode only the tail.
+    std::vector<std::int32_t> tail(150);
+    ac3::mlp::predict_decode(coefficients, std::span{residual}.subspan(150), tail, mid_state);
+
+    CHECK(std::equal(tail.begin(), tail.end(), samples.begin() + 150));
 }
