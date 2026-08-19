@@ -17,9 +17,16 @@ this project currently knows versus still has to work out before it can be built
     from WO 96/37048 Tables 2-7, replacing the earlier Rice stand-in). Multi-access-unit streams
     round-trip bit-exactly at all six sample rates, integer arithmetic throughout.
 
-    V1 shape limits, deliberately: one substream, one channel, one block per access unit; the
-    PMQ matrix stage (`matrix.hpp`) exists but is not yet wired into multichannel blocks; no
-    noise shaping, FIFO rate control, DC offsets, or end-of-stream terminators. The block
+    Multichannel is in: blocks carry up to 16 channels through the WO Fig. 3/26a order -
+    per-channel B1 strip, then the PMQ matrix cascade (`matrix.hpp`, coefficients in the block
+    header, n-1 per stage), then per-channel predictors and entropy coding with a per-sample
+    interleaved payload - and the stream layer scopes the channel count in-band via the restart
+    header's `max_chan`/`ch_assign`, the way real MLP does. Verified property: correlated
+    channels code measurably smaller with the decorrelating matrix than without.
+
+    V1 shape limits, deliberately: one substream, one block per access unit; no noise shaping,
+    FIFO rate control, DC offsets, or end-of-stream terminators; encoder-side coefficient and
+    matrix *selection* is the caller's job (no automatic decorrelation search yet). The block
     header's field order is a documented self-consistent packing of the WO's inventory, NOT the
     shipping layout - interop with real TrueHD decoders still requires the layer-3/4 format
     sources. See [What's confirmed versus what's still
