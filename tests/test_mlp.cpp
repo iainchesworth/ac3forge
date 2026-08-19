@@ -17,6 +17,7 @@
 #include "ac3/mlp/predictor.hpp"
 #include "ac3/mlp/restart_header.hpp"
 #include "ac3/mlp/rice.hpp"
+#include "ac3/mlp/stream.hpp"
 #include "ac3/mlp/sync.hpp"
 
 // Covers only what's fully specified and built so far: mlp_sync's
@@ -974,4 +975,166 @@ TEST_CASE("block: header pack/parse round trips and rejects corruption", "[mlp]"
     corrupt[0] |= std::byte{0xC0};
     ac3::BitReader r(corrupt);
     CHECK_FALSE(ac3::mlp::parse_block_header(r, 24, parsed));
+}
+
+// --- stream assembler -----------------------------------------------------
+
+TEST_CASE("stream: multi-AU round trip with periodic major sync", "[mlp]") {
+    ac3::mlp::StreamConfig config;
+    config.sample_rate = ac3::mlp::SampleRate::k48000;
+    config.wordlength = 24;
+    config.major_sync_interval = 8;
+    config.coefficients = ac3::mlp::table1_preset(1);
+
+    ac3::mlp::StreamEncoder encoder(config);
+    ac3::mlp::StreamDecoder decoder(24);
+
+    std::mt19937 rng(0x600D);
+    const auto frame = static_cast<std::size_t>(
+        ac3::mlp::samples_per_access_unit(config.sample_rate));
+    CHECK(frame == 40);
+
+    for (int au = 0; au < 20; ++au) {
+        CAPTURE(au);
+        const auto samples = random_samples(rng, frame, 24);
+        const auto bytes = encoder.encode_access_unit(samples);
+
+        // access_unit_length is the whole unit in 16-bit words (§4.1.2).
+        const auto length_words =
+            ((std::to_integer<std::uint32_t>(bytes[0]) & 0xF) << 8) |
+            std::to_integer<std::uint32_t>(bytes[1]);
+        CHECK(static_cast<std::size_t>(length_words) * 2 == bytes.size());
+
+        // §4.1.1: the XOR of mlp_sync's eight nibbles is 0xF.
+        std::uint8_t nibbles = 0;
+        for (int i = 0; i < 4; ++i) {
+            nibbles ^= std::to_integer<std::uint8_t>(bytes[static_cast<std::size_t>(i)]) >> 4;
+            nibbles ^= std::to_integer<std::uint8_t>(bytes[static_cast<std::size_t>(i)]) & 0xF;
+        }
+        CHECK(nibbles == 0xF);
+
+        // input_timing advances by one frame per AU, mod 65536 (§4.1.3).
+        const auto timing = (std::to_integer<std::uint32_t>(bytes[2]) << 8) |
+                            std::to_integer<std::uint32_t>(bytes[3]);
+        CHECK(timing == ((static_cast<std::uint32_t>(au) * frame) & 0xFFFF));
+
+        // §3.1/§2.5: format_sync at bit offset 32 on major-sync AUs only -
+        // the first AU and every eighth after it.
+        const bool expect_major = au % 8 == 0;
+        const bool is_major = std::to_integer<std::uint8_t>(bytes[4]) == 0xF8 &&
+                              std::to_integer<std::uint8_t>(bytes[5]) == 0x72 &&
+                              std::to_integer<std::uint8_t>(bytes[6]) == 0x6F &&
+                              std::to_integer<std::uint8_t>(bytes[7]) == 0xBA;
+        CHECK(is_major == expect_major);
+
+        std::vector<std::int32_t> decoded;
+        REQUIRE(decoder.decode_access_unit(bytes, decoded));
+        REQUIRE(std::equal(samples.begin(), samples.end(), decoded.begin()));
+    }
+    CHECK(decoder.sample_rate() == ac3::mlp::SampleRate::k48000);
+}
+
+TEST_CASE("stream: every sample rate frames and round trips", "[mlp]") {
+    std::mt19937 rng(0x48F);
+    for (const auto rate :
+         {ac3::mlp::SampleRate::k48000, ac3::mlp::SampleRate::k96000,
+          ac3::mlp::SampleRate::k192000, ac3::mlp::SampleRate::k44100,
+          ac3::mlp::SampleRate::k88200, ac3::mlp::SampleRate::k176400}) {
+        ac3::mlp::StreamConfig config;
+        config.sample_rate = rate;
+        config.coefficients = ac3::mlp::table1_preset(2);
+        ac3::mlp::StreamEncoder encoder(config);
+        ac3::mlp::StreamDecoder decoder(24);
+
+        const auto frame =
+            static_cast<std::size_t>(ac3::mlp::samples_per_access_unit(rate));
+        for (int au = 0; au < 3; ++au) {
+            const auto samples = random_samples(rng, frame, 24);
+            const auto bytes = encoder.encode_access_unit(samples);
+            std::vector<std::int32_t> decoded;
+            REQUIRE(decoder.decode_access_unit(bytes, decoded));
+            REQUIRE(std::equal(samples.begin(), samples.end(), decoded.begin()));
+        }
+        CHECK(decoder.sample_rate() == rate);
+    }
+}
+
+TEST_CASE("stream: decoding must start at a major sync", "[mlp]") {
+    ac3::mlp::StreamConfig config;
+    config.coefficients = ac3::mlp::table1_preset(1);
+    ac3::mlp::StreamEncoder encoder(config);
+
+    std::mt19937 rng(0xDEC0);
+    const auto frame = static_cast<std::size_t>(
+        ac3::mlp::samples_per_access_unit(config.sample_rate));
+    const auto first = encoder.encode_access_unit(random_samples(rng, frame, 24));
+    const auto samples = random_samples(rng, frame, 24);
+    const auto second = encoder.encode_access_unit(samples);
+
+    std::vector<std::int32_t> decoded;
+
+    // A fresh decoder fed the minor AU first has no stream context: reject.
+    ac3::mlp::StreamDecoder cold(24);
+    CHECK_FALSE(cold.decode_access_unit(second, decoded));
+
+    // Fed in order, both decode.
+    ac3::mlp::StreamDecoder warm(24);
+    REQUIRE(warm.decode_access_unit(first, decoded));
+    REQUIRE(warm.decode_access_unit(second, decoded));
+    CHECK(std::equal(samples.begin(), samples.end(), decoded.begin()));
+}
+
+TEST_CASE("stream: corruption anywhere is detected", "[mlp]") {
+    ac3::mlp::StreamConfig config;
+    config.coefficients = ac3::mlp::table1_preset(3);
+    ac3::mlp::StreamEncoder encoder(config);
+
+    std::mt19937 rng(0xBAD);
+    const auto frame = static_cast<std::size_t>(
+        ac3::mlp::samples_per_access_unit(config.sample_rate));
+    const auto bytes = encoder.encode_access_unit(random_samples(rng, frame, 24));
+
+    for (const std::size_t position : {std::size_t{0}, std::size_t{2}, std::size_t{5},
+                                       bytes.size() / 2, bytes.size() - 1}) {
+        CAPTURE(position);
+        auto corrupt = bytes;
+        corrupt[position] ^= std::byte{0x40};
+        ac3::mlp::StreamDecoder decoder(24);
+        std::vector<std::int32_t> decoded;
+        CHECK_FALSE(decoder.decode_access_unit(corrupt, decoded));
+    }
+
+    // Truncation is also caught (the length field no longer matches).
+    auto truncated = bytes;
+    truncated.resize(bytes.size() - 2);
+    ac3::mlp::StreamDecoder decoder(24);
+    std::vector<std::int32_t> decoded;
+    CHECK_FALSE(decoder.decode_access_unit(truncated, decoded));
+}
+
+TEST_CASE("stream: digital-black access units stay compact", "[mlp]") {
+    ac3::mlp::StreamConfig config;
+    config.coefficients = ac3::mlp::table1_preset(1);
+    ac3::mlp::StreamEncoder encoder(config);
+    ac3::mlp::StreamDecoder decoder(24);
+
+    const auto frame = static_cast<std::size_t>(
+        ac3::mlp::samples_per_access_unit(config.sample_rate));
+    const std::vector<std::int32_t> silence(frame, 0);
+
+    const auto major = encoder.encode_access_unit(silence);
+    const auto minor = encoder.encode_access_unit(silence);
+
+    // Minor silent AU: 4 sync + 2 directory + tiny empty-coded segment + 2
+    // parity/CRC - comfortably under 16 bytes.
+    CHECK(minor.size() <= 16);
+    CHECK(major.size() > minor.size());  // the 28-byte major sync + restart header
+
+    std::vector<std::int32_t> decoded;
+    REQUIRE(decoder.decode_access_unit(major, decoded));
+    CHECK(std::all_of(decoded.begin(), decoded.end(),
+                      [](std::int32_t v) { return v == 0; }));
+    REQUIRE(decoder.decode_access_unit(minor, decoded));
+    CHECK(std::all_of(decoded.begin(), decoded.end(),
+                      [](std::int32_t v) { return v == 0; }));
 }

@@ -78,14 +78,20 @@ struct RestartHeader {
                                                                 const RestartHeader& header);
 
 // The independent read side, transcribed from §3.3.8's field list rather
-// than as the inverse of build_restart_header(). `data` must start exactly
-// at restart_header()'s own first bit - always a whole-byte offset, since
-// (unlike its end) a restart point's start IS guaranteed 16-bit aligned per
-// §3.2.1/§2.4, which is what lets this take a byte span rather than a bit
-// position into a larger buffer; a caller parsing a full access unit slices
-// its own span accordingly before calling this. Returns false (leaving
+// than as the inverse of build_restart_header(). Returns false (leaving
 // `out` partially written) if the restart_sync_word isn't valid for
 // `expected_substream_index` or the CRC doesn't check out.
+//
+// The BitReader form consumes the header from the reader's CURRENT bit
+// position - which inside block() is two flag bits past a 16-bit boundary,
+// never byte-aligned, so the CRC is verified by re-serialising the parsed
+// fields rather than over the raw input (exact as long as the reserved
+// v(16) is zero, which the spec reserves and our writer guarantees). The
+// span form is a convenience wrapper for a header starting at byte offset
+// zero.
+[[nodiscard]] AC3FORGE_EXPORT bool parse_restart_header(BitReader& r,
+                                                         int expected_substream_index,
+                                                         RestartHeader& out);
 [[nodiscard]] AC3FORGE_EXPORT bool parse_restart_header(std::span<const std::byte> data,
                                                          int expected_substream_index,
                                                          RestartHeader& out);

@@ -6,11 +6,14 @@
 
 namespace ac3::mlp {
 
-std::size_t build_restart_header(BitWriter& out, const RestartHeader& header) {
-    assert(is_restart_sync_word_valid(header.substream_index, header.restart_sync_word));
-    assert(header.channel_assignment.size() == static_cast<std::size_t>(header.max_matrix_chan) + 1);
+namespace {
 
-    BitWriter body;
+// Everything before restart_header_CRC, in §3.3.8's field order. Shared by
+// the builder and by the BitReader-based parser's CRC verification (which
+// re-serialises the parsed fields and checks the CRC against that - exact
+// as long as every field round-trips, which requires the reserved v(16) to
+// be zero; our writer always writes zero and the spec reserves it).
+std::size_t put_restart_header_body(BitWriter& body, const RestartHeader& header) {
     body.put(header.restart_sync_word, 14);
     body.put(header.output_timing, 16);
     body.put(header.min_chan, 4);
@@ -28,8 +31,17 @@ std::size_t build_restart_header(BitWriter& out, const RestartHeader& header) {
     for (const auto assignment : header.channel_assignment) {
         body.put(assignment & 0x3F, 6);
     }
+    return body.bit_count();
+}
 
-    const auto bit_count = body.bit_count();
+}  // namespace
+
+std::size_t build_restart_header(BitWriter& out, const RestartHeader& header) {
+    assert(is_restart_sync_word_valid(header.substream_index, header.restart_sync_word));
+    assert(header.channel_assignment.size() == static_cast<std::size_t>(header.max_matrix_chan) + 1);
+
+    BitWriter body;
+    const auto bit_count = put_restart_header_body(body, header);
     const std::vector<std::byte> bytes = body.take();
     const std::uint8_t crc = restart_header_crc(bytes, bit_count);
 
@@ -38,10 +50,7 @@ std::size_t build_restart_header(BitWriter& out, const RestartHeader& header) {
     return bit_count + 8;
 }
 
-bool parse_restart_header(std::span<const std::byte> data, int expected_substream_index,
-                          RestartHeader& out) {
-    BitReader r(data);
-
+bool parse_restart_header(BitReader& r, int expected_substream_index, RestartHeader& out) {
     const auto word = static_cast<std::uint16_t>(r.read(14));
     if (!is_restart_sync_word_valid(expected_substream_index, word)) {
         return false;
@@ -66,20 +75,31 @@ bool parse_restart_header(std::span<const std::byte> data, int expected_substrea
     out.max_bits_b = static_cast<std::uint8_t>(r.read(5));
     out.error_protect = r.read(1) != 0;
     out.lossless_check = static_cast<std::uint8_t>(r.read(8));
-    r.skip(16);  // reserved
+    r.skip(16);  // reserved (must be zero for the CRC re-serialisation below)
 
     out.channel_assignment.assign(static_cast<std::size_t>(out.max_matrix_chan) + 1, 0);
     for (auto& assignment : out.channel_assignment) {
         assignment = static_cast<std::uint8_t>(r.read(6));
     }
 
-    const auto body_bits = r.bit_position();
     const auto received_crc = static_cast<std::uint8_t>(r.read(8));
-
     if (r.overflowed()) {
         return false;
     }
-    return restart_header_crc(data, body_bits) == received_crc;
+
+    // The header may start at any bit offset (inside block() it follows two
+    // flag bits), so the covered span is not addressable as bytes of the
+    // input - verify the CRC by re-serialising the parsed fields instead.
+    BitWriter body;
+    const auto bit_count = put_restart_header_body(body, out);
+    const std::vector<std::byte> bytes = body.take();
+    return restart_header_crc(bytes, bit_count) == received_crc;
+}
+
+bool parse_restart_header(std::span<const std::byte> data, int expected_substream_index,
+                          RestartHeader& out) {
+    BitReader r(data);
+    return parse_restart_header(r, expected_substream_index, out);
 }
 
 }  // namespace ac3::mlp

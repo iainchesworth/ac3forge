@@ -6,23 +6,23 @@ unrelated lineage that happens to also carry Dolby Atmos. This page explains wha
 different, how Atmos rides inside it (which is *not* how Atmos rides inside E-AC-3), and what
 this project currently knows versus still has to work out before it can be built.
 
-!!! note "Status: framing landed; block_data()'s DSP primitives started, not yet wired to a bitstream"
-    `ac3::mlp` (`src/lib/include/ac3/mlp/`, `src/lib/src/mlp/`) implements `mlp_sync`'s
-    `check_nibble` and `major_sync_info()` (`sync.hpp`) and `restart_header()`
-    (`restart_header.hpp`), both built and round-trip tested against the confirmed syntax below.
-    `substream_directory`, `substream_segment()`, `block()`'s own header and `EXTRA_DATA()` are
-    not implemented yet.
-    
-    For `block_data()` itself - the one piece neither Dolby document specifies - two of its
-    three DSP stages now exist as standalone, round-trip-tested primitives, independent of
-    Dolby's exact wire format (which remains unknown): `matrix.hpp` (the lossless
-    Primitive-Matrix-Quantiser cascade) and `rice.hpp` (Golomb-Rice entropy coding - a
-    well-tested stand-in, now known NOT to be MLP's actual mechanism; see [What "Lossless Coding
-    for Audio Discs" adds](#what-lossless-coding-for-audio-discs-adds) - real MLP uses
-    block-adaptive Huffman tables). The lossless IIR/FIR predictor loop (Figs. 10/11 in the AES
-    papers) is the remaining DSP primitive; actually packing any of this into `block_data()`'s
-    real bitstream still needs a source more precise than the paraphrased patent/paper
-    descriptions available so far. See [What's confirmed versus what's still
+!!! note "Status: a complete internal lossless codec (v1 single-channel shape) is landed"
+    `ac3::mlp` (`src/lib/include/ac3/mlp/`, `src/lib/src/mlp/`) now runs end to end:
+    `StreamEncoder`/`StreamDecoder` (`stream.hpp`) assemble spec-exact access units - `mlp_sync`
+    with `check_nibble`, periodic `major_sync_info()` with restart headers on exactly the
+    major-sync units, the substream directory, `substream_segment()` with §4.6.6/§4.6.7
+    parity+CRC and 16-bit padding - around a working block codec (`block.hpp`): B1 constant-LSB
+    stripping, the lossless quantizer-in-loop predictor (`predictor.hpp`, WO Figs. 6/10/11
+    architecture, WO Table 1 presets), and the real entropy layer (`huffman.hpp`, transcribed
+    from WO 96/37048 Tables 2-7, replacing the earlier Rice stand-in). Multi-access-unit streams
+    round-trip bit-exactly at all six sample rates, integer arithmetic throughout.
+
+    V1 shape limits, deliberately: one substream, one channel, one block per access unit; the
+    PMQ matrix stage (`matrix.hpp`) exists but is not yet wired into multichannel blocks; no
+    noise shaping, FIFO rate control, DC offsets, or end-of-stream terminators. The block
+    header's field order is a documented self-consistent packing of the WO's inventory, NOT the
+    shipping layout - interop with real TrueHD decoders still requires the layer-3/4 format
+    sources. See [What's confirmed versus what's still
     open](#whats-confirmed-versus-whats-still-open).
 
 ## A different lineage: lossless, not perceptual

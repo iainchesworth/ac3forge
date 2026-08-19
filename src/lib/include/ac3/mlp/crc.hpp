@@ -98,4 +98,37 @@ inline constexpr auto kMajorSyncCrcTable = make_major_sync_crc_table();
     return crc;
 }
 
+// §4.6.6: substream_parity - "the exclusive-OR of all the bytes in the
+// expansion of substream_segment(), exclusive-ORed with the constant 0xA9
+// (the purpose of the latter being to force the check to fail in the event
+// of the stream consisting entirely of zeroes)". The segment is padded to a
+// 16-bit boundary before this runs, so a byte span is exact.
+[[nodiscard]] constexpr std::uint8_t substream_parity(std::span<const std::byte> data) {
+    std::uint8_t parity = 0;
+    for (const std::byte b : data) {
+        parity ^= std::to_integer<std::uint8_t>(b);
+    }
+    return parity ^ 0xA9;
+}
+
+// §4.6.7: substream_CRC, x^8 + x^6 + x^5 + x + 1, transcribed from the
+// document's own explicit bit-serial algorithm rather than assumed
+// equivalent to a byte-table form: "1. Set substream_CRC <- 0xA2. 2. For
+// each bit in substream_segment(), taken in sequence, set substream_CRC <-
+// (substream_CRC << 1) + bit. If substream_CRC & 0x100 != 0, set
+// substream_CRC <- substream_CRC XOR 0x163." (0x163 carries the x^8 term
+// explicitly, which is why the register runs 9 bits wide here.)
+[[nodiscard]] constexpr std::uint8_t substream_crc(std::span<const std::byte> data) {
+    std::uint32_t crc = 0xA2;
+    for (const std::byte b : data) {
+        for (int bit = 7; bit >= 0; --bit) {
+            crc = (crc << 1) + ((std::to_integer<std::uint32_t>(b) >> bit) & 1);
+            if ((crc & 0x100) != 0) {
+                crc ^= 0x163;
+            }
+        }
+    }
+    return static_cast<std::uint8_t>(crc);
+}
+
 }  // namespace ac3::mlp

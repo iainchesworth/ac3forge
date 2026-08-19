@@ -131,6 +131,7 @@ target_sources(forge_objects
         src/mlp/predictor.cpp
         src/mlp/restart_header.cpp
         src/mlp/rice.cpp
+        src/mlp/stream.cpp
         src/mlp/sync.cpp
         src/io/wav.cpp
         src/meta/drc.cpp
