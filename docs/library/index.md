@@ -48,12 +48,17 @@ find_package(ac3forge CONFIG REQUIRED)
 target_link_libraries(your_target PRIVATE ac3::forge)
 ```
 
-The three container writers are the port's `matroska`/`mp4`/`mpegts` features, all on by default
-(`matroska::matroska`/`mp4::mp4`/`mpegts::mpegts` become available); leave any or all out with
-`vcpkg install ac3forge[core]` (none of them) or `ac3forge[core,mp4]` (just `mp4`) if you only
-want a subset, or only the codec. `ac3adm::ac3adm` has no vcpkg feature — see the note above,
-it isn't part of this installed package at all. Once merged into `microsoft/vcpkg`, the same two
-snippets work with a plain `vcpkg install ac3forge` — no `--overlay-ports` needed.
+The three container writers are the port's `matroska`/`mp4`/`mpegts` features — none on by
+default (a curated-registry port's `default-features` may only cover behaviors, not additional
+public APIs/targets/binaries, and each of these three is exactly that) — opt in with
+`vcpkg install ac3forge[matroska,mp4,mpegts]` (all three) or `ac3forge[mp4]` (just `mp4`) to get
+`matroska::matroska`/`mp4::mp4`/`mpegts::mpegts` available. `ac3adm::ac3adm` has no vcpkg
+feature — see the note above, it isn't part of this installed package at all — and neither does
+`ac3::forge_c` (the C API, see [C API](c-api.md)): its export set currently has a real bug under
+`AC3FORGE_INSTALL_BOTH_LINKAGES=OFF` (the single-linkage mode this port always uses), so the
+port excludes it entirely rather than exposing something broken. Once merged into
+`microsoft/vcpkg`, the same two snippets work with a plain `vcpkg install ac3forge` — no
+`--overlay-ports` needed.
 
 **Conan.** A recipe lives in this repo at
 [`packaging/conan/`](https://github.com/iainchesworthlabs/ac3forge/tree/main/packaging/conan)
