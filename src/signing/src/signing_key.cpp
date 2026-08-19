@@ -1,6 +1,7 @@
 #include "ac3/signing/signing_key.hpp"
 
 #include <cctype>
+#include <cstdint>
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
