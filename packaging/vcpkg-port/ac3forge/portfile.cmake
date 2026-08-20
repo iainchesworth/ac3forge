@@ -39,10 +39,12 @@ vcpkg_cmake_configure(
         -DAC3FORGE_BUILD_TESTS=OFF
         -DAC3FORGE_BUILD_EXAMPLES=OFF
         -DAC3FORGE_BUILD_FUZZERS=OFF
-        # ac3::forge_c (roadmap F1) was never part of this port's scope, and
-        # its capiTargets export set currently requires forge_static even
-        # when AC3FORGE_INSTALL_BOTH_LINKAGES=OFF leaves that target
-        # unexported - a real bug independent of vcpkg, tracked separately.
+        # ac3::forge_c (roadmap F1) was never part of this port's scope - this triplet's
+        # single-linkage, shared-only build would otherwise now succeed (cmake/InstallLibrary.cmake
+        # exports forge_static alongside forge_shared whenever AC3FORGE_BUILD_CAPI is ON, so the
+        # export set it needs is no longer missing), but ac3::forge_c stays out of the installed
+        # package here until it is formally added as its own vcpkg feature and documented in
+        # docs/releasing.md's vcpkg port section, same as matroska/mp4/mpegts were.
         -DAC3FORGE_BUILD_CAPI=OFF
         -DAC3FORGE_FETCH_CATCH2=OFF
         -DAC3FORGE_INSTALL_BOTH_LINKAGES=OFF
