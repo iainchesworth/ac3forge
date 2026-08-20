@@ -26,7 +26,7 @@
 // byte-level BW64 fixture and ac3adm::parse_bw64() end to end, then through a real
 // ac3::oba::AtmosEncoder::encode_frame()/Eac3Decoder round trip, per this project's own standard
 // for codec-adjacent behaviour (silence/frame-0 checks give false passes - see
-// tests/test_atmos_motion.cpp's own flagship test for the established pattern this one follows).
+// tests/oba/test_atmos_motion.cpp's own flagship test for the established pattern this one follows).
 
 namespace {
 
@@ -111,7 +111,7 @@ TEST_CASE("adm_cartesian_to_room maps the unit cube onto ac3::oba::Position's ro
 
 TEST_CASE("polar positions at the 5.1 ring reproduce this project's own known room coordinates",
          "[admbridge][coordinates]") {
-    // Cross-check against tests/test_atmos_motion.cpp's own kL/kR/kSR constants (that file's own
+    // Cross-check against tests/oba/test_atmos_motion.cpp's own kL/kR/kSR constants (that file's own
     // comment: "the 5.1 ring's L, SR and R azimuths... L +30 degrees, SR -110 degrees, R -30
     // degrees"), which are also exactly BS.2076-2 Annex A's own M+030/M-030/M-110 speaker-label
     // azimuths. Converting those same azimuths through this module's own coordinate functions
@@ -606,9 +606,9 @@ TEST_CASE("build() applies absolute time as object.start_s + block.rtime_s", "[a
 // Flagship: a real BW64/ADM fixture, parsed by the real ac3adm::parse_bw64(), bridged, and driven
 // through a real ac3::oba::AtmosEncoder / ac3::Eac3Decoder round trip.
 //
-// Byte-fixture helpers are duplicated from tests/test_adm.cpp rather than shared, per this
+// Byte-fixture helpers are duplicated from tests/adm/test_adm.cpp rather than shared, per this
 // project's own established per-file convention for test helpers (see tests/
-// test_atmos_motion.cpp's own comment on this - "the same helpers as test_atmos.cpp, duplicated
+// tests/oba/test_atmos_motion.cpp's own comment on this - "the same helpers as tests/oba/test_atmos.cpp, duplicated
 // here").
 // ---------------------------------------------------------------------------
 
@@ -683,7 +683,7 @@ Bytes build_riff(const Bytes& fmt, const Bytes& chna, const Bytes& axml, const B
     Bytes body;
     append_chunk(body, "fmt ", fmt);
     // An empty chna/axml means "absent" (libbw64 hard-rejects a real 0-byte <chna> chunk as
-    // an illegal size), matching tests/test_adm.cpp's own build_riff.
+    // an illegal size), matching tests/adm/test_adm.cpp's own build_riff.
     if (!chna.empty()) {
         append_chunk(body, "chna", chna);
     }
@@ -876,7 +876,7 @@ TEST_CASE("a real ADM BWF master's bed and moving object survive admbridge into 
         REQUIRE(unit.has_value());
 
         // Check the last frame of each 3-frame hold, the same "settled, not mid-transition"
-        // convention tests/test_atmos_motion.cpp's own flagship test uses.
+        // convention tests/oba/test_atmos_motion.cpp's own flagship test uses.
         if (f != 2 && f != 5) {
             continue;
         }

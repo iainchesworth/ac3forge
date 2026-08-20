@@ -165,7 +165,7 @@ TEST_CASE("scan refuses what it cannot read", "[elementary]") {
 
 // bsid/bsmod/bit_rate_code and the TS 103 420 addbsi Atmos marker exist
 // purely for ac3::io::build_codec_config_box() (ac3/io/dec3.hpp) to build a
-// spec-correct dac3/dec3 box - see tests/test_mp4.cpp for the box byte
+// spec-correct dac3/dec3 box - see tests/containers/test_mp4.cpp for the box byte
 // layout itself. These check the values scan() reports for them.
 TEST_CASE("scan reads bsid/bsmod/bit_rate_code straight off the bsi", "[elementary]") {
     // A/52 encoder.cpp always writes bsid 8; real audio, not silence, per

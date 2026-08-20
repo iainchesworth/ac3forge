@@ -9,9 +9,9 @@
 //
 // The E-AC-3 half of the surface is decode-only (the Atmos encoder is the C
 // header's only Annex E producer), so the E-AC-3 tests below drive the C++
-// encoder - the same tool combinations tests/test_eac3.cpp proves stack
+// encoder - the same tool combinations tests/encoder/test_eac3.cpp proves stack
 // correctly - and hold the C decode surface to the behaviour
-// tests/test_eac3_decoder.cpp establishes for the C++ one.
+// tests/decoder/test_eac3_decoder.cpp establishes for the C++ one.
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
@@ -40,7 +40,7 @@ void fill_tone(float* out, double hz, int frame, double rate) {
 }
 
 // Direct sample SNR with the codec's 256-sample delay, skipping the warm-up
-// frame at each end - the same measurement tests/test_eac3_decoder.cpp makes,
+// frame at each end - the same measurement tests/decoder/test_eac3_decoder.cpp makes,
 // so a C-boundary round trip is held against real decoded audio, not just a
 // header parse.
 double snr_db(const std::vector<float>& input, const std::vector<float>& decoded) {
@@ -271,7 +271,7 @@ TEST_CASE("Atmos encode/decode round-trips OAMD position and JOC object audio", 
 
     std::vector<float> object(AC3FORGE_SAMPLES_PER_FRAME);
     // The default placement (x=0.5, y=0.5, z=0.0, gain=1.0/0 dB) sits exactly
-    // on OAMD's quantizer grid - see tests/test_oba.cpp's own comment on why
+    // on OAMD's quantizer grid - see tests/oba/test_oba.cpp's own comment on why
     // that makes an exact round-trip assertion valid rather than a tolerance.
     const ac3forge_object_placement_t placement{.x = 0.5, .y = 0.5, .z = 0.0, .gain = 1.0,
                                                  .lfe_send = 0.0};
@@ -386,7 +386,7 @@ TEST_CASE("E-AC-3 substreams round-trip through the C API across the Annex E too
                 rendered[ch].insert(rendered[ch].end(), samples,
                                     samples + AC3FORGE_SAMPLES_PER_FRAME);
                 // A steady sub-2 kHz tone never trips §8.2.2's transient
-                // detector (see tests/test_eac3_decoder.cpp's tone-choice
+                // detector (see tests/decoder/test_eac3_decoder.cpp's tone-choice
                 // comment), so no block may report the short transform.
                 for (int blk = 0; blk < AC3FORGE_BLOCKS_PER_FRAME; ++blk) {
                     CHECK(ac3forge_decoded_substream_block_switched(substream, ch, blk) == 0);
@@ -406,7 +406,7 @@ TEST_CASE("E-AC-3 substreams round-trip through the C API across the Annex E too
 TEST_CASE("E-AC-3 access units with a dependent substream cross the C API intact",
           "[capi][eac3]") {
     // 5.1.2: a 3/2+LFE bed plus one dependent substream carrying Vhl/Vhr -
-    // the same layout family tests/test_eac3_decoder.cpp proves against the
+    // the same layout family tests/decoder/test_eac3_decoder.cpp proves against the
     // C++ decoder; here the C access-unit surface is what walks it.
     const ac3::eac3::AccessUnitConfig config{
         .independent = {.bitrate_kbps = 448, .acmod = ac3::Acmod::k3_2, .lfe = true},
@@ -646,7 +646,7 @@ TEST_CASE("E-AC-3 dual mono metadata crosses the C boundary on both decode surfa
 TEST_CASE("the C API holds back and flushes transient pre-noise frames like the C++ decoder",
           "[capi][eac3]") {
     // Mirrors "transient pre-noise processing holds a frame back then releases
-    // it corrected" (tests/test_eac3_decoder.cpp). The silent frames here are
+    // it corrected" (tests/decoder/test_eac3_decoder.cpp). The silent frames here are
     // the tool's own semantics - frames that never switch a block release
     // immediately - not the test signal; the transient itself is real audio.
     ac3::eac3::FrameEncoder encoder{
@@ -1080,7 +1080,7 @@ TEST_CASE("C encode entry points surface the encoder's own error codes", "[capi]
     CHECK(encoder == nullptr);
 
     // 100 kbps is not one of Table 5.18's 19 nominal rates, so AC-3 (unlike
-    // E-AC-3, which takes it - see tests/test_eac3.cpp) must refuse it.
+    // E-AC-3, which takes it - see tests/encoder/test_eac3.cpp) must refuse it.
     config.bitrate_kbps = 100;
     REQUIRE(ac3forge_encoder_create(&config, &encoder) == AC3FORGE_OK);
     ac3forge_bytes_t* encoded = nullptr;

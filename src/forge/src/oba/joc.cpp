@@ -26,7 +26,7 @@ void put_code(BitWriter& w, const HuffCode& code) {
 
 // §6.6.3 Pseudocode 4, decoding by longest match rather than walking a tree:
 // a prefix code is uniquely determined by its (code, length) pairs, so this
-// is equivalent to the normative tree and was how tests/test_oba.cpp
+// is equivalent to the normative tree and was how tests/oba/test_oba.cpp
 // originally validated the generated encode tables (kMtxCoarse/kMtxFine were
 // inverted FROM those trees, so agreeing with an independent forward walk of
 // them, not with build_payload's own logic, is what that test proved). This
@@ -223,7 +223,7 @@ std::optional<FrameParameters> parse_payload(std::span<const std::byte> payload)
     }
 
     // At most a byte of padding_bits should remain (§6.2.1), same bound
-    // tests/test_oba.cpp's own encode-side test holds build_payload to - a
+    // tests/oba/test_oba.cpp's own encode-side test holds build_payload to - a
     // corrupt object/band count that made this decode stop short leaves
     // more than that unaccounted for.
     if (r.overflowed() || payload.size() * 8 - r.bit_position() >= 8) {

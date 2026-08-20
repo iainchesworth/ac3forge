@@ -12,7 +12,7 @@
 // The macOS backend's pure half, tested directly - see coreaudio_names.hpp's
 // own header comment for why "pure" means "touches no live HAL object" here,
 // rather than "builds without CoreAudio.framework" the way
-// tests/platform/alsa/test_alsa_device_names.cpp's device_names.hpp is pure
+// tests/backend/alsa/test_alsa_device_names.cpp's device_names.hpp is pure
 // of libasound: CMake only ever selects this file on a real macOS host, so
 // CoreAudio.framework is always present when it runs.
 

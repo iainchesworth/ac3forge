@@ -14,7 +14,7 @@ Three independent anchors are tied together here:
    "usual 512 sample windowed audio segment... split into two segments").
    The short-transform inverse (§7.9.4.2) has no separate golden here, same
    as the long inverse: both are validated by TDAC round-trip in
-   tests/test_mdct.cpp instead.
+   tests/core/test_mdct.cpp instead.
 
 Output: tests/golden/mdct_goldens.hpp (constexpr arrays consumed by Catch2).
 Run from the repo root:  python tools/generators/gen_mdct_goldens.py

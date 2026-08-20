@@ -54,7 +54,7 @@ struct EncoderConfig {
     // by default since the owner accepted its quality evidence (verified max
     // relative error ~3e-12 against the direct form on random data and real
     // audio, 331 dB direct-vs-fast end-to-end SNR, 0.000 dB delta against an
-    // independent oracle at 192-448 kbps; see tests/test_mdct_fast.cpp and
+    // independent oracle at 192-448 kbps; see tests/core/test_mdct_fast.cpp and
     // `tools/ci/quality_race.py fast-mdct`). false forces the direct §8.2.3.2
     // reference form, which stays maintained as the oracle the fast path is
     // validated against. Only the long transform accelerates today - a

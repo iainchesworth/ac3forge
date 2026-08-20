@@ -403,7 +403,7 @@ std::optional<DecodedProgram> parse_payload(std::span<const std::byte> payload) 
     }
     // element_bytes is measured from b_discard_unknown_element (§5.6.4.3),
     // one bit BEFORE element_start - see the equivalent bit_position() - 1
-    // measurement tests/test_oba.cpp's own encode-side test takes for the
+    // measurement tests/oba/test_oba.cpp's own encode-side test takes for the
     // same reason. An EXACT byte-rounding match, not just an upper bound,
     // is what actually catches a corrupt object count that makes this loop
     // stop short: reading too few objects still lands inside the payload,

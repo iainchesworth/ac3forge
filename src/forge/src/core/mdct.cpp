@@ -205,7 +205,7 @@ void mdct_forward_core(std::span<const double> windowed, const ForwardCosTable<N
 // DCT-IV. The long fold was verified 2026-08-14 against ForwardCosTable
 // (this file's own direct-form ground truth) to max relative error ~3e-12
 // on both random data and real audio, the short folds 2026-08-15 the same
-// way; see tests/test_mdct_fast.cpp, which asserts a 1e-10 bound on all
+// way; see tests/core/test_mdct_fast.cpp, which asserts a 1e-10 bound on all
 // three.
 
 // Everything angle-dependent in the fold below, computed once per NLen -
@@ -225,7 +225,7 @@ void mdct_forward_core(std::span<const double> windowed, const ForwardCosTable<N
 //   The table stores std::cos/std::sin of each exact angle -2*pi*j/len
 //   instead - a (tiny) numerical change in the direction of MORE precision,
 //   re-verified against the direct form's ground truth by
-//   tests/test_mdct_fast.cpp's unchanged 1e-10 bound.
+//   tests/core/test_mdct_fast.cpp's unchanged 1e-10 bound.
 template <int NLen>
 struct FastMdctTables {
     static constexpr std::size_t kM = static_cast<std::size_t>(NLen) / 2;
@@ -340,7 +340,7 @@ void mdct256_forward_first(std::span<const double, 256> windowed, std::span<doub
     // (cos(pi(2k+1) - phi) = -cos(phi)), so the upper half folds into the
     // lower with a minus sign and the transform is exactly the M-point
     // DCT-IV of v[n] = x[n] - x[255-n], scaled by -2/256. Verified against
-    // this file's direct-form table (tests/test_mdct_fast.cpp).
+    // this file's direct-form table (tests/core/test_mdct_fast.cpp).
     if (fast) {
         std::array<double, 128> v{};
         for (std::size_t n = 0; n < 128; ++n) {
@@ -363,7 +363,7 @@ void mdct256_forward_second(std::span<const double, 256> windowed, std::span<dou
     // (+2/256) * DCT4_128(w_R), w_R[n] = x[127-n] + x[128+n]. The "harder,
     // DST-IV-shaped" transform the phase-4 scoping deferred thus lands on
     // the SAME core as its siblings, one reversal away. Verified against
-    // this file's direct-form table (tests/test_mdct_fast.cpp).
+    // this file's direct-form table (tests/core/test_mdct_fast.cpp).
     if (fast) {
         std::array<double, 128> w_r{};
         for (std::size_t n = 0; n < 128; ++n) {

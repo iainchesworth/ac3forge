@@ -434,7 +434,7 @@ every other required leg.
     green three consecutive times on GitHub's hosted runners — see [Release / CI](#release-ci) above.
 
 !!! warning "Not yet verified"
-    `tests/platform/android/` covers only the device-free logic (burst sizing, carrier rate,
+    `tests/backend/android/` covers only the device-free logic (burst sizing, carrier rate,
     render-device construction), built and run on the normal desktop-hosted CTest suite — there is
     no automated on-device or instrumented test for anything in this section; every claim above is
     manual verification on one specific Shield + receiver pair, not a repeatable check. Other Android

@@ -37,7 +37,7 @@
 // directions at the cardinal points (0 deg azimuth = straight ahead = +Y; +90 deg azimuth = left
 // = -X, since X is right-positive; +90 deg elevation = up = +Z), and (2) empirically, in this
 // module's own tests, against the existing ring-position constants this project's
-// tests/test_atmos_motion.cpp already hardcodes (kL/kR/kSR) - converting BS.2076-2's own M+030/
+// tests/oba/test_atmos_motion.cpp already hardcodes (kL/kR/kSR) - converting BS.2076-2's own M+030/
 // M-030/M-110 speaker-label azimuths (Annex A common definitions) through this formula reproduces
 // those exact room coordinates.
 //

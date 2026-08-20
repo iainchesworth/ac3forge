@@ -9,7 +9,7 @@ separate library from `ac3::forge`: link `ac3::forge_c` instead, not both.
 
 [`examples/capi_encode_decode.c`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/capi_encode_decode.c)
 is a complete, buildable program (compiled as C, not C++, so the build itself proves the header
-is genuinely C-usable) — the excerpts below are drawn from it. `tests/test_capi.cpp` covers the
+is genuinely C-usable) — the excerpts below are drawn from it. `tests/capi/test_capi.cpp` covers the
 rest of the surface, including E-AC-3/Atmos decode and the error paths, from Catch2.
 
 ```cmake

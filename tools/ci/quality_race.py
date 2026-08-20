@@ -580,7 +580,7 @@ CI_AC3_51_MIN_SNR_DB = 15.0
 # ecpl+tpn); 5.1/256kbps scored 8.7-8.8 dB SNR / 7.5 dB LSD (ecpl, ecpl+tpn)
 # and 13.8 dB SNR / 9.1 dB LSD (tpn). tpn's material here is the same tone-
 # burst-heavy mix every other row uses, not audio shaped around a single
-# clean onset the way tests/test_eac3_decoder.cpp's dedicated unit test is -
+# clean onset the way tests/decoder/test_eac3_decoder.cpp's dedicated unit test is -
 # that is why its own floor sits well below ecpl's despite the tool working
 # correctly; see that test for a tighter, onset-specific assertion.
 CI_EAC3_SELF_THRESHOLDS = {
@@ -1081,7 +1081,7 @@ def race_fast_mdct(source, original):
     owner asked for before making fast the default, kept as the standing
     check that the two paths still agree. mdct512_forward's fast path is
     already verified bit-close (~1e-15 absolute error) against the direct
-    form in isolation (tests/test_mdct_fast.cpp); what this measures is
+    form in isolation (tests/core/test_mdct_fast.cpp); what this measures is
     whether that residual ever flips a bap/exponent DECISION enough to show
     up against an independent oracle, at real bitrates, on real (if
     synthetic) material.

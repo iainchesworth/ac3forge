@@ -9,8 +9,9 @@
 // CMake adds this file to the suite only when it selected the alsa/ platform
 // directory, and puts that directory on the include path - the same selection
 // that decides which backend the library gets, so a build cannot end up
-// testing a backend it did not compile. tests/platform/ already worked this
-// way for the CRT report hook; this is the second axis to use it.
+// testing a backend it did not compile. tests/crt/ already worked this same
+// selection pattern for the CRT report hook (a different axis - the compiler's
+// runtime, not the audio backend); tests/backend/ is this one.
 //
 // What is worth testing here is what cannot be tested any other way. Opening a
 // device needs hardware; deciding WHICH device to open, and with what channel

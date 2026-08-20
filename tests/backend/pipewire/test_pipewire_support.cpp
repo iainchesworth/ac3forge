@@ -8,7 +8,7 @@
 
 // The PipeWire backend's pure half, tested with no PipeWire session running
 // at all - CMake adds this file to the suite only when it selected the
-// pipewire/ platform directory (the same axis tests/platform/alsa/'s own
+// pipewire/ platform directory (the same axis tests/backend/alsa/'s own
 // file rides), and puts that directory on the include path.
 //
 // What is worth testing here is what does not need a session to get wrong:

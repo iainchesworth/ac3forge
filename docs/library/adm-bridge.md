@@ -81,7 +81,7 @@ this logic independent of `ac3adm`'s own BW64/ADM-XML-specific parsing, even tho
   front-positive, Z top-positive, `[-1, 1]` unit cube) conventions, both converted to
   `ac3::oba::Position`'s room-anchored `[0, 1]`/`[0, 1]`/`[-1, 1]` one. Checked against the
   standard's own axis-direction text at the cardinal points, and empirically against this
-  project's own existing ring-position constants (`tests/test_atmos_motion.cpp`'s `kL`/`kR`/`kSR`)
+  project's own existing ring-position constants (`tests/oba/test_atmos_motion.cpp`'s `kL`/`kR`/`kSR`)
   — the BS.2076-2 `M+030`/`M-030`/`M-110` speaker-label azimuths reproduce those exact values
   through this conversion.
 - **Absolute timeline time** for a channel's automation is `object.start_s + block.rtime_s` — two
@@ -150,7 +150,7 @@ not carry at all — `build()` deliberately does not invent defaults for them; c
 
 ## Tests
 
-`tests/test_adm_bridge.cpp` covers coordinate conversion (against BS.2076-2 §8's cardinal points
+`tests/admbridge/test_adm_bridge.cpp` covers coordinate conversion (against BS.2076-2 §8's cardinal points
 and this project's own existing ring constants), `build_channel_path`'s full §10.3 state machine
 (single block, continuous-glide blocks, instant-jump blocks, ramp-then-hold blocks, the
 first-block-always-holds override, the LFE override), `build()`'s graph-walking error paths
@@ -160,10 +160,10 @@ real byte-level BW64 fixture (two DirectSpeakers bed channels plus one Objects c
 at one ring position and then jumps to another), parses it with the real `ac3adm::parse_bw64()`,
 bridges it, and drives a real `ac3::oba::AtmosEncoder`/`ac3::Eac3Decoder` round trip — confirming
 the decoded bitstream's channel energy actually lands where the authored ADM positions and hold/
-jump timing say it should, the same standard `tests/test_atmos_motion.cpp`'s own flagship test
+jump timing say it should, the same standard `tests/oba/test_atmos_motion.cpp`'s own flagship test
 holds itself to.
 
-`tests/test_cli_atmos_adm.cpp` (phase 3) covers the same fixture shape one level up: it runs the
+`tests/cli/test_cli_atmos_adm.cpp` (phase 3) covers the same fixture shape one level up: it runs the
 real, built `ac3cli` binary's `atmos-adm` command as a subprocess against a real ADM BWF file on
 disk, then decodes what that binary actually wrote and checks the same channel-energy assertions —
 proving the CLI's own argument parsing and its `parse_bw64` → `build` → `AtmosEncoder` wiring, not

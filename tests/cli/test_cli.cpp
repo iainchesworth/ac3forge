@@ -1721,7 +1721,7 @@ TEST_CASE(
 
 // silence/eac3-silence build their frames from build_silent_stereo_frame/
 // build_silent_access_unit, both already covered directly (test_frame.cpp,
-// test_eac3.cpp) - what neither of those unit-tests can see is the CLI
+// encoder/test_eac3.cpp) - what neither of those unit-tests can see is the CLI
 // dispatch row itself: whether 'silence <out> [seconds] [bitrate_kbps]' and
 // 'eac3-silence <out> [seconds] [bitrate_kbps] [layout]' actually route argv
 // to the right parameters. main.cpp's own comment on the command table
