@@ -141,4 +141,50 @@ class AC3FORGE_EXPORT WavStreamWriter {
     std::unique_ptr<Impl> impl_;
 };
 
+// Incremental WAV reader, WavStreamWriter's read-side counterpart: for
+// inputs too long to hold in memory. read_wav() above peaks at the whole
+// file PLUS its planar float copy resident at once - fine for a fixture,
+// gigabytes for a feature-length programme - where this holds one block.
+// Same format support and the same sample conversion as read_wav (PCM16 /
+// float32, EXTENSIBLE unwrapped, a data chunk shorter than declared is
+// tolerated at its real length), so a block-at-a-time consumer sees exactly
+// the samples the whole-file overloads produce. Needs a seekable file, which
+// is why the whole-file overloads keep the stdin/pipe case.
+class AC3FORGE_EXPORT WavStreamReader {
+   public:
+    WavStreamReader();
+    ~WavStreamReader();
+    WavStreamReader(const WavStreamReader&) = delete;
+    WavStreamReader& operator=(const WavStreamReader&) = delete;
+    WavStreamReader(WavStreamReader&&) noexcept;
+    WavStreamReader& operator=(WavStreamReader&&) noexcept;
+
+    // Opens `path` and parses the RIFF header. The fmt and data chunks must
+    // sit within the first 64 KiB - true of every WAV this project produces
+    // or has ever consumed; a file with a deeper header is refused
+    // (kNotRiffWave) rather than mis-read, and read_wav still handles it.
+    [[nodiscard]] std::expected<void, WavError> open(const std::string& path);
+
+    [[nodiscard]] bool is_open() const;
+    [[nodiscard]] std::uint32_t sample_rate() const;
+    [[nodiscard]] std::uint16_t channels() const;
+    // Frames in the data chunk (its declared size clamped to what the file
+    // actually holds, same as read_wav).
+    [[nodiscard]] std::uint64_t frame_count() const;
+
+    // Reads up to `frames` frames, deinterleaved into planar [-1, 1) floats:
+    // channels[ch][i], one span per channel, each at least `frames` long.
+    // Returns the number of frames actually read - less than `frames` only
+    // at the end of the data chunk, 0 once it is exhausted. kTruncated if
+    // the underlying read fails mid-chunk.
+    [[nodiscard]] std::expected<std::size_t, WavError> read_planar(
+        std::span<const std::span<float>> channels, std::size_t frames);
+
+    void close();
+
+   private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
 }  // namespace ac3::io

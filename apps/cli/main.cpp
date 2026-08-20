@@ -3169,15 +3169,43 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
         }
         return run_encode_multi(in_path, out_path, bitrate, couple, layout, meta);
     }
-    auto wav = read_wav_arg(in_path);
-    if (!wav) {
-        std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(wav.error()));
+    // A seekable file whose whole-programme passes are not needed - no
+    // dialnorm=auto BS.1770 measurement, no second dual-mono file to merge -
+    // streams one frame-sized block at a time, holding ~40 KB of samples
+    // resident instead of the whole file plus its planar float copy (the
+    // measured peak was linear in duration before this: 152 MiB for a 60 s
+    // 5.1 encode, 438 MiB for 180 s). Everything else takes the whole-file
+    // read below, unchanged - including a failed open, which falls through
+    // so read_wav_arg can produce the error message it always has.
+    ac3::io::WavStreamReader stream_in;
+    const bool streaming = !is_stdio_path(in_path) && !meta.p.measure_dialnorm &&
+                           !meta.p.measure_dialnorm2 && in2_path.empty() &&
+                           stream_in.open(std::string{in_path}).has_value();
+    std::expected<ac3::io::WavData, ac3::io::WavError> wav =
+        std::unexpected(ac3::io::WavError::kCannotOpen);
+    if (!streaming) {
+        wav = read_wav_arg(in_path);
+        if (!wav) {
+            std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(wav.error()));
+            return 1;
+        }
+        if (!prepare_dual_mono_source(*wav, layout, in2_path)) {
+            return 1;
+        }
+    } else if (layout == "1+1" && stream_in.channels() != 2) {
+        // The same refusal prepare_dual_mono_source gives the one-file 1+1
+        // case; the streaming path validates off the header instead.
+        std::println(stderr,
+                     "error: layout 1+1 needs either one two-channel file (Ch1, Ch2) or "
+                     "two mono files; the source has {} channel(s) and no second file "
+                     "was given",
+                     stream_in.channels());
         return 1;
     }
-    if (!prepare_dual_mono_source(*wav, layout, in2_path)) {
-        return 1;
-    }
-    const auto sr = wav_sample_rate(wav->sample_rate, "AC-3", false);
+    const std::uint32_t src_rate = streaming ? stream_in.sample_rate() : wav->sample_rate;
+    const std::size_t src_channels =
+        streaming ? stream_in.channels() : wav->channels.size();
+    const auto sr = wav_sample_rate(src_rate, "AC-3", false);
     if (!sr) {
         return 1;
     }
@@ -3190,12 +3218,12 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
         // An unnamed layout follows the source, which is what this command
         // did before it could be told otherwise. Naming one is how a stereo
         // file reaches a 5.1 stream, or a 5.1 file gets folded down per §7.8.
-        const auto id = plan::layout_for_source(wav->channels.size());
+        const auto id = plan::layout_for_source(src_channels);
         if (!id || !plan::carries(plan::Codec::kAc3, *id)) {
             std::println(stderr,
                          "error: encode handles 1 to 6 channels ({} given); no AC-3 coding "
                          "mode is wider than 3/2 + LFE",
-                         wav->channels.size());
+                         src_channels);
             return 1;
         }
         p.layout = *id;
@@ -3255,7 +3283,7 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
         p.meta.dialnorm2 = *measured2;
     }
 
-    const auto routing = routing_or_error(p, wav->channels.size());
+    const auto routing = routing_or_error(p, src_channels);
     if (!routing) {
         return 1;
     }
@@ -3264,16 +3292,17 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
     // Heap-allocated: FrameEncoder carries several KB of MDCT scratch/history
     // state, and this function only constructs it once (PREfast's C6262).
     auto encoder = std::make_unique<ac3::FrameEncoder>(config);
-    ac3::analysis::LevelMeter meter{config.acmod, config.lfe, wav->sample_rate};
+    ac3::analysis::LevelMeter meter{config.acmod, config.lfe, src_rate};
     const auto nchans = static_cast<std::size_t>(routing->coded_channels);
     // The classic path has exactly one source, always index 0 in offset='s
     // numbering - see LoadedSources::offset_samples for the multi-source
     // equivalent of this same leading silence.
-    const std::size_t offset = offset_samples_for(meta.offsets, 0, wav->sample_rate);
-    const std::size_t frame_count = wav->frame_count();
+    const std::size_t offset = offset_samples_for(meta.offsets, 0, src_rate);
+    const std::size_t frame_count =
+        streaming ? static_cast<std::size_t>(stream_in.frame_count()) : wav->frame_count();
     const std::size_t total = offset + frame_count;
 
-    std::vector<std::vector<float>> source(wav->channels.size(),
+    std::vector<std::vector<float>> source(src_channels,
                                            std::vector<float>(ac3::kSamplesPerFrame));
     std::vector<std::vector<float>> block(nchans, std::vector<float>(ac3::kSamplesPerFrame));
     std::vector<std::span<const float>> in(source.size());
@@ -3285,6 +3314,14 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
         views[c] = block[c];
     }
     std::vector<std::vector<std::byte>> frames;
+    // The streaming path's own state: the frame loop below asks for the
+    // source's samples strictly in order (offset= only ever shifts where
+    // they land inside a frame, never which come next), so a rolling read
+    // position plus the last real sample per channel - for the same
+    // hold-padding the whole-file path applies - is all it takes.
+    std::vector<float> stream_hold(src_channels, 0.0f);
+    std::vector<std::span<float>> stream_dst(src_channels);
+    std::size_t consumed = 0;
     for (std::size_t start = 0; start < total; start += ac3::kSamplesPerFrame) {
         // The tail frame is padded to a full 1536 samples; the meter sees only
         // the real ones, so the padding cannot pull the RMS down. Padding
@@ -3296,19 +3333,53 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
         // Ahead of the source's own samples, offset= silence is real
         // silence, not padding.
         const auto valid = std::min<std::size_t>(ac3::kSamplesPerFrame, total - start);
-        for (std::size_t c = 0; c < source.size(); ++c) {
-            const float hold = frame_count > 0 ? wav->channels[c][frame_count - 1] : 0.0f;
-            for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
-                const std::size_t at = start + static_cast<std::size_t>(i);
-                if (at < offset) {
-                    source[c][static_cast<std::size_t>(i)] = 0.0f;
-                    continue;
-                }
-                const std::size_t shifted = at - offset;
-                source[c][static_cast<std::size_t>(i)] =
-                    shifted < frame_count ? wav->channels[c][shifted] : hold;
+        if (streaming) {
+            const std::size_t lead =
+                start < offset ? std::min<std::size_t>(offset - start, ac3::kSamplesPerFrame)
+                               : 0;
+            std::size_t want = 0;
+            if (lead < ac3::kSamplesPerFrame) {
+                const std::size_t remaining = frame_count - std::min(frame_count, consumed);
+                want = std::min<std::size_t>(ac3::kSamplesPerFrame - lead, remaining);
             }
-            in[c] = source[c];
+            for (std::size_t c = 0; c < src_channels; ++c) {
+                std::fill_n(source[c].begin(), lead, 0.0f);
+                stream_dst[c] = std::span{source[c]}.subspan(lead, want);
+            }
+            if (want > 0) {
+                const auto got = stream_in.read_planar(stream_dst, want);
+                if (!got || *got != want) {
+                    std::println(stderr, "error: {}: {}", in_path,
+                                 ac3::io::describe(got ? ac3::io::WavError::kTruncated
+                                                       : got.error()));
+                    write_partial_output(out_path, meta.keep_partial, frames);
+                    return 1;
+                }
+                consumed += want;
+            }
+            for (std::size_t c = 0; c < src_channels; ++c) {
+                if (want > 0) {
+                    stream_hold[c] = source[c][lead + want - 1];
+                }
+                std::fill(source[c].begin() + static_cast<std::ptrdiff_t>(lead + want),
+                          source[c].end(), stream_hold[c]);
+                in[c] = source[c];
+            }
+        } else {
+            for (std::size_t c = 0; c < source.size(); ++c) {
+                const float hold = frame_count > 0 ? wav->channels[c][frame_count - 1] : 0.0f;
+                for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+                    const std::size_t at = start + static_cast<std::size_t>(i);
+                    if (at < offset) {
+                        source[c][static_cast<std::size_t>(i)] = 0.0f;
+                        continue;
+                    }
+                    const std::size_t shifted = at - offset;
+                    source[c][static_cast<std::size_t>(i)] =
+                        shifted < frame_count ? wav->channels[c][shifted] : hold;
+                }
+                in[c] = source[c];
+            }
         }
         plan::render(*routing, in, out, ac3::kSamplesPerFrame);
         for (std::size_t c = 0; c < nchans; ++c) {
@@ -3327,7 +3398,7 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
         return 1;
     }
     std::println(status, "encoded {} frames ({} kbps, {} Hz, {}) to {}", frames.size(), bitrate,
-                wav->sample_rate, ac3::analysis::layout_name(config.acmod, config.lfe), out_path);
+                src_rate, ac3::analysis::layout_name(config.acmod, config.lfe), out_path);
     print_routing(p, *routing, label, status);
     print_channel_summary(meter, status);
     return 0;
