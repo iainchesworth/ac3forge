@@ -27,6 +27,12 @@ public:
 
     void put_bit(bool bit) { put(bit ? 1u : 0u, 1); }
 
+    // Pre-size the output buffer. Every CBR pack site knows its frame's
+    // exact byte count before emitting a single field, so put()'s
+    // one-byte-at-a-time growth (~11 geometric reallocations for a full
+    // syncframe) is pure waste there.
+    void reserve(std::size_t bytes) { bytes_.reserve(bytes); }
+
     // Zero-pad to the next byte boundary. Syncframes are an integral number of
     // 16-bit words, so a fully packed frame always ends byte-aligned; this is
     // for tests and partial assemblies.

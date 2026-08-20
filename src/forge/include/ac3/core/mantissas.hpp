@@ -77,8 +77,18 @@ class AC3FORGE_EXPORT MantissaBlockWriter {
     // the same writer to keep the ordering and the group backfill straight.
     void add_raw(std::uint32_t value, int bits);
     void finish_block();
+    // Ready this writer for another block, keeping the token buffer's
+    // capacity - so one writer hoisted above a block loop allocates nothing
+    // after its first block, where a fresh writer per block re-grows the
+    // buffer every time.
+    void reset();
     [[nodiscard]] std::size_t bit_count() const { return bit_count_; }
     [[nodiscard]] const std::vector<MantissaToken>& tokens() const { return tokens_; }
+    // Swap the finished block's tokens into `out` instead of copying them.
+    // The writer is left holding `out`'s former storage, so a caller that
+    // cycles reset()+emit+take through the same destinations recycles every
+    // buffer involved - no copies and, at steady state, no allocations.
+    void take_tokens_into(std::vector<MantissaToken>& out) { out.swap(tokens_); }
 
    private:
     struct PendingGroup {

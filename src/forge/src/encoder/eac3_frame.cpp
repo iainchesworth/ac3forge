@@ -2624,8 +2624,12 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
             emit_stream(nfchans);
         }
         writer.finish_block();
+        // Move, not copy: ~10 KB of tokens per block otherwise gets copied
+        // out of a writer destroyed at the end of the iteration anyway.
+        // Full storage recycling (the AC-3 encoder's hoisted-writer shape)
+        // waits on payload itself becoming frame-lifetime state.
         token_bits += writer.bit_count();
-        payload.mantissas[static_cast<std::size_t>(blk)] = writer.tokens();
+        writer.take_tokens_into(payload.mantissas[static_cast<std::size_t>(blk)]);
     }
     // The search's fast counter and the packer must agree exactly, or every
     // block after the first lands at the wrong bit offset.

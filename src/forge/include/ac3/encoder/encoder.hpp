@@ -8,6 +8,7 @@
 #include <span>
 #include <vector>
 
+#include "ac3/core/mantissas.hpp"  // MantissaToken, for the token scratch below
 #include "ac3/core/tables.hpp"
 #include "ac3/encoder/silent_frame.hpp"  // FrameError, SkipPlan/plan_padding
 #include "ac3/encoder/transient.hpp"
@@ -129,6 +130,22 @@ class AC3FORGE_EXPORT FrameEncoder {
     std::array<double, 512> windowed_scratch_{};
     std::array<double, 128> half1_scratch_{};
     std::array<double, 128> half2_scratch_{};
+    // Frame-lifetime work buffers, reused across encode_frame calls under
+    // the same reasoning (and the same single-instance contract) as the
+    // scratch arrays above: each is re-sized via assign()/resize() and fully
+    // re-written every frame before anything reads it, so reuse changes
+    // nothing observable - it only stops encode_frame from re-allocating
+    // them 31 times a second. coeffs_ is the per-(stream, block) MDCT
+    // spectrum set (~86 KB at 5.1+coupling); block_exps_ the per-slot raw
+    // exponent sets; fixed_/fixed_base_ the flattened fixed-point bins and
+    // their per-slot offsets; block_tokens_ each block's mantissa tokens,
+    // filled through MantissaBlockWriter::take_tokens_into so the token
+    // storage cycles between the writer and these slots without copies.
+    std::vector<std::array<double, 256>> coeffs_;
+    std::vector<std::int32_t> fixed_;
+    std::vector<std::size_t> fixed_base_;
+    std::vector<std::vector<std::uint8_t>> block_exps_;
+    std::array<std::vector<MantissaToken>, kBlocksPerFrame> block_tokens_;
     std::uint64_t rate_accumulator_ = 0;  // ideal-bits Bresenham state
     std::uint64_t words_emitted_ = 0;
     // The previous frame's converged SNR-offset composite, warm-starting the

@@ -437,8 +437,12 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
 
     // --- 1. MDCT per channel per block -------------------------------------
     AC3_ZONE_BEGIN(zone_mdct, "step1_mdct");
-    std::vector<std::array<double, 256>> coeffs(
-        static_cast<std::size_t>(streams) * kBlocksPerFrame);
+    // assign() keeps exactly the zero-fill the fresh vector used to provide
+    // (bins outside a stream's coded range stay zero, whether or not any
+    // reader depends on that today) - only the storage itself is the reused
+    // member (see encoder.hpp's work-buffer comment).
+    auto& coeffs = coeffs_;
+    coeffs.assign(static_cast<std::size_t>(streams) * kBlocksPerFrame, {});
     const auto coeffs_at = [&](int s, int block) -> std::array<double, 256>& {
         return coeffs[static_cast<std::size_t>(s) * kBlocksPerFrame +
                       static_cast<std::size_t>(block)];
@@ -653,7 +657,8 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
 
     // --- 4. Fixed point + per-block raw exponents --------------------------
     AC3_ZONE_BEGIN(zone_fixed, "step4_fixed_exponents");
-    std::vector<std::int32_t> fixed;
+    auto& fixed = fixed_;
+    fixed.clear();
     {
         // One reservation instead of push_back growth across ~10k bins - the
         // exact total is knowable up front, and the phase-5 Tracy zones put
@@ -666,9 +671,13 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         }
         fixed.reserve(total);
     }
-    std::vector<std::size_t> fixed_base(static_cast<std::size_t>(streams) * kBlocksPerFrame);
-    std::vector<std::vector<std::uint8_t>> block_exps(
-        static_cast<std::size_t>(streams) * kBlocksPerFrame);
+    auto& fixed_base = fixed_base_;
+    fixed_base.assign(static_cast<std::size_t>(streams) * kBlocksPerFrame, 0);
+    // resize(), not assign(): every slot in range is itself resized and
+    // fully overwritten in the loop below, and plain resize keeps each
+    // inner vector's capacity where assign would discard it.
+    auto& block_exps = block_exps_;
+    block_exps.resize(static_cast<std::size_t>(streams) * kBlocksPerFrame);
     for (int s = 0; s < streams; ++s) {
         const int begin = stream_start(s);
         const int end = stream_end(s);
@@ -697,6 +706,14 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     // --- 5. Exponent strategy plan per stream (§8.2.8) ---------------------
     AC3_ZONE_BEGIN(zone_strategy, "step5_exp_strategy");
     std::vector<StreamPlan> plan(static_cast<std::size_t>(streams));
+    // Shared across the per-stream iterations below, re-assign()ed at each
+    // use: `starts` (run boundaries), `raw` (a run's min-exponent set) and
+    // `peak_mag` (§7.2.2.6's per-bin maxima) were each freshly allocated
+    // per stream or per run - ~70 small allocations a frame for buffers
+    // whose contents never outlive one iteration.
+    std::vector<int> starts;
+    std::vector<std::uint8_t> raw;
+    std::vector<double> peak_mag;
     for (int s = 0; s < streams; ++s) {
         auto& p = plan[static_cast<std::size_t>(s)];
         const bool is_lfe = s < nchans && s >= nfchans;
@@ -728,7 +745,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         // being quantized against a scale meant for a louder block.
         //
         // See tools/check_ac3_allocation.py, which is what found it.
-        std::vector<int> starts{0};
+        starts.assign(1, 0);
         const auto* reference = &block_exps[static_cast<std::size_t>(s) * kBlocksPerFrame];
         for (int block = 1; block < kBlocksPerFrame; ++block) {
             const auto& current = block_exps[static_cast<std::size_t>(s) * kBlocksPerFrame +
@@ -760,9 +777,8 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
             const auto strategy = (is_lfe || is_cpl) ? ExpStrategy::kD15
                                                      : strategy_for_span(last - first);
 
-            std::vector<std::uint8_t> raw(
-                block_exps[static_cast<std::size_t>(s) * kBlocksPerFrame +
-                           static_cast<std::size_t>(first)]);
+            raw = block_exps[static_cast<std::size_t>(s) * kBlocksPerFrame +
+                             static_cast<std::size_t>(first)];
             for (int block = first + 1; block < last; ++block) {
                 const auto& other = block_exps[static_cast<std::size_t>(s) * kBlocksPerFrame +
                                                static_cast<std::size_t>(block)];
@@ -819,7 +835,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
             // fit - so there is no need to withhold it here pre-emptively
             // just because coupling happens to be on this frame.
             if (!is_lfe) {
-                std::vector<double> peak_mag(static_cast<std::size_t>(end), 0.0);
+                peak_mag.assign(static_cast<std::size_t>(end), 0.0);
                 for (int block = first; block < last; ++block) {
                     const auto& c = coeffs_at(s, block);
                     for (int bin = begin; bin < end; ++bin) {
@@ -856,7 +872,6 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     // One function writes a block's side information; the bit budget is
     // measured by running it into a throwaway writer rather than maintaining
     // a parallel formula that every new field could silently invalidate.
-    std::vector<std::vector<std::uint8_t>> stream_bap(static_cast<std::size_t>(streams));
     int csnroffst = 0;
     int fsnroffst = 0;
 
@@ -1416,11 +1431,17 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     AC3_ZONE_BEGIN(zone_mantissa_tokens, "step10_mantissa_tokens");
     // §5.3.3 ordering: each fbw channel's mantissas, with the coupling
     // channel's inserted right after the FIRST coupled channel, then the LFE.
-    std::array<std::vector<MantissaToken>, kBlocksPerFrame> block_tokens;
+    // One writer for all six blocks and member-owned token slots: reset()
+    // and take_tokens_into() cycle the token storage between the writer and
+    // block_tokens_, so at steady state this step neither copies tokens nor
+    // allocates - a fresh writer per block re-grew its buffer every time
+    // and tokens() copied ~10 KB per block out of it.
+    auto& block_tokens = block_tokens_;
+    MantissaBlockWriter writer;
     // maybe_unused: only the assert below reads this, and NDEBUG removes it.
     [[maybe_unused]] std::size_t token_bits_total = 0;
     for (int block = 0; block < kBlocksPerFrame; ++block) {
-        MantissaBlockWriter writer;
+        writer.reset();
         const auto emit_stream = [&](int s) {
             const auto& p = plan[static_cast<std::size_t>(s)];
             const auto run = static_cast<std::size_t>(
@@ -1449,7 +1470,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         }
         writer.finish_block();
         token_bits_total += writer.bit_count();
-        block_tokens[static_cast<std::size_t>(block)] = writer.tokens();
+        writer.take_tokens_into(block_tokens[static_cast<std::size_t>(block)]);
     }
     assert(token_bits_total == mantissa_bits);
     AC3_ZONE_END(zone_mantissa_tokens);
@@ -1459,6 +1480,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     const auto plan_pad = detail::plan_padding(budget - mantissa_bits);
 
     BitWriter w;
+    w.reserve(total_bytes);
     w.put(kSyncWord, 16);
     w.put(0, 16);  // crc1, patched below
     w.put(static_cast<std::uint32_t>(config_.sample_rate), 2);
