@@ -601,8 +601,8 @@ jobs:
       - name: Configure
         run: cmake --preset config-linux-gcc
 
-      - name: Build ac3bench and ac3kernelbench
-        run: cmake --build --preset build-linux-gcc --target ac3bench ac3kernelbench -- -k 0
+      - name: Build ac3bench, ac3kernelbench and ac3membench
+        run: cmake --build --preset build-linux-gcc --target ac3bench ac3kernelbench ac3membench -- -k 0
 
       - name: Run ac3bench
         run: |
@@ -619,6 +619,15 @@ jobs:
           set -euo pipefail
           mkdir -p kernel-results/kernels-linux-gcc
           build/config-linux-gcc/bin/ac3kernelbench --json-out kernel-results/kernels-linux-gcc/kernels.json
+
+      # Third results tree, same reasoning as the kernel one above: each
+      # append script globs every *.json under its legs and requires its own
+      # producer's schema.
+      - name: Run ac3membench
+        run: |
+          set -euo pipefail
+          mkdir -p memory-results/memory-linux-gcc
+          build/config-linux-gcc/bin/ac3membench --json-out memory-results/memory-linux-gcc/membench.json
 
       # Same mechanic as quality-trend's own step in _build.yml (plain git
       # over an HTTPS remote carrying the token, not actions/checkout, which
@@ -685,6 +694,28 @@ jobs:
             --commit "$COMMIT_SHA" \
             --commit-date "$commit_date"
 
+      # Gates like the whole-frame series (its own hard_regression output,
+      # keyed off by its own fail step below), unlike the never-gating
+      # kernel series - ac3membench's counts are near-deterministic for a
+      # fixed workload, so its hard tier carries none of the runner-noise
+      # risk that keeps the kernel series advisory.
+      - name: Append memory-trend history
+        id: append_memory
+        shell: bash
+        env:
+          BRANCH: ${{ github.ref_name }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory '*'
+          commit_date="$(git show -s --format=%cI "$COMMIT_SHA")"
+          python3 scripts/append-memory-history.py \
+            --results-dir memory-results \
+            --history-dir history \
+            --branch "$BRANCH" \
+            --commit "$COMMIT_SHA" \
+            --commit-date "$commit_date"
+
       - name: Commit and push performance-history update
         shell: bash
         env:
@@ -710,6 +741,16 @@ jobs:
         shell: bash
         run: |
           echo "::error::A leg/config ran at least twice as slow as its trailing average - see the job log above and docs/performance-trend.md for the recorded numbers."
+          exit 1
+
+      # `always() &&` so a hard memory regression is still reported when the
+      # performance step above already failed the job - without it, a failed
+      # earlier step would silently skip this one.
+      - name: Fail on hard memory regression
+        if: always() && steps.append_memory.outputs.hard_regression == 'true'
+        shell: bash
+        run: |
+          echo "::error::A workload's heap churn at least doubled against its trailing average (or it leaked past the absolute threshold) - see the job log above and docs/performance-trend.md's memory tables for the recorded numbers."
           exit 1
 
   # FFmpeg as an independent oracle (CONTRIBUTING.md's "Oracles" list, #2),
