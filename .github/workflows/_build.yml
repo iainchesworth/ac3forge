@@ -505,7 +505,7 @@ jobs:
       # without this. clang-cl (windows-llvm) targets the MSVC ABI, so it
       # shares this same msvc2022_64 kit with windows-msvc rather than
       # needing its own. Version pinned to the exact kit already verified
-      # locally (see docs/BUILDING.md's Verified configuration table); the
+      # locally (see docs/building.md's Verified configuration table); the
       # pinned action itself is CountdownSolver's own precedent
       # (R:\CountdownSolver\.github\workflows\release.yml), the other
       # project sharing this same "prebuilt Qt, never vcpkg" convention.
@@ -674,7 +674,7 @@ jobs:
       # can't - that ac3gui actually starts, loads its QML, and drives a real
       # encode through the Qt event loop. offscreen needs no display, so it
       # runs the same in this container as it does on a workstation. See
-      # docs/BUILDING.md's Linux section for why the qmlshapesplugin /
+      # docs/building.md's Linux section for why the qmlshapesplugin /
       # labsmodelsplugin / qmlfolderlistmodelplugin CMake warnings during
       # Configure, above, don't affect this.
       - name: Smoke test ac3gui (headless)

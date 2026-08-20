@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------------------
 # ac3::forge - the whole codec: bitstream, DSP, encoder, decoder, the spatial
 # object layer and the IEC 61937 sink. No GUI, no third-party codec code (see
-# docs/RESEARCH.md on the clean-room rule) - and, deliberately, no
+# CONTRIBUTING.md's "The clean-room rule") - and, deliberately, no
 # platform-specific code at all: this target builds identically on any
 # C++23 platform, with no WASAPI/ALSA dependency, so a third party linking it
 # purely to encode/decode AC-3/E-AC-3/Atmos streams needs nothing else. Live
