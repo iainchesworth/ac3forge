@@ -91,6 +91,7 @@ add_executable(ac3tests
     test_transient_prenoise.cpp
     test_watchdog.cpp
     test_wav.cpp
+    test_wav_stream_reader.cpp
     test_wav_stream_writer.cpp)
 
 # test_signing.cpp reaches ac3::signing's internal crypto headers (sha256.hpp/
