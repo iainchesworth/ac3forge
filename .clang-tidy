@@ -70,5 +70,5 @@ Checks: >
   cert-str34-c
 
 WarningsAsErrors: ''
-HeaderFilterRegex: 'src/(lib|cli|matroska)/.*'
+HeaderFilterRegex: 'src/(forge|cli|matroska)/.*'
 FormatStyle: none

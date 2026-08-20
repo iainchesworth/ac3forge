@@ -291,7 +291,7 @@ jobs:
         run: |
           run-clang-tidy-21 -j "$(nproc)" -p build/config-linux-llvm \
             -warnings-as-errors='*' \
-            'src/(lib|cli|matroska)/.*\.cpp'
+            'src/(forge|cli|matroska)/.*\.cpp'
 
   # ac3tests coverage over ac3::forge (src/forge only - the library is what was
   # asked for; src/cli, src/gui and src/matroska are out of scope and unmeasured).
