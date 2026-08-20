@@ -83,11 +83,15 @@ import wave
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+# quality_race.py lives in the sibling tools/ci/ directory (CI-orchestration
+# bucket), not here (tools/generators/, table/fixture-generator bucket) - it
+# just also happens to be where its own CLI/WAV-IO/scoring helpers live.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ci"))
 from quality_race import (
     CLI, decode_scores_ours_fixed, measured_kbps, read_wav_any, read_wav_f32, run, score_fixed,
 )
 
-REPO = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parent.parent.parent
 AUDIO = REPO / "tests" / "golden" / "audio"
 OUT = REPO / "tests" / "golden" / "external-baseline"
 SCRATCH = REPO / "build" / "external_baseline_scratch"

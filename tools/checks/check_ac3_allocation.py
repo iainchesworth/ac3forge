@@ -48,9 +48,13 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+# quality_race.py lives in the sibling tools/ci/ directory (CI-orchestration
+# bucket), not here (tools/checks/, correctness-gate bucket) - it just also
+# happens to be the one place CLI path/WAV IO/alignment helpers already live.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ci"))
 import quality_race as qr  # noqa: E402  (CLI path, WAV IO, alignment)
 
-REPO = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parent.parent.parent
 SOURCE = REPO / "tests" / "golden" / "audio" / "reference_51.wav"
 # reference_51.wav's channel order, for labelling only.
 CHANNELS = ["L", "R", "C", "LFE", "Ls", "Rs"]

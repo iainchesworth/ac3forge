@@ -81,7 +81,7 @@ import wave
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parent.parent.parent
 
 # A/52 Table 5.18's nominal rates - the only ones AC-3's frmsizcod can index
 # (ac3::is_valid_bitrate, src/forge/include/ac3/core/tables.hpp).

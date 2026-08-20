@@ -17,7 +17,7 @@ Run from the repo root:  python tools/generators/gen_aht_tables.py
 import re
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parent.parent.parent
 SPEC_TXT = REPO / "docs" / "spec" / "A52-2018.txt"
 OUT = REPO / "src" / "lib" / "include" / "ac3" / "core" / "aht_tables.hpp"
 

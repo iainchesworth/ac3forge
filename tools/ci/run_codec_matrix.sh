@@ -55,7 +55,7 @@ esac
 # after the `cd "$WORKDIR"` on the next lines. Resolve them now, from this
 # script's own location rather than $PWD, so it does not matter where the
 # script was invoked from.
-FIXTURES="$(cd "$(dirname "${BASH_SOURCE[0]}")/../tests/golden/audio" && pwd)"
+FIXTURES="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../tests/golden/audio" && pwd)"
 
 WORKDIR="${2:-$(mktemp -d)}"
 mkdir -p "$WORKDIR"

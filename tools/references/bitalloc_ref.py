@@ -19,11 +19,17 @@ Includes two known spec erratum fixes:
 Run from the repo root:  python tools/references/bitalloc_ref.py
 """
 
+import sys
 from pathlib import Path
 
-from gen_bitalloc_tables import parse_tables
+# gen_bitalloc_tables.py lives in the sibling tools/generators/ directory
+# (table-generator bucket), not here (tools/references/, independent
+# reference-implementation bucket) - it just also happens to be where the
+# shared table-extraction logic these two implementations both draw from lives.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "generators"))
+from gen_bitalloc_tables import parse_tables  # noqa: E402
 
-REPO = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parent.parent.parent
 OUT = REPO / "tests" / "golden" / "bitalloc_goldens.hpp"
 
 T = parse_tables()

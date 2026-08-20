@@ -24,7 +24,7 @@ from pathlib import Path
 
 import numpy as np
 
-REPO = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parent.parent.parent
 SPEC_TXT = REPO / "docs" / "spec" / "A52-2018.txt"
 OUT = REPO / "tests" / "golden" / "mdct_goldens.hpp"
 

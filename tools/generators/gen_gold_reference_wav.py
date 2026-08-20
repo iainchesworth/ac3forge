@@ -27,7 +27,7 @@ import struct
 import wave
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parent.parent.parent
 OUT = REPO / "tests" / "golden" / "audio" / "reference_51.wav"
 
 RATE = 48000

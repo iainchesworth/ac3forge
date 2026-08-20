@@ -22,7 +22,7 @@ mkdir -p "$WORKDIR"
 
 # Resolved from this script's own location, not the caller's cwd, so it works
 # the same whether invoked from the repo root (as CI does) or anywhere else.
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 GOLD_WAV="$REPO_ROOT/tests/golden/audio/reference_51.wav"
 COMPARE="$REPO_ROOT/tools/checks/compare_wav.py"
 

@@ -21,7 +21,7 @@ from pathlib import Path
 
 import numpy as np
 
-REPO = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parent.parent.parent
 BUILD = REPO / "build"
 # AC3CLI overrides the binary - see tools/ci/quality_race.py's CLI constant for
 # why the default below (a "dev" preset that does not exist, an .exe on a

@@ -57,7 +57,7 @@ from pathlib import Path
 
 import numpy as np
 
-REPO = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parent.parent.parent
 BUILD = REPO / "build"
 # AC3CLI overrides the binary: the "dev" preset this default assumes does not
 # exist (see CMakePresets.json - there is no such preset, only per-platform

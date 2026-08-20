@@ -21,7 +21,7 @@ Run from the repo root:  python tools/generators/gen_joc_tables.py
 import re
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parent.parent.parent
 TABLES_C = REPO / "docs" / "spec" / "ts_103420_tables.c"
 SPEC_TXT = REPO / "docs" / "spec" / "TS103420-2018.txt"
 OUT = REPO / "src" / "lib" / "include" / "ac3" / "oba" / "joc_tables.hpp"

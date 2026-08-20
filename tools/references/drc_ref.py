@@ -19,7 +19,7 @@ import argparse
 import math
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parent.parent.parent
 OUT = REPO / "tests" / "golden" / "drc_goldens.hpp"
 
 # Table 7.29, "Arithmetic Shifts" column: left shifts positive, right negative.
