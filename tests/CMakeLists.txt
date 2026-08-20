@@ -174,7 +174,7 @@ endif()
 # ac3cli binary as a subprocess and inspect what it actually wrote.
 #
 # Only added when ac3cli itself is being built (AC3FORGE_BUILD_CLI): the
-# top-level CMakeLists.txt processes src/cli before tests/, so the target
+# top-level CMakeLists.txt processes apps/cli before tests/, so the target
 # already exists here whenever it is going to.
 # ---------------------------------------------------------------------------
 if(TARGET ac3cli)
@@ -201,7 +201,7 @@ endif()
 # above to hold at once, not just AC3FORGE_BUILD_ADM alone: it runs the real, built ac3cli binary
 # as a subprocess (AC3CLI_EXE, defined only inside the `if(TARGET ac3cli)` block above) against an
 # ADM fixture, so the command it exercises only exists in that binary at all when
-# AC3FORGE_BUILD_ADM was ALSO on for this same configure (src/cli/CMakeLists.txt's own
+# AC3FORGE_BUILD_ADM was ALSO on for this same configure (apps/cli/CMakeLists.txt's own
 # AC3FORGE_BUILD_ADM guard). Neither `if(TARGET ac3cli)` alone (AC3FORGE_BUILD_ADM could be off,
 # and 'atmos-adm' simply would not exist in that binary) nor `if(AC3FORGE_BUILD_ADM)` alone
 # (AC3CLI_EXE might not be defined at all, e.g. AC3FORGE_BUILD_CLI=OFF) is sufficient by itself -

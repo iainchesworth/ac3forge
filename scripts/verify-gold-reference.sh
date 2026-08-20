@@ -29,7 +29,7 @@ COMPARE="$REPO_ROOT/scripts/compare_wav.py"
 # Same reasoning as docs/RESEARCH.md's L3 recipe: pin drc_scale to 0 on both
 # sides so a dynamic-range-compression default mismatch between FFmpeg and
 # ac3cli's own decoder (which also defaults drc_scale to 0 - see
-# src/cli/main.cpp's MetaOptions) can never masquerade as a fidelity loss.
+# apps/cli/main.cpp's MetaOptions) can never masquerade as a fidelity loss.
 #
 # 55, not some more conservative-looking round number: this gate compares two
 # decodes of the *same* bitstream (FFmpeg vs. ac3cli's own decoder), so absent

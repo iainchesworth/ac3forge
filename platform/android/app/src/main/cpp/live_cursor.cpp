@@ -2,7 +2,7 @@
 // the whole ac3forge project that drives AtmosEncoder::encode_frame() from a
 // live, externally-set position every frame rather than from an authored
 // KeyframePath/OrbitPath or a file. Modeled directly on ac3cli's run_live
-// (src/cli/main.cpp) - same per-frame shape (build placement, encode_frame,
+// (apps/cli/main.cpp) - same per-frame shape (build placement, encode_frame,
 // IEC61937-wrap, PassthroughSink::submit with retry+sleep) - but self-paced
 // by wall clock instead of run_live's "block on the capture ring buffer"
 // mechanism, because this app synthesizes its own object audio; there is no

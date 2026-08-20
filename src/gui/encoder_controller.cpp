@@ -186,7 +186,7 @@ struct Mp4Scan {
 // built from a real ac3::io::ScannedStream - bsid/bsmod/the Atmos marker are
 // bitstream syntax this controller does not otherwise track. So MP4 and
 // fMP4 both re-scan the frames they are about to write, the same way
-// ac3cli's own run_mp4/run_fmp4 (src/cli/main.cpp) re-scan an already-
+// ac3cli's own run_mp4/run_fmp4 (apps/cli/main.cpp) re-scan an already-
 // encoded file before wrapping it. Returns the QString writeOutput() already
 // uses for its error contract on failure.
 std::expected<Mp4Scan, QString> scan_for_mp4(const std::vector<std::vector<std::byte>>& frames) {
@@ -225,7 +225,7 @@ bool write_text_to_path(const std::filesystem::path& path, std::string_view text
 
 // A minimal but complete DASH MPD document wrapped around
 // mp4::build_dash_adaptation_set()'s <AdaptationSet> snippet, ported from
-// ac3cli's own build_dash_mpd (src/cli/main.cpp): that helper is CLI-side
+// ac3cli's own build_dash_mpd (apps/cli/main.cpp): that helper is CLI-side
 // glue, not part of mp4:: (mp4/dash.hpp deliberately stops at the
 // <AdaptationSet> snippet - see its own header comment), so the GUI needs
 // the identical wrapper.
@@ -5632,7 +5632,7 @@ QString EncoderController::writeOutput(const QString& path,
         }
         // Dolby Digital Plus with Atmos objects needs CHANNELS="<N>/JOC"
         // instead of a plain channel count - see mp4/hls.hpp's own
-        // citations, and run_fmp4 (src/cli/main.cpp) for the CLI's
+        // citations, and run_fmp4 (apps/cli/main.cpp) for the CLI's
         // identical construction.
         const mp4::HlsOptions hls_options{
             .channels_attribute = built->oba_complexity_index

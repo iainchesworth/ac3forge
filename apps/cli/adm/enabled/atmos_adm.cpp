@@ -6,7 +6,7 @@
 #include "ac3adm/ac3adm.hpp"
 
 // Compiled only when AC3FORGE_BUILD_ADM turned ac3adm::ac3adm/ac3::admbridge on (see
-// src/cli/CMakeLists.txt) - see ../atmos_adm.hpp's own top comment for why this file, rather than
+// apps/cli/CMakeLists.txt) - see ../atmos_adm.hpp's own top comment for why this file, rather than
 // a preprocessor conditional inside main.cpp, is the mechanism.
 
 namespace ac3cli {
