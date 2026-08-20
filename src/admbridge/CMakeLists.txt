@@ -72,7 +72,8 @@ target_link_libraries(admbridge_objects
         ac3::forge
         ac3adm::ac3adm
     PRIVATE
-        "$<BUILD_INTERFACE:ac3::warnings>")
+        "$<BUILD_INTERFACE:ac3::warnings>"
+        "$<BUILD_INTERFACE:ac3::coverage>")
 
 set_target_properties(admbridge_objects PROPERTIES
     POSITION_INDEPENDENT_CODE ON

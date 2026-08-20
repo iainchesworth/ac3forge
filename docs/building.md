@@ -115,13 +115,24 @@ There is a sixteenth trio, `config-linux-gcc-coverage` / `build-linux-gcc-covera
 `test-linux-gcc-coverage`, the same shape as the asan-ubsan one: an instrumented variant of
 `linux-gcc`, Debug-only, not a platform/compiler pair. It inherits a `coverage` fragment setting
 `AC3FORGE_ENABLE_COVERAGE=ON` (see `cmake/Coverage.cmake`, GCC/Clang's `--coverage` gcov
-instrumentation; other compilers just warn and skip it) plus `AC3FORGE_BUILD_CLI=OFF` and
-`AC3FORGE_BUILD_EXAMPLES=OFF` — `ac3cli` and the twenty `examples/` executables also link the
-now-instrumented `ac3::forge`, and turning them off avoids having to wire `ac3::coverage` into
-them too just to resolve its gcov runtime symbols at link time for targets nobody is measuring
-coverage of anyway. `.github/workflows/ci.yml`'s `coverage` job runs `gcovr` over `src/forge/*`
-after `ctest` and gates on line/branch percentage — see that job's own comment for the current
-thresholds and why they sit below the measured baseline.
+instrumentation; other compilers just warn and skip it), `AC3FORGE_BUILD_ADM=ON` with vcpkg's
+`adm` feature (so the opt-in ADM pair — `ac3adm` and its bridge — is measured alongside the
+always-on seven), plus `AC3FORGE_BUILD_CLI=OFF` and `AC3FORGE_BUILD_EXAMPLES=OFF` — purely a
+build-time saving: `ac3cli` and the `examples/` executables would link fine against the
+instrumented libraries (the gcov runtime propagates to consumers automatically, see
+`cmake/Coverage.cmake`), but the report is filtered to the library components, so building them
+instrumented buys nothing. After `ctest`,
+`scripts/coverage-report.sh` (the same script `.github/workflows/ci.yml`'s `coverage` job runs)
+makes one `gcovr` extraction pass over every `src/` library component and then gates line *and*
+branch coverage per component — see the script's own floor table for the current thresholds and
+the measured baseline each was calibrated against:
+
+```bash
+cmake --preset config-linux-gcc-coverage
+cmake --build --preset build-linux-gcc-coverage -- -k 0
+ctest --preset test-linux-gcc-coverage -LE Performance
+./scripts/coverage-report.sh -g gcov-15
+```
 
 There is a seventeenth trio, `config-linux-llvm-shared` / `build-linux-llvm-shared` /
 `test-linux-llvm-shared`, same shape again: an instrumented variant of `linux-llvm`, Debug-only.
@@ -523,7 +534,8 @@ real QML channel meters. See [Linux audio](#linux-audio) for what the ALSA verif
 and did not (real hardware), prove.
 
 linux-gcc, linux-llvm, linux-gcc-arm64, linux-llvm-arm64, linux-llvm-asan-ubsan, macos-llvm,
-static-analysis (clang-tidy), coverage (gcovr over `src/forge`, via `config-linux-gcc-coverage`),
+static-analysis (clang-tidy), coverage (`scripts/coverage-report.sh` over every `src/` library
+component, via `config-linux-gcc-coverage`),
 adm-validate (the opt-in ADM module) and ffmpeg-validate all run on every push, as does
 build-android (the Shield app's debug APK) — the four Linux build legs install the same
 Qt6/ALSA packages and build/smoke-test the GUI too. ffmpeg-validate is a
@@ -536,9 +548,11 @@ combination produces a *structurally correct* stream at all, plus a numeric fide
 the Annex E tool combinations the one fixed gold-reference sample does not itself exercise. No
 leg remains experimental.
 
-The coverage job's own gate — 81.3% line / 72.0% branch measured on a real GitHub Actions run,
-80%/70% required — uses the same GCC 15 pin as the other Linux legs; see the coverage job's own
-comment in `ci.yml` for the thresholds and why they sit below the measured baseline.
+The coverage job gates line and branch coverage per library component, not as one blended
+number, using the same GCC 15 pin as the other Linux legs; the floor table, the measurement each
+floor was calibrated against, and why two components (`src/audio`'s device paths, `src/capi`'s
+E-AC-3 surface) are honestly floored low all live in `scripts/coverage-report.sh`, with the
+calibration history in the coverage job's own comment in `ci.yml`.
 
 No macOS host exists for this project, so `config-macos-llvm`/`config-macos-llvm-debug` are only
 ever exercised by CI (`macos-latest`, Apple Silicon) — never locally. That CI leg is green:

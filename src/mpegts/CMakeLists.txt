@@ -43,8 +43,11 @@ target_compile_features(mpegts_objects PUBLIC cxx_std_23)
 
 # $<BUILD_INTERFACE:...> wrapping - see src/forge/CMakeLists.txt's identical
 # forge_objects treatment for why a plain PRIVATE link isn't enough for
-# an OBJECT library that's part of an install(EXPORT) set.
-target_link_libraries(mpegts_objects PRIVATE "$<BUILD_INTERFACE:ac3::warnings>")
+# an OBJECT library that's part of an install(EXPORT) set. ac3::coverage is a
+# no-op unless AC3FORGE_ENABLE_COVERAGE is on (see cmake/Coverage.cmake).
+target_link_libraries(mpegts_objects PRIVATE
+    "$<BUILD_INTERFACE:ac3::warnings>"
+    "$<BUILD_INTERFACE:ac3::coverage>")
 
 set_target_properties(mpegts_objects PROPERTIES
     POSITION_INDEPENDENT_CODE ON

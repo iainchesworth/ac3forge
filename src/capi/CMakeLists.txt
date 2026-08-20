@@ -62,7 +62,8 @@ target_compile_features(forge_c_objects PUBLIC cxx_std_23)
 target_link_libraries(forge_c_objects
     PRIVATE
         ac3::forge_static
-        "$<BUILD_INTERFACE:ac3::warnings>")
+        "$<BUILD_INTERFACE:ac3::warnings>"
+        "$<BUILD_INTERFACE:ac3::coverage>")
 
 set_target_properties(forge_c_objects PROPERTIES
     POSITION_INDEPENDENT_CODE ON

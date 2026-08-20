@@ -167,11 +167,13 @@
     {
       "name": "coverage",
       "hidden": true,
-      "description": "gcov source coverage instrumentation (cmake/Coverage.cmake) over ac3::forge and ac3tests. CLI and examples are off: both link ac3::forge, and an instrumented library's gcov runtime symbols would otherwise need resolving on their link lines too for no coverage benefit, since gcovr's report is filtered to src/forge/.* anyway - see .github/workflows/ci.yml's coverage job.",
+      "description": "gcov source coverage instrumentation (cmake/Coverage.cmake) over every library component - ac3::forge, ac3::audio, ac3::signing, matroska/mp4/mpegts, the C API, and (via AC3FORGE_BUILD_ADM=ON plus vcpkg's 'adm' feature, the same pair ci.yml's adm-validate job passes) ac3adm/admbridge - plus ac3tests. CLI and examples are off purely to save build time: they would link fine (the gcov runtime propagates to consumers automatically, see cmake/Coverage.cmake), but scripts/coverage-report.sh filters the report to the library components, so building them instrumented buys nothing - see .github/workflows/ci.yml's coverage job.",
       "cacheVariables": {
         "AC3FORGE_ENABLE_COVERAGE": "ON",
         "AC3FORGE_BUILD_CLI": "OFF",
-        "AC3FORGE_BUILD_EXAMPLES": "OFF"
+        "AC3FORGE_BUILD_EXAMPLES": "OFF",
+        "AC3FORGE_BUILD_ADM": "ON",
+        "VCPKG_MANIFEST_FEATURES": "adm"
       }
     },
     {
