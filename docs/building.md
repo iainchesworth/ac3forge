@@ -514,7 +514,7 @@ Result: configure, build and `ctest` all clean on both compilers, GUI and ALSA b
 The base suite is `ac3tests` and `ac3perf`'s Catch2 cases plus one ctest entry per example
 program; `AC3FORGE_WITH_ALSA`'s `tests/platform/alsa/` adds 14 entries (or, on a build that
 selected pipewire/ instead, `tests/platform/pipewire/` adds 5), and the GUI's Qt Quick
-Test harness (`ac3gui_qmltests`, `src/gui/tests/CMakeLists.txt`) adds one more — unlike every
+Test harness (`ac3gui_qmltests`, `apps/gui/tests/CMakeLists.txt`) adds one more — unlike every
 other GUI-related target, that one harness *does* register its own `ctest` entry, gated on both
 `AC3FORGE_BUILD_GUI` and `AC3FORGE_BUILD_TESTS`. A Linux build with neither ALSA nor the GUI
 runs the base suite; with the GUI on and ALSA off it matches Windows exactly. `ac3gui --smoke`
@@ -556,14 +556,14 @@ too (Homebrew's `qt` formula — see [GUI on macOS](platforms/macos.md#gui-on-ma
 ctest entries total, 100% passing, `ac3gui_qmltests` itself in 39.74s (56.81s for the whole
 suite) — the first time that number has existed for macOS at all, so there is no prior baseline
 to compare it against the way the ~15s Windows number has one. Getting there needed two real
-fixes, not just turning the option on: `QSG_RENDER_LOOP=basic` (`src/gui/tests/CMakeLists.txt`,
+fixes, not just turning the option on: `QSG_RENDER_LOOP=basic` (`apps/gui/tests/CMakeLists.txt`,
 `APPLE` only) for a Qt Quick threaded-render-loop deadlock that hung the suite outright before a
 single test ran, and forcing the `Fusion` style in `qml_test_main.cpp` — matching what `main.cpp` already does —
 for a second, narrower hang in a native `ComboBox` populated by real capture-device data once a
 test entered live-session mode: the same native-style-under-offscreen fragility a comment in
-`src/gui/qml/Main.qml` already documents one earlier instance of, on Windows, in a different
+`apps/gui/qml/Main.qml` already documents one earlier instance of, on Windows, in a different
 control (a `Repeater`'s per-device `Button`, worked around there directly in QML rather than at
-the style level). See `src/gui/tests/CMakeLists.txt` and `qml_test_main.cpp` for the full detail
+the style level). See `apps/gui/tests/CMakeLists.txt` and `qml_test_main.cpp` for the full detail
 on both macOS fixes.
 
 `src/audio/CMakeLists.txt` selects a real CoreAudio backend on macOS (`src/audio/src/backend/macos/`,

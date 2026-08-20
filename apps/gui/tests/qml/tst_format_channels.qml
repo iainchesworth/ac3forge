@@ -5,7 +5,7 @@ import Ac3Forge
 
 // A real simulated click on the live tier control, not a property poke -
 // the actual point of Qt Quick Test over the existing --smoke harness's
-// prop=value mechanism (see src/gui/main.cpp).
+// prop=value mechanism (see apps/gui/main.cpp).
 TestCase {
     id: testCase
     name: "FormatChannels"
