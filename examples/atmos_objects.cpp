@@ -45,8 +45,8 @@ int main() {
 
     // Position error and audio-tracking SNR accumulate across every frame
     // after this one, so the transform pair's own warm-up (see
-    // tests/test_oba.cpp's "reconstruct is a 256-sample-delayed identity..."
-    // and tests/test_atmos.cpp's "joc::reconstruct recovers well-separated
+    // tests/oba/test_oba.cpp's "reconstruct is a 256-sample-delayed identity..."
+    // and tests/oba/test_atmos.cpp's "joc::reconstruct recovers well-separated
     // objects...") doesn't flatter the numbers below.
     constexpr int kWarmupFrames = 3;
     constexpr int kTotalFrames = 62;  // two seconds

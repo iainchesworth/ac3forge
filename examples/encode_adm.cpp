@@ -223,7 +223,7 @@ int main(int argc, char** argv) {
     // a real `ac3cli atmos-adm` invocation against a real file on disk, rather than a fourth copy
     // of the same byte-level BW64/ADM chunk-writing logic already duplicated (per this project's
     // own established per-file test-fixture convention) across this file, examples/read_adm.cpp
-    // and tests/test_cli_atmos_adm.cpp - three was already the considered limit; a shell script
+    // and tests/cli/test_cli_atmos_adm.cpp - three was already the considered limit; a shell script
     // reimplementing RIFF chunk framing in bash was not a fourth worth having.
     if (argc >= 3 && std::string_view{argv[1]} == "--write-fixture") {
         if (!write_fixture(argv[2])) {

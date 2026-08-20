@@ -752,7 +752,7 @@ TEST_CASE("fast_mdct changes output only at the quantization-decision level",
     // Phase 4's own end-to-end check: encode the SAME real (multi-tone,
     // several frames) audio once with fast_mdct off and once with it on,
     // decode both with the repo's own decoder, and compare. The fast path
-    // is bit-exact for mdct512_forward itself (test_mdct_fast.cpp), but the
+    // is bit-exact for mdct512_forward itself (core/test_mdct_fast.cpp), but the
     // ENCODER makes discrete decisions (bap, exponent strategy, block
     // switching) off of those coefficients - a coefficient that changes by
     // 1e-13 can occasionally land on the other side of a rounding boundary

@@ -523,8 +523,8 @@ The Linux instructions were run on:
 
 Result: configure, build and `ctest` all clean on both compilers, GUI and ALSA both included.
 The base suite is `ac3tests` and `ac3perf`'s Catch2 cases plus one ctest entry per example
-program; `AC3FORGE_WITH_ALSA`'s `tests/platform/alsa/` adds 14 entries (or, on a build that
-selected pipewire/ instead, `tests/platform/pipewire/` adds 5), and the GUI's Qt Quick
+program; `AC3FORGE_WITH_ALSA`'s `tests/backend/alsa/` adds 14 entries (or, on a build that
+selected pipewire/ instead, `tests/backend/pipewire/` adds 5), and the GUI's Qt Quick
 Test harness (`ac3gui_qmltests`, `apps/gui/tests/CMakeLists.txt`) adds one more — unlike every
 other GUI-related target, that one harness *does* register its own `ctest` entry, gated on both
 `AC3FORGE_BUILD_GUI` and `AC3FORGE_BUILD_TESTS`. A Linux build with neither ALSA nor the GUI

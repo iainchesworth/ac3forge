@@ -505,7 +505,7 @@ TEST_CASE("joc::reconstruct recovers well-separated objects through the real wir
 
     // Two stacked MDCT round trips carry two stacked 256-sample algorithmic
     // delays: one from the real encode+decode of the bed itself (see
-    // tests/test_eac3_decoder.cpp's own snr_db helper), one more from
+    // tests/decoder/test_eac3_decoder.cpp's own snr_db helper), one more from
     // reconstruct()'s own independent forward+inverse pass over that decoded
     // bed (see "reconstruct is a 256-sample-delayed identity..." above).
     // Comparing sample n of the recovered audio against sample (n - 512) of

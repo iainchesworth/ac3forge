@@ -119,7 +119,7 @@ endif()
 # OS 13/Trixie, whose apt archive tops out at GCC 14.2.0 - the toolchain
 # files' find_program fallback (see cmake/toolchains/linux.gcc.toolchain.cmake)
 # picks it up correctly, so this is a real, reachable configuration, not a
-# hypothetical one. Two genuine repros: tests/test_cli.cpp's read_log()
+# hypothetical one. Two genuine repros: tests/cli/test_cli.cpp's read_log()
 # istreambuf_iterator-based std::string construction flags a "null pointer
 # dereference" inside <streambuf>'s gptr()/egptr(), and apps/cli/main.cpp's
 # load_sources() std::vector<std::size_t>::resize() flags one inside

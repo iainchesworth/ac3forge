@@ -28,9 +28,9 @@
 // a machine that might not have libasound installed, what this file is pure
 // OF is a live HAL round-trip, not a library that might be missing:
 // CoreAudio.framework's headers ship with every macOS SDK, so there is no
-// "not installed" story here to design around. tests/platform/macos/
+// "not installed" story here to design around. tests/backend/macos/
 // test_macos_support.cpp covers this file directly, on real macOS CI, the
-// same role tests/platform/alsa/test_alsa_device_names.cpp plays for
+// same role tests/backend/alsa/test_alsa_device_names.cpp plays for
 // device_names.hpp.
 //
 // coreaudio_support.hpp next door is the impure half: property fetching,

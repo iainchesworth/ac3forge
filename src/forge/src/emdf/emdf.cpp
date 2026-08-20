@@ -94,7 +94,7 @@ std::uint32_t read_variable_bits(BitReader& r, int group_bits) {
 
 // §H.2.2.1.1: the container's position depends on how many bits the audio
 // took, so it is found by scanning rather than at a fixed offset. Mirrors
-// tests/test_emdf.cpp's own find_emdf_sync, promoted here because production
+// tests/emdf/test_emdf.cpp's own find_emdf_sync, promoted here because production
 // decode needs the same search, not just a test helper for one.
 constexpr std::size_t kSyncNotFound = static_cast<std::size_t>(-1);
 

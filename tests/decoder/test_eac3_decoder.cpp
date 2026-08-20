@@ -355,7 +355,7 @@ TEST_CASE("two dependents that claim the same location: the later one wins",
     // Nothing stops two dependents from naming the same Table E2.5 location -
     // the per-substream chanmap check (E2.3.1.8) never looks at siblings, and
     // build_silent_access_unit accepts it outright (see the encoder-side test
-    // in test_eac3.cpp). The decoder's own §E3.8.2 rule - "transmission order
+    // in encoder/test_eac3.cpp). The decoder's own §E3.8.2 rule - "transmission order
     // is overwrite order" (eac3_decoder.cpp) - is what actually resolves the
     // conflict. This is that rule proven with real, distinguishable audio
     // rather than just read off the comment that documents it: if the later
@@ -558,7 +558,7 @@ TEST_CASE("E-AC-3 dual mono: Ch2's own heavy compression is not Ch1's, and is no
     using ac3::Acmod;
     // This decoder is default-constructed, so it never applies compr/compr2
     // to the reconstructed audio regardless of the words it reports (see
-    // Eac3Decoder's DecoderConfig-driven gain; tests/test_drc.cpp exercises
+    // Eac3Decoder's DecoderConfig-driven gain; tests/meta/test_drc.cpp exercises
     // heavy_compression actually applying it, including the peak-level cross-
     // channel check the AC-3 sibling test does). This test instead stays at
     // the word level: it compares Ch2's OWN compr2 word across two encodes
@@ -1203,7 +1203,7 @@ TEST_CASE("the E-AC-3 decoder rejects malformed coupling streams",
         // that a single corrupted bit here cannot make the rest of the
         // frame decode as something plausible. A genuine enhanced-coupling
         // round-trip - a real encoded stream, decoded successfully - is
-        // covered once the encoder can produce one (see test_eac3.cpp).
+        // covered once the encoder can produce one (see encoder/test_eac3.cpp).
         auto broken = whole;
         patch_bits(broken, kEcplinuBit, 1, 1);
         CHECK_FALSE(decoder.decode_access_unit(broken).has_value());

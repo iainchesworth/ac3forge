@@ -14,7 +14,7 @@
 // statement of the transform and the oracle every fast-path test validates
 // against. `fast` selects the §7.9.4 fast N/4-FFT structure behind this same
 // interface: verified max relative error ~3e-12 against the direct form on
-// random data and real audio (tests/test_mdct_fast.cpp), and since the owner
+// random data and real audio (tests/core/test_mdct_fast.cpp), and since the owner
 // accepted that evidence it is what every encoder config defaults to
 // (EncoderConfig::fast_mdct / eac3::FrameConfig::fast_mdct default true and
 // are what an encoder actually reads to decide - a caller of THIS function
@@ -61,7 +61,7 @@ AC3FORGE_EXPORT void imdct512_windowed(std::span<const double, 256> coeffs,
 // sine-kernel sum that reaches the shared DCT-IV core through the DST-IV
 // reversal identity). Each fold is verified against its own direct-form
 // table to the same 1e-10 bound as the long transform's -
-// tests/test_mdct_fast.cpp. `fast = false` remains the spec's own
+// tests/core/test_mdct_fast.cpp. `fast = false` remains the spec's own
 // direct-form evaluation on all three.
 AC3FORGE_EXPORT void mdct256_forward_first(std::span<const double, 256> windowed,
                                            std::span<double, 128> coeffs, bool fast = false);

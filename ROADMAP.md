@@ -120,7 +120,7 @@ decoded an AC-3/E-AC-3 bitstream and verified its loudness metadata against meas
   the static and shared variants always statically embed the codec, unlike `ac3::forge`
   itself, so a binding or embedder only ever needs to load one library. Covered by
   `examples/capi_encode_decode.c` (compiled as genuine C, proving the header is actually
-  C-usable) and `tests/test_capi.cpp`. See `docs/library/c-api.md`.
+  C-usable) and `tests/capi/test_capi.cpp`. See `docs/library/c-api.md`.
 - [x] **F2 (L)** — Python bindings on PyPI, with wheels for the three desktop platforms. Landed
   pybind11-direct (the roadmap's own fallback), not waiting on F1: `python/` binds straight onto
   `ac3::FrameEncoder`/`FrameDecoder`/`Eac3Decoder`/`oba::AtmosEncoder`, numpy-friendly PCM and
@@ -169,9 +169,9 @@ decoded an AC-3/E-AC-3 bitstream and verified its loudness metadata against meas
   the quality race and landscape pages alongside SNR.
 - [x] **G2 (M)** — Backfill thin test coverage. Resurveyed rather than trusting the original
   estimate (already stale): the WAV reader and `meta/mixing` genuinely had no dedicated test file
-  and got one each (`tests/test_wav.cpp`, `tests/test_mixing.cpp`); `meta/loudness` and
-  `silent_frame` turned out to already be solidly covered (`tests/test_loudness.cpp`,
-  `tests/test_frame.cpp`) and were left alone; the CLI's `silence`/`eac3-silence` commands had zero
+  and got one each (`tests/io/test_wav.cpp`, `tests/meta/test_mixing.cpp`); `meta/loudness` and
+  `silent_frame` turned out to already be solidly covered (`tests/meta/test_loudness.cpp`,
+  `tests/core/test_frame.cpp`) and were left alone; the CLI's `silence`/`eac3-silence` commands had zero
   coverage of their own argv wiring and got some.
 - [x] **G3 (M)** — Differential decoder fuzzing against FFmpeg: feed the same mutated frames
   to both decoders and diff the PCM.

@@ -75,7 +75,7 @@ rather than only in that run's CI log.
 
 The Catch2 suites (`ac3tests` plus the `ac3perf` throughput suite) plus one `ctest` entry per
 example program, run per platform. The GUI's Qt Quick Test harness (`ac3gui_qmltests`) adds one
-entry on a GUI-enabled build, and the ALSA backend's `tests/platform/alsa/` adds 14 on a Linux
+entry on a GUI-enabled build, and the ALSA backend's `tests/backend/alsa/` adds 14 on a Linux
 build with libasound present; `ctest` runs whatever the configuration registered:
 
 ```bash
@@ -126,7 +126,7 @@ merely unavailable. `tools/ci/quality_race.py`'s CI gate (`decode_scores_ours`) 
 this project's own decoder instead, the same self-consistency posture 7.1.4 falls back to, with
 one weaker guarantee than 7.1.4 has: a defect both the encoder and decoder agree on — a
 misreading of the spec shared by both sides rather than a one-sided bug — would not be caught by
-either the CI gate or the round-trip unit tests in `tests/test_eac3_decoder.cpp`.
+either the CI gate or the round-trip unit tests in `tests/decoder/test_eac3_decoder.cpp`.
 
 **`fscod2` audio content has no external decode oracle at all — not even Dolby's own.**
 `ffprobe` walks every syncframe of a reduced-rate stream correctly (frame count, exact byte size,
@@ -144,7 +144,7 @@ project's own encoder/decoder round trip and the independent Python parser
 **`compr` in E-AC-3 has no external oracle.** FFmpeg's Annex E header parser reads `compre` and
 then skips the word, so `-heavy_compr` changes nothing on an E-AC-3 stream however good the
 metadata is. It is covered bit-by-bit instead
-([tests/test_drc.cpp](https://github.com/iainchesworthlabs/ac3forge/blob/main/tests/test_drc.cpp),
+([tests/meta/test_drc.cpp](https://github.com/iainchesworthlabs/ac3forge/blob/main/tests/meta/test_drc.cpp),
 [tools/references/eac3_parse.py](https://github.com/iainchesworthlabs/ac3forge/blob/main/tools/references/eac3_parse.py)).
 
 ## What's confirmed against real hardware, and what isn't

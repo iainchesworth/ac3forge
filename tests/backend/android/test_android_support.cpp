@@ -4,7 +4,7 @@
 
 // The Android backend's pure half, tested on a machine with no Android
 // SDK/NDK at all - see android_support.hpp's header comment. Matches
-// tests/platform/alsa/test_alsa_device_names.cpp's role for that backend:
+// tests/backend/alsa/test_alsa_device_names.cpp's role for that backend:
 // CMake adds this file to the suite only when it selected the android/
 // platform directory, and puts that directory on the include path.
 

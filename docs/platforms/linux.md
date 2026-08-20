@@ -153,7 +153,7 @@ Two more legs, `linux-gcc-arm64` and `linux-llvm-arm64`, run the same matrix on 
 [Raspberry Pi](raspberry-pi.md), which is the hardware this arch target is validated
 against.
 
-The ALSA backend adds 14 tests of its own (`tests/platform/alsa/`) on top of the base suite: a
+The ALSA backend adds 14 tests of its own (`tests/backend/alsa/`) on top of the base suite: a
 Linux build with the GUI on and `libasound2-dev` absent runs the same suite as Windows, and ALSA
 adds those 14. `ctest --preset test-linux-gcc-debug` (or whichever preset matches your build)
 runs the full suite. See [Verified configuration](../building.md#verified-configuration)

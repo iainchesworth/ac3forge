@@ -34,7 +34,7 @@
 #                                     the per-component gate recorded here
 #                                     yet; src/audio measured genuinely thin,
 #                                     src/capi's own thin spot closed the same
-#                                     day when tests/test_capi.cpp gained its
+#                                     day when tests/capi/test_capi.cpp gained its
 #                                     E-AC-3 half) - the floors and the full
 #                                     measured table live in
 #                                     tools/checks/coverage_report.sh
@@ -75,7 +75,7 @@
 # the existing `ctest --preset test-<leg>` step picks it up with zero changes
 # to this file or _build.yml.
 #
-# ALSA-conditional tests (tests/platform/alsa/, see tests/CMakeLists.txt)
+# ALSA-conditional tests (tests/backend/alsa/, see tests/CMakeLists.txt)
 # register only when AC3FORGE_WITH_ALSA finds libasound, which is why a
 # no-ALSA fallback run reports fewer tests than the same leg's full run - a
 # configuration difference, not tests going missing.
@@ -456,7 +456,7 @@ jobs:
   # get zero CI coverage - the same gap this job's own header comment above already exists to close
   # for the library modules themselves. examples/ registers each example as its own ctest case
   # (examples/CMakeLists.txt), so `ctest --preset test-linux-gcc` below already exercises
-  # encode_adm's own standalone fixture-driven run alongside test_adm.cpp/test_adm_bridge.cpp/
+  # encode_adm's own standalone fixture-driven run alongside adm/test_adm.cpp/admbridge/test_adm_bridge.cpp/
   # test_cli_atmos_adm.cpp (tests/CMakeLists.txt only compiles that last one in when
   # AC3FORGE_BUILD_ADM AND ac3cli are both present, exactly the combination this job now builds).
   # AC3FORGE_BUILD_GUI already defaults OFF on this preset.

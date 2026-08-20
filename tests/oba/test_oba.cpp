@@ -164,7 +164,7 @@ TEST_CASE("reconstruct is a 256-sample-delayed identity when the matrix is a pur
     // from any panning/mixing math: M[0][0][*] = 1, every other entry 0,
     // should hand channel 0 straight back through - modulo the 256-sample
     // algorithmic delay every MDCT-based encode+decode round trip in this
-    // codebase carries (see tests/test_eac3_decoder.cpp's own snr_db helper
+    // codebase carries (see tests/decoder/test_eac3_decoder.cpp's own snr_db helper
     // and its "256-sample encode+decode delay" comment; reconstruct() runs
     // its own independent forward+inverse MDCT pass, so it carries that same
     // one block of delay relative to whatever bed it was handed).
