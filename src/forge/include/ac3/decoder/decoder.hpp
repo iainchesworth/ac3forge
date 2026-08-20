@@ -348,6 +348,22 @@ class AC3FORGE_EXPORT Eac3Decoder {
     std::array<double, 512> imdct_scratch_{};
     std::array<double, 256> ecpl_spectrum_real_{};
     std::array<double, 256> ecpl_spectrum_imag_{};
+    // decode_substream's frame-lifetime coefficient buffers - the AHT
+    // stream store (§3.4: all six blocks decoded at block 0) and the
+    // enhanced-coupling channel store (§3.5.5.1: a block's reconstruction
+    // reads its neighbors). Owned here for the same reuse reasoning as the
+    // scratch above, with one extra property worth the wordier comment:
+    // both used to be heap-allocated and zeroed afresh on every call (98 KB
+    // per frame, the two largest per-frame heap costs in the decoder)
+    // whether or not the stream used either tool. They are sized lazily at
+    // first use instead - a stream using neither tool never allocates them
+    // - and every read of a reused buffer is made safe at the write site:
+    // an AHT stream's slot is cleared before its block-0 decode fills it
+    // (bins past its endmant must read zero), and enhanced-coupling reads
+    // are whole-array assignments from this call or gated by this call's
+    // ecpl_active flags, so a previous frame's contents are never visible.
+    std::vector<std::array<std::array<double, 256>, kBlocksPerFrame>> aht_coeffs_;
+    std::vector<std::array<double, 256>> ecpl_all_coeffs_;
     // §7.3.4 dither (Annex E's dithflag[ch]/dithflage), shared across every
     // substream identity decode_substream ever sees - nothing about §7.3.4
     // requires per-identity separation, only that simultaneous channels'

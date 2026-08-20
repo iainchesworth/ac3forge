@@ -557,9 +557,12 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
     // stream. Unlike every other per-stream array above, these are produced
     // once - at block 0, since an AHT stream's mantissas exist only there -
     // rather than block by block, so they need their own frame-lifetime
-    // buffer distinct from the per-block-local `coeffs` below.
-    std::vector<std::array<std::array<double, 256>, kBlocksPerFrame>> aht_coeffs(
-        static_cast<std::size_t>(kMaxSubstreamStreams));
+    // buffer distinct from the per-block-local `coeffs` below. The buffer
+    // itself lives on the decoder (see the members' comment in decoder.hpp):
+    // decode_aht_stream sizes it at first AHT use and clears a stream's
+    // slot before filling it, so a stream that never uses AHT never pays
+    // the 86 KB, and a reused slot can never leak a previous frame's bins.
+    auto& aht_coeffs = aht_coeffs_;
 
     // Enhanced coupling state (§E3.5), parallel to the standard-coupling
     // state above and mutually exclusive with it per block (ecplinu picks
@@ -594,10 +597,12 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
     // neighbors.
     // Heap-allocated like aht_coeffs above (PREfast's C6262, alert #63): a
     // fixed std::array here was the single largest contributor to
-    // decode_substream's oversized stack frame, and - same as aht_coeffs -
-    // it's produced once per call, not per (block, channel) iteration, so
-    // there's no hot-loop allocation cost to heap-allocating it.
-    std::vector<std::array<double, 256>> ecpl_all_coeffs(static_cast<std::size_t>(kBlocksPerFrame));
+    // decode_substream's oversized stack frame. Like aht_coeffs it lives on
+    // the decoder, sized lazily at the first block that stashes into it:
+    // every read is either a whole-array assignment made this call or gated
+    // by this call's ecpl_active flags, so nothing stale is ever visible,
+    // and a stream that never uses enhanced coupling never allocates it.
+    auto& ecpl_all_coeffs = ecpl_all_coeffs_;
     std::array<bool, kBlocksPerFrame> ecpl_active{};
 
     // Everything the second pass below (spx synthesis, rematrixing, IMDCT
@@ -1343,6 +1348,14 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
         // because its BitAllocRegion was built with high_efficiency=true.
         const auto decode_aht_stream = [&](int s, int begin) -> std::expected<void, DecodeError> {
             const auto us = static_cast<std::size_t>(s);
+            // First AHT use on this decoder sizes the frame-lifetime buffer;
+            // the slot clear keeps the read side's invariant that bins this
+            // decode does not write - past endmant, below `begin` - read
+            // zero, which the freshly-allocated buffer used to provide.
+            if (aht_coeffs.size() < static_cast<std::size_t>(kMaxSubstreamStreams)) {
+                aht_coeffs.resize(static_cast<std::size_t>(kMaxSubstreamStreams));
+            }
+            aht_coeffs[us] = {};
             const int end = endmant[us];
             const auto& hebap = bap[us];
 
@@ -1519,6 +1532,9 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
         // coupling needs them even when this block did not (§3.5.5.1's own
         // zero-substitution rule reads them via ecpl_active below).
         if (frm->cplinu[static_cast<std::size_t>(blk)] && ecplinu_now) {
+            if (ecpl_all_coeffs.empty()) {
+                ecpl_all_coeffs.resize(static_cast<std::size_t>(kBlocksPerFrame));
+            }
             ecpl_all_coeffs[static_cast<std::size_t>(blk)] =
                 coeffs[static_cast<std::size_t>(kCplStream)];
             ecpl_active[static_cast<std::size_t>(blk)] = true;
@@ -1789,6 +1805,11 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
 
     auto pending_it = pending_.find(key);
     if (frm->transproce) {
+        // One splice buffer for every processed channel, re-cleared per
+        // channel rather than re-allocated: the zero fill is load-bearing
+        // (with no pending frame the history half must read silence), the
+        // 12 KB allocation per channel was not.
+        std::vector<float> combined;
         for (int ch = 0; ch < nfchans; ++ch) {
             const auto uch = static_cast<std::size_t>(ch);
             if (!frm->chintransproc[uch]) {
@@ -1804,7 +1825,7 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
                 // syntax this project's own encoder does not exercise).
                 return std::unexpected(DecodeError::kUnsupported);
             }
-            std::vector<float> combined(static_cast<std::size_t>(kSamplesPerFrame) * 2);
+            combined.assign(static_cast<std::size_t>(kSamplesPerFrame) * 2, 0.0f);
             if (pending_it != pending_.end()) {
                 std::ranges::copy(pending_it->second.channels[uch], combined.begin());
             }
