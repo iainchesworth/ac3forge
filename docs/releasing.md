@@ -112,6 +112,12 @@ not optional polish:
 
 4. Verify the release page has all expected artifacts, and that the curated notes render and
    read well.
+5. Bump the four packaging manifests - each has its own **Every release tag** steps below, and
+   none of them happen automatically:
+   [vcpkg port](#vcpkg-port), [Homebrew formula and cask](#homebrew-formula-and-cask),
+   [winget manifest](#winget-manifest), [Conan recipe](#conan-recipe). Nothing in CI checks these
+   against the latest tag, so a release is not actually done until all four point at it - three
+   were caught stale for a full release cycle before this line existed.
 
 ## vcpkg port
 

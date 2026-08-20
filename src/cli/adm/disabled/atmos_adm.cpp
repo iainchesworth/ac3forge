@@ -8,8 +8,8 @@
 
 namespace ac3cli {
 
-const ac3::platform::Capability& adm_capability() {
-    static constexpr ac3::platform::Capability kUnavailable{
+const ac3::audio::Capability& adm_capability() {
+    static constexpr ac3::audio::Capability kUnavailable{
         .available = false,
         .reason = "this build was not configured with -DAC3FORGE_BUILD_ADM=ON "
                   "(ac3adm::ac3adm/ac3::admbridge were not linked in)"};

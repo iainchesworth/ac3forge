@@ -73,7 +73,7 @@ typedef enum ac3forge_status {
 /* A short, static, human-readable description of `status` — e.g. for a log
  * line. The returned pointer is to library-owned storage valid for the
  * process lifetime; never free() it. */
-AC3FORGEC_API const char* ac3forge_status_message(ac3forge_status_t status);
+AC3FORGEC_EXPORT const char* ac3forge_status_message(ac3forge_status_t status);
 
 /* --------------------------------------------------------------------- *
  * Version
@@ -92,7 +92,7 @@ typedef struct ac3forge_version_info {
     const char* full;
 } ac3forge_version_t;
 
-AC3FORGEC_API ac3forge_version_t ac3forge_version(void);
+AC3FORGEC_EXPORT ac3forge_version_t ac3forge_version(void);
 
 /* --------------------------------------------------------------------- *
  * Shared enums (ac3::SampleRate, ac3::Acmod)
@@ -162,7 +162,7 @@ typedef struct ac3forge_heavy_config {
     double release_db_per_second; /* default 20.0 */
 } ac3forge_heavy_config_t;
 
-AC3FORGEC_API void ac3forge_heavy_config_init(ac3forge_heavy_config_t* config);
+AC3FORGEC_EXPORT void ac3forge_heavy_config_init(ac3forge_heavy_config_t* config);
 
 /* --------------------------------------------------------------------- *
  * AC-3 encoder (ac3::FrameEncoder)
@@ -208,23 +208,23 @@ typedef struct ac3forge_encoder_config {
 } ac3forge_encoder_config_t;
 
 /* Fills `config` with the same defaults as ac3::EncoderConfig{}. */
-AC3FORGEC_API void ac3forge_encoder_config_init(ac3forge_encoder_config_t* config);
+AC3FORGEC_EXPORT void ac3forge_encoder_config_init(ac3forge_encoder_config_t* config);
 
-AC3FORGEC_API ac3forge_status_t ac3forge_encoder_create(const ac3forge_encoder_config_t* config,
+AC3FORGEC_EXPORT ac3forge_status_t ac3forge_encoder_create(const ac3forge_encoder_config_t* config,
                                                          ac3forge_encoder_t** out_encoder);
-AC3FORGEC_API void ac3forge_encoder_destroy(ac3forge_encoder_t* encoder);
+AC3FORGEC_EXPORT void ac3forge_encoder_destroy(ac3forge_encoder_t* encoder);
 
 /* Full-bandwidth channels (per config.acmod) plus, when config.lfe is set,
  * the LFE channel last — the same count encode_frame() below expects. */
-AC3FORGEC_API size_t ac3forge_encoder_channel_count(const ac3forge_encoder_t* encoder);
+AC3FORGEC_EXPORT size_t ac3forge_encoder_channel_count(const ac3forge_encoder_t* encoder);
 
 /* An owned, immutable byte buffer — the result type for every function here
  * that produces one encoded frame's worth of bytes. */
 typedef struct ac3forge_bytes ac3forge_bytes_t;
 
-AC3FORGEC_API const uint8_t* ac3forge_bytes_data(const ac3forge_bytes_t* bytes);
-AC3FORGEC_API size_t ac3forge_bytes_size(const ac3forge_bytes_t* bytes);
-AC3FORGEC_API void ac3forge_bytes_destroy(ac3forge_bytes_t* bytes);
+AC3FORGEC_EXPORT const uint8_t* ac3forge_bytes_data(const ac3forge_bytes_t* bytes);
+AC3FORGEC_EXPORT size_t ac3forge_bytes_size(const ac3forge_bytes_t* bytes);
+AC3FORGEC_EXPORT void ac3forge_bytes_destroy(ac3forge_bytes_t* bytes);
 
 /* channels: `channel_count` pointers (must equal
  * ac3forge_encoder_channel_count(encoder)), each to exactly
@@ -232,7 +232,7 @@ AC3FORGEC_API void ac3forge_bytes_destroy(ac3forge_bytes_t* bytes);
  * order (Table 5.8) with LFE last. On success, *out_frame receives one
  * complete syncframe; the caller must destroy it. *out_frame is left
  * untouched on failure. */
-AC3FORGEC_API ac3forge_status_t ac3forge_encoder_encode_frame(ac3forge_encoder_t* encoder,
+AC3FORGEC_EXPORT ac3forge_status_t ac3forge_encoder_encode_frame(ac3forge_encoder_t* encoder,
                                                                const float* const* channels,
                                                                size_t channel_count,
                                                                size_t samples_per_channel,
@@ -250,11 +250,11 @@ typedef struct ac3forge_decoder_config {
     int heavy_compression; /* default 0 */
 } ac3forge_decoder_config_t;
 
-AC3FORGEC_API void ac3forge_decoder_config_init(ac3forge_decoder_config_t* config);
+AC3FORGEC_EXPORT void ac3forge_decoder_config_init(ac3forge_decoder_config_t* config);
 
-AC3FORGEC_API ac3forge_status_t ac3forge_decoder_create(const ac3forge_decoder_config_t* config,
+AC3FORGEC_EXPORT ac3forge_status_t ac3forge_decoder_create(const ac3forge_decoder_config_t* config,
                                                          ac3forge_decoder_t** out_decoder);
-AC3FORGEC_API void ac3forge_decoder_destroy(ac3forge_decoder_t* decoder);
+AC3FORGEC_EXPORT void ac3forge_decoder_destroy(ac3forge_decoder_t* decoder);
 
 /* One decoded syncframe (ac3::DecodedFrame), read through the accessors
  * below. */
@@ -263,49 +263,49 @@ typedef struct ac3forge_decoded_frame ac3forge_decoded_frame_t;
 /* `frame` must be exactly one syncframe, same precondition as
  * FrameDecoder::decode_frame(). On success, *out_frame receives the decode
  * result; the caller must destroy it. */
-AC3FORGEC_API ac3forge_status_t ac3forge_decoder_decode_frame(ac3forge_decoder_t* decoder,
+AC3FORGEC_EXPORT ac3forge_status_t ac3forge_decoder_decode_frame(ac3forge_decoder_t* decoder,
                                                                const uint8_t* frame,
                                                                size_t frame_size,
                                                                ac3forge_decoded_frame_t** out_frame);
 
-AC3FORGEC_API ac3forge_sample_rate_t ac3forge_decoded_frame_sample_rate(
+AC3FORGEC_EXPORT ac3forge_sample_rate_t ac3forge_decoded_frame_sample_rate(
     const ac3forge_decoded_frame_t* frame);
-AC3FORGEC_API uint32_t ac3forge_decoded_frame_bitrate_kbps(const ac3forge_decoded_frame_t* frame);
-AC3FORGEC_API ac3forge_acmod_t ac3forge_decoded_frame_acmod(const ac3forge_decoded_frame_t* frame);
-AC3FORGEC_API int ac3forge_decoded_frame_lfe(const ac3forge_decoded_frame_t* frame);
-AC3FORGEC_API int ac3forge_decoded_frame_dialnorm(const ac3forge_decoded_frame_t* frame);
+AC3FORGEC_EXPORT uint32_t ac3forge_decoded_frame_bitrate_kbps(const ac3forge_decoded_frame_t* frame);
+AC3FORGEC_EXPORT ac3forge_acmod_t ac3forge_decoded_frame_acmod(const ac3forge_decoded_frame_t* frame);
+AC3FORGEC_EXPORT int ac3forge_decoded_frame_lfe(const ac3forge_decoded_frame_t* frame);
+AC3FORGEC_EXPORT int ac3forge_decoded_frame_dialnorm(const ac3forge_decoded_frame_t* frame);
 
-AC3FORGEC_API int ac3forge_decoded_frame_has_compr(const ac3forge_decoded_frame_t* frame);
-AC3FORGEC_API uint8_t ac3forge_decoded_frame_compr(const ac3forge_decoded_frame_t* frame);
+AC3FORGEC_EXPORT int ac3forge_decoded_frame_has_compr(const ac3forge_decoded_frame_t* frame);
+AC3FORGEC_EXPORT uint8_t ac3forge_decoded_frame_compr(const ac3forge_decoded_frame_t* frame);
 /* block_index in [0, AC3FORGE_BLOCKS_PER_FRAME). */
-AC3FORGEC_API uint8_t ac3forge_decoded_frame_dynrng(const ac3forge_decoded_frame_t* frame,
+AC3FORGEC_EXPORT uint8_t ac3forge_decoded_frame_dynrng(const ac3forge_decoded_frame_t* frame,
                                                      int block_index);
 
 /* Ch2's words — meaningful only when acmod() == AC3FORGE_ACMOD_DUAL_MONO. */
-AC3FORGEC_API int ac3forge_decoded_frame_has_dialnorm2(const ac3forge_decoded_frame_t* frame);
-AC3FORGEC_API int ac3forge_decoded_frame_dialnorm2(const ac3forge_decoded_frame_t* frame);
-AC3FORGEC_API int ac3forge_decoded_frame_has_compr2(const ac3forge_decoded_frame_t* frame);
-AC3FORGEC_API uint8_t ac3forge_decoded_frame_compr2(const ac3forge_decoded_frame_t* frame);
-AC3FORGEC_API uint8_t ac3forge_decoded_frame_dynrng2(const ac3forge_decoded_frame_t* frame,
+AC3FORGEC_EXPORT int ac3forge_decoded_frame_has_dialnorm2(const ac3forge_decoded_frame_t* frame);
+AC3FORGEC_EXPORT int ac3forge_decoded_frame_dialnorm2(const ac3forge_decoded_frame_t* frame);
+AC3FORGEC_EXPORT int ac3forge_decoded_frame_has_compr2(const ac3forge_decoded_frame_t* frame);
+AC3FORGEC_EXPORT uint8_t ac3forge_decoded_frame_compr2(const ac3forge_decoded_frame_t* frame);
+AC3FORGEC_EXPORT uint8_t ac3forge_decoded_frame_dynrng2(const ac3forge_decoded_frame_t* frame,
                                                       int block_index);
 
-AC3FORGEC_API size_t ac3forge_decoded_frame_channel_count(const ac3forge_decoded_frame_t* frame);
+AC3FORGEC_EXPORT size_t ac3forge_decoded_frame_channel_count(const ac3forge_decoded_frame_t* frame);
 /* Always AC3FORGE_SAMPLES_PER_FRAME; exposed for a caller that would rather
  * not depend on the macro. */
-AC3FORGEC_API size_t ac3forge_decoded_frame_samples_per_channel(
+AC3FORGEC_EXPORT size_t ac3forge_decoded_frame_samples_per_channel(
     const ac3forge_decoded_frame_t* frame);
 /* channel_index in [0, channel_count()), AC-3 coded order (Table 5.8), LFE
  * last when lfe() is set. The returned pointer is valid until `frame` is
  * destroyed. */
-AC3FORGEC_API const float* ac3forge_decoded_frame_channel_samples(
+AC3FORGEC_EXPORT const float* ac3forge_decoded_frame_channel_samples(
     const ac3forge_decoded_frame_t* frame, size_t channel_index);
 /* True where that block used the short (block-switched) transform.
  * channel_index only ranges over the full-bandwidth channels (no LFE/coupling
  * entry — see DecodedFrame::blksw); out of range returns 0. */
-AC3FORGEC_API int ac3forge_decoded_frame_block_switched(const ac3forge_decoded_frame_t* frame,
+AC3FORGEC_EXPORT int ac3forge_decoded_frame_block_switched(const ac3forge_decoded_frame_t* frame,
                                                          size_t channel_index, int block_index);
 
-AC3FORGEC_API void ac3forge_decoded_frame_destroy(ac3forge_decoded_frame_t* frame);
+AC3FORGEC_EXPORT void ac3forge_decoded_frame_destroy(ac3forge_decoded_frame_t* frame);
 
 /* --------------------------------------------------------------------- *
  * E-AC-3 / Atmos decode (ac3::Eac3Decoder)
@@ -313,9 +313,9 @@ AC3FORGEC_API void ac3forge_decoded_frame_destroy(ac3forge_decoded_frame_t* fram
 
 typedef struct ac3forge_eac3_decoder ac3forge_eac3_decoder_t;
 
-AC3FORGEC_API ac3forge_status_t ac3forge_eac3_decoder_create(
+AC3FORGEC_EXPORT ac3forge_status_t ac3forge_eac3_decoder_create(
     const ac3forge_decoder_config_t* config, ac3forge_eac3_decoder_t** out_decoder);
-AC3FORGEC_API void ac3forge_eac3_decoder_destroy(ac3forge_eac3_decoder_t* decoder);
+AC3FORGEC_EXPORT void ac3forge_eac3_decoder_destroy(ac3forge_eac3_decoder_t* decoder);
 
 typedef struct ac3forge_decoded_substream ac3forge_decoded_substream_t;
 typedef struct ac3forge_decoded_access_unit ac3forge_decoded_access_unit_t;
@@ -324,14 +324,14 @@ typedef struct ac3forge_decoded_access_unit ac3forge_decoded_access_unit_t;
  * AC3FORGE_OK with *out_substream left NULL means this frame's PCM is being
  * held back pending transient pre-noise processing (§3.7) — not an error.
  * Call ac3forge_eac3_decoder_flush() at end of stream to collect it. */
-AC3FORGEC_API ac3forge_status_t ac3forge_eac3_decoder_decode_substream(
+AC3FORGEC_EXPORT ac3forge_status_t ac3forge_eac3_decoder_decode_substream(
     ac3forge_eac3_decoder_t* decoder, const uint8_t* frame, size_t frame_size,
     ac3forge_decoded_substream_t** out_substream);
 
 /* Same held-back convention as decode_substream, for the same reason (see
  * ac3::Eac3Decoder::decode_access_unit's own comment). `unit` must be
  * delimited exactly as ac3forge_split_access_units() would delimit it. */
-AC3FORGEC_API ac3forge_status_t ac3forge_eac3_decoder_decode_access_unit(
+AC3FORGEC_EXPORT ac3forge_status_t ac3forge_eac3_decoder_decode_access_unit(
     ac3forge_eac3_decoder_t* decoder, const uint8_t* unit, size_t unit_size,
     ac3forge_decoded_access_unit_t** out_unit);
 
@@ -340,95 +340,95 @@ AC3FORGEC_API ac3forge_status_t ac3forge_eac3_decoder_decode_access_unit(
  * handles (each must still be individually destroyed); *out_count is 0 (and
  * *out_substreams NULL) for a stream that never used the tool. Free the array
  * itself with ac3forge_decoded_substream_array_destroy(). */
-AC3FORGEC_API ac3forge_status_t ac3forge_eac3_decoder_flush(
+AC3FORGEC_EXPORT ac3forge_status_t ac3forge_eac3_decoder_flush(
     ac3forge_eac3_decoder_t* decoder, ac3forge_decoded_substream_t*** out_substreams,
     size_t* out_count);
-AC3FORGEC_API void ac3forge_decoded_substream_array_destroy(
+AC3FORGEC_EXPORT void ac3forge_decoded_substream_array_destroy(
     ac3forge_decoded_substream_t** substreams, size_t count);
 
 /* --- ac3::DecodedSubstream accessors ------------------------------------ */
 
-AC3FORGEC_API int ac3forge_decoded_substream_is_independent(
+AC3FORGEC_EXPORT int ac3forge_decoded_substream_is_independent(
     const ac3forge_decoded_substream_t* substream);
-AC3FORGEC_API int ac3forge_decoded_substream_id(const ac3forge_decoded_substream_t* substream);
-AC3FORGEC_API ac3forge_sample_rate_t ac3forge_decoded_substream_sample_rate(
+AC3FORGEC_EXPORT int ac3forge_decoded_substream_id(const ac3forge_decoded_substream_t* substream);
+AC3FORGEC_EXPORT ac3forge_sample_rate_t ac3forge_decoded_substream_sample_rate(
     const ac3forge_decoded_substream_t* substream);
-AC3FORGEC_API ac3forge_acmod_t ac3forge_decoded_substream_acmod(
+AC3FORGEC_EXPORT ac3forge_acmod_t ac3forge_decoded_substream_acmod(
     const ac3forge_decoded_substream_t* substream);
-AC3FORGEC_API int ac3forge_decoded_substream_lfe(const ac3forge_decoded_substream_t* substream);
-AC3FORGEC_API int ac3forge_decoded_substream_dialnorm(
+AC3FORGEC_EXPORT int ac3forge_decoded_substream_lfe(const ac3forge_decoded_substream_t* substream);
+AC3FORGEC_EXPORT int ac3forge_decoded_substream_dialnorm(
     const ac3forge_decoded_substream_t* substream);
-AC3FORGEC_API int ac3forge_decoded_substream_has_compr(
+AC3FORGEC_EXPORT int ac3forge_decoded_substream_has_compr(
     const ac3forge_decoded_substream_t* substream);
-AC3FORGEC_API uint8_t ac3forge_decoded_substream_compr(
+AC3FORGEC_EXPORT uint8_t ac3forge_decoded_substream_compr(
     const ac3forge_decoded_substream_t* substream);
-AC3FORGEC_API uint8_t ac3forge_decoded_substream_dynrng(
+AC3FORGEC_EXPORT uint8_t ac3forge_decoded_substream_dynrng(
     const ac3forge_decoded_substream_t* substream, int block_index);
-AC3FORGEC_API int ac3forge_decoded_substream_has_dialnorm2(
+AC3FORGEC_EXPORT int ac3forge_decoded_substream_has_dialnorm2(
     const ac3forge_decoded_substream_t* substream);
-AC3FORGEC_API int ac3forge_decoded_substream_dialnorm2(
+AC3FORGEC_EXPORT int ac3forge_decoded_substream_dialnorm2(
     const ac3forge_decoded_substream_t* substream);
-AC3FORGEC_API int ac3forge_decoded_substream_has_compr2(
+AC3FORGEC_EXPORT int ac3forge_decoded_substream_has_compr2(
     const ac3forge_decoded_substream_t* substream);
-AC3FORGEC_API uint8_t ac3forge_decoded_substream_compr2(
+AC3FORGEC_EXPORT uint8_t ac3forge_decoded_substream_compr2(
     const ac3forge_decoded_substream_t* substream);
-AC3FORGEC_API uint8_t ac3forge_decoded_substream_dynrng2(
+AC3FORGEC_EXPORT uint8_t ac3forge_decoded_substream_dynrng2(
     const ac3forge_decoded_substream_t* substream, int block_index);
-AC3FORGEC_API int ac3forge_decoded_substream_numblkscod(
+AC3FORGEC_EXPORT int ac3forge_decoded_substream_numblkscod(
     const ac3forge_decoded_substream_t* substream);
-AC3FORGEC_API int ac3forge_decoded_substream_has_chanmap(
+AC3FORGEC_EXPORT int ac3forge_decoded_substream_has_chanmap(
     const ac3forge_decoded_substream_t* substream);
-AC3FORGEC_API uint16_t ac3forge_decoded_substream_chanmap(
+AC3FORGEC_EXPORT uint16_t ac3forge_decoded_substream_chanmap(
     const ac3forge_decoded_substream_t* substream);
-AC3FORGEC_API int ac3forge_decoded_substream_last_dependent(
+AC3FORGEC_EXPORT int ac3forge_decoded_substream_last_dependent(
     const ac3forge_decoded_substream_t* substream);
 /* Table E2.5 location map this substream's channels occupy — chanmap() when
  * present, the acmod/lfe-derived map otherwise. */
-AC3FORGEC_API uint16_t ac3forge_decoded_substream_location_map(
+AC3FORGEC_EXPORT uint16_t ac3forge_decoded_substream_location_map(
     const ac3forge_decoded_substream_t* substream);
 
-AC3FORGEC_API size_t ac3forge_decoded_substream_channel_count(
+AC3FORGEC_EXPORT size_t ac3forge_decoded_substream_channel_count(
     const ac3forge_decoded_substream_t* substream);
-AC3FORGEC_API size_t ac3forge_decoded_substream_samples_per_channel(
+AC3FORGEC_EXPORT size_t ac3forge_decoded_substream_samples_per_channel(
     const ac3forge_decoded_substream_t* substream);
-AC3FORGEC_API const float* ac3forge_decoded_substream_channel_samples(
+AC3FORGEC_EXPORT const float* ac3forge_decoded_substream_channel_samples(
     const ac3forge_decoded_substream_t* substream, size_t channel_index);
-AC3FORGEC_API int ac3forge_decoded_substream_block_switched(
+AC3FORGEC_EXPORT int ac3forge_decoded_substream_block_switched(
     const ac3forge_decoded_substream_t* substream, size_t channel_index, int block_index);
 
 /* --- object audio: OAMD (ac3::oba::DecodedProgram) + JOC reconstruction -- */
 
-AC3FORGEC_API int ac3forge_decoded_substream_has_object_metadata(
+AC3FORGEC_EXPORT int ac3forge_decoded_substream_has_object_metadata(
     const ac3forge_decoded_substream_t* substream);
 /* Below are only meaningful when has_object_metadata() is non-zero. */
-AC3FORGEC_API int ac3forge_decoded_substream_program_dynamic_only(
+AC3FORGEC_EXPORT int ac3forge_decoded_substream_program_dynamic_only(
     const ac3forge_decoded_substream_t* substream);
 /* b_lfe_present — dynamic_only programmes only; see program_bed() for the
  * bed-instance branch's own LFE flag (bit AC3FORGE_BED_LFE). */
-AC3FORGEC_API int ac3forge_decoded_substream_program_lfe(
+AC3FORGEC_EXPORT int ac3forge_decoded_substream_program_lfe(
     const ac3forge_decoded_substream_t* substream);
 /* Table 12 bed-instance channel assignment bitmask (0 when dynamic_only). */
-AC3FORGEC_API uint16_t ac3forge_decoded_substream_program_bed(
+AC3FORGEC_EXPORT uint16_t ac3forge_decoded_substream_program_bed(
     const ac3forge_decoded_substream_t* substream);
-AC3FORGEC_API int ac3forge_decoded_substream_program_dynamic_object_count(
+AC3FORGEC_EXPORT int ac3forge_decoded_substream_program_dynamic_object_count(
     const ac3forge_decoded_substream_t* substream);
 /* object_index in [0, program_dynamic_object_count()). Position is §4.2.1's
  * room-anchored, left-handed, normalized-to-the-room-cuboid system: x in
  * [0, 1] left to right, y in [0, 1] front to back, z in [-1, 1] floor to
  * ceiling. gain_db is §5.6.1.4's object gain. */
-AC3FORGEC_API void ac3forge_decoded_substream_dynamic_object(
+AC3FORGEC_EXPORT void ac3forge_decoded_substream_dynamic_object(
     const ac3forge_decoded_substream_t* substream, int object_index, double* out_x, double* out_y,
     double* out_z, double* out_gain_db);
 
 /* JOC's reconstructed per-object audio, parallel to the dynamic objects
  * above (same index = same object) — 0 when no JOC payload rode alongside
  * the OAMD one. Each waveform is samples_per_channel() samples long. */
-AC3FORGEC_API size_t ac3forge_decoded_substream_object_audio_count(
+AC3FORGEC_EXPORT size_t ac3forge_decoded_substream_object_audio_count(
     const ac3forge_decoded_substream_t* substream);
-AC3FORGEC_API const float* ac3forge_decoded_substream_object_audio(
+AC3FORGEC_EXPORT const float* ac3forge_decoded_substream_object_audio(
     const ac3forge_decoded_substream_t* substream, size_t object_index);
 
-AC3FORGEC_API void ac3forge_decoded_substream_destroy(ac3forge_decoded_substream_t* substream);
+AC3FORGEC_EXPORT void ac3forge_decoded_substream_destroy(ac3forge_decoded_substream_t* substream);
 
 /* --- Table 12 bed-instance channel assignment bits (program_bed()) ------ */
 #define AC3FORGE_BED_LR (1u << 9)
@@ -472,61 +472,61 @@ typedef enum ac3forge_location {
 
 /* Same held-back-frame convention as decode_substream/decode_access_unit
  * above; see ac3::Eac3Decoder::decode_access_unit's own comment. */
-AC3FORGEC_API ac3forge_sample_rate_t ac3forge_decoded_access_unit_sample_rate(
+AC3FORGEC_EXPORT ac3forge_sample_rate_t ac3forge_decoded_access_unit_sample_rate(
     const ac3forge_decoded_access_unit_t* unit);
-AC3FORGEC_API ac3forge_acmod_t ac3forge_decoded_access_unit_acmod(
+AC3FORGEC_EXPORT ac3forge_acmod_t ac3forge_decoded_access_unit_acmod(
     const ac3forge_decoded_access_unit_t* unit);
-AC3FORGEC_API int ac3forge_decoded_access_unit_dialnorm(
+AC3FORGEC_EXPORT int ac3forge_decoded_access_unit_dialnorm(
     const ac3forge_decoded_access_unit_t* unit);
-AC3FORGEC_API int ac3forge_decoded_access_unit_has_compr(
+AC3FORGEC_EXPORT int ac3forge_decoded_access_unit_has_compr(
     const ac3forge_decoded_access_unit_t* unit);
-AC3FORGEC_API uint8_t ac3forge_decoded_access_unit_compr(
+AC3FORGEC_EXPORT uint8_t ac3forge_decoded_access_unit_compr(
     const ac3forge_decoded_access_unit_t* unit);
-AC3FORGEC_API uint8_t ac3forge_decoded_access_unit_dynrng(
+AC3FORGEC_EXPORT uint8_t ac3forge_decoded_access_unit_dynrng(
     const ac3forge_decoded_access_unit_t* unit, int block_index);
-AC3FORGEC_API int ac3forge_decoded_access_unit_numblkscod(
+AC3FORGEC_EXPORT int ac3forge_decoded_access_unit_numblkscod(
     const ac3forge_decoded_access_unit_t* unit);
-AC3FORGEC_API int ac3forge_decoded_access_unit_substream_count(
+AC3FORGEC_EXPORT int ac3forge_decoded_access_unit_substream_count(
     const ac3forge_decoded_access_unit_t* unit);
 
 /* The rendered programme, laid out in Table E2.5 location order — parallel
  * to layout() below, except for dual mono (see layout_count()'s own
  * comment). */
-AC3FORGEC_API size_t ac3forge_decoded_access_unit_channel_count(
+AC3FORGEC_EXPORT size_t ac3forge_decoded_access_unit_channel_count(
     const ac3forge_decoded_access_unit_t* unit);
-AC3FORGEC_API size_t ac3forge_decoded_access_unit_samples_per_channel(
+AC3FORGEC_EXPORT size_t ac3forge_decoded_access_unit_samples_per_channel(
     const ac3forge_decoded_access_unit_t* unit);
-AC3FORGEC_API const float* ac3forge_decoded_access_unit_channel_samples(
+AC3FORGEC_EXPORT const float* ac3forge_decoded_access_unit_channel_samples(
     const ac3forge_decoded_access_unit_t* unit, size_t channel_index);
 
 /* 0 for dual mono (acmod == AC3FORGE_ACMOD_DUAL_MONO): 1+1 has no Table
  * E2.5 layout, its two channels are unrelated programmes — see
  * ac3::DecodedAccessUnit::layout's own comment. Otherwise equal to
  * channel_count() above. */
-AC3FORGEC_API size_t ac3forge_decoded_access_unit_layout_count(
+AC3FORGEC_EXPORT size_t ac3forge_decoded_access_unit_layout_count(
     const ac3forge_decoded_access_unit_t* unit);
-AC3FORGEC_API ac3forge_location_t ac3forge_decoded_access_unit_layout_location(
+AC3FORGEC_EXPORT ac3forge_location_t ac3forge_decoded_access_unit_layout_location(
     const ac3forge_decoded_access_unit_t* unit, size_t index);
 
-AC3FORGEC_API int ac3forge_decoded_access_unit_has_object_metadata(
+AC3FORGEC_EXPORT int ac3forge_decoded_access_unit_has_object_metadata(
     const ac3forge_decoded_access_unit_t* unit);
-AC3FORGEC_API int ac3forge_decoded_access_unit_program_dynamic_only(
+AC3FORGEC_EXPORT int ac3forge_decoded_access_unit_program_dynamic_only(
     const ac3forge_decoded_access_unit_t* unit);
-AC3FORGEC_API int ac3forge_decoded_access_unit_program_lfe(
+AC3FORGEC_EXPORT int ac3forge_decoded_access_unit_program_lfe(
     const ac3forge_decoded_access_unit_t* unit);
-AC3FORGEC_API uint16_t ac3forge_decoded_access_unit_program_bed(
+AC3FORGEC_EXPORT uint16_t ac3forge_decoded_access_unit_program_bed(
     const ac3forge_decoded_access_unit_t* unit);
-AC3FORGEC_API int ac3forge_decoded_access_unit_program_dynamic_object_count(
+AC3FORGEC_EXPORT int ac3forge_decoded_access_unit_program_dynamic_object_count(
     const ac3forge_decoded_access_unit_t* unit);
-AC3FORGEC_API void ac3forge_decoded_access_unit_dynamic_object(
+AC3FORGEC_EXPORT void ac3forge_decoded_access_unit_dynamic_object(
     const ac3forge_decoded_access_unit_t* unit, int object_index, double* out_x, double* out_y,
     double* out_z, double* out_gain_db);
-AC3FORGEC_API size_t ac3forge_decoded_access_unit_object_audio_count(
+AC3FORGEC_EXPORT size_t ac3forge_decoded_access_unit_object_audio_count(
     const ac3forge_decoded_access_unit_t* unit);
-AC3FORGEC_API const float* ac3forge_decoded_access_unit_object_audio(
+AC3FORGEC_EXPORT const float* ac3forge_decoded_access_unit_object_audio(
     const ac3forge_decoded_access_unit_t* unit, size_t object_index);
 
-AC3FORGEC_API void ac3forge_decoded_access_unit_destroy(ac3forge_decoded_access_unit_t* unit);
+AC3FORGEC_EXPORT void ac3forge_decoded_access_unit_destroy(ac3forge_decoded_access_unit_t* unit);
 
 /* --------------------------------------------------------------------- *
  * Stream framing helpers (ac3::split_frames / split_access_units / stream_bsid)
@@ -543,22 +543,22 @@ typedef struct ac3forge_span {
 
 typedef struct ac3forge_spans ac3forge_spans_t;
 
-AC3FORGEC_API size_t ac3forge_spans_count(const ac3forge_spans_t* spans);
-AC3FORGEC_API ac3forge_span_t ac3forge_spans_get(const ac3forge_spans_t* spans, size_t index);
-AC3FORGEC_API void ac3forge_spans_destroy(ac3forge_spans_t* spans);
+AC3FORGEC_EXPORT size_t ac3forge_spans_count(const ac3forge_spans_t* spans);
+AC3FORGEC_EXPORT ac3forge_span_t ac3forge_spans_get(const ac3forge_spans_t* spans, size_t index);
+AC3FORGEC_EXPORT void ac3forge_spans_destroy(ac3forge_spans_t* spans);
 
 /* Splits a raw elementary stream into syncframes by sync word and declared
  * size. Handles both AC-3 and E-AC-3. */
-AC3FORGEC_API ac3forge_status_t ac3forge_split_frames(const uint8_t* stream, size_t stream_size,
+AC3FORGEC_EXPORT ac3forge_status_t ac3forge_split_frames(const uint8_t* stream, size_t stream_size,
                                                        ac3forge_spans_t** out_spans);
 /* Groups those syncframes into access units — a new one begins at each
  * independent substream. */
-AC3FORGEC_API ac3forge_status_t ac3forge_split_access_units(const uint8_t* stream,
+AC3FORGEC_EXPORT ac3forge_status_t ac3forge_split_access_units(const uint8_t* stream,
                                                              size_t stream_size,
                                                              ac3forge_spans_t** out_spans);
 /* bsid at bit 40, without committing to either generation. Fails only if
  * `frame` is too short to hold a header. */
-AC3FORGEC_API ac3forge_status_t ac3forge_stream_bsid(const uint8_t* frame, size_t frame_size,
+AC3FORGEC_EXPORT ac3forge_status_t ac3forge_stream_bsid(const uint8_t* frame, size_t frame_size,
                                                       int* out_bsid);
 
 /* --------------------------------------------------------------------- *
@@ -578,7 +578,7 @@ typedef struct ac3forge_atmos_config {
     int fast_mdct;
 } ac3forge_atmos_config_t;
 
-AC3FORGEC_API void ac3forge_atmos_config_init(ac3forge_atmos_config_t* config);
+AC3FORGEC_EXPORT void ac3forge_atmos_config_init(ac3forge_atmos_config_t* config);
 
 /* One object's placement for one frame — mirrors ac3::oba::ObjectPlacement.
  * Position is §4.2.1's room-anchored system, same ranges as
@@ -589,11 +589,11 @@ typedef struct ac3forge_object_placement {
     double lfe_send; /* linear, default 0.0 — the only route an object reaches the LFE */
 } ac3forge_object_placement_t;
 
-AC3FORGEC_API ac3forge_status_t ac3forge_atmos_encoder_create(
+AC3FORGEC_EXPORT ac3forge_status_t ac3forge_atmos_encoder_create(
     const ac3forge_atmos_config_t* config, int object_count,
     ac3forge_atmos_encoder_t** out_encoder);
-AC3FORGEC_API void ac3forge_atmos_encoder_destroy(ac3forge_atmos_encoder_t* encoder);
-AC3FORGEC_API int ac3forge_atmos_encoder_dynamic_object_count(
+AC3FORGEC_EXPORT void ac3forge_atmos_encoder_destroy(ac3forge_atmos_encoder_t* encoder);
+AC3FORGEC_EXPORT int ac3forge_atmos_encoder_dynamic_object_count(
     const ac3forge_atmos_encoder_t* encoder);
 
 /* objects: `object_count` (as given to _create) mono spans, each exactly
@@ -602,7 +602,7 @@ AC3FORGEC_API int ac3forge_atmos_encoder_dynamic_object_count(
  * E-AC-3 access unit (a single independent substream carrying the 5.1 bed,
  * with the EMDF object container in its aux data when
  * config.emit_object_metadata was set); the caller must destroy it. */
-AC3FORGEC_API ac3forge_status_t ac3forge_atmos_encoder_encode_frame(
+AC3FORGEC_EXPORT ac3forge_status_t ac3forge_atmos_encoder_encode_frame(
     ac3forge_atmos_encoder_t* encoder, const float* const* objects, size_t object_count,
     size_t samples_per_object, const ac3forge_object_placement_t* placements,
     size_t placement_count, ac3forge_bytes_t** out_unit);

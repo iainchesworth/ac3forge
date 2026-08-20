@@ -42,7 +42,7 @@ target_include_directories(mpegts_objects
 target_compile_features(mpegts_objects PUBLIC cxx_std_23)
 
 # $<BUILD_INTERFACE:...> wrapping - see src/forge/CMakeLists.txt's identical
-# ac3forge_objects treatment for why a plain PRIVATE link isn't enough for
+# forge_objects treatment for why a plain PRIVATE link isn't enough for
 # an OBJECT library that's part of an install(EXPORT) set.
 target_link_libraries(mpegts_objects PRIVATE "$<BUILD_INTERFACE:ac3::warnings>")
 

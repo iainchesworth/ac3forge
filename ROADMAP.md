@@ -41,7 +41,7 @@ mixes are delivered as master files.
   (the `ac3::admbridge` object/bed mapping layer onto `AtmosEncoder`, including BS.2076-2 §10.3
   position/gain automation and the polar/Cartesian → room-anchored coordinate conversion) are both
   done** — see [`src/ac3adm/`](https://github.com/iainchesworthlabs/ac3forge/tree/main/src/ac3adm) and
-  `docs/library/adm.md`, and [`src/adm_bridge/`](https://github.com/iainchesworthlabs/ac3forge/tree/main/src/adm_bridge)
+  `docs/library/adm.md`, and [`src/admbridge/`](https://github.com/iainchesworthlabs/ac3forge/tree/main/src/admbridge)
   and `docs/library/adm-bridge.md`. **Phase 3 (driving both together end to end) is also done** —
   the `ac3cli atmos-adm` command (`src/cli/main.cpp`) and
   [`examples/encode_adm.cpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/encode_adm.cpp).
@@ -102,7 +102,7 @@ decoded an AC-3/E-AC-3 bitstream and verified its loudness metadata against meas
   `pw_stream` PCM; IEC 61937 passthrough negotiates for real (`SPA_MEDIA_SUBTYPE_iec958`,
   confirmed against a real shipped client) but is contingent on the target node's `iec958Codecs`
   being enabled by the session manager, which this library cannot do on a caller's behalf — see
-  `src/platform/pipewire/passthrough.cpp`. ALSA keeps first precedence when both are present;
+  `src/audio/src/backend/pipewire/passthrough.cpp`. ALSA keeps first precedence when both are present;
   see `docs/building.md`'s "Why ALSA still comes first".
 - [ ] **E3 (S)** — Confirm exclusive-mode passthrough against real bitstreaming hardware —
   the standing "Known gaps" bullet from 0.5.0 — and update `docs/verification.md`.

@@ -4,17 +4,20 @@
 # is set to the single generator currently being packaged when this runs, so
 # variables here apply to that pass only, not the whole cpack invocation.
 #
-# Why this file exists: CPACK_COMPONENTS_GROUPING IGNORE (Packaging.cmake) is
+# Why this file exists: CPack's own default component-grouping mode
+# (ONE_PER_GROUP - nothing in Packaging.cmake overrides it for archives) is
 # what makes the archive generators (ZIP/TGZ) split into one independent
-# runtime/library download each - the deliberate design those generators
-# use. But that setting is global CPack state, not archive-specific, and
-# DragNDrop (macOS) reads the exact same value - confirmed on real macOS CI
-# during v0.3.0-beta.1's dry run, where it kept splitting into a -runtime.dmg
-# and a -library.dmg even with CPACK_DMG_COMPONENT_INSTALL explicitly OFF.
-# That variable alone does not override CPACK_COMPONENTS_GROUPING here.
-# Forcing monolithic installation just for DragNDrop's own pass restores the
-# one-dmg-bundles-everything shape this project has always intended for it,
-# without touching the archive generators' split.
+# runtime/dev download each, given Packaging.cmake's own GROUP assignments
+# (runtime stays ungrouped; library+libruntime share GROUP "dev") - the
+# deliberate design those generators use. But that grouping mode is global
+# CPack state, not archive-specific, and DragNDrop (macOS) reads the exact
+# same default - confirmed on real macOS CI during v0.3.0-beta.1's dry run,
+# where it kept splitting into a -runtime.dmg and a -library.dmg even with
+# CPACK_DMG_COMPONENT_INSTALL explicitly OFF. That variable alone does not
+# override the grouping mode here. Forcing monolithic installation just for
+# DragNDrop's own pass restores the one-dmg-bundles-everything shape this
+# project has always intended for it, without touching the archive
+# generators' split.
 # ---------------------------------------------------------------------------
 
 if(CPACK_GENERATOR STREQUAL "DragNDrop")

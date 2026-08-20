@@ -76,7 +76,7 @@
 #
 # What none of this covers: real audio hardware. WSL2 has no sound devices and
 # no kernel sound modules, and neither does a GitHub runner, so the ALSA
-# backend is verified headless only. See docs/BUILDING.md#linux-audio.
+# backend is verified headless only. See docs/building.md#linux-audio.
 #
 # macos-llvm is no longer experimental (see _build.yml's own header for how
 # that happened) - it blocks like every other leg now, no continue-on-error.
@@ -236,6 +236,20 @@ jobs:
       - name: Check for preprocessor conditionals in src/
         shell: pwsh
         run: ./scripts/check-platform-macros.ps1 -Root $PWD
+
+  # Internal consistency of packaging/ (vcpkg port, Homebrew, winget, Conan) - NOT "is it
+  # current", see the script's own header for why that's the wrong check. Same shape as
+  # platform-macros above: cheap, fast, ungated.
+  packaging-consistency:
+    name: Packaging Consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check packaging manifests are internally consistent
+        shell: bash
+        run: bash scripts/check-packaging-versions.sh -r "$PWD"
 
   # .clang-tidy's own header comment explains the curated check groups and
   # what got excluded from them (and why). A full Build precedes clang-tidy,
@@ -1033,7 +1047,7 @@ jobs:
   ci-status:
     name: CI Status
     if: always()
-    needs: [ branch-name, no-quarantine, changes, platform-macros, static-analysis, coverage, adm-validate, build-and-test, ffmpeg-validate, persist-performance-trend, persist-external-comparison-trend ]
+    needs: [ branch-name, no-quarantine, changes, platform-macros, packaging-consistency, static-analysis, coverage, adm-validate, build-and-test, ffmpeg-validate, persist-performance-trend, persist-external-comparison-trend ]
     runs-on: ubuntu-latest
     steps:
       - name: Gate on required job results
@@ -1044,6 +1058,7 @@ jobs:
           R_QUARANTINE: ${{ needs.no-quarantine.result }}
           R_CHANGES: ${{ needs.changes.result }}
           R_MACROS: ${{ needs.platform-macros.result }}
+          R_PACKAGING: ${{ needs.packaging-consistency.result }}
           # 'skipped' on a docs-only change, which is a pass, not a failure.
           R_TIDY: ${{ needs.static-analysis.result }}
           R_COVERAGE: ${{ needs.coverage.result }}
@@ -1059,6 +1074,7 @@ jobs:
           fail=0
           for pair in "branch-name:$R_BRANCH" "no-quarantine:$R_QUARANTINE" \
                       "changes:$R_CHANGES" "platform-macros:$R_MACROS" \
+                      "packaging-consistency:$R_PACKAGING" \
                       "static-analysis:$R_TIDY" "coverage:$R_COVERAGE" \
                       "adm-validate:$R_ADM" \
                       "build-and-test:$R_BUILD" "ffmpeg-validate:$R_FFMPEG" \

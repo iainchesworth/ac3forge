@@ -351,9 +351,9 @@ jobs:
       #
       # libasound2-dev is the ALSA backend's only dependency, and the reason it
       # is here rather than left out is that its ABSENCE is not a build
-      # failure: src/audio/CMakeLists.txt would fall back to the no-backend
-      # platform directory and CI would go green having compiled none of
-      # src/audio/src/platform/alsa/. The alsa_fallback step at the end covers
+      # failure: src/audio/CMakeLists.txt would fall back to the no-op
+      # posix/ directory and CI would go green having compiled none of
+      # src/audio/src/backend/alsa/. The alsa_fallback step at the end covers
       # the other half of that switch on purpose.
       - name: Bootstrap container
         if: matrix.container
@@ -505,7 +505,7 @@ jobs:
       # without this. clang-cl (windows-llvm) targets the MSVC ABI, so it
       # shares this same msvc2022_64 kit with windows-msvc rather than
       # needing its own. Version pinned to the exact kit already verified
-      # locally (see docs/BUILDING.md's Verified configuration table); the
+      # locally (see docs/building.md's Verified configuration table); the
       # pinned action itself is CountdownSolver's own precedent
       # (R:\CountdownSolver\.github\workflows\release.yml), the other
       # project sharing this same "prebuilt Qt, never vcpkg" convention.
@@ -674,7 +674,7 @@ jobs:
       # can't - that ac3gui actually starts, loads its QML, and drives a real
       # encode through the Qt event loop. offscreen needs no display, so it
       # runs the same in this container as it does on a workstation. See
-      # docs/BUILDING.md's Linux section for why the qmlshapesplugin /
+      # docs/building.md's Linux section for why the qmlshapesplugin /
       # labsmodelsplugin / qmlfolderlistmodelplugin CMake warnings during
       # Configure, above, don't affect this.
       - name: Smoke test ac3gui (headless)
@@ -732,7 +732,7 @@ jobs:
 
       # The other side of the ALSA switch: a Linux machine without libasound's
       # development headers must still configure, build and pass everything,
-      # falling back to src/audio/src/platform/posix/ - that is the whole point
+      # falling back to src/audio/src/backend/posix/ - that is the whole point
       # of the dependency being optional, and it is a claim that rots silently
       # unless something checks it.
       #

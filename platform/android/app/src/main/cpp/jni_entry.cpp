@@ -1,7 +1,7 @@
 // This app's own native entry points. Everything platform-specific that
 // ac3::audio needs from JNI (the PassthroughBridge plumbing, and JNI_OnLoad
 // itself) lives in that library's own
-// src/audio/src/platform/android/passthrough.cpp, not here - see that
+// src/audio/src/backend/android/passthrough.cpp, not here - see that
 // file's header comment for why JNI_OnLoad belongs there (capturing the
 // JavaVM is ac3::audio's own concern) rather than being duplicated in this
 // translation unit, which would be an ODR violation at link time (a shared
@@ -14,7 +14,7 @@
 //    ac3::forge static library rather than an empty stub. No audio
 //    hardware or JNI passthrough bridge involved at all.
 //  - nativeProbePassthroughCapabilities: the real HDMI capability probe
-//    end to end - native calls ac3::sinks::enumerate_render_devices(),
+//    end to end - native calls ac3::audio::enumerate_render_devices(),
 //    which calls back into the just-registered PassthroughBridge over
 //    JNI, which asks AudioTrack.isDirectPlaybackSupported() what the
 //    Shield's current audio route (and the receiver on the other end of
@@ -29,8 +29,8 @@
 
 #include <string>
 
-#include "ac3/platform/audio_backend.hpp"
-#include "ac3/sinks/passthrough.hpp"
+#include "ac3/audio/audio_backend.hpp"
+#include "ac3/audio/passthrough.hpp"
 #include "ac3/version.hpp"
 
 namespace {
@@ -48,7 +48,7 @@ Java_com_ac3forge_shield_NativeBridge_nativeVersionString(JNIEnv* env, jclass /*
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_ac3forge_shield_NativeBridge_nativeProbePassthroughCapabilities(JNIEnv* env,
                                                                           jclass /*clazz*/) {
-    const auto& backend = ac3::platform::audio_backend();
+    const auto& backend = ac3::audio::audio_backend();
     std::string report = "passthrough backend compiled in: ";
     report += backend.passthrough.available ? "yes" : "no";
     if (!backend.passthrough.available) {
@@ -57,10 +57,10 @@ Java_com_ac3forge_shield_NativeBridge_nativeProbePassthroughCapabilities(JNIEnv*
         report += ")";
     }
 
-    const auto devices = ac3::sinks::enumerate_render_devices(48000);
+    const auto devices = ac3::audio::enumerate_render_devices(48000);
     if (!devices) {
         report += "\nenumerate_render_devices failed: ";
-        report += ac3::sinks::describe(devices.error());
+        report += ac3::audio::describe(devices.error());
     } else if (devices->empty()) {
         report += "\nenumerate_render_devices returned no devices";
     } else {

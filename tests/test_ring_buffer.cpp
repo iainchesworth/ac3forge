@@ -5,16 +5,16 @@
 #include <thread>
 #include <vector>
 
-#include "ac3/capture/ring_buffer.hpp"
+#include "ac3/audio/ring_buffer.hpp"
 
 TEST_CASE("ring buffer rounds capacity up to a power of two", "[ring]") {
-    CHECK(ac3::capture::RingBuffer(1000).capacity() == 1024);
-    CHECK(ac3::capture::RingBuffer(1024).capacity() == 1024);
-    CHECK(ac3::capture::RingBuffer(1).capacity() == 2);
+    CHECK(ac3::audio::RingBuffer(1000).capacity() == 1024);
+    CHECK(ac3::audio::RingBuffer(1024).capacity() == 1024);
+    CHECK(ac3::audio::RingBuffer(1).capacity() == 2);
 }
 
 TEST_CASE("write then read returns the same samples in order", "[ring]") {
-    ac3::capture::RingBuffer ring(64);
+    ac3::audio::RingBuffer ring(64);
     std::vector<float> in(40);
     std::iota(in.begin(), in.end(), 1.0f);
     CHECK(ring.write(in) == in.size());
@@ -28,7 +28,7 @@ TEST_CASE("write then read returns the same samples in order", "[ring]") {
 }
 
 TEST_CASE("writes wrap around the buffer end", "[ring]") {
-    ac3::capture::RingBuffer ring(16);  // capacity 16, usable 15
+    ac3::audio::RingBuffer ring(16);  // capacity 16, usable 15
     std::vector<float> chunk(10);
     std::vector<float> out(10);
     // Three passes push the write index past the wrap point twice.
@@ -41,7 +41,7 @@ TEST_CASE("writes wrap around the buffer end", "[ring]") {
 }
 
 TEST_CASE("a full buffer drops the overflow and counts it", "[ring]") {
-    ac3::capture::RingBuffer ring(8);  // capacity 8, one slot reserved
+    ac3::audio::RingBuffer ring(8);  // capacity 8, one slot reserved
     const std::vector<float> in(20, 0.5f);
     const auto written = ring.write(in);
     CHECK(written == 7);
@@ -55,7 +55,7 @@ TEST_CASE("a full buffer drops the overflow and counts it", "[ring]") {
 }
 
 TEST_CASE("reads never exceed what was written", "[ring]") {
-    ac3::capture::RingBuffer ring(32);
+    ac3::audio::RingBuffer ring(32);
     std::vector<float> out(10);
     CHECK(ring.read(out) == 0);  // empty
     const std::vector<float> in(3, 2.0f);
@@ -67,7 +67,7 @@ TEST_CASE("concurrent producer and consumer preserve the sample sequence", "[rin
     // The real usage: the WASAPI thread writes while the encoder reads. Every
     // sample that survives must appear exactly once, in order.
     constexpr std::size_t kTotal = 200'000;
-    ac3::capture::RingBuffer ring(1024);
+    ac3::audio::RingBuffer ring(1024);
     std::atomic<std::size_t> produced{0};
 
     std::jthread producer([&] {

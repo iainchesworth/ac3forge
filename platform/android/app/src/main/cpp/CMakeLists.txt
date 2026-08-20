@@ -4,7 +4,7 @@
 #
 #  1. Pull in the real repo root's CMakeLists.txt via add_subdirectory(), so
 #     ac3::forge and ac3::audio (including this app's own
-#     src/audio/src/platform/android/ backend) are built from the SAME
+#     src/audio/src/backend/android/ backend) are built from the SAME
 #     source-of-truth target definitions the desktop CLI/GUI use - a change
 #     to the core lib is picked up here automatically, nothing to keep in
 #     sync by hand.
@@ -31,6 +31,13 @@ set(AC3FORGE_BUILD_GUI OFF CACHE BOOL "" FORCE)
 set(AC3FORGE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(AC3FORGE_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(AC3FORGE_BUILD_FUZZERS OFF CACHE BOOL "" FORCE)
+
+# ac3forge_jni's own target_link_libraries below is ac3::forge/ac3::audio/ac3::signing only
+# (see the comment above the MATROSKA/MP4/MPEGTS block just below) - this app never links
+# ac3::forge_c, so there is no reason to compile src/capi at all here. Off explicitly rather
+# than relying on the root CMakeLists.txt's default ON: leaving it on would silently compile
+# forge_c_objects/forge_c_static/forge_c_shared into every Shield build for nothing.
+set(AC3FORGE_BUILD_CAPI OFF CACHE BOOL "" FORCE)
 
 # The Shield app links none of the three standalone container writers either
 # (ac3forge_jni's own target_link_libraries below is ac3::forge/ac3::audio/
@@ -73,7 +80,7 @@ add_library(ac3forge_jni SHARED
 target_compile_features(ac3forge_jni PRIVATE cxx_std_23)
 
 # log: android/log.h, used by jni_entry.cpp and by
-# src/audio/src/platform/android/passthrough.cpp (linked in transitively via
+# src/audio/src/backend/android/passthrough.cpp (linked in transitively via
 # ac3::audio, which already declares its own aaudio/log deps - see
 # src/audio/CMakeLists.txt's ANDROID branch).
 # android: android/asset_manager_jni.h (AAssetManager_fromJava), used by

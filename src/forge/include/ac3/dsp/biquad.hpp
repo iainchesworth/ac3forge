@@ -26,7 +26,7 @@
 // low-pass - the standard way to build a stable higher-order Butterworth
 // filter out of second-order sections. Both are allocation-free and carry
 // only their own delay-line state between calls, matching this codebase's
-// other per-run, caller-driven DSP objects (e.g. ac3::capture::
+// other per-run, caller-driven DSP objects (e.g. ac3::audio::
 // DriftResampler, ac3::analysis::LevelMeter): construct once per run,
 // process() once per frame in frame order for the run's whole life,
 // reset() only at a run boundary.

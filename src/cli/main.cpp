@@ -24,8 +24,8 @@
 #include <vector>
 
 #include "ac3/analysis/levels.hpp"
-#include "ac3/capture/capture.hpp"
-#include "ac3/capture/resampler.hpp"
+#include "ac3/audio/capture.hpp"
+#include "ac3/audio/resampler.hpp"
 #include "ac3/decoder/decoder.hpp"
 #include "ac3/encoder/assignment.hpp"
 #include "ac3/encoder/eac3_frame.hpp"
@@ -41,10 +41,10 @@
 #include "ac3/meta/qc.hpp"
 #include "ac3/oba/atmos.hpp"
 #include "ac3/oba/motion.hpp"
-#include "ac3/platform/audio_backend.hpp"
+#include "ac3/audio/audio_backend.hpp"
 #include "ac3/sinks/iec61937.hpp"
-#include "ac3/sinks/monitor.hpp"
-#include "ac3/sinks/passthrough.hpp"
+#include "ac3/audio/monitor.hpp"
+#include "ac3/audio/passthrough.hpp"
 #include "ac3/spatial/spatial.hpp"
 #include "ac3/version.hpp"
 #include "ac3/signing/emdf_atmos_signer.hpp"
@@ -194,7 +194,7 @@ struct Options {
     // docs/concepts/object-signing.md.
     bool verify_objects = false;
     // 'live' only: a second ("slave") capture device index, same numbering
-    // ac3::capture::enumerate_devices()/'devices' uses and the capture_device
+    // ac3::audio::enumerate_devices()/'devices' uses and the capture_device
     // positional already reads. Unset means the classic single-device
     // session, unchanged from before this option existed.
     std::optional<int> capture2 = std::nullopt;
@@ -2635,7 +2635,7 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
 }
 
 // Roadmap B1 phase 3 of 3 (see ROADMAP.md's "ADM BWF reader feeding the JOC encoder" entry - the
-// last phase; phase 1 is src/ac3adm, phase 2 is src/adm_bridge, this command is the first place
+// last phase; phase 1 is src/ac3adm, phase 2 is src/admbridge, this command is the first place
 // both are driven together). A real ADM BWF master (BS.2076-2 ADM XML embedded in a BS.2088-1
 // BW64/RF64 container) straight to DD+ JOC E-AC-3 - no WAV plus a hand-authored keyframe file the
 // way atmos-encode above needs, because the master already carries every bed speaker feed's and
@@ -2661,7 +2661,7 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
 // kCommands row below, are therefore unconditional too: 'atmos-adm' is always one of the 26 rows
 // in the table (matching every command's own fixed shape) and is refused before this function is
 // ever called by the SAME Needs::kAdm/unmet() capability gate the audio-hardware commands
-// (Needs::kCapture/kPassthrough/kMonitor, ac3::platform::audio_backend()) already use for their
+// (Needs::kCapture/kPassthrough/kMonitor, ac3::audio::audio_backend()) already use for their
 // own "is this available in this particular build?" question - reused rather than a second
 // mechanism invented for what is structurally the identical problem. (An earlier version of this
 // function used a scoped #ifdef instead, before scripts/check-platform-macros.ps1 was actually run
@@ -2848,9 +2848,9 @@ int run_orbit(std::string_view out_path, std::uint32_t seconds, std::uint32_t bi
 }
 
 int run_devices() {
-    const auto devices = ac3::capture::enumerate_devices();
+    const auto devices = ac3::audio::enumerate_devices();
     if (!devices) {
-        std::println(stderr, "error: {}", ac3::capture::describe(devices.error()));
+        std::println(stderr, "error: {}", ac3::audio::describe(devices.error()));
         return 1;
     }
     if (devices->empty()) {
@@ -2861,7 +2861,7 @@ int run_devices() {
     for (std::size_t i = 0; i < devices->size(); ++i) {
         const auto& d = (*devices)[i];
         std::println("{:>3}  {:<9} {:>7}  {:>3}  {}{}", i,
-                     d.kind == ac3::capture::DeviceKind::kInput ? "input" : "loopback",
+                     d.kind == ac3::audio::DeviceKind::kInput ? "input" : "loopback",
                      d.sample_rate, d.channels, d.name, d.is_default ? "  [default]" : "");
     }
     return 0;
@@ -2871,9 +2871,9 @@ int run_devices() {
 // a lock-free ring; this thread drains it a frame at a time.
 int run_record(std::string_view out_path, std::uint32_t seconds, std::uint32_t bitrate,
                int device_index, const Options& meta) {
-    const auto devices = ac3::capture::enumerate_devices();
+    const auto devices = ac3::audio::enumerate_devices();
     if (!devices) {
-        std::println(stderr, "error: {}", ac3::capture::describe(devices.error()));
+        std::println(stderr, "error: {}", ac3::audio::describe(devices.error()));
         return 1;
     }
     if (devices->empty()) {
@@ -2900,10 +2900,10 @@ int run_record(std::string_view out_path, std::uint32_t seconds, std::uint32_t b
             return 1;
     }
 
-    ac3::capture::Capture capture;
+    ac3::audio::Capture capture;
     const auto started = capture.start(device.id, device.kind);
     if (!started) {
-        std::println(stderr, "error: {}", ac3::capture::describe(started.error()));
+        std::println(stderr, "error: {}", ac3::audio::describe(started.error()));
         return 1;
     }
     const auto channels = capture.channels();
@@ -4430,9 +4430,9 @@ int run_spdif(std::string_view in_path, std::string_view out_path) {
 }
 
 int run_outputs() {
-    const auto devices = ac3::sinks::enumerate_render_devices();
+    const auto devices = ac3::audio::enumerate_render_devices();
     if (!devices) {
-        std::println(stderr, "error: {}", ac3::sinks::describe(devices.error()));
+        std::println(stderr, "error: {}", ac3::audio::describe(devices.error()));
         return 1;
     }
     if (devices->empty()) {
@@ -4505,14 +4505,14 @@ int run_play(std::string_view in_path, int device_index) {
                 std::to_integer<std::uint32_t>(units[0][4]) >> 6));
     }
 
-    const auto devices = ac3::sinks::enumerate_render_devices(content_rate);
+    const auto devices = ac3::audio::enumerate_render_devices(content_rate);
     // Enumeration failing and enumeration finding nothing are different
     // answers: the first is the backend saying it could not look, the second
     // is it looking and seeing no endpoints. Reporting both as "none
     // available" sent people hunting for a missing sound device when the real
     // answer was a COM failure.
     if (!devices) {
-        std::println(stderr, "error: {}", ac3::sinks::describe(devices.error()));
+        std::println(stderr, "error: {}", ac3::audio::describe(devices.error()));
         return 1;
     }
     if (devices->empty()) {
@@ -4540,12 +4540,12 @@ int run_play(std::string_view in_path, int device_index) {
         }
     }
 
-    ac3::sinks::PassthroughSink sink;
+    ac3::audio::PassthroughSink sink;
     const auto started = sink.start(
         device_id, content_rate,
-        eac3 ? ac3::sinks::BitstreamFormat::kEac3 : ac3::sinks::BitstreamFormat::kAc3);
+        eac3 ? ac3::audio::BitstreamFormat::kEac3 : ac3::audio::BitstreamFormat::kAc3);
     if (!started) {
-        std::println(stderr, "error: {}", ac3::sinks::describe(started.error()));
+        std::println(stderr, "error: {}", ac3::audio::describe(started.error()));
         return 1;
     }
     std::println("streaming {} {} to \"{}\" ({} Hz{})…", units.size(),
@@ -4644,9 +4644,9 @@ int run_monitor(std::string_view in_path, int device_index, const Options& meta)
     std::string device_id;
     std::string device_name = "default endpoint";
     if (device_index >= 0) {
-        const auto devices = ac3::sinks::enumerate_render_devices();
+        const auto devices = ac3::audio::enumerate_render_devices();
         if (!devices) {
-            std::println(stderr, "error: {}", ac3::sinks::describe(devices.error()));
+            std::println(stderr, "error: {}", ac3::audio::describe(devices.error()));
             return 1;
         }
         if (static_cast<std::size_t>(device_index) >= devices->size()) {
@@ -4658,7 +4658,7 @@ int run_monitor(std::string_view in_path, int device_index, const Options& meta)
         device_name = (*devices)[static_cast<std::size_t>(device_index)].name;
     }
 
-    ac3::sinks::MonitorSink sink;
+    ac3::audio::MonitorSink sink;
     std::uint64_t units_played = 0;
     auto play = [&](std::span<const float> interleaved) {
         while (!sink.submit(interleaved)) {
@@ -4709,7 +4709,7 @@ int run_monitor(std::string_view in_path, int device_index, const Options& meta)
                 const auto started = sink.start(device_id, sample_rate_hz(out.sample_rate),
                                                 static_cast<std::uint16_t>(order.size()));
                 if (!started) {
-                    std::println(stderr, "error: {}", ac3::sinks::describe(started.error()));
+                    std::println(stderr, "error: {}", ac3::audio::describe(started.error()));
                     return 1;
                 }
                 std::println("monitoring {} ({} channels, {} Hz) on \"{}\"…", in_path,
@@ -4757,7 +4757,7 @@ int run_monitor(std::string_view in_path, int device_index, const Options& meta)
                 const auto started = sink.start(device_id, sample_rate_hz(decoded->sample_rate),
                                                 static_cast<std::uint16_t>(order.size()));
                 if (!started) {
-                    std::println(stderr, "error: {}", ac3::sinks::describe(started.error()));
+                    std::println(stderr, "error: {}", ac3::audio::describe(started.error()));
                     return 1;
                 }
                 std::println("monitoring {} ({} channels, {} Hz) on \"{}\"…", in_path,
@@ -4799,9 +4799,9 @@ int run_live(std::string_view out_path, int capture_device, std::uint32_t second
     }
     const bool atmos = mode == "atmos";
 
-    const auto devices = ac3::capture::enumerate_devices();
+    const auto devices = ac3::audio::enumerate_devices();
     if (!devices) {
-        std::println(stderr, "error: {}", ac3::capture::describe(devices.error()));
+        std::println(stderr, "error: {}", ac3::audio::describe(devices.error()));
         return 1;
     }
     if (capture_device < 0 || static_cast<std::size_t>(capture_device) >= devices->size()) {
@@ -4821,7 +4821,7 @@ int run_live(std::string_view out_path, int capture_device, std::uint32_t second
                      *meta.capture2);
         return 1;
     }
-    const ac3::capture::DeviceInfo* device2 =
+    const ac3::audio::DeviceInfo* device2 =
         meta.capture2 ? &(*devices)[static_cast<std::size_t>(*meta.capture2)] : nullptr;
 
     ac3::SampleRate sr{};
@@ -4857,10 +4857,10 @@ int run_live(std::string_view out_path, int capture_device, std::uint32_t second
             static_cast<double>(device.sample_rate) / static_cast<double>(device2->sample_rate);
     }
 
-    ac3::capture::Capture capture;
+    ac3::audio::Capture capture;
     const auto started = capture.start(device.id, device.kind);
     if (!started) {
-        std::println(stderr, "error: {}", ac3::capture::describe(started.error()));
+        std::println(stderr, "error: {}", ac3::audio::describe(started.error()));
         return 1;
     }
     const auto channels = capture.channels();
@@ -4871,17 +4871,17 @@ int run_live(std::string_view out_path, int capture_device, std::uint32_t second
     // a second, independently-clocked device whose stream gets resampled
     // into lockstep with capture's pacing every frame, then appended after
     // capture's own channels.
-    ac3::capture::Capture capture2;
+    ac3::audio::Capture capture2;
     std::size_t capture2_channels = 0;
-    std::optional<ac3::capture::DriftResampler> slave_resampler;
-    std::optional<ac3::capture::ClockDriftEstimator> slave_drift;
+    std::optional<ac3::audio::DriftResampler> slave_resampler;
+    std::optional<ac3::audio::ClockDriftEstimator> slave_drift;
     std::vector<float> slave_scratch;
     std::size_t slave_scratch_valid_frames = 0;
     std::vector<float> slave_out;
     if (device2) {
         const auto started2 = capture2.start(device2->id, device2->kind);
         if (!started2) {
-            std::println(stderr, "error: {}", ac3::capture::describe(started2.error()));
+            std::println(stderr, "error: {}", ac3::audio::describe(started2.error()));
             return 1;
         }
         capture2_channels = capture2.channels();
@@ -4906,18 +4906,18 @@ int run_live(std::string_view out_path, int capture_device, std::uint32_t second
     const std::size_t total_channels = static_cast<std::size_t>(channels) + capture2_channels;
     const std::size_t nobjects = atmos ? std::min<std::size_t>(total_channels, 15) : 2;
 
-    auto resolve_render_device = [&](int index) -> std::optional<ac3::sinks::RenderDeviceInfo> {
+    auto resolve_render_device = [&](int index) -> std::optional<ac3::audio::RenderDeviceInfo> {
         if (index < 0) {
-            return ac3::sinks::RenderDeviceInfo{};  // empty id: default endpoint
+            return ac3::audio::RenderDeviceInfo{};  // empty id: default endpoint
         }
-        const auto render_devices = ac3::sinks::enumerate_render_devices(rate_hz);
+        const auto render_devices = ac3::audio::enumerate_render_devices(rate_hz);
         if (!render_devices || static_cast<std::size_t>(index) >= render_devices->size()) {
             return std::nullopt;
         }
         return (*render_devices)[static_cast<std::size_t>(index)];
     };
 
-    ac3::sinks::MonitorSink monitor_sink;
+    ac3::audio::MonitorSink monitor_sink;
     bool monitoring = false;
     if (monitor_device != -2) {
         const auto target = resolve_render_device(monitor_device);
@@ -4929,7 +4929,7 @@ int run_live(std::string_view out_path, int capture_device, std::uint32_t second
                 target->id, rate_hz, static_cast<std::uint16_t>(atmos ? 6 : 2));
             if (!mstarted) {
                 std::println(stderr, "warning: monitor unavailable: {}",
-                             ac3::sinks::describe(mstarted.error()));
+                             ac3::audio::describe(mstarted.error()));
             } else {
                 monitoring = true;
                 std::println("monitoring on \"{}\"", target->name.empty() ? "default endpoint"
@@ -4938,12 +4938,12 @@ int run_live(std::string_view out_path, int capture_device, std::uint32_t second
         }
     }
 
-    ac3::sinks::PassthroughSink passthrough_sink;
+    ac3::audio::PassthroughSink passthrough_sink;
     bool passing_through = false;
     if (passthrough_device != -2) {
         const auto target = resolve_render_device(passthrough_device);
         const auto format =
-            atmos ? ac3::sinks::BitstreamFormat::kEac3 : ac3::sinks::BitstreamFormat::kAc3;
+            atmos ? ac3::audio::BitstreamFormat::kEac3 : ac3::audio::BitstreamFormat::kAc3;
         if (!target) {
             std::println(stderr,
                          "warning: passthrough device index {} out of range; passthrough off",
@@ -4958,7 +4958,7 @@ int run_live(std::string_view out_path, int capture_device, std::uint32_t second
             const auto pstarted = passthrough_sink.start(target->id, rate_hz, format);
             if (!pstarted) {
                 std::println(stderr, "warning: passthrough unavailable: {}",
-                             ac3::sinks::describe(pstarted.error()));
+                             ac3::audio::describe(pstarted.error()));
             } else {
                 passing_through = true;
                 std::println("passthrough ({}) on \"{}\"", atmos ? "E-AC-3" : "AC-3",
@@ -5269,7 +5269,7 @@ struct Args {
 // What a command needs beyond plain file I/O to run at all in THIS build. Most commands need
 // nothing. Several need the machine's audio hardware; one (atmos-adm) needs a library that is not
 // part of every build - either way, unmet() below answers with the same {available, reason} shape
-// (ac3::platform::Capability), so dispatch and the usage listing treat both kinds of "not here"
+// (ac3::audio::Capability), so dispatch and the usage listing treat both kinds of "not here"
 // identically.
 //
 // This is a column in the table rather than a check inside each handler for
@@ -5297,14 +5297,14 @@ enum class Needs : std::uint8_t { kNothing, kCapture, kPassthrough, kMonitor, kA
 //
 // Note what kCapture/kPassthrough/kMonitor are not: an OS test. main.cpp never asks whether it is
 // on Windows - it asks the one translation unit CMake compiled from
-// src/audio/src/platform/<os>/ what that platform can do, and prints the answer
+// src/audio/src/backend/<os>/ what that backend can do, and prints the answer
 // that unit supplied. The day a Unix capture backend lands, capture flips to
 // available in that file alone and 'devices' and 'record' start working here
 // with no change to this file. kAdm asks the analogous question of
 // adm/{enabled,disabled}/atmos_adm.cpp instead - a library-linked-or-not fact rather than an
 // OS one, answered by the identical "ask the compiled-in file" shape.
-const ac3::platform::Capability* unmet(Needs needs) {
-    const auto& backend = ac3::platform::audio_backend();
+const ac3::audio::Capability* unmet(Needs needs) {
+    const auto& backend = ac3::audio::audio_backend();
     switch (needs) {
         case Needs::kNothing: return nullptr;
         case Needs::kCapture: return backend.capture.available ? nullptr : &backend.capture;
@@ -5481,7 +5481,7 @@ void print_usage() {
         }
         std::println("{}", line);
     }
-    const auto& backend = ac3::platform::audio_backend();
+    const auto& backend = ac3::audio::audio_backend();
     if (!backend.capture.available || !backend.passthrough.available ||
         !backend.monitor.available) {
         std::println("");

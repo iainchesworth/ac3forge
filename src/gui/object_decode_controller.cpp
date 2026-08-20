@@ -15,7 +15,7 @@
 
 #include "ac3/core/tables.hpp"
 #include "ac3/decoder/decoder.hpp"
-#include "ac3/sinks/monitor.hpp"
+#include "ac3/audio/monitor.hpp"
 
 using objdec_detail::RawFrame;
 using objdec_detail::RawResult;
@@ -187,10 +187,10 @@ InspectOutcome inspect_file(const QString& path) {
 ObjectDecodeController::ObjectDecodeController(QObject* parent) : QObject(parent) {}
 
 // Out-of-line even though it is just = default: audition_sink_ is a
-// unique_ptr<ac3::sinks::MonitorSink>, and MonitorSink is only
+// unique_ptr<ac3::audio::MonitorSink>, and MonitorSink is only
 // forward-declared in the header (see its own comment on why) - the
 // destructor needs the complete type, which this translation unit's
-// #include "ac3/sinks/monitor.hpp" above provides. Same shape as
+// #include "ac3/audio/monitor.hpp" above provides. Same shape as
 // EncoderController's own out-of-line ~EncoderController() = default for its
 // analogous motion_preview_monitor_sink_.
 ObjectDecodeController::~ObjectDecodeController() = default;
@@ -278,11 +278,11 @@ void ObjectDecodeController::auditionObject(int index) {
         return;
     }
 
-    audition_sink_ = std::make_unique<ac3::sinks::MonitorSink>();
+    audition_sink_ = std::make_unique<ac3::audio::MonitorSink>();
     const auto started =
         audition_sink_->start(std::string{}, result_->sample_rate_hz, /*channels=*/1);
     if (!started) {
-        const auto why = ac3::sinks::describe(started.error());
+        const auto why = ac3::audio::describe(started.error());
         audition_sink_.reset();
         error_ = QStringLiteral("Could not open the audition output: %1").arg(to_qstring(why));
         emit resultChanged();

@@ -62,6 +62,26 @@ jobs:
 
       - run: pip install --require-hashes -r requirements-docs.txt
 
+      # docs/assets/wasm-decode-demo/ is a committed fallback for a local `mkdocs build` (and
+      # this job's own strict build below) - see the deploy job's "Rebuild WASM decode demo"
+      # step for why the *published* site never depends on this staying in sync. But
+      # index.html/demo.js/the favicons have no reason to differ from platform/wasm/ at all -
+      # they are plain copies (see platform/wasm/CMakeLists.txt's POST_BUILD step), not
+      # Emscripten output, so nothing here needs the toolchain this job deliberately doesn't
+      # install. ac3forge_decode.js/.wasm are the genuine build artifacts and have no
+      # source-tree counterpart to diff against, so they're not part of this check.
+      - name: Check WASM demo fallback is in sync with platform/wasm/
+        run: |
+          set -euo pipefail
+          status=0
+          for f in index.html demo.js favicon.svg favicon-32.png assets/demo.ec3; do
+            if ! cmp -s "platform/wasm/$f" "docs/assets/wasm-decode-demo/$f"; then
+              echo "::error file=docs/assets/wasm-decode-demo/$f::Out of sync with platform/wasm/$f - re-copy it (see docs/platforms/wasm.md)."
+              status=1
+            fi
+          done
+          exit "$status"
+
       - run: mkdocs build --strict
 
   deploy:

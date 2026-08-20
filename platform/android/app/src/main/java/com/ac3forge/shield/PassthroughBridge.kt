@@ -23,8 +23,8 @@ private const val BUFFER_BURSTS = 8
 /**
  * Owns the Java `android.media.AudioTrack` that actually bitstreams IEC 61937
  * to the HDMI/S-PDIF output - the delivery mechanism
- * `ac3::sinks::PassthroughSink`'s Android backend
- * (src/audio/src/platform/android/passthrough.cpp) calls into over JNI. See
+ * `ac3::audio::PassthroughSink`'s Android backend
+ * (src/audio/src/backend/android/passthrough.cpp) calls into over JNI. See
  * that file's header comment for the exact contract this class implements
  * (method names/signatures are part of the JNI ABI - do not rename/reshape
  * without updating both sides).

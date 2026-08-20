@@ -8,10 +8,10 @@
 #include <span>
 #include <vector>
 
-#include "ac3/capture/resampler.hpp"
+#include "ac3/audio/resampler.hpp"
 
-using ac3::capture::ClockDriftEstimator;
-using ac3::capture::DriftResampler;
+using ac3::audio::ClockDriftEstimator;
+using ac3::audio::DriftResampler;
 
 namespace {
 

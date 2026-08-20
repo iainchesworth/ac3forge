@@ -5,7 +5,7 @@ package com.ac3forge.shield
  * call that goes the other way.
  *
  * `registerPassthroughBridge` is declared here now (implemented in
- * src/audio/src/platform/android/passthrough.cpp) even though
+ * src/audio/src/backend/android/passthrough.cpp) even though
  * [PassthroughBridge] itself does not exist yet - the native symbol name is
  * part of the JNI contract fixed by mangling
  * (`Java_com_ac3forge_shield_NativeBridge_registerPassthroughBridge`), so the
@@ -30,7 +30,7 @@ object NativeBridge {
     external fun registerPassthroughBridge(bridge: Any)
 
     /**
-     * Smoke test: runs ac3::sinks::enumerate_render_devices() end to end
+     * Smoke test: runs ac3::audio::enumerate_render_devices() end to end
      * (native -> PassthroughBridge -> AudioTrack.isDirectPlaybackSupported)
      * and returns a human-readable report. Requires
      * [registerPassthroughBridge] to have run first. See jni_entry.cpp.

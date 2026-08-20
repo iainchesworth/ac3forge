@@ -14,11 +14,10 @@
 # matroska::matroska, mp4::mp4 and mpegts::mpegts are all optional components, off-able via
 # their own AC3FORGE_BUILD_MATROSKA/AC3FORGE_BUILD_MP4/AC3FORGE_BUILD_MPEGTS option (root
 # CMakeLists.txt) - each its own AC3FORGE_BUILD_<NAME> option, its own guarded
-# add_subdirectory(), and its own guarded block below. See
-# packaging/vcpkg-port/ac3forge/vcpkg.json's "matroska" feature, which maps onto
-# AC3FORGE_BUILD_MATROSKA for a vcpkg install; mp4::mp4 and mpegts::mpegts do not have a vcpkg
-# feature of their own yet (a follow-up, not a gap in this install() treatment) - a vcpkg
-# install always gets them.
+# add_subdirectory(), and its own guarded block below. Each maps 1:1 onto its own vcpkg
+# feature (packaging/vcpkg-port/ac3forge/vcpkg.json's "matroska"/"mp4"/"mpegts", wired
+# through portfile.cmake's vcpkg_check_features()), so a vcpkg install only gets the ones its
+# feature selection actually asked for.
 #
 # Every install() rule below carries COMPONENT library: without one, CPack
 # files it under its own "Unspecified" component, inconsistent once
@@ -58,24 +57,47 @@ include(CMakePackageConfigHelpers)
 # install()'d/exported is filtered by this option, so nothing above this point in the tree
 # needs touching for it to take effect.
 option(AC3FORGE_INSTALL_BOTH_LINKAGES "Install/export both static and shared library variants (OFF installs only the BUILD_SHARED_LIBS-selected one)" ON)
+
+# forge_c_objects (src/capi) always PRIVATE-links ac3::forge_static, regardless of
+# BUILD_SHARED_LIBS - see src/capi/CMakeLists.txt's own header comment on why the C API embeds
+# the static codec unconditionally, for a single self-contained module to dlopen/ctypes/ffi
+# against. install(EXPORT capiTargets ...) below therefore needs ac3::forge_static in SOME
+# export set whenever AC3FORGE_BUILD_CAPI is ON. AC3FORGE_INSTALL_BOTH_LINKAGES=OFF combined with
+# BUILD_SHARED_LIBS=ON is the one combination that does not provide that: the elseif(BUILD_SHARED_LIBS)
+# branch just below installs only forge_shared, dropping forge_static entirely - confirmed by
+# reproducing it, install(EXPORT) then refuses to generate at all, with "includes target
+# 'forge_c_objects' which requires target 'forge_static' that is not in any export set". Caught
+# here with a clear message instead, the same way the AC3FORGE_BUILD_MATROSKA/MP4/MPEGTS guards in
+# the root CMakeLists.txt catch their own unsupported combinations. This is also why
+# packaging/vcpkg-port/ac3forge/portfile.cmake passes AC3FORGE_BUILD_CAPI=OFF unconditionally -
+# its single-linkage, shared-only triplet builds hit exactly this combination, which is what that
+# file's own comment refers to as "a real bug independent of vcpkg, tracked separately".
+if(AC3FORGE_BUILD_CAPI AND BUILD_SHARED_LIBS AND NOT AC3FORGE_INSTALL_BOTH_LINKAGES)
+    message(FATAL_ERROR "AC3FORGE_BUILD_CAPI=ON with BUILD_SHARED_LIBS=ON requires "
+        "AC3FORGE_INSTALL_BOTH_LINKAGES=ON (the default) - the C API always statically embeds "
+        "ac3::forge_static regardless of BUILD_SHARED_LIBS, so installing only the shared variant "
+        "of ac3::forge leaves that dependency unexported. Set AC3FORGE_INSTALL_BOTH_LINKAGES=ON, "
+        "turn AC3FORGE_BUILD_CAPI=OFF, or build with BUILD_SHARED_LIBS=OFF instead.")
+endif()
+
 if(AC3FORGE_INSTALL_BOTH_LINKAGES)
     set(_ac3forge_forge_install_targets forge_objects forge_static forge_shared)
     set(_ac3forge_matroska_install_targets matroska_objects matroska_static matroska_shared)
     set(_ac3forge_mp4_install_targets mp4_objects mp4_static mp4_shared)
     set(_ac3forge_mpegts_install_targets mpegts_objects mpegts_static mpegts_shared)
-    set(_ac3forge_capi_install_targets capi_objects capi_static capi_shared)
+    set(_ac3forge_capi_install_targets forge_c_objects forge_c_static forge_c_shared)
 elseif(BUILD_SHARED_LIBS)
     set(_ac3forge_forge_install_targets forge_objects forge_shared)
     set(_ac3forge_matroska_install_targets matroska_objects matroska_shared)
     set(_ac3forge_mp4_install_targets mp4_objects mp4_shared)
     set(_ac3forge_mpegts_install_targets mpegts_objects mpegts_shared)
-    set(_ac3forge_capi_install_targets capi_objects capi_shared)
+    set(_ac3forge_capi_install_targets forge_c_objects forge_c_shared)
 else()
     set(_ac3forge_forge_install_targets forge_objects forge_static)
     set(_ac3forge_matroska_install_targets matroska_objects matroska_static)
     set(_ac3forge_mp4_install_targets mp4_objects mp4_static)
     set(_ac3forge_mpegts_install_targets mpegts_objects mpegts_static)
-    set(_ac3forge_capi_install_targets capi_objects capi_static)
+    set(_ac3forge_capi_install_targets forge_c_objects forge_c_static)
 endif()
 
 # Two separate EXPORT sets, not the one combined set an earlier draft of this
@@ -140,9 +162,8 @@ endif()
 # shape as matroska::matroska above including the AC3FORGE_INSTALL_BOTH_LINKAGES-selected
 # target list - its targets, headers and export set only exist to install when the component
 # was actually built. ac3forgeConfig.cmake.in's include() of mp4Targets.cmake is itself
-# conditional (if(EXISTS)) to match. mp4::mp4 has no vcpkg port feature of its own yet
-# (packaging/vcpkg-port/ac3forge/vcpkg.json only defines "matroska") - a follow-up, not a gap
-# in this install() treatment.
+# conditional (if(EXISTS)) to match. Maps onto its own "mp4" vcpkg feature the same way
+# matroska does (packaging/vcpkg-port/ac3forge/vcpkg.json).
 if(AC3FORGE_BUILD_MP4)
     install(TARGETS ${_ac3forge_mp4_install_targets}
         EXPORT mp4Targets
@@ -160,8 +181,8 @@ if(AC3FORGE_BUILD_MP4)
 endif()
 
 # mpegts::mpegts is an optional component (AC3FORGE_BUILD_MPEGTS, see the root
-# CMakeLists.txt) - same shape as matroska::matroska immediately above, not yet exposed as its
-# own vcpkg feature (packaging/vcpkg-port/ac3forge/), unlike matroska's "matroska" feature.
+# CMakeLists.txt) - same shape as matroska::matroska immediately above, including its own
+# "mpegts" vcpkg feature (packaging/vcpkg-port/ac3forge/vcpkg.json).
 if(AC3FORGE_BUILD_MPEGTS)
     install(TARGETS ${_ac3forge_mpegts_install_targets}
         EXPORT mpegtsTargets

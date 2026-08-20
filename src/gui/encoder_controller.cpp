@@ -27,7 +27,7 @@
 #include <utility>
 #include <vector>
 
-#include "ac3/capture/watchdog.hpp"
+#include "ac3/audio/watchdog.hpp"
 #include "ac3/decoder/decoder.hpp"
 #include "ac3/dsp/biquad.hpp"
 #include "ac3/dsp/resampler.hpp"
@@ -415,7 +415,7 @@ QString sibling_path(const QString& path, const QString& suffix) {
 // plain AC-3, which is the one case a capped leg turns a refusal into sound.
 // A receiver that can take neither format is a genuine refusal either way,
 // so this only ever matters when it is true.
-bool wants_downmix_leg(bool main_needs_eac3, const ac3::sinks::RenderDeviceInfo& receiver) {
+bool wants_downmix_leg(bool main_needs_eac3, const ac3::audio::RenderDeviceInfo& receiver) {
     return main_needs_eac3 && !receiver.supports_eac3_passthrough &&
           receiver.supports_ac3_passthrough;
 }
@@ -431,10 +431,10 @@ bool wants_downmix_leg(bool main_needs_eac3, const ac3::sinks::RenderDeviceInfo&
 // that rather than as an ordinary AC-3 session.
 struct LivePassthroughOpen {
     bool ok = false;
-    std::unique_ptr<ac3::sinks::PassthroughSink> sink;
+    std::unique_ptr<ac3::audio::PassthroughSink> sink;
     QString plan_text;
 };
-LivePassthroughOpen open_live_passthrough(const ac3::sinks::RenderDeviceInfo& receiver, bool eac3,
+LivePassthroughOpen open_live_passthrough(const ac3::audio::RenderDeviceInfo& receiver, bool eac3,
                                           bool atmos_enabled, bool downmix_leg,
                                           std::uint32_t sample_rate, const QString& shape_name) {
     LivePassthroughOpen result;
@@ -446,12 +446,12 @@ LivePassthroughOpen open_live_passthrough(const ac3::sinks::RenderDeviceInfo& re
                                      eac3 ? QStringLiteral("E-AC-3") : QStringLiteral("AC-3"));
         return result;
     }
-    auto psink = std::make_unique<ac3::sinks::PassthroughSink>();
+    auto psink = std::make_unique<ac3::audio::PassthroughSink>();
     const auto format =
-        eac3 ? ac3::sinks::BitstreamFormat::kEac3 : ac3::sinks::BitstreamFormat::kAc3;
+        eac3 ? ac3::audio::BitstreamFormat::kEac3 : ac3::audio::BitstreamFormat::kAc3;
     const auto started = psink->start(receiver.id, sample_rate, format);
     if (!started) {
-        const auto why = ac3::sinks::describe(started.error());
+        const auto why = ac3::audio::describe(started.error());
         result.plan_text =
             QStringLiteral("\"%1\" would not open: %2")
                 .arg(QString::fromStdString(receiver.name),
@@ -1916,11 +1916,11 @@ void EncoderController::startMotionPreview() {
     // Opened here, on the GUI thread - mirrors startLiveSession's own
     // MonitorSink::start() call, using the loaded source's own rate since
     // there is no capture device involved in a file preview.
-    motion_preview_monitor_sink_ = std::make_unique<ac3::sinks::MonitorSink>();
+    motion_preview_monitor_sink_ = std::make_unique<ac3::audio::MonitorSink>();
     const auto started =
         motion_preview_monitor_sink_->start(std::string{}, sample_rate, /*channels=*/6);
     if (!started) {
-        const auto why = ac3::sinks::describe(started.error());
+        const auto why = ac3::audio::describe(started.error());
         motion_preview_monitor_sink_.reset();
         setStatus(QStringLiteral("Could not open the preview output: %1")
                       .arg(QString::fromUtf8(why.data(), static_cast<qsizetype>(why.size()))));
@@ -2547,7 +2547,7 @@ bool EncoderController::outputIsFolder() const { return container_index_ == kCon
 void EncoderController::refreshCaptureDevices() {
     QStringList names;
     devices_.clear();
-    if (auto found = ac3::capture::enumerate_devices()) {
+    if (auto found = ac3::audio::enumerate_devices()) {
         devices_ = std::move(*found);
         for (const auto& device : devices_) {
             names.append(QString::fromStdString(device.name) +
@@ -3390,7 +3390,7 @@ void EncoderController::publishSourceLevels(std::span<const ac3::analysis::Chann
 void EncoderController::refreshOutputDevices() {
     QStringList names;
     outputs_.clear();
-    if (auto found = ac3::sinks::enumerate_render_devices()) {
+    if (auto found = ac3::audio::enumerate_render_devices()) {
         outputs_ = std::move(*found);
         for (const auto& device : outputs_) {
             // The capability is part of the label: a user staring at a greyed
@@ -3473,13 +3473,13 @@ void EncoderController::playFileToReceiver(const QString& path, int deviceIndex)
                 } else {
                     const auto rate = sample_rate_hz(static_cast<ac3::SampleRate>(
                         std::to_integer<std::uint32_t>((*units)[0][4]) >> 6));
-                    ac3::sinks::PassthroughSink sink;
+                    ac3::audio::PassthroughSink sink;
                     const auto started = sink.start(
                         device.id, rate,
-                        eac3 ? ac3::sinks::BitstreamFormat::kEac3
-                             : ac3::sinks::BitstreamFormat::kAc3);
+                        eac3 ? ac3::audio::BitstreamFormat::kEac3
+                             : ac3::audio::BitstreamFormat::kAc3);
                     if (!started) {
-                        const auto why = ac3::sinks::describe(started.error());
+                        const auto why = ac3::audio::describe(started.error());
                         message = QString::fromUtf8(why.data(), static_cast<qsizetype>(why.size()));
                     } else {
                         ac3::iec61937::Eac3BurstPacker eac3_packer;
@@ -3643,7 +3643,7 @@ void EncoderController::switchLiveLayout(const QString& presetName) {
 }
 
 std::unique_ptr<EncoderController::LiveOutputWriters> EncoderController::openLiveOutputWriters(
-    const QString& path, bool write_to_disk, const ac3::capture::DeviceInfo& device) {
+    const QString& path, bool write_to_disk, const ac3::audio::DeviceInfo& device) {
     if (!write_to_disk) {
         return nullptr;
     }
@@ -3720,7 +3720,7 @@ void EncoderController::startLiveSession(int captureDeviceIndex, bool monitor,
     }
 
     const bool want_passthrough = receiverDeviceIndex >= 0;
-    ac3::sinks::RenderDeviceInfo receiver{};
+    ac3::audio::RenderDeviceInfo receiver{};
     if (want_passthrough) {
         if (static_cast<std::size_t>(receiverDeviceIndex) >= outputs_.size()) {
             setStatus(QStringLiteral("Choose a receiver device first."));
@@ -3740,10 +3740,10 @@ void EncoderController::startLiveSession(int captureDeviceIndex, bool monitor,
         }
     }
 
-    live_capture_ = std::make_unique<ac3::capture::Capture>();
+    live_capture_ = std::make_unique<ac3::audio::Capture>();
     const auto started = live_capture_->start(device.id, device.kind);
     if (!started) {
-        const auto why = ac3::capture::describe(started.error());
+        const auto why = ac3::audio::describe(started.error());
         live_capture_.reset();
         setStatus(QStringLiteral("Could not open \"%1\": %2")
                       .arg(QString::fromStdString(device.name),
@@ -3758,14 +3758,14 @@ void EncoderController::startLiveSession(int captureDeviceIndex, bool monitor,
     // two-device session that can't get its second device still starts as
     // an ordinary single-device one rather than failing outright, since the
     // master alone is a perfectly good session.
-    std::optional<ac3::capture::DeviceInfo> device2;
+    std::optional<ac3::audio::DeviceInfo> device2;
     if (live_selected_devices_.size() > 1) {
         const int slave_index = live_selected_devices_[1];
         if (slave_index >= 0 && static_cast<std::size_t>(slave_index) < devices_.size() &&
             slave_index != captureDeviceIndex) {
             const auto candidate = devices_[static_cast<std::size_t>(slave_index)];
             if (to_sample_rate(candidate.sample_rate)) {
-                live_capture2_ = std::make_unique<ac3::capture::Capture>();
+                live_capture2_ = std::make_unique<ac3::audio::Capture>();
                 if (live_capture2_->start(candidate.id, candidate.kind)) {
                     device2 = candidate;
                 } else {
@@ -3835,7 +3835,7 @@ void EncoderController::startLiveSession(int captureDeviceIndex, bool monitor,
 
     bool monitor_ok = false;
     if (monitor) {
-        auto msink = std::make_unique<ac3::sinks::MonitorSink>();
+        auto msink = std::make_unique<ac3::audio::MonitorSink>();
         const auto mstarted = msink->start(
             std::string{}, device.sample_rate,
             static_cast<std::uint16_t>(atmos_enabled_ ? 6 : plan::coded_channels(
@@ -3968,8 +3968,8 @@ void EncoderController::startLiveSession(int captureDeviceIndex, bool monitor,
                    std::move(writers));
 }
 
-void EncoderController::runLiveSession(ac3::capture::DeviceInfo device,
-                                       std::optional<ac3::capture::DeviceInfo> device2,
+void EncoderController::runLiveSession(ac3::audio::DeviceInfo device,
+                                       std::optional<ac3::audio::DeviceInfo> device2,
                                        bool monitor, bool passthrough, bool write_to_disk,
                                        QString file_path,
                                        std::unique_ptr<LiveOutputWriters> writers) {
@@ -4151,15 +4151,15 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device,
         // the atmos per-slot de-interleave further down).
         std::vector<float> slave_resampled(static_cast<std::size_t>(ac3::kSamplesPerFrame) *
                                            channels2);
-        std::optional<ac3::capture::DriftResampler> slave_resampler;
-        std::optional<ac3::capture::ClockDriftEstimator> slave_drift;
+        std::optional<ac3::audio::DriftResampler> slave_resampler;
+        std::optional<ac3::audio::ClockDriftEstimator> slave_drift;
         // Generous headroom (8 frame periods) so a burst of slave jitter
         // never starves the resampler mid-frame; the servo steers actual
         // occupancy back towards one frame period's worth (kSamplesPerFrame)
         // on its own.
         std::vector<float> slave_scratch;
         std::size_t slave_scratch_valid_frames = 0;
-        ac3::capture::SilenceWatchdog slave_watchdog(kDeviceSilenceTimeout);
+        ac3::audio::SilenceWatchdog slave_watchdog(kDeviceSilenceTimeout);
         if (has_device2) {
             const double nominal_ratio =
                 static_cast<double>(sample_rate) / static_cast<double>(sample_rate2);
@@ -4198,7 +4198,7 @@ void EncoderController::runLiveSession(ac3::capture::DeviceInfo device,
         std::uint64_t frames_written = 0;
         auto published_at = std::chrono::steady_clock::now() - kPublishInterval;
         auto last_disk_flush_at = std::chrono::steady_clock::now();
-        ac3::capture::SilenceWatchdog watchdog(kDeviceSilenceTimeout);
+        ac3::audio::SilenceWatchdog watchdog(kDeviceSilenceTimeout);
         watchdog.reset(std::chrono::steady_clock::now());
         if (has_device2) {
             slave_watchdog.reset(std::chrono::steady_clock::now());
@@ -4791,10 +4791,10 @@ void EncoderController::startRecording(int deviceIndex, const QUrl& url) {
         return;
     }
 
-    capture_ = std::make_unique<ac3::capture::Capture>();
+    capture_ = std::make_unique<ac3::audio::Capture>();
     const auto started = capture_->start(device.id, device.kind);
     if (!started) {
-        const auto why = ac3::capture::describe(started.error());
+        const auto why = ac3::audio::describe(started.error());
         capture_.reset();
         setStatus(QStringLiteral("Could not open \"%1\": %2")
                       .arg(QString::fromStdString(device.name),

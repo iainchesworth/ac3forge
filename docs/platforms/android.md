@@ -35,7 +35,7 @@ adb -s <shield-ip>:5555 shell am start -n com.ac3forge.shield/.MainActivity
 platform-independent and is linked into the app **unmodified**, via a thin wrapper
 `CMakeLists.txt` (`platform/android/app/src/main/cpp/CMakeLists.txt`) that `add_subdirectory()`s
 the real repo root rather than duplicating its target definitions. `ac3::audio` (`src/audio/`)
-gains a fifth platform backend, `src/audio/src/platform/android/`, alongside `windows`/`alsa`/
+gains a fifth backend, `src/audio/src/backend/android/`, alongside `windows`/`alsa`/
 `posix`/`macos`, selected by CMake's own `ANDROID` variable (set by the NDK toolchain file, a peer check
 to the existing `WIN32`/`LINUX`/`APPLE` blocks in `src/audio/CMakeLists.txt`) — no `#ifdef`
 anywhere, per the project's
@@ -88,7 +88,7 @@ So the backend is genuinely split, unlike the other three:
 
 - **`monitor.cpp`** — real AAudio (`AAudioStreamBuilder`, PCM float), for local preview. This is
   exactly what AAudio is good at, and the only place in this backend that uses it.
-- **`passthrough.cpp`** — a JNI shim implementing `ac3::sinks::PassthroughSink`. `submit()` hands
+- **`passthrough.cpp`** — a JNI shim implementing `ac3::audio::PassthroughSink`. `submit()` hands
   each burst to a Kotlin-owned `AudioTrack` via a small round-robin pool of buffers wrapped once
   with `env->NewDirectByteBuffer(...)` and promoted to a `GlobalRef` at startup — one `memcpy` into
   a native buffer per burst, zero further copies, no per-frame `NewDirectByteBuffer`/GC churn.

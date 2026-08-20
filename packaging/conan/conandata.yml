@@ -9,3 +9,6 @@ sources:
   "0.8.0-beta.1":
     url: "https://github.com/iainchesworthlabs/ac3forge/archive/refs/tags/v0.8.0-beta.1.tar.gz"
     sha256: "69da9af8c2afe1b3eb37695378219d45391779d69fc2b44b2353935c769c09ee"
+  "0.8.0-beta.2":
+    url: "https://github.com/iainchesworthlabs/ac3forge/archive/refs/tags/v0.8.0-beta.2.tar.gz"
+    sha256: "2a070e423369a6f46d6245ab46c389fb2eeb27918198875766be1f8d6b06aa3c"

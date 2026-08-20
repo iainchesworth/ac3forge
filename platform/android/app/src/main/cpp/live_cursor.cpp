@@ -57,7 +57,7 @@
 #include "ac3/core/tables.hpp"
 #include "ac3/oba/atmos.hpp"
 #include "ac3/sinks/iec61937.hpp"
-#include "ac3/sinks/passthrough.hpp"
+#include "ac3/audio/passthrough.hpp"
 #include "shield_signing_hook.hpp"
 
 namespace {
@@ -451,11 +451,11 @@ void run_loop() {
                                    kObjects);
     __android_log_print(ANDROID_LOG_INFO, kLogTag,
                         "object container: %s", emit_objects ? "objects (signed)" : "bed51 (omitted, unsigned build)");
-    ac3::sinks::PassthroughSink sink;
-    auto started = sink.start("", 48000, ac3::sinks::BitstreamFormat::kEac3);
+    ac3::audio::PassthroughSink sink;
+    auto started = sink.start("", 48000, ac3::audio::BitstreamFormat::kEac3);
     if (!started) {
         __android_log_print(ANDROID_LOG_ERROR, kLogTag, "PassthroughSink::start failed: %s",
-                            std::string(ac3::sinks::describe(started.error())).c_str());
+                            std::string(ac3::audio::describe(started.error())).c_str());
         return;
     }
 
