@@ -29,7 +29,7 @@ using ac3::audio::BitstreamFormat;
 
 TEST_CASE("E-AC-3 runs the carrier four times as fast as its content") {
     // Same physical fact platform/alsa/device_names.hpp and
-    // platform/android/android_support.hpp both encode - see their own
+    // apps/android/android_support.hpp both encode - see their own
     // tests for the full rationale.
     CHECK(carrier_rate(BitstreamFormat::kAc3, 48000) == 48000);
     CHECK(carrier_rate(BitstreamFormat::kAc3, 44100) == 44100);

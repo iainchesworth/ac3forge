@@ -1,7 +1,7 @@
 # Android (NVIDIA Shield)
 
 Android support is not `ac3cli`/`ac3gui` ported to a phone — it is a separate, small,
-Shield-specific demo app, **Shield Atmos Demo** (`platform/android/`), that plays a real Atmos/JOC
+Shield-specific demo app, **Shield Atmos Demo** (`apps/android/`), that plays a real Atmos/JOC
 stream out through the Shield's HDMI passthrough output to an AV receiver, with a controller or
 remote moving one of a few objects around the room live. It exists to prove the encoder's object
 audio audibly moves in 3D space on real consumer hardware, not to be a general-purpose encoding
@@ -20,7 +20,7 @@ An Android SDK with **NDK 26.1.10909125** and **CMake 3.31.6** installed (`local
 `sdk.dir`), plus a Shield TV reachable over the network or USB:
 
 ```bash
-cd platform/android
+cd apps/android
 ./gradlew assembleDebug --no-daemon
 adb connect <shield-ip>:5555          # if not on USB
 adb -s <shield-ip>:5555 install -r app/build/outputs/apk/debug/app-debug.apk
@@ -33,7 +33,7 @@ adb -s <shield-ip>:5555 shell am start -n com.ac3forge.shield/.MainActivity
 
 `ac3::forge` (`src/forge/`) — the codec, `AtmosEncoder`, IEC 61937 framing — is fully
 platform-independent and is linked into the app **unmodified**, via a thin wrapper
-`CMakeLists.txt` (`platform/android/app/src/main/cpp/CMakeLists.txt`) that `add_subdirectory()`s
+`CMakeLists.txt` (`apps/android/app/src/main/cpp/CMakeLists.txt`) that `add_subdirectory()`s
 the real repo root rather than duplicating its target definitions. `ac3::audio` (`src/audio/`)
 gains a fifth backend, `src/audio/src/backend/android/`, alongside `windows`/`alsa`/
 `posix`/`macos`, selected by CMake's own `ANDROID` variable (set by the NDK toolchain file, a peer check
@@ -42,7 +42,7 @@ anywhere, per the project's
 [platform-tree convention](raspberry-pi.md#why-theres-no-raspberry-pi-specific-code).
 
 Everything else — the Gradle app shell, the JNI bridge, the live encode loop, input handling, the
-room visualization — is new and lives entirely under `platform/android/`, outside the CMake
+room visualization — is new and lives entirely under `apps/android/`, outside the CMake
 project the desktop tools build from.
 
 ## Toolchain
@@ -347,7 +347,7 @@ To build a signed APK on your own machine, drop your own `signing.key` (base64 o
 ## Building and running
 
 ```bash
-cd platform/android
+cd apps/android
 ./gradlew assembleDebug --no-daemon
 adb connect <shield-ip>:5555          # if not on USB
 adb -s <shield-ip>:5555 install -r app/build/outputs/apk/debug/app-debug.apk

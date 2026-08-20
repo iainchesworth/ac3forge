@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# The Shield app (platform/android) is a full Gradle/NDK project outside the
+# The Shield app (apps/android) is a full Gradle/NDK project outside the
 # ac3forge CMake configure entirely, reached from the other direction (its own
 # CMakeLists.txt add_subdirectory()s the repo root). This platform doesn't
 # need that indirection - there's no non-CMake build system in the way, so

@@ -31,7 +31,7 @@ docs/spec/
 # runtime. The desktop tools take it by path/env (never a file in the tree),
 # but the Shield app signs on-device and so reads it from a bundled asset: that
 # asset is written from a CI secret at build time and must never be committed.
-platform/android/app/src/main/assets/signing.key
+apps/android/app/src/main/assets/signing.key
 
 # The older RE-derived signer OVERLAY predates the committed src/signing and is
 # still quarantined: it additionally embeds the key extracted from Dolby's

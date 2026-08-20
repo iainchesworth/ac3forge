@@ -290,7 +290,7 @@ endif(APPLE)
 if(ANDROID)
     # -----------------------------------------------------------------------
     # NVIDIA Shield / Android TV, for the Shield Atmos demo app
-    # (platform/android/app/) - see docs/platforms/android.md.
+    # (apps/android/app/) - see docs/platforms/android.md.
     #
     # Split unlike the other three backends: monitor.cpp is genuine AAudio
     # (the NDK's native audio API), but passthrough.cpp is a JNI shim to a

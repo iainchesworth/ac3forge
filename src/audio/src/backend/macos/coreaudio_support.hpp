@@ -45,7 +45,7 @@
 // calls that callback at the device's hardware period until
 // AudioDeviceStop() - there is no blocking read/write call to run a thread
 // of our own around, the way AAudio's blocking AAudioStream_write() lets
-// platform/android/monitor.cpp keep the jthread shape even though AAudio
+// apps/android/monitor.cpp keep the jthread shape even though AAudio
 // also offers a callback API. So capture.cpp/monitor.cpp/passthrough.cpp in
 // this directory have no `worker` field at all: start() registers the
 // IOProc and returns, stop() unregisters it, and every sample the ring

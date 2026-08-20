@@ -855,7 +855,7 @@ jobs:
             packages/*.dmg.sha512
           if-no-files-found: error
 
-  # The Shield app (platform/android): a Gradle/NDK build, not a CMake preset
+  # The Shield app (apps/android): a Gradle/NDK build, not a CMake preset
   # leg, so it is its own job rather than a `build` matrix entry - there is
   # no config-android/build-android/pack-android preset to reuse, and trying
   # to force this into the same matrix shape as the CMake legs above would
@@ -907,7 +907,7 @@ jobs:
           persist-credentials: false
           fetch-depth: ${{ inputs.fetch_depth }}
 
-      # platform/android/gradle/wrapper/gradle-wrapper.jar is a committed
+      # apps/android/gradle/wrapper/gradle-wrapper.jar is a committed
       # binary (OpenSSF Scorecard's Binary-Artifacts check, alert #65) - it
       # can't be dropped since gradlew needs it, so this verifies its
       # checksum against Gradle's own known-good release hashes instead.
@@ -955,13 +955,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          asset_dir="platform/android/app/src/main/assets"
+          asset_dir="apps/android/app/src/main/assets"
           mkdir -p "$asset_dir"
           printf '%s' "$ATMOS_SIGNING_KEY" > "$asset_dir/signing.key"
           echo "Wrote $asset_dir/signing.key ($(wc -c < "$asset_dir/signing.key") base64 chars) - object signing enabled."
 
       - name: Build debug APK
-        working-directory: platform/android
+        working-directory: apps/android
         shell: bash
         run: |
           set -euo pipefail
@@ -1002,7 +1002,7 @@ jobs:
 
       - name: Build release APK
         if: inputs.do_package
-        working-directory: platform/android
+        working-directory: apps/android
         shell: bash
         run: |
           set -euo pipefail
@@ -1021,7 +1021,7 @@ jobs:
           set -euo pipefail
           version="${VERSION_TAG_INPUT:-0.0.0-dev}"
           mkdir -p packages
-          cp platform/android/app/build/outputs/apk/release/app-release.apk \
+          cp apps/android/app/build/outputs/apk/release/app-release.apk \
              "packages/ac3forge-shield-${version}.apk"
           ( cd packages && sha512sum "ac3forge-shield-${version}.apk" > "ac3forge-shield-${version}.apk.sha512" )
 

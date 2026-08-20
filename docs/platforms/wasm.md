@@ -33,7 +33,7 @@ Open `http://localhost:8000/`.
 `ac3::forge` (`src/forge/`) — the codec, `FrameDecoder`/`Eac3Decoder`, elementary-stream scanning — is
 fully platform-independent and is linked into the demo **unmodified**, the same way `apps/wasm/CMakeLists.txt`
 links it as any other consumer would: `add_executable` + `target_link_libraries(... ac3::forge ...)`,
-no fork, no `#ifdef`. Unlike `platform/android/`, this doesn't need a separate build system reached
+no fork, no `#ifdef`. Unlike `apps/android/`, this doesn't need a separate build system reached
 from the other direction — WASM is a plain CMake cross-compile, so `apps/wasm/` is a normal
 `add_subdirectory()` from the root `CMakeLists.txt`, gated on `EMSCRIPTEN` (set by
 `cmake/toolchains/wasm.emscripten.toolchain.cmake`) rather than an `AC3FORGE_BUILD_*` option.
