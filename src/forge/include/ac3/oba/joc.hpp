@@ -156,8 +156,10 @@ struct ReconstructionState {
 // `objects`/matrix rows use - which, for a program this project's own
 // AtmosEncoder produces (dynamic-object-only with a bypassed LFE, no bed),
 // is exactly oba::DecodedProgram::objects' order too.
+// Spans rather than vectors so the caller's permutation into JOC order is
+// a five-pointer shuffle, not five channel copies.
 [[nodiscard]] AC3FORGE_EXPORT std::vector<std::vector<float>> reconstruct(
-    std::span<const std::vector<float>> bed, const FrameParameters& params,
+    std::span<const std::span<const float>> bed, const FrameParameters& params,
     ReconstructionState& state, bool fast_mdct = false);
 
 }  // namespace ac3::joc

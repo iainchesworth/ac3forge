@@ -14,6 +14,7 @@
 #include "ac3/core/eac3_tables.hpp"
 #include "ac3/core/mantissas.hpp"
 #include "ac3/core/tables.hpp"
+#include "ac3/encoder/eac3_tools.hpp"  // eac3::BandLayout, for BlockTail below
 #include "ac3/export.hpp"
 #include "ac3/oba/joc.hpp"
 #include "ac3/oba/oamd.hpp"
@@ -364,6 +365,54 @@ class AC3FORGE_EXPORT Eac3Decoder {
     // ecpl_active flags, so a previous frame's contents are never visible.
     std::vector<std::array<std::array<double, 256>, kBlocksPerFrame>> aht_coeffs_;
     std::vector<std::array<double, 256>> ecpl_all_coeffs_;
+    // One entry per block: everything decode_substream's second pass (spx
+    // synthesis, rematrixing, IMDCT and PCM write) needs from pass one -
+    // the .cpp's comment at the use site explains why two passes exist at
+    // all. A member for the same churn reason as the buffers above: the
+    // per-block geometry copies (chincpl, spxco, the enhanced-coupling
+    // index sets...) land in vectors that keep their capacity across
+    // frames, and `coeffs` cycles storage with the parse loop by swap
+    // instead of forcing a fresh 14 KB allocation every block. The
+    // enhanced-coupling fields are only assigned under cplinu &&
+    // ecplinu_now and only read under the same guard - both flags ARE
+    // re-assigned every block - so a reused entry's stale conditional
+    // fields are never visible.
+    struct BlockTail {
+        std::vector<std::array<double, 256>> coeffs;  // per stream; decoupled where standard
+        std::vector<bool> chincpl;
+        bool cplinu = false;
+        bool ecplinu_now = false;
+        // Standard coupling (valid when cplinu && !ecplinu_now): decoupling
+        // already ran inline in pass one, so `coeffs` is final for these
+        // channels and nothing further is needed here.
+        //
+        // Enhanced coupling (valid when cplinu && ecplinu_now):
+        int firstchincpl = -1;
+        int ecpl_begin_subbnd = 0;
+        int ecpl_end_subbnd = 0;
+        std::array<bool, eac3::kEcplSubBands> ecpl_structure{};
+        std::vector<std::vector<int>> ecplamp_raw;    // [ch][band]
+        std::vector<std::vector<int>> ecplangle_raw;  // [ch][band]
+        std::vector<std::vector<int>> ecplchaos_raw;  // [ch][band]
+        std::vector<bool> ecpltrans;                  // [ch]
+        int cplstrtmant = 0;
+        int cplendmant = 0;
+        // spx (§3.6)
+        bool spxinu = false;
+        std::vector<bool> chinspx;
+        eac3::BandLayout spx_bands{};
+        std::vector<std::vector<double>> spxco;
+        std::vector<int> spxblnd;
+        int spx_startmant = 0;
+        int spx_endmant = 0;
+        int spx_copystart = 0;
+        // rematrixing (§7.5.4, 2/0 only) and block switching
+        std::array<bool, 4> rematflg{};
+        std::array<bool, eac3::chanmap::kMaxSubstreamFullbw> blksw{};
+        // One slot per coded channel plus the shared coupling stream.
+        std::array<int, eac3::chanmap::kMaxSubstreamChannels + 1> endmant{};
+    };
+    std::vector<BlockTail> tails_;
     // §7.3.4 dither (Annex E's dithflag[ch]/dithflage), shared across every
     // substream identity decode_substream ever sees - nothing about §7.3.4
     // requires per-identity separation, only that simultaneous channels'

@@ -232,7 +232,7 @@ std::optional<FrameParameters> parse_payload(std::span<const std::byte> payload)
     return params;
 }
 
-std::vector<std::vector<float>> reconstruct(std::span<const std::vector<float>> bed,
+std::vector<std::vector<float>> reconstruct(std::span<const std::span<const float>> bed,
                                             const FrameParameters& params,
                                             ReconstructionState& state, bool fast_mdct) {
     assert(bed.size() == static_cast<std::size_t>(kNumChannels5X));
