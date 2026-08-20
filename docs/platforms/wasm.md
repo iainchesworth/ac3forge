@@ -82,6 +82,16 @@ possibly-stale commit. Both jobs share one Emscripten install step,
 `.github/actions/setup-emscripten` (pinned to the same version this page's Toolchain section names),
 so the two never drift onto different SDK versions.
 
+The committed fallback is not immune to going stale, though: nothing rewrites it except a human
+manually re-copying `platform/wasm/`'s output, and `docs.yml`'s own `deploy` job overwrites its
+working copy in a throwaway CI workspace rather than committing the refresh back. `docs.yml`'s
+`build` job (the one every PR runs, `mkdocs build --strict`) therefore also byte-compares
+`index.html`, `demo.js`, the two favicon files and `assets/demo.ec3` against their
+`platform/wasm/` originals — the plain copies, not Emscripten output, so the check needs no
+toolchain. `ac3forge_decode.js`/`ac3forge_decode.wasm` are genuine build artifacts with no
+source-tree counterpart and are outside this check's scope; they only get refreshed by an actual
+Emscripten rebuild.
+
 `docs.yml`'s trigger `paths:` list includes `platform/wasm/**`, `CMakeLists.txt`,
 `CMakePresets.json` and the WASM toolchain file specifically — without them, a source change there
 would never trigger a redeploy at all, and the live demo would silently drift from what's in
