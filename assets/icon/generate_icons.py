@@ -162,7 +162,7 @@ def main() -> None:
     render_badge(256).save(icons_dir / "ac3forge-256.png")
     print(f"wrote {icons_dir}/ac3forge.{{ico,icns}}, ac3forge-{{32,256}}.png")
 
-    res_dir = REPO_ROOT / "platform" / "android" / "app" / "src" / "main" / "res"
+    res_dir = REPO_ROOT / "apps" / "android" / "app" / "src" / "main" / "res"
 
     # Legacy launcher icon, every density bucket - the fallback for
     # launchers/contexts (app-list entries, Settings) that don't use the

@@ -14,7 +14,7 @@
 #
 # See docs/platforms/android.md for the full architecture writeup and
 # ../../../../../../CMakeLists.txt (the repo root, six directories up: cpp ->
-# main -> src -> app -> android -> platform -> repo root) for what
+# main -> src -> app -> android -> apps -> repo root) for what
 # add_subdirectory() below actually configures.
 # ---------------------------------------------------------------------------
 cmake_minimum_required(VERSION 3.28...4.3)

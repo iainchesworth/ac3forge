@@ -40,7 +40,7 @@
 namespace ac3::coreaudio {
 
 // Mirrors platform/alsa/device_names.hpp's carrier_rate and
-// platform/android/android_support.hpp's copy of the same logic (the same
+// apps/android/android_support.hpp's copy of the same logic (the same
 // physical fact each time, not a coincidence of naming): a Dolby Digital
 // Plus burst is four times the size of an AC-3 one and covers the same span
 // of time, so the digital link has to clock four times as fast to deliver

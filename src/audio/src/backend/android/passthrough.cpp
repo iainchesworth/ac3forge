@@ -39,7 +39,7 @@
 //    itself, there is exactly one place that fact lives.
 //
 // The Kotlin side (app-specific, not part of ac3::audio - see
-// platform/android/app/src/main/java/.../NativeBridge.kt and
+// apps/android/app/src/main/java/.../NativeBridge.kt and
 // PassthroughBridge.kt) is expected to expose exactly this contract, called
 // through the method IDs cached in registerPassthroughBridge() below:
 //
@@ -433,7 +433,7 @@ std::expected<void, PassthroughError> PassthroughSink::start(const std::string& 
 // the mangling convention (Java_<package>_<Class>_<method>), not by us.
 //
 // JNI_OnLoad is defined here, not in the app's own native code
-// (platform/android/app/src/main/cpp/), because capturing the JavaVM is
+// (apps/android/app/src/main/cpp/), because capturing the JavaVM is
 // ac3::audio's own concern (attach_current_thread() above needs it) and a
 // process may load exactly one JNI_OnLoad per shared object - this is the
 // only translation unit in ac3forge_jni.so that needs it.

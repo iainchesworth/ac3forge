@@ -259,10 +259,10 @@ if(AC3FORGE_BUILD_FUZZERS)
 endif()
 
 # The browser decode demo (roadmap F3, docs/platforms/wasm.md) - a platform
-# app, same shape and reasoning as platform/android/'s Shield app: a small
+# app, same shape and reasoning as apps/android/'s Shield app: a small
 # demo consuming ac3::forge unmodified, kept out of both src/ (not library
 # code) and examples/ (not a single-API-call snippet backing a
-# docs/library/*.md page, see CONTRIBUTING.md). Unlike platform/android/,
+# docs/library/*.md page, see CONTRIBUTING.md). Unlike apps/android/,
 # which is a wholly separate Gradle/NDK build reached from the other
 # direction, this platform has no non-CMake build system to work around, so
 # it is a normal add_subdirectory() gated on EMSCRIPTEN (set by
