@@ -38,6 +38,19 @@ add_executable(ac3bench bench_encoder.cpp)
 target_link_libraries(ac3bench PRIVATE ac3::forge ac3::warnings)
 
 # ---------------------------------------------------------------------------
+# ac3membench - heap-churn and footprint numbers for the same workloads as
+# ac3bench. Windows-only measurement harness for the memory-usage
+# investigation; links ac3::forge_static explicitly so the global
+# operator new/delete replacements in bench_memory.cpp observe the codec's
+# allocations too (a DLL's allocations bind to the DLL's own operator new).
+# ---------------------------------------------------------------------------
+if(WIN32)
+    add_executable(ac3membench bench_memory.cpp)
+
+    target_link_libraries(ac3membench PRIVATE ac3::forge_static ac3::warnings)
+endif()
+
+# ---------------------------------------------------------------------------
 # ac3kernelbench - per-kernel micro-benchmarks, one level below ac3bench's
 # whole-frame numbers. Where ac3bench answers "how fast is a frame", this
 # answers "which stage of that frame" - the observability slice of the
