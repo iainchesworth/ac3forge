@@ -2104,8 +2104,8 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     // scale comes back at three times its own level. Measured on the
     // reference program, that cost 46 dB of the vector range's SNR while the
     // scalar range sat at a comfortable 33.
-    std::vector<std::array<std::int32_t, 256>> fixed(
-        static_cast<std::size_t>(streams) * kBlocksPerFrame);
+    auto& fixed = fixed_scratch_;
+    fixed.assign(static_cast<std::size_t>(streams) * kBlocksPerFrame, {});
     const auto fixed_at = [&](int s, int blk) -> std::array<std::int32_t, 256>& {
         return fixed[static_cast<std::size_t>(s) * kBlocksPerFrame +
                      static_cast<std::size_t>(blk)];

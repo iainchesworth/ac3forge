@@ -1292,13 +1292,14 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
 
     // --- 9. SNR-offset search ----------------------------------------------
     AC3_ZONE_BEGIN(zone_snr_search, "step9_snr_search");
-    std::vector<std::vector<std::vector<std::uint8_t>>> run_bap(
-        static_cast<std::size_t>(streams));
+    auto& run_bap = run_bap_;
+    run_bap.resize(static_cast<std::size_t>(streams));
     for (int s = 0; s < streams; ++s) {
         run_bap[static_cast<std::size_t>(s)].resize(
             plan[static_cast<std::size_t>(s)].runs.size());
     }
-    std::vector<std::span<const std::uint8_t>> bap_views(static_cast<std::size_t>(streams));
+    auto& bap_views = bap_views_;
+    bap_views.assign(static_cast<std::size_t>(streams), {});
 
     const auto bits_at = [&](int composite) {
         AC3_ZONE_SCOPED_N("bits_at");
@@ -1389,9 +1390,14 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         }
     }
     if (any_delta) {
-        std::vector<std::vector<DeltaSegments>> saved(plan.size());
+        // Fixed-size: DeltaSegments is a small POD, streams never exceed
+        // nchans + 1 and a run per block is the most a stream can have, so
+        // ~1.2 KB of stack replaces eight heap allocations on every frame
+        // that runs the delta on/off race.
+        std::array<std::array<DeltaSegments, kBlocksPerFrame>, 7> saved{};
+        assert(plan.size() <= saved.size());
         for (std::size_t s = 0; s < plan.size(); ++s) {
-            saved[s].resize(plan[s].runs.size());
+            assert(plan[s].runs.size() <= saved[s].size());
             for (std::size_t r = 0; r < plan[s].runs.size(); ++r) {
                 saved[s][r] = plan[s].runs[r].delta;
                 plan[s].runs[r].delta = {};
