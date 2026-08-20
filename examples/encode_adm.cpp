@@ -1,7 +1,7 @@
 // A real ADM BWF master, all the way to a Dolby Atmos E-AC-3 (DD+ JOC) elementary stream.
 //
 // Roadmap item B1 phase 3 of 3 (the last piece - phase 1 is ac3adm::ac3adm, src/ac3adm; phase 2 is
-// ac3::admbridge, src/adm_bridge). This is a minimal, standalone illustration of the same pipeline
+// ac3::admbridge, src/admbridge). This is a minimal, standalone illustration of the same pipeline
 // ac3cli's 'atmos-adm' command drives for real: ac3adm::parse_bw64() reads the container + ADM XML
 // graph, ac3::admbridge::build() maps it onto ac3::oba::AtmosEncoder's flat object-list input
 // shape (one bed speaker feed pinned in place, one dynamic object panned by its own authored
