@@ -32,6 +32,13 @@ set(AC3FORGE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(AC3FORGE_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(AC3FORGE_BUILD_FUZZERS OFF CACHE BOOL "" FORCE)
 
+# ac3forge_jni's own target_link_libraries below is ac3::forge/ac3::audio/ac3::signing only
+# (see the comment above the MATROSKA/MP4/MPEGTS block just below) - this app never links
+# ac3::forge_c, so there is no reason to compile src/capi at all here. Off explicitly rather
+# than relying on the root CMakeLists.txt's default ON: leaving it on would silently compile
+# forge_c_objects/forge_c_static/forge_c_shared into every Shield build for nothing.
+set(AC3FORGE_BUILD_CAPI OFF CACHE BOOL "" FORCE)
+
 # The Shield app links none of the three standalone container writers either
 # (ac3forge_jni's own target_link_libraries below is ac3::forge/ac3::audio/
 # ac3::signing only - it streams live objects out AAudio passthrough, it

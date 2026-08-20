@@ -58,24 +58,47 @@ include(CMakePackageConfigHelpers)
 # install()'d/exported is filtered by this option, so nothing above this point in the tree
 # needs touching for it to take effect.
 option(AC3FORGE_INSTALL_BOTH_LINKAGES "Install/export both static and shared library variants (OFF installs only the BUILD_SHARED_LIBS-selected one)" ON)
+
+# forge_c_objects (src/capi) always PRIVATE-links ac3::forge_static, regardless of
+# BUILD_SHARED_LIBS - see src/capi/CMakeLists.txt's own header comment on why the C API embeds
+# the static codec unconditionally, for a single self-contained module to dlopen/ctypes/ffi
+# against. install(EXPORT capiTargets ...) below therefore needs ac3::forge_static in SOME
+# export set whenever AC3FORGE_BUILD_CAPI is ON. AC3FORGE_INSTALL_BOTH_LINKAGES=OFF combined with
+# BUILD_SHARED_LIBS=ON is the one combination that does not provide that: the elseif(BUILD_SHARED_LIBS)
+# branch just below installs only forge_shared, dropping forge_static entirely - confirmed by
+# reproducing it, install(EXPORT) then refuses to generate at all, with "includes target
+# 'forge_c_objects' which requires target 'forge_static' that is not in any export set". Caught
+# here with a clear message instead, the same way the AC3FORGE_BUILD_MATROSKA/MP4/MPEGTS guards in
+# the root CMakeLists.txt catch their own unsupported combinations. This is also why
+# packaging/vcpkg-port/ac3forge/portfile.cmake passes AC3FORGE_BUILD_CAPI=OFF unconditionally -
+# its single-linkage, shared-only triplet builds hit exactly this combination, which is what that
+# file's own comment refers to as "a real bug independent of vcpkg, tracked separately".
+if(AC3FORGE_BUILD_CAPI AND BUILD_SHARED_LIBS AND NOT AC3FORGE_INSTALL_BOTH_LINKAGES)
+    message(FATAL_ERROR "AC3FORGE_BUILD_CAPI=ON with BUILD_SHARED_LIBS=ON requires "
+        "AC3FORGE_INSTALL_BOTH_LINKAGES=ON (the default) - the C API always statically embeds "
+        "ac3::forge_static regardless of BUILD_SHARED_LIBS, so installing only the shared variant "
+        "of ac3::forge leaves that dependency unexported. Set AC3FORGE_INSTALL_BOTH_LINKAGES=ON, "
+        "turn AC3FORGE_BUILD_CAPI=OFF, or build with BUILD_SHARED_LIBS=OFF instead.")
+endif()
+
 if(AC3FORGE_INSTALL_BOTH_LINKAGES)
     set(_ac3forge_forge_install_targets forge_objects forge_static forge_shared)
     set(_ac3forge_matroska_install_targets matroska_objects matroska_static matroska_shared)
     set(_ac3forge_mp4_install_targets mp4_objects mp4_static mp4_shared)
     set(_ac3forge_mpegts_install_targets mpegts_objects mpegts_static mpegts_shared)
-    set(_ac3forge_capi_install_targets capi_objects capi_static capi_shared)
+    set(_ac3forge_capi_install_targets forge_c_objects forge_c_static forge_c_shared)
 elseif(BUILD_SHARED_LIBS)
     set(_ac3forge_forge_install_targets forge_objects forge_shared)
     set(_ac3forge_matroska_install_targets matroska_objects matroska_shared)
     set(_ac3forge_mp4_install_targets mp4_objects mp4_shared)
     set(_ac3forge_mpegts_install_targets mpegts_objects mpegts_shared)
-    set(_ac3forge_capi_install_targets capi_objects capi_shared)
+    set(_ac3forge_capi_install_targets forge_c_objects forge_c_shared)
 else()
     set(_ac3forge_forge_install_targets forge_objects forge_static)
     set(_ac3forge_matroska_install_targets matroska_objects matroska_static)
     set(_ac3forge_mp4_install_targets mp4_objects mp4_static)
     set(_ac3forge_mpegts_install_targets mpegts_objects mpegts_static)
-    set(_ac3forge_capi_install_targets capi_objects capi_static)
+    set(_ac3forge_capi_install_targets forge_c_objects forge_c_static)
 endif()
 
 # Two separate EXPORT sets, not the one combined set an earlier draft of this

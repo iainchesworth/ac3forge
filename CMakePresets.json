@@ -151,7 +151,8 @@
         "AC3FORGE_BUILD_EXAMPLES": "OFF",
         "AC3FORGE_BUILD_MATROSKA": "OFF",
         "AC3FORGE_BUILD_MP4": "OFF",
-        "AC3FORGE_BUILD_MPEGTS": "OFF"
+        "AC3FORGE_BUILD_MPEGTS": "OFF",
+        "AC3FORGE_BUILD_CAPI": "OFF"
       }
     },
 
