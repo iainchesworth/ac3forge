@@ -7,7 +7,7 @@
 # silently disagree with (see encoder_controller.hpp's own header comment).
 #
 # Included (not add_subdirectory()'d) from ../CMakeLists.txt, so every path
-# below is written relative to src/gui, not src/gui/tests - see the comment
+# below is written relative to apps/gui, not apps/gui/tests - see the comment
 # at that include() call for why that distinction is load-bearing here and
 # not just a style choice.
 #

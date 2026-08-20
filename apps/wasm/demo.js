@@ -15,7 +15,7 @@
 // Ear-level ring: ac3::spatial's kSpeakerAzimuthDeg
 // (src/forge/include/ac3/spatial/spatial.hpp), ITU-R BS.775, degrees CCW from
 // front, left positive. Ceiling ring: the same azimuth convention extended to
-// Table E2.5's height locations, matching src/gui/qml/SoundfieldView.qml's own
+// Table E2.5's height locations, matching apps/gui/qml/SoundfieldView.qml's own
 // extension (its location_azimuth_deg()) - a second, smaller, dashed ring for
 // genuinely elevated channels, not a fabricated height axis. A plain 5.1/7.1
 // stream (like the bundled demo) never populates it; a real 7.1.4 stream does.
@@ -213,7 +213,7 @@ function currentPlaybackSeconds() {
     return audioCtx.currentTime - playStartCtxTime;
 }
 
-// --- Visualization: ported from src/gui/qml/SoundfieldView.qml -----------
+// --- Visualization: ported from apps/gui/qml/SoundfieldView.qml -----------
 // (screenX/screenY azimuth->pixel mapping, ring radius, opacity-by-RMS,
 // energy-vector arrow - see that file for the original QML this was ported
 // from, and the PR description for why it's channel energy, not objects.)
@@ -251,7 +251,7 @@ function drawSpeaker(ctx, cx, cy, radius, az, label, level, color) {
     return { x: Math.sin(azRad) * level, y: Math.cos(azRad) * level };
 }
 
-// Ported from src/gui/qml/SoundfieldView.qml: an ear-level ring plus a
+// Ported from apps/gui/qml/SoundfieldView.qml: an ear-level ring plus a
 // smaller, dashed ceiling ring for genuinely elevated channels (its own
 // visual cue for "a conceptually different, flattened-height plane"), driven
 // throughout by real per-channel RMS from the decoder - not a fabricated
@@ -368,7 +368,7 @@ function drawObjectDot(ctx, x, y, radius, color, label, highlighted) {
     ctx.fillText(label, x, y - radius - 6);
 }
 
-// Ported from src/gui/qml/Main.qml's Objects tab (top-down + elevation room
+// Ported from apps/gui/qml/Main.qml's Objects tab (top-down + elevation room
 // panels, side by side - see docs/platforms/android.md's own description of
 // the same layout in the Shield app). Unlike that GUI's own version, which
 // previews positions about to be ENCODED, this one is driven entirely by

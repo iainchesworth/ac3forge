@@ -48,7 +48,7 @@
 //     (ac3/oba/atmos.hpp) - nothing in that signature distinguishes "a bed channel" from "a
 //     dynamic object". A bed channel is therefore represented the only way the API allows: as an
 //     object with an unmoving, pinned placement, the same convention every existing caller
-//     (apps/cli/main.cpp's run_atmos_encode, src/gui/encoder_controller.cpp's encodeObjects)
+//     (apps/cli/main.cpp's run_atmos_encode, apps/gui/encoder_controller.cpp's encodeObjects)
 //     already uses. This module follows suit - a bed channel becomes one more entry in the same
 //     flat channel list, with a static (or, rarely, dynamic - see build_channel_path()'s own
 //     comment) ObjectPath pinned at its speakerLabel's room position, at unity gain; a bed

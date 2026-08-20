@@ -41,7 +41,7 @@ public slots:
         // Qt Quick Controls resolves to the platform's native style, whose
         // native-theme queries are the documented cause of a real,
         // reproducible hang under the offscreen QPA platform (see
-        // src/gui/qml/Main.qml's "native Button inside a Repeater fed real
+        // apps/gui/qml/Main.qml's "native Button inside a Repeater fed real
         // data" comment for the first occurrence, on Windows). That
         // occurrence was worked around locally in QML; a second one surfaced
         // here on macOS - not in the Repeater that fix already covers, but

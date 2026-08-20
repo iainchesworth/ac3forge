@@ -43,7 +43,7 @@ equivalent to add; a browser gets audio playback from the Web Audio API in JavaS
 having no browser platform directory — see `src/audio/CMakeLists.txt`).
 
 Everything else — `decoder_bindings.cpp` (the Embind wrapper), `index.html`/`demo.js` (the page, Web
-Audio playback, the Canvas visualizations ported from `src/gui/qml/SoundfieldView.qml` and Main.qml's
+Audio playback, the Canvas visualizations ported from `apps/gui/qml/SoundfieldView.qml` and Main.qml's
 Objects tab) — is new and lives entirely under `apps/wasm/`, outside anything the desktop tools
 build from. The object visualization/audio is a thin JS-facing surface over `Eac3Decoder`'s own real
 `object_metadata` (OAMD positions/gain, `ac3::forge#168`) and `object_audio` (JOC-reconstructed
