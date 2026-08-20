@@ -39,7 +39,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     ac3::DecodedAccessUnit first{};
     bool have_first = false;
 
-    // Mirrors ac3cli's own 'decode' path for E-AC-3 (src/cli/main.cpp:
+    // Mirrors ac3cli's own 'decode' path for E-AC-3 (apps/cli/main.cpp:
     // run_decode_eac3) exactly, including the §3.7 transient-pre-noise-
     // processing hold-back convention (decode_access_unit's own doc
     // comment) and the end-of-stream flush() below.

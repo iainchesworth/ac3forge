@@ -269,7 +269,7 @@ std::expected<std::vector<const ac3adm::AudioObject*>, BridgeError> collect_leaf
 // oamd.hpp) at 16 total, with AtmosEncoder's own implicit LFE bookkeeping (see atmos.cpp's
 // AtmosEncoder::AtmosEncoder: `Program{.dynamic_only = true, .lfe = true, ...}`) always taking
 // one of those 16 regardless of what this bridge produces - the same cap and the same reasoning
-// src/cli/main.cpp's run_atmos_encode/run_atmos_path already apply to the `objects` constructor
+// apps/cli/main.cpp's run_atmos_encode/run_atmos_path already apply to the `objects` constructor
 // parameter, reused here rather than re-derived.
 constexpr std::size_t kMaxChannels = 15;
 

@@ -121,7 +121,7 @@ endif()
 # picks it up correctly, so this is a real, reachable configuration, not a
 # hypothetical one. Two genuine repros: tests/test_cli.cpp's read_log()
 # istreambuf_iterator-based std::string construction flags a "null pointer
-# dereference" inside <streambuf>'s gptr()/egptr(), and src/cli/main.cpp's
+# dereference" inside <streambuf>'s gptr()/egptr(), and apps/cli/main.cpp's
 # load_sources() std::vector<std::size_t>::resize() flags one inside
 # <bits/stl_construct.h> - both after GCC inlines several layers deep into
 # code this project does not own and cannot edit. This is GCC's own

@@ -50,7 +50,7 @@ struct MeasureOutcome {
     RawResult result = RawResult();
 };
 
-// AC-3 (bsid <= 8): mirrors src/cli/main.cpp's measure_qc_ac3 exactly -
+// AC-3 (bsid <= 8): mirrors apps/cli/main.cpp's measure_qc_ac3 exactly -
 // same per-frame decode loop, same dual-mono split, feeding
 // ac3::meta::LoudnessMeter instead of printing anything. Kept in step with
 // the CLI's own reference implementation deliberately, per this change's own

@@ -337,7 +337,7 @@ endif()
 # ---------------------------------------------------------------------------
 include(GNUInstallDirs)
 
-# COMPONENT runtime - see src/cli/CMakeLists.txt's identical ac3cli install()
+# COMPONENT runtime - see apps/cli/CMakeLists.txt's identical ac3cli install()
 # for why.
 install(TARGETS ac3gui
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT runtime
