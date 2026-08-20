@@ -313,11 +313,7 @@ jobs:
             -warnings-as-errors='*' \
             '(src/(forge|matroska)|apps/cli)/.*\.cpp'
 
-<<<<<<< HEAD
-  # ac3tests coverage over every library component: src/lib plus audio,
-=======
   # ac3tests coverage over every library component: src/forge plus audio,
->>>>>>> github/feature/library-coverage-gcov
   # signing, matroska, mp4, mpegts, capi, and - via the coverage preset's
   # AC3FORGE_BUILD_ADM=ON with vcpkg's 'adm' feature, the same pair
   # adm-validate passes by hand - ac3adm/admbridge. Originally src/forge only
