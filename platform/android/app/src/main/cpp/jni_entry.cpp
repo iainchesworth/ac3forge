@@ -1,7 +1,7 @@
 // This app's own native entry points. Everything platform-specific that
 // ac3::audio needs from JNI (the PassthroughBridge plumbing, and JNI_OnLoad
 // itself) lives in that library's own
-// src/audio/src/platform/android/passthrough.cpp, not here - see that
+// src/audio/src/backend/android/passthrough.cpp, not here - see that
 // file's header comment for why JNI_OnLoad belongs there (capturing the
 // JavaVM is ac3::audio's own concern) rather than being duplicated in this
 // translation unit, which would be an ODR violation at link time (a shared

@@ -10,7 +10,7 @@
 // per-platform answer, and under the no-#ifdef rule a per-platform answer is
 // a file in a platform directory - not a conditional at the call site.
 //
-// Exactly one src/platform/<os>/audio_backend.cpp is compiled, chosen by
+// Exactly one src/audio/src/backend/<os>/audio_backend.cpp is compiled, chosen by
 // CMake alongside that platform's capture.cpp, passthrough.cpp and
 // monitor.cpp, so this report can never disagree with the implementations it
 // describes. Callers read it as data: the CLI marks its usage listing from it

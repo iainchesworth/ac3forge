@@ -33,7 +33,7 @@ spa_dict make_dict(const spa_dict_item* items, std::uint32_t n_items) {
     // Plain aggregate init, not the SPA_DICT_INIT macro: it expands to a C99
     // compound literal, which -Werror -Wc99-extensions (Clang) flags outside
     // the system header that otherwise shelters it - see
-    // src/platform/pipewire/capture.cpp's identical note on
+    // src/audio/src/backend/pipewire/capture.cpp's identical note on
     // SPA_POD_BUILDER_INIT.
     return spa_dict{0, n_items, items};
 }

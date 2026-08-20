@@ -5,7 +5,7 @@ package com.ac3forge.shield
  * call that goes the other way.
  *
  * `registerPassthroughBridge` is declared here now (implemented in
- * src/audio/src/platform/android/passthrough.cpp) even though
+ * src/audio/src/backend/android/passthrough.cpp) even though
  * [PassthroughBridge] itself does not exist yet - the native symbol name is
  * part of the JNI contract fixed by mangling
  * (`Java_com_ac3forge_shield_NativeBridge_registerPassthroughBridge`), so the

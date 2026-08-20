@@ -102,7 +102,7 @@ decoded an AC-3/E-AC-3 bitstream and verified its loudness metadata against meas
   `pw_stream` PCM; IEC 61937 passthrough negotiates for real (`SPA_MEDIA_SUBTYPE_iec958`,
   confirmed against a real shipped client) but is contingent on the target node's `iec958Codecs`
   being enabled by the session manager, which this library cannot do on a caller's behalf — see
-  `src/platform/pipewire/passthrough.cpp`. ALSA keeps first precedence when both are present;
+  `src/audio/src/backend/pipewire/passthrough.cpp`. ALSA keeps first precedence when both are present;
   see `docs/building.md`'s "Why ALSA still comes first".
 - [ ] **E3 (S)** — Confirm exclusive-mode passthrough against real bitstreaming hardware —
   the standing "Known gaps" bullet from 0.5.0 — and update `docs/verification.md`.

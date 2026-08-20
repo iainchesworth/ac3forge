@@ -8,7 +8,7 @@ unchanged, just with `-arm64` presets.
 
 ## Why there's no Raspberry Pi-specific code
 
-The project's platform tree (`src/audio/src/platform/{windows,alsa,posix,macos,android}/`, selected by
+The project's backend tree (`src/audio/src/backend/{windows,alsa,posix,macos,android}/`, selected by
 `src/audio/CMakeLists.txt`, never by `#ifdef` - `scripts/check-platform-macros.ps1` enforces this in CI)
 branches on **operating system**, not architecture or device. A Raspberry Pi running Raspberry Pi OS
 hits exactly the same `if(LINUX)` branch, the same ALSA backend, and the same
@@ -78,7 +78,7 @@ x64. `VCPKG_ROOT` only ever supplies Catch2, exactly as on every other platform.
 
 The Pi's only audio-capable HDMI path is its VideoCore HDMI ALSA card, normally exposed under a name
 like `vc4-hdmi` (`bcm2835` on older firmware/kernel combinations). ac3forge doesn't special-case
-this name - `src/audio/src/platform/alsa/device_names.hpp`'s `classify_digital_output()` already
+this name - `src/audio/src/backend/alsa/device_names.hpp`'s `classify_digital_output()` already
 recognizes any ALSA PCM whose name contains `hdmi` and builds the IEC 60958 channel-status device
 string generically. Find the real name on a given Pi with:
 

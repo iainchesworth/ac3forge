@@ -40,11 +40,11 @@ target_compile_features(ac3audio PUBLIC cxx_std_23)
 target_link_libraries(ac3audio PRIVATE ac3::forge ac3::warnings)
 
 # ---------------------------------------------------------------------------
-# The platform tree.
+# The backend tree.
 #
 # Live capture, IEC 61937 passthrough, shared-mode monitor playback, and the
 # report saying which of the three exists are the only OS-specific code in
-# the project. Each is one file of the SAME name under src/platform/<backend>/,
+# the project. Each is one file of the SAME name under src/backend/<backend>/,
 # and CMake compiles exactly one directory of them - so no translation unit
 # ever asks which system it is being built for, and adding a platform means
 # adding a directory rather than editing conditionals scattered through the
@@ -66,19 +66,19 @@ target_link_libraries(ac3audio PRIVATE ac3::forge ac3::warnings)
 # ---------------------------------------------------------------------------
 if(NOT WIN32 AND NOT LINUX AND NOT APPLE AND NOT ANDROID)
     message(FATAL_ERROR
-        "ac3audio has no platform directory for this system. Add "
-        "src/audio/src/platform/<backend>/{audio_backend,capture,passthrough,monitor}.cpp - "
-        "src/audio/src/platform/posix/ is the no-backend implementation and is a "
+        "ac3audio has no backend directory for this system. Add "
+        "src/audio/src/backend/<backend>/{audio_backend,capture,passthrough,monitor}.cpp - "
+        "src/audio/src/backend/posix/ is the no-backend implementation and is a "
         "working starting point - then select it here.")
 endif()
 
 if(WIN32)
     target_sources(ac3audio
         PRIVATE
-            src/platform/windows/audio_backend.cpp
-            src/platform/windows/capture.cpp
-            src/platform/windows/passthrough.cpp
-            src/platform/windows/monitor.cpp)
+            src/backend/windows/audio_backend.cpp
+            src/backend/windows/capture.cpp
+            src/backend/windows/passthrough.cpp
+            src/backend/windows/monitor.cpp)
 
     # How <windows.h> is to be configured wherever it is included: the lean
     # header set, and no min/max macros to collide with <algorithm>. Stated
@@ -101,7 +101,7 @@ if(LINUX)
     # 60958 non-audio bit set, and ALSA is both the layer that expresses that
     # and the layer PulseAudio (and, per the PipeWire block below,
     # ordinarily PipeWire too) reaches it through. See the essay at the top
-    # of src/platform/alsa/passthrough.cpp.
+    # of src/backend/alsa/passthrough.cpp.
     #
     # Optional, and detected rather than assumed. libasound2-dev (Debian and
     # Ubuntu) or alsa-lib-devel (Fedora) is a small and universally packaged
@@ -137,7 +137,7 @@ if(LINUX)
     # does negotiate compressed IEC 61937 formats through PipeWire's own API
     # (SPA_MEDIA_SUBTYPE_iec958, spa_format_audio_iec958_build(),
     # PW_STREAM_FLAG_EXCLUSIVE) - see the essay at the top of
-    # src/platform/pipewire/passthrough.cpp for what that can and cannot
+    # src/backend/pipewire/passthrough.cpp for what that can and cannot
     # promise in practice, which is the real reason ALSA keeps first
     # precedence below rather than "PipeWire is what most desktops run
     # today" winning by default.
@@ -192,7 +192,7 @@ if(LINUX)
     # is somehow lesser, but because ALSA's passthrough works unconditionally
     # the moment compatible hardware exists, while PipeWire's compressed
     # codec support has to have been separately enabled on the target node by
-    # the session manager first (see src/platform/pipewire/passthrough.cpp's
+    # the session manager first (see src/backend/pipewire/passthrough.cpp's
     # header comment) - so preferring PipeWire by default on every machine
     # that merely has both sets of headers installed would silently regress
     # 'ac3cli outputs'/'play' on the common case where nobody has touched
@@ -211,10 +211,10 @@ if(LINUX)
     if(ALSA_FOUND)
         target_sources(ac3audio
             PRIVATE
-                src/platform/alsa/audio_backend.cpp
-                src/platform/alsa/capture.cpp
-                src/platform/alsa/monitor.cpp
-                src/platform/alsa/passthrough.cpp)
+                src/backend/alsa/audio_backend.cpp
+                src/backend/alsa/capture.cpp
+                src/backend/alsa/monitor.cpp
+                src/backend/alsa/passthrough.cpp)
         target_link_libraries(ac3audio PRIVATE ALSA::ALSA)
         set(AC3FORGE_AUDIO_BACKEND alsa)
         message(STATUS
@@ -223,24 +223,24 @@ if(LINUX)
     elseif(PipeWire_FOUND)
         target_sources(ac3audio
             PRIVATE
-                src/platform/pipewire/audio_backend.cpp
-                src/platform/pipewire/capture.cpp
-                src/platform/pipewire/monitor.cpp
-                src/platform/pipewire/passthrough.cpp)
+                src/backend/pipewire/audio_backend.cpp
+                src/backend/pipewire/capture.cpp
+                src/backend/pipewire/monitor.cpp
+                src/backend/pipewire/passthrough.cpp)
         target_link_libraries(ac3audio PRIVATE PkgConfig::PipeWire)
         set(AC3FORGE_AUDIO_BACKEND pipewire)
         message(STATUS
             "PipeWire ${PipeWire_VERSION}: live capture and monitor playback enabled; IEC "
             "61937 passthrough negotiates for real but needs a compressed codec enabled on "
             "the target node by the session manager first - see "
-            "src/platform/pipewire/passthrough.cpp")
+            "src/backend/pipewire/passthrough.cpp")
     else()
         target_sources(ac3audio
             PRIVATE
-                src/platform/posix/audio_backend.cpp
-                src/platform/posix/capture.cpp
-                src/platform/posix/monitor.cpp
-                src/platform/posix/passthrough.cpp)
+                src/backend/posix/audio_backend.cpp
+                src/backend/posix/capture.cpp
+                src/backend/posix/monitor.cpp
+                src/backend/posix/passthrough.cpp)
         set(AC3FORGE_AUDIO_BACKEND posix)
         message(STATUS
             "Neither ALSA nor PipeWire headers were found; building without live capture, "
@@ -255,7 +255,7 @@ if(APPLE)
     # -----------------------------------------------------------------------
     # CoreAudio: the Audio HAL (AudioObjectID / AudioDeviceIOProc), the same
     # layer WASAPI and ALSA occupy on their own platforms - not AVAudioEngine
-    # or Audio Queue Services. See src/platform/macos/capture.cpp's own
+    # or Audio Queue Services. See src/backend/macos/capture.cpp's own
     # header for why: passthrough's exclusive-mode physical-format switch
     # has to happen at the HAL, so every capability shares that one layer
     # (and its device-enumeration/hog-mode code, coreaudio_support.hpp)
@@ -263,15 +263,15 @@ if(APPLE)
     #
     # Always available and never optional the way ALSA is on Linux: CoreAudio
     # is part of every macOS SDK, with no missing-headers story to fall back
-    # from - see src/platform/macos/audio_backend.cpp's own comment on what
+    # from - see src/backend/macos/audio_backend.cpp's own comment on what
     # "available" still does and does not promise.
     # -----------------------------------------------------------------------
     target_sources(ac3audio
         PRIVATE
-            src/platform/macos/audio_backend.cpp
-            src/platform/macos/capture.cpp
-            src/platform/macos/passthrough.cpp
-            src/platform/macos/monitor.cpp)
+            src/backend/macos/audio_backend.cpp
+            src/backend/macos/capture.cpp
+            src/backend/macos/passthrough.cpp
+            src/backend/macos/monitor.cpp)
 
     # CoreAudio: the Audio HAL itself. CoreFoundation: CFStringRef, used
     # throughout coreaudio_support.hpp for every device's persistent UID and
@@ -292,7 +292,7 @@ if(ANDROID)
     # (the NDK's native audio API), but passthrough.cpp is a JNI shim to a
     # Kotlin-owned android.media.AudioTrack, because AAudio has no support
     # for compressed/IEC 61937 bitstream passthrough at all - see
-    # src/platform/android/audio_backend.cpp's header comment for the full
+    # src/backend/android/audio_backend.cpp's header comment for the full
     # reasoning. capture.cpp is the no-backend stub: this build has no
     # microphone/loopback feature to serve.
     #
@@ -304,10 +304,10 @@ if(ANDROID)
     # -----------------------------------------------------------------------
     target_sources(ac3audio
         PRIVATE
-            src/platform/android/audio_backend.cpp
-            src/platform/android/capture.cpp
-            src/platform/android/passthrough.cpp
-            src/platform/android/monitor.cpp)
+            src/backend/android/audio_backend.cpp
+            src/backend/android/capture.cpp
+            src/backend/android/passthrough.cpp
+            src/backend/android/monitor.cpp)
 
     # aaudio: monitor.cpp's native playback API. log: android/log.h, used
     # throughout the backend for diagnostics visible in `adb logcat`.
@@ -317,5 +317,5 @@ if(ANDROID)
 endif(ANDROID)
 
 set(AC3FORGE_AUDIO_BACKEND "${AC3FORGE_AUDIO_BACKEND}" PARENT_SCOPE)
-set(AC3FORGE_AUDIO_BACKEND_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/${AC3FORGE_AUDIO_BACKEND}"
+set(AC3FORGE_AUDIO_BACKEND_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/backend/${AC3FORGE_AUDIO_BACKEND}"
     PARENT_SCOPE)

@@ -275,7 +275,7 @@ hardware in real time, and a live microphone capture → encode → monitor sess
 end-to-end. Building this path against real hardware surfaced two genuine bugs that neither
 unit tests nor silent/synthetic input would have caught — see
 [Windows](../platforms/windows.md#audio-backend-wasapi) for the details, and
-`src/audio/src/platform/windows/monitor.cpp` for the fixes.
+`src/audio/src/backend/windows/monitor.cpp` for the fixes.
 
 ## Capture: `ac3::capture`
 

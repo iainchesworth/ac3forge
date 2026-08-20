@@ -3,7 +3,7 @@
 // This is now reachable only as ac3::audio's Linux fallback, when
 // libasound's development headers are not present (see the AC3FORGE_WITH_ALSA
 // AUTO/ON/OFF block in src/audio/CMakeLists.txt) - macOS gets a real
-// CoreAudio backend of its own, src/platform/macos/, unconditionally.
+// CoreAudio backend of its own, src/audio/src/backend/macos/, unconditionally.
 //
 // None of the three capabilities exist here, and on a Linux host without
 // ALSA that is a real absence rather than an oversight: live capture would

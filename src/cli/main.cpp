@@ -5297,7 +5297,7 @@ enum class Needs : std::uint8_t { kNothing, kCapture, kPassthrough, kMonitor, kA
 //
 // Note what kCapture/kPassthrough/kMonitor are not: an OS test. main.cpp never asks whether it is
 // on Windows - it asks the one translation unit CMake compiled from
-// src/audio/src/platform/<os>/ what that platform can do, and prints the answer
+// src/audio/src/backend/<os>/ what that backend can do, and prints the answer
 // that unit supplied. The day a Unix capture backend lands, capture flips to
 // available in that file alone and 'devices' and 'record' start working here
 // with no change to this file. kAdm asks the analogous question of
