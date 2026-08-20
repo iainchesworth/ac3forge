@@ -366,8 +366,8 @@ endif()
 # unless QT_FORCE_STDERR_LOGGING=1 is also set - confirmed by reproducing
 # the CI failure locally with the Release preset. include() keeps
 # tests/CMakeLists.txt's own CMAKE_CURRENT_SOURCE_DIR/BINARY_DIR equal to
-# this file's, so every path inside it is written relative to src/gui, not
-# src/gui/tests.
+# this file's, so every path inside it is written relative to apps/gui, not
+# apps/gui/tests.
 if(AC3FORGE_BUILD_TESTS)
     include(tests/CMakeLists.txt)
 endif()

@@ -101,7 +101,7 @@ Dialog {
         }
         AboutBody {
             // The Archivo font this dialog (and the whole app) renders in is
-            // bundled under a separate license - src/gui/fonts/OFL.txt ships
+            // bundled under a separate license - apps/gui/fonts/OFL.txt ships
             // beside the faces because SIL OFL 1.1 requires attribution to
             // travel with the font; this is that attribution.
             text: qsTr("Includes the Archivo typeface, licensed under the SIL Open Font License 1.1.")

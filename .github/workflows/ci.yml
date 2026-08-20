@@ -66,7 +66,7 @@
 # threshold on every leg, and exactly why the gate is SNR-based rather than a
 # bit-exact bitstream comparison.
 #
-# Qt Quick Test harness: src/gui/tests/ adds ac3gui_qml_tests, a real ctest
+# Qt Quick Test harness: apps/gui/tests/ adds ac3gui_qml_tests, a real ctest
 # entry (label "gui") that Quick-Test-drives the actual EncoderController
 # singleton and Main.qml shell, registered only when AC3FORGE_BUILD_GUI is
 # ON - so it rides the existing GUI axis rather than adding a new one, and
@@ -317,7 +317,7 @@ jobs:
   # adm-validate passes by hand - ac3adm/admbridge. Originally src/forge only
   # ("the library is what was asked for"); extended once the rest of the
   # library surface existed and was already being EXERCISED by this same
-  # suite, just uninstrumented and unreported. apps/cli and src/gui stay out
+  # suite, just uninstrumented and unreported. apps/cli and apps/gui stay out
   # of scope: they are applications, not the library, and the coverage
   # preset builds neither.
   #
