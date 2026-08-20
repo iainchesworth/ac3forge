@@ -1,4 +1,4 @@
-#include "ac3/platform/audio_backend.hpp"
+#include "ac3/audio/audio_backend.hpp"
 
 // macOS: all three capabilities are real. capture.cpp reads from any HAL
 // input device via AudioDeviceCreateIOProcID, monitor.cpp plays ordinary
@@ -18,7 +18,7 @@
 // the same as ALSA's own documented behaviour for a machine with only an
 // analog output.
 
-namespace ac3::platform {
+namespace ac3::audio {
 
 const AudioBackend& audio_backend() {
     static constexpr AudioBackend kBackend{
@@ -29,4 +29,4 @@ const AudioBackend& audio_backend() {
     return kBackend;
 }
 
-}  // namespace ac3::platform
+}  // namespace ac3::audio

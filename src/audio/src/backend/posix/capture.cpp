@@ -1,15 +1,15 @@
-#include "ac3/capture/capture.hpp"
+#include "ac3/audio/capture.hpp"
 
 // The Unix capture backend: there isn't one. CMake compiles this directory's
 // capture.cpp on Linux and macOS, and every entry point fails with kNoBackend
 // rather than the API disappearing from the library - callers keep compiling,
 // and get told no instead of getting nothing.
 //
-// Ask ac3::platform::audio_backend() BEFORE calling any of this if the answer
+// Ask ac3::audio::audio_backend() BEFORE calling any of this if the answer
 // wants to be a sentence rather than an error code; see
 // platform/posix/audio_backend.cpp for why there is no backend here.
 
-namespace ac3::capture {
+namespace ac3::audio {
 
 std::string_view describe(CaptureError error) {
     switch (error) {
@@ -42,4 +42,4 @@ std::uint16_t Capture::channels() const { return 0; }
 CaptureStats Capture::stats() const { return {}; }
 RingBuffer* Capture::buffer() { return nullptr; }
 
-}  // namespace ac3::capture
+}  // namespace ac3::audio

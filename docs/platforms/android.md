@@ -88,7 +88,7 @@ So the backend is genuinely split, unlike the other three:
 
 - **`monitor.cpp`** — real AAudio (`AAudioStreamBuilder`, PCM float), for local preview. This is
   exactly what AAudio is good at, and the only place in this backend that uses it.
-- **`passthrough.cpp`** — a JNI shim implementing `ac3::sinks::PassthroughSink`. `submit()` hands
+- **`passthrough.cpp`** — a JNI shim implementing `ac3::audio::PassthroughSink`. `submit()` hands
   each burst to a Kotlin-owned `AudioTrack` via a small round-robin pool of buffers wrapped once
   with `env->NewDirectByteBuffer(...)` and promoted to a `GlobalRef` at startup — one `memcpy` into
   a native buffer per burst, zero further copies, no per-frame `NewDirectByteBuffer`/GC churn.

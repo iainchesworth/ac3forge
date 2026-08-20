@@ -9,7 +9,7 @@
 #include <vector>
 
 #include "ac3/oba/motion.hpp"
-#include "ac3/platform/audio_backend.hpp"
+#include "ac3/audio/audio_backend.hpp"
 
 // Roadmap B1 phase 3 of 3 ("ADM BWF reader feeding the JOC encoder", see ROADMAP.md) - the narrow
 // seam between main.cpp's 'atmos-adm' command and ac3adm::ac3adm/ac3::admbridge, this project's
@@ -37,12 +37,12 @@ namespace ac3cli {
 
 // Whether THIS build's ac3cli can run 'atmos-adm' at all - the same "is this available here?"
 // question main.cpp's existing Needs::kCapture/kPassthrough/kMonitor already ask of
-// ac3::platform::audio_backend() (see that header's own top comment on why a per-platform TU,
+// ac3::audio::audio_backend() (see that header's own top comment on why a per-platform TU,
 // not a conditional, answers it); Needs::kAdm (main.cpp's kCommands table) asks this instead,
 // and unmet() refuses the command before run_atmos_adm is ever called when it reports
-// unavailable - reusing ac3::platform::Capability's {available, reason} shape rather than
+// unavailable - reusing ac3::audio::Capability's {available, reason} shape rather than
 // inventing a second one for what is structurally the identical question.
-[[nodiscard]] const ac3::platform::Capability& adm_capability();
+[[nodiscard]] const ac3::audio::Capability& adm_capability();
 
 // Everything run_atmos_adm (main.cpp) needs from one parsed-and-bridged ADM BWF master, expressed
 // purely in ac3::oba terms. `handle` owns whatever `pcm`'s spans actually borrow from (an

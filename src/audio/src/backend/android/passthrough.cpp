@@ -1,4 +1,4 @@
-#include "ac3/sinks/passthrough.hpp"
+#include "ac3/audio/passthrough.hpp"
 
 // The Android passthrough backend. CMake compiles this directory's
 // passthrough.cpp on Android and another platform directory's everywhere
@@ -83,7 +83,7 @@
 #include "ac3/sinks/iec61937.hpp"
 #include "android_support.hpp"
 
-namespace ac3::sinks {
+namespace ac3::audio {
 
 namespace {
 
@@ -426,10 +426,10 @@ std::expected<void, PassthroughError> PassthroughSink::start(const std::string& 
     return {};
 }
 
-}  // namespace ac3::sinks
+}  // namespace ac3::audio
 
 // --- JNI entry points -----------------------------------------------------
-// Deliberately outside namespace ac3::sinks: JNI symbol names are fixed by
+// Deliberately outside namespace ac3::audio: JNI symbol names are fixed by
 // the mangling convention (Java_<package>_<Class>_<method>), not by us.
 //
 // JNI_OnLoad is defined here, not in the app's own native code
@@ -439,8 +439,8 @@ std::expected<void, PassthroughError> PassthroughSink::start(const std::string& 
 // only translation unit in ac3forge_jni.so that needs it.
 
 extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* /*reserved*/) {
-    ac3::sinks::g_vm = vm;
-    __android_log_print(ANDROID_LOG_INFO, ac3::sinks::kLogTag,
+    ac3::audio::g_vm = vm;
+    __android_log_print(ANDROID_LOG_INFO, ac3::audio::kLogTag,
                         "JNI_OnLoad: ac3forge_jni loaded, JavaVM captured");
     return JNI_VERSION_1_6;
 }
@@ -451,11 +451,11 @@ extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* /*reserved*/) {
 extern "C" JNIEXPORT void JNICALL
 Java_com_ac3forge_shield_NativeBridge_registerPassthroughBridge(JNIEnv* env, jclass /*clazz*/,
                                                                  jobject bridge) {
-    std::lock_guard lock(ac3::sinks::g_bridge_mutex);
+    std::lock_guard lock(ac3::audio::g_bridge_mutex);
 
-    if (ac3::sinks::g_bridge != nullptr) {
-        env->DeleteGlobalRef(ac3::sinks::g_bridge);
-        ac3::sinks::g_bridge = nullptr;
+    if (ac3::audio::g_bridge != nullptr) {
+        env->DeleteGlobalRef(ac3::audio::g_bridge);
+        ac3::audio::g_bridge = nullptr;
     }
     if (bridge == nullptr) {
         return;
@@ -465,22 +465,22 @@ Java_com_ac3forge_shield_NativeBridge_registerPassthroughBridge(JNIEnv* env, jcl
     if (local_class == nullptr) {
         return;
     }
-    ac3::sinks::g_mid_is_direct_supported =
+    ac3::audio::g_mid_is_direct_supported =
         env->GetMethodID(local_class, "isDirectPlaybackSupported", "(IZ)Z");
-    ac3::sinks::g_mid_is_pcm_supported = env->GetMethodID(local_class, "isPcmSupported", "(I)Z");
-    ac3::sinks::g_mid_open = env->GetMethodID(local_class, "open", "(IZ)Z");
-    ac3::sinks::g_mid_submit =
+    ac3::audio::g_mid_is_pcm_supported = env->GetMethodID(local_class, "isPcmSupported", "(I)Z");
+    ac3::audio::g_mid_open = env->GetMethodID(local_class, "open", "(IZ)Z");
+    ac3::audio::g_mid_submit =
         env->GetMethodID(local_class, "submit", "(Ljava/nio/ByteBuffer;I)I");
-    ac3::sinks::g_mid_close = env->GetMethodID(local_class, "close", "()V");
+    ac3::audio::g_mid_close = env->GetMethodID(local_class, "close", "()V");
     if (env->ExceptionCheck() != 0) {
         env->ExceptionClear();
-        ac3::sinks::g_mid_is_direct_supported = nullptr;
-        ac3::sinks::g_mid_is_pcm_supported = nullptr;
-        ac3::sinks::g_mid_open = nullptr;
-        ac3::sinks::g_mid_submit = nullptr;
-        ac3::sinks::g_mid_close = nullptr;
+        ac3::audio::g_mid_is_direct_supported = nullptr;
+        ac3::audio::g_mid_is_pcm_supported = nullptr;
+        ac3::audio::g_mid_open = nullptr;
+        ac3::audio::g_mid_submit = nullptr;
+        ac3::audio::g_mid_close = nullptr;
         env->DeleteLocalRef(local_class);
-        __android_log_print(ANDROID_LOG_ERROR, ac3::sinks::kLogTag,
+        __android_log_print(ANDROID_LOG_ERROR, ac3::audio::kLogTag,
                             "registerPassthroughBridge: GetMethodID failed - does "
                             "PassthroughBridge match the expected "
                             "isDirectPlaybackSupported/isPcmSupported/open/submit/close "
@@ -488,8 +488,8 @@ Java_com_ac3forge_shield_NativeBridge_registerPassthroughBridge(JNIEnv* env, jcl
         return;
     }
 
-    ac3::sinks::g_bridge = env->NewGlobalRef(bridge);
+    ac3::audio::g_bridge = env->NewGlobalRef(bridge);
     env->DeleteLocalRef(local_class);
-    __android_log_print(ANDROID_LOG_INFO, ac3::sinks::kLogTag,
+    __android_log_print(ANDROID_LOG_INFO, ac3::audio::kLogTag,
                         "registerPassthroughBridge: bridge registered");
 }

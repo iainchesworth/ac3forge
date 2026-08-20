@@ -1,4 +1,4 @@
-#include "ac3/platform/audio_backend.hpp"
+#include "ac3/audio/audio_backend.hpp"
 
 // ALSA: all three capabilities are real. capture.cpp reads from any ALSA PCM -
 // including `default`, which on a desktop is PipeWire or PulseAudio -
@@ -15,7 +15,7 @@
 // false. A machine with no sound card at all - a container, a CI runner -
 // enumerates nothing and gets an empty list, not an error.
 
-namespace ac3::platform {
+namespace ac3::audio {
 
 const AudioBackend& audio_backend() {
     static constexpr AudioBackend kBackend{
@@ -26,4 +26,4 @@ const AudioBackend& audio_backend() {
     return kBackend;
 }
 
-}  // namespace ac3::platform
+}  // namespace ac3::audio

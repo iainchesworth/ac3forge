@@ -18,7 +18,7 @@
 // Exactly one thread may write and one may read. Capacity is rounded up to a
 // power of two so the index wrap is a mask rather than a modulo.
 
-namespace ac3::capture {
+namespace ac3::audio {
 
 template <typename T>
 class BasicRingBuffer {
@@ -90,4 +90,4 @@ private:
 using RingBuffer = BasicRingBuffer<float>;
 using ByteRingBuffer = BasicRingBuffer<std::byte>;
 
-}  // namespace ac3::capture
+}  // namespace ac3::audio

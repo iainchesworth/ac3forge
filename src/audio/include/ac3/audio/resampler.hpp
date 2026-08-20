@@ -25,7 +25,7 @@
 // the caller, so both are exercisable from a plain Catch2 test with
 // synthetic data instead of a real device pair.
 
-namespace ac3::capture {
+namespace ac3::audio {
 
 // Streaming linear-interpolation fractional resampler. Applies a caller-
 // supplied ratio (output_rate / input_rate) to interleaved float PCM,
@@ -216,4 +216,4 @@ private:
     bool has_update_ = false;
 };
 
-}  // namespace ac3::capture
+}  // namespace ac3::audio

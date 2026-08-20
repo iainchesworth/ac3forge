@@ -13,7 +13,7 @@
 # distributed ac3forge-dev package (see docs/library/index.md).
 #
 # PRIVATE-links ac3::forge for one reason only: the passthrough backends
-# reuse ac3::sinks::iec61937's burst-size constants and framer to size and
+# reuse ac3::iec61937's burst-size constants and framer to size and
 # pack S/PDIF bursts. iec61937 itself has no platform dependency and stays in
 # ac3::forge - it is pure codec-adjacent byte framing, also used standalone
 # by ac3cli's file-based `spdif` command.

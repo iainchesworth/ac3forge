@@ -1,4 +1,4 @@
-#include "ac3/sinks/passthrough.hpp"
+#include "ac3/audio/passthrough.hpp"
 
 // The PipeWire passthrough backend. CMake compiles this directory's
 // passthrough.cpp on a Linux host that selected pipewire/ over alsa/ (see
@@ -61,11 +61,11 @@
 #include <string>
 #include <vector>
 
-#include "ac3/capture/ring_buffer.hpp"
+#include "ac3/audio/ring_buffer.hpp"
 #include "ac3/sinks/iec61937.hpp"
 #include "pipewire_support.hpp"
 
-namespace ac3::sinks {
+namespace ac3::audio {
 
 namespace {
 
@@ -266,7 +266,7 @@ std::expected<std::vector<RenderDeviceInfo>, PassthroughError> enumerate_render_
     }
 
     // No per-node "this is the default" metadata is read here - the same
-    // fallback ac3::capture's PipeWire enumeration and ALSA's own passthrough
+    // fallback ac3::audio's PipeWire enumeration and ALSA's own passthrough
     // enumeration both use when they cannot resolve one either.
     if (!devices.empty()) {
         devices.front().is_default = true;
@@ -281,7 +281,7 @@ std::expected<std::vector<RenderDeviceInfo>, PassthroughError> enumerate_render_
 struct PassthroughSink::Impl {
     ThreadLoop loop;
     Stream stream;
-    std::unique_ptr<capture::ByteRingBuffer> queue;
+    std::unique_ptr<ByteRingBuffer> queue;
     std::size_t burst_bytes = iec61937::kBurstBytes;
     std::atomic_bool running{false};
     std::atomic<std::uint64_t> submitted{0};
@@ -327,7 +327,7 @@ struct PassthroughSink::Impl {
         const auto got = impl.queue->read(std::span{out, byte_count});
         if (got < byte_count) {
             // A gap on the wire, exactly as underrun handling is described
-            // in ac3::sinks::PassthroughStats's own documentation - counted,
+            // in ac3::audio::PassthroughStats's own documentation - counted,
             // not hidden, matching every other backend's discipline.
             std::fill(out + got, out + byte_count, std::byte{0});
             impl.underruns.fetch_add(1, std::memory_order_relaxed);
@@ -447,7 +447,7 @@ std::expected<void, PassthroughError> PassthroughSink::start(const std::string& 
     // Everything Impl::process()/Impl::state_changed() might touch is set up
     // before pw_stream_connect() below - see capture.cpp's start() for why
     // that ordering is what keeps this race-free.
-    impl_->queue = std::make_unique<capture::ByteRingBuffer>(burst_bytes * 40);
+    impl_->queue = std::make_unique<ByteRingBuffer>(burst_bytes * 40);
     impl_->burst_bytes = burst_bytes;
     impl_->submitted.store(0, std::memory_order_relaxed);
     impl_->rendered.store(0, std::memory_order_relaxed);
@@ -513,4 +513,4 @@ std::expected<void, PassthroughError> PassthroughSink::start(const std::string& 
     return {};
 }
 
-}  // namespace ac3::sinks
+}  // namespace ac3::audio

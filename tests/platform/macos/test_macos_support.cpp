@@ -25,7 +25,7 @@ using ac3::coreaudio::float_to_samples;
 using ac3::coreaudio::physical_format_id;
 using ac3::coreaudio::samples_to_float;
 using ac3::coreaudio::SampleFormat;
-using ac3::sinks::BitstreamFormat;
+using ac3::audio::BitstreamFormat;
 
 TEST_CASE("E-AC-3 runs the carrier four times as fast as its content") {
     // Same physical fact platform/alsa/device_names.hpp and

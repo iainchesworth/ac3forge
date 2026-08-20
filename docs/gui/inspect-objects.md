@@ -44,7 +44,7 @@ Once a file decodes, the dialog fills with:
 ## Audition
 
 Each object's own **Audition** button plays that object's JOC-reconstructed audio through an
-ordinary output — the same shared-mode playback path (`ac3::sinks::MonitorSink`) the Objects tab's
+ordinary output — the same shared-mode playback path (`ac3::audio::MonitorSink`) the Objects tab's
 own motion preview uses — so it can be judged by ear, not just by position. Only one object
 auditions at a time; **Audition** on the row already playing becomes **Stop**. This is a parametric
 reconstruction, not the original source audio recovered losslessly — see

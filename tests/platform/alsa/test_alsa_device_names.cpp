@@ -66,7 +66,7 @@ TEST_CASE("channel status carries the rate the link is actually running at") {
 
 TEST_CASE("E-AC-3 runs the link four times as fast as its content") {
     using ac3::alsa::carrier_rate;
-    using ac3::sinks::BitstreamFormat;
+    using ac3::audio::BitstreamFormat;
 
     // AC-3 carries at the content rate...
     CHECK(carrier_rate(BitstreamFormat::kAc3, 48000) == 48000);
@@ -147,7 +147,7 @@ TEST_CASE("an unusable rate is refused rather than guessed at") {
 
 TEST_CASE("E-AC-3 at 32 kHz has nowhere to go, and says so") {
     using ac3::alsa::carrier_rate;
-    using ac3::sinks::BitstreamFormat;
+    using ac3::audio::BitstreamFormat;
 
     // The one combination this library can encode and this backend cannot
     // carry, followed all the way through as PassthroughSink::start() does it:

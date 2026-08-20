@@ -25,7 +25,7 @@ using ac3::pipewire::is_audio_sink;
 using ac3::pipewire::is_audio_source;
 using ac3::pipewire::node_friendly_name;
 using ac3::pipewire::node_id;
-using ac3::sinks::BitstreamFormat;
+using ac3::audio::BitstreamFormat;
 
 namespace {
 

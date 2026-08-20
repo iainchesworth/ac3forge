@@ -4,7 +4,7 @@
 #include <cstdint>
 
 #include "ac3/sinks/iec61937.hpp"
-#include "ac3/sinks/passthrough.hpp"
+#include "ac3/audio/passthrough.hpp"
 
 // The Android backend's pure half, split out for the same reason
 // platform/alsa/device_names.hpp is: everything here compiles and tests on a
@@ -19,8 +19,8 @@ namespace ac3::android_audio {
 // platform/alsa's equivalent: which IEC 61937 burst size a format uses.
 // AudioTrack.write() needs the caller (submit()) to know this up front so it
 // can validate the burst it was handed before ever touching JNI.
-[[nodiscard]] inline std::size_t burst_bytes_for(sinks::BitstreamFormat format) {
-    return format == sinks::BitstreamFormat::kEac3 ? iec61937::kEac3BurstBytes
+[[nodiscard]] inline std::size_t burst_bytes_for(audio::BitstreamFormat format) {
+    return format == audio::BitstreamFormat::kEac3 ? iec61937::kEac3BurstBytes
                                                     : iec61937::kBurstBytes;
 }
 
@@ -37,9 +37,9 @@ namespace ac3::android_audio {
 // same "the declared rate describes the wire, not the content" situation
 // ALSA/WASAPI are already in - so PassthroughSink::start() passes THIS
 // value to PassthroughBridge.open(), not the raw content sample_rate.
-[[nodiscard]] constexpr std::uint32_t carrier_rate(sinks::BitstreamFormat format,
+[[nodiscard]] constexpr std::uint32_t carrier_rate(audio::BitstreamFormat format,
                                                     std::uint32_t content_rate) {
-    return format == sinks::BitstreamFormat::kEac3 ? content_rate * 4 : content_rate;
+    return format == audio::BitstreamFormat::kEac3 ? content_rate * 4 : content_rate;
 }
 
 // The Kotlin side's PassthroughBridge.probeCapabilities(int) returns
@@ -50,10 +50,10 @@ namespace ac3::android_audio {
 // WASAPI-style per-endpoint enumeration to walk - see
 // enumerate_render_devices()'s own comment), so the id/name/is_default
 // fields are fixed rather than read from anywhere.
-[[nodiscard]] inline sinks::RenderDeviceInfo make_render_device_info(bool ac3_supported,
+[[nodiscard]] inline audio::RenderDeviceInfo make_render_device_info(bool ac3_supported,
                                                                       bool eac3_supported,
                                                                       bool pcm_supported) {
-    sinks::RenderDeviceInfo info;
+    audio::RenderDeviceInfo info;
     info.id = "default";
     info.name = "Android system audio output (HDMI-routed)";
     info.is_default = true;

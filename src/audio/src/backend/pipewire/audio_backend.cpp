@@ -1,4 +1,4 @@
-#include "ac3/platform/audio_backend.hpp"
+#include "ac3/audio/audio_backend.hpp"
 
 // PipeWire: all three capabilities are real, over the native pw_stream API -
 // not PipeWire's ALSA-compatibility shim, and not a fallback that quietly
@@ -20,7 +20,7 @@
 // a machine with no PipeWire session running enumerates nothing, the same
 // honest empty list a machine with no ALSA sound card returns.
 
-namespace ac3::platform {
+namespace ac3::audio {
 
 const AudioBackend& audio_backend() {
     static constexpr AudioBackend kBackend{
@@ -31,4 +31,4 @@ const AudioBackend& audio_backend() {
     return kBackend;
 }
 
-}  // namespace ac3::platform
+}  // namespace ac3::audio

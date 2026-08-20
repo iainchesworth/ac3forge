@@ -1,4 +1,4 @@
-#include "ac3/platform/audio_backend.hpp"
+#include "ac3/audio/audio_backend.hpp"
 
 // This is now reachable only as ac3::audio's Linux fallback, when
 // libasound's development headers are not present (see the AC3FORGE_WITH_ALSA
@@ -20,7 +20,7 @@
 // These strings are printed verbatim when a caller is turned away, so they
 // name what is missing rather than merely reporting that something is.
 
-namespace ac3::platform {
+namespace ac3::audio {
 
 const AudioBackend& audio_backend() {
     static constexpr AudioBackend kBackend{
@@ -39,4 +39,4 @@ const AudioBackend& audio_backend() {
     return kBackend;
 }
 
-}  // namespace ac3::platform
+}  // namespace ac3::audio

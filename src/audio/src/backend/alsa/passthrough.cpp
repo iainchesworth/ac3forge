@@ -1,4 +1,4 @@
-#include "ac3/sinks/passthrough.hpp"
+#include "ac3/audio/passthrough.hpp"
 
 // The ALSA passthrough backend. CMake compiles this directory's
 // passthrough.cpp on a Linux host whose libasound development headers are
@@ -63,12 +63,12 @@
 #include <thread>
 #include <vector>
 
-#include "ac3/capture/ring_buffer.hpp"
+#include "ac3/audio/ring_buffer.hpp"
 #include "ac3/sinks/iec61937.hpp"
 #include "alsa_support.hpp"
 #include "device_names.hpp"
 
-namespace ac3::sinks {
+namespace ac3::audio {
 
 namespace {
 
@@ -306,7 +306,7 @@ std::expected<std::vector<RenderDeviceInfo>, PassthroughError> enumerate_render_
 }
 
 struct PassthroughSink::Impl {
-    std::unique_ptr<capture::ByteRingBuffer> queue;
+    std::unique_ptr<ByteRingBuffer> queue;
     std::jthread worker;
     snd_pcm_t* pcm = nullptr;
     // Set by start() and read by submit(): the two burst sizes are four times
@@ -430,7 +430,7 @@ std::expected<void, PassthroughError> PassthroughSink::start(const std::string& 
     // Room for roughly a second of bursts, so a caller encoding slightly
     // ahead of real time never has to spin. Counted in bursts rather than
     // bytes so an E-AC-3 session gets the same second, not a quarter of one.
-    impl_->queue = std::make_unique<capture::ByteRingBuffer>(burst_bytes * 40);
+    impl_->queue = std::make_unique<ByteRingBuffer>(burst_bytes * 40);
     impl_->burst_bytes = burst_bytes;
     impl_->submitted.store(0, std::memory_order_relaxed);
     impl_->rendered.store(0, std::memory_order_relaxed);
@@ -486,4 +486,4 @@ std::expected<void, PassthroughError> PassthroughSink::start(const std::string& 
     return {};
 }
 
-}  // namespace ac3::sinks
+}  // namespace ac3::audio

@@ -1,16 +1,16 @@
-#include "ac3/sinks/passthrough.hpp"
+#include "ac3/audio/passthrough.hpp"
 
 // The Unix passthrough backend: there isn't one. CMake compiles this
 // directory's passthrough.cpp on Linux and macOS, and every entry point fails
 // with kNoBackend rather than the API disappearing - callers keep compiling,
 // and get told no instead of getting nothing.
 //
-// Ask ac3::platform::audio_backend() BEFORE calling any of this if the answer
+// Ask ac3::audio::audio_backend() BEFORE calling any of this if the answer
 // wants to be a sentence rather than an error code; see
 // platform/posix/audio_backend.cpp for why there is no backend here, and what
 // to reach for instead.
 
-namespace ac3::sinks {
+namespace ac3::audio {
 
 std::string_view describe(PassthroughError error) {
     switch (error) {
@@ -47,4 +47,4 @@ void PassthroughSink::stop() {}
 bool PassthroughSink::running() const { return false; }
 PassthroughStats PassthroughSink::stats() const { return {}; }
 
-}  // namespace ac3::sinks
+}  // namespace ac3::audio

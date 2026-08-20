@@ -1,4 +1,4 @@
-#include "ac3/sinks/passthrough.hpp"
+#include "ac3/audio/passthrough.hpp"
 
 // The macOS passthrough backend. CMake compiles this directory's
 // passthrough.cpp under APPLE and another platform directory's everywhere
@@ -76,7 +76,7 @@
 // kAudioFormatEnhancedAC3 exactly as it does kAudioFormat60958AC3, and
 // where a driver does not offer it (older hardware, a non-HDMI output, an
 // Intel Mac), supports_eac3_passthrough simply comes back false - the same
-// "a platform can gain one and not the other" contract sinks::RenderDeviceInfo
+// "a platform can gain one and not the other" contract ac3::audio::RenderDeviceInfo
 // already documents for the AC-3/E-AC-3 split, not a claim that every
 // digital output on every Mac carries Dolby Digital Plus.
 //
@@ -103,12 +103,12 @@
 #include <string>
 #include <vector>
 
-#include "ac3/capture/ring_buffer.hpp"
+#include "ac3/audio/ring_buffer.hpp"
 #include "ac3/sinks/iec61937.hpp"
 #include "coreaudio_names.hpp"
 #include "coreaudio_support.hpp"
 
-namespace ac3::sinks {
+namespace ac3::audio {
 
 namespace {
 
@@ -210,7 +210,7 @@ struct PassthroughSink::Impl {
     bool have_original_format = false;
     coreaudio::HogGuard hog;
     coreaudio::MixingGuard mixing;
-    std::unique_ptr<capture::ByteRingBuffer> queue;
+    std::unique_ptr<ByteRingBuffer> queue;
     std::size_t burst_bytes = iec61937::kBurstBytes;
     std::atomic_bool running{false};
     std::atomic<std::uint64_t> submitted{0};
@@ -349,7 +349,7 @@ std::expected<void, PassthroughError> PassthroughSink::start(const std::string& 
     // Room for roughly a second of bursts, so a caller encoding slightly
     // ahead of real time never has to spin - the same sizing rationale as
     // the Windows/ALSA backends.
-    impl_->queue = std::make_unique<capture::ByteRingBuffer>(impl_->burst_bytes * 40);
+    impl_->queue = std::make_unique<ByteRingBuffer>(impl_->burst_bytes * 40);
     impl_->submitted.store(0, std::memory_order_relaxed);
     impl_->rendered.store(0, std::memory_order_relaxed);
     impl_->underruns.store(0, std::memory_order_relaxed);
@@ -409,4 +409,4 @@ std::expected<void, PassthroughError> PassthroughSink::start(const std::string& 
     return {};
 }
 
-}  // namespace ac3::sinks
+}  // namespace ac3::audio

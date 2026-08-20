@@ -1,4 +1,4 @@
-#include "ac3/capture/capture.hpp"
+#include "ac3/audio/capture.hpp"
 
 // The PipeWire capture backend. CMake compiles this directory's capture.cpp
 // on a Linux host that selected pipewire/ over alsa/ (see
@@ -56,7 +56,7 @@
 
 #include "pipewire_support.hpp"
 
-namespace ac3::capture {
+namespace ac3::audio {
 
 namespace {
 
@@ -92,7 +92,7 @@ bool wait_for_connect(pw_thread_loop* loop, std::atomic<ConnectState>& state) {
 
 }  // namespace
 
-// Impl is private (declared in the shared ac3/capture/capture.hpp every
+// Impl is private (declared in the shared ac3/audio/capture.hpp every
 // backend implements), so the callbacks below - which need to reach it from
 // a bare `void*` - are members of Impl itself rather than free functions:
 // naming `Capture::Impl` from outside Capture's or Impl's own members is an
@@ -380,4 +380,4 @@ std::expected<void, CaptureError> Capture::start(const std::string& device_id, D
     return {};
 }
 
-}  // namespace ac3::capture
+}  // namespace ac3::audio

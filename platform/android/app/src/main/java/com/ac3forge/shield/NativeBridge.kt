@@ -30,7 +30,7 @@ object NativeBridge {
     external fun registerPassthroughBridge(bridge: Any)
 
     /**
-     * Smoke test: runs ac3::sinks::enumerate_render_devices() end to end
+     * Smoke test: runs ac3::audio::enumerate_render_devices() end to end
      * (native -> PassthroughBridge -> AudioTrack.isDirectPlaybackSupported)
      * and returns a human-readable report. Requires
      * [registerPassthroughBridge] to have run first. See jni_entry.cpp.

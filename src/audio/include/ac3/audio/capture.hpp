@@ -7,7 +7,7 @@
 #include <string_view>
 #include <vector>
 
-#include "ac3/capture/ring_buffer.hpp"
+#include "ac3/audio/ring_buffer.hpp"
 
 // Live audio capture. On Windows this is WASAPI in shared mode: either a
 // real input endpoint (microphone, line in) or a render endpoint opened in
@@ -17,7 +17,7 @@
 // RingBuffer; callers pull from that buffer at their own pace. Nothing on the
 // capture side allocates, locks or blocks.
 
-namespace ac3::capture {
+namespace ac3::audio {
 
 enum class CaptureError : std::uint8_t {
     kNoBackend,          // built without a platform capture backend
@@ -85,4 +85,4 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-}  // namespace ac3::capture
+}  // namespace ac3::audio

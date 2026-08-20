@@ -1,4 +1,4 @@
-#include "ac3/capture/capture.hpp"
+#include "ac3/audio/capture.hpp"
 
 // The Android capture backend: there isn't one, on purpose rather than by
 // omission. The only app this backend exists for (the Shield Atmos demo, see
@@ -11,7 +11,7 @@
 // (AAudio has an input direction) if some later app needs it; it just is not
 // this one.
 
-namespace ac3::capture {
+namespace ac3::audio {
 
 std::string_view describe(CaptureError error) {
     switch (error) {
@@ -44,4 +44,4 @@ std::uint16_t Capture::channels() const { return 0; }
 CaptureStats Capture::stats() const { return {}; }
 RingBuffer* Capture::buffer() { return nullptr; }
 
-}  // namespace ac3::capture
+}  // namespace ac3::audio

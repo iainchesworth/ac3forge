@@ -1,4 +1,4 @@
-#include "ac3/capture/capture.hpp"
+#include "ac3/audio/capture.hpp"
 
 // The ALSA capture backend. CMake compiles this directory's capture.cpp on a
 // Linux host whose libasound development headers are present and another
@@ -44,7 +44,7 @@
 #include "alsa_support.hpp"
 #include "device_names.hpp"
 
-namespace ac3::capture {
+namespace ac3::audio {
 
 namespace {
 
@@ -444,4 +444,4 @@ std::expected<void, CaptureError> Capture::start(const std::string& device_id, D
     return {};
 }
 
-}  // namespace ac3::capture
+}  // namespace ac3::audio

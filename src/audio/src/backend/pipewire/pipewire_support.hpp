@@ -10,7 +10,7 @@
 #include <string>
 #include <string_view>
 
-#include "ac3/sinks/passthrough.hpp"
+#include "ac3/audio/passthrough.hpp"
 
 // The handful of things capture.cpp, monitor.cpp and passthrough.cpp all need
 // from libpipewire, kept in one place so the three cannot drift - the same
@@ -76,13 +76,13 @@ inline void ensure_initialized() {
 // lines duplicated beside their own backend read more clearly than a cross-
 // backend helper would, and the two backends have no other reason to share
 // code at all.
-[[nodiscard]] constexpr std::uint32_t carrier_rate(sinks::BitstreamFormat format,
+[[nodiscard]] constexpr std::uint32_t carrier_rate(audio::BitstreamFormat format,
                                                     std::uint32_t content_rate) {
-    return format == sinks::BitstreamFormat::kEac3 ? content_rate * 4 : content_rate;
+    return format == audio::BitstreamFormat::kEac3 ? content_rate * 4 : content_rate;
 }
 
-[[nodiscard]] constexpr spa_audio_iec958_codec iec958_codec_for(sinks::BitstreamFormat format) {
-    return format == sinks::BitstreamFormat::kEac3 ? SPA_AUDIO_IEC958_CODEC_EAC3
+[[nodiscard]] constexpr spa_audio_iec958_codec iec958_codec_for(audio::BitstreamFormat format) {
+    return format == audio::BitstreamFormat::kEac3 ? SPA_AUDIO_IEC958_CODEC_EAC3
                                                     : SPA_AUDIO_IEC958_CODEC_AC3;
 }
 
@@ -101,7 +101,7 @@ inline constexpr std::size_t kCarrierFrameBytes = 4;
 // added mid-walk cannot be mistaken for the boundary), and return once that
 // confirmation arrives. The same shape PipeWire's own listing tools use
 // (`pw-cli ls`, the `list-inputs.c` example) as a synchronous call, which is
-// what ac3::capture::enumerate_devices() and ac3::sinks::enumerate_render_
+// what ac3::audio::enumerate_devices() and ac3::audio::enumerate_render_
 // devices() both need to stay synchronous themselves.
 //
 // A machine with no PipeWire session running - a container, a CI runner, a

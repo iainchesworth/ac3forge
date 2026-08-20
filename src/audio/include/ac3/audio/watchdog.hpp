@@ -18,7 +18,7 @@
 // rather than this reading it itself - a test can then advance time in exact
 // steps instead of sleeping for real.
 
-namespace ac3::capture {
+namespace ac3::audio {
 
 class SilenceWatchdog {
 public:
@@ -57,4 +57,4 @@ private:
     std::chrono::steady_clock::time_point last_success_{};
 };
 
-}  // namespace ac3::capture
+}  // namespace ac3::audio

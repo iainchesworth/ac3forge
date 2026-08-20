@@ -11,14 +11,14 @@
 using ac3::android_audio::burst_bytes_for;
 using ac3::android_audio::carrier_rate;
 using ac3::android_audio::make_render_device_info;
-using ac3::sinks::BitstreamFormat;
+using ac3::audio::BitstreamFormat;
 
 TEST_CASE("burst size follows the format, not a fixed guess") {
     // Getting this wrong means submit() validates bursts against the wrong
     // length, silently rejecting every real AtmosEncoder/Eac3BurstPacker
     // frame the app hands it.
-    CHECK(burst_bytes_for(BitstreamFormat::kAc3) == ac3::sinks::iec61937::kBurstBytes);
-    CHECK(burst_bytes_for(BitstreamFormat::kEac3) == ac3::sinks::iec61937::kEac3BurstBytes);
+    CHECK(burst_bytes_for(BitstreamFormat::kAc3) == ac3::iec61937::kBurstBytes);
+    CHECK(burst_bytes_for(BitstreamFormat::kEac3) == ac3::iec61937::kEac3BurstBytes);
     CHECK(burst_bytes_for(BitstreamFormat::kEac3) > burst_bytes_for(BitstreamFormat::kAc3));
 }
 

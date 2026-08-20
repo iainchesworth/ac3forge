@@ -1,4 +1,4 @@
-#include "ac3/sinks/monitor.hpp"
+#include "ac3/audio/monitor.hpp"
 
 // The Unix monitor backend: there isn't one. CMake compiles this directory's
 // monitor.cpp on Linux and macOS, and every entry point fails with
@@ -6,7 +6,7 @@
 // get told no instead of getting nothing. See platform/posix/passthrough.cpp
 // for the same convention.
 
-namespace ac3::sinks {
+namespace ac3::audio {
 
 std::string_view describe(MonitorError error) {
     switch (error) {
@@ -35,4 +35,4 @@ void MonitorSink::stop() {}
 bool MonitorSink::running() const { return false; }
 MonitorStats MonitorSink::stats() const { return {}; }
 
-}  // namespace ac3::sinks
+}  // namespace ac3::audio

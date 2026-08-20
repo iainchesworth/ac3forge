@@ -1,4 +1,4 @@
-#include "ac3/sinks/passthrough.hpp"
+#include "ac3/audio/passthrough.hpp"
 
 // The Windows passthrough backend. CMake compiles this directory's
 // passthrough.cpp on Windows and another platform directory's everywhere
@@ -22,10 +22,10 @@
 #include <cstring>
 #include <thread>
 
-#include "ac3/capture/ring_buffer.hpp"
+#include "ac3/audio/ring_buffer.hpp"
 #include "ac3/sinks/iec61937.hpp"
 
-namespace ac3::sinks {
+namespace ac3::audio {
 
 namespace {
 
@@ -314,7 +314,7 @@ std::expected<std::vector<RenderDeviceInfo>, PassthroughError> enumerate_render_
 }
 
 struct PassthroughSink::Impl {
-    std::unique_ptr<capture::ByteRingBuffer> queue;
+    std::unique_ptr<ByteRingBuffer> queue;
     std::jthread worker;
     std::atomic_bool running{false};
     std::atomic<std::uint64_t> submitted{0};
@@ -473,7 +473,7 @@ std::expected<void, PassthroughError> PassthroughSink::start(const std::string& 
     // Room for roughly a second of bursts, so a caller encoding slightly
     // ahead of real time never has to spin.
     impl_->burst_bytes = burst_bytes_for(format_kind);
-    impl_->queue = std::make_unique<capture::ByteRingBuffer>(impl_->burst_bytes * 40);
+    impl_->queue = std::make_unique<ByteRingBuffer>(impl_->burst_bytes * 40);
     impl_->submitted.store(0, std::memory_order_relaxed);
     impl_->rendered.store(0, std::memory_order_relaxed);
     impl_->underruns.store(0, std::memory_order_relaxed);
@@ -524,4 +524,4 @@ std::expected<void, PassthroughError> PassthroughSink::start(const std::string& 
     return {};
 }
 
-}  // namespace ac3::sinks
+}  // namespace ac3::audio

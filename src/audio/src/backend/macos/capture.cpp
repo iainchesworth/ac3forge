@@ -1,4 +1,4 @@
-#include "ac3/capture/capture.hpp"
+#include "ac3/audio/capture.hpp"
 
 // The macOS capture backend. CMake compiles this directory's capture.cpp
 // under APPLE and another platform directory's everywhere else, so there is
@@ -56,7 +56,7 @@
 #include "coreaudio_names.hpp"
 #include "coreaudio_support.hpp"
 
-namespace ac3::capture {
+namespace ac3::audio {
 
 namespace {
 
@@ -282,4 +282,4 @@ std::expected<void, CaptureError> Capture::start(const std::string& device_id, D
     return {};
 }
 
-}  // namespace ac3::capture
+}  // namespace ac3::audio

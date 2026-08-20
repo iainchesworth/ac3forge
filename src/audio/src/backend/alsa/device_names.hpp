@@ -6,7 +6,7 @@
 #include <string>
 #include <string_view>
 
-#include "ac3/sinks/passthrough.hpp"
+#include "ac3/audio/passthrough.hpp"
 
 // Everything the ALSA backend does with device names and IEC 60958 channel
 // status, expressed without touching libasound.
@@ -55,9 +55,9 @@ struct ChannelStatus {
 // "Representing Formats for IEC 61937 Transmissions" states it as a
 // requirement; the Windows backend applies it by building a 4x
 // WAVEFORMATEXTENSIBLE, and this backend by opening the device at 4x.
-[[nodiscard]] constexpr std::uint32_t carrier_rate(sinks::BitstreamFormat format,
+[[nodiscard]] constexpr std::uint32_t carrier_rate(audio::BitstreamFormat format,
                                                    std::uint32_t content_rate) {
-    return format == sinks::BitstreamFormat::kEac3 ? content_rate * 4 : content_rate;
+    return format == audio::BitstreamFormat::kEac3 ? content_rate * 4 : content_rate;
 }
 
 // Channel status for an IEC 61937 burst stream on a link running at

@@ -1,4 +1,4 @@
-#include "ac3/platform/audio_backend.hpp"
+#include "ac3/audio/audio_backend.hpp"
 
 // Android: capture is absent by design (see capture.cpp); passthrough and
 // monitor are both real, but by two different mechanisms, not one:
@@ -22,7 +22,7 @@
 // enumerate_render_devices()'s RenderDeviceInfo, not by this static report -
 // exactly as WASAPI's IsFormatSupported answers it per-device on Windows.
 
-namespace ac3::platform {
+namespace ac3::audio {
 
 const AudioBackend& audio_backend() {
     static constexpr AudioBackend kBackend{
@@ -35,4 +35,4 @@ const AudioBackend& audio_backend() {
     return kBackend;
 }
 
-}  // namespace ac3::platform
+}  // namespace ac3::audio

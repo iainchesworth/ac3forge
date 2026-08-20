@@ -23,7 +23,7 @@
 // FFmpeg's spdif muxer, and for E-AC-3 also cross-checked against Microsoft's
 // own IEC 61937 documentation); this is only delivery.
 
-namespace ac3::sinks {
+namespace ac3::audio {
 
 enum class PassthroughError : std::uint8_t {
     kNoBackend,             // built without a platform passthrough backend
@@ -112,4 +112,4 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-}  // namespace ac3::sinks
+}  // namespace ac3::audio

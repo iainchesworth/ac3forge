@@ -1,4 +1,4 @@
-#include "ac3/capture/capture.hpp"
+#include "ac3/audio/capture.hpp"
 
 // The Windows capture backend. CMake compiles this directory's capture.cpp on
 // Windows and another platform directory's everywhere else, so there is no
@@ -21,7 +21,7 @@
 #include <cstring>
 #include <thread>
 
-namespace ac3::capture {
+namespace ac3::audio {
 
 namespace {
 
@@ -509,4 +509,4 @@ std::expected<void, CaptureError> Capture::start(const std::string& device_id, D
     return {};
 }
 
-}  // namespace ac3::capture
+}  // namespace ac3::audio

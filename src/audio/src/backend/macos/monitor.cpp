@@ -1,4 +1,4 @@
-#include "ac3/sinks/monitor.hpp"
+#include "ac3/audio/monitor.hpp"
 
 // The macOS monitor backend. CMake compiles this directory's monitor.cpp
 // under APPLE and another platform directory's everywhere else, so there is
@@ -45,11 +45,11 @@
 #include <span>
 #include <vector>
 
-#include "ac3/capture/ring_buffer.hpp"
+#include "ac3/audio/ring_buffer.hpp"
 #include "coreaudio_names.hpp"
 #include "coreaudio_support.hpp"
 
-namespace ac3::sinks {
+namespace ac3::audio {
 
 namespace {
 
@@ -73,7 +73,7 @@ std::string_view describe(MonitorError error) {
 struct MonitorSink::Impl {
     AudioObjectID device = kAudioObjectUnknown;
     AudioDeviceIOProcID io_proc_id = nullptr;
-    std::unique_ptr<capture::RingBuffer> queue;
+    std::unique_ptr<RingBuffer> queue;
     coreaudio::SampleFormat format = coreaudio::SampleFormat::kFloat32;
     bool interleaved = true;
     std::uint16_t channels = 0;
@@ -194,7 +194,7 @@ std::expected<void, MonitorError> MonitorSink::start(const std::string& device_i
     // Room for roughly a second of samples, so a caller decoding slightly
     // ahead of real time never has to spin.
     impl_->queue =
-        std::make_unique<capture::RingBuffer>(static_cast<std::size_t>(channels) * sample_rate);
+        std::make_unique<RingBuffer>(static_cast<std::size_t>(channels) * sample_rate);
     impl_->device = device;
     impl_->channels = channels;
     impl_->format = format;
@@ -274,4 +274,4 @@ std::expected<void, MonitorError> MonitorSink::start(const std::string& device_i
     return {};
 }
 
-}  // namespace ac3::sinks
+}  // namespace ac3::audio

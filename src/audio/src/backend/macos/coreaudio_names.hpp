@@ -10,7 +10,7 @@
 #include <span>
 #include <string>
 
-#include "ac3/sinks/passthrough.hpp"
+#include "ac3/audio/passthrough.hpp"
 
 // The macOS backend's pure half: everything here is ordinary arithmetic and
 // struct inspection over types <CoreAudio/CoreAudio.h> defines, with no
@@ -49,9 +49,9 @@ namespace ac3::coreaudio {
 // CoreAudio's kAudioStreamPropertyPhysicalFormat mSampleRate field describes
 // the wire in exactly the sense WASAPI's WAVEFORMATEXTENSIBLE and ALSA's
 // device-name rate both do.
-[[nodiscard]] constexpr std::uint32_t carrier_rate(sinks::BitstreamFormat format,
+[[nodiscard]] constexpr std::uint32_t carrier_rate(audio::BitstreamFormat format,
                                                     std::uint32_t content_rate) {
-    return format == sinks::BitstreamFormat::kEac3 ? content_rate * 4 : content_rate;
+    return format == audio::BitstreamFormat::kEac3 ? content_rate * 4 : content_rate;
 }
 
 // The physical-format fourCC a digital output stream is asked for.
@@ -71,9 +71,9 @@ namespace ac3::coreaudio {
 // exactly as it does kAudioFormat60958AC3; on hardware or macOS versions
 // where the driver does not publish it, supports_eac3_passthrough simply
 // comes back false, the honest answer under the same "a platform can gain
-// one and not the other" contract sinks::RenderDeviceInfo already documents.
-[[nodiscard]] constexpr AudioFormatID physical_format_id(sinks::BitstreamFormat format) {
-    return format == sinks::BitstreamFormat::kEac3 ? kAudioFormatEnhancedAC3
+// one and not the other" contract ac3::audio::RenderDeviceInfo already documents.
+[[nodiscard]] constexpr AudioFormatID physical_format_id(audio::BitstreamFormat format) {
+    return format == audio::BitstreamFormat::kEac3 ? kAudioFormatEnhancedAC3
                                                      : kAudioFormat60958AC3;
 }
 

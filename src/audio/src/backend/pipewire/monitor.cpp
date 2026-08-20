@@ -1,4 +1,4 @@
-#include "ac3/sinks/monitor.hpp"
+#include "ac3/audio/monitor.hpp"
 
 // The PipeWire monitor backend. CMake compiles this directory's monitor.cpp
 // on a Linux host that selected pipewire/ over alsa/ (see
@@ -26,10 +26,10 @@
 #include <span>
 #include <string>
 
-#include "ac3/capture/ring_buffer.hpp"
+#include "ac3/audio/ring_buffer.hpp"
 #include "pipewire_support.hpp"
 
-namespace ac3::sinks {
+namespace ac3::audio {
 
 namespace {
 
@@ -59,7 +59,7 @@ bool wait_for_connect(pw_thread_loop* loop, std::atomic<ConnectState>& state) {
 struct MonitorSink::Impl {
     ThreadLoop loop;
     Stream stream;
-    std::unique_ptr<capture::RingBuffer> queue;
+    std::unique_ptr<RingBuffer> queue;
     std::atomic_bool running{false};
     std::atomic<std::uint64_t> submitted{0};
     std::atomic<std::uint64_t> rendered{0};
@@ -221,7 +221,7 @@ std::expected<void, MonitorError> MonitorSink::start(const std::string& device_i
     // the earliest Impl::process()/Impl::state_changed() can run is once connect()
     // releases the lock, so Impl is always complete by then.
     impl_->queue =
-        std::make_unique<capture::RingBuffer>(static_cast<std::size_t>(channels) * sample_rate);
+        std::make_unique<RingBuffer>(static_cast<std::size_t>(channels) * sample_rate);
     impl_->channels = channels;
     impl_->submitted.store(0, std::memory_order_relaxed);
     impl_->rendered.store(0, std::memory_order_relaxed);
@@ -288,4 +288,4 @@ std::expected<void, MonitorError> MonitorSink::start(const std::string& device_i
     return {};
 }
 
-}  // namespace ac3::sinks
+}  // namespace ac3::audio

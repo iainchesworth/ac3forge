@@ -1,4 +1,4 @@
-#include "ac3/sinks/monitor.hpp"
+#include "ac3/audio/monitor.hpp"
 
 // The Android monitor backend. CMake compiles this directory's monitor.cpp
 // on Android and another platform directory's everywhere else, so there is
@@ -17,9 +17,9 @@
 #include <thread>
 #include <vector>
 
-#include "ac3/capture/ring_buffer.hpp"
+#include "ac3/audio/ring_buffer.hpp"
 
-namespace ac3::sinks {
+namespace ac3::audio {
 
 namespace {
 
@@ -45,7 +45,7 @@ std::string_view describe(MonitorError error) {
 
 struct MonitorSink::Impl {
     AAudioStream* stream = nullptr;
-    std::unique_ptr<capture::RingBuffer> queue;
+    std::unique_ptr<RingBuffer> queue;
     // std::thread + a manual stop flag, not std::jthread/std::stop_token:
     // NDK r26's bundled libc++ does not implement <stop_token> at all (see
     // docs/platforms/android.md) - the Windows/ALSA backends use jthread
@@ -156,7 +156,7 @@ std::expected<void, MonitorError> MonitorSink::start(const std::string& /*device
     // ahead of real time never has to spin - same sizing rationale as the
     // Windows/ALSA backends.
     impl_->queue =
-        std::make_unique<capture::RingBuffer>(static_cast<std::size_t>(channels) * sample_rate);
+        std::make_unique<RingBuffer>(static_cast<std::size_t>(channels) * sample_rate);
     impl_->stream = stream;
     impl_->channels = channels;
     impl_->submitted.store(0, std::memory_order_relaxed);
@@ -194,4 +194,4 @@ std::expected<void, MonitorError> MonitorSink::start(const std::string& /*device
     return {};
 }
 
-}  // namespace ac3::sinks
+}  // namespace ac3::audio

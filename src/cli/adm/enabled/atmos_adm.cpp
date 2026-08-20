@@ -11,8 +11,8 @@
 
 namespace ac3cli {
 
-const ac3::platform::Capability& adm_capability() {
-    static constexpr ac3::platform::Capability kAvailable{.available = true, .reason = {}};
+const ac3::audio::Capability& adm_capability() {
+    static constexpr ac3::audio::Capability kAvailable{.available = true, .reason = {}};
     return kAvailable;
 }
 
