@@ -491,7 +491,7 @@ TEST_CASE("joc::reconstruct recovers well-separated objects through the real wir
         const auto params = ac3::joc::parse_payload(*joc_bytes);
         REQUIRE(params.has_value());
 
-        std::vector<std::vector<float>> bed_joc_order(ac3::joc::kNumChannels5X);
+        std::array<std::span<const float>, ac3::joc::kNumChannels5X> bed_joc_order{};
         for (int jc = 0; jc < ac3::joc::kNumChannels5X; ++jc) {
             bed_joc_order[static_cast<std::size_t>(jc)] =
                 sub.channels[static_cast<std::size_t>(kAc3FromJoc[static_cast<std::size_t>(jc)])];

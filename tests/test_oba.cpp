@@ -181,9 +181,10 @@ TEST_CASE("reconstruct is a 256-sample-delayed identity when the matrix is a pur
     }
 
     ac3::joc::ReconstructionState state;
+    const std::vector<std::span<const float>> bed_views(bed.begin(), bed.end());
     std::vector<std::vector<float>> out;
     for (int frame = 0; frame < 3; ++frame) {
-        out = ac3::joc::reconstruct(bed, params, state);
+        out = ac3::joc::reconstruct(bed_views, params, state);
     }
     REQUIRE(out.size() == 1);
 

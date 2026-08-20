@@ -617,41 +617,20 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
     // state (not only the enhanced-coupling ones) keeps that sequencing
     // simple: one pass parses everything in the bitstream's own order, the
     // next finishes every block, still in order 0..nblks-1.
-    struct BlockTail {
-        std::vector<std::array<double, 256>> coeffs;  // per stream; decoupled where standard
-        std::vector<bool> chincpl;
-        bool cplinu = false;
-        bool ecplinu_now = false;
-        // Standard coupling (valid when cplinu && !ecplinu_now): decoupling
-        // already ran inline in pass one, so `coeffs` is final for these
-        // channels and nothing further is needed here.
-        //
-        // Enhanced coupling (valid when cplinu && ecplinu_now):
-        int firstchincpl = -1;
-        int ecpl_begin_subbnd = 0;
-        int ecpl_end_subbnd = 0;
-        std::array<bool, eac3::kEcplSubBands> ecpl_structure{};
-        std::vector<std::vector<int>> ecplamp_raw;    // [ch][band]
-        std::vector<std::vector<int>> ecplangle_raw;  // [ch][band]
-        std::vector<std::vector<int>> ecplchaos_raw;  // [ch][band]
-        std::vector<bool> ecpltrans;                  // [ch]
-        int cplstrtmant = 0;
-        int cplendmant = 0;
-        // spx (§3.6)
-        bool spxinu = false;
-        std::vector<bool> chinspx;
-        eac3::BandLayout spx_bands{};
-        std::vector<std::vector<double>> spxco;
-        std::vector<int> spxblnd;
-        int spx_startmant = 0;
-        int spx_endmant = 0;
-        int spx_copystart = 0;
-        // rematrixing (§7.5.4, 2/0 only) and block switching
-        std::array<bool, 4> rematflg{};
-        std::array<bool, eac3::chanmap::kMaxSubstreamFullbw> blksw{};
-        std::array<int, kMaxSubstreamStreams> endmant{};
-    };
-    std::vector<BlockTail> tails(static_cast<std::size_t>(nblks));
+    // The struct itself (BlockTail) and its storage live on the decoder so
+    // the per-block copies below reuse capacity across frames - see the
+    // members' comment in decoder.hpp. resize() keeps prior entries'
+    // storage; every unconditional field is re-assigned per block, and the
+    // conditional (enhanced-coupling) fields are read only under the same
+    // guard they are written under.
+    auto& tails = tails_;
+    tails.resize(static_cast<std::size_t>(nblks));
+    // The per-block spectra, declared here so the swap at each block's
+    // snapshot can cycle storage with the tails - see its assign() inside
+    // the block loop for the zeroing contract. Pass one aliases it as
+    // `coeffs` block-locally; pass two's own `coeffs` refers to each
+    // tail's, so the two never share a scope.
+    std::vector<std::array<double, 256>> parse_coeffs;
 
     // Captured alongside out.object_metadata below, from whichever block's
     // skip field carries the EMDF container - kept raw here (not parsed
@@ -1315,8 +1294,12 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
         MantissaBlockReader mantissa_reader;
         // Heap-backed, matching decoder.cpp's own per-block coeffs: at
         // kMaxSubstreamStreams * 256 doubles, a stack std::array here is the
-        // single largest contributor to this function's frame size.
-        std::vector<std::array<double, 256>> coeffs(kMaxSubstreamStreams);
+        // single largest contributor to this function's frame size. The
+        // assign() re-zeroes exactly as the fresh vector did (uncoded bins
+        // must read zero) into whatever storage the swap with this block's
+        // tail handed back - see the swap at the snapshot below.
+        auto& coeffs = parse_coeffs;
+        coeffs.assign(static_cast<std::size_t>(kMaxSubstreamStreams), {});
         // §7.3.4, same split as decoder.cpp's own read_stream: only a stream
         // with its OWN dithflag (a full-bandwidth channel, s < nfchans)
         // dithers here. The LFE has no dithflag and always reconstructs as
@@ -1542,7 +1525,10 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
 
         // Snapshot everything the second pass needs to finish this block.
         auto& tail = tails[static_cast<std::size_t>(blk)];
-        tail.coeffs = std::move(coeffs);
+        // Swap, not move: the tail gets this block's spectra either way, but
+        // coeffs gets the tail's previous-frame storage back, so the next
+        // block's assign() above never has to allocate.
+        tail.coeffs.swap(coeffs);
         tail.chincpl = chincpl;
         tail.cplinu = frm->cplinu[static_cast<std::size_t>(blk)];
         tail.ecplinu_now = ecplinu_now;
@@ -1790,7 +1776,9 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
         const auto params = joc::parse_payload(joc_bytes);
         if (params && params->objects == static_cast<int>(out.object_metadata->objects.size())) {
             constexpr std::array<int, joc::kNumChannels5X> kAc3FromJoc = {0, 2, 1, 3, 4};
-            std::vector<std::vector<float>> bed_joc_order(joc::kNumChannels5X);
+            // Spans, not copies: this permutation used to deep-copy five
+            // channels (~30 KB a frame) purely to reorder them.
+            std::array<std::span<const float>, joc::kNumChannels5X> bed_joc_order{};
             bool have_bed = static_cast<std::size_t>(joc::kNumChannels5X) <= out.channels.size();
             for (int jc = 0; have_bed && jc < joc::kNumChannels5X; ++jc) {
                 bed_joc_order[static_cast<std::size_t>(jc)] =
