@@ -202,9 +202,9 @@ if(AC3FORGE_BUILD_ADM)
     # ac3::admbridge - roadmap item B1 phase 2: maps ac3adm's parsed ADM graph onto
     # ac3::oba::AtmosEncoder. Depends on BOTH ac3::forge (added above) and ac3adm::ac3adm (just
     # added), so it is meaningless without AC3FORGE_BUILD_ADM - gated by the same flag rather
-    # than a new option of its own; see src/adm_bridge/CMakeLists.txt's own header comment for
+    # than a new option of its own; see src/admbridge/CMakeLists.txt's own header comment for
     # the full reasoning, including why this is a separate module from either side.
-    add_subdirectory(src/adm_bridge)
+    add_subdirectory(src/admbridge)
 endif()
 
 # ac3forge_c (roadmap F1) - after src/lib so ac3::forge_static exists to embed, gated by its own
@@ -224,7 +224,7 @@ endif()
 # header comment) plus the added complexity of re-exporting libbw64/libadm's own transitive
 # targets through this package - AC3FORGE_BUILD_ADM users consume ac3adm::ac3adm from an in-tree
 # add_subdirectory() build, not from a `find_package(ac3forge)` installed one, for now. ac3::admbridge
-# (src/adm_bridge) is excluded for the same reason - it transitively depends on ac3adm::ac3adm.
+# (src/admbridge) is excluded for the same reason - it transitively depends on ac3adm::ac3adm.
 include(InstallLibrary)
 
 # The pybind11 extension module - after ac3::forge exists (it links straight against it, the

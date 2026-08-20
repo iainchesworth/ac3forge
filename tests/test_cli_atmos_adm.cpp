@@ -400,7 +400,7 @@ TEST_CASE("ac3cli atmos-adm reports a clear diagnosis for a file with no ADM pro
                 log_path);
     CHECK(rc != 0);
     const auto log = read_log(log_path);
-    // describe(BridgeError::kNoProgramme) - see src/adm_bridge/src/bridge.cpp - not an opaque
+    // describe(BridgeError::kNoProgramme) - see src/admbridge/src/bridge.cpp - not an opaque
     // crash or a generic "error" with no diagnosis.
     CHECK(log.find("programme") != std::string::npos);
     CHECK_FALSE(fs::exists(out_path));

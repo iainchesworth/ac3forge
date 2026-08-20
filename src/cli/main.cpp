@@ -2635,7 +2635,7 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
 }
 
 // Roadmap B1 phase 3 of 3 (see ROADMAP.md's "ADM BWF reader feeding the JOC encoder" entry - the
-// last phase; phase 1 is src/ac3adm, phase 2 is src/adm_bridge, this command is the first place
+// last phase; phase 1 is src/ac3adm, phase 2 is src/admbridge, this command is the first place
 // both are driven together). A real ADM BWF master (BS.2076-2 ADM XML embedded in a BS.2088-1
 // BW64/RF64 container) straight to DD+ JOC E-AC-3 - no WAV plus a hand-authored keyframe file the
 // way atmos-encode above needs, because the master already carries every bed speaker feed's and
