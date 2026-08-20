@@ -33,7 +33,9 @@ target_compile_features(ac3_signing PUBLIC cxx_std_23)
 # ac3gui/the Android shared object without a text-relocation complaint.
 target_link_libraries(ac3_signing
     PUBLIC ac3::forge
-    PRIVATE "$<BUILD_INTERFACE:ac3::warnings>")
+    PRIVATE
+        "$<BUILD_INTERFACE:ac3::warnings>"
+        "$<BUILD_INTERFACE:ac3::coverage>")
 
 set_target_properties(ac3_signing PROPERTIES POSITION_INDEPENDENT_CODE ON)
 

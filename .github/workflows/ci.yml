@@ -27,11 +27,15 @@
 #                                     _build.yml. Also runs the codec-matrix
 #                                     script's full layout/tool/atmos sweep
 #   static-analysis (tidy)  GREEN     .clang-tidy's curated set, clean baseline
-#   coverage                GREEN     81.3% line / 72.0% branch over src/lib
-#                                     (ac3::forge only) when last recorded
-#                                     here, gated at 80%/70% - see the job's
-#                                     own comment for why the gate sits below
-#                                     the measured number
+#   coverage                GREEN     per-component line/branch gates over all
+#                                     nine library components (src/lib 92.0%
+#                                     line / 83.7% branch on the 2026-08-20
+#                                     WSL2 calibration run - no hosted run of
+#                                     the per-component gate recorded here
+#                                     yet; src/audio and src/capi measured
+#                                     genuinely thin) - the floors and the
+#                                     full measured table live in
+#                                     scripts/coverage-report.sh
 #   macos-llvm              GREEN     real GitHub Actions runs - this project
 #                                     has no Mac. Its first-ever run hit one
 #                                     genuine, fully-understood issue
@@ -307,30 +311,42 @@ jobs:
             -warnings-as-errors='*' \
             'src/(lib|cli|matroska)/.*\.cpp'
 
-  # ac3tests coverage over ac3::forge (src/lib only - the library is what was
-  # asked for; src/cli, src/gui and src/matroska are out of scope and unmeasured).
-  # config-linux-gcc-coverage (CMakePresets.json) builds just the library and
-  # its test suite - AC3FORGE_BUILD_CLI/EXAMPLES are off there specifically so
-  # ac3cli and the seven example executables, which also link the now-instrumented
-  # ac3::forge, don't need ac3::coverage wired into them too just to resolve its
-  # gcov runtime symbols at link time (see cmake/Coverage.cmake).
+  # ac3tests coverage over every library component: src/lib plus audio,
+  # signing, matroska, mp4, mpegts, capi, and - via the coverage preset's
+  # AC3FORGE_BUILD_ADM=ON with vcpkg's 'adm' feature, the same pair
+  # adm-validate passes by hand - ac3adm/admbridge. Originally src/lib only
+  # ("the library is what was asked for"); extended once the rest of the
+  # library surface existed and was already being EXERCISED by this same
+  # suite, just uninstrumented and unreported. src/cli and src/gui stay out
+  # of scope: they are applications, not the library, and the coverage
+  # preset builds neither.
   #
-  # --fail-under-line 80 / --fail-under-branch 70 are deliberately NOT the
-  # 80/80 gate a sibling project (CountdownSolver) uses for the same setup:
-  # this job's own first real GitHub Actions run (gcc 15.2.0, matching the
-  # linux-gcc leg's pin) came back 81.3% line / 72.0% branch, measured while
-  # block switching, delta bit allocation, half sample rate and dual mono
-  # support were all still landing. Both thresholds sit a few points under
-  # that measured baseline on
-  # purpose, so ordinary in-flight churn does not immediately trip the gate,
-  # while a real coverage regression still fails the job. Raise both as the
-  # suite's own coverage grows rather than leaving the headroom in place
-  # indefinitely.
+  # config-linux-gcc-coverage (CMakePresets.json) builds just the library
+  # components and their test suite - AC3FORGE_BUILD_CLI/EXAMPLES are off
+  # there purely to save build time: ac3cli and the example executables
+  # would link fine against the instrumented libraries (the gcov runtime
+  # propagates to consumers automatically - see cmake/Coverage.cmake), but
+  # scripts/coverage-report.sh filters the report to the library components,
+  # so building them instrumented buys nothing.
   #
-  # A pre-merge WSL2 measurement on the same toolchain pin came back a couple
-  # of points higher on both axes (close, not identical - environment-
-  # specific gcov/header-instantiation differences are expected); the real
-  # hosted run above is the number this gate is actually calibrated against.
+  # The gate is PER COMPONENT - a line floor and a branch floor per
+  # src/<dir>, not one blended number a small component's regression could
+  # hide inside - and lives in scripts/coverage-report.sh alongside the
+  # measured baseline each floor was calibrated against. src/lib's original
+  # 80/70 floor (set a few points under its first hosted run's 81.3/72.0,
+  # measured 2026-08-09 while block switching, delta bit allocation, half
+  # sample rate and dual mono were still landing) is now 88/78: the suite
+  # grew well past the old numbers, and that first calibration's own
+  # instruction was to raise the floors as the suite grows rather than leave
+  # the headroom in place indefinitely.
+  #
+  # Calibration provenance: the current floors were set against a WSL2
+  # measurement on the same toolchain pins (gcc/gcov 15.2.0, gcovr 8.6).
+  # Same-machine comparisons have read a couple of points HIGHER than hosted
+  # runs (environment-specific gcov/header-instantiation differences), and
+  # the floors' margins already allow for that - re-check against this job's
+  # own first hosted run after any recalibration and tighten where the
+  # margin proves generous.
   coverage:
     name: Coverage (Linux, GCC)
     needs: [changes, toolchain-versions]
@@ -379,48 +395,40 @@ jobs:
       # measurable overhead - a coverage build has no more business being
       # held to a hard real-time budget than the linux-llvm-asan-ubsan leg
       # does (same reasoning, see that matrix entry's own comment). This
-      # job's question is "how much of src/lib executes", not "how fast" -
-      # tests/performance/'s own suite covers the latter on a genuinely
-      # optimized build.
+      # job's question is "how much of the library executes", not "how
+      # fast" - tests/performance/'s own suite covers the latter on a
+      # genuinely optimized build.
       - name: Test
         shell: bash
         run: ctest --preset test-linux-gcc-coverage -LE Performance
 
-      # --gcov-ignore-parse-errors=suspicious_hits.warn: mdct.cpp's
-      # ForwardCosTable-driven hot loop (src/core/mdct.cpp) trips a documented
-      # gcov bug (gcc.gnu.org/bugzilla#68080, a false "suspicious hit value"
-      # on a tight accumulation loop) that otherwise aborts gcovr outright
-      # rather than just under/over-reporting that one line's count - gcovr's
-      # own error message names this exact flag as the fix. Warn, not skip,
-      # so a genuinely new suspicious-hit line elsewhere still shows up in
-      # the job log instead of vanishing silently.
+      # The gcov extraction, the per-component floors, and the gate itself
+      # all live in scripts/coverage-report.sh, shared verbatim with local
+      # runs (docs/building.md shows the local recipe) so CI and a developer
+      # machine cannot drift onto different filters or thresholds. The
+      # mdct.cpp suspicious-hits gcov-bug workaround this step used to carry
+      # inline moved there with the rest of the gcovr flags.
       - name: Coverage report + gate
         shell: bash
-        run: >
-          gcovr --root . --filter 'src/lib/.*'
-          --gcov-executable gcov-15
-          --exclude-throw-branches --exclude-unreachable-branches
-          --gcov-ignore-errors=no_working_dir_found
-          --gcov-ignore-parse-errors=suspicious_hits.warn
-          --object-directory build/config-linux-gcc-coverage
-          --print-summary --html-details build/coverage.html
-          --fail-under-line 80 --fail-under-branch 70
+        run: bash scripts/coverage-report.sh -g gcov-15
 
       - name: Upload coverage report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage-report
-          path: build/coverage*.html
+          path: build/config-linux-gcc-coverage/coverage*.html
 
   # ac3adm::ac3adm (src/ac3adm) is opt-in - AC3FORGE_BUILD_ADM defaults OFF, unlike every other
   # library component (see the root CMakeLists.txt's own option() and src/ac3adm/CMakeLists.txt's
   # header comment for why: it is the one module in this repo with a third-party dependency,
   # libadm's Boost header libraries, resolved only via -DVCPKG_MANIFEST_FEATURES=adm). No leg in
-  # build-and-test's matrix (_build.yml) or any other job in this file ever passes
-  # -DAC3FORGE_BUILD_ADM=ON, so without this job the module has zero CI coverage - a change to it,
-  # or to its vendored libbw64/libadm pins (src/ac3adm/CMakeLists.txt's GIT_TAG values), could
-  # silently break it and nobody would notice until someone happens to build with the flag on.
+  # build-and-test's matrix (_build.yml) ever passes -DAC3FORGE_BUILD_ADM=ON; besides this job,
+  # the only other build with it on is the coverage job's instrumented Debug preset, which turns
+  # the CLI and examples OFF - so without this job, roadmap B1 phase 3's CLI command and example
+  # (see below) would still have zero CI builds, and a change to the module or to its vendored
+  # libbw64/libadm pins (src/ac3adm/CMakeLists.txt's GIT_TAG values) would never be exercised at
+  # -O2 or under the full default configuration anybody actually installs.
   #
   # A dedicated job rather than an extra pass inside an existing Linux leg (the shape
   # alsa_fallback and BUILD_SHARED_LIBS already use in _build.yml): those legs are already the
