@@ -16,8 +16,8 @@ on:
       - "**/*.md"
       - "LICENSE"
       - "mkdocs.yml"
-      - "requirements-docs.in"
-      - "requirements-docs.txt"
+      - "requirements/requirements-docs.in"
+      - "requirements/requirements-docs.txt"
       - ".github/workflows/docs.yml"
   pull_request:
     branches: [ main, develop ]
@@ -26,8 +26,8 @@ on:
       - "**/*.md"
       - "LICENSE"
       - "mkdocs.yml"
-      - "requirements-docs.in"
-      - "requirements-docs.txt"
+      - "requirements/requirements-docs.in"
+      - "requirements/requirements-docs.txt"
       - ".github/workflows/docs.yml"
   schedule:
     # Weekly, offset from the CodeQL cron (Mon 03:17) to avoid runner
