@@ -35,8 +35,7 @@ set(AC3FORGE_EXAMPLES
 # example in the list above. encode_adm (roadmap B1 phase 3) is the end-to-end
 # counterpart: ac3adm::parse_bw64 -> ac3::admbridge::build -> ac3::oba::AtmosEncoder, so unlike
 # every other entry here (including read_adm) it needs BOTH ac3::forge and the opt-in ADM modules
-# together - see this file's own DLL-copy comments below for the Windows shared-build consequence
-# of that. Both are only added when AC3FORGE_BUILD_ADM turned those modules on (default OFF - see
+# together. Both are only added when AC3FORGE_BUILD_ADM turned those modules on (default OFF - see
 # root CMakeLists.txt's own option() for why), so the foreach below cannot assume either is always
 # present the way it can for e.g. mux_mkv.
 if(AC3FORGE_BUILD_ADM)
@@ -58,9 +57,7 @@ foreach(example IN LISTS AC3FORGE_EXAMPLES)
     else()
         target_link_libraries(${example} PRIVATE ac3::forge ac3::warnings)
     endif()
-    set_target_properties(${example} PROPERTIES
-        FOLDER examples
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/examples")
+    set_target_properties(${example} PROPERTIES FOLDER examples)
 endforeach()
 
 # Only these need a container writer; mux_fmp4 reuses mp4::mp4 the same way mux_mp4 does.
@@ -72,105 +69,12 @@ target_link_libraries(mux_ts PRIVATE mpegts::mpegts)
 # Only this one needs the object signer.
 target_link_libraries(object_signing PRIVATE ac3::signing)
 
-# A shared ac3::forge/matroska::matroska/mp4::mp4/mpegts::mpegts (-DBUILD_SHARED_LIBS=ON)
-# lands its .dll in ${CMAKE_BINARY_DIR}/bin, one level up from where the loop
-# above puts every example - Windows' same-directory DLL search never finds
-# it there, and there is no rpath-equivalent to point at a parent directory
-# instead. Copy the runtime DLLs once, from mux_mkv's, mux_mp4's and mux_ts's own
-# TARGET_RUNTIME_DLLS - together they're a strict superset of what every
-# other example needs (mux_mkv covers ac3::forge/matroska::matroska, mux_mp4
-# adds mp4::mp4, mux_ts adds mpegts::mpegts), so this single copy covers all of
-# them. (Giving each example its own POST_BUILD copy into the same shared
-# bin/examples/ directory was tried first and failed intermittently with
-# "permission denied": ninja runs several examples' links in parallel, and
-# multiple processes copying the identical destination file at once race under
-# Windows' file locking. A single custom target every other example depends
-# on avoids that without serializing the examples' own compiles against each
-# other.)
-#
-# Gated on BUILD_SHARED_LIBS AND WIN32, not left unconditional and relying
-# on TARGET_RUNTIME_DLLS expanding to nothing when it doesn't apply:
-# `cmake -E copy_if_different` with zero source arguments is a hard error
-# ("Usage: ..."), not the graceful no-op that would make an always-on custom
-# target safe either way - confirmed twice over by actually configuring,
-# not assumed either time. A static build is the first case (nothing to
-# copy at all). A shared *Linux* build is the second, found only by
-# actually building config-linux-llvm-shared in WSL: TARGET_RUNTIME_DLLS is
-# a Windows-only generator expression (CMake docs: "may not be used on
-# other platforms") and is empty there too, for a real reason rather than
-# an oversight - Linux resolves a build-tree .so via an automatically
-# computed RPATH pointing straight at wherever it actually sits, so
-# mux_mkv/mux_ts/ac3cli/ac3tests/etc. all just find libac3forge.so,
-# libmatroska.so and libmpegts.so without any of this copying, unlike
-# Windows' same-directory-only DLL search. ac3cli/ac3gui/tests don't need any
-# of this either, on any platform - they already share ${CMAKE_BINARY_DIR}/bin
-# with the DLLs directly (Windows), or already work via RPATH (Linux/macOS).
-if(BUILD_SHARED_LIBS AND WIN32)
-    add_custom_target(examples_copy_runtime_dlls
-        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "$<TARGET_RUNTIME_DLLS:mux_mkv>"
-            "$<TARGET_RUNTIME_DLLS:mux_mp4>"
-            "$<TARGET_RUNTIME_DLLS:mux_ts>"
-            "${CMAKE_BINARY_DIR}/bin/examples"
-        COMMAND_EXPAND_LISTS
-        # TARGET_RUNTIME_DLLS in a *custom command*'s own COMMAND line does
-        # not imply a build-order dependency on the DLLs it names the way it
-        # does when used inside a target's own link/compile step - without
-        # this, the copy has run before ac3forge.dll exists at all ("No such
-        # file or directory"). Depending on mux_mkv, mux_mp4 and mux_ts themselves is
-        # sufficient: linking them already requires ac3forge_shared/
-        # matroska_shared/mp4_shared/mpegts_shared to exist first.
-        DEPENDS mux_mkv mux_mp4 mux_ts)
-    # Every other example also depends on the copy - not mux_mkv/mux_mp4/mux_ts
-    # themselves, which would make any of them depend on
-    # examples_copy_runtime_dlls depend on mux_mkv/mux_mp4/mux_ts depend on
-    # examples_copy_runtime_dlls, a cycle. Whether their own .exe existing
-    # waits on the copy or not doesn't matter: all are ordinary members of the
-    # default ALL target, so a plain `cmake --build .` builds everything
-    # before ctest ever runs anything either way.
-    foreach(example IN LISTS AC3FORGE_EXAMPLES)
-        if(NOT example STREQUAL "mux_mkv" AND NOT example STREQUAL "mux_mp4"
-                AND NOT example STREQUAL "mux_ts" AND NOT example STREQUAL "read_adm"
-                AND NOT example STREQUAL "encode_adm")
-            add_dependencies(${example} examples_copy_runtime_dlls)
-        endif()
-    endforeach()
-endif()
-
-# read_adm and encode_adm need their own copy step, separate from the one above: read_adm links
-# ac3adm::ac3adm only, and encode_adm links ac3::forge ALONGSIDE ac3adm::ac3adm/ac3::admbridge (see
-# examples/CMakeLists.txt's own foreach above) - neither combination is the
-# ac3::forge/matroska::matroska/mp4::mp4/mpegts::mpegts set mux_mkv/mux_mp4/mux_ts's own
-# TARGET_RUNTIME_DLLS cover, and both only exist at all when AC3FORGE_BUILD_ADM is ON (see the
-# AC3FORGE_EXAMPLES list above) - folding either into the block above would make that block depend
-# on a target that may not exist. Combined into one target rather than two separate ones (the same
-# "list every DLL source once, copy together" shape the block above already uses for
-# mux_mkv/mux_mp4/mux_ts): TARGET_RUNTIME_DLLS resolves each target's own full transitive DLL
-# closure regardless of which libraries it links, so listing both here needs no reasoning about
-# whether one target's DLLs are a superset of the other's.
-#
-# Neither read_adm nor encode_adm is made to depend on this copy target - each is among its own
-# consumers, so doing so would make it depend on a target that itself DEPENDS on it, a cycle. As
-# with mux_mkv/mux_mp4/mux_ts above, whether either .exe existing waits on the copy or not doesn't
-# matter: all are ordinary members of the default ALL target, so a plain `cmake --build .` builds
-# everything before ctest ever runs anything either way.
-if(BUILD_SHARED_LIBS AND WIN32 AND AC3FORGE_BUILD_ADM)
-    add_custom_target(examples_copy_adm_runtime_dlls
-        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "$<TARGET_RUNTIME_DLLS:read_adm>"
-            "$<TARGET_RUNTIME_DLLS:encode_adm>"
-            "${CMAKE_BINARY_DIR}/bin/examples"
-        COMMAND_EXPAND_LISTS
-        DEPENDS read_adm encode_adm)
-endif()
-
 # capi_encode_decode (roadmap F1) is a plain C source, not C++ - the .c extension is what actually
 # proves ac3forge_c/ac3forge.h compiles under a C toolchain rather than merely under a C++ one
 # parsing valid-C syntax, so it cannot join the foreach()/AC3FORGE_EXAMPLES list above (that loop
 # hardcodes add_executable(${example} "${example}.cpp")) and gets its own block instead. It links
 # ac3::forge_c only, never ac3::forge - the whole point of the C API is that a consumer needs
-# nothing else - so it is not covered by any DLL-copy target above either and gets its own, same
-# shape as read_adm/encode_adm's.
+# nothing else.
 if(AC3FORGE_BUILD_CAPI)
     # The only C (not C++) source anywhere in this tree - the project() call in the root
     # CMakeLists.txt only declares CXX, so the C compiler has to be brought in explicitly before
@@ -178,18 +82,7 @@ if(AC3FORGE_BUILD_CAPI)
     enable_language(C)
     add_executable(capi_encode_decode capi_encode_decode.c)
     target_link_libraries(capi_encode_decode PRIVATE ac3::forge_c ac3::warnings)
-    set_target_properties(capi_encode_decode PROPERTIES
-        FOLDER examples
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/examples")
-
-    if(BUILD_SHARED_LIBS AND WIN32)
-        add_custom_target(examples_copy_capi_runtime_dlls
-            COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-                "$<TARGET_RUNTIME_DLLS:capi_encode_decode>"
-                "${CMAKE_BINARY_DIR}/bin/examples"
-            COMMAND_EXPAND_LISTS
-            DEPENDS capi_encode_decode)
-    endif()
+    set_target_properties(capi_encode_decode PROPERTIES FOLDER examples)
 
     if(AC3FORGE_BUILD_TESTS)
         add_test(NAME "example.capi_encode_decode" COMMAND capi_encode_decode)
