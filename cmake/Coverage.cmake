@@ -7,13 +7,21 @@
 # turns it on, so normal dev/CI builds pay no instrumentation cost.
 #
 # Link it PRIVATE into every first-party target whose coverage should be
-# measured (ac3forge, ac3tests) - both the instrumentation (compile) and the
-# gcov runtime (link) are needed on every executable that ends up containing
-# instrumented objects, even ones whose own sources aren't of direct interest,
-# since the final link must resolve the gcov runtime symbols pulled in by
-# whatever it links against. The coverage preset keeps its scope to just the
-# library and its test suite (AC3FORGE_BUILD_CLI/EXAMPLES off) rather than
-# wiring this into ac3cli/examples too - see CMakePresets.json.
+# measured - today that is every library component (forge, audio, signing,
+# matroska, mp4, mpegts, the C API, ac3adm, admbridge) plus ac3tests.
+# Executables that merely LINK an instrumented library need nothing wired in:
+# a PRIVATE link of this target lands in the library's INTERFACE_LINK_LIBRARIES
+# as $<LINK_ONLY:ac3::coverage>, so --coverage and the gcov runtime propagate
+# to every downstream link line automatically (ac3perf/ac3bench link the
+# instrumented ac3::forge with no ac3::coverage of their own and link fine).
+# The coverage preset still turns AC3FORGE_BUILD_CLI/EXAMPLES off, but as a
+# pure build-time saving: those targets' coverage is filtered out of
+# scripts/coverage-report.sh's report anyway, so building them instrumented
+# buys nothing - see CMakePresets.json. Vendored third-party code
+# (src/ac3adm's FetchContent'd libbw64/libadm) is deliberately NOT
+# instrumented: these flags are target-scoped and nothing links ac3::coverage
+# into those targets, and scripts/coverage-report.sh's filters are
+# first-party-only anyway.
 # ---------------------------------------------------------------------------
 
 option(AC3FORGE_ENABLE_COVERAGE "Enable gcov/llvm-cov source coverage instrumentation" OFF)

@@ -177,6 +177,7 @@ target_compile_options(ac3adm_suppress_gcc15_null_deref INTERFACE
 target_link_libraries(ac3adm_objects
     PRIVATE
         "$<BUILD_INTERFACE:ac3::warnings>"
+        "$<BUILD_INTERFACE:ac3::coverage>"
         bw64
         adm
         ac3adm_suppress_gcc15_null_deref)
