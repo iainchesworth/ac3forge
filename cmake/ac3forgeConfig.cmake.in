@@ -3,7 +3,7 @@
 # Independent, dependency-free libraries in one package - see
 # cmake/InstallLibrary.cmake for why they're separate EXPORT sets sharing
 # this one Config file rather than a single combined export.
-include("${CMAKE_CURRENT_LIST_DIR}/ac3forgeTargets.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/forgeTargets.cmake")
 
 # matroska::matroska, mp4::mp4 and mpegts::mpegts are all optional components
 # (AC3FORGE_BUILD_MATROSKA/AC3FORGE_BUILD_MP4/AC3FORGE_BUILD_MPEGTS) - each Targets file only

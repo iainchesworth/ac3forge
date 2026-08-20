@@ -96,7 +96,7 @@ unavailable device reports *why* — "cannot bitstream" (an analog output) as ag
 exclusive access" (disabled or in use).
 
 This has never been confirmed against bitstreaming hardware; see the
-[verification-gap table](../verification.md#where-the-oracles-dont-reach).
+[verification-gap table](verification.md#where-the-oracles-dont-reach).
 
 ## Channel coupling
 
@@ -172,7 +172,7 @@ container matching Dolby's byte-for-byte on the fields that matter.
 
 Two limits established here are structural and remain: objects sharing a direction cannot be
 separated, and Dolby's decoder will not treat these as objects because the stream is not
-signed with its key. Both are in the [verification-gap table](../verification.md#where-the-oracles-dont-reach).
+signed with its key. Both are in the [verification-gap table](verification.md#where-the-oracles-dont-reach).
 
 ## Metering and analysis
 
@@ -197,7 +197,7 @@ screenshot.
 Everything above decodes; this is what makes it *play* right. An AV receiver reads exactly
 these bits to set level, compress dynamics and fold down, and until this point they were all
 zero. `dynrng`, `compr`, a measured `dialnorm`, and the downmix levels — see the
-[capability table](../index.md#metadata) for what each one does here.
+[capability table](index.md#metadata) for what each one does here.
 
 Verified against the oracle rather than against the bits alone: `tools/check_drc.py` runs 22
 checks in which a decode that *applies* the metadata is compared against one that ignores it
@@ -259,7 +259,7 @@ this machine's Realtek output in real time, end to end, including a live capture
 session. Exclusive-mode E-AC-3 passthrough did not get the same confirmation — this machine has
 no S/PDIF/HDMI endpoint behind a real AV receiver, so `IsFormatSupported` was exercised (and
 correctly answers no everywhere available) but no receiver has locked onto either the existing
-AC-3 burst or the new E-AC-3 one. See the [verification-gap table](../verification.md#where-the-oracles-dont-reach) for the full
+AC-3 burst or the new E-AC-3 one. See the [verification-gap table](verification.md#where-the-oracles-dont-reach) for the full
 account.
 
 ## The ALSA backend
@@ -278,7 +278,7 @@ denominator above it. Verified on WSL2 Ubuntu 26.04 (gcc 15.2, clang 21.1) with 
 libasound present, and under ASan+UBSan with leak detection, including the device-independent
 halves (device-name construction, channel-status derivation) driven against ALSA's software
 `null` PCM. Not verified: any real sound hardware — WSL2 has none. See
-[building.md](../building.md#linux-audio).
+[building.md](building.md#linux-audio).
 
 ## Per-object Atmos motion
 
@@ -328,7 +328,7 @@ than a separate system — `ac3::plan::channel_plan_for(id)` is a one-line looku
 - `fscod2`, Annex E's half sample rates (24, 22.05, 16 kHz) — decoded with the same tables as
   their double-rate parent (§E2.3.1.4), so nothing else about decoding changes. No external
   decode oracle exists for the audio content at these rates, not even Dolby's own Reference
-  Player; see the [verification-gap table](../verification.md#where-the-oracles-dont-reach).
+  Player; see the [verification-gap table](verification.md#where-the-oracles-dont-reach).
 - Delta bit allocation (§7.2.2.6) on both encoders: corrects bands where the coarse
   exponent-only masking curve and the real pre-quantization coefficient magnitude clearly
   diverge. Skipped for the LFE and, on the encode side only, whenever coupling is active that

@@ -43,6 +43,36 @@ This is the constraint the whole project rests on. Breaking it makes the code un
 
 If you cannot cite where something came from, it does not go in.
 
+## Repository layout
+
+**`src/` is the installable library; `apps/` consumes it, never the reverse.** `src/forge` is
+the codec itself; `apps/{cli,gui,wasm,android}` are its consumers. Nothing under `src/` may
+depend on anything under `apps/`.
+
+**The `ac3/` header prefix marks a dependency on `ac3::forge`, not just anything codec-adjacent.**
+A module installs its public headers under `include/ac3/<name>/` exactly when it depends on or
+extends `ac3::forge`'s own model: `forge` itself (`ac3/core`, `ac3/encoder`, ...), `admbridge`
+(`ac3/admbridge`), `audio` (`ac3/audio`), `signing` (`ac3/signing`). A bare `include/<name>/`
+(no `ac3/` prefix) marks a module as deliberately codec-blind: `ac3adm` (ADM/BW64 file parsing),
+`matroska`, `mp4`, `mpegts` (container muxing) — none of these know AC-3, E-AC-3 or Atmos exist,
+and should stay that way.
+
+The one deliberate exception is `capi`: it installs under `include/ac3forge_c/`, not `ac3/`,
+even though it depends on the codec directly (it wraps `ac3::forge_static`). The `ac3/` tree is
+a C++ namespace; `capi` is a C-callable surface, and a C or non-C++ consumer has no reason to
+see, or accidentally `#include`, a C++ header. Don't read "not under `ac3/`" as "codec-blind"
+here — it's a different axis (language surface, not dependency) that happens to look similar.
+
+**One subdirectory per platform audio backend, selected by CMake, never `#ifdef`.**
+`src/audio/src/backend/{alsa,pipewire,android,macos,posix,windows}` — adding a backend means a
+new directory and a new CMake guard, not a new preprocessor branch. There are zero
+`#ifdef`-based platform branches anywhere in `src/`; keep it that way.
+
+**A leading underscore on a workflow file means "reusable, not directly triggered."**
+`.github/workflows/_build.yml` and `_toolchain-versions.yml` are `workflow_call` targets invoked
+by `ci.yml` and `release.yml`; every other workflow file responds to a real GitHub event
+(`pull_request`, `push`, a schedule) on its own.
+
 ## Code conventions
 
 **C++23, and use it.** `std::expected` for recoverable failure, `std::span` for borrowed
@@ -194,7 +224,7 @@ If you add a capability or find a new limitation, the tables in
 does" / "What it does not do") and, for oracle coverage specifically,
 [docs/verification.md](https://github.com/iainchesworthlabs/ac3forge/blob/main/docs/verification.md)
 are the authority and must be updated with it. README.md's own summary of the same material
-should stay a summary, not grow back into a second copy. [docs/project/history.md](https://github.com/iainchesworthlabs/ac3forge/blob/main/docs/project/history.md) is a
+should stay a summary, not grow back into a second copy. [docs/history.md](https://github.com/iainchesworthlabs/ac3forge/blob/main/docs/history.md) is a
 record of past work and is not maintained against the current state.
 
 ## Commits

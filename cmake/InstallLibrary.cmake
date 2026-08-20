@@ -98,6 +98,14 @@ endif()
 # matroska::matroska_shared. Both still land in the one ac3forgeConfig.cmake
 # a consumer's find_package(ac3forge) resolves - see ac3forgeConfig.cmake.in,
 # which include()s both generated *Targets.cmake files.
+#
+# forgeTargets (not ac3forgeTargets): every other export set here is named
+# after its own AC3FORGE_BUILD_<NAME> component switch (matroskaTargets,
+# mp4Targets, mpegtsTargets, capiTargets) - forge has no such switch, since
+# it's the one mandatory, always-built component, but it still gets named
+# after its own component identity ("forge", matching its raw target names
+# forge_static/forge_shared) rather than after the overall package, for the
+# same consistency reason.
 # The _objects OBJECT library has to be in the same export set as the
 # _static/_shared targets that PUBLIC-link it, even though nothing about it
 # needs installing on its own (its compiled code is already embedded in the
@@ -105,7 +113,7 @@ endif()
 # since it can't resolve a usage-requirement dependency that isn't itself
 # part of any export set.
 install(TARGETS ${_ac3forge_forge_install_targets}
-    EXPORT ac3forgeTargets
+    EXPORT forgeTargets
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT library
     LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT libruntime NAMELINK_COMPONENT library
     ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT library)
@@ -239,8 +247,8 @@ install(FILES
     DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/ac3forge"
     COMPONENT library)
 
-install(EXPORT ac3forgeTargets
-    FILE ac3forgeTargets.cmake
+install(EXPORT forgeTargets
+    FILE forgeTargets.cmake
     NAMESPACE ac3::
     DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/ac3forge"
     COMPONENT library)

@@ -118,7 +118,7 @@ class Ac3forgeConan(ConanFile):
         # ac3forge exports its own CMake package config
         # (cmake/InstallLibrary.cmake's configure_package_config_file() +
         # install(EXPORT ...) calls - ac3forgeConfig.cmake,
-        # ac3forgeTargets.cmake, and one *Targets.cmake per enabled
+        # forgeTargets.cmake, and one *Targets.cmake per enabled
         # component) rather than relying on Conan's CMakeDeps generator to
         # synthesise one. cmake_find_mode "none" tells CMakeDeps to stay out
         # of the way; builddirs puts the package's own installed config on
