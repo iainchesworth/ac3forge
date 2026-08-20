@@ -39,13 +39,30 @@ target_link_libraries(ac3bench PRIVATE ac3::forge ac3::warnings)
 
 # ---------------------------------------------------------------------------
 # ac3membench - heap-churn and footprint numbers for the same workloads as
-# ac3bench. Windows-only measurement harness for the memory-usage
-# investigation; links ac3::forge_static explicitly so the global
-# operator new/delete replacements in bench_memory.cpp observe the codec's
-# allocations too (a DLL's allocations bind to the DLL's own operator new).
+# ac3bench, plus the decode paths ac3bench never covered. Links
+# ac3::forge_static explicitly so the global operator new/delete
+# replacements in bench_memory.cpp observe the codec's allocations too: on
+# Windows a DLL's allocations bind to the DLL's own operator new, so
+# linking the shared library would count nothing. The allocator
+# introspection and peak-RSS probe live in platform/{windows,linux}/
+# (the platform-tree rule, as everywhere else). Not ctest-registered, same
+# reasoning as ac3bench above: nothing here asserts anything, and its JSON
+# feeds scripts/append-memory-history.py (docs/performance-trend.md's
+# memory tables) from the persist-performance-trend CI job. macOS would
+# need a mem_probe of its own (malloc_size; ru_maxrss in bytes, not
+# Linux's KiB) - the trend job only measures linux-gcc, so the target
+# simply does not exist there yet rather than carrying an untested port.
 # ---------------------------------------------------------------------------
-if(WIN32)
+if(WIN32 OR LINUX)
     add_executable(ac3membench bench_memory.cpp)
+
+    if(WIN32)
+        target_sources(ac3membench PRIVATE platform/windows/mem_probe.cpp)
+    else()
+        target_sources(ac3membench PRIVATE platform/linux/mem_probe.cpp)
+    endif()
+
+    target_include_directories(ac3membench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
     target_link_libraries(ac3membench PRIVATE ac3::forge_static ac3::warnings)
 endif()

@@ -2,23 +2,18 @@
 // alongside bench_encoder.cpp's wall-clock numbers. Where ac3bench answers
 // "how fast is a frame", this answers "how many heap allocations and bytes
 // does a frame cost, and how much memory does a stream hold live" - churn
-// and footprint, not time.
+// and footprint, not time. Unlike ms/frame, these numbers are
+// near-deterministic for a fixed workload, so a trend flag on them is a
+// real change, not runner noise.
 //
-// Counting works by replacing the global allocation functions with
-// counting wrappers, so every operator new/delete in the process - the
-// harness AND the statically linked codec - is observed. That is also why
-// this binary links ac3::forge_static explicitly: allocations inside a DLL
-// bind to the DLL's own operator new at its link time, and an exe-side
-// replacement would never see them.
-//
-// Windows-only for now (_msize/_aligned_msize and K32GetProcessMemoryInfo);
-// a committed cross-platform version would take the platform-tree treatment.
-
-#include <windows.h>
-// windows.h first; psapi.h needs its types.
-#include <psapi.h>
-
-#include <malloc.h>
+// Counting works by replacing the global allocation functions with counting
+// wrappers, so every operator new/delete in the process - the harness AND
+// the statically linked codec - is observed. That is also why this binary
+// links ac3::forge_static explicitly: on Windows a DLL's allocations bind
+// to the DLL's own operator new at its link time, and an exe-side
+// replacement would never see them. The platform-specific pieces (exact
+// allocator size introspection, peak RSS) live behind mem_probe.hpp's
+// per-platform implementations.
 
 #include <atomic>
 #include <cmath>
@@ -38,6 +33,7 @@
 #include "ac3/encoder/eac3_frame.hpp"
 #include "ac3/encoder/encoder.hpp"
 #include "ac3/oba/atmos.hpp"
+#include "mem_probe.hpp"
 
 namespace {
 
@@ -67,20 +63,20 @@ void note_free(std::size_t size) noexcept {
 }  // namespace
 
 void* operator new(std::size_t size) {
-    void* p = std::malloc(size != 0 ? size : 1);
+    void* p = membench::raw_alloc(size);
     if (p == nullptr) {
         throw std::bad_alloc{};
     }
-    note_alloc(_msize(p));
+    note_alloc(membench::usable_size(p));
     return p;
 }
 
 void* operator new[](std::size_t size) { return ::operator new(size); }
 
 void* operator new(std::size_t size, const std::nothrow_t&) noexcept {
-    void* p = std::malloc(size != 0 ? size : 1);
+    void* p = membench::raw_alloc(size);
     if (p != nullptr) {
-        note_alloc(_msize(p));
+        note_alloc(membench::usable_size(p));
     }
     return p;
 }
@@ -93,8 +89,8 @@ void operator delete(void* p) noexcept {
     if (p == nullptr) {
         return;
     }
-    note_free(_msize(p));
-    std::free(p);
+    note_free(membench::usable_size(p));
+    membench::raw_free(p);
 }
 
 void operator delete[](void* p) noexcept { ::operator delete(p); }
@@ -104,11 +100,11 @@ void operator delete(void* p, const std::nothrow_t&) noexcept { ::operator delet
 void operator delete[](void* p, const std::nothrow_t&) noexcept { ::operator delete(p); }
 
 void* operator new(std::size_t size, std::align_val_t align) {
-    void* p = _aligned_malloc(size != 0 ? size : 1, static_cast<std::size_t>(align));
+    void* p = membench::raw_alloc_aligned(size, static_cast<std::size_t>(align));
     if (p == nullptr) {
         throw std::bad_alloc{};
     }
-    note_alloc(_aligned_msize(p, static_cast<std::size_t>(align), 0));
+    note_alloc(membench::usable_size_aligned(p, static_cast<std::size_t>(align)));
     return p;
 }
 
@@ -120,8 +116,8 @@ void operator delete(void* p, std::align_val_t align) noexcept {
     if (p == nullptr) {
         return;
     }
-    note_free(_aligned_msize(p, static_cast<std::size_t>(align), 0));
-    _aligned_free(p);
+    note_free(membench::usable_size_aligned(p, static_cast<std::size_t>(align)));
+    membench::raw_free_aligned(p, static_cast<std::size_t>(align));
 }
 
 void operator delete[](void* p, std::align_val_t align) noexcept { ::operator delete(p, align); }
@@ -431,9 +427,9 @@ Result bench_eac3_decode(std::string name, std::span<const std::byte> stream) {
 }
 
 void write_json(const std::vector<Result>& results, const std::string& path,
-                const PROCESS_MEMORY_COUNTERS& pmc) {
+                const membench::ProcessMemory& pm) {
     std::ofstream out(path);
-    out << "{\n  \"peak_working_set_bytes\": " << pmc.PeakWorkingSetSize
+    out << "{\n  \"peak_rss_bytes\": " << (pm.valid ? pm.peak_rss_bytes : 0)
         << ",\n  \"results\": [\n";
     for (std::size_t i = 0; i < results.size(); ++i) {
         const auto& r = results[i];
@@ -487,16 +483,15 @@ int main(int argc, char** argv) {
             static_cast<long long>(r.peak_live_delta));
     }
 
-    PROCESS_MEMORY_COUNTERS pmc{};
-    pmc.cb = sizeof(pmc);
-    if (K32GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc)) != 0) {
-        std::printf("\npeak working set: %.1f MiB   current: %.1f MiB\n",
-                    static_cast<double>(pmc.PeakWorkingSetSize) / (1024.0 * 1024.0),
-                    static_cast<double>(pmc.WorkingSetSize) / (1024.0 * 1024.0));
+    const membench::ProcessMemory pm = membench::process_memory();
+    if (pm.valid) {
+        std::printf("\npeak rss: %.1f MiB   current: %.1f MiB\n",
+                    static_cast<double>(pm.peak_rss_bytes) / (1024.0 * 1024.0),
+                    static_cast<double>(pm.current_rss_bytes) / (1024.0 * 1024.0));
     }
 
     if (!json_out.empty()) {
-        write_json(results, json_out, pmc);
+        write_json(results, json_out, pm);
         std::printf("wrote %s\n", json_out.c_str());
     }
 
