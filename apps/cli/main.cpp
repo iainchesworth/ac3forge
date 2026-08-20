@@ -752,6 +752,36 @@ std::string partial_output_path(std::string_view path) {
 // when keep_partial is false or nothing was encoded yet; a write failure for
 // the partial itself is reported but does not change the caller's own exit
 // code, since the ORIGINAL error is still the one that matters.
+// One frame written `count` times, for the silence generators: they used to
+// materialise `count` identical copies of a single ~2 KB frame first (~268
+// MB for an hour of silence) purely to satisfy write_frames' list shape.
+bool write_repeated_frame(std::string_view path, std::span<const std::byte> frame,
+                          std::uint64_t count) {
+    const auto emit = [&](std::ostream& out) {
+        for (std::uint64_t i = 0; i < count; ++i) {
+            out.write(reinterpret_cast<const char*>(frame.data()),
+                      static_cast<std::streamsize>(frame.size()));
+        }
+        return static_cast<bool>(out);
+    };
+    if (is_stdio_path(path)) {
+        ac3::cli::platform::set_stdio_binary();
+        const bool ok = emit(std::cout);
+        std::cout.flush();
+        if (!ok || !std::cout) {
+            std::println(stderr, "error: cannot write to stdout");
+            return false;
+        }
+        return true;
+    }
+    std::ofstream out{std::string{path}, std::ios::binary};
+    if (!out) {
+        std::println(stderr, "error: cannot open {} for writing", path);
+        return false;
+    }
+    return emit(out);
+}
+
 void write_partial_output(std::string_view out_path, bool keep_partial,
                           std::span<const std::vector<std::byte>> frames) {
     if (!keep_partial || frames.empty()) {
@@ -796,6 +826,9 @@ std::vector<float> interleave_reordered(std::span<const std::vector<float>> chan
 
 std::vector<std::byte> read_all(std::string_view path) {
     if (is_stdio_path(path)) {
+        // stdin's length is unknown up front, so this path keeps the
+        // iterator read (and to_bytes' copy) the file branch below no
+        // longer needs.
         ac3::cli::platform::set_stdio_binary();
         const std::vector<char> raw{std::istreambuf_iterator<char>(std::cin),
                                     std::istreambuf_iterator<char>()};
@@ -805,9 +838,20 @@ std::vector<std::byte> read_all(std::string_view path) {
     if (!in) {
         return {};
     }
-    const std::vector<char> raw{std::istreambuf_iterator<char>(in),
-                                std::istreambuf_iterator<char>()};
-    return to_bytes(raw);
+    // Sized read straight into the byte buffer: the iterator+to_bytes route
+    // held the file twice (char copy plus byte copy) at its return point.
+    in.seekg(0, std::ios::end);
+    const auto end = in.tellg();
+    if (end < 0) {
+        return {};
+    }
+    in.seekg(0);
+    std::vector<std::byte> bytes(static_cast<std::size_t>(end));
+    in.read(reinterpret_cast<char*>(bytes.data()), end);
+    if (in.gcount() != end) {
+        return {};
+    }
+    return bytes;
 }
 
 // Wraps ac3::io::read_wav to honor the "-" stdin convention (is_stdio_path
@@ -1058,8 +1102,7 @@ int run_silence(std::string_view out_path, std::uint32_t seconds, std::uint32_t 
         return 1;
     }
     const std::uint64_t count = (static_cast<std::uint64_t>(seconds) * 48000 + 1535) / 1536;
-    const std::vector<std::vector<std::byte>> frames(static_cast<std::size_t>(count), *frame);
-    if (!write_frames(out_path, frames)) {
+    if (!write_repeated_frame(out_path, *frame, count)) {
         return 1;
     }
     std::println("wrote {} silent frames to {}", count, out_path);
@@ -4982,9 +5025,7 @@ int run_eac3_silence(std::string_view out_path, std::uint32_t seconds, std::uint
         return 1;
     }
     const std::uint64_t count = frame_count(seconds);
-    const std::vector<std::vector<std::byte>> frames(static_cast<std::size_t>(count),
-                                                     unit->bytes);
-    if (!write_frames(out_path, frames)) {
+    if (!write_repeated_frame(out_path, unit->bytes, count)) {
         return 1;
     }
     std::println("wrote {} silent E-AC-3 {} access units ({} substreams, "
