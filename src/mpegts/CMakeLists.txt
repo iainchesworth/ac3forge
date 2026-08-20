@@ -11,7 +11,7 @@
 # library never reaches for the container and vice versa.
 #
 # Built and installed as both a static and a shared library - see
-# src/lib/CMakeLists.txt's ac3::forge for the full explanation of why an
+# src/forge/CMakeLists.txt's ac3::forge for the full explanation of why an
 # OBJECT library plus two thin wrapper targets, rather than one add_library().
 # ---------------------------------------------------------------------------
 add_library(mpegts_objects OBJECT)
@@ -41,7 +41,7 @@ target_include_directories(mpegts_objects
 
 target_compile_features(mpegts_objects PUBLIC cxx_std_23)
 
-# $<BUILD_INTERFACE:...> wrapping - see src/lib/CMakeLists.txt's identical
+# $<BUILD_INTERFACE:...> wrapping - see src/forge/CMakeLists.txt's identical
 # forge_objects treatment for why a plain PRIVATE link isn't enough for
 # an OBJECT library that's part of an install(EXPORT) set. ac3::coverage is a
 # no-op unless AC3FORGE_ENABLE_COVERAGE is on (see cmake/Coverage.cmake).

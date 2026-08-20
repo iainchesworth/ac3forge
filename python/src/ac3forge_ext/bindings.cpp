@@ -1,7 +1,7 @@
 // pybind11 bindings for ac3forge (roadmap F2) - wraps ac3::FrameEncoder, ac3::FrameDecoder,
 // ac3::Eac3Decoder and ac3::oba::AtmosEncoder directly (pybind11-direct, per the roadmap's own
 // dependency note - no intermediate C API). Every C++ class kept here is exactly the one
-// declared in src/lib/include/ac3/{encoder/encoder,decoder/decoder,oba/atmos}.hpp; this file adds
+// declared in src/forge/include/ac3/{encoder/encoder,decoder/decoder,oba/atmos}.hpp; this file adds
 // no codec behaviour of its own; error handling exists only because Python has no
 // std::expected-shaped calling convention.
 //
@@ -191,7 +191,7 @@ py::list blksw_to_list(const std::vector<std::array<bool, ac3::kBlocksPerFrame>>
 }
 
 // AC-3's own channel labels (Table 5.8) - independent of the E-AC-3 Table E2.5 chanmap machinery
-// used for DecodedSubstream/DecodedAccessUnit below, same split platform/wasm/decoder_bindings.cpp
+// used for DecodedSubstream/DecodedAccessUnit below, same split apps/wasm/decoder_bindings.cpp
 // draws between its own ac3_channel_labels() and apply_layout()/apply_layout_substream().
 std::vector<std::string> ac3_channel_labels(ac3::Acmod acmod, bool lfe) {
     static const std::array<std::vector<std::string>, 8> kByAcmod{{
@@ -587,7 +587,7 @@ PYBIND11_MODULE(_ac3forge, m) {
         .def_property_readonly("channel_labels", [](const ac3::DecodedAccessUnit& u) {
             // Dual mono has no Table E2.5 layout at all (DecodedAccessUnit::layout's own
             // comment) - fall back to the plain AC-3 acmod labels, same as
-            // platform/wasm/decoder_bindings.cpp's apply_layout() does.
+            // apps/wasm/decoder_bindings.cpp's apply_layout() does.
             if (u.layout.count == 0) {
                 return ac3_channel_labels(u.acmod, false);
             }

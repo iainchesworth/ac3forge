@@ -203,7 +203,7 @@ run decode eac3_silence.ec3 eac3_silence.wav
 run_ffmpeg_check eac3_silence.ec3
 
 # "atten:N" and "noatten" alone tune spectral extension's notch but do not,
-# by themselves, turn spx on (see parse_tools in src/lib/src/encoder/plan.cpp)
+# by themselves, turn spx on (see parse_tools in src/forge/src/encoder/plan.cpp)
 # - so they round-trip like "none". "nofastmdct" is the same shape one step
 # further: not a coding tool at all, just the direct-form forward MDCT
 # instead of the default fast path, so its stream differs from "none"'s only
@@ -342,7 +342,7 @@ run_ffmpeg_check atmos_enc.ec3
 # atmos-path: a tiny hand-authored keyframe file, proving the file-driven
 # object path round-trips too, not just the built-in synthetic orbit 'atmos'
 # uses. Format is 'object time_s x y z gain lfe_send' per run_atmos_path's
-# parser (src/cli/main.cpp).
+# parser (apps/cli/main.cpp).
 cat > atmos_paths.txt <<'PATHSEOF'
 0 0.0 0.1 0.5 0.0 0.7 0.0
 0 2.0 0.9 0.5 1.0 0.7 0.0
@@ -371,7 +371,7 @@ run_ffmpeg_check atmos_path.ec3
 # check actually looks for - see that script's own module docstring.
 ADM_FIXTURE_TOOL="$(dirname "$CLI")/examples/encode_adm"
 if "$CLI" 2>&1 | grep -E '^  ac3cli atmos-adm[[:space:]]' | grep -q 'UNAVAILABLE HERE'; then
-    echo "    [skip] atmos-adm: this ac3cli build has no -DAC3FORGE_BUILD_ADM=ON (src/cli/adm/atmos_adm.hpp) - covered instead by the adm-validate CI job and tests/test_cli_atmos_adm.cpp, which do build with it"
+    echo "    [skip] atmos-adm: this ac3cli build has no -DAC3FORGE_BUILD_ADM=ON (apps/cli/adm/atmos_adm.hpp) - covered instead by the adm-validate CI job and tests/test_cli_atmos_adm.cpp, which do build with it"
 elif [ ! -x "$ADM_FIXTURE_TOOL" ]; then
     echo "    [skip] atmos-adm: examples/encode_adm was not built alongside this ac3cli (AC3FORGE_BUILD_EXAMPLES=OFF?), so its --write-fixture mode is unavailable to generate a real ADM file"
 else

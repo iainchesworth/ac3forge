@@ -43,7 +43,7 @@ mixes are delivered as master files.
   done** — see [`src/ac3adm/`](https://github.com/iainchesworthlabs/ac3forge/tree/main/src/ac3adm) and
   `docs/library/adm.md`, and [`src/admbridge/`](https://github.com/iainchesworthlabs/ac3forge/tree/main/src/admbridge)
   and `docs/library/adm-bridge.md`. **Phase 3 (driving both together end to end) is also done** —
-  the `ac3cli atmos-adm` command (`src/cli/main.cpp`) and
+  the `ac3cli atmos-adm` command (`apps/cli/main.cpp`) and
   [`examples/encode_adm.cpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/encode_adm.cpp).
   `ac3cli` still builds and works identically whether `AC3FORGE_BUILD_ADM` is on or off, just with
   or without this one command — with no preprocessor conditional anywhere
@@ -51,8 +51,8 @@ mixes are delivered as master files.
   `atmos-adm` is always one row in `main.cpp`'s command table, gated at dispatch time by a new
   `Needs::kAdm`/`unmet()` case (the same mechanism `Needs::kCapture`/`kPassthrough`/`kMonitor`
   already use for platform audio capability), backed by a small CMake-selected file pair
-  (`src/cli/adm/{enabled,disabled}/atmos_adm.cpp`) rather than an `#ifdef` — see
-  `src/cli/adm/atmos_adm.hpp`'s own comment for the full reasoning. Built on the vendored
+  (`apps/cli/adm/{enabled,disabled}/atmos_adm.cpp`) rather than an `#ifdef` — see
+  `apps/cli/adm/atmos_adm.hpp`'s own comment for the full reasoning. Built on the vendored
   libbw64/libadm (github.com/ebu) rather than a hand-rolled parser; opt-in via
   `-DAC3FORGE_BUILD_ADM=ON` (needs Boost, see `vcpkg.json`'s `adm` feature) — the only third-party
   dependency anywhere in this project, and deliberately not default-on.
@@ -132,7 +132,7 @@ decoded an AC-3/E-AC-3 bitstream and verified its loudness metadata against meas
 - [x] **F3 (L)** — WASM build plus a browser demo that decodes E-AC-3 + JOC and renders
   object motion; could double as the documentation site's live demo. `ac3::forge`'s
   AC-3/E-AC-3 decode path builds under Emscripten (`config-wasm-emscripten` preset), and a
-  real browser demo (`platform/wasm/`, embedded live at `docs/wasm-demo.md`) decodes a
+  real browser demo (`apps/wasm/`, embedded live at `docs/wasm-demo.md`) decodes a
   genuine Atmos-in-DD+ stream, plays the real 5.1 bed, and renders each object's real
   decoded position (OAMD, #168) moving in a top-down/elevation room view — plus a "solo
   object" control that plays that object's own real JOC-reconstructed audio (#169), not its

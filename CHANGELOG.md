@@ -15,11 +15,12 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 ### Changed
 
 - **The CI coverage gate now measures the whole library, per component.** The `coverage` leg
-  previously instrumented and gated `src/lib` alone; it now instruments every library component —
+  previously instrumented and gated the codec core (now `src/forge`) alone; it now instruments
+  every library component —
   `ac3::forge`, `ac3::audio`, `ac3::signing`, the Matroska/MP4/MPEG-TS writers, the C API, and
   the opt-in ADM module plus its bridge — and gates statement (line) and branch coverage per
   component via the new `scripts/coverage-report.sh`, so a regression in a small module can no
-  longer hide inside a blended number. `src/lib`'s own floor rose from 80%/70% line/branch to
+  longer hide inside a blended number. `src/forge`'s own floor rose from 80%/70% line/branch to
   88%/78% to track the suite's growth, and the first whole-library measurement put honest floors
   under two thin spots — `src/audio`'s device I/O paths and the C API's E-AC-3 surface — rather
   than leaving them unmeasured. See the script's floor table for every component's numbers.

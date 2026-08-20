@@ -18,7 +18,7 @@
 # NOT enabled, on purpose:
 #   modernize-*, readability-*, google-*, llvm-*, hicpp-*, fuchsia-*, etc. -
 #   stylistic/opinionated groups that would relitigate this codebase's own
-#   deliberate conventions (see src/lib/'s comment-voice and
+#   deliberate conventions (see src/forge/'s comment-voice and
 #   abstraction-avoidance patterns) rather than find defects.
 # Three checks excluded from their otherwise-enabled groups, each verified
 # against this codebase's actual output rather than excluded a priori:
@@ -70,5 +70,5 @@ Checks: >
   cert-str34-c
 
 WarningsAsErrors: ''
-HeaderFilterRegex: 'src/(lib|cli|matroska)/.*'
+HeaderFilterRegex: '(src/(forge|matroska)|apps/cli)/.*'
 FormatStyle: none

@@ -28,7 +28,7 @@
 #                                     script's full layout/tool/atmos sweep
 #   static-analysis (tidy)  GREEN     .clang-tidy's curated set, clean baseline
 #   coverage                GREEN     per-component line/branch gates over all
-#                                     nine library components (src/lib 92.0%
+#                                     nine library components (src/forge 92.0%
 #                                     line / 83.7% branch on the 2026-08-20
 #                                     WSL2 calibration run - no hosted run of
 #                                     the per-component gate recorded here
@@ -309,15 +309,15 @@ jobs:
         run: |
           run-clang-tidy-21 -j "$(nproc)" -p build/config-linux-llvm \
             -warnings-as-errors='*' \
-            'src/(lib|cli|matroska)/.*\.cpp'
+            '(src/(forge|matroska)|apps/cli)/.*\.cpp'
 
-  # ac3tests coverage over every library component: src/lib plus audio,
+  # ac3tests coverage over every library component: src/forge plus audio,
   # signing, matroska, mp4, mpegts, capi, and - via the coverage preset's
   # AC3FORGE_BUILD_ADM=ON with vcpkg's 'adm' feature, the same pair
-  # adm-validate passes by hand - ac3adm/admbridge. Originally src/lib only
+  # adm-validate passes by hand - ac3adm/admbridge. Originally src/forge only
   # ("the library is what was asked for"); extended once the rest of the
   # library surface existed and was already being EXERCISED by this same
-  # suite, just uninstrumented and unreported. src/cli and src/gui stay out
+  # suite, just uninstrumented and unreported. apps/cli and src/gui stay out
   # of scope: they are applications, not the library, and the coverage
   # preset builds neither.
   #
@@ -332,7 +332,7 @@ jobs:
   # The gate is PER COMPONENT - a line floor and a branch floor per
   # src/<dir>, not one blended number a small component's regression could
   # hide inside - and lives in scripts/coverage-report.sh alongside the
-  # measured baseline each floor was calibrated against. src/lib's original
+  # measured baseline each floor was calibrated against. src/forge's original
   # 80/70 floor (set a few points under its first hosted run's 81.3/72.0,
   # measured 2026-08-09 while block switching, delta bit allocation, half
   # sample rate and dual mono were still landing) is now 88/78: the suite
@@ -447,7 +447,7 @@ jobs:
   # WSL2 gcc-15, WSL2 clang++-21, all green).
   #
   # AC3FORGE_BUILD_CLI/EXAMPLES stay at their preset default (ON): roadmap B1 phase 3 (the
-  # 'atmos-adm' ac3cli command, src/cli/main.cpp's run_atmos_adm, and examples/encode_adm.cpp) is
+  # 'atmos-adm' ac3cli command, apps/cli/main.cpp's run_atmos_adm, and examples/encode_adm.cpp) is
   # the first code outside tests/ to link ac3adm::ac3adm/ac3::admbridge at all, so unlike phases 1
   # and 2 (when neither the CLI nor the examples touched this module, hence this job originally
   # turning both off), this job now has to build and run both too or the CLI command and example
