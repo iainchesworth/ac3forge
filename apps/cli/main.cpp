@@ -12,6 +12,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <numbers>
 #include <optional>
@@ -836,6 +837,138 @@ std::expected<void, ac3::io::WavError> write_wav_f32_arg(
     }
     return ac3::io::write_wav_f32(std::string{path}, channels, sample_rate, channel_order);
 }
+
+// Streams planar float channels into a WAV as they decode, so the decoded
+// programme never sits in memory whole (it used to: ~69 MB per minute of
+// 5.1). Channels arrive per SLOT and may momentarily advance unevenly -
+// E-AC-3's transient-pre-noise flush appends per mapped slot - so each slot
+// keeps a small carry, and whole interleaved frames go to WavStreamWriter as
+// soon as every slot has them. Two deliberate fallbacks: out_path "-"
+// accumulates and writes in one shot at close (stdout cannot seek, and
+// WavStreamWriter patches its header), and any residue left by slots of
+// unequal final length is dropped with a warning - the whole-buffer write
+// this replaces indexed every channel to the first one's length, so equal
+// lengths are the only case that ever actually occurred.
+class PlanarWavSink {
+   public:
+    // `order`: entry i names the source slot that belongs at WAV position i
+    // (write_wav_f32's convention); empty means identity.
+    [[nodiscard]] bool open(std::string_view path, std::uint32_t sample_rate, std::size_t slots,
+                            std::span<const std::size_t> order) {
+        path_ = std::string{path};
+        stdio_ = is_stdio_path(path);
+        sample_rate_ = sample_rate;
+        slots_.assign(slots, {});
+        consumed_.assign(slots, 0);
+        order_.assign(order.begin(), order.end());
+        if (order_.empty()) {
+            order_.resize(slots);
+            for (std::size_t i = 0; i < slots; ++i) {
+                order_[i] = i;
+            }
+        }
+        if (!stdio_) {
+            if (!writer_.open(path_, sample_rate, static_cast<std::uint16_t>(slots))) {
+                return false;
+            }
+        }
+        open_ = true;
+        return true;
+    }
+
+    [[nodiscard]] bool is_open() const { return open_; }
+
+    [[nodiscard]] bool append(std::size_t slot, std::span<const float> samples) {
+        auto& buffer = slots_[slot];
+        buffer.insert(buffer.end(), samples.begin(), samples.end());
+        return drain();
+    }
+
+    // Finalize; reports whether the write side stayed healthy. Unequal
+    // residue across slots (never produced by a healthy stream) is dropped.
+    [[nodiscard]] std::expected<void, ac3::io::WavError> close() {
+        if (!open_) {
+            return std::unexpected(ac3::io::WavError::kCannotOpen);
+        }
+        open_ = false;
+        if (stdio_) {
+            return write_wav_f32_arg(path_, slots_, sample_rate_, order_);
+        }
+        if (!drain()) {
+            writer_.close();
+            return std::unexpected(ac3::io::WavError::kCannotOpen);
+        }
+        for (std::size_t s = 0; s < slots_.size(); ++s) {
+            if (slots_[s].size() != consumed_[s]) {
+                std::println(stderr,
+                             "warning: dropped a ragged tail the substreams never evened out");
+                break;
+            }
+        }
+        writer_.close();
+        return {};
+    }
+
+    // The decode failed part-way: close and remove whatever was written, so
+    // a failed run leaves no output file - exactly like the whole-buffer
+    // write it replaces, which never ran at all on failure.
+    void abort() {
+        if (!open_) {
+            return;
+        }
+        open_ = false;
+        if (!stdio_) {
+            writer_.close();
+            std::error_code ec;
+            std::filesystem::remove(std::filesystem::path{path_}, ec);
+        }
+    }
+
+   private:
+    [[nodiscard]] bool drain() {
+        if (stdio_) {
+            return true;
+        }
+        std::size_t ready = std::numeric_limits<std::size_t>::max();
+        for (std::size_t s = 0; s < slots_.size(); ++s) {
+            ready = std::min(ready, slots_[s].size() - consumed_[s]);
+        }
+        if (ready == 0 || ready == std::numeric_limits<std::size_t>::max()) {
+            return true;
+        }
+        scratch_.resize(ready * slots_.size());
+        for (std::size_t pos = 0; pos < ready; ++pos) {
+            for (std::size_t w = 0; w < order_.size(); ++w) {
+                const auto slot = order_[w];
+                scratch_[pos * order_.size() + w] = slots_[slot][consumed_[slot] + pos];
+            }
+        }
+        if (!writer_.write(scratch_)) {
+            return false;
+        }
+        for (std::size_t s = 0; s < slots_.size(); ++s) {
+            consumed_[s] += ready;
+            // Keep the carry small: once the consumed prefix dominates,
+            // shift the remainder down rather than growing forever.
+            if (consumed_[s] > 8192 && consumed_[s] > slots_[s].size() / 2) {
+                slots_[s].erase(slots_[s].begin(),
+                                slots_[s].begin() + static_cast<std::ptrdiff_t>(consumed_[s]));
+                consumed_[s] = 0;
+            }
+        }
+        return true;
+    }
+
+    std::string path_;
+    bool stdio_ = false;
+    bool open_ = false;
+    std::uint32_t sample_rate_ = 0;
+    ac3::io::WavStreamWriter writer_;
+    std::vector<std::vector<float>> slots_;
+    std::vector<std::size_t> consumed_;
+    std::vector<std::size_t> order_;
+    std::vector<float> scratch_;
+};
 
 // ---------------------------------------------------------------------------
 // Level reporting. Every number comes from ac3::analysis, so a level reads
@@ -3509,48 +3642,31 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
 
 // Reports the object layer (if any) an E-AC-3 decode found - the decode-side
 // mirror of run_atmos_encode's own "{N} dynamic objects + the bed's LFE = {M}
-// objects" line - and, when objects_dir is non-empty, exports each JOC-
-// reconstructed object as its own single-channel WAV under it. Shared between
-// run_decode_eac3's dual-mono and ordinary return paths since both reach
-// here with the same (metadata, object_pcm) shape, even though this
-// project's own AtmosEncoder never emits dual mono alongside an object
-// container.
+// objects" line. Shared between run_decode_eac3's dual-mono and ordinary
+// return paths, even though this project's own AtmosEncoder never emits dual
+// mono alongside an object container. The object WAVs themselves are
+// streamed out by per-object sinks as the decode runs (run_decode_eac3's
+// append_objects) - by the time this prints, the files are already closed;
+// this only says what happened.
 int report_decoded_objects(FILE* status, const std::optional<ac3::oba::DecodedProgram>& metadata,
-                           const std::vector<std::vector<float>>& object_pcm,
-                           std::uint32_t sample_rate, std::string_view objects_dir) {
+                           bool have_object_audio, std::size_t objects_written,
+                           std::string_view objects_dir) {
     if (metadata) {
         std::println(status, "  {} dynamic objects + the bed's LFE = {} objects, OAMD present{}",
                      metadata->objects.size(), ac3::oba::object_count(metadata->program),
-                     object_pcm.empty() ? " (JOC audio not reconstructed)"
-                                        : ", JOC audio reconstructed");
+                     have_object_audio ? ", JOC audio reconstructed"
+                                       : " (JOC audio not reconstructed)");
     }
     if (objects_dir.empty()) {
         return 0;
     }
-    if (object_pcm.empty()) {
+    if (objects_written == 0) {
         std::println(stderr,
                      "warning: objects_dir given but there is no reconstructed object audio to "
                      "export");
         return 0;
     }
-    std::error_code ec;
-    const std::filesystem::path dir{std::string{objects_dir}};
-    std::filesystem::create_directories(dir, ec);
-    if (ec) {
-        std::println(stderr, "error: cannot create directory {} ({})", objects_dir, ec.message());
-        return 1;
-    }
-    for (std::size_t i = 0; i < object_pcm.size(); ++i) {
-        const auto object_path = dir / std::format("object_{:02}.wav", i);
-        const auto written = ac3::io::write_wav_f32(
-            object_path.string(), std::span<const std::vector<float>>{&object_pcm[i], 1},
-            sample_rate);
-        if (!written) {
-            std::println(stderr, "error: {}", ac3::io::describe(written.error()));
-            return 1;
-        }
-    }
-    std::println(status, "  wrote {} object WAV(s) to {}", object_pcm.size(), objects_dir);
+    std::println(status, "  wrote {} object WAV(s) to {}", objects_written, objects_dir);
     return 0;
 }
 
@@ -3587,16 +3703,85 @@ int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path
     }
     ac3::Eac3Decoder decoder{
         {.drc_scale = meta.drc_scale, .heavy_compression = meta.p.heavy.has_value()}};
-    std::vector<std::vector<float>> pcm;
-    // JOC's reconstructed per-object audio, accumulated the same way `pcm`
-    // is above - parallel to first.object_metadata->objects (same index,
-    // same object), one entry per access unit that actually carried it. An
-    // access unit whose object_audio size doesn't match what's accumulated
-    // so far is skipped rather than resized into: DecodedSubstream's own
-    // comment documents this as reachable (a program-shape mismatch JOC's
-    // ordering can't be lined up against), not something worth failing the
-    // whole decode over.
-    std::vector<std::vector<float>> object_pcm;
+    // The decoded programme goes out through the sink as units decode - the
+    // sink's per-slot carry absorbs the one place slots advance unevenly
+    // (the transient-pre-noise flush below).
+    PlanarWavSink sink;
+    std::size_t sink_slots = 0;
+    const auto open_sink = [&](const ac3::DecodedAccessUnit& unit,
+                               std::size_t slots) -> bool {
+        sink_slots = slots;
+        // Dual mono has no Table E2.5 location to order by, so Ch1 and Ch2
+        // go out in coded order - the same identity the whole-buffer write
+        // fell back to. Everyone else gets the WAV speaker order the encode
+        // side reads a file in.
+        std::vector<std::size_t> order;
+        if (unit.acmod != ac3::Acmod::kDualMono) {
+            order = plan::wav_order(std::span{unit.layout.items}.first(
+                static_cast<std::size_t>(unit.layout.count)));
+        }
+        if (!sink.open(out_path, sample_rate_hz(unit.sample_rate), slots, order)) {
+            std::println(stderr, "error: cannot open {} for writing", out_path);
+            return false;
+        }
+        return true;
+    };
+    // JOC's reconstructed per-object audio - parallel to
+    // first.object_metadata->objects (same index, same object). With no
+    // objects_dir nothing keeps it: only the fact that some arrived matters
+    // to the report. With one, each object streams to its own mono WAV. An
+    // access unit whose object_audio size doesn't match the sinks is
+    // skipped rather than resized into: DecodedSubstream's own comment
+    // documents this as reachable (a program-shape mismatch JOC's ordering
+    // can't be lined up against), not something worth failing the whole
+    // decode over.
+    bool have_object_audio = false;
+    std::vector<PlanarWavSink> object_sinks;
+    const auto abort_all = [&] {
+        sink.abort();
+        for (auto& object_sink : object_sinks) {
+            object_sink.abort();
+        }
+    };
+    const auto append_objects = [&](const std::vector<std::vector<float>>& object_audio,
+                                    std::uint32_t sample_rate) -> bool {
+        if (object_audio.empty()) {
+            return true;
+        }
+        have_object_audio = true;
+        if (objects_dir.empty()) {
+            return true;
+        }
+        if (object_sinks.empty()) {
+            std::error_code ec;
+            const std::filesystem::path dir{std::string{objects_dir}};
+            std::filesystem::create_directories(dir, ec);
+            if (ec) {
+                std::println(stderr, "error: cannot create directory {} ({})", objects_dir,
+                             ec.message());
+                return false;
+            }
+            object_sinks.resize(object_audio.size());
+            for (std::size_t i = 0; i < object_sinks.size(); ++i) {
+                const auto object_path = dir / std::format("object_{:02}.wav", i);
+                if (!object_sinks[i].open(object_path.string(), sample_rate, 1, {})) {
+                    std::println(stderr, "error: cannot open {} for writing",
+                                 object_path.string());
+                    return false;
+                }
+            }
+        }
+        if (object_audio.size() != object_sinks.size()) {
+            return true;  // shape mismatch: skipped, same as the old append
+        }
+        for (std::size_t i = 0; i < object_sinks.size(); ++i) {
+            if (!object_sinks[i].append(0, object_audio[i])) {
+                std::println(stderr, "error: cannot write object audio under {}", objects_dir);
+                return false;
+            }
+        }
+        return true;
+    };
     ac3::DecodedAccessUnit first{};
     // What the independent (bed) substream actually carried, reported whether
     // or not it was applied - same convention as run_decode's own dynrng_min_db/
@@ -3637,6 +3822,7 @@ int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path
         if (!decoded) {
             std::println(stderr, "error: decode failed (code {})",
                          static_cast<int>(decoded.error()));
+            abort_all();
             return 1;
         }
         if (!decoded->has_value()) {
@@ -3646,24 +3832,23 @@ int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path
             continue;
         }
         const auto& out = **decoded;
-        if (pcm.empty()) {
+        if (!sink.is_open()) {
             first = out;
-            pcm.resize(out.channels.size());
+            if (!open_sink(first, out.channels.size())) {
+                return 1;
+            }
         }
         track_metadata(out.dynrng, out.numblkscod, out.compr);
         for (std::size_t ch = 0; ch < out.channels.size(); ++ch) {
-            pcm[ch].insert(pcm[ch].end(), out.channels[ch].begin(), out.channels[ch].end());
+            if (!sink.append(ch, out.channels[ch])) {
+                std::println(stderr, "error: cannot write to {}", out_path);
+                abort_all();
+                return 1;
+            }
         }
-        if (!out.object_audio.empty()) {
-            if (object_pcm.empty()) {
-                object_pcm.resize(out.object_audio.size());
-            }
-            if (out.object_audio.size() == object_pcm.size()) {
-                for (std::size_t i = 0; i < object_pcm.size(); ++i) {
-                    object_pcm[i].insert(object_pcm[i].end(), out.object_audio[i].begin(),
-                                         out.object_audio[i].end());
-                }
-            }
+        if (!append_objects(out.object_audio, sample_rate_hz(first.sample_rate))) {
+            abort_all();
+            return 1;
         }
     }
     // Whatever transient pre-noise processing was still holding back at
@@ -3688,29 +3873,34 @@ int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path
                 track_metadata(substream.dynrng, substream.numblkscod, substream.compr);
             }
         }
-        const bool dual_mono = pcm.empty() ? flushed.front().acmod == ac3::Acmod::kDualMono
-                                            : first.acmod == ac3::Acmod::kDualMono;
+        const bool dual_mono = sink.is_open() ? first.acmod == ac3::Acmod::kDualMono
+                                              : flushed.front().acmod == ac3::Acmod::kDualMono;
         if (dual_mono) {
             // No Table E2.5 location to place by - dual mono is always a
             // lone substream with no dependents and no spatial layout
             // (decode_access_unit's own comment) - so its channels go
-            // straight to pcm in coded order, same as decode_access_unit.
+            // straight out in coded order, same as decode_access_unit.
             for (const auto& substream : flushed) {
-                if (pcm.empty()) {
+                if (!sink.is_open()) {
                     first.acmod = ac3::Acmod::kDualMono;
                     first.sample_rate = substream.sample_rate;
                     first.dialnorm = substream.dialnorm;
                     first.substream_count = 1;
                     first.object_metadata = substream.object_metadata;
-                    pcm.resize(substream.channels.size());
+                    if (!open_sink(first, substream.channels.size())) {
+                        return 1;
+                    }
                 }
                 for (std::size_t ch = 0; ch < substream.channels.size(); ++ch) {
-                    pcm[ch].insert(pcm[ch].end(), substream.channels[ch].begin(),
-                                   substream.channels[ch].end());
+                    if (!sink.append(ch, substream.channels[ch])) {
+                        std::println(stderr, "error: cannot write to {}", out_path);
+                        abort_all();
+                        return 1;
+                    }
                 }
             }
         } else {
-            if (pcm.empty()) {
+            if (!sink.is_open()) {
                 // No access unit ever completed - synthesize the program's
                 // layout by unioning every flushed substream's own
                 // locations, exactly like decode_access_unit's own §E3.8.2
@@ -3735,12 +3925,15 @@ int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path
                     }
                 }
                 first = synthesized;
-                pcm.assign(static_cast<std::size_t>(first.layout.count), {});
+                if (!open_sink(first, static_cast<std::size_t>(first.layout.count))) {
+                    return 1;
+                }
             }
             // §E3.8.2 placement: each flushed substream's own channels land
             // at whichever slot their Table E2.5 location occupies in
             // `first.layout`, mirroring decode_access_unit's own assembly
-            // loop rather than assuming pcm[0..channels.size()).
+            // loop. Different substreams may append different lengths to
+            // different slots here; the sink's per-slot carry absorbs it.
             for (const auto& substream : flushed) {
                 const auto locations = ac3::eac3::chanmap::expand(substream.location_map());
                 for (int i = 0; i < locations.count; ++i) {
@@ -3748,32 +3941,27 @@ int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path
                     if (slot < 0) {
                         continue;
                     }
-                    const auto& channel = substream.channels[static_cast<std::size_t>(i)];
-                    pcm[static_cast<std::size_t>(slot)].insert(
-                        pcm[static_cast<std::size_t>(slot)].end(), channel.begin(), channel.end());
+                    if (!sink.append(static_cast<std::size_t>(slot),
+                                     substream.channels[static_cast<std::size_t>(i)])) {
+                        std::println(stderr, "error: cannot write to {}", out_path);
+                        abort_all();
+                        return 1;
+                    }
                 }
             }
         }
-        // JOC's reconstructed per-object audio, accumulated the same way
-        // pcm is above - see the equivalent block in the main access-unit
-        // loop above for why a size mismatch is skipped rather than resized
-        // into.
+        // JOC's reconstructed per-object audio, streamed the same way the
+        // main access-unit loop's is - see append_objects for why a size
+        // mismatch is skipped rather than resized into.
         for (const auto& substream : flushed) {
-            if (substream.object_audio.empty()) {
-                continue;
-            }
-            if (object_pcm.empty()) {
-                object_pcm.resize(substream.object_audio.size());
-            }
-            if (substream.object_audio.size() == object_pcm.size()) {
-                for (std::size_t i = 0; i < object_pcm.size(); ++i) {
-                    object_pcm[i].insert(object_pcm[i].end(), substream.object_audio[i].begin(),
-                                         substream.object_audio[i].end());
-                }
+            if (!append_objects(substream.object_audio,
+                                sample_rate_hz(substream.sample_rate))) {
+                abort_all();
+                return 1;
             }
         }
     }
-    if (pcm.empty()) {
+    if (!sink.is_open()) {
         std::println(stderr, "error: no access units");
         return 1;
     }
@@ -3784,32 +3972,36 @@ int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path
     // - the WAV bytes the write below produces already own stdout in that
     // case, and this report must not land in the middle of them.
     const auto status = status_stream(out_path);
-    if (first.acmod == ac3::Acmod::kDualMono) {
-        const auto written = write_wav_f32_arg(out_path, pcm, sample_rate_hz(first.sample_rate));
-        if (!written) {
-            std::println(stderr, "error: {}", ac3::io::describe(written.error()));
+    const auto written = sink.close();
+    if (!written) {
+        std::println(stderr, "error: {}", ac3::io::describe(written.error()));
+        return 1;
+    }
+    std::size_t objects_written = 0;
+    for (auto& object_sink : object_sinks) {
+        if (const auto closed = object_sink.close(); !closed) {
+            std::println(stderr, "error: {}", ac3::io::describe(closed.error()));
             return 1;
         }
+        ++objects_written;
+    }
+    if (first.acmod == ac3::Acmod::kDualMono) {
         std::println(status, "decoded {} E-AC-3 access units ({} substreams each) -> {}",
                      units->size(), first.substream_count, out_path);
         std::println(status,
                      "  {} channels, {} Hz: Ch1 Ch2 (1+1 dual mono - two programmes, not a "
                      "soundfield)",
-                     pcm.size(), sample_rate_hz(first.sample_rate));
+                     sink_slots, sample_rate_hz(first.sample_rate));
         print_drc_summary(status, dynrng_min_db, dynrng_max_db, compr_min_db, compr_max_db,
                           compr_frames, meta);
-        return report_decoded_objects(status, first.object_metadata, object_pcm,
-                                      sample_rate_hz(first.sample_rate), objects_dir);
+        return report_decoded_objects(status, first.object_metadata, have_object_audio,
+                                      objects_written, objects_dir);
     }
     // The same WAV speaker order the encode side reads a file in, so a stream
-    // decoded here and re-encoded lands every channel back where it started.
+    // decoded here and re-encoded lands every channel back where it started -
+    // recomputed here only for the speaker-name report; the sink applied it.
     const auto map = plan::wav_order(
         std::span{first.layout.items}.first(static_cast<std::size_t>(first.layout.count)));
-    const auto written = write_wav_f32_arg(out_path, pcm, sample_rate_hz(first.sample_rate), map);
-    if (!written) {
-        std::println(stderr, "error: {}", ac3::io::describe(written.error()));
-        return 1;
-    }
     std::string speakers;
     for (const auto index : map) {
         speakers += ac3::eac3::chanmap::name(first.layout[static_cast<int>(index)]);
@@ -3821,8 +4013,8 @@ int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path
                  speakers);
     print_drc_summary(status, dynrng_min_db, dynrng_max_db, compr_min_db, compr_max_db,
                       compr_frames, meta);
-    return report_decoded_objects(status, first.object_metadata, object_pcm,
-                                  sample_rate_hz(first.sample_rate), objects_dir);
+    return report_decoded_objects(status, first.object_metadata, have_object_audio,
+                                  objects_written, objects_dir);
 }
 
 int run_decode(std::string_view in_path, std::string_view out_path, const Options& meta,
@@ -3858,7 +4050,7 @@ int run_decode(std::string_view in_path, std::string_view out_path, const Option
     }
     ac3::FrameDecoder decoder{
         {.drc_scale = meta.drc_scale, .heavy_compression = meta.p.heavy.has_value()}};
-    std::vector<std::vector<float>> pcm;
+    PlanarWavSink sink;
     std::optional<ac3::analysis::LevelMeter> meter;
     ac3::DecodedFrame first{};
     bool have_first = false;
@@ -3873,6 +4065,7 @@ int run_decode(std::string_view in_path, std::string_view out_path, const Option
         const auto decoded = decoder.decode_frame(frame);
         if (!decoded) {
             std::println(stderr, "error: {}: {}", in_path, ac3::describe(decoded.error()));
+            sink.abort();
             return 1;
         }
         for (const auto word : decoded->dynrng) {
@@ -3889,15 +4082,27 @@ int run_decode(std::string_view in_path, std::string_view out_path, const Option
         }
         if (!have_first) {
             first = *decoded;
-            pcm.resize(decoded->channels.size());
+            // The channel permutation the whole-buffer write used to apply
+            // at the end is fixed from the first frame's layout - the same
+            // values, just needed up front now that samples leave as they
+            // decode.
+            if (!sink.open(out_path, sample_rate_hz(decoded->sample_rate),
+                           decoded->channels.size(),
+                           ac3::io::wav_channel_order(decoded->acmod, decoded->lfe))) {
+                std::println(stderr, "error: cannot open {} for writing", out_path);
+                return 1;
+            }
             meter.emplace(decoded->acmod, decoded->lfe, sample_rate_hz(decoded->sample_rate));
             have_first = true;
         }
         std::vector<std::span<const float>> views;
         views.reserve(decoded->channels.size());
         for (std::size_t ch = 0; ch < decoded->channels.size(); ++ch) {
-            pcm[ch].insert(pcm[ch].end(), decoded->channels[ch].begin(),
-                           decoded->channels[ch].end());
+            if (!sink.append(ch, decoded->channels[ch])) {
+                std::println(stderr, "error: cannot write to {}", out_path);
+                sink.abort();
+                return 1;
+            }
             views.emplace_back(decoded->channels[ch]);
         }
         // have_first gates meter.emplace() a few lines up, in this same
@@ -3910,8 +4115,7 @@ int run_decode(std::string_view in_path, std::string_view out_path, const Option
         std::println(stderr, "error: no frames");
         return 1;
     }
-    const auto map = ac3::io::wav_channel_order(first.acmod, first.lfe);
-    const auto written = write_wav_f32_arg(out_path, pcm, sample_rate_hz(first.sample_rate), map);
+    const auto written = sink.close();
     if (!written) {
         std::println(stderr, "error: {}", ac3::io::describe(written.error()));
         return 1;
