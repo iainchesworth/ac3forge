@@ -23,7 +23,7 @@
 // ac3adm). This module is the one place both are allowed to meet, and - like ac3adm::ac3adm
 // itself - it is gated behind AC3FORGE_BUILD_ADM: it is meaningless without ac3adm, and
 // ac3::forge is unconditionally available regardless of whether this module is built at all. See
-// src/adm_bridge/CMakeLists.txt's own header comment for the full reasoning, including why this
+// src/admbridge/CMakeLists.txt's own header comment for the full reasoning, including why this
 // is a new standalone module rather than folded into either side.
 //
 // ROADMAP.md's B2 entry (a future DAMF `.atmos`/`.atmos.metadata`/`.atmos.audio` reader) names

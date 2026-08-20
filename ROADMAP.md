@@ -41,7 +41,7 @@ mixes are delivered as master files.
   (the `ac3::admbridge` object/bed mapping layer onto `AtmosEncoder`, including BS.2076-2 §10.3
   position/gain automation and the polar/Cartesian → room-anchored coordinate conversion) are both
   done** — see [`src/ac3adm/`](https://github.com/iainchesworthlabs/ac3forge/tree/main/src/ac3adm) and
-  `docs/library/adm.md`, and [`src/adm_bridge/`](https://github.com/iainchesworthlabs/ac3forge/tree/main/src/adm_bridge)
+  `docs/library/adm.md`, and [`src/admbridge/`](https://github.com/iainchesworthlabs/ac3forge/tree/main/src/admbridge)
   and `docs/library/adm-bridge.md`. **Phase 3 (driving both together end to end) is also done** —
   the `ac3cli atmos-adm` command (`apps/cli/main.cpp`) and
   [`examples/encode_adm.cpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/encode_adm.cpp).
