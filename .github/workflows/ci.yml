@@ -76,7 +76,7 @@
 #
 # What none of this covers: real audio hardware. WSL2 has no sound devices and
 # no kernel sound modules, and neither does a GitHub runner, so the ALSA
-# backend is verified headless only. See docs/BUILDING.md#linux-audio.
+# backend is verified headless only. See docs/building.md#linux-audio.
 #
 # macos-llvm is no longer experimental (see _build.yml's own header for how
 # that happened) - it blocks like every other leg now, no continue-on-error.

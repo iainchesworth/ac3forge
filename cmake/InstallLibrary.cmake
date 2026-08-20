@@ -14,11 +14,10 @@
 # matroska::matroska, mp4::mp4 and mpegts::mpegts are all optional components, off-able via
 # their own AC3FORGE_BUILD_MATROSKA/AC3FORGE_BUILD_MP4/AC3FORGE_BUILD_MPEGTS option (root
 # CMakeLists.txt) - each its own AC3FORGE_BUILD_<NAME> option, its own guarded
-# add_subdirectory(), and its own guarded block below. See
-# packaging/vcpkg-port/ac3forge/vcpkg.json's "matroska" feature, which maps onto
-# AC3FORGE_BUILD_MATROSKA for a vcpkg install; mp4::mp4 and mpegts::mpegts do not have a vcpkg
-# feature of their own yet (a follow-up, not a gap in this install() treatment) - a vcpkg
-# install always gets them.
+# add_subdirectory(), and its own guarded block below. Each maps 1:1 onto its own vcpkg
+# feature (packaging/vcpkg-port/ac3forge/vcpkg.json's "matroska"/"mp4"/"mpegts", wired
+# through portfile.cmake's vcpkg_check_features()), so a vcpkg install only gets the ones its
+# feature selection actually asked for.
 #
 # Every install() rule below carries COMPONENT library: without one, CPack
 # files it under its own "Unspecified" component, inconsistent once
@@ -140,9 +139,8 @@ endif()
 # shape as matroska::matroska above including the AC3FORGE_INSTALL_BOTH_LINKAGES-selected
 # target list - its targets, headers and export set only exist to install when the component
 # was actually built. ac3forgeConfig.cmake.in's include() of mp4Targets.cmake is itself
-# conditional (if(EXISTS)) to match. mp4::mp4 has no vcpkg port feature of its own yet
-# (packaging/vcpkg-port/ac3forge/vcpkg.json only defines "matroska") - a follow-up, not a gap
-# in this install() treatment.
+# conditional (if(EXISTS)) to match. Maps onto its own "mp4" vcpkg feature the same way
+# matroska does (packaging/vcpkg-port/ac3forge/vcpkg.json).
 if(AC3FORGE_BUILD_MP4)
     install(TARGETS ${_ac3forge_mp4_install_targets}
         EXPORT mp4Targets
@@ -160,8 +158,8 @@ if(AC3FORGE_BUILD_MP4)
 endif()
 
 # mpegts::mpegts is an optional component (AC3FORGE_BUILD_MPEGTS, see the root
-# CMakeLists.txt) - same shape as matroska::matroska immediately above, not yet exposed as its
-# own vcpkg feature (packaging/vcpkg-port/ac3forge/), unlike matroska's "matroska" feature.
+# CMakeLists.txt) - same shape as matroska::matroska immediately above, including its own
+# "mpegts" vcpkg feature (packaging/vcpkg-port/ac3forge/vcpkg.json).
 if(AC3FORGE_BUILD_MPEGTS)
     install(TARGETS ${_ac3forge_mpegts_install_targets}
         EXPORT mpegtsTargets

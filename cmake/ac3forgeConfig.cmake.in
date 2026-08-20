@@ -7,10 +7,10 @@ include("${CMAKE_CURRENT_LIST_DIR}/ac3forgeTargets.cmake")
 
 # matroska::matroska, mp4::mp4 and mpegts::mpegts are all optional components
 # (AC3FORGE_BUILD_MATROSKA/AC3FORGE_BUILD_MP4/AC3FORGE_BUILD_MPEGTS) - each Targets file only
-# exists when that component was actually installed, e.g. a vcpkg install() built without the
-# "matroska" feature (see cmake/InstallLibrary.cmake's header comment; mp4::mp4 and
-# mpegts::mpegts have no vcpkg feature of their own yet). Same shape applies to any future
-# optional component's own *Targets.cmake.
+# exists when that component was actually installed, e.g. a vcpkg install() built without a
+# given feature (see cmake/InstallLibrary.cmake's header comment; each of the three maps onto
+# its own vcpkg feature). Same shape applies to any future optional component's own
+# *Targets.cmake.
 if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/matroskaTargets.cmake")
     include("${CMAKE_CURRENT_LIST_DIR}/matroskaTargets.cmake")
 endif()

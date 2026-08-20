@@ -49,7 +49,7 @@ target_include_directories(mp4_objects
 target_compile_features(mp4_objects PUBLIC cxx_std_23)
 
 # $<BUILD_INTERFACE:...> wrapping - see src/lib/CMakeLists.txt's identical
-# ac3forge_objects treatment for why a plain PRIVATE link isn't enough for
+# forge_objects treatment for why a plain PRIVATE link isn't enough for
 # an OBJECT library that's part of an install(EXPORT) set.
 target_link_libraries(mp4_objects PRIVATE "$<BUILD_INTERFACE:ac3::warnings>")
 
