@@ -63,17 +63,17 @@ the **master**; the second, when present, the **slave**.
 single-device session. The slave is an independent capture, and there is no shared hardware
 clock between two WASAPI shared-mode endpoints, even nominally identical ones on the same PC:
 left alone, the slave's stream drifts against the master's a sample at a time. Two small,
-Qt-free, allocation-free library pieces (`src/audio/include/ac3/capture/resampler.hpp`) correct
+Qt-free, allocation-free library pieces (`src/audio/include/ac3/audio/resampler.hpp`) correct
 that:
 
-- **`ac3::capture::DriftResampler`** — a streaming linear-interpolation fractional resampler.
+- **`ac3::audio::DriftResampler`** — a streaming linear-interpolation fractional resampler.
   Linear interpolation, not a windowed-sinc design: at the drift magnitudes a free-running consumer
   clock actually exhibits (tens of parts-per-million) linear interpolation's error sits far below
   the codec's psychoacoustic floor, and at a genuine nominal-rate conversion (44.1 → 48 kHz) it
   trades some high-frequency accuracy near Nyquist for an allocation-free, state-tiny
   implementation appropriate to a live capture hot path. It carries only a fractional read position
   between `render()` calls — no sample data of its own.
-- **`ac3::capture::ClockDriftEstimator`** — the servo that decides the resampler's ratio: a small
+- **`ac3::audio::ClockDriftEstimator`** — the servo that decides the resampler's ratio: a small
   proportional controller steering the worker's own slave-side scratch FIFO back towards a target
   occupancy (one frame period's worth), smoothed with a one-pole filter so the ratio moves in
   small, audio-safe steps rather than jumping. `ratio()` is the nominal conversion
@@ -236,7 +236,7 @@ is undersell the last fraction of a second.
 
 ## Device-drop detection
 
-The capture read loop runs a silence watchdog (`ac3::capture::SilenceWatchdog`) that tracks how
+The capture read loop runs a silence watchdog (`ac3::audio::SilenceWatchdog`) that tracks how
 long ago the last read attempt actually delivered audio, with a three-second timeout.
 
 Once that gap passes, the session stops as a failure, not a silent "still running": the status

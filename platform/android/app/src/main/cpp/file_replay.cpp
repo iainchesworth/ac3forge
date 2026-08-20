@@ -27,7 +27,7 @@
 #include "ac3/core/eac3_tables.hpp"
 #include "ac3/core/tables.hpp"
 #include "ac3/sinks/iec61937.hpp"
-#include "ac3/sinks/passthrough.hpp"
+#include "ac3/audio/passthrough.hpp"
 
 namespace {
 
@@ -124,11 +124,11 @@ bool play_file(const std::string& path) {
     const std::uint32_t content_rate = ac3::sample_rate_hz(
         static_cast<ac3::SampleRate>(std::to_integer<std::uint32_t>(units[0][4]) >> 6));
 
-    ac3::sinks::PassthroughSink sink;
-    const auto started = sink.start("", content_rate, ac3::sinks::BitstreamFormat::kEac3);
+    ac3::audio::PassthroughSink sink;
+    const auto started = sink.start("", content_rate, ac3::audio::BitstreamFormat::kEac3);
     if (!started) {
         __android_log_print(ANDROID_LOG_ERROR, kLogTag, "PassthroughSink::start failed: %s",
-                            std::string(ac3::sinks::describe(started.error())).c_str());
+                            std::string(ac3::audio::describe(started.error())).c_str());
         return false;
     }
     __android_log_print(ANDROID_LOG_INFO, kLogTag,

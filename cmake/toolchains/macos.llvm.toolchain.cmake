@@ -12,7 +12,7 @@
 # NOTE: written from the aqualink-automate reference; this project still has
 # no local macOS host, but CI (.github/workflows/_build.yml's macos-llvm leg,
 # on macos-latest/Apple Silicon) has run this for real and found the Homebrew
-# LLVM it's written to find - see docs/BUILDING.md's Verified configuration
+# LLVM it's written to find - see docs/building.md's Verified configuration
 # section for the actual numbers.
 #------------------------------------------------------------------------------
 

@@ -76,7 +76,7 @@
 #
 # What none of this covers: real audio hardware. WSL2 has no sound devices and
 # no kernel sound modules, and neither does a GitHub runner, so the ALSA
-# backend is verified headless only. See docs/BUILDING.md#linux-audio.
+# backend is verified headless only. See docs/building.md#linux-audio.
 #
 # macos-llvm is no longer experimental (see _build.yml's own header for how
 # that happened) - it blocks like every other leg now, no continue-on-error.
@@ -162,6 +162,15 @@ jobs:
           fi
           echo "No quarantined signer in the tree."
 
+  # Single source of truth for the tool-version pins several jobs below need
+  # for their own direct setup-vcpkg call (build-and-test gets its copy from
+  # _build.yml's own internal job of the same name instead) - see
+  # docs/ci-self-hosted-runners.md and _toolchain-versions.yml's own header.
+  toolchain-versions:
+    uses: ./.github/workflows/_toolchain-versions.yml
+    permissions:
+      contents: read
+
   # Classify the change so a docs-only edit skips a five-platform matrix. This
   # is a job rather than a workflow-level paths-ignore on purpose: a filtered-out
   # workflow never runs, so the required "CI Status" check below would sit
@@ -228,6 +237,20 @@ jobs:
         shell: pwsh
         run: ./scripts/check-platform-macros.ps1 -Root $PWD
 
+  # Internal consistency of packaging/ (vcpkg port, Homebrew, winget, Conan) - NOT "is it
+  # current", see the script's own header for why that's the wrong check. Same shape as
+  # platform-macros above: cheap, fast, ungated.
+  packaging-consistency:
+    name: Packaging Consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check packaging manifests are internally consistent
+        shell: bash
+        run: bash scripts/check-packaging-versions.sh -r "$PWD"
+
   # .clang-tidy's own header comment explains the curated check groups and
   # what got excluded from them (and why). A full Build precedes clang-tidy,
   # not just Configure: CMake 3.28's Ninja dependency-scan step (the
@@ -244,7 +267,7 @@ jobs:
   # is the starting point, not an aspiration.
   static-analysis:
     name: Static Analysis (clang-tidy)
-    needs: changes
+    needs: [changes, toolchain-versions]
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     container: ubuntu:26.04
@@ -267,7 +290,7 @@ jobs:
 
       - uses: ./.github/actions/setup-vcpkg
         with:
-          vcpkg-commit: "eaca4a577b6b678c6e10252754b6988a61746c19"
+          vcpkg-commit: ${{ needs.toolchain-versions.outputs.vcpkg_commit }}
 
       - name: Configure
         shell: bash
@@ -310,7 +333,7 @@ jobs:
   # hosted run above is the number this gate is actually calibrated against.
   coverage:
     name: Coverage (Linux, GCC)
-    needs: changes
+    needs: [changes, toolchain-versions]
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     container: ubuntu:26.04
@@ -333,7 +356,7 @@ jobs:
 
       - uses: ./.github/actions/setup-vcpkg
         with:
-          vcpkg-commit: "eaca4a577b6b678c6e10252754b6988a61746c19"
+          vcpkg-commit: ${{ needs.toolchain-versions.outputs.vcpkg_commit }}
 
       # ubuntu:26.04's python3-pip enforces PEP 668 (no bare `pip install` at
       # system scope) - --break-system-packages is safe here specifically
@@ -429,7 +452,7 @@ jobs:
   # AC3FORGE_BUILD_GUI already defaults OFF on this preset.
   adm-validate:
     name: ADM Module (Linux, GCC)
-    needs: changes
+    needs: [changes, toolchain-versions]
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     container: ubuntu:26.04
@@ -452,7 +475,7 @@ jobs:
 
       - uses: ./.github/actions/setup-vcpkg
         with:
-          vcpkg-commit: "eaca4a577b6b678c6e10252754b6988a61746c19"
+          vcpkg-commit: ${{ needs.toolchain-versions.outputs.vcpkg_commit }}
 
       - name: Configure
         shell: bash
@@ -534,7 +557,7 @@ jobs:
   # with no auth.
   persist-performance-trend:
     name: Publish performance trend
-    needs: build-and-test
+    needs: [build-and-test, toolchain-versions]
     if: github.event_name == 'push' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     container: ubuntu:26.04
@@ -563,7 +586,7 @@ jobs:
 
       - uses: ./.github/actions/setup-vcpkg
         with:
-          vcpkg-commit: "eaca4a577b6b678c6e10252754b6988a61746c19"
+          vcpkg-commit: ${{ needs.toolchain-versions.outputs.vcpkg_commit }}
 
       - name: Configure
         run: cmake --preset config-linux-gcc
@@ -720,7 +743,7 @@ jobs:
   # to the vcpkg commit and the LLVM/GCC versions.
   ffmpeg-validate:
     name: FFmpeg Validate
-    needs: changes
+    needs: [changes, toolchain-versions]
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     container: ubuntu:26.04
@@ -745,7 +768,7 @@ jobs:
 
       - uses: ./.github/actions/setup-vcpkg
         with:
-          vcpkg-commit: "eaca4a577b6b678c6e10252754b6988a61746c19"
+          vcpkg-commit: ${{ needs.toolchain-versions.outputs.vcpkg_commit }}
 
       # requirements-ffmpeg-validate.txt is a pip-compile --generate-hashes
       # lock (see its own header for how to regenerate) so this install is
@@ -1024,7 +1047,7 @@ jobs:
   ci-status:
     name: CI Status
     if: always()
-    needs: [ branch-name, no-quarantine, changes, platform-macros, static-analysis, coverage, adm-validate, build-and-test, ffmpeg-validate, persist-performance-trend, persist-external-comparison-trend ]
+    needs: [ branch-name, no-quarantine, changes, platform-macros, packaging-consistency, static-analysis, coverage, adm-validate, build-and-test, ffmpeg-validate, persist-performance-trend, persist-external-comparison-trend ]
     runs-on: ubuntu-latest
     steps:
       - name: Gate on required job results
@@ -1035,6 +1058,7 @@ jobs:
           R_QUARANTINE: ${{ needs.no-quarantine.result }}
           R_CHANGES: ${{ needs.changes.result }}
           R_MACROS: ${{ needs.platform-macros.result }}
+          R_PACKAGING: ${{ needs.packaging-consistency.result }}
           # 'skipped' on a docs-only change, which is a pass, not a failure.
           R_TIDY: ${{ needs.static-analysis.result }}
           R_COVERAGE: ${{ needs.coverage.result }}
@@ -1050,6 +1074,7 @@ jobs:
           fail=0
           for pair in "branch-name:$R_BRANCH" "no-quarantine:$R_QUARANTINE" \
                       "changes:$R_CHANGES" "platform-macros:$R_MACROS" \
+                      "packaging-consistency:$R_PACKAGING" \
                       "static-analysis:$R_TIDY" "coverage:$R_COVERAGE" \
                       "adm-validate:$R_ADM" \
                       "build-and-test:$R_BUILD" "ffmpeg-validate:$R_FFMPEG" \

@@ -21,7 +21,7 @@ reports whatever Homebrew currently ships rather than asserting a specific one.
 
 ## Audio backend: CoreAudio
 
-`src/audio/CMakeLists.txt` selects a real CoreAudio backend on macOS, `src/audio/src/platform/macos/`
+`src/audio/CMakeLists.txt` selects a real CoreAudio backend on macOS, `src/audio/src/backend/macos/`
 — capture, monitor playback and IEC 61937 passthrough are built on the Audio HAL
 (`AudioObjectID`/`AudioDeviceIOProc`), the same layer WASAPI and ALSA occupy on their own
 platforms, rather than the no-backend stub that used to fall back to here. Its passthrough
@@ -29,7 +29,7 @@ mechanism is genuinely different from both: CoreAudio has no per-open bitstream 
 WASAPI's exclusive-mode subformat or ALSA's channel-status device name are, so bitstreaming means
 taking hog mode on a digital output and retuning its *physical* stream format
 (`kAudioStreamPropertyPhysicalFormat`) to `kAudioFormat60958AC3` for AC-3 — see
-`src/audio/src/platform/macos/passthrough.cpp`'s own header for the full mechanism, cross-checked
+`src/audio/src/backend/macos/passthrough.cpp`'s own header for the full mechanism, cross-checked
 against three independent real-world implementations of the same thing (MythTV, mpv, VLC) while
 writing it, since there was no Mac available locally to try it on directly. For E-AC-3, the same
 walk additionally probes a stream's available physical formats for `kAudioFormatEnhancedAC3`:

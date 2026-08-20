@@ -21,10 +21,10 @@ for the mechanics.
 
 On Windows, the three features that touch sound hardware are all implemented over **WASAPI**:
 
-- **`ac3::capture`** — live input/loopback capture through a lock-free SPSC ring.
-- **`ac3::sinks::PassthroughSink`** — exclusive-mode/direct bitstream output, for both AC-3 and
+- **`ac3::audio`** — live input/loopback capture through a lock-free SPSC ring.
+- **`ac3::audio::PassthroughSink`** — exclusive-mode/direct bitstream output, for both AC-3 and
   E-AC-3 burst framing (IEC 61937).
-- **`ac3::sinks::MonitorSink`** — shared-mode PCM playback: a non-bitstreamed preview/monitor
+- **`ac3::audio::MonitorSink`** — shared-mode PCM playback: a non-bitstreamed preview/monitor
   path that decodes what is being encoded and plays it back on an ordinary output.
 
 These three are not equally verified against real hardware, and the project's own documentation
@@ -39,7 +39,7 @@ is deliberately explicit about the difference.
     let the ring buffer silently perform a partial write while reporting failure, and the live
     pipeline's Atmos metering step writing past the end of a buffer sized for the object count
     rather than the bed's fixed six channels. Both are fixed; see
-    `src/audio/src/platform/windows/monitor.cpp` and `run_live` in `src/cli/main.cpp`.
+    `src/audio/src/backend/windows/monitor.cpp` and `run_live` in `src/cli/main.cpp`.
 
 !!! warning "Exclusive-mode passthrough bitstreaming has never been confirmed against a real receiver"
     No S/PDIF or HDMI endpoint behind an actual AV receiver has been available during

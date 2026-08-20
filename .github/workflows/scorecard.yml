@@ -9,6 +9,7 @@
 # fully; without a token it degrades gracefully rather than failing. To get
 # the fuller score, add a fine-grained PAT (read-only, "Administration: read")
 # as a repo secret named SCORECARD_READ_TOKEN and uncomment repo_token below.
+name: Scorecard
 
 on:
   push:

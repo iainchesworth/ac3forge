@@ -12,7 +12,7 @@
 #include <optional>
 #include <vector>
 
-namespace ac3::sinks {
+namespace ac3::audio {
 class MonitorSink;
 }
 
@@ -126,7 +126,7 @@ class ObjectDecodeController : public QObject {
     Q_INVOKABLE void inspectFile(const QUrl& url);
 
     // Plays dynamic object `index`'s decoded audio through an ordinary
-    // shared-mode output (ac3::sinks::MonitorSink), the same playback path
+    // shared-mode output (ac3::audio::MonitorSink), the same playback path
     // EncoderController's own motion-preview uses. Calling it again for the
     // object already playing stops it (a toggle); calling it for a
     // DIFFERENT object while one is already playing is ignored - one
@@ -147,7 +147,7 @@ class ObjectDecodeController : public QObject {
     QString error_;
     std::optional<objdec_detail::RawResult> result_;
 
-    std::unique_ptr<ac3::sinks::MonitorSink> audition_sink_;
+    std::unique_ptr<ac3::audio::MonitorSink> audition_sink_;
     std::atomic<bool> stop_audition_{false};
     int auditioning_index_ = -1;
 };

@@ -8,6 +8,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/GitVersionDerivation.cmake")
 project(ac3forge
     VERSION ${DERIVED_VERSION_SEMVER}
     DESCRIPTION "Clean-room AC-3 (ATSC A/52) encoder and decoder with a spatial object layer"
+    HOMEPAGE_URL "https://github.com/iainchesworthlabs/ac3forge"
     LANGUAGES CXX)
 
 # CMake's project() VERSION field can only hold M.M.P, so a tag's prerelease
@@ -202,9 +203,9 @@ if(AC3FORGE_BUILD_ADM)
     # ac3::admbridge - roadmap item B1 phase 2: maps ac3adm's parsed ADM graph onto
     # ac3::oba::AtmosEncoder. Depends on BOTH ac3::forge (added above) and ac3adm::ac3adm (just
     # added), so it is meaningless without AC3FORGE_BUILD_ADM - gated by the same flag rather
-    # than a new option of its own; see src/adm_bridge/CMakeLists.txt's own header comment for
+    # than a new option of its own; see src/admbridge/CMakeLists.txt's own header comment for
     # the full reasoning, including why this is a separate module from either side.
-    add_subdirectory(src/adm_bridge)
+    add_subdirectory(src/admbridge)
 endif()
 
 # ac3forge_c (roadmap F1) - after src/lib so ac3::forge_static exists to embed, gated by its own
@@ -224,7 +225,7 @@ endif()
 # header comment) plus the added complexity of re-exporting libbw64/libadm's own transitive
 # targets through this package - AC3FORGE_BUILD_ADM users consume ac3adm::ac3adm from an in-tree
 # add_subdirectory() build, not from a `find_package(ac3forge)` installed one, for now. ac3::admbridge
-# (src/adm_bridge) is excluded for the same reason - it transitively depends on ac3adm::ac3adm.
+# (src/admbridge) is excluded for the same reason - it transitively depends on ac3adm::ac3adm.
 include(InstallLibrary)
 
 # The pybind11 extension module - after ac3::forge exists (it links straight against it, the
@@ -281,7 +282,7 @@ message(STATUS "  Build GUI      : ${AC3FORGE_BUILD_GUI}")
 message(STATUS "  Build tests    : ${AC3FORGE_BUILD_TESTS}")
 message(STATUS "  Build examples : ${AC3FORGE_BUILD_EXAMPLES}")
 message(STATUS "  Build Python   : ${AC3FORGE_BUILD_PYTHON}")
-# Which src/audio/src/platform/ directory was compiled, and so whether 'record'
+# Which src/audio/src/backend/ directory was compiled, and so whether 'record'
 # and 'play' work in this build at all - see the platform tree in
 # src/audio/CMakeLists.txt. 'posix' is the one that means no.
 message(STATUS "  Audio backend  : ${AC3FORGE_AUDIO_BACKEND}")

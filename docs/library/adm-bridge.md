@@ -41,7 +41,7 @@ Two hard constraints rule out folding this into either side it bridges:
   configuration of this project. It cannot gain a dependency on the opt-in, Boost-requiring
   `ac3adm` without breaking every default build.
 
-`ac3::admbridge` is therefore its own module (`src/adm_bridge/`), PUBLIC-linking both — the same
+`ac3::admbridge` is therefore its own module (`src/admbridge/`), PUBLIC-linking both — the same
 shape `ac3::signing` uses for its own `ac3::forge` dependency. It is not part of the installed
 `find_package(ac3forge)` package, for the same reason `ac3adm::ac3adm` itself is not (see
 [ADM / BW64 reading](adm.md)'s own "Why opt-in" section): consume it via `add_subdirectory`
