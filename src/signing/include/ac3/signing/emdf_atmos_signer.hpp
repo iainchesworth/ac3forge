@@ -10,7 +10,7 @@
 //
 // Provenance: the HMAC-SHA-256 construction (RFC 2104 / FIPS 180-4) and the
 // choice of which frame regions are authenticated are derived from the public
-// container layout this codec already emits (src/lib/src/emdf/emdf.cpp,
+// container layout this codec already emits (src/forge/src/emdf/emdf.cpp,
 // ETSI TS 103 420 / the E-AC-3 syntax) and reuse this project's own clean-room
 // parsing primitives (BitReader, decode_exponents, compute_bit_allocation, the
 // spx helpers). The ONLY externally-provisioned input is the key (SigningKey),

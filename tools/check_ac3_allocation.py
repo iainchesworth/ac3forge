@@ -2,7 +2,7 @@
 
 This project's AC-3 encoder scores about 3 dB below FFmpeg's at matched
 bitrate on the landscape leg (`ac3-51-448`). Two structural explanations are
-visible in src/lib/src/encoder/encoder.cpp, and they are not distinguishable
+visible in src/forge/src/encoder/encoder.cpp, and they are not distinguishable
 from a single overall SNR number:
 
   shared fine SNR offset   Every channel is written the same `fsnroffst`

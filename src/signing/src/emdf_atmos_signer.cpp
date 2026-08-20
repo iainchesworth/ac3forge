@@ -367,7 +367,7 @@ Parsed parse(std::span<const std::byte> frame) {
         // unlike baie/snroffste above, this one right here was the actual
         // gap: every block sends its own deltbaie bit once dbaflde is set
         // (§5.4.3.47-57), even a block with nothing to say, and this
-        // encoder's own delta bit allocation (src/lib/src/core/bitalloc.cpp)
+        // encoder's own delta bit allocation (src/forge/src/core/bitalloc.cpp)
         // sets dbaflde whenever any channel's real spectral energy diverges
         // enough from the default allocation model's estimate to warrant a
         // correction - ordinary, content-driven behavior, not an edge case.

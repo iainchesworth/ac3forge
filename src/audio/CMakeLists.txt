@@ -20,7 +20,7 @@
 #
 # Always STATIC, deliberately, regardless of the ambient BUILD_SHARED_LIBS a
 # whole-project configure might set for ac3::forge/matroska::matroska's own
-# benefit (see src/lib/CMakeLists.txt): this target carries no export
+# benefit (see src/forge/CMakeLists.txt): this target carries no export
 # annotations at all, so building it SHARED produces a DLL with nothing
 # exported and no usable import library - a link failure for every in-tree
 # consumer, not a working shared ac3audio. It isn't part of the distributed

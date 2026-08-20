@@ -31,7 +31,7 @@ adb -s <shield-ip>:5555 shell am start -n com.ac3forge.shield/.MainActivity
 
 ## What's reused, what's new
 
-`ac3::forge` (`src/lib/`) — the codec, `AtmosEncoder`, IEC 61937 framing — is fully
+`ac3::forge` (`src/forge/`) — the codec, `AtmosEncoder`, IEC 61937 framing — is fully
 platform-independent and is linked into the app **unmodified**, via a thin wrapper
 `CMakeLists.txt` (`platform/android/app/src/main/cpp/CMakeLists.txt`) that `add_subdirectory()`s
 the real repo root rather than duplicating its target definitions. `ac3::audio` (`src/audio/`)
@@ -56,7 +56,7 @@ linked into one shared object (`ac3forge_jni.so`), and a static STL would duplic
 (locale, iostream init) if anything else in the process ever pulled in libc++ too.
 
 The r26 pin also reaches into the library itself: r26's bundled libc++ does not implement
-`<format>`, so shared library code avoids it outright — `src/lib/src/version.cpp` builds its
+`<format>`, so shared library code avoids it outright — `src/forge/src/version.cpp` builds its
 version string by plain concatenation and cites this page for why.
 
 `minSdk = 26` (Oreo) is a hard floor, not a target: `monitor.cpp` depends on AAudio outright, which
@@ -119,7 +119,7 @@ That override alone only bought back ~1.6x — nowhere near enough. Profiling wi
 `AC3FORGE_ENABLE_TRACY`) traced the remaining gap to `mdct_forward_core`: it recomputed `std::cos()`
 fresh, every iteration, inside an O(N²) loop, while the *inverse* transform right next to it already
 used a precomputed table. Fixing the forward transform to do the same (`ForwardCosTable` in
-`src/lib/src/core/mdct.cpp`) gave a further ~3.8x — this is a real library-level fix, verified
+`src/forge/src/core/mdct.cpp`) gave a further ~3.8x — this is a real library-level fix, verified
 bit-exact against the full test suite, not an Android-specific workaround, and it benefits every
 platform's Atmos encode path. With both fixes, the Shield holds an exact 32.0ms/frame cadence with
 zero underruns. See [Performance trend](../performance-trend.md) for the CI regression gate this

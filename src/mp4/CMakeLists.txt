@@ -48,7 +48,7 @@ target_include_directories(mp4_objects
 
 target_compile_features(mp4_objects PUBLIC cxx_std_23)
 
-# $<BUILD_INTERFACE:...> wrapping - see src/lib/CMakeLists.txt's identical
+# $<BUILD_INTERFACE:...> wrapping - see src/forge/CMakeLists.txt's identical
 # forge_objects treatment for why a plain PRIVATE link isn't enough for
 # an OBJECT library that's part of an install(EXPORT) set. ac3::coverage is a
 # no-op unless AC3FORGE_ENABLE_COVERAGE is on (see cmake/Coverage.cmake).

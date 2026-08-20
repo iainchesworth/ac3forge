@@ -30,7 +30,7 @@ Open `http://localhost:8000/`.
 
 ## What's reused, what's new
 
-`ac3::forge` (`src/lib/`) — the codec, `FrameDecoder`/`Eac3Decoder`, elementary-stream scanning — is
+`ac3::forge` (`src/forge/`) — the codec, `FrameDecoder`/`Eac3Decoder`, elementary-stream scanning — is
 fully platform-independent and is linked into the demo **unmodified**, the same way `apps/wasm/CMakeLists.txt`
 links it as any other consumer would: `add_executable` + `target_link_libraries(... ac3::forge ...)`,
 no fork, no `#ifdef`. Unlike `platform/android/`, this doesn't need a separate build system reached

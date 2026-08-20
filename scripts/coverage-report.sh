@@ -5,11 +5,11 @@
 # One gcov extraction pass over an AC3FORGE_ENABLE_COVERAGE build (the
 # config-linux-gcc-coverage preset - see CMakePresets.json), then one cheap
 # gate pass per library component off the shared JSON trace. Line and branch
-# coverage are gated PER COMPONENT rather than as one blended number: src/lib
-# is an order of magnitude larger than any container writer, so a blend would
-# let a real regression in src/mpegts or src/capi hide inside ordinary drift
-# in src/lib - and "which module is thin" is exactly the question a
-# per-component table exists to answer.
+# coverage are gated PER COMPONENT rather than as one blended number:
+# src/forge is an order of magnitude larger than any container writer, so a
+# blend would let a real regression in src/mpegts or src/capi hide inside
+# ordinary drift in src/forge - and "which module is thin" is exactly the
+# question a per-component table exists to answer.
 #
 # Run by .github/workflows/ci.yml's coverage job after `ctest`; runnable
 # locally the same way, from the repository root (see docs/building.md):
@@ -54,7 +54,7 @@ fi
 # Calibrated 2026-08-20 against a WSL2 run on the CI toolchain pins (gcc/gcov
 # 15.2.0, gcovr 8.6), measured per component as:
 #
-#   lib 92.2/84.1   audio 31.2/19.9   signing 86.9/61.4   matroska 93.3/91.9
+#   forge 92.2/84.1 audio 31.2/19.9   signing 86.9/61.4   matroska 93.3/91.9
 #   mp4 95.0/90.2   mpegts 93.5/92.5  capi 87.8/79.2      ac3adm 87.2/82.6
 #   admbridge 90.3/85.0               (aggregate 87.4/78.2)
 #
@@ -75,7 +75,7 @@ fi
 # clauses (allocation failure is not fakeable from a test) and the
 # defensively unreachable enum fallthroughs beside them.
 components="
-lib        88 78
+forge      88 78
 audio      25 15
 signing    82 55
 matroska   88 85
@@ -106,7 +106,7 @@ html="$build_dir/coverage.html"
 # suspicious-hit line elsewhere still shows up in the log instead of
 # vanishing silently.
 gcovr --root . \
-    --filter 'src/(lib|audio|signing|matroska|mp4|mpegts|capi|ac3adm|admbridge)/.*' \
+    --filter 'src/(forge|audio|signing|matroska|mp4|mpegts|capi|ac3adm|admbridge)/.*' \
     --gcov-executable "$gcov_exe" \
     --exclude-throw-branches --exclude-unreachable-branches \
     --gcov-ignore-errors=no_working_dir_found \

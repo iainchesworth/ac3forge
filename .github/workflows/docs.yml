@@ -17,7 +17,7 @@ on:
       # The WASM decode demo the deploy job below rebuilds fresh and embeds
       # at docs/wasm-demo.md - without these, an apps/wasm/ change on
       # main would never trigger a redeploy at all, and the published demo
-      # would silently drift from source. src/lib/ is deliberately NOT
+      # would silently drift from source. src/forge/ is deliberately NOT
       # listed: an ordinary codec change touches it constantly and has no
       # reason to redeploy the docs site on its own; a change that also
       # needs the demo republished goes through apps/wasm/ (or one of

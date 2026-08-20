@@ -13,7 +13,7 @@
 //   Z[k] = (1/N) * sum_{n=0}^{N-1} (x_re[n] + j.x_im[n]) *
 //                                  (cos(2*pi*k*n/N) - j.sin(2*pi*k*n/N))
 //
-// via the shared radix-2 core (src/lib/src/core/fft_radix2.hpp - the same
+// via the shared radix-2 core (src/forge/src/core/fft_radix2.hpp - the same
 // machinery the §7.9.4 fast MDCT runs at P = 128). It began as the
 // direct-form O(N^2) sum on this project's correctness-first stance, with
 // the fast structure deferred "once there is a decoder round-trip to
