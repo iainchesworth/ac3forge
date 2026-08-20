@@ -146,6 +146,13 @@ class AC3FORGE_EXPORT FrameEncoder {
     std::vector<std::size_t> fixed_base_;
     std::vector<std::vector<std::uint8_t>> block_exps_;
     std::array<std::vector<MantissaToken>, kBlocksPerFrame> block_tokens_;
+    // The SNR search's per-(stream, run) candidate allocations and the
+    // per-stream bap views the block cost sum reads through. Same contract
+    // as the buffers above: every (stream, run) slot in this frame's range
+    // is re-assign()ed by bits_at before anything reads it, so reuse
+    // (including a slot whose run count shrank) changes nothing observable.
+    std::vector<std::vector<std::vector<std::uint8_t>>> run_bap_;
+    std::vector<std::span<const std::uint8_t>> bap_views_;
     std::uint64_t rate_accumulator_ = 0;  // ideal-bits Bresenham state
     std::uint64_t words_emitted_ = 0;
     // The previous frame's converged SNR-offset composite, warm-starting the

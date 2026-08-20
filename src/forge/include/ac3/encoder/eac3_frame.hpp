@@ -351,6 +351,12 @@ class AC3FORGE_EXPORT FrameEncoder {
     std::array<double, 256> ecpl_curr_scratch_{};
     std::array<double, 256> ecpl_next_scratch_{};
     std::array<double, 256> ecpl_recon_scratch_{};
+    // encode_frame's per-(stream, block) fixed-point spectra (~43 KB at
+    // 5.1+coupling), a frame-lifetime work buffer under the same reasoning
+    // and single-instance contract as the scratch above: re-assign()ed
+    // (zero-filled, exactly as the fresh vector was) and fully re-derived
+    // every frame, so reuse only removes the re-allocation.
+    std::vector<std::array<std::int32_t, 256>> fixed_scratch_;
     // The previous frame's converged SNR-offset composite, warm-starting the
     // next frame's search (src/forge/src/encoder/snr_search.hpp). Performance
     // state only: it changes how fast the search converges, never which
