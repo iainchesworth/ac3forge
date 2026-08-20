@@ -132,7 +132,7 @@ decoded an AC-3/E-AC-3 bitstream and verified its loudness metadata against meas
 - [x] **F3 (L)** — WASM build plus a browser demo that decodes E-AC-3 + JOC and renders
   object motion; could double as the documentation site's live demo. `ac3::forge`'s
   AC-3/E-AC-3 decode path builds under Emscripten (`config-wasm-emscripten` preset), and a
-  real browser demo (`platform/wasm/`, embedded live at `docs/wasm-demo.md`) decodes a
+  real browser demo (`apps/wasm/`, embedded live at `docs/wasm-demo.md`) decodes a
   genuine Atmos-in-DD+ stream, plays the real 5.1 bed, and renders each object's real
   decoded position (OAMD, #168) moving in a top-down/elevation room view — plus a "solo
   object" control that plays that object's own real JOC-reconstructed audio (#169), not its

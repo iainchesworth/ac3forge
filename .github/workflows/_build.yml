@@ -1035,7 +1035,7 @@ jobs:
             packages/*.apk.sha512
           if-no-files-found: error
 
-  # The WASM browser decode demo (platform/wasm, roadmap F3): a real CMake
+  # The WASM browser decode demo (apps/wasm, roadmap F3): a real CMake
   # preset (config-wasm-emscripten) unlike build-android above, but still its
   # own job rather than a `build` matrix entry, for the same reason
   # build-android's own header gives - this leg has none of the shape that
