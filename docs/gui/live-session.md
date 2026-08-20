@@ -342,7 +342,7 @@ durability](#take-durability) section describes the GUI's Container combo making
 it with `matroska::mux()` rather than `matroska::Writer` — `record`/`live` already hold every frame
 in memory until the run ends (see the very next sentence), so there is nothing incremental to gain
 there the way there is for the GUI's own bounded-memory, mid-session-crash-safe take. The rest of
-the parity gap remains, worth being honest about: `ac3cli live` (`run_live` in `src/cli/main.cpp`)
+the parity gap remains, worth being honest about: `ac3cli live` (`run_live` in `apps/cli/main.cpp`)
 still reserves and fills a `frames` vector across the whole run and writes it once at the end, has
 no device-drop watchdog, still pans exactly one object per capture channel with no add/reassign,
 and has no parallel downmix leg of its own (an AC-3-only receiver during an `atmos`/E-AC-3 CLI

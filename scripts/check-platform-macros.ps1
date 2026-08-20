@@ -53,7 +53,18 @@ if (-not (Test-Path $srcRoot)) {
     exit 2
 }
 
-$files = Get-ChildItem -Path $srcRoot -Recurse -File -Include '*.h', '*.hpp', '*.cpp', '*.cc', '*.cxx', '*.inl'
+# apps/ (the runnable-application tree - ac3cli, ac3gui, the Android and WASM
+# demos) carries the same rule and is scanned alongside src/ once it exists.
+# Optional rather than required: a repo state mid-way through the src/->apps/
+# consolidation (or a checkout of an older tag, before apps/ existed at all)
+# still has a valid src/ to scan even with no apps/ yet.
+$scanRoots = @($srcRoot)
+$appsRoot = Join-Path $Root 'apps'
+if (Test-Path $appsRoot) {
+    $scanRoots += $appsRoot
+}
+
+$files = Get-ChildItem -Path $scanRoots -Recurse -File -Include '*.h', '*.hpp', '*.cpp', '*.cc', '*.cxx', '*.inl'
 
 $violations = @()
 foreach ($file in $files) {
@@ -89,19 +100,19 @@ foreach ($file in $files) {
 
 if ($violations.Count -gt 0) {
     Write-Host ''
-    Write-Host 'Platform-isolation violation: preprocessor conditional in src/.' -ForegroundColor Red
+    Write-Host 'Platform-isolation violation: preprocessor conditional in src/ or apps/.' -ForegroundColor Red
     Write-Host 'Per-OS code is selected by CMake (see the WIN32 block in src/audio/CMakeLists.txt),'
     Write-Host 'so it belongs in its own translation unit, not behind an #ifdef.'
     Write-Host ''
     foreach ($v in $violations) {
         Write-Host ('  {0}:{1}: {2}' -f $v.Path, $v.Line, $v.Text)
         # GitHub Actions annotation; prints harmlessly when run locally.
-        Write-Host ('::error file={0},line={1}::Preprocessor conditional in src/ - select the platform in CMake instead' -f $v.Path, $v.Line)
+        Write-Host ('::error file={0},line={1}::Preprocessor conditional in src/ or apps/ - select the platform in CMake instead' -f $v.Path, $v.Line)
     }
     Write-Host ''
     Write-Host ('{0} violation(s) found.' -f $violations.Count) -ForegroundColor Red
     exit 1
 }
 
-Write-Host "OK: no preprocessor conditionals in src/ ($($files.Count) files scanned)." -ForegroundColor Green
+Write-Host "OK: no preprocessor conditionals in src/ or apps/ ($($files.Count) files scanned)." -ForegroundColor Green
 exit 0

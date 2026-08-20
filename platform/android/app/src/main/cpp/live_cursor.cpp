@@ -2,7 +2,7 @@
 // the whole ac3forge project that drives AtmosEncoder::encode_frame() from a
 // live, externally-set position every frame rather than from an authored
 // KeyframePath/OrbitPath or a file. Modeled directly on ac3cli's run_live
-// (src/cli/main.cpp) - same per-frame shape (build placement, encode_frame,
+// (apps/cli/main.cpp) - same per-frame shape (build placement, encode_frame,
 // IEC61937-wrap, PassthroughSink::submit with retry+sleep) - but self-paced
 // by wall clock instead of run_live's "block on the capture ring buffer"
 // mechanism, because this app synthesizes its own object audio; there is no
@@ -31,7 +31,7 @@
 // ~266ms/frame on this Shield's SoC - traced (Tracy) to the forward MDCT
 // recomputing std::cos() fresh inside an O(N^2) loop instead of using a
 // precomputed table the way the inverse transform already did (see
-// src/lib/src/core/mdct.cpp's ForwardCosTable). Fixed there, not worked
+// src/forge/src/core/mdct.cpp's ForwardCosTable). Fixed there, not worked
 // around here - this is the straight per-frame loop again.
 
 #include <jni.h>
@@ -362,7 +362,7 @@ public:
             // that one keeps the BIAS itself bounded, this one keeps the
             // final trajectory+bias position inside the room even right at
             // the trajectory's own extremes (x,y in [0,1], z in [-1,1] - see
-            // src/lib/include/ac3/oba/oamd.hpp).
+            // src/forge/include/ac3/oba/oamd.hpp).
             placements_[static_cast<std::size_t>(i)] = {
                 .position = {.x = std::clamp(base.x + defl.x, 0.0, 1.0),
                             .y = std::clamp(base.y + defl.y, 0.0, 1.0),

@@ -192,7 +192,7 @@ jobs:
     # A backstop against GitHub's own 360-minute default: the macos-llvm
     # leg's first-ever GUI run hung in the Test step and silently consumed
     # the full 6 hours before being force-cancelled (see
-    # src/gui/tests/CMakeLists.txt's QSG_RENDER_LOOP comment for the
+    # apps/gui/tests/CMakeLists.txt's QSG_RENDER_LOOP comment for the
     # hypothesis and the per-test TIMEOUT that now also bounds that specific
     # case). This is deliberately generous - the slowest leg observed so far
     # (windows-llvm, packaging included on windows-msvc) is ~22 minutes - so
@@ -326,7 +326,7 @@ jobs:
           # reason as Linux, not because ac3gui cannot be built on macOS -
           # cmake/FindQt6.cmake already carries Homebrew's Qt6 prefixes
           # (/opt/homebrew/opt/qt, /opt/homebrew/opt/qt6) and
-          # src/gui/CMakeLists.txt's APPLE branch (MACOSX_BUNDLE,
+          # apps/gui/CMakeLists.txt's APPLE branch (MACOSX_BUNDLE,
           # qt_generate_deploy_qml_app_script under `if(WIN32 OR APPLE)`) was
           # already written for this, just never exercised. "Install Qt6
           # (macOS GUI)" below installs Homebrew's "qt" formula, which bundles
@@ -682,7 +682,7 @@ jobs:
         shell: bash
         env:
           QT_QPA_PLATFORM: offscreen
-        # src/gui/CMakeLists.txt sets MACOSX_BUNDLE ON unconditionally, but it
+        # apps/gui/CMakeLists.txt sets MACOSX_BUNDLE ON unconditionally, but it
         # is a no-op everywhere except APPLE, where it moves the built
         # executable to bin/ac3gui.app/Contents/MacOS/ac3gui instead of plain
         # bin/ac3gui - the property Linux never sets and Windows doesn't need
@@ -691,7 +691,7 @@ jobs:
         #
         # QSG_RENDER_LOOP=basic and the perl-alarm wrapper are both macOS-only
         # and both about the same hang the "Test" step hit on this leg's
-        # first-ever GUI run (see src/gui/tests/CMakeLists.txt's identical
+        # first-ever GUI run (see apps/gui/tests/CMakeLists.txt's identical
         # QSG_RENDER_LOOP comment for the render-loop-deadlock hypothesis).
         # ac3gui --smoke drives the same QQmlApplicationEngine/QQuickWindow
         # path ac3gui_qmltests does, so it is at equal risk and had no bound
@@ -760,7 +760,7 @@ jobs:
       # release: ac3::forge_shared/matroska::matroska_shared existing and
       # configuring cleanly (already exercised by every leg's normal
       # config-<preset> build, since both variants are always built
-      # regardless of BUILD_SHARED_LIBS - see src/lib/CMakeLists.txt) is not
+      # regardless of BUILD_SHARED_LIBS - see src/forge/CMakeLists.txt) is not
       # the same claim as every in-tree consumer actually linking and
       # running against the real .so - ac3cli/ac3tests/every example,
       # including mux_mkv, the one that needs libmatroska.so alongside
@@ -1035,7 +1035,7 @@ jobs:
             packages/*.apk.sha512
           if-no-files-found: error
 
-  # The WASM browser decode demo (platform/wasm, roadmap F3): a real CMake
+  # The WASM browser decode demo (apps/wasm, roadmap F3): a real CMake
   # preset (config-wasm-emscripten) unlike build-android above, but still its
   # own job rather than a `build` matrix entry, for the same reason
   # build-android's own header gives - this leg has none of the shape that

@@ -20,7 +20,7 @@
 #
 # Always STATIC, deliberately, regardless of the ambient BUILD_SHARED_LIBS a
 # whole-project configure might set for ac3::forge/matroska::matroska's own
-# benefit (see src/lib/CMakeLists.txt): this target carries no export
+# benefit (see src/forge/CMakeLists.txt): this target carries no export
 # annotations at all, so building it SHARED produces a DLL with nothing
 # exported and no usable import library - a link failure for every in-tree
 # consumer, not a working shared ac3audio. It isn't part of the distributed
@@ -37,7 +37,11 @@ target_include_directories(ac3audio
 
 target_compile_features(ac3audio PUBLIC cxx_std_23)
 
-target_link_libraries(ac3audio PRIVATE ac3::forge ac3::warnings)
+# ac3::coverage is a no-op unless AC3FORGE_ENABLE_COVERAGE is on (see
+# cmake/Coverage.cmake). Plain, not $<BUILD_INTERFACE:...>-wrapped: this
+# target is never installed (see the header comment above), so it has no
+# install(EXPORT) graph to keep the dependency out of.
+target_link_libraries(ac3audio PRIVATE ac3::forge ac3::warnings ac3::coverage)
 
 # ---------------------------------------------------------------------------
 # The backend tree.

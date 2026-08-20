@@ -17,7 +17,7 @@
 #include "ac3/core/tables.hpp"
 #include "ac3/io/wav.hpp"
 
-// src/cli/main.cpp compiles directly into the ac3cli executable, everything
+// apps/cli/main.cpp compiles directly into the ac3cli executable, everything
 // in an anonymous namespace - there is no library surface parse_options,
 // gather_frame or run_atmos_encode's own logic could be linked into this
 // binary and called directly. So these are integration tests: they run the

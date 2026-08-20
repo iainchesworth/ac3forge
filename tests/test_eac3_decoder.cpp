@@ -42,7 +42,7 @@ ac3::eac3::FrameConfig bed(std::uint32_t kbps) {
     return {.bitrate_kbps = kbps, .acmod = ac3::Acmod::k3_2, .lfe = true};
 }
 
-// The same layouts and tones the CLI emits (see eac3_layout in src/cli).
+// The same layouts and tones the CLI emits (see eac3_layout in apps/cli).
 // Deliberately, the rear dependent's Ls/Rs tones are NOT the bed's: identical
 // ones could not tell §E3.8.2's overwrite happening apart from the dependent
 // being ignored altogether.

@@ -23,7 +23,7 @@ key, reads none from the build, and has no way to obtain or derive one. What it 
 | Part | Where it comes from | In the library? |
 |---|---|---|
 | **HMAC-SHA-256** | FIPS 180-4 / RFC 2104, public standards | Yes — `src/signing/`, dependency-free |
-| **What gets authenticated** — which frame regions feed the HMAC, and where the tag is written | The public container layout this codec already emits (`src/lib/src/emdf/emdf.cpp`, the E-AC-3 syntax, TS 103 420) | Yes — `src/signing/src/emdf_atmos_signer.cpp` |
+| **What gets authenticated** — which frame regions feed the HMAC, and where the tag is written | The public container layout this codec already emits (`src/forge/src/emdf/emdf.cpp`, the E-AC-3 syntax, TS 103 420) | Yes — `src/signing/src/emdf_atmos_signer.cpp` |
 | **The key** | You provision it — exactly as a licensed tool (DEE) receives its own via iLok | **No — never** |
 
 A stream signed with a key that does not match a given decoder's simply fails that decoder's check,

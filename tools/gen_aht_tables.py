@@ -1,6 +1,6 @@
 """Extract the Annex E adaptive hybrid transform tables from the spec text.
 
-Emits src/lib/include/ac3/core/aht_tables.hpp: the high-efficiency bit
+Emits src/forge/include/ac3/core/aht_tables.hpp: the high-efficiency bit
 allocation pointers (Table E3.1) and the seven vector quantisation codebooks
 (Tables E4.1-E4.7, 956 six-dimensional vectors between them).
 

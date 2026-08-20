@@ -11,7 +11,7 @@
 #   AC3FORGE_VERSION       - the semver string, e.g. "0.2.0" (see GitVersionDerivation.cmake)
 #   AC3FORGE_VERSION_FULL  - the same, plus any prerelease suffix, e.g. "0.2.0-beta.1"
 #   AC3FORGE_BUILD_TARGET  - "<OS> <arch> (<compiler> <version>)", computed by
-#                            src/lib/CMakeLists.txt from CMAKE_SYSTEM_NAME/
+#                            src/forge/CMakeLists.txt from CMAKE_SYSTEM_NAME/
 #                            CMAKE_SYSTEM_PROCESSOR/CMAKE_CXX_COMPILER_ID,
 #                            which this script (run standalone via `cmake -P`
 #                            for the build-time restamp) has no access to.

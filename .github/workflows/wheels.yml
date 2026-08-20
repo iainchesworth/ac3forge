@@ -15,7 +15,7 @@ on:
   pull_request:
     paths:
       - "python/**"
-      - "src/lib/**"
+      - "src/forge/**"
       - "examples/python/**"
       - "CMakeLists.txt"
       - ".github/workflows/wheels.yml"
@@ -23,7 +23,7 @@ on:
     branches: [develop, main]
     paths:
       - "python/**"
-      - "src/lib/**"
+      - "src/forge/**"
       - "examples/python/**"
       - "CMakeLists.txt"
       - ".github/workflows/wheels.yml"

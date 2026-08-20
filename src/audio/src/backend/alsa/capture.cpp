@@ -3,7 +3,7 @@
 // The ALSA capture backend. CMake compiles this directory's capture.cpp on a
 // Linux host whose libasound development headers are present and another
 // directory's everywhere else, so there is no #ifdef here - the file's path is
-// what says "ALSA", and src/lib/CMakeLists.txt is where the choice is made.
+// what says "ALSA", and src/forge/CMakeLists.txt is where the choice is made.
 //
 // Where WASAPI enumerates endpoints the audio engine has already opened and
 // mixed, ALSA enumerates the hardware itself, so the two backends answer the

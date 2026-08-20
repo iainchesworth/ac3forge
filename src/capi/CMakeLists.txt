@@ -8,7 +8,7 @@
 #
 # Built and installed as both a static and a shared library, same OBJECT-
 # library-plus-two-thin-wrappers shape as ac3::forge itself - see
-# src/lib/CMakeLists.txt's header comment for the full reasoning.
+# src/forge/CMakeLists.txt's header comment for the full reasoning.
 #
 # Unlike forge_static/forge_shared, BOTH variants here statically embed
 # ac3::forge_static (PRIVATE - forge's own types never appear in this
@@ -18,7 +18,7 @@
 # ffi.dlopen all expect a single self-contained module) - making
 # ac3forge_c_shared's own linkage depend on a separately-shipped
 # libac3forge.so would defeat that. forge_static's objects are already built
-# PIC (src/lib/CMakeLists.txt), so embedding them in a shared library is
+# PIC (src/forge/CMakeLists.txt), so embedding them in a shared library is
 # safe on every platform this project targets.
 # ---------------------------------------------------------------------------
 add_library(forge_c_objects OBJECT)
@@ -55,14 +55,15 @@ target_compile_features(forge_c_objects PUBLIC cxx_std_23)
 # ac3::forge_static PRIVATE: see this file's header comment on why both
 # forge_c_static and forge_c_shared embed the static codec rather than tracking
 # BUILD_SHARED_LIBS. $<BUILD_INTERFACE:...> wraps ac3::warnings for the same
-# "dev-only, must not enter the export graph" reason src/lib/CMakeLists.txt's
+# "dev-only, must not enter the export graph" reason src/forge/CMakeLists.txt's
 # identical forge_objects treatment documents - not needed for
 # ac3::forge_static itself, which forge_c_static/forge_c_shared's install(EXPORT)
 # already resolves via ac3forgeTargets.
 target_link_libraries(forge_c_objects
     PRIVATE
         ac3::forge_static
-        "$<BUILD_INTERFACE:ac3::warnings>")
+        "$<BUILD_INTERFACE:ac3::warnings>"
+        "$<BUILD_INTERFACE:ac3::coverage>")
 
 set_target_properties(forge_c_objects PROPERTIES
     POSITION_INDEPENDENT_CODE ON

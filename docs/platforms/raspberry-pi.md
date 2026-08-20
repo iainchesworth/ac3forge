@@ -151,8 +151,7 @@ hypothetical:**
    unconditionally, since every Linux LLVM leg configures the same way regardless of which distro's
    package split happens to be exercising the gap.
 
-**Real ALSA/HDMI device names found**, confirming the generic device-naming logic resolves
-correctly against actual Pi hardware:
+**Real ALSA/HDMI device names found**:
 
 ```
 hdmi:CARD=vc4hdmi0,DEV=0   # HDMI port 0
@@ -160,10 +159,55 @@ hdmi:CARD=vc4hdmi1,DEV=0   # HDMI port 1 (the 4B has two micro-HDMI outputs)
 hw:CARD=Headphones,DEV=0   # bcm2835 analogue out, not HDMI
 ```
 
-**Not yet verified: live HDMI passthrough to a real receiver.** This Pi's HDMI ports both report
-`disconnected` at the DRM level (nothing plugged in during this validation pass), so `ac3cli
-outputs` correctly reports no active render endpoints - the ALSA card names above exist and are
-correctly classified as HDMI, but no bitstream has actually been sent to a receiver yet, and no
-lock-on has been confirmed. This is the same category of gap [Linux](linux.md#what-has-and-has-not-been-verified)
-already documents for x64 - real hardware, still no downstream receiver in the loop. Revisit once a
-TV/AVR is connected.
+These names exist and are well-formed, but - see the next section - nothing had actually walked
+the device *classifier* against them with a receiver in the loop yet at this point in the
+validation, and that turned out to matter.
+
+## Live HDMI passthrough to a real receiver
+
+Verified for real: an Atmos-capable AVR connected to HDMI port 0 and powered on, driven from this
+same Pi and checkout. This closes the one gap the section above left open, and found a third real
+bug on the way.
+
+**A third real, hardware-only bug:** `classify_digital_output()` (`device_names.hpp`) judges a
+PCM's kind from the name alsa-lib's `snd_pcm_info_get_name()` gives it - "HDMI 0", "IEC958", etc.
+on most drivers. vc4-hdmi doesn't follow that convention: every one of its PCMs is named
+identically, `MAI PCM i2s-hifi-0`, regardless of which HDMI port it is - "hdmi" only ever appears
+in the *card's* own id (`vc4hdmi0`) and name (`vc4-hdmi-0`), which the classifier never looked at.
+The result: every vc4-hdmi candidate silently classified as `kNone` and was dropped, so `ac3cli
+outputs` reported "no active render endpoints found" even with the receiver fully connected,
+EDID-populated, and its `HDMI Jack` ALSA control reading `on`. Fixed by falling back to the card's
+id/name when the PCM's own name gives no signal; a regression test in `test_alsa_device_names.cpp`
+pins the vc4-hdmi case specifically, alongside the existing HDA-style cases it doesn't change.
+
+With the fix, `ac3cli outputs` reports both HDMI ports correctly:
+
+```
+idx  AC-3       E-AC-3     excl PCM   name
+  0  yes        yes        no         vc4-hdmi-0: MAI PCM i2s-hifi-0  [default]
+  1  no         no         no         vc4-hdmi-1: MAI PCM i2s-hifi-0
+```
+
+(Port 1's all-`no` row is correct, not a bug - nothing is connected to it.)
+
+**Every stream shape tried locked on the real receiver, correctly identified:**
+
+| Stream | Result |
+|---|---|
+| Plain AC-3, 2/0 stereo | Dolby Digital, 2ch |
+| Plain E-AC-3, 2/0 stereo | Dolby Digital Plus, 2ch |
+| Plain E-AC-3, 5.1 (no object container) | Dolby Digital Plus, 5.1 |
+| Atmos `bed51` (5.1 bed, no object container) | Dolby Digital Plus, 5.1 |
+| Atmos `objects`, unsigned (object container present, no EMDF tag) | Dolby Digital Plus, 5.1 - a graceful fallback, not the hard refusal [object signing](../concepts/object-signing.md#desktop-cli) warns an unsigned-but-present container can get from a validating decoder. This receiver falls back gracefully instead. |
+| Atmos `objects`, signed with a real Dolby encoder license key (key and signed assets not part of this repo - see [object signing](../concepts/object-signing.md)) | Atmos confirmed on the receiver's own OSD, 4 height channels active (5.0.4 layout) |
+
+Every case submitted its bursts cleanly - `ac3cli play`'s own stats read 0 underruns throughout,
+every time. A couple of early runs looked like they hadn't synced, but that was purely down to the
+short (12 s) clips ending before the receiver's own display could be checked in time; the same
+files replayed and locked correctly once watched for their full length. Nothing here needed a
+longer runway than that to lock - once the classifier fix above landed, every stream shape locked
+on the first real attempt.
+
+This closes the [Linux](linux.md#why-alsa-and-not-pipewire) page's still-open gap for HDMI
+passthrough on Raspberry Pi specifically: verified end to end now, from plain AC-3 through
+Atmos/JOC with height rendering, against a real Dolby-licensed decoder.

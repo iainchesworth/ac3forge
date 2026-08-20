@@ -9,7 +9,7 @@
 #     header comments) - it does not, and should not, gain a dependency on
 #     ac3::forge/ac3::oba just to know what an "object" or "bed" means in
 #     JOC/Atmos terms.
-#   - src/lib (-> ac3::forge, ac3::oba::AtmosEncoder) is always built,
+#   - src/forge (-> ac3::forge, ac3::oba::AtmosEncoder) is always built,
 #     unconditionally, by every configuration of this project. It cannot
 #     gain a dependency on the opt-in, Boost-requiring ac3adm without
 #     breaking every default build - the exact reason ac3adm itself defaults
@@ -72,7 +72,8 @@ target_link_libraries(admbridge_objects
         ac3::forge
         ac3adm::ac3adm
     PRIVATE
-        "$<BUILD_INTERFACE:ac3::warnings>")
+        "$<BUILD_INTERFACE:ac3::warnings>"
+        "$<BUILD_INTERFACE:ac3::coverage>")
 
 set_target_properties(admbridge_objects PROPERTIES
     POSITION_INDEPENDENT_CODE ON

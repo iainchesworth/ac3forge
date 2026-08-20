@@ -1,7 +1,7 @@
 # WebAssembly (browser decode demo)
 
 WASM support is not `ac3cli` ported to a browser — it is a small, decode-only demo app,
-**`platform/wasm/`**, that compiles `ac3::forge`'s AC-3/E-AC-3 decoder to WebAssembly and runs it
+**`apps/wasm/`**, that compiles `ac3::forge`'s AC-3/E-AC-3 decoder to WebAssembly and runs it
 client-side in a static HTML page: load a real elementary stream, hear the decoded bed play through
 the Web Audio API, watch real per-channel energy on a speaker-ring visualization, and — for a stream
 carrying Atmos objects — watch each object's real decoded position (OAMD) move in a room view and
@@ -30,11 +30,11 @@ Open `http://localhost:8000/`.
 
 ## What's reused, what's new
 
-`ac3::forge` (`src/lib/`) — the codec, `FrameDecoder`/`Eac3Decoder`, elementary-stream scanning — is
-fully platform-independent and is linked into the demo **unmodified**, the same way `platform/wasm/CMakeLists.txt`
+`ac3::forge` (`src/forge/`) — the codec, `FrameDecoder`/`Eac3Decoder`, elementary-stream scanning — is
+fully platform-independent and is linked into the demo **unmodified**, the same way `apps/wasm/CMakeLists.txt`
 links it as any other consumer would: `add_executable` + `target_link_libraries(... ac3::forge ...)`,
 no fork, no `#ifdef`. Unlike `platform/android/`, this doesn't need a separate build system reached
-from the other direction — WASM is a plain CMake cross-compile, so `platform/wasm/` is a normal
+from the other direction — WASM is a plain CMake cross-compile, so `apps/wasm/` is a normal
 `add_subdirectory()` from the root `CMakeLists.txt`, gated on `EMSCRIPTEN` (set by
 `cmake/toolchains/wasm.emscripten.toolchain.cmake`) rather than an `AC3FORGE_BUILD_*` option.
 `ac3::audio` (`src/audio/`) gains **no** WASM backend — there is no live-capture/passthrough
@@ -43,8 +43,8 @@ equivalent to add; a browser gets audio playback from the Web Audio API in JavaS
 having no browser platform directory — see `src/audio/CMakeLists.txt`).
 
 Everything else — `decoder_bindings.cpp` (the Embind wrapper), `index.html`/`demo.js` (the page, Web
-Audio playback, the Canvas visualizations ported from `src/gui/qml/SoundfieldView.qml` and Main.qml's
-Objects tab) — is new and lives entirely under `platform/wasm/`, outside anything the desktop tools
+Audio playback, the Canvas visualizations ported from `apps/gui/qml/SoundfieldView.qml` and Main.qml's
+Objects tab) — is new and lives entirely under `apps/wasm/`, outside anything the desktop tools
 build from. The object visualization/audio is a thin JS-facing surface over `Eac3Decoder`'s own real
 `object_metadata` (OAMD positions/gain, `ac3::forge#168`) and `object_audio` (JOC-reconstructed
 per-object audio, `ac3::forge#169`) fields — `decoder_bindings.cpp` does no decoding of its own, it
@@ -76,26 +76,26 @@ steps for no benefit.
 is committed to the repo as a working fallback (so a plain local `mkdocs build` — or this repo's own
 PR-time docs check — still has something to embed without anyone needing Emscripten installed just
 to preview docs), but `.github/workflows/docs.yml`'s `deploy` job (push to `main` only) installs
-Emscripten, rebuilds `platform/wasm/` from source, and overwrites that directory *before* `mkdocs
+Emscripten, rebuilds `apps/wasm/` from source, and overwrites that directory *before* `mkdocs
 gh-deploy` runs — so what actually reaches the live site always reflects current source, never a
 possibly-stale commit. Both jobs share one Emscripten install step,
 `.github/actions/setup-emscripten` (pinned to the same version this page's Toolchain section names),
 so the two never drift onto different SDK versions.
 
 The committed fallback is not immune to going stale, though: nothing rewrites it except a human
-manually re-copying `platform/wasm/`'s output, and `docs.yml`'s own `deploy` job overwrites its
+manually re-copying `apps/wasm/`'s output, and `docs.yml`'s own `deploy` job overwrites its
 working copy in a throwaway CI workspace rather than committing the refresh back. `docs.yml`'s
 `build` job (the one every PR runs, `mkdocs build --strict`) therefore also byte-compares
 `index.html`, `demo.js`, the two favicon files and `assets/demo.ec3` against their
-`platform/wasm/` originals — the plain copies, not Emscripten output, so the check needs no
+`apps/wasm/` originals — the plain copies, not Emscripten output, so the check needs no
 toolchain. `ac3forge_decode.js`/`ac3forge_decode.wasm` are genuine build artifacts with no
 source-tree counterpart and are outside this check's scope; they only get refreshed by an actual
 Emscripten rebuild.
 
-`docs.yml`'s trigger `paths:` list includes `platform/wasm/**`, `CMakeLists.txt`,
+`docs.yml`'s trigger `paths:` list includes `apps/wasm/**`, `CMakeLists.txt`,
 `CMakePresets.json` and the WASM toolchain file specifically — without them, a source change there
 would never trigger a redeploy at all, and the live demo would silently drift from what's in
-`platform/wasm/`.
+`apps/wasm/`.
 
 ## What has and has not been verified
 
