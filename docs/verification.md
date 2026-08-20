@@ -32,7 +32,7 @@ In rough order of strength:
    the checked-in seed and regression corpora on every push and PR, and the `Fuzz Differential`
    job adds a bounded mutation budget on pushes.
 
-   Out of the encoder: `tools/fuzz_encoder_space.py` draws random legal encoder configurations
+   Out of the encoder: `tools/ci/fuzz_encoder_space.py` draws random legal encoder configurations
    crossed with adversarial PCM — transients, silence↔loud transitions inside one frame, spectral
    jumps between blocks, dense harmonics, clipping — and holds every stream it produces against
    both decoders. This is the one check here that varies the *input material* rather than the
@@ -46,7 +46,7 @@ flags and the CI jobs that run them — is in [Oracles](https://github.com/iainc
 
 ## Quality
 
-`tools/quality_race.py` synthesizes stereo programme material, encodes it with both ac3forge
+`tools/ci/quality_race.py` synthesizes stereo programme material, encodes it with both ac3forge
 and FFmpeg at matched bit rates, decodes both with FFmpeg as a neutral referee, aligns by
 cross-correlation, and reports SNR against the original:
 
@@ -57,7 +57,7 @@ cross-correlation, and reports SNR against the original:
 | 320 kbps | 45.09 dB | 44.15 dB | +0.94 |
 | 448 kbps | 51.05 dB | 47.60 dB | +3.46 |
 
-Measured with FFmpeg 8.0.1 on 2026-08-09; reproduce with `python tools/quality_race.py ac3`.
+Measured with FFmpeg 8.0.1 on 2026-08-09; reproduce with `python tools/ci/quality_race.py ac3`.
 SNR on synthetic material is a narrow metric — it says the waveform is closer, not that it
 sounds better, and no *subjective* listening test has been run. `quality_race.py`'s tables (and
 [Tool comparison trend](tool-comparison-trend.md)/[Landscape](landscape.md)) also carry an
@@ -65,7 +65,7 @@ objective perceptual-quality prediction alongside SNR, [ViSQOL](https://github.c
 MOS-LQO — narrower than a real listening panel, but closer to "how it would sound" than a
 waveform-distance number, and something SNR alone cannot claim. It's an optional column
 (`visqol-python` not installed shows `-`, never a failure), so it isn't in the snapshot table
-above; see `perceptual_score()` in `tools/quality_race.py`.
+above; see `perceptual_score()` in `tools/ci/quality_race.py`.
 
 That is a one-off snapshot. [Quality trend](quality-trend.md) tracks the same gold-reference SNR
 by commit, on every push to `develop` and `main`, so a regression shows up as a trend line
@@ -122,7 +122,7 @@ replace the bed's rather than adding to them.
 the partial one 7.1.4 gets.** FFmpeg's own Annex E parser was never written to read either
 tool's syntax, so it doesn't reject these streams the way it does a second dependent substream —
 it has no model of the bits at all, which makes `-xerror` unusable as a check here rather than
-merely unavailable. `tools/quality_race.py`'s CI gate (`decode_scores_ours`) scores both through
+merely unavailable. `tools/ci/quality_race.py`'s CI gate (`decode_scores_ours`) scores both through
 this project's own decoder instead, the same self-consistency posture 7.1.4 falls back to, with
 one weaker guarantee than 7.1.4 has: a defect both the encoder and decoder agree on — a
 misreading of the spec shared by both sides rather than a one-sided bug — would not be caught by
@@ -135,17 +135,17 @@ header are cross-checked externally. But actually decoding the audio is refused 
 real-world implementations available here: FFmpeg's E-AC-3 decoder (`Not yet implemented in
 FFmpeg, patches welcome`) and, more surprisingly, Dolby's own Reference Player — `dlbac3parse`
 reports `No valid frames found before end of stream` on a stream `ffprobe` reads frame-by-frame
-without complaint, using the same pipeline (`tools/quality_race.py`'s `dolby_decode`) that decodes
+without complaint, using the same pipeline (`tools/ci/quality_race.py`'s `dolby_decode`) that decodes
 a normal-rate stream from this encoder without issue. `fscod2` appears to be a coding tool whose
 own reference implementation does not support it. So the coded audio is verified only by this
 project's own encoder/decoder round trip and the independent Python parser
-(`tools/eac3_parse.py`).
+(`tools/references/eac3_parse.py`).
 
 **`compr` in E-AC-3 has no external oracle.** FFmpeg's Annex E header parser reads `compre` and
 then skips the word, so `-heavy_compr` changes nothing on an E-AC-3 stream however good the
 metadata is. It is covered bit-by-bit instead
 ([tests/test_drc.cpp](https://github.com/iainchesworthlabs/ac3forge/blob/main/tests/test_drc.cpp),
-[tools/eac3_parse.py](https://github.com/iainchesworthlabs/ac3forge/blob/main/tools/eac3_parse.py)).
+[tools/references/eac3_parse.py](https://github.com/iainchesworthlabs/ac3forge/blob/main/tools/references/eac3_parse.py)).
 
 ## What's confirmed against real hardware, and what isn't
 

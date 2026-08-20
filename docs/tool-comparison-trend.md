@@ -3,10 +3,10 @@
 The commit-level half of the external-encoder landscape comparison — see
 [Landscape](landscape.md) for the release-facing headline number. Every push
 to `develop` or `main` encodes the same three fixed legs
-[`tools/gen_external_baseline.py`](https://github.com/iainchesworthlabs/ac3forge/blob/main/tools/gen_external_baseline.py)
+[`tools/generators/gen_external_baseline.py`](https://github.com/iainchesworthlabs/ac3forge/blob/main/tools/generators/gen_external_baseline.py)
 measures FFmpeg's and Dolby DEE's encoders against, scores this build's own
 output through `ac3cli`'s own decoder (no FFmpeg, no DEE, at CI time — see
-`tools/quality_race.py`'s `trend` mode), and appends the numbers here. It
+`tools/ci/quality_race.py`'s `trend` mode), and appends the numbers here. It
 exists to answer a narrower question than the landscape page: not "are we
 competitive with the outside world" but "did this specific Annex E tool get
 better or worse as the code changed" — one row per (leg, tool-set), not just
@@ -32,13 +32,13 @@ one (0.5 dB below the trailing 10-run mean for the same leg/variant/branch)
 that only annotates a row, and a hard one (10 dB below) that fails the CI run
 that produced it — after the numbers are still recorded here. See
 `REGRESSION_DROP_DB`/`HARD_REGRESSION_DROP_DB` in
-`scripts/append-external-comparison-history.py`.
+`tools/ci/append_external_comparison_history.py`.
 
 **MOS** is a perceptual-quality prediction alongside the waveform-level SNR —
 [ViSQOL](https://github.com/google/visqol)'s MOS-LQO (Mean Opinion Score -
 Listening Quality Objective) in audio mode, 1 (bad) to a ceiling around 4.75,
 via the `visqol-python` package (see `perceptual_score()` in
-`tools/quality_race.py` for why ViSQOL over PEAQ and why that package
+`tools/ci/quality_race.py` for why ViSQOL over PEAQ and why that package
 specifically). It's read-only here — no regression check, unlike SNR — and
 shows `-` on any row a CI run produced without `visqol-python` installed in
 that job's environment, not a real zero score.
@@ -83,7 +83,7 @@ that job's environment, not a real zero score.
     { branch: "develop", color: "#7c4dff" },
     { branch: "main", color: "#00acc1" },
   ];
-  // Mirrors scripts/append-external-comparison-history.py's own constants -
+  // Mirrors tools/ci/append_external_comparison_history.py's own constants -
   // keep these in sync if that script's thresholds change; this is a
   // display-only echo, not a second source of truth. Only the soft
   // (non-failing) tier is shown here - a hard regression fails its own CI
@@ -92,7 +92,7 @@ that job's environment, not a real zero score.
   const REGRESSION_DROP_DB = 0.5;
   const TABLE_ROWS = 40;
   const LEGS = ["ac3-51-448", "eac3-stereo-192", "eac3-51-256"];
-  // Every variant tools/quality_race.py's `trend` mode can emit - see
+  // Every variant tools/ci/quality_race.py's `trend` mode can emit - see
   // EAC3_VARIANTS/EAC3_SELF_VARIANTS there. AC-3's only row is "landscape"
   // (no tool tokens exist for it); the others simply never appear for that
   // leg, so the checkboxes below are the same list regardless of which leg

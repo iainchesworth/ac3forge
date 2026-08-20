@@ -47,7 +47,7 @@ src/quarantine/
 fuzz/corpus/
 fuzz/artifacts/
 
-# Failing cases kept by tools/fuzz_encoder_space.py. Same reasoning as above,
+# Failing cases kept by tools/ci/fuzz_encoder_space.py. Same reasoning as above,
 # one step stronger: every one of these is regenerable from the single case
 # seed the harness prints beside it (`--replay <seed>`), so the WAV and
 # bitstream copies are a convenience for looking at, never the record.

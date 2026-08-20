@@ -3,13 +3,13 @@
 // answers "did the encoder stay faster than real time" (pass/fail); this
 // answers "how much faster, and is that number drifting" - a trend signal,
 // not a threshold, the same relationship docs/quality-trend.md's gold-
-// reference gate has to scripts/append-quality-history.py.
+// reference gate has to tools/ci/append_quality_history.py.
 //
 // Not a Catch2 binary on purpose: nothing here asserts anything. It runs
 // each configuration for a fixed frame count and writes one JSON record per
-// configuration to --json-out, for scripts/append-performance-history.py to
+// configuration to --json-out, for tools/ci/append_performance_history.py to
 // append to the performance-history data (docs/performance-trend.md) the
-// same way compare_wav.py's --json-out feeds append-quality-history.py.
+// same way compare_wav.py's --json-out feeds append_quality_history.py.
 
 #include <chrono>
 #include <cmath>

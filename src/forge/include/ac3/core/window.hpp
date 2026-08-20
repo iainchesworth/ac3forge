@@ -9,7 +9,7 @@
 // The published values are the Kaiser-Bessel-derived (KBD) window with
 // alpha = 5 (Kaiser kernel beta = 5*pi, kernel length N/2 + 1 = 257) —
 // verified: rounding this construction to 5 decimals reproduces every
-// Table 7.33 entry exactly (see tools/gen_mdct_goldens.py).
+// Table 7.33 entry exactly (see tools/generators/gen_mdct_goldens.py).
 //
 // Generated at compile time from the formula; unit tests pin it against the
 // Table 7.33 values and an independent numpy evaluation. The custom Bessel

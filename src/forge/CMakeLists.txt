@@ -52,7 +52,7 @@ set(AC3FORGE_VERSION_HEADER "${CMAKE_CURRENT_BINARY_DIR}/generated/ac3/version.h
 # --version/About-dialog output. Computed here (CMake already knows all three
 # from the toolchain it configured) rather than read back with predefined
 # macros at compile time, so version.cpp needs no #ifdef - see ac3::audio's
-# platform tree (src/audio/CMakeLists.txt) and scripts/check-platform-macros.ps1.
+# platform tree (src/audio/CMakeLists.txt) and tools/checks/check_platform_macros.ps1.
 if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     set(AC3FORGE_BUILD_OS "macOS")
 else()
@@ -158,7 +158,7 @@ target_include_directories(forge_objects
 # variants (src/internal/profiling/tracy_{enabled,disabled}/) every
 # `#include "ac3/internal/profiling.hpp"` call site resolves to - CMake
 # choosing the directory, not an #ifdef in the header, per
-# scripts/check-platform-macros.ps1's platform/feature-isolation rule (the
+# tools/checks/check_platform_macros.ps1's platform/feature-isolation rule (the
 # same reason src/audio's platform backends and the quarantine hook seam are
 # selected this way rather than with a preprocessor conditional). PRIVATE:
 # this header is internal build-diagnostics tooling, never installed, so it

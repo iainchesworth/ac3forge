@@ -82,7 +82,7 @@ double peak_db(std::span<const float> samples) {
 // --- the two wire formats --------------------------------------------------
 
 TEST_CASE("dynrng and compr gains match an independent transcription", "[drc]") {
-    // tools/drc_ref.py builds these from Table 7.29 / 7.30's arithmetic-shift
+    // tools/references/drc_ref.py builds these from Table 7.29 / 7.30's arithmetic-shift
     // column; the encoder computes the exponent in closed form from the signed
     // field. Two readings of the same tables, so agreement is evidence about
     // the reading and not just about the arithmetic.

@@ -29,9 +29,9 @@ catch_discover_tests(ac3perf
 # ac3bench - the trend-tracking half (numbers, not a threshold). Not a
 # ctest-registered test at all: see bench_encoder.cpp's own header comment
 # and docs/performance-trend.md for how its --json-out output feeds
-# scripts/append-performance-history.py, the same relationship
-# scripts/verify-gold-reference.sh's --json-out has to
-# append-quality-history.py.
+# tools/ci/append_performance_history.py, the same relationship
+# tools/checks/verify_gold_reference.sh's --json-out has to
+# append_quality_history.py.
 # ---------------------------------------------------------------------------
 add_executable(ac3bench bench_encoder.cpp)
 
@@ -47,7 +47,7 @@ target_link_libraries(ac3bench PRIVATE ac3::forge ac3::warnings)
 # introspection and peak-RSS probe live in platform/{windows,linux}/
 # (the platform-tree rule, as everywhere else). Not ctest-registered, same
 # reasoning as ac3bench above: nothing here asserts anything, and its JSON
-# feeds scripts/append-memory-history.py (docs/performance-trend.md's
+# feeds tools/ci/append_memory_history.py (docs/performance-trend.md's
 # memory tables) from the persist-performance-trend CI job. macOS would
 # need a mem_probe of its own (malloc_size; ru_maxrss in bytes, not
 # Linux's KiB) - the trend job only measures linux-gcc, so the target
@@ -74,7 +74,7 @@ endif()
 # performance programme these three both belong to (Tracy zones give the
 # real-time breakdown, this gives an offline one that needs no profiler
 # attached). Not ctest-registered, same reasoning as ac3bench above: nothing
-# here asserts anything, and its JSON feeds scripts/append-kernel-history.py
+# here asserts anything, and its JSON feeds tools/ci/append_kernel_history.py
 # (docs/performance-trend.md's per-kernel tables) as a trend signal, never a
 # CI gate - see that script's docstring for why it is deliberately
 # non-gating.

@@ -37,7 +37,7 @@
 #                                     day when tests/test_capi.cpp gained its
 #                                     E-AC-3 half) - the floors and the full
 #                                     measured table live in
-#                                     scripts/coverage-report.sh
+#                                     tools/checks/coverage_report.sh
 #   macos-llvm              GREEN     real GitHub Actions runs - this project
 #                                     has no Mac. Its first-ever run hit one
 #                                     genuine, fully-understood issue
@@ -56,10 +56,10 @@
 # The project's original validation-pyramid design (now docs/verification.md)
 # called for L3 (FFmpeg-oracle strict decode, every commit) and L4
 # (perceptual SNR) from the start; neither was ever wired into any CI leg
-# until now. scripts/verify-gold-reference.sh
+# until now. tools/checks/verify_gold_reference.sh
 # encodes a fixed checked-in 5.1 WAV (tests/golden/audio/reference_51.wav),
 # strict-decodes it with FFmpeg, decodes it with ac3cli's own decoder, and
-# asserts they agree via scripts/compare_wav.py's delay-compensated SNR (>=
+# asserts they agree via tools/checks/compare_wav.py's delay-compensated SNR (>=
 # 30 dB gate). Runs on every leg except linux-llvm-asan-ubsan (diagnostic-
 # only, same reasoning as its `packageable` exclusion). Real numbers from the
 # CI run that landed this: 67.84/67.82 dB on Windows and Linux, 61.81/61.82
@@ -241,7 +241,7 @@ jobs:
           persist-credentials: false
       - name: Check for preprocessor conditionals in src/
         shell: pwsh
-        run: ./scripts/check-platform-macros.ps1 -Root $PWD
+        run: ./tools/checks/check_platform_macros.ps1 -Root $PWD
 
   # Internal consistency of packaging/ (vcpkg port, Homebrew, winget, Conan) - NOT "is it
   # current", see the script's own header for why that's the wrong check. Same shape as
@@ -255,7 +255,7 @@ jobs:
           persist-credentials: false
       - name: Check packaging manifests are internally consistent
         shell: bash
-        run: bash scripts/check-packaging-versions.sh -r "$PWD"
+        run: bash tools/checks/check_packaging_versions.sh -r "$PWD"
 
   # .clang-tidy's own header comment explains the curated check groups and
   # what got excluded from them (and why). A full Build precedes clang-tidy,
@@ -328,12 +328,12 @@ jobs:
   # there purely to save build time: ac3cli and the example executables
   # would link fine against the instrumented libraries (the gcov runtime
   # propagates to consumers automatically - see cmake/Coverage.cmake), but
-  # scripts/coverage-report.sh filters the report to the library components,
+  # tools/checks/coverage_report.sh filters the report to the library components,
   # so building them instrumented buys nothing.
   #
   # The gate is PER COMPONENT - a line floor and a branch floor per
   # src/<dir>, not one blended number a small component's regression could
-  # hide inside - and lives in scripts/coverage-report.sh alongside the
+  # hide inside - and lives in tools/checks/coverage_report.sh alongside the
   # measured baseline each floor was calibrated against. src/forge's original
   # 80/70 floor (set a few points under its first hosted run's 81.3/72.0,
   # measured 2026-08-09 while block switching, delta bit allocation, half
@@ -405,14 +405,14 @@ jobs:
         run: ctest --preset test-linux-gcc-coverage -LE Performance
 
       # The gcov extraction, the per-component floors, and the gate itself
-      # all live in scripts/coverage-report.sh, shared verbatim with local
+      # all live in tools/checks/coverage_report.sh, shared verbatim with local
       # runs (docs/building.md shows the local recipe) so CI and a developer
       # machine cannot drift onto different filters or thresholds. The
       # mdct.cpp suspicious-hits gcov-bug workaround this step used to carry
       # inline moved there with the rest of the gcovr flags.
       - name: Coverage report + gate
         shell: bash
-        run: bash scripts/coverage-report.sh -g gcov-15
+        run: bash tools/checks/coverage_report.sh -g gcov-15
 
       - name: Upload coverage report
         if: always()
@@ -443,7 +443,7 @@ jobs:
   #
   # One leg, not the whole matrix - same reasoning as ffmpeg-validate above: this module's own
   # code does not vary by platform/compiler (no #ifdefs anywhere in this repo - see
-  # scripts/check-platform-macros.ps1), so one Linux leg is enough to catch a real regression.
+  # tools/checks/check_platform_macros.ps1), so one Linux leg is enough to catch a real regression.
   # GCC 15, matching one of the two Linux toolchains this module was verified against locally
   # before landing (see the PR that introduced it, branch feature/adm-bw64-parser: Windows MSVC,
   # WSL2 gcc-15, WSL2 clang++-21, all green).
@@ -549,7 +549,7 @@ jobs:
   # while ac3perf keeps passing. It records two granularities per run:
   # ac3bench's whole-frame ms/frame (gating at the +100% tier, below) and
   # ac3kernelbench's per-kernel ns/call (never gating - see
-  # scripts/append-kernel-history.py for why), so a whole-frame drift can be
+  # tools/ci/append_kernel_history.py for why), so a whole-frame drift can be
   # attributed to the kernel that caused it without re-running a profiler.
   #
   # One leg (linux-gcc), not the whole matrix: unlike the gold-reference SNR
@@ -561,7 +561,7 @@ jobs:
   # job instead of one more thing threaded through that file's per-leg logic.
   #
   # Reuses the quality-history branch (a different file - see
-  # scripts/append-performance-history.py) rather than a new branch, for the
+  # tools/ci/append_performance_history.py) rather than a new branch, for the
   # same reasons quality-trend already uses a dedicated branch instead of
   # gh-pages: incremental, no publish-cadence coupling, fetchable client-side
   # with no auth.
@@ -611,9 +611,9 @@ jobs:
           build/config-linux-gcc/bin/ac3bench --json-out results/performance-linux-gcc/bench.json
 
       # A separate results tree from ac3bench's on purpose:
-      # append-performance-history.py globs every *.json under its legs and
+      # append_performance_history.py globs every *.json under its legs and
       # requires ac3bench's schema, so the two producers' outputs must never
-      # share a directory - see append-kernel-history.py's load_leg_results.
+      # share a directory - see append_kernel_history.py's load_leg_results.
       - name: Run ac3kernelbench
         run: |
           set -euo pipefail
@@ -665,7 +665,7 @@ jobs:
           set -euo pipefail
           git config --global --add safe.directory '*'
           commit_date="$(git show -s --format=%cI "$COMMIT_SHA")"
-          python3 scripts/append-performance-history.py \
+          python3 tools/ci/append_performance_history.py \
             --results-dir results \
             --history-dir history \
             --branch "$BRANCH" \
@@ -687,7 +687,7 @@ jobs:
           set -euo pipefail
           git config --global --add safe.directory '*'
           commit_date="$(git show -s --format=%cI "$COMMIT_SHA")"
-          python3 scripts/append-kernel-history.py \
+          python3 tools/ci/append_kernel_history.py \
             --results-dir kernel-results \
             --history-dir history \
             --branch "$BRANCH" \
@@ -709,7 +709,7 @@ jobs:
           set -euo pipefail
           git config --global --add safe.directory '*'
           commit_date="$(git show -s --format=%cI "$COMMIT_SHA")"
-          python3 scripts/append-memory-history.py \
+          python3 tools/ci/append_memory_history.py \
             --results-dir memory-results \
             --history-dir history \
             --branch "$BRANCH" \
@@ -733,8 +733,8 @@ jobs:
           fi
 
       # Deliberately after the push above, not instead of the append step
-      # failing outright - see append-performance-history.py's own
-      # HARD_REGRESSION_SLOWDOWN_FRACTION and append-quality-history.py's
+      # failing outright - see append_performance_history.py's own
+      # HARD_REGRESSION_SLOWDOWN_FRACTION and append_quality_history.py's
       # identical reasoning for its own hard-regression step.
       - name: Fail on hard performance regression
         if: steps.append.outputs.hard_regression == 'true'
@@ -765,26 +765,26 @@ jobs:
   # Annex E tool token and metadata option in the encoder's surface produces
   # a structurally valid stream at all - output *correctness* across the
   # full option space, which one fixed sample can never exercise:
-  #   - conformance: scripts/run-codec-matrix.sh's FFmpeg strict-decode
+  #   - conformance: tools/ci/run_codec_matrix.sh's FFmpeg strict-decode
   #     additions, across the layout/tool/metadata matrix. Skips 7.1.4 and
   #     7.1.4+Annex-E-tool combinations on purpose - see the script's own
   #     header comment and README.md's Verification gaps table for why no
   #     oracle exists for either.
-  #   - metadata: tools/check_drc.py (dynrng/compr/downmix/dialnorm) and
-  #     tools/check_coupling.py + check_coupling_level.py (coupling envelope
+  #   - metadata: tools/checks/check_drc.py (dynrng/compr/downmix/dialnorm) and
+  #     tools/checks/check_coupling.py + check_coupling_level.py (coupling envelope
   #     and absolute level), all discriminating checks that compare a decode
   #     which applies the metadata against one that doesn't.
-  #   - fidelity: tools/quality_race.py's `ci` mode, a numeric SNR/LSD floor
+  #   - fidelity: tools/ci/quality_race.py's `ci` mode, a numeric SNR/LSD floor
   #     per E-AC-3 tool variant (stereo and 5.1) plus AC-3, set well below
   #     today's measured numbers (README.md's own SNR table) so it trips on
   #     a genuine regression without chasing normal drift.
-  #   - coverage: tools/check_matrix_coverage.py, a different question from
+  #   - coverage: tools/checks/check_matrix_coverage.py, a different question from
   #     the three layers above - not "is the output correct" but "does
   #     anything exercise this at all". Reads the CLI's own canonical option
   #     lists (usage text, and the "unknown layout"/"unknown tool set" error
   #     messages a bad argument hits) and fails if a layout, Annex E tool
   #     token or command the CLI accepts today is never mentioned in
-  #     run-codec-matrix.sh - so a new option landing in the library without
+  #     run_codec_matrix.sh - so a new option landing in the library without
   #     a matching matrix entry fails CI instead of shipping unvalidated.
   #     Caught exactly this for real while this job was being built: E-AC-3
   #     VBR support landed with zero matrix coverage, on this same branch.
@@ -825,7 +825,7 @@ jobs:
       # lock (see its own header for how to regenerate) so this install is
       # hash-pinned.
       #
-      # Deliberately NOT installing `visqol-python` here (tools/quality_race.py's
+      # Deliberately NOT installing `visqol-python` here (tools/ci/quality_race.py's
       # perceptual_score(), see its own docstring for why ViSQOL/why that
       # package): this job's `ci` step is a hard fidelity gate and stays exactly
       # as fast and as free of new supply-chain surface as it was before that
@@ -860,31 +860,31 @@ jobs:
         run: cmake --build --preset build-linux-llvm --target ac3cli -- -k 0
 
       - name: Codec matrix against the FFmpeg oracle
-        run: bash scripts/run-codec-matrix.sh build/config-linux-llvm/bin/ac3cli
+        run: bash tools/ci/run_codec_matrix.sh build/config-linux-llvm/bin/ac3cli
 
       - name: Metadata checks against FFmpeg (dynrng, compr, downmix, dialnorm)
-        run: python3 tools/check_drc.py --cli build/config-linux-llvm/bin/ac3cli
+        run: python3 tools/checks/check_drc.py --cli build/config-linux-llvm/bin/ac3cli
 
       - name: Coupling checks against FFmpeg (envelope and absolute level)
         env:
           AC3CLI: build/config-linux-llvm/bin/ac3cli
         run: |
-          python3 tools/check_coupling.py
-          python3 tools/check_coupling_level.py
+          python3 tools/checks/check_coupling.py
+          python3 tools/checks/check_coupling_level.py
 
       - name: Fidelity gate against FFmpeg (SNR/LSD floors)
         env:
           AC3CLI: build/config-linux-llvm/bin/ac3cli
-        run: python3 tools/quality_race.py ci
+        run: python3 tools/ci/quality_race.py ci
 
       - name: Matrix coverage (every CLI option is exercised somewhere)
-        run: python3 tools/check_matrix_coverage.py --cli build/config-linux-llvm/bin/ac3cli
+        run: python3 tools/checks/check_matrix_coverage.py --cli build/config-linux-llvm/bin/ac3cli
 
       # The generator half of this job's question. Everything above walks a
       # HAND-ENUMERATED set of command lines against one bootstrap tone: the
       # matrix says which options exist, the coverage check says each one is
       # named somewhere, and neither has any notion of option COMBINATIONS or
-      # of the input material. tools/fuzz_encoder_space.py draws random legal
+      # of the input material. tools/ci/fuzz_encoder_space.py draws random legal
       # configurations crossed with adversarial PCM whose character changes
       # part-way through a frame, and holds every resulting stream against
       # both decoders - see that file's own header for the encoder defect
@@ -911,12 +911,12 @@ jobs:
       - name: Encoder acceptance envelope (the rate floors the search draws from)
         env:
           AC3CLI: build/config-linux-llvm/bin/ac3cli
-        run: python3 tools/fuzz_encoder_space.py --check-envelope
+        run: python3 tools/ci/fuzz_encoder_space.py --check-envelope
 
       - name: Encoder input-space fuzz (bounded, both decoders)
         env:
           AC3CLI: build/config-linux-llvm/bin/ac3cli
-        run: python3 tools/fuzz_encoder_space.py --seconds 120
+        run: python3 tools/ci/fuzz_encoder_space.py --seconds 120
 
       - name: Upload failing encoder-space inputs
         if: failure()
@@ -927,7 +927,7 @@ jobs:
           if-no-files-found: ignore
 
       # Compute-only: scores this build against the same three fixed legs
-      # tools/gen_external_baseline.py measures FFmpeg/DEE against, using
+      # tools/generators/gen_external_baseline.py measures FFmpeg/DEE against, using
       # this project's own decoder throughout (see quality_race.py's
       # race_trend docstring) - neither FFmpeg's nor DEE's encoder ever
       # runs here. Not yet persisted to quality-history (a later phase);
@@ -946,7 +946,7 @@ jobs:
       - name: External-encoder landscape trend (compute-only)
         env:
           AC3CLI: build/config-linux-llvm/bin/ac3cli
-        run: python3 tools/quality_race.py trend --json-out results/trend.json --spectrogram-dir results/spectrograms
+        run: python3 tools/ci/quality_race.py trend --json-out results/trend.json --spectrogram-dir results/spectrograms
 
       - name: Upload landscape trend
         if: always()
@@ -967,7 +967,7 @@ jobs:
   # persist-performance-trend beside it - one job downstream of a single
   # producer job rather than a per-leg matrix, so this is one commit per CI
   # run, not a race between several. Needs neither a container nor a build:
-  # scripts/append-external-comparison-history.py is stdlib-only, and
+  # tools/ci/append_external_comparison_history.py is stdlib-only, and
   # tests/golden/external-baseline/manifest.json (the FFmpeg/DEE numbers to
   # diff against) is a committed file the checkout below already has.
   persist-external-comparison-trend:
@@ -1039,7 +1039,7 @@ jobs:
         run: |
           set -euo pipefail
           commit_date="$(git show -s --format=%cI "$COMMIT_SHA")"
-          python3 scripts/append-external-comparison-history.py \
+          python3 tools/ci/append_external_comparison_history.py \
             --trend-json results/trend.json \
             --manifest-json tests/golden/external-baseline/manifest.json \
             --history-dir history \
@@ -1083,7 +1083,7 @@ jobs:
 
       # Deliberately after the push above, not instead of the append step
       # failing outright - same reasoning as persist-performance-trend's and
-      # append-quality-history.py's identical hard-regression step.
+      # append_quality_history.py's identical hard-regression step.
       - name: Fail on hard external-comparison regression
         if: steps.append.outputs.hard_regression == 'true'
         shell: bash

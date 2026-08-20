@@ -9,7 +9,7 @@ unchanged, just with `-arm64` presets.
 ## Why there's no Raspberry Pi-specific code
 
 The project's backend tree (`src/audio/src/backend/{windows,alsa,posix,macos,android}/`, selected by
-`src/audio/CMakeLists.txt`, never by `#ifdef` - `scripts/check-platform-macros.ps1` enforces this in CI)
+`src/audio/CMakeLists.txt`, never by `#ifdef` - `tools/checks/check_platform_macros.ps1` enforces this in CI)
 branches on **operating system**, not architecture or device. A Raspberry Pi running Raspberry Pi OS
 hits exactly the same `if(LINUX)` branch, the same ALSA backend, and the same
 [HDMI/S-PDIF passthrough device-naming logic](linux.md#why-alsa-and-not-pipewire) that any x86_64

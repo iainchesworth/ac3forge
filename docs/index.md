@@ -140,7 +140,7 @@ load-bearing enough to flag up front:
 
 Enhanced coupling and transient pre-noise processing have no external decode oracle at all —
 not even the FFmpeg-can't-but-the-in-repo-decoder-can situation 7.1.4 is in, since FFmpeg's own
-Annex E parser has never read either tool's syntax — so `tools/quality_race.py`'s CI gate scores
+Annex E parser has never read either tool's syntax — so `tools/ci/quality_race.py`'s CI gate scores
 both through this project's own decoder instead (see
 [Validation](verification.md#where-the-oracles-dont-reach)). Transient pre-noise processing's
 one-frame decoder buffering is an API characteristic, not a gap; [Decoding](library/decoding.md)

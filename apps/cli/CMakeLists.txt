@@ -7,7 +7,7 @@ add_executable(ac3cli main.cpp)
 # the "-" stdin/stdout file-argument convention (see platform/stdio_binary.hpp
 # for why Windows needs a real call and POSIX doesn't). Selected here rather
 # than behind an #ifdef in main.cpp, the same platform-tree pattern ac3::audio
-# uses for WASAPI/ALSA (src/audio/CMakeLists.txt) - scripts/check-platform-macros.ps1
+# uses for WASAPI/ALSA (src/audio/CMakeLists.txt) - tools/checks/check_platform_macros.ps1
 # enforces there being no third option.
 if(WIN32)
     target_sources(ac3cli PRIVATE platform/windows/stdio_binary.cpp)
@@ -25,7 +25,7 @@ endif()
 # listing entirely.
 #
 # main.cpp itself never names ac3adm::ac3adm/ac3::admbridge or includes either of their headers -
-# not even behind a preprocessor guard, since scripts/check-platform-macros.ps1 (CI-enforced)
+# not even behind a preprocessor guard, since tools/checks/check_platform_macros.ps1 (CI-enforced)
 # refuses ANY #if/#ifdef/#ifndef anywhere under src/, feature flags included, not just platform
 # ones (that script's own header comment). So the same platform-tree shape the WIN32/else split
 # above already uses for stdio_binary.cpp applies here too, for a library-linked-or-not axis
@@ -35,7 +35,7 @@ endif()
 # ac3cli links successfully and behaves correctly either way with zero preprocessor conditionals
 # anywhere in this target's sources. See adm/atmos_adm.hpp's own top comment for the full
 # reasoning, including why this replaced an earlier #ifdef-based design once
-# scripts/check-platform-macros.ps1 was actually run against it.
+# tools/checks/check_platform_macros.ps1 was actually run against it.
 if(AC3FORGE_BUILD_ADM)
     target_sources(ac3cli PRIVATE adm/enabled/atmos_adm.cpp)
     target_link_libraries(ac3cli PRIVATE ac3adm::ac3adm ac3::admbridge)

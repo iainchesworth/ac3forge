@@ -135,7 +135,7 @@ struct FrameConfig {
     // metadata is - unlike -drc_scale, which honours dynrng here as it does in
     // AC-3. What holds it up instead: the word format and the generator are
     // shared with the AC-3 path, which ffmpeg does verify, and the field's
-    // placement is checked bit by bit (tests/test_drc.cpp, tools/eac3_parse.py).
+    // placement is checked bit by bit (tests/test_drc.cpp, tools/references/eac3_parse.py).
     std::optional<meta::HeavyConfig> heavy = std::nullopt;
     // Ch2's own drc/heavy, meaningful only under kDualMono - no fallback to
     // drc/heavy when unset. See ac3::EncoderConfig::drc2 (the AC-3 sibling of
@@ -241,7 +241,7 @@ struct FrameConfig {
     // relative error ~3e-12 against the direct form on random data and real
     // audio, 331 dB direct-vs-fast end-to-end SNR, 0.000 dB delta against an
     // independent oracle at 192-448 kbps; see tests/test_mdct_fast.cpp and
-    // `tools/quality_race.py fast-mdct`). false forces the direct §8.2.3.2
+    // `tools/ci/quality_race.py fast-mdct`). false forces the direct §8.2.3.2
     // reference form, which stays maintained as the oracle the fast path is
     // validated against. Only the long transform accelerates today - a
     // block-switched channel's short transforms always take the direct path

@@ -551,7 +551,7 @@ TEST_CASE("GAQ reconstruction agrees with Table E3.6", "[eac3][aht][gaq]") {
     using ac3::eac3::aht_quantize_mantissa;
     // The encoder derives its quantizers rather than transcribing the
     // standard's remapping constants, so the derivation has to be anchored to
-    // them somewhere. tools/gen_aht_tables.py checks all 120; these are the
+    // them somewhere. tools/generators/gen_aht_tables.py checks all 120; these are the
     // two rows that pin the shape - the dead zone's edge and its step - at
     // the narrowest quantizer, where the constants are least forgiving.
     //

@@ -55,7 +55,7 @@ struct EncoderConfig {
     // relative error ~3e-12 against the direct form on random data and real
     // audio, 331 dB direct-vs-fast end-to-end SNR, 0.000 dB delta against an
     // independent oracle at 192-448 kbps; see tests/test_mdct_fast.cpp and
-    // `tools/quality_race.py fast-mdct`). false forces the direct §8.2.3.2
+    // `tools/ci/quality_race.py fast-mdct`). false forces the direct §8.2.3.2
     // reference form, which stays maintained as the oracle the fast path is
     // validated against. Only the long transform accelerates today - a
     // block-switched channel's short transforms always take the direct path

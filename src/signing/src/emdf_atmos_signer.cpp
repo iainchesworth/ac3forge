@@ -61,7 +61,7 @@ struct Parsed {
 };
 
 // Walk one syncframe of the ac3forge atmos subset, recording the A-holes and the
-// container. Mirrors tools/eac3_parse.py for this configuration.
+// container. Mirrors tools/references/eac3_parse.py for this configuration.
 Parsed parse(std::span<const std::byte> frame) {
     Parsed out;
     // Set the moment any per-block field this parser walks turns out to be

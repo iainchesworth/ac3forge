@@ -2648,7 +2648,7 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
 // here: ac3adm::ac3adm/ac3::admbridge are this project's one opt-in, non-default library
 // (AC3FORGE_BUILD_ADM, default OFF - see the root CMakeLists.txt's own option() for why), and this
 // file cannot name their types at all in a build where AC3FORGE_BUILD_ADM is off - not even behind
-// a preprocessor guard, since this project's scripts/check-platform-macros.ps1 (CI-enforced, see
+// a preprocessor guard, since this project's tools/checks/check_platform_macros.ps1 (CI-enforced, see
 // .github/workflows/ci.yml's "Check for preprocessor conditionals in src/" job) refuses ANY
 // #if/#ifdef/#ifndef anywhere under src/, deliberately stricter than "no OS macros" (that script's
 // own comment: a feature-flag #ifdef is "just as unwelcome as a platform one"). So the same
@@ -2664,7 +2664,7 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
 // (Needs::kCapture/kPassthrough/kMonitor, ac3::audio::audio_backend()) already use for their
 // own "is this available in this particular build?" question - reused rather than a second
 // mechanism invented for what is structurally the identical problem. (An earlier version of this
-// function used a scoped #ifdef instead, before scripts/check-platform-macros.ps1 was actually run
+// function used a scoped #ifdef instead, before tools/checks/check_platform_macros.ps1 was actually run
 // against it and found to reject that outright - this design is what replaced it.)
 //
 // This function is deliberately thin beyond that seam: parse+bridge, per-frame evaluate+encode,

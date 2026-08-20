@@ -17,7 +17,7 @@
 // own option() for why: libadm's Boost dependency).
 //
 // main.cpp cannot #include "ac3adm/ac3adm.hpp" or "ac3/admbridge/bridge.hpp" itself, not even
-// behind a preprocessor guard: this project's scripts/check-platform-macros.ps1 (CI-enforced, see
+// behind a preprocessor guard: this project's tools/checks/check_platform_macros.ps1 (CI-enforced, see
 // .github/workflows/ci.yml's own "Check for preprocessor conditionals in src/" job) refuses ANY
 // #if/#ifdef/#ifndef under src/ - deliberately stricter than "no OS macros"; that script's own
 // header comment says a feature-flag #ifdef is "just as unwelcome as a platform one". So whether

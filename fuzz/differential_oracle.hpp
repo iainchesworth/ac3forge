@@ -7,9 +7,9 @@
 // in-process, the same way fuzz_ac3_decode.cpp/fuzz_eac3_decode.cpp already
 // do it, and once with FFmpeg, out-of-process, using the exact "strict
 // decode" invocation this repo already treats as its external oracle
-// everywhere else - tools/quality_race.py's decode_scores,
-// scripts/verify-gold-reference.sh's ffmpeg_strict_decode, and
-// scripts/run-codec-matrix.sh's run_ffmpeg_check all use
+// everywhere else - tools/ci/quality_race.py's decode_scores,
+// tools/checks/verify_gold_reference.sh's ffmpeg_strict_decode, and
+// tools/ci/run_codec_matrix.sh's run_ffmpeg_check all use
 // `-xerror -err_detect crccheck+bitstream+buffer+explode`, the flag
 // combination CONTRIBUTING.md's "Oracles" section explains is required
 // (`-err_detect` alone only controls what FFmpeg treats as an error
@@ -33,7 +33,7 @@
 //   2. FFmpeg's strict decode (see ffmpeg_strict_decode below) must exit 0
 //      with a real, non-empty WAV - a non-zero exit or empty output means
 //      FFmpeg declined the input, which run_differential treats as "no
-//      oracle for this one", the same stance run-codec-matrix.sh already
+//      oracle for this one", the same stance run_codec_matrix.sh already
 //      takes for the tool combinations FFmpeg has no reading of at all
 //      (enhanced coupling, transient pre-noise processing, a second
 //      dependent substream/7.1.4 - see docs/verification.md's "Where the
@@ -44,7 +44,7 @@
 //      against meaningfully, not evidence of anything.
 //   4. A channel with essentially no energy (below -120 dBFS) is skipped
 //      rather than compared - the same "ignore near-silent frames"
-//      reasoning tools/quality_race.py's spectral_scores already applies,
+//      reasoning tools/ci/quality_race.py's spectral_scores already applies,
 //      because a fraction-of-an-LSB rounding difference between two
 //      independent implementations can swing a near-zero ratio by tens of
 //      dB without either side having done anything wrong.
@@ -53,8 +53,8 @@
 // against real measurements, not guessed: docs/verification.md's own
 // headline numbers (float32-precision parity for the plain coding path,
 // 98+ dB for coupling/spectral extension, 62-89 dB for AHT) all come from
-// tools/quality_race.py's broadband synthetic material, and an early
-// version of this harness reused scripts/verify-gold-reference.sh's
+// tools/ci/quality_race.py's broadband synthetic material, and an early
+// version of this harness reused tools/checks/verify_gold_reference.sh's
 // CPLBNDSTRCE0_MIN_SNR_DB=15 precedent on that basis - then
 // fuzz/measure-agreement.sh (AC3FORGE_DIFF_MEASURE_ONLY=1, see
 // run_differential below) run once over every file in
@@ -63,7 +63,7 @@
 // two seeds well under that floor: fuzz_ac3_decode/ac3-orbit.ac3 (a panning
 // source, worst channel 12.74 dB) and the plain single-tone
 // ac3-sine-mono.ac3/ac3-sine-stereo.ac3/eac3-sine-mono.ec3/eac3-sine-stereo.ec3
-// seeds (~22-24 dB), independently reproduced with scripts/compare_wav.py
+// seeds (~22-24 dB), independently reproduced with tools/checks/compare_wav.py
 // against the same two decoded WAVs to rule out a bug in this harness's own
 // alignment/comparison code rather than a real property of the two decodes.
 //
@@ -129,8 +129,8 @@ inline const char* scratch_dir() {
 
 // A fresh temp path ending in `suffix` (".ac3"/".ec3"/".wav") - FFmpeg's own
 // format probe wants a real extension, matching every other FFmpeg call
-// site in this repo (tools/quality_race.py, scripts/run-codec-matrix.sh,
-// scripts/verify-gold-reference.sh all hand it a real path rather than
+// site in this repo (tools/ci/quality_race.py, tools/ci/run_codec_matrix.sh,
+// tools/checks/verify_gold_reference.sh all hand it a real path rather than
 // piping stdin). Empty string on failure.
 inline std::string make_scratch_path(const char* suffix) {
     std::string tmpl = std::string(scratch_dir()) + "/ac3forge-diff-XXXXXX";
@@ -224,7 +224,7 @@ inline bool ffmpeg_strict_decode(const std::string& coded_path, const std::strin
 
 // How many samples `b` leads (positive) or lags (negative) `a` by, found by
 // cross-correlating a short prefix - the same reason
-// scripts/compare_wav.py's best_lag exists: decoder priming/lookahead can
+// tools/checks/compare_wav.py's best_lag exists: decoder priming/lookahead can
 // shift two independently-implemented decoders' output by a handful of
 // samples even for the identical bitstream. +-512 matches that script's own
 // max-lag default; the probe itself is capped small because this harness's
@@ -369,7 +369,7 @@ inline CompareResult compare_pcm(const std::vector<std::vector<float>>& ours,
 //                               deleting them and prints their paths, so a
 //                               specific divergence (or a specific seed
 //                               during calibration) can be inspected by
-//                               hand, e.g. with scripts/compare_wav.py.
+//                               hand, e.g. with tools/checks/compare_wav.py.
 inline void run_differential(const char* codec_label, std::span<const std::byte> coded_bytes,
                               const char* coded_ext, const std::vector<std::vector<float>>& pcm,
                               std::uint32_t sample_rate, std::span<const std::size_t> channel_order) {

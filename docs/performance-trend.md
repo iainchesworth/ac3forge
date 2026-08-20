@@ -34,7 +34,7 @@ forward MDCT should have cached) once shipped with no coverage to catch it: the 
 gate blocks a repeat outright, and the trend tables catch the gradual drift a
 pass/fail gate cannot see.
 
-`scripts/append-performance-history.py` appends every `develop`/`main` run's numbers
+`tools/ci/append_performance_history.py` appends every `develop`/`main` run's numbers
 to the `quality-history` branch (reused, not a new branch - the same reasoning
 [Quality trend](quality-trend.md) already gives for a dedicated branch over
 `gh-pages`: incremental, no publish-cadence coupling, fetchable client-side with no
@@ -44,7 +44,7 @@ a hard one (100% slower - i.e. at least doubled - `::error::`, fails the
 `persist-performance-trend` CI job *after* the numbers are still recorded, so a big
 regression is never silently un-recorded just because it also failed the run).
 
-`scripts/append-kernel-history.py` does the same for `ac3kernelbench`'s per-kernel
+`tools/ci/append_kernel_history.py` does the same for `ac3kernelbench`'s per-kernel
 numbers (`kernels-develop.jsonl` / `kernels-main.jsonl`, same branch), with the same
 two trailing-baseline tiers - but both tiers are `::warning::` annotations and the
 kernel series **never fails the job**: a micro-kernel's ns/call on a shared CI runner
@@ -54,7 +54,7 @@ tables are where kernel regressions surface. Every series is keyed by its own ke
 name end to end - a trailing mean over mixed kernels would be a number with no owner,
 the same conflation the quality-trend history once had to be cured of.
 
-`scripts/append-memory-history.py` does the same for `ac3membench`'s numbers
+`tools/ci/append_memory_history.py` does the same for `ac3membench`'s numbers
 (`memory-develop.jsonl` / `memory-main.jsonl`, same branch), with the same two
 tiers on **two** churn metrics per series - allocations/frame and bytes/frame,
 either one regressing flags the record - and it gates like the whole-frame
@@ -318,7 +318,7 @@ of per-commit numbers.
 
 Same commits, one level finer: each kernel's ns/call from `ac3kernelbench`, one
 series per kernel. The Δ column is each run against its own series' trailing
-10-run mean - the same window and thresholds `append-kernel-history.py` annotates
+10-run mean - the same window and thresholds `append_kernel_history.py` annotates
 with: ≥ +20% is flagged as a soft drift, ≥ +100% as a hard one. Neither ever fails
 CI (see above); a flagged row here is an invitation to look, not a broken build.
 
@@ -343,7 +343,7 @@ CI (see above); a flagged row here is an invitation to look, not a broken build.
   // kernel series to the whole-frame tables' handful of configs, and this page is
   // a trend readout, not an audit log - the JSONL keeps everything.
   const ROWS_PER_SERIES = 10;
-  // Mirrors append-kernel-history.py's REGRESSION_TRAILING_WINDOW and its two
+  // Mirrors append_kernel_history.py's REGRESSION_TRAILING_WINDOW and its two
   // annotation tiers, so a flagged row here and a ::warning:: in the CI log are
   // the same statement about the same numbers.
   const TRAILING_WINDOW = 10;
@@ -459,7 +459,7 @@ Same commits, a different resource: each workload's heap-allocation count and
 allocator traffic per frame from `ac3membench`, one series per workload -
 including the decode paths the timing benches don't cover. The Δ column is
 bytes/frame against the series' trailing 10-run mean, the same window and
-thresholds `append-memory-history.py` gates with (≥ +20% soft, ≥ +100% hard on
+thresholds `append_memory_history.py` gates with (≥ +20% soft, ≥ +100% hard on
 *either* churn metric); a non-zero **live growth** is its own signal (bytes
 still held after ~200 steady-state frames - the leak check is absolute, not
 trend-relative). These counts are near-deterministic for a fixed workload: a
@@ -483,7 +483,7 @@ these series - that is what this table exists to show.
   const HISTORY_BRANCH = "quality-history";
   const BRANCHES = ["develop", "main"];
   const ROWS_PER_SERIES = 10;
-  // Mirrors append-memory-history.py's window and tiers, so a flagged row
+  // Mirrors append_memory_history.py's window and tiers, so a flagged row
   // here and an annotation in the CI log are the same statement about the
   // same numbers. The flag is on the WORSE of the two churn metrics.
   const TRAILING_WINDOW = 10;
