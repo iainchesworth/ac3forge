@@ -199,7 +199,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docs_re='^(docs/|LICENSE$|mkdocs\.yml$|requirements-docs\.(in|txt)$|\.github/workflows/docs\.yml$|.*\.md$)'
+          docs_re='^(docs/|LICENSE$|mkdocs\.yml$|requirements/requirements-docs\.(in|txt)$|\.github/workflows/docs\.yml$|.*\.md$)'
 
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             files=$(gh api --paginate "repos/$REPO/pulls/${{ github.event.pull_request.number }}/files" --jq '.[].filename')
@@ -380,10 +380,10 @@ jobs:
       # system scope) - --break-system-packages is safe here specifically
       # because this container is thrown away at the end of the job, unlike a
       # real machine where that flag risks the system's own Python tooling.
-      # requirements-coverage.txt is a pip-compile --generate-hashes lock (see
+      # requirements/requirements-coverage.txt is a pip-compile --generate-hashes lock (see
       # its own header for how to regenerate) so this install is hash-pinned.
       - name: Install gcovr
-        run: pip install --quiet --break-system-packages --require-hashes -r requirements-coverage.txt
+        run: pip install --quiet --break-system-packages --require-hashes -r requirements/requirements-coverage.txt
 
       - name: Configure
         shell: bash
@@ -821,7 +821,7 @@ jobs:
         with:
           vcpkg-commit: ${{ needs.toolchain-versions.outputs.vcpkg_commit }}
 
-      # requirements-ffmpeg-validate.txt is a pip-compile --generate-hashes
+      # requirements/requirements-ffmpeg-validate.txt is a pip-compile --generate-hashes
       # lock (see its own header for how to regenerate) so this install is
       # hash-pinned.
       #
@@ -833,7 +833,7 @@ jobs:
       # and one clear message, never a failure) already lets this job run
       # unchanged. The `trend` step below feeds the quality-history branch that
       # docs/landscape.md and docs/tool-comparison-trend.md read, so a real MOS
-      # column there needs `visqol-python` added to requirements-ffmpeg-
+      # column there needs `visqol-python` added to requirements/requirements-ffmpeg-
       # validate.in and this lock regenerated - a deliberate later step once
       # that dependency's own track record justifies pinning it into every CI
       # run, not a default of this PR.
@@ -848,7 +848,7 @@ jobs:
       # rather than trying to uninstall first - fine in a throwaway
       # container that gets discarded after the job either way.
       - name: Install numpy
-        run: pip install --quiet --break-system-packages --ignore-installed --require-hashes -r requirements-ffmpeg-validate.txt
+        run: pip install --quiet --break-system-packages --ignore-installed --require-hashes -r requirements/requirements-ffmpeg-validate.txt
 
       - name: Report ffmpeg version
         run: ffmpeg -version | head -1

@@ -6,8 +6,8 @@ on:
     paths:
       - "docs/**"
       - "mkdocs.yml"
-      - "requirements-docs.in"
-      - "requirements-docs.txt"
+      - "requirements/requirements-docs.in"
+      - "requirements/requirements-docs.txt"
       - ".github/workflows/docs.yml"
       # Root files the site includes verbatim via pymdownx.snippets
       # (docs/contributing.md and docs/roadmap.md) - an edit to either must
@@ -32,8 +32,8 @@ on:
     paths:
       - "docs/**"
       - "mkdocs.yml"
-      - "requirements-docs.in"
-      - "requirements-docs.txt"
+      - "requirements/requirements-docs.in"
+      - "requirements/requirements-docs.txt"
       - ".github/workflows/docs.yml"
       - "CONTRIBUTING.md"
       - "ROADMAP.md"
@@ -60,7 +60,7 @@ jobs:
         with:
           python-version: "3.x"
 
-      - run: pip install --require-hashes -r requirements-docs.txt
+      - run: pip install --require-hashes -r requirements/requirements-docs.txt
 
       # docs/assets/wasm-decode-demo/ is a committed fallback for a local `mkdocs build` (and
       # this job's own strict build below) - see the deploy job's "Rebuild WASM decode demo"
@@ -106,7 +106,7 @@ jobs:
         with:
           python-version: "3.x"
 
-      - run: pip install --require-hashes -r requirements-docs.txt
+      - run: pip install --require-hashes -r requirements/requirements-docs.txt
 
       # Rebuilds the WASM decode demo (apps/wasm, roadmap F3) fresh and
       # overwrites the committed docs/assets/wasm-decode-demo/ copy before
