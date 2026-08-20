@@ -51,12 +51,12 @@ if(WIN32)
         list(APPEND CPACK_GENERATOR "NSIS")
         set(CPACK_NSIS_PACKAGE_NAME "${CPACK_PACKAGE_NAME}")
         set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
-        # Same source ac3gui's own .rc uses (src/gui/CMakeLists.txt) - the
+        # Same source ac3gui's own .rc uses (apps/gui/CMakeLists.txt) - the
         # installer/uninstaller windows and shortcut both otherwise default
         # to NSIS's own generic icon. NSIS wants a Windows .ico specifically
         # for both variables, which generate_icons.py already produces.
-        set(CPACK_NSIS_MUI_ICON "${PROJECT_SOURCE_DIR}/src/gui/icons/ac3forge.ico")
-        set(CPACK_NSIS_MUI_UNIICON "${PROJECT_SOURCE_DIR}/src/gui/icons/ac3forge.ico")
+        set(CPACK_NSIS_MUI_ICON "${PROJECT_SOURCE_DIR}/apps/gui/icons/ac3forge.ico")
+        set(CPACK_NSIS_MUI_UNIICON "${PROJECT_SOURCE_DIR}/apps/gui/icons/ac3forge.ico")
     endif()
 elseif(APPLE)
     list(APPEND CPACK_GENERATOR "DragNDrop")

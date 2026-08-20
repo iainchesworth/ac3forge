@@ -66,7 +66,7 @@ Catch2, plus Boost and Tracy only if you opt into the `adm`/`profiling` features
 do (see [GUI on Linux](../building.md#gui-on-linux)): a Qt kit isn't assumed present on every
 Mac, not because `ac3gui` cannot be built here. `cmake/FindQt6.cmake` already searches Homebrew's
 Apple Silicon prefixes (`/opt/homebrew/opt/qt`, `/opt/homebrew/opt/qt6`), and
-`src/gui/CMakeLists.txt`'s `APPLE` branch — `MACOSX_BUNDLE`, the `.icns` bundle icon, and
+`apps/gui/CMakeLists.txt`'s `APPLE` branch — `MACOSX_BUNDLE`, the `.icns` bundle icon, and
 `qt_generate_deploy_qml_app_script()` for packaging — was written for this from the start; it
 was simply never exercised until the `macos-llvm` CI leg turned the option on. Opt in explicitly
 once Qt is installed:
@@ -112,7 +112,7 @@ ctest entries total, 100% passing, that one entry in 39.74s of a 56.81s total ru
 first-ever GUI run, confirmed clean on a second push after two real fixes (`QSG_RENDER_LOOP=basic`
 for a Qt Quick render-loop deadlock, and forcing the `Fusion` style in the test binary for a
 native-`ComboBox`-under-offscreen hang - see [GUI on macOS](#gui-on-macos) above and
-`src/gui/tests/CMakeLists.txt`/`qml_test_main.cpp` for the full detail). Real SNR numbers from
+`apps/gui/tests/CMakeLists.txt`/`qml_test_main.cpp` for the full detail). Real SNR numbers from
 the CI run that first proved the gate on macOS: 61.81/61.82 dB, against 67.84/67.82 dB on Linux
 and Windows for the same material — a real but modest cross-compiler floating-point difference
 (Homebrew LLVM's libm vs. glibc's/MSVC's), comfortably clear of the gate's 30 dB floor. That

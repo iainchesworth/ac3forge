@@ -81,7 +81,7 @@ option(AC3FORGE_BUILD_MATROSKA "Build the standalone Matroska container writer (
 option(AC3FORGE_BUILD_MP4 "Build the standalone MP4/ISOBMFF container writer (src/mp4)" ON)
 option(AC3FORGE_BUILD_MPEGTS "Build the standalone MPEG-TS container writer (src/mpegts)" ON)
 
-# apps/cli, src/gui, tests/ and examples/ all link matroska::matroska, mp4::mp4 and
+# apps/cli, apps/gui, tests/ and examples/ all link matroska::matroska, mp4::mp4 and
 # mpegts::mpegts unconditionally - none of them are written to cope with any of the three being
 # absent. AC3FORGE_BUILD_MATROSKA=OFF, AC3FORGE_BUILD_MP4=OFF or AC3FORGE_BUILD_MPEGTS=OFF only
 # make sense with all four also OFF (this is the shape a vcpkg build without the matching
@@ -110,7 +110,7 @@ endif()
 # roadmap item B1 phase 1 ("ADM BWF reader feeding the JOC encoder", see ROADMAP.md), parsing
 # BW64/RF64 + the Audio Definition Model rather than muxing a container. Unlike
 # matroska/mp4/mpegts, it defaults OFF rather than ON and is genuinely additive: nothing in
-# apps/cli, src/gui, tests/ or examples/ links it unconditionally, so every one of those builds
+# apps/cli, apps/gui, tests/ or examples/ links it unconditionally, so every one of those builds
 # identically whether this is on or off. The reason for the different default is its
 # dependency footprint - see src/ac3adm/CMakeLists.txt's own header comment - libadm needs
 # several Boost header libraries, resolved through a dedicated opt-in vcpkg feature
@@ -125,7 +125,7 @@ option(AC3FORGE_BUILD_ADM "Build the standalone BW64/RF64 + ADM parser (src/ac3a
 option(AC3FORGE_BUILD_CAPI "Build the C API over the encode/decode core (src/capi)" ON)
 
 # Roadmap F2: the pybind11 extension module (python/) - off by default like AC3FORGE_BUILD_ADM
-# above, and for the same reason: nothing under src/, apps/cli, src/gui, tests/ or examples/ links
+# above, and for the same reason: nothing under src/, apps/cli, apps/gui, tests/ or examples/ links
 # it or is affected by it either way. A normal C++ build (and every existing CI leg) is unchanged
 # with this OFF. Turned ON by python/pyproject.toml's own cmake.define when scikit-build-core
 # drives the configure for `pip install`/cibuildwheel - see python/CMakeLists.txt.
@@ -134,7 +134,7 @@ option(AC3FORGE_BUILD_PYTHON "Build the pybind11 Python extension module (python
 # enable_testing() has to run before ANY add_subdirectory() that might contain
 # an add_test() call, not merely before tests/ itself - CTest silently drops
 # an add_test() registered from a directory processed earlier in the same
-# configure pass (confirmed the hard way: src/gui/tests/'s ac3gui_qml_tests
+# configure pass (confirmed the hard way: apps/gui/tests/'s ac3gui_qml_tests
 # was invisible to `ctest -N` until this moved here). Calling it unconditionally
 # is harmless when AC3FORGE_BUILD_TESTS is OFF - nothing calls add_test() then.
 if(AC3FORGE_BUILD_TESTS)
@@ -149,7 +149,7 @@ add_subdirectory(src/forge)
 
 # Live capture, monitor playback and IEC 61937 passthrough - the only
 # platform-specific code in the project. After src/forge (PRIVATE-links
-# ac3::forge for the IEC 61937 framer); before apps/cli/src/gui/tests, which
+# ac3::forge for the IEC 61937 framer); before apps/cli/apps/gui/tests, which
 # link it alongside ac3::forge for their live-audio commands/features. Not
 # linked by examples/ - none of them touch live audio.
 #
@@ -241,7 +241,7 @@ if(AC3FORGE_BUILD_CLI)
 endif()
 
 if(AC3FORGE_BUILD_GUI)
-    add_subdirectory(src/gui)
+    add_subdirectory(apps/gui)
 endif()
 
 if(AC3FORGE_BUILD_TESTS)
@@ -273,7 +273,7 @@ if(EMSCRIPTEN)
     add_subdirectory(apps/wasm)
 endif()
 
-# After every target's install() rules (apps/cli, src/gui) have been declared.
+# After every target's install() rules (apps/cli, apps/gui) have been declared.
 include(Packaging)
 
 message(STATUS "ac3forge ${PROJECT_VERSION_FULL}")

@@ -62,7 +62,7 @@
 # threshold on every leg, and exactly why the gate is SNR-based rather than a
 # bit-exact bitstream comparison.
 #
-# Qt Quick Test harness: src/gui/tests/ adds ac3gui_qml_tests, a real ctest
+# Qt Quick Test harness: apps/gui/tests/ adds ac3gui_qml_tests, a real ctest
 # entry (label "gui") that Quick-Test-drives the actual EncoderController
 # singleton and Main.qml shell, registered only when AC3FORGE_BUILD_GUI is
 # ON - so it rides the existing GUI axis rather than adding a new one, and
@@ -308,7 +308,7 @@ jobs:
             '(src/(forge|matroska)|apps/cli)/.*\.cpp'
 
   # ac3tests coverage over ac3::forge (src/forge only - the library is what was
-  # asked for; apps/cli, src/gui and src/matroska are out of scope and unmeasured).
+  # asked for; apps/cli, apps/gui and src/matroska are out of scope and unmeasured).
   # config-linux-gcc-coverage (CMakePresets.json) builds just the library and
   # its test suite - AC3FORGE_BUILD_CLI/EXAMPLES are off there specifically so
   # ac3cli and the seven example executables, which also link the now-instrumented

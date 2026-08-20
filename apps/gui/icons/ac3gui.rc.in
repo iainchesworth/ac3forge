@@ -3,5 +3,5 @@
 // CMakeLists.txt rather than committed as a plain .rc, so AC3_GUI_ICON_ICO
 // carries an absolute path - IDI_ICON1 resolves relative to the current
 // working directory of the rc.exe invocation, not this file's own location,
-// and that directory isn't guaranteed to be src/gui/icons/.
+// and that directory isn't guaranteed to be apps/gui/icons/.
 IDI_ICON1 ICON "@AC3_GUI_ICON_ICO@"

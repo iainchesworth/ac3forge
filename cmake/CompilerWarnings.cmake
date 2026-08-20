@@ -146,11 +146,11 @@ endif()
 # into the build tree and add it to our own target, where it inherits
 # ac3::warnings - so a warning in a file nobody here wrote becomes a build
 # failure under -Werror. It is not ours to fix, so it is not ours to warn
-# about: see how src/gui/CMakeLists.txt applies this to the generated sources.
+# about: see how apps/gui/CMakeLists.txt applies this to the generated sources.
 #
 # Not "/w" on real MSVC, deliberately. cl has very little to say about this
 # generated code under /W4 to begin with (unlike clang-cl and GCC, which
-# reject more of it - see src/gui/CMakeLists.txt for the specific warning),
+# reject more of it - see apps/gui/CMakeLists.txt for the specific warning),
 # so adding /w on top of the target's own /W4 would achieve nothing except a
 # "D9025: overriding '/W4' with '/w'" on every generated file - a warning
 # about the build, appearing on every build, to suppress warnings that were

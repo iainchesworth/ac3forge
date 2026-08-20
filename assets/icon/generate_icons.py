@@ -6,7 +6,7 @@ below, not edited by hand in any of the .ico/.icns/.png/mipmap files this
 writes. Re-run this script (`python assets/icon/generate_icons.py`) after
 changing the design, rather than touching a generated output directly.
 Mirrors the "commit the binary asset into the tree" precedent
-src/gui/fonts/*.ttf already sets for this project - just generated here
+apps/gui/fonts/*.ttf already sets for this project - just generated here
 rather than third-party.
 
 Pillow only (confirmed available: 12.3+, including native ICO and ICNS
@@ -153,7 +153,7 @@ ANDROID_DENSITIES = (
 
 
 def main() -> None:
-    icons_dir = REPO_ROOT / "src" / "gui" / "icons"
+    icons_dir = REPO_ROOT / "apps" / "gui" / "icons"
     icons_dir.mkdir(parents=True, exist_ok=True)
 
     write_ico(icons_dir / "ac3forge.ico")
