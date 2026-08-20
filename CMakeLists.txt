@@ -270,7 +270,7 @@ endif()
 # AC3FORGE_BUILD_* option - there is nothing to opt in or out of on a host
 # that isn't targeting WASM in the first place.
 if(EMSCRIPTEN)
-    add_subdirectory(platform/wasm)
+    add_subdirectory(apps/wasm)
 endif()
 
 # After every target's install() rules (src/cli, src/gui) have been declared.

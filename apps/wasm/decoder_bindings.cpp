@@ -1,5 +1,5 @@
 // Embind wrapper around ac3::forge's decode path, for the roadmap-F3 browser
-// demo (platform/wasm/index.html). One JS-visible class, `Decoder`: feed it
+// demo (apps/wasm/index.html). One JS-visible class, `Decoder`: feed it
 // a raw AC-3/E-AC-3 elementary stream (a Uint8Array, exactly what
 // fetch().arrayBuffer() gives you - no container, no demux step, see
 // ac3::io::scan's own header comment), and it decodes every access unit up

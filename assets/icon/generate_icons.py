@@ -25,7 +25,7 @@ from PIL import Image, ImageDraw
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 
-# The WASM demo page's own existing palette (platform/wasm/index.html's
+# The WASM demo page's own existing palette (apps/wasm/index.html's
 # :root CSS vars: --bg/--accent) - reused here rather than inventing a
 # third brand color for a project that already has one established.
 BG = (11, 18, 32, 255)  # #0b1220
@@ -188,7 +188,7 @@ def main() -> None:
     render_banner().save(banner_dir / "banner.png")
     print(f"wrote {banner_dir}/banner.png")
 
-    wasm_dir = REPO_ROOT / "platform" / "wasm"
+    wasm_dir = REPO_ROOT / "apps" / "wasm"
     render_badge(32).save(wasm_dir / "favicon-32.png")
     print(f"wrote {wasm_dir}/favicon-32.png")
 
