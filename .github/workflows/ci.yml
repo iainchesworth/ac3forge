@@ -28,13 +28,15 @@
 #                                     script's full layout/tool/atmos sweep
 #   static-analysis (tidy)  GREEN     .clang-tidy's curated set, clean baseline
 #   coverage                GREEN     per-component line/branch gates over all
-#                                     nine library components (src/lib 92.0%
-#                                     line / 83.7% branch on the 2026-08-20
+#                                     nine library components (src/lib 92.2%
+#                                     line / 84.1% branch on the 2026-08-20
 #                                     WSL2 calibration run - no hosted run of
 #                                     the per-component gate recorded here
-#                                     yet; src/audio and src/capi measured
-#                                     genuinely thin) - the floors and the
-#                                     full measured table live in
+#                                     yet; src/audio measured genuinely thin,
+#                                     src/capi's own thin spot closed the same
+#                                     day when tests/test_capi.cpp gained its
+#                                     E-AC-3 half) - the floors and the full
+#                                     measured table live in
 #                                     scripts/coverage-report.sh
 #   macos-llvm              GREEN     real GitHub Actions runs - this project
 #                                     has no Mac. Its first-ever run hit one

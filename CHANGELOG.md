@@ -23,6 +23,13 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   88%/78% to track the suite's growth, and the first whole-library measurement put honest floors
   under two thin spots — `src/audio`'s device I/O paths and the C API's E-AC-3 surface — rather
   than leaving them unmeasured. See the script's floor table for every component's numbers.
+- **The C API's E-AC-3 surface is now tested, and its coverage floor raised to match.**
+  `tests/test_capi.cpp` gained the E-AC-3 half it was missing: substream and access-unit round
+  trips across the Annex E tool combinations, dependent-substream and dual mono metadata,
+  transient pre-noise hold-back and flush, the decode/encode error mappings, and the NULL-handle
+  defaults across the whole opaque-handle surface — all on real multi-frame audio. `src/capi`'s
+  measurement moved from 48.4%/27.1% line/branch to 87.8%/79.2%, and its floor in
+  `scripts/coverage-report.sh` from 42/22 to 82/72 per the table's own calibration rule.
 
 ## [0.8.0-beta.2] - 2026-08-19
 

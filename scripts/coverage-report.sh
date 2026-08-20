@@ -54,23 +54,26 @@ fi
 # Calibrated 2026-08-20 against a WSL2 run on the CI toolchain pins (gcc/gcov
 # 15.2.0, gcovr 8.6), measured per component as:
 #
-#   lib 92.0/83.7   audio 31.2/19.9   signing 86.9/61.4   matroska 93.3/91.9
-#   mp4 95.0/90.2   mpegts 93.5/92.5  capi 48.4/27.1      ac3adm 87.2/82.6
-#   admbridge 90.3/85.0               (aggregate 85.2/75.1)
+#   lib 92.2/84.1   audio 31.2/19.9   signing 86.9/61.4   matroska 93.3/91.9
+#   mp4 95.0/90.2   mpegts 93.5/92.5  capi 87.8/79.2      ac3adm 87.2/82.6
+#   admbridge 90.3/85.0               (aggregate 87.4/78.2)
 #
 # Each floor sits ~4-8 points under its measurement: a couple of points for
 # the known WSL-reads-higher-than-hosted effect (see ci.yml's coverage job
 # comment), the rest as ordinary in-flight-churn headroom. Re-check against
 # the first hosted run and tighten if the margin proves generous.
 #
-# src/audio's and src/capi's floors are low because their MEASUREMENTS are
-# low, deliberately not rounded up to look respectable: no test opens an
-# audio device, so the ALSA capture/monitor/passthrough device paths (the
-# bulk of src/audio's lines) never execute headless - only the device-naming/
-# format logic does - and test_capi.cpp exercises the AC-3 encoder/decoder/
-# Atmos surface but barely touches the E-AC-3 half (src/capi/src/eac3.cpp
-# measured 31% line). These floors hold the line while that is true; raising
-# them is a matter of writing the missing tests, not of editing this table.
+# src/audio's floor is low because its MEASUREMENT is low, deliberately not
+# rounded up to look respectable: no test opens an audio device, so the ALSA
+# capture/monitor/passthrough device paths (the bulk of src/audio's lines)
+# never execute headless - only the device-naming/format logic does. The
+# floor holds the line while that is true; raising it is a matter of writing
+# the missing tests, not of editing this table. src/capi sat in the same
+# paragraph (48.4/27.1: test_capi.cpp barely touched the E-AC-3 half,
+# src/capi/src/eac3.cpp measured 31% line) until that half's tests were
+# written; its remaining gap is src/capi/src/internal.hpp's guard() catch
+# clauses (allocation failure is not fakeable from a test) and the
+# defensively unreachable enum fallthroughs beside them.
 components="
 lib        88 78
 audio      25 15
@@ -78,7 +81,7 @@ signing    82 55
 matroska   88 85
 mp4        90 85
 mpegts     88 85
-capi       42 22
+capi       82 72
 ac3adm     82 75
 admbridge  85 78
 "
