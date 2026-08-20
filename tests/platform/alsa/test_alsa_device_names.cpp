@@ -187,6 +187,27 @@ TEST_CASE("an HDMI PCM that also says digital is classified as HDMI") {
     CHECK(classify_digital_output("HDMI 0 Digital Out") == DigitalOutput::kHdmi);
 }
 
+TEST_CASE("a PCM with no marker of its own falls back to the card's name") {
+    // vc4-hdmi (Raspberry Pi's HDMI output) names every PCM identically -
+    // "MAI PCM i2s-hifi-0" - regardless of which HDMI port it is; "hdmi" only
+    // ever shows up in the card's own id ("vc4hdmi0") and name ("vc4-hdmi-0").
+    // Found live: a real receiver connected and ELD-populated, and 'ac3cli
+    // outputs' still reported no render endpoints until this fallback existed.
+    CHECK(classify_digital_output("MAI PCM i2s-hifi-0", "vc4hdmi0", "vc4-hdmi-0") ==
+          DigitalOutput::kHdmi);
+    CHECK(classify_digital_output("MAI PCM i2s-hifi-0", "vc4hdmi1", "vc4-hdmi-1") ==
+          DigitalOutput::kHdmi);
+
+    // The device name is still checked first: a driver that names the PCM
+    // itself doesn't need the card to say anything.
+    CHECK(classify_digital_output("HDMI 0", "PCH", "HDA Intel PCH") == DigitalOutput::kHdmi);
+
+    // A genuinely analog device stays kNone even though the fallback ran -
+    // nothing in "bcm2835 Headphones" (device, id, or name) says digital.
+    CHECK(classify_digital_output("bcm2835 Headphones", "Headphones", "bcm2835 Headphones") ==
+          DigitalOutput::kNone);
+}
+
 TEST_CASE("a configuration device name indexes the plugin, not the hardware") {
     // hdmi:DEV=n is the card's n-th HDMI PCM, which on an HDA card is hardware
     // device 3, 7, 8... - so this must never be built from the hw device
