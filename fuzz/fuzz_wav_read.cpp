@@ -6,7 +6,7 @@
 
 #include "ac3/io/wav.hpp"
 
-// read_wav's only interface is a path (src/lib/include/ac3/io/wav.hpp), not a
+// read_wav's only interface is a path (src/forge/include/ac3/io/wav.hpp), not a
 // byte span, so the one unavoidable step beyond calling it directly is
 // round-tripping libFuzzer's buffer through a scratch file - there is no
 // in-memory entry point to call instead. /dev/shm keeps that off real disk

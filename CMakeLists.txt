@@ -144,10 +144,10 @@ endif()
 # Targets
 # ---------------------------------------------------------------------------
 # The library holds the entire codec and spatial engine and is GUI-free.
-add_subdirectory(src/lib)
+add_subdirectory(src/forge)
 
 # Live capture, monitor playback and IEC 61937 passthrough - the only
-# platform-specific code in the project. After src/lib (PRIVATE-links
+# platform-specific code in the project. After src/forge (PRIVATE-links
 # ac3::forge for the IEC 61937 framer); before src/cli/src/gui/tests, which
 # link it alongside ac3::forge for their live-audio commands/features. Not
 # linked by examples/ - none of them touch live audio.
@@ -166,7 +166,7 @@ endif()
 # the HMAC construction and authenticated-region layout are in-tree, and the
 # only secret - the key - is supplied by the operator at runtime, never
 # embedded, so unlike the old quarantine overlay this is committed and built by
-# default. After src/lib so it can reuse the codec's parsing primitives; before
+# default. After src/forge so it can reuse the codec's parsing primitives; before
 # src/cli so ac3cli can link it.
 add_subdirectory(src/signing)
 
@@ -207,7 +207,7 @@ if(AC3FORGE_BUILD_ADM)
     add_subdirectory(src/adm_bridge)
 endif()
 
-# ac3forge_c (roadmap F1) - after src/lib so ac3::forge_static exists to embed, gated by its own
+# ac3forge_c (roadmap F1) - after src/forge so ac3::forge_static exists to embed, gated by its own
 # AC3FORGE_BUILD_CAPI option (see the option() above) the same way matroska/mp4/mpegts are gated by
 # theirs.
 if(AC3FORGE_BUILD_CAPI)

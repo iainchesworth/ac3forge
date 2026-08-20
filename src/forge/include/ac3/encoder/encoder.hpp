@@ -132,7 +132,7 @@ class AC3FORGE_EXPORT FrameEncoder {
     std::uint64_t rate_accumulator_ = 0;  // ideal-bits Bresenham state
     std::uint64_t words_emitted_ = 0;
     // The previous frame's converged SNR-offset composite, warm-starting the
-    // next frame's search (src/lib/src/encoder/snr_search.hpp). Performance
+    // next frame's search (src/forge/src/encoder/snr_search.hpp). Performance
     // state only: it changes how fast the search converges, never which
     // offset it converges to. Negative until a frame has been encoded.
     int snr_search_hint_ = -1;

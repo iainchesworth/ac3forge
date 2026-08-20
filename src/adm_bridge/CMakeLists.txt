@@ -9,7 +9,7 @@
 #     header comments) - it does not, and should not, gain a dependency on
 #     ac3::forge/ac3::oba just to know what an "object" or "bed" means in
 #     JOC/Atmos terms.
-#   - src/lib (-> ac3::forge, ac3::oba::AtmosEncoder) is always built,
+#   - src/forge (-> ac3::forge, ac3::oba::AtmosEncoder) is always built,
 #     unconditionally, by every configuration of this project. It cannot
 #     gain a dependency on the opt-in, Boost-requiring ac3adm without
 #     breaking every default build - the exact reason ac3adm itself defaults

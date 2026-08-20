@@ -3,7 +3,7 @@
 # Platform-isolation guard.
 #
 # ac3forge branches on the operating system in CMake, never in the preprocessor:
-# src/lib/CMakeLists.txt picks capture_wasapi.cpp or capture_stub.cpp (and the
+# src/forge/CMakeLists.txt picks capture_wasapi.cpp or capture_stub.cpp (and the
 # passthrough pair) for the target OS, so exactly one implementation is ever
 # compiled. That only stays true if nobody reaches for an #ifdef, and an #ifdef
 # is the path of least resistance the moment a second platform misbehaves --
@@ -14,7 +14,7 @@
 # nothing to keep at zero, and zero is a far easier line to hold than "only the
 # justified ones". Header-configuration defines that a platform header genuinely
 # requires (WIN32_LEAN_AND_MEAN, NOMINMAX) belong in target_compile_definitions
-# -- see the WIN32 block in src/lib/CMakeLists.txt for the worked example.
+# -- see the WIN32 block in src/forge/CMakeLists.txt for the worked example.
 #
 # Include guards are not affected: the codebase uses #pragma once.
 #
@@ -89,7 +89,7 @@ foreach ($file in $files) {
 if ($violations.Count -gt 0) {
     Write-Host ''
     Write-Host 'Platform-isolation violation: preprocessor conditional in src/.' -ForegroundColor Red
-    Write-Host 'Per-OS code is selected by CMake (see the WIN32 block in src/lib/CMakeLists.txt),'
+    Write-Host 'Per-OS code is selected by CMake (see the WIN32 block in src/forge/CMakeLists.txt),'
     Write-Host 'so it belongs in its own translation unit, not behind an #ifdef.'
     Write-Host ''
     foreach ($v in $violations) {

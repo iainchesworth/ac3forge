@@ -39,7 +39,7 @@ endif()
 # print and run straight past.
 #
 # Set on forge_objects, not the forge_static/forge_shared wrapper
-# targets: the actual codec sources compile there (see src/lib/CMakeLists.txt),
+# targets: the actual codec sources compile there (see src/forge/CMakeLists.txt),
 # and PUBLIC on an OBJECT library's usage requirements still propagates
 # through PUBLIC target_link_libraries(forge_static PUBLIC forge_objects)
 # to whatever finally links ac3::forge - here, each fuzz harness below.
@@ -74,21 +74,21 @@ function(ac3forge_add_fuzzer name)
 endfunction()
 
 # ac3::io::scan: format-sniffing over an unidentified byte stream, before any
-# decoder commits to a layout (src/lib/src/io/elementary.cpp).
+# decoder commits to a layout (src/forge/src/io/elementary.cpp).
 ac3forge_add_fuzzer(fuzz_scan)
 
 # split_frames + FrameDecoder::decode_frame, driven the way ac3cli's 'decode'
-# drives them (src/lib/src/decoder/decoder.cpp).
+# drives them (src/forge/src/decoder/decoder.cpp).
 ac3forge_add_fuzzer(fuzz_ac3_decode)
 
 # split_access_units + Eac3Decoder::decode_access_unit (which calls
 # decode_substream internally), driven the way ac3cli's 'decode' drives them
-# for E-AC-3 (src/lib/src/decoder/eac3_decoder.cpp).
+# for E-AC-3 (src/forge/src/decoder/eac3_decoder.cpp).
 ac3forge_add_fuzzer(fuzz_eac3_decode)
 
 # ac3::io::read_wav: a realistic input too, not only an adversarial one - a
 # truncated or hand-edited WAV is exactly what a user hands the CLI
-# (src/lib/src/io/wav.cpp).
+# (src/forge/src/io/wav.cpp).
 ac3forge_add_fuzzer(fuzz_wav_read)
 
 # --- Differential mode (roadmap G3) -----------------------------------------

@@ -5,7 +5,7 @@
 // #ifdef here - the file's path is what says "Windows".
 //
 // WIN32_LEAN_AND_MEAN and NOMINMAX are set by the WIN32 block of
-// src/lib/CMakeLists.txt, not by #defines here: they configure <windows.h> for
+// src/forge/CMakeLists.txt, not by #defines here: they configure <windows.h> for
 // every translation unit that pulls it in, and one setting in one place cannot
 // disagree with itself the way per-file guards can.
 

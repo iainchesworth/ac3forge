@@ -9,7 +9,7 @@
 #include "ac3/core/tables.hpp"
 #include "ac3/meta/mixing.hpp"
 
-// ac3::meta::mixing (src/lib/src/meta/mixing.cpp) is the §7.8 downmix - what
+// ac3::meta::mixing (src/forge/src/meta/mixing.cpp) is the §7.8 downmix - what
 // most listeners actually hear when a 5.1 (or narrower) programme folds down
 // to a 2-speaker or 1-speaker system - plus the mix-metadata tables and LFE
 // mix-level formula A/52 and E-AC-3's mixmdate carry. test_drc.cpp has two

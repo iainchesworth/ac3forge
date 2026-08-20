@@ -21,7 +21,7 @@
 // called with a zero count / empty span, so no separate "empty" variant is
 // needed). Internal to src/mp4/src/ on purpose - this is plumbing between
 // translation units of the same library, not public API; see
-// src/lib/src/encoder/snr_search.hpp for the identical pattern elsewhere in
+// src/forge/src/encoder/snr_search.hpp for the identical pattern elsewhere in
 // this codebase.
 //
 // Every free function here is `inline`: this header is included by more

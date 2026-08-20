@@ -3,7 +3,7 @@
 #
 # Defines an INTERFACE target `ac3::tracy` that, when AC3FORGE_ENABLE_TRACY is
 # on, links Tracy's client library and defines AC3FORGE_TRACY_ENABLED, which
-# src/lib/include/ac3/internal/profiling.hpp uses to turn AC3_ZONE_SCOPED()
+# src/forge/include/ac3/internal/profiling.hpp uses to turn AC3_ZONE_SCOPED()
 # etc. into real Tracy zones instead of no-ops. Off by default, matching
 # Coverage.cmake's shape: normal dev/CI builds pay no instrumentation cost and
 # do not even need Tracy present.

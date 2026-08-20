@@ -17,7 +17,7 @@
 // platform backend) - traced with Tracy to the forward MDCT recomputing
 // std::cos() fresh inside an O(N^2) loop on every call, instead of using a
 // precomputed table the way the inverse transform right next to it already
-// did (see src/lib/src/core/mdct.cpp's ForwardCosTable). Every other test in
+// did (see src/forge/src/core/mdct.cpp's ForwardCosTable). Every other test in
 // this suite asserts correctness, not throughput, so nothing would have
 // caught a regression like that - this file exists specifically to fail
 // loudly if the encoder ever stops being faster than real time again, from

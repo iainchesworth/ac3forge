@@ -19,7 +19,7 @@
 //
 // ac3::admbridge sits between two modules that otherwise know nothing about each other:
 // ac3adm::ac3adm (src/ac3adm, codec-blind by design - see its own header comments) and
-// ac3::forge/ac3::oba (src/lib, always built, no dependency on the opt-in, Boost-requiring
+// ac3::forge/ac3::oba (src/forge, always built, no dependency on the opt-in, Boost-requiring
 // ac3adm). This module is the one place both are allowed to meet, and - like ac3adm::ac3adm
 // itself - it is gated behind AC3FORGE_BUILD_ADM: it is meaningless without ac3adm, and
 // ac3::forge is unconditionally available regardless of whether this module is built at all. See

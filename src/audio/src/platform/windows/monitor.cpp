@@ -5,7 +5,7 @@
 // #ifdef here - the file's path is what says "Windows".
 //
 // WIN32_LEAN_AND_MEAN and NOMINMAX are set by the WIN32 block of
-// src/lib/CMakeLists.txt; see passthrough.cpp for why that lives there rather
+// src/forge/CMakeLists.txt; see passthrough.cpp for why that lives there rather
 // than as #defines here.
 
 #include <windows.h>

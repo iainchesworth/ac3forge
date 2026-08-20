@@ -37,7 +37,7 @@ Two hard constraints rule out folding this into either side it bridges:
 
 - `ac3adm::ac3adm` is documentedly codec-blind — its own header comments and this project's design
   keep it with zero dependency on `ac3::forge`/`ac3::oba`, and that does not change here.
-- `src/lib` (`ac3::forge`, `ac3::oba::AtmosEncoder`) is always built, unconditionally, by every
+- `src/forge` (`ac3::forge`, `ac3::oba::AtmosEncoder`) is always built, unconditionally, by every
   configuration of this project. It cannot gain a dependency on the opt-in, Boost-requiring
   `ac3adm` without breaking every default build.
 

@@ -1,6 +1,6 @@
 # Using ac3::forge
 
-The public API is the headers under `src/lib/include/ac3/`. Link `ac3::forge`; link
+The public API is the headers under `src/forge/include/ac3/`. Link `ac3::forge`; link
 `matroska::matroska` and/or `mp4::mp4` as well if you want a container writer, or `ac3adm::ac3adm`
 if you want to read a professional ADM BWF master — the one module in this list that is a reader
 rather than a writer, and so does not need `ac3::forge` linked alongside it at all. Unlike every

@@ -1,7 +1,7 @@
 // pybind11 bindings for ac3forge (roadmap F2) - wraps ac3::FrameEncoder, ac3::FrameDecoder,
 // ac3::Eac3Decoder and ac3::oba::AtmosEncoder directly (pybind11-direct, per the roadmap's own
 // dependency note - no intermediate C API). Every C++ class kept here is exactly the one
-// declared in src/lib/include/ac3/{encoder/encoder,decoder/decoder,oba/atmos}.hpp; this file adds
+// declared in src/forge/include/ac3/{encoder/encoder,decoder/decoder,oba/atmos}.hpp; this file adds
 // no codec behaviour of its own; error handling exists only because Python has no
 // std::expected-shaped calling convention.
 //

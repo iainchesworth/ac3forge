@@ -10,7 +10,7 @@
 // its bit-allocation evaluation ~11 times a frame; the phase-5 Tracy zones
 // (PR #115/#120) put that cluster at the top of both paths' profiles.
 //
-// Internal to src/lib/src/encoder/ on purpose - this is plumbing between the
+// Internal to src/forge/src/encoder/ on purpose - this is plumbing between the
 // two encoder translation units, not library surface.
 
 namespace ac3::internal {

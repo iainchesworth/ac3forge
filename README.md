@@ -138,7 +138,7 @@ full test-suite counts — all in [Validation](docs/verification.md).
 
 ```
 cmake/          toolchains, Qt/CPack/sanitizer/coverage modules, vcpkg triplet overlays
-src/lib/        ac3::forge — the whole codec, GUI-free
+src/forge/        ac3::forge — the whole codec, GUI-free
 src/matroska/   matroska::matroska — a standalone MKV muxer, no ac3::forge dependency
 src/mp4/        mp4::mp4 — a standalone MP4/ISOBMFF muxer plus fMP4/CMAF + HLS/DASH, no ac3::forge dependency
 src/mpegts/     mpegts::mpegts — a standalone MPEG-2 Transport Stream muxer, no ac3::forge dependency

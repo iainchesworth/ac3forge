@@ -15,7 +15,7 @@
 // for the MDCT; dft512's move from its direct-form sum onto this core is
 // that file's own, separately-verified change.
 //
-// Internal to src/lib/src/core/ on purpose - transform plumbing between
+// Internal to src/forge/src/core/ on purpose - transform plumbing between
 // translation units, not library surface.
 
 namespace ac3::internal {

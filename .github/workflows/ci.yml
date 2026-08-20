@@ -27,7 +27,7 @@
 #                                     _build.yml. Also runs the codec-matrix
 #                                     script's full layout/tool/atmos sweep
 #   static-analysis (tidy)  GREEN     .clang-tidy's curated set, clean baseline
-#   coverage                GREEN     81.3% line / 72.0% branch over src/lib
+#   coverage                GREEN     81.3% line / 72.0% branch over src/forge
 #                                     (ac3::forge only) when last recorded
 #                                     here, gated at 80%/70% - see the job's
 #                                     own comment for why the gate sits below
@@ -293,7 +293,7 @@ jobs:
             -warnings-as-errors='*' \
             'src/(lib|cli|matroska)/.*\.cpp'
 
-  # ac3tests coverage over ac3::forge (src/lib only - the library is what was
+  # ac3tests coverage over ac3::forge (src/forge only - the library is what was
   # asked for; src/cli, src/gui and src/matroska are out of scope and unmeasured).
   # config-linux-gcc-coverage (CMakePresets.json) builds just the library and
   # its test suite - AC3FORGE_BUILD_CLI/EXAMPLES are off there specifically so
@@ -365,7 +365,7 @@ jobs:
       # measurable overhead - a coverage build has no more business being
       # held to a hard real-time budget than the linux-llvm-asan-ubsan leg
       # does (same reasoning, see that matrix entry's own comment). This
-      # job's question is "how much of src/lib executes", not "how fast" -
+      # job's question is "how much of src/forge executes", not "how fast" -
       # tests/performance/'s own suite covers the latter on a genuinely
       # optimized build.
       - name: Test
@@ -383,7 +383,7 @@ jobs:
       - name: Coverage report + gate
         shell: bash
         run: >
-          gcovr --root . --filter 'src/lib/.*'
+          gcovr --root . --filter 'src/forge/.*'
           --gcov-executable gcov-15
           --exclude-throw-branches --exclude-unreachable-branches
           --gcov-ignore-errors=no_working_dir_found

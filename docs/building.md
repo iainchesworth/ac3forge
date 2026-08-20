@@ -119,7 +119,7 @@ instrumentation; other compilers just warn and skip it) plus `AC3FORGE_BUILD_CLI
 `AC3FORGE_BUILD_EXAMPLES=OFF` — `ac3cli` and the twenty `examples/` executables also link the
 now-instrumented `ac3::forge`, and turning them off avoids having to wire `ac3::coverage` into
 them too just to resolve its gcov runtime symbols at link time for targets nobody is measuring
-coverage of anyway. `.github/workflows/ci.yml`'s `coverage` job runs `gcovr` over `src/lib/*`
+coverage of anyway. `.github/workflows/ci.yml`'s `coverage` job runs `gcovr` over `src/forge/*`
 after `ctest` and gates on line/branch percentage — see that job's own comment for the current
 thresholds and why they sit below the measured baseline.
 
@@ -523,7 +523,7 @@ real QML channel meters. See [Linux audio](#linux-audio) for what the ALSA verif
 and did not (real hardware), prove.
 
 linux-gcc, linux-llvm, linux-gcc-arm64, linux-llvm-arm64, linux-llvm-asan-ubsan, macos-llvm,
-static-analysis (clang-tidy), coverage (gcovr over `src/lib`, via `config-linux-gcc-coverage`),
+static-analysis (clang-tidy), coverage (gcovr over `src/forge`, via `config-linux-gcc-coverage`),
 adm-validate (the opt-in ADM module) and ffmpeg-validate all run on every push, as does
 build-android (the Shield app's debug APK) — the four Linux build legs install the same
 Qt6/ALSA packages and build/smoke-test the GUI too. ffmpeg-validate is a

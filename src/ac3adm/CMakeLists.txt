@@ -112,7 +112,7 @@ FetchContent_MakeAvailable(libadm)
 # ---------------------------------------------------------------------------
 # ac3adm's own targets - built and installed as both a static and a shared
 # library, same OBJECT-library-plus-two-thin-wrappers shape as every other
-# component here; see src/lib/CMakeLists.txt's ac3::forge for the full
+# component here; see src/forge/CMakeLists.txt's ac3::forge for the full
 # explanation of why.
 # ---------------------------------------------------------------------------
 add_library(ac3adm_objects OBJECT)
@@ -143,7 +143,7 @@ target_include_directories(ac3adm_objects
 
 target_compile_features(ac3adm_objects PUBLIC cxx_std_23)
 
-# $<BUILD_INTERFACE:...> wrapping ac3::warnings - see src/lib/CMakeLists.txt's identical
+# $<BUILD_INTERFACE:...> wrapping ac3::warnings - see src/forge/CMakeLists.txt's identical
 # ac3forge_objects treatment for why a plain PRIVATE link isn't enough for an OBJECT
 # library that's part of an install(EXPORT) set. bw64/adm are PRIVATE too: neither
 # library's types cross ac3adm's own public API (see this file's header comment), so
