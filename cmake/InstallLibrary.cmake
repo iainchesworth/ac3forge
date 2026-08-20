@@ -22,7 +22,7 @@
 # Every install() rule below carries COMPONENT library: without one, CPack
 # files it under its own "Unspecified" component, inconsistent once
 # component-based packaging is on (see cmake/Packaging.cmake) - same reason
-# src/cli/CMakeLists.txt's ac3cli install() carries COMPONENT runtime.
+# apps/cli/CMakeLists.txt's ac3cli install() carries COMPONENT runtime.
 #
 # The LIBRARY DESTINATION rules below additionally carry NAMELINK_COMPONENT
 # library, splitting them from COMPONENT libruntime. On Unix, a versioned

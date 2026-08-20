@@ -2655,7 +2655,7 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
 // principle this file's own platform/stdio_binary.cpp split already uses for an OS difference
 // applies here to a library-linked-or-not difference instead: adm/atmos_adm.hpp declares
 // ac3cli::load_adm_atmos_source() and ac3cli::adm_capability() unconditionally, in terms of
-// ac3::oba's own always-available types only, and src/cli/CMakeLists.txt compiles exactly one of
+// ac3::oba's own always-available types only, and apps/cli/CMakeLists.txt compiles exactly one of
 // adm/enabled/atmos_adm.cpp (the real ac3adm/admbridge call) or adm/disabled/atmos_adm.cpp (a
 // stub) into this same ac3cli binary - never both, never neither. This function, and its
 // kCommands row below, are therefore unconditional too: 'atmos-adm' is always one of the 26 rows

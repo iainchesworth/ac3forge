@@ -176,7 +176,7 @@ TestCase {
         // onreadystatechange never reaches DONE), so this checks the write
         // itself succeeds rather than re-parsing the result - the format
         // exportObjectPaths writes (parse_path_file's own grammar,
-        // src/cli/main.cpp: "object_index time_s x y z gain lfe_send" per
+        // apps/cli/main.cpp: "object_index time_s x y z gain lfe_send" per
         // line, addressed by flat channel index) is what the CLI side's
         // own atmos-encode-with-keyframes-file tests exercise end to end.
         const ok = EncoderController.exportObjectPaths(exportedPathsUrl);
