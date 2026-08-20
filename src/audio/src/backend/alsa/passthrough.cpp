@@ -228,7 +228,8 @@ std::vector<Candidate> find_candidates() {
             hdmi_index = 0;
             spdif_index = 0;
         }
-        const DigitalOutput kind = alsa::classify_digital_output(entry.device_name);
+        const DigitalOutput kind =
+            alsa::classify_digital_output(entry.device_name, entry.card_id, entry.card_name);
         if (kind == DigitalOutput::kNone) {
             return;
         }
