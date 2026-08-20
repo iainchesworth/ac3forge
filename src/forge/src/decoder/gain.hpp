@@ -9,10 +9,10 @@
 
 // The §7.7 gain math both decoders apply, shared so a future correction to
 // the partial-compression exponent or the compr-fallback rule only has one
-// place to land. Internal to src/lib/src/decoder/ on purpose - this is
+// place to land. Internal to src/forge/src/decoder/ on purpose - this is
 // plumbing between the two decoder translation units (decoder.cpp and
 // eac3_decoder.cpp), not library surface - the same convention
-// src/lib/src/encoder/snr_search.hpp uses for its own cross-TU helper.
+// src/forge/src/encoder/snr_search.hpp uses for its own cross-TU helper.
 
 namespace ac3::internal {
 

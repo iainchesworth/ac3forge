@@ -30,7 +30,7 @@ from pathlib import Path
 
 # Not the stdlib `wave` module: it hard-rejects WAVE_FORMAT_IEEE_FLOAT
 # (format tag 3, "unknown format: 3") with no opt-out, and ac3cli's own
-# decode writes exactly that (see write_wav_f32 in src/lib/src/io/wav.cpp) -
+# decode writes exactly that (see write_wav_f32 in src/forge/src/io/wav.cpp) -
 # confirmed locally, this is not a hypothetical. A small manual RIFF/WAVE
 # walk (mirroring that same C++ reader) handles PCM16 and float32 uniformly,
 # plus WAVE_FORMAT_EXTENSIBLE, without needing two code paths.

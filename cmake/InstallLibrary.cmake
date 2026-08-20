@@ -6,7 +6,7 @@
 # NOT installed/exported here - it is a CLI/GUI implementation detail, not part of the
 # distributed package; see docs/library/index.md.
 #
-# include()'d from the root CMakeLists.txt after add_subdirectory(src/lib) and, for each
+# include()'d from the root CMakeLists.txt after add_subdirectory(src/forge) and, for each
 # optional component, its own guarded add_subdirectory(src/matroska|mp4|mpegts), before
 # include(Packaging) - CPack's own library component (cmake/Packaging.cmake) packages exactly
 # what gets install()'d here.
@@ -111,19 +111,19 @@ install(TARGETS ${_ac3forge_forge_install_targets}
     ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT library)
 
 # Source headers, from ac3::forge's include/ tree.
-install(DIRECTORY "${PROJECT_SOURCE_DIR}/src/lib/include/"
+install(DIRECTORY "${PROJECT_SOURCE_DIR}/src/forge/include/"
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
     COMPONENT library)
 
 # Generated headers - ac3/version.hpp (from ac3/version.hpp.in) and the
 # generate_export_header() output - live in the library's own binary dir, not
-# its source tree (see src/lib/CMakeLists.txt), so the install(DIRECTORY
+# its source tree (see src/forge/CMakeLists.txt), so the install(DIRECTORY
 # .../include/) call above never sees them. A consumer's
 # #include <ac3/version.hpp>/<ac3/export.hpp> needs both installed at the
 # same relative paths the in-tree BUILD_INTERFACE include dirs already use.
 install(FILES
-        "${CMAKE_BINARY_DIR}/src/lib/generated/ac3/version.hpp"
-        "${CMAKE_BINARY_DIR}/src/lib/generated/ac3/export.hpp"
+        "${CMAKE_BINARY_DIR}/src/forge/generated/ac3/version.hpp"
+        "${CMAKE_BINARY_DIR}/src/forge/generated/ac3/export.hpp"
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/ac3"
     COMPONENT library)
 
@@ -222,7 +222,7 @@ configure_package_config_file(
     INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/ac3forge")
 
 # SameMajorVersion, not exact: pre-1.0, there is no ABI-compatibility promise
-# across any two releases (see src/lib/CMakeLists.txt's SOVERSION comment for
+# across any two releases (see src/forge/CMakeLists.txt's SOVERSION comment for
 # the full reasoning), but SameMajorVersion is the conventional default and
 # is what actually governs here - find_package()'s own version matching
 # against a requested `find_package(ac3forge X.Y.Z)`, not the .so's SONAME

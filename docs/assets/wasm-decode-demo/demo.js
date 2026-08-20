@@ -13,7 +13,7 @@
 // objects and only shows the speaker-ring/bed panel.
 
 // Ear-level ring: ac3::spatial's kSpeakerAzimuthDeg
-// (src/lib/include/ac3/spatial/spatial.hpp), ITU-R BS.775, degrees CCW from
+// (src/forge/include/ac3/spatial/spatial.hpp), ITU-R BS.775, degrees CCW from
 // front, left positive. Ceiling ring: the same azimuth convention extended to
 // Table E2.5's height locations, matching src/gui/qml/SoundfieldView.qml's own
 // extension (its location_azimuth_deg()) - a second, smaller, dashed ring for

@@ -203,7 +203,7 @@ run decode eac3_silence.ec3 eac3_silence.wav
 run_ffmpeg_check eac3_silence.ec3
 
 # "atten:N" and "noatten" alone tune spectral extension's notch but do not,
-# by themselves, turn spx on (see parse_tools in src/lib/src/encoder/plan.cpp)
+# by themselves, turn spx on (see parse_tools in src/forge/src/encoder/plan.cpp)
 # - so they round-trip like "none". "nofastmdct" is the same shape one step
 # further: not a coding tool at all, just the direct-form forward MDCT
 # instead of the default fast path, so its stream differs from "none"'s only

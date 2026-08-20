@@ -12,7 +12,7 @@
 
 #include "ac3/io/wav.hpp"
 
-// ac3::io::read_wav/parse_wav (src/lib/src/io/wav.cpp) is the file every
+// ac3::io::read_wav/parse_wav (src/forge/src/io/wav.cpp) is the file every
 // codec-path test in this suite leans on to get real audio in and decoded
 // audio back out - but nothing exercises the parser itself: its RIFF/WAVE
 // validation, its PCM16 decode path (every other test only round-trips

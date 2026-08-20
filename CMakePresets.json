@@ -167,7 +167,7 @@
     {
       "name": "coverage",
       "hidden": true,
-      "description": "gcov source coverage instrumentation (cmake/Coverage.cmake) over ac3::forge and ac3tests. CLI and examples are off: both link ac3::forge, and an instrumented library's gcov runtime symbols would otherwise need resolving on their link lines too for no coverage benefit, since gcovr's report is filtered to src/lib/.* anyway - see .github/workflows/ci.yml's coverage job.",
+      "description": "gcov source coverage instrumentation (cmake/Coverage.cmake) over ac3::forge and ac3tests. CLI and examples are off: both link ac3::forge, and an instrumented library's gcov runtime symbols would otherwise need resolving on their link lines too for no coverage benefit, since gcovr's report is filtered to src/forge/.* anyway - see .github/workflows/ci.yml's coverage job.",
       "cacheVariables": {
         "AC3FORGE_ENABLE_COVERAGE": "ON",
         "AC3FORGE_BUILD_CLI": "OFF",

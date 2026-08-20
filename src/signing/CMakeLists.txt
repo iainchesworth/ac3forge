@@ -42,7 +42,7 @@ set_target_properties(ac3_signing PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # under -Wall -Wextra - and the suggested _dupenv_s is a Microsoft CRT
 # extension with no NDK/POSIX equivalent, so "fix the code" is not an option
 # that stays cross-platform. Scoped to this one compiler's opinion of a
-# standard C function, the same way src/lib handles its own MSVC-only
+# standard C function, the same way src/forge handles its own MSVC-only
 # suppressions (see cmake/CompilerWarnings.cmake).
 if(MSVC)
     target_compile_options(ac3_signing PRIVATE /wd4996)

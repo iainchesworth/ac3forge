@@ -1,7 +1,7 @@
 #pragma once
 
 // Zone macros for Tracy instrumentation, real-Tracy variant - selected by
-// CMake (src/lib/CMakeLists.txt adds this directory, not the tracy_disabled
+// CMake (src/forge/CMakeLists.txt adds this directory, not the tracy_disabled
 // sibling, to forge_objects's private include path when AC3FORGE_ENABLE_TRACY
 // is on - see cmake/Tracy.cmake) rather than an #ifdef, per the project's
 // platform/feature-isolation rule (scripts/check-platform-macros.ps1):
