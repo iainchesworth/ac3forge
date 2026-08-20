@@ -161,12 +161,14 @@ enum class DigitalOutput {
     kSpdif,   // reached through the `iec958` plugin: optical or coaxial
 };
 
-[[nodiscard]] inline DigitalOutput classify_digital_output(std::string_view pcm_name) {
-    // Case-fold once; driver spellings vary ("HDMI", "hdmi", "IEC958",
-    // "iec958", "S/PDIF", "SPDIF", "Digital Out").
+namespace detail {
+
+// Case-folds once and matches the same markers `classify_digital_output`
+// documents; factored out so it can be tried against more than one string.
+[[nodiscard]] inline DigitalOutput classify_one(std::string_view name) {
     std::string folded;
-    folded.reserve(pcm_name.size());
-    for (const char c : pcm_name) {
+    folded.reserve(name.size());
+    for (const char c : name) {
         folded.push_back(c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c);
     }
     // HDMI first: an HDMI PCM is usually also called a digital output, and it
@@ -180,6 +182,26 @@ enum class DigitalOutput {
         }
     }
     return DigitalOutput::kNone;
+}
+
+}  // namespace detail
+
+[[nodiscard]] inline DigitalOutput classify_digital_output(std::string_view pcm_name,
+                                                             std::string_view card_id = {},
+                                                             std::string_view card_name = {}) {
+    if (const auto kind = detail::classify_one(pcm_name); kind != DigitalOutput::kNone) {
+        return kind;
+    }
+    // Some drivers name the PCM itself generically and put the only marker on
+    // the card instead: vc4-hdmi (Raspberry Pi's HDMI output) calls every PCM
+    // "MAI PCM i2s-hifi-0" - "hdmi" only ever appears in the card's own id
+    // ("vc4hdmi0") and name ("vc4-hdmi-0"). Falling back to those costs
+    // nothing here: a wrong guess is still caught by the open+probe that
+    // follows, per the type's own doc comment above.
+    if (const auto kind = detail::classify_one(card_id); kind != DigitalOutput::kNone) {
+        return kind;
+    }
+    return detail::classify_one(card_name);
 }
 
 // The alsa-lib device name for the `index`-th digital output of `card_id`.
