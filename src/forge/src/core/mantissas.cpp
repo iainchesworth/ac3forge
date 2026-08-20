@@ -126,6 +126,14 @@ void MantissaBlockWriter::finish_block() {
     flush(bap4_, 2);
 }
 
+void MantissaBlockWriter::reset() {
+    bap1_ = {};
+    bap2_ = {};
+    bap4_ = {};
+    tokens_.clear();
+    bit_count_ = 0;
+}
+
 std::size_t mantissa_bits_per_block(
     std::span<const std::span<const std::uint8_t>> channel_baps) {
     AC3_ZONE_SCOPED_N("mantissa_bits_per_block");
