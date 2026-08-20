@@ -47,7 +47,7 @@ mixes are delivered as master files.
   [`examples/encode_adm.cpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/encode_adm.cpp).
   `ac3cli` still builds and works identically whether `AC3FORGE_BUILD_ADM` is on or off, just with
   or without this one command — with no preprocessor conditional anywhere
-  (`scripts/check-platform-macros.ps1` forbids one under `src/`, feature flags included):
+  (`tools/checks/check_platform_macros.ps1` forbids one under `src/`, feature flags included):
   `atmos-adm` is always one row in `main.cpp`'s command table, gated at dispatch time by a new
   `Needs::kAdm`/`unmet()` case (the same mechanism `Needs::kCapture`/`kPassthrough`/`kMonitor`
   already use for platform audio capability), backed by a small CMake-selected file pair
@@ -177,7 +177,7 @@ decoded an AC-3/E-AC-3 bitstream and verified its loudness metadata against meas
   to both decoders and diff the PCM.
 - [x] **G4 (M)** — Encoder input-space fuzzing: random legal encoder configurations crossed
   with adversarial audio, every stream produced held against both decoders
-  (`tools/fuzz_encoder_space.py`). Added after the `deltbaie` defect — a stream both decoders
+  (`tools/ci/fuzz_encoder_space.py`). Added after the `deltbaie` defect — a stream both decoders
   reject — got through every gate above, because reaching it needed a specific input shape
   rather than an untried option combination. AC-3 `encode` only; E-AC-3's own configuration
   space (Annex E tool tokens, VBR, the wider layouts) is still uncovered.

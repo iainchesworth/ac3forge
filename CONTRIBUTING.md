@@ -143,21 +143,21 @@ Ranked by how much they prove. Prefer the strongest one available for what you a
    different questions:
 
    - **`ffmpeg-validate`** (Linux-only, this job): *correctness* across the full option space.
-     `scripts/run-codec-matrix.sh`'s FFmpeg strict-decode checks for conformance,
-     `tools/check_drc.py` and `tools/check_coupling.py`/`check_coupling_level.py` for metadata
-     that only a discriminating decode can confirm, and `tools/quality_race.py ci` for a numeric
+     `tools/ci/run_codec_matrix.sh`'s FFmpeg strict-decode checks for conformance,
+     `tools/checks/check_drc.py` and `tools/checks/check_coupling.py`/`check_coupling_level.py` for metadata
+     that only a discriminating decode can confirm, and `tools/ci/quality_race.py ci` for a numeric
      SNR/LSD floor per E-AC-3 tool variant. Running any of these locally needs `ffmpeg` on `PATH`
      and, for the Python ones, `AC3CLI` (or `--cli`) pointed at your build's `ac3cli`.
-   - **The gold-reference gate** (`scripts/verify-gold-reference.sh`, every platform leg):
+   - **The gold-reference gate** (`tools/checks/verify_gold_reference.sh`, every platform leg):
      *quality* and cross-platform reproducibility on one fixed sample - does ac3cli's own decoder
      agree with FFmpeg's, by SNR, on every compiler this project builds with. See
      [docs/building.md](https://github.com/iainchesworthlabs/ac3forge/blob/main/docs/building.md#gold-reference-correctness-gate).
 
-   The same job also runs `tools/check_matrix_coverage.py`, which asks a different question: not
+   The same job also runs `tools/checks/check_matrix_coverage.py`, which asks a different question: not
    "is the output correct" but "does anything exercise this at all". It reads the CLI's own
    canonical option lists (its usage text, and the "unknown layout"/"unknown tool set" messages a
    bad argument hits) and fails if a layout, Annex E tool token or command the CLI accepts is
-   never exercised by `run-codec-matrix.sh`. Most of those are presence checks — the token has to
+   never exercised by `run_codec_matrix.sh`. Most of those are presence checks — the token has to
    appear somewhere in the script — but Annex E tool tokens are read only from the tool sets the
    matrix actually encodes with, after a token that appeared only as an unrelated option's *value*
    produced a false pass. So a new layout, tool token or command needs a matching matrix entry in
@@ -166,7 +166,7 @@ Ranked by how much they prove. Prefer the strongest one available for what you a
 
    Both of those walk a *hand-enumerated* list of command lines against one bootstrap tone, so
    neither has any notion of option *combinations* or of the input material. The same job's
-   `tools/fuzz_encoder_space.py` step covers what that leaves: random legal encoder
+   `tools/ci/fuzz_encoder_space.py` step covers what that leaves: random legal encoder
    configurations crossed with adversarial PCM whose character changes part-way through a frame,
    every resulting stream held against both decoders. It exists because the `deltbaie` defect
    (`deltbaie = 0` means "retain", not "no delta") produced streams both decoders reject and

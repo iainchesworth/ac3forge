@@ -11,7 +11,7 @@
 // AC-3. The decoder recomputes this routine from transmitted parameters
 // using exact integer arithmetic, so this implementation must be bit-exact;
 // it is validated against an independent Python transcription of the spec
-// pseudocode (tools/bitalloc_ref.py) with zero tolerance.
+// pseudocode (tools/references/bitalloc_ref.py) with zero tolerance.
 //
 // Scope: fbw, LFE and coupling channels — the coupling channel enters higher
 // up the spectrum and seeds its leak state from cplfleak/cplsleak instead of

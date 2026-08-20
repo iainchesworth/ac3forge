@@ -373,7 +373,7 @@ AC3FORGE_EXPORT void aht_inverse(std::span<const double, kBlocksPerFrameSize> co
 //
 // Table E3.6's remapping constants are not transcribed here. They restate
 // three uniform quantizers, and deriving those instead means the arithmetic
-// below is checkable rather than trusted: tools/gen_aht_tables.py reproduces
+// below is checkable rather than trusted: tools/generators/gen_aht_tables.py reproduces
 // all 120 of the standard's constants from it and fails if any disagrees.
 
 // Table E3.3: which gains a mode permits. Mode 0 permits only unity, which is

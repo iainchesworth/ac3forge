@@ -239,7 +239,7 @@ TEST_CASE("coupled streams round-trip through the in-repo decoder", "[decoder][c
     // Coupling discards inter-channel detail above the coupling frequency,
     // so the bar here is the low band (which coupling must leave alone) plus
     // the stream decoding at all. The high-band envelope is checked
-    // separately by tools/check_coupling.py against FFmpeg.
+    // separately by tools/checks/check_coupling.py against FFmpeg.
     using ac3::Acmod;
     for (const auto acmod : {Acmod::k2_0, Acmod::k3_2}) {
         for (const auto& [begf, endf] : {std::pair{6, 12}, std::pair{0, 15}}) {

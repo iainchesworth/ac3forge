@@ -377,7 +377,7 @@ Optional positional arguments, when omitted:
 - **`fast-mdct=off`**: every encode runs the §7.9.4 fast forward MDCT by default (the quality
   evidence that made it the default: ~3e-12 max relative coefficient error against the direct
   form, 331 dB direct-vs-fast end-to-end SNR, 0.000 dB SNR delta against an independent oracle
-  at 192–448 kbps — see `tools/quality_race.py fast-mdct`). `fast-mdct=off` forces the direct
+  at 192–448 kbps — see `tools/ci/quality_race.py fast-mdct`). `fast-mdct=off` forces the direct
   §8.2.3.2 reference form — the validation oracle — wherever the command encodes, including the
   `atmos*`, `record`, `live`, `eac3-sine` and `eac3-encode` (both its single-source and its
   `src=`/`map=` multi-source path). `eac3-encode` also has a second spelling: the bare

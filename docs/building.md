@@ -122,7 +122,7 @@ build-time saving: `ac3cli` and the `examples/` executables would link fine agai
 instrumented libraries (the gcov runtime propagates to consumers automatically, see
 `cmake/Coverage.cmake`), but the report is filtered to the library components, so building them
 instrumented buys nothing. After `ctest`,
-`scripts/coverage-report.sh` (the same script `.github/workflows/ci.yml`'s `coverage` job runs)
+`tools/checks/coverage_report.sh` (the same script `.github/workflows/ci.yml`'s `coverage` job runs)
 makes one `gcovr` extraction pass over every `src/` library component and then gates line *and*
 branch coverage per component — see the script's own floor table for the current thresholds and
 the measured baseline each was calibrated against:
@@ -131,7 +131,7 @@ the measured baseline each was calibrated against:
 cmake --preset config-linux-gcc-coverage
 cmake --build --preset build-linux-gcc-coverage -- -k 0
 ctest --preset test-linux-gcc-coverage -LE Performance
-./scripts/coverage-report.sh -g gcov-15
+./tools/checks/coverage_report.sh -g gcov-15
 ```
 
 There is a seventeenth trio, `config-linux-llvm-shared` / `build-linux-llvm-shared` /
@@ -534,7 +534,7 @@ real QML channel meters. See [Linux audio](#linux-audio) for what the ALSA verif
 and did not (real hardware), prove.
 
 linux-gcc, linux-llvm, linux-gcc-arm64, linux-llvm-arm64, linux-llvm-asan-ubsan, macos-llvm,
-static-analysis (clang-tidy), coverage (`scripts/coverage-report.sh` over every `src/` library
+static-analysis (clang-tidy), coverage (`tools/checks/coverage_report.sh` over every `src/` library
 component, via `config-linux-gcc-coverage`),
 adm-validate (the opt-in ADM module) and ffmpeg-validate all run on every push, as does
 build-android (the Shield app's debug APK) — the four Linux build legs install the same
@@ -551,7 +551,7 @@ leg remains experimental.
 The coverage job gates line and branch coverage per library component, not as one blended
 number, using the same GCC 15 pin as the other Linux legs; the floor table, the measurement each
 floor was calibrated against, and why two components (`src/audio`'s device paths, `src/capi`'s
-E-AC-3 surface) are honestly floored low all live in `scripts/coverage-report.sh`, with the
+E-AC-3 surface) are honestly floored low all live in `tools/checks/coverage_report.sh`, with the
 calibration history in the coverage job's own comment in `ci.yml`.
 
 No macOS host exists for this project, so `config-macos-llvm`/`config-macos-llvm-debug` are only
@@ -561,7 +561,7 @@ configure, build and `ctest` all clean, using a Homebrew-installed LLVM
 a version-pinned one — Homebrew's core `llvm` formula has no versioned sibling the way
 apt.llvm.org or the official Windows installer do, so unlike the other LLVM legs this one tracks
 whatever Homebrew currently ships. The gold-reference correctness gate
-(`scripts/verify-gold-reference.sh` — see [Gold-reference correctness gate](#gold-reference-correctness-gate)
+(`tools/checks/verify_gold_reference.sh` — see [Gold-reference correctness gate](#gold-reference-correctness-gate)
 below) also passes: real SNR numbers from that CI run were 61.81/61.82 dB on macOS, against
 67.84/67.82 dB on Linux and Windows for the same material - a real but modest cross-compiler
 floating-point difference, comfortably clear of the 30 dB gate. `macos-llvm` now builds the GUI
@@ -603,16 +603,16 @@ Pi OS, and so on).
 
 ## Gold-reference correctness gate
 
-`scripts/verify-gold-reference.sh` (invoked in CI on every leg except linux-llvm-asan-ubsan,
+`tools/checks/verify_gold_reference.sh` (invoked in CI on every leg except linux-llvm-asan-ubsan,
 which stays diagnostic-only) is the first real implementation of the project's original
 validation-pyramid design (now [docs/verification.md](verification.md)), which had never been
 wired into CI before this: encode a fixed, checked-in 5.1 WAV
-(`tests/golden/audio/reference_51.wav`, synthesized once by `tools/gen_gold_reference_wav.py` —
+(`tests/golden/audio/reference_51.wav`, synthesized once by `tools/generators/gen_gold_reference_wav.py` —
 independent of this codec's own encoder/decoder, not bootstrapped from one of our own encodes),
 strict-decode the result with FFmpeg (`-err_detect crccheck+bitstream+buffer+explode`, checked
 via stderr content rather than exit code — confirmed locally that ffmpeg's own process exits 0
 even on a CRC mismatch), decode it again with ac3cli's own decoder, and assert the two decodes
-agree via `scripts/compare_wav.py`'s delay-compensated SNR (stdlib-only Python, no numpy — every
+agree via `tools/checks/compare_wav.py`'s delay-compensated SNR (stdlib-only Python, no numpy — every
 CI-hosted runner already ships Python 3, so this needs no new provisioning). The gate is
 perceptual/SNR-based rather than a bit-exact bitstream comparison deliberately: nothing in this
 project verifies that Homebrew LLVM, GCC and MSVC round the codec's floating-point
@@ -620,7 +620,7 @@ pipeline identically, and the real numbers above show they in fact do not, by a 
 measurable margin.
 
 This is a narrow, cross-platform *quality* check — one sample, two codecs, every OS — not a
-conformance sweep. `tools/check_matrix_coverage.py`, `tools/quality_race.py`'s `ci` mode and the
+conformance sweep. `tools/checks/check_matrix_coverage.py`, `tools/ci/quality_race.py`'s `ci` mode and the
 rest of the `ffmpeg-validate` CI leg (Linux-only, see [Verified configuration](#verified-configuration)
 above) cover the *correctness* question instead: does every layout, every Annex E tool token and
 every metadata option actually produce a structurally valid, spec-conformant stream, across the

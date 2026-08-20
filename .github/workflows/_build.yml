@@ -16,7 +16,7 @@
 # issue (Homebrew's unpinned LLVM formula flagging Catch2's __COUNTER__ usage
 # under -Wc2y-extensions - see cmake/CompilerWarnings.cmake), fixed in one
 # commit, followed by two consecutive clean runs including the gold-reference
-# gate (scripts/verify-gold-reference.sh) at real SNR numbers (60-80s dB) -
+# gate (tools/checks/verify_gold_reference.sh) at real SNR numbers (60-80s dB) -
 # not just "it compiled." See the table in ci.yml.
 #
 # Experimental legs run with continue-on-error, which reports their real
@@ -461,11 +461,11 @@ jobs:
           echo "${llvm_prefix}/bin" >> "$GITHUB_PATH"
 
       # ffmpeg is the gold-reference gate's decode oracle (see
-      # scripts/verify-gold-reference.sh). Proven first on macOS alone (the
+      # tools/checks/verify_gold_reference.sh). Proven first on macOS alone (the
       # newest, least-trusted leg); gold_reference now covers every packaged
       # leg except linux-llvm-asan-ubsan, which stays a diagnostic-only build
       # (see that matrix entry's own comment) but still needs it: the codec
-      # matrix step below (matrix.sanitizer) runs scripts/run-codec-matrix.sh,
+      # matrix step below (matrix.sanitizer) runs tools/ci/run_codec_matrix.sh,
       # which also uses ffmpeg as its independent oracle regardless of the
       # gold-reference gate being skipped on this leg.
       - name: Install ffmpeg (Linux)
@@ -633,7 +633,7 @@ jobs:
       # The gold-reference correctness gate (the L3 FFmpeg-oracle + a
       # lightweight L4 SNR check from the project's original validation-
       # pyramid design, now docs/verification.md - wired into CI for the
-      # first time here; see scripts/verify-gold-reference.sh's own header).
+      # first time here; see tools/checks/verify_gold_reference.sh's own header).
       # Proven on
       # macOS alone first; now every leg has it except linux-llvm-asan-ubsan,
       # which stays diagnostic-only (same reasoning as its `packageable`
@@ -643,7 +643,7 @@ jobs:
         if: matrix.gold_reference
         shell: bash
         env:
-          # See scripts/verify-gold-reference.sh's own comment: set, this asks
+          # See tools/checks/verify_gold_reference.sh's own comment: set, this asks
           # compare_wav.py to also write a structured per-codec result here,
           # which the "Upload gold-reference results" step below picks up.
           # Unset (persist_quality_trend false, e.g. every PR run) the gate
@@ -656,7 +656,7 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then
             bin="${bin}.exe"
           fi
-          bash scripts/verify-gold-reference.sh "$bin"
+          bash tools/checks/verify_gold_reference.sh "$bin"
 
       # Handed off to the quality-trend job below, which runs once (not once
       # per leg) after every gold_reference leg has passed - see that job's
@@ -728,7 +728,7 @@ jobs:
         env:
           ASAN_OPTIONS: detect_leaks=1
           UBSAN_OPTIONS: print_stacktrace=1
-        run: bash scripts/run-codec-matrix.sh "build/config-${{ matrix.preset }}/bin/ac3cli"
+        run: bash tools/ci/run_codec_matrix.sh "build/config-${{ matrix.preset }}/bin/ac3cli"
 
       # The other side of the ALSA switch: a Linux machine without libasound's
       # development headers must still configure, build and pass everything,
@@ -1108,7 +1108,7 @@ jobs:
       contents: write
     steps:
       # persist-credentials: false - this checkout is only ever read from
-      # (scripts/append-quality-history.py, `git show` on this commit); the
+      # (tools/ci/append_quality_history.py, `git show` on this commit); the
       # "Prepare quality-history checkout" step below pushes through its own
       # explicitly-scoped remote instead, so leaving actions/checkout's token
       # persisted in this working tree's git config would just be an unused,
@@ -1165,10 +1165,10 @@ jobs:
         run: |
           set -euo pipefail
           # The commit's own recorded date, not date -u/Date.now() - see
-          # append-quality-history.py's own header on why this is passed in
+          # append_quality_history.py's own header on why this is passed in
           # rather than read from the clock.
           commit_date="$(git show -s --format=%cI "$COMMIT_SHA")"
-          python3 scripts/append-quality-history.py \
+          python3 tools/ci/append_quality_history.py \
             --results-dir results \
             --history-dir history \
             --branch "$BRANCH" \
@@ -1195,7 +1195,7 @@ jobs:
       # failing outright: a hard regression's numbers still need to land in
       # quality-history (docs/quality-trend.md's table/chart is how anyone
       # finds out what happened) even though this run must also end up red.
-      # See scripts/append-quality-history.py's HARD_REGRESSION_DROP_DB.
+      # See tools/ci/append_quality_history.py's HARD_REGRESSION_DROP_DB.
       - name: Fail on hard quality regression
         if: steps.append.outputs.hard_regression == 'true'
         shell: bash

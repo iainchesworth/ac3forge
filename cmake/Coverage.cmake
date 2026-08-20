@@ -16,11 +16,11 @@
 # instrumented ac3::forge with no ac3::coverage of their own and link fine).
 # The coverage preset still turns AC3FORGE_BUILD_CLI/EXAMPLES off, but as a
 # pure build-time saving: those targets' coverage is filtered out of
-# scripts/coverage-report.sh's report anyway, so building them instrumented
+# tools/checks/coverage_report.sh's report anyway, so building them instrumented
 # buys nothing - see CMakePresets.json. Vendored third-party code
 # (src/ac3adm's FetchContent'd libbw64/libadm) is deliberately NOT
 # instrumented: these flags are target-scoped and nothing links ac3::coverage
-# into those targets, and scripts/coverage-report.sh's filters are
+# into those targets, and tools/checks/coverage_report.sh's filters are
 # first-party-only anyway.
 # ---------------------------------------------------------------------------
 

@@ -25,7 +25,7 @@
         },
         "dee": {
           "status": "unverified",
-          "reason": "DEE build v6.5.4-dme+b56bc97e drops the Ls channel for discrete 6-channel 5.1 input (confirmed via tone probe, channel-index-locked) - see tools/gen_external_baseline.py's module docstring."
+          "reason": "DEE build v6.5.4-dme+b56bc97e drops the Ls channel for discrete 6-channel 5.1 input (confirmed via tone probe, channel-index-locked) - see tools/generators/gen_external_baseline.py's module docstring."
         },
         "ours_at_baseline_time": {
           "snr_db": 36.02410888671875,
@@ -80,7 +80,7 @@
         },
         "dee": {
           "status": "unverified",
-          "reason": "DEE build v6.5.4-dme+b56bc97e drops the Ls channel for discrete 6-channel 5.1 input (confirmed via tone probe, channel-index-locked) - see tools/gen_external_baseline.py's module docstring."
+          "reason": "DEE build v6.5.4-dme+b56bc97e drops the Ls channel for discrete 6-channel 5.1 input (confirmed via tone probe, channel-index-locked) - see tools/generators/gen_external_baseline.py's module docstring."
         },
         "ours_at_baseline_time": {
           "snr_db": 31.629106521606445,

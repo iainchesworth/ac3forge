@@ -1,4 +1,4 @@
-# numpy for ci.yml's ffmpeg-validate job (tools/quality_race.py and friends).
+# numpy for ci.yml's ffmpeg-validate job (tools/ci/quality_race.py and friends).
 # matplotlib is for that job's spectrogram-rendering step only
 # (quality_race.py's render_spectrograms(), `trend --spectrogram-dir`) - see
 # that function's own docstring for why this is fine to add directly here

@@ -4,7 +4,7 @@
 // CMake (src/forge/CMakeLists.txt adds this directory, not the tracy_disabled
 // sibling, to forge_objects's private include path when AC3FORGE_ENABLE_TRACY
 // is on - see cmake/Tracy.cmake) rather than an #ifdef, per the project's
-// platform/feature-isolation rule (scripts/check-platform-macros.ps1):
+// platform/feature-isolation rule (tools/checks/check_platform_macros.ps1):
 // exactly one of this file and tracy_disabled/ac3/internal/profiling.hpp is
 // ever compiled, both at this same "ac3/internal/profiling.hpp" relative
 // path, so every call site's #include "ac3/internal/profiling.hpp" and every

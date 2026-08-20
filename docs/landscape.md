@@ -148,7 +148,7 @@ number a real user of either tool actually gets, not an internal detail.
       FFmpeg <code>${manifest.tools.ffmpeg.version}</code> ·
       DEE <code>${manifest.tools.dee.version}</code> —
       regenerated locally and reviewed by hand, see
-      <a href="https://github.com/${REPO}/blob/main/tools/gen_external_baseline.py">tools/gen_external_baseline.py</a>.</p>`;
+      <a href="https://github.com/${REPO}/blob/main/tools/generators/gen_external_baseline.py">tools/generators/gen_external_baseline.py</a>.</p>`;
   }
 
   function buildTable(records, releasesBySha) {
@@ -258,7 +258,7 @@ one per historical release. If the image looks newer than the table row
 you're comparing it against, it is: the images have no history of their own,
 only a current snapshot. They come from the same `quality-history` branch
 mechanism as the table's own numbers (see "Where the data lives" below) —
-generated in CI by `tools/quality_race.py`'s `render_spectrograms()`
+generated in CI by `tools/ci/quality_race.py`'s `render_spectrograms()`
 (`trend --spectrogram-dir`), decoding this build's own encode plus the
 committed `tests/golden/external-baseline/` FFmpeg/DEE bitstreams — never
 invoking FFmpeg's or DEE's own encoder, same boundary as the numbers.
@@ -301,7 +301,7 @@ even where ac3forge's own MOS is present.
 
 The baseline itself — FFmpeg's and DEE's actual encoded output — is
 regenerated locally, occasionally, and reviewed by hand as a normal PR (see
-`tools/gen_external_baseline.py`'s own docstring); it is never re-run
+`tools/generators/gen_external_baseline.py`'s own docstring); it is never re-run
 automatically, and never runs in CI. The **Baseline** column names which
 version of it a given release's numbers were compared against, so a jump in
 that column marks where the external side of the comparison changed, not

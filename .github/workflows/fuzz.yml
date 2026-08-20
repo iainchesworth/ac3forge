@@ -41,7 +41,7 @@
 #                      short per-PR counterpart is a step in that same
 #                      ffmpeg-validate job, not a job here, because everything
 #                      it needs is already built and pinned there.
-#                      See tools/fuzz_encoder_space.py for why this exists:
+#                      See tools/ci/fuzz_encoder_space.py for why this exists:
 #                      an encoder defect (PR #186) that produced streams BOTH
 #                      decoders reject, and that every other gate in this repo
 #                      missed because reaching it needs a specific input SHAPE
@@ -335,10 +335,10 @@ jobs:
       # First, because a run that draws configurations the encoder was never
       # going to accept would come back green having encoded almost nothing.
       - name: Acceptance envelope (the rate floors the generator draws from)
-        run: python3 tools/fuzz_encoder_space.py --check-envelope
+        run: python3 tools/ci/fuzz_encoder_space.py --check-envelope
 
       - name: Encoder input-space fuzz (deeper budget, both decoders)
-        run: python3 tools/fuzz_encoder_space.py --seconds "$ENCODER_SPACE_SECONDS"
+        run: python3 tools/ci/fuzz_encoder_space.py --seconds "$ENCODER_SPACE_SECONDS"
 
       - name: Upload failing inputs
         if: failure()

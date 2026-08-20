@@ -21,7 +21,7 @@
 //
 // Run with `--write-fixture <path>` to just write that same fixture to a real file and exit,
 // skipping the parse/bridge/encode demo below - see main()'s own comment on why
-// scripts/run-codec-matrix.sh uses exactly this to drive a real `ac3cli atmos-adm` invocation.
+// tools/ci/run_codec_matrix.sh uses exactly this to drive a real `ac3cli atmos-adm` invocation.
 
 #include <cmath>
 #include <cstdint>
@@ -218,7 +218,7 @@ bool write_fixture(const std::string& path) {
 
 int main(int argc, char** argv) {
     // --write-fixture <path>: writes only the fixture below to `path` and exits, skipping the
-    // parse/bridge/encode demo that follows. Exists so scripts/run-codec-matrix.sh (a bash
+    // parse/bridge/encode demo that follows. Exists so tools/ci/run_codec_matrix.sh (a bash
     // script with no access to this file's own C++ helpers) can reuse this exact fixture to drive
     // a real `ac3cli atmos-adm` invocation against a real file on disk, rather than a fourth copy
     // of the same byte-level BW64/ADM chunk-writing logic already duplicated (per this project's

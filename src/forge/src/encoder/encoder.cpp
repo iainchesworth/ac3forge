@@ -744,7 +744,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         // bits on a correction nobody had weighed, this one stops the LFE
         // being quantized against a scale meant for a louder block.
         //
-        // See tools/check_ac3_allocation.py, which is what found it.
+        // See tools/checks/check_ac3_allocation.py, which is what found it.
         starts.assign(1, 0);
         const auto* reference = &block_exps[static_cast<std::size_t>(s) * kBlocksPerFrame];
         for (int block = 1; block < kBlocksPerFrame; ++block) {
