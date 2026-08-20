@@ -1943,15 +1943,36 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
         }
         return run_eac3_encode_multi(in_path, out_path, bitrate, tools, layout, vbr, meta);
     }
-    auto wav = read_wav_arg(in_path);
-    if (!wav) {
-        std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(wav.error()));
+    // The same streaming-vs-whole-file split as run_encode, for the same
+    // reasons - see its comment. A failed open falls through so read_wav_arg
+    // produces the error message it always has.
+    ac3::io::WavStreamReader stream_in;
+    const bool streaming = !is_stdio_path(in_path) && !meta.p.measure_dialnorm &&
+                           !meta.p.measure_dialnorm2 && in2_path.empty() &&
+                           stream_in.open(std::string{in_path}).has_value();
+    std::expected<ac3::io::WavData, ac3::io::WavError> wav =
+        std::unexpected(ac3::io::WavError::kCannotOpen);
+    if (!streaming) {
+        wav = read_wav_arg(in_path);
+        if (!wav) {
+            std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(wav.error()));
+            return 1;
+        }
+        if (!prepare_dual_mono_source(*wav, layout, in2_path)) {
+            return 1;
+        }
+    } else if (layout == "1+1" && stream_in.channels() != 2) {
+        std::println(stderr,
+                     "error: layout 1+1 needs either one two-channel file (Ch1, Ch2) or "
+                     "two mono files; the source has {} channel(s) and no second file "
+                     "was given",
+                     stream_in.channels());
         return 1;
     }
-    if (!prepare_dual_mono_source(*wav, layout, in2_path)) {
-        return 1;
-    }
-    const auto sr = wav_sample_rate(wav->sample_rate, "E-AC-3", true);
+    const std::uint32_t src_rate = streaming ? stream_in.sample_rate() : wav->sample_rate;
+    const std::size_t src_channels =
+        streaming ? stream_in.channels() : wav->channels.size();
+    const auto sr = wav_sample_rate(src_rate, "E-AC-3", true);
     if (!sr) {
         return 1;
     }
@@ -1963,9 +1984,9 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
     if (layout.empty()) {
         // An unnamed layout follows the source, which is what this command
         // did before it could be told otherwise.
-        const auto id = plan::layout_for_source(wav->channels.size());
+        const auto id = plan::layout_for_source(src_channels);
         if (!id) {
-            std::println(stderr, "error: {} channels - {}", wav->channels.size(),
+            std::println(stderr, "error: {} channels - {}", src_channels,
                          plan::describe(plan::PlanError::kNoSourceLayout));
             return 1;
         }
@@ -2018,7 +2039,7 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
         p.meta.dialnorm2 = *measured2;
     }
 
-    const auto routing = routing_or_error(p, wav->channels.size());
+    const auto routing = routing_or_error(p, src_channels);
     if (!routing) {
         return 1;
     }
@@ -2029,11 +2050,12 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
     // The classic path has exactly one source, always index 0 in offset='s
     // numbering - see LoadedSources::offset_samples for the multi-source
     // equivalent of this same leading silence.
-    const std::size_t offset = offset_samples_for(meta.offsets, 0, wav->sample_rate);
-    const std::size_t frame_count = wav->frame_count();
+    const std::size_t offset = offset_samples_for(meta.offsets, 0, src_rate);
+    const std::size_t frame_count =
+        streaming ? static_cast<std::size_t>(stream_in.frame_count()) : wav->frame_count();
     const std::size_t total = offset + frame_count;
 
-    std::vector<std::vector<float>> source(wav->channels.size(),
+    std::vector<std::vector<float>> source(src_channels,
                                            std::vector<float>(ac3::kSamplesPerFrame));
     std::vector<std::vector<float>> block(nchans, std::vector<float>(ac3::kSamplesPerFrame));
     std::vector<std::span<const float>> in(source.size());
@@ -2044,6 +2066,12 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
         views[c] = block[c];
     }
     std::vector<std::vector<std::byte>> frames;
+    // See run_encode's identical streaming state: the loop consumes the
+    // source strictly in order, so a rolling read position and the last
+    // real sample per channel are all the streaming path needs.
+    std::vector<float> stream_hold(src_channels, 0.0f);
+    std::vector<std::span<float>> stream_dst(src_channels);
+    std::size_t consumed = 0;
     for (std::size_t start = 0; start < total; start += ac3::kSamplesPerFrame) {
         // Hold the last real sample past end-of-file rather than dropping to
         // hard zero - see run_encode's identical padding for why: a sudden
@@ -2051,19 +2079,53 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
         // spend a block-switch on, for a discontinuity that only exists
         // because this frame ends mid-buffer. Ahead of the source's own
         // samples, offset= silence is real silence, not padding.
-        for (std::size_t c = 0; c < source.size(); ++c) {
-            const float hold = frame_count > 0 ? wav->channels[c][frame_count - 1] : 0.0f;
-            for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
-                const std::size_t at = start + static_cast<std::size_t>(i);
-                if (at < offset) {
-                    source[c][static_cast<std::size_t>(i)] = 0.0f;
-                    continue;
-                }
-                const std::size_t shifted = at - offset;
-                source[c][static_cast<std::size_t>(i)] =
-                    shifted < frame_count ? wav->channels[c][shifted] : hold;
+        if (streaming) {
+            const std::size_t lead =
+                start < offset ? std::min<std::size_t>(offset - start, ac3::kSamplesPerFrame)
+                               : 0;
+            std::size_t want = 0;
+            if (lead < ac3::kSamplesPerFrame) {
+                const std::size_t remaining = frame_count - std::min(frame_count, consumed);
+                want = std::min<std::size_t>(ac3::kSamplesPerFrame - lead, remaining);
             }
-            in[c] = source[c];
+            for (std::size_t c = 0; c < src_channels; ++c) {
+                std::fill_n(source[c].begin(), lead, 0.0f);
+                stream_dst[c] = std::span{source[c]}.subspan(lead, want);
+            }
+            if (want > 0) {
+                const auto got = stream_in.read_planar(stream_dst, want);
+                if (!got || *got != want) {
+                    std::println(stderr, "error: {}: {}", in_path,
+                                 ac3::io::describe(got ? ac3::io::WavError::kTruncated
+                                                       : got.error()));
+                    write_partial_output(out_path, meta.keep_partial, frames);
+                    return 1;
+                }
+                consumed += want;
+            }
+            for (std::size_t c = 0; c < src_channels; ++c) {
+                if (want > 0) {
+                    stream_hold[c] = source[c][lead + want - 1];
+                }
+                std::fill(source[c].begin() + static_cast<std::ptrdiff_t>(lead + want),
+                          source[c].end(), stream_hold[c]);
+                in[c] = source[c];
+            }
+        } else {
+            for (std::size_t c = 0; c < source.size(); ++c) {
+                const float hold = frame_count > 0 ? wav->channels[c][frame_count - 1] : 0.0f;
+                for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+                    const std::size_t at = start + static_cast<std::size_t>(i);
+                    if (at < offset) {
+                        source[c][static_cast<std::size_t>(i)] = 0.0f;
+                        continue;
+                    }
+                    const std::size_t shifted = at - offset;
+                    source[c][static_cast<std::size_t>(i)] =
+                        shifted < frame_count ? wav->channels[c][shifted] : hold;
+                }
+                in[c] = source[c];
+            }
         }
         plan::render(*routing, in, out, ac3::kSamplesPerFrame);
         auto unit = encoder.encode_access_unit(views);
@@ -2092,12 +2154,12 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
         const double mean_bytes = frames.empty() ? 0.0
                                                   : static_cast<double>(total_bytes) /
                                                         static_cast<double>(frames.size());
-        const double mean_kbps = mean_bytes * 8.0 * static_cast<double>(wav->sample_rate) /
+        const double mean_kbps = mean_bytes * 8.0 * static_cast<double>(src_rate) /
                                  (1000.0 * ac3::kSamplesPerFrame);
         std::println(status,
                      "encoded {} E-AC-3 access units (vbr {}, {} Hz, {}, {} coded channels, "
                      "tools: {}) to {}",
-                     frames.size(), plan::format_vbr(p.vbr), wav->sample_rate, label, nchans,
+                     frames.size(), plan::format_vbr(p.vbr), src_rate, label, nchans,
                      plan::format_tools(p.tools), out_path);
         std::println(status,
                      "  access unit size: {}-{} bytes, {:.0f} bytes mean (~{:.0f} kbps mean)",
@@ -2106,7 +2168,7 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
         std::println(status,
                      "encoded {} E-AC-3 access units ({} kbps, {} Hz, {}, {} coded channels, "
                      "tools: {}) to {}",
-                     frames.size(), bitrate, wav->sample_rate, label, nchans,
+                     frames.size(), bitrate, src_rate, label, nchans,
                      plan::format_tools(p.tools), out_path);
     }
     print_routing(p, *routing, label, status);
@@ -2452,24 +2514,37 @@ int run_atmos_path(std::string_view out_path, std::string_view paths_path, std::
 int run_atmos_encode(std::string_view in_path, std::string_view out_path,
                      std::uint32_t bitrate, std::uint32_t objects,
                      const Options& meta, std::string_view paths_path = {}) {
-    const auto wav = read_wav_arg(in_path);
-    if (!wav) {
-        std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(wav.error()));
-        return 1;
+    // The same streaming-vs-whole-file split as run_encode - see its
+    // comment. This command has no dual-mono merge, so only stdin and
+    // dialnorm=auto (whole-programme BS.1770) force the whole-file read.
+    ac3::io::WavStreamReader stream_in;
+    const bool streaming = !is_stdio_path(in_path) && !meta.p.measure_dialnorm &&
+                           stream_in.open(std::string{in_path}).has_value();
+    std::expected<ac3::io::WavData, ac3::io::WavError> wav =
+        std::unexpected(ac3::io::WavError::kCannotOpen);
+    if (!streaming) {
+        wav = read_wav_arg(in_path);
+        if (!wav) {
+            std::println(stderr, "error: {}: {}", in_path, ac3::io::describe(wav.error()));
+            return 1;
+        }
     }
-    const auto sr = wav_sample_rate(wav->sample_rate, "E-AC-3", true);
+    const std::uint32_t src_rate = streaming ? stream_in.sample_rate() : wav->sample_rate;
+    const std::size_t src_channels =
+        streaming ? stream_in.channels() : wav->channels.size();
+    const auto sr = wav_sample_rate(src_rate, "E-AC-3", true);
     if (!sr) {
         return 1;
     }
     // One object per source channel unless told otherwise; more objects than
     // the file has channels would leave some carrying nothing.
-    const auto count = objects == 0 ? wav->channels.size()
-                                    : std::min<std::size_t>(objects, wav->channels.size());
+    const auto count = objects == 0 ? src_channels
+                                    : std::min<std::size_t>(objects, src_channels);
     if (count < 1 || count > 15) {
         std::println(stderr,
                      "error: 1 to 15 objects (the bed's LFE is the 16th, and TS 103 420 "
                      "§8.3.2.2 caps the total at 16); this file has {} channels",
-                     wav->channels.size());
+                     src_channels);
         return 1;
     }
 
@@ -2480,7 +2555,7 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
     const auto status = status_stream(out_path);
     int dialnorm = meta.p.dialnorm;
     if (meta.p.measure_dialnorm) {
-        const auto layout = ac3::io::ac3_layout_for(wav->channels.size());
+        const auto layout = ac3::io::ac3_layout_for(src_channels);
         const auto measured = layout
                                   ? measured_dialnorm(*wav, *sr, layout->acmod, layout->lfe, status)
                                   : std::nullopt;
@@ -2502,7 +2577,7 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
     // room rather than stacked at one point. A channel that already has a
     // direction keeps it; the rest fan out evenly.
     std::vector<ac3::oba::ObjectPlacement> placement(count);
-    const auto layout = ac3::io::ac3_layout_for(wav->channels.size());
+    const auto layout = ac3::io::ac3_layout_for(src_channels);
     for (std::size_t i = 0; i < count; ++i) {
         double azimuth = 0.0;
         if (layout) {
@@ -2565,22 +2640,50 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
         }
     }
 
-    ac3::analysis::LevelMeter meter{ac3::Acmod::k3_2, true, wav->sample_rate};
-    const std::size_t total = wav->frame_count();
+    ac3::analysis::LevelMeter meter{ac3::Acmod::k3_2, true, src_rate};
+    const std::size_t total =
+        streaming ? static_cast<std::size_t>(stream_in.frame_count()) : wav->frame_count();
     std::vector<std::vector<float>> block(count, std::vector<float>(ac3::kSamplesPerFrame));
     std::vector<std::span<const float>> views(count);
     std::vector<std::span<const float>> metered(6);
     std::vector<std::vector<std::byte>> out;
+    // Streaming reads every file channel (read_planar's contract), but only
+    // the first `count` become objects - the extras land in one shared
+    // discard buffer whose contents nothing reads.
+    std::vector<float> stream_discard(streaming ? ac3::kSamplesPerFrame : 0);
+    std::vector<std::span<float>> stream_dst(streaming ? src_channels : 0);
 
     for (std::size_t start = 0; start < total; start += ac3::kSamplesPerFrame) {
         const auto valid = std::min<std::size_t>(ac3::kSamplesPerFrame, total - start);
-        for (std::size_t ch = 0; ch < count; ++ch) {
-            for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
-                const std::size_t at = start + static_cast<std::size_t>(i);
-                block[ch][static_cast<std::size_t>(i)] =
-                    at < total ? wav->channels[ch][at] : 0.0f;
+        if (streaming) {
+            for (std::size_t ch = 0; ch < src_channels; ++ch) {
+                stream_dst[ch] = ch < count ? std::span{block[ch]}.first(valid)
+                                            : std::span{stream_discard}.first(valid);
             }
-            views[ch] = block[ch];
+            const auto got = stream_in.read_planar(stream_dst, valid);
+            if (!got || *got != valid) {
+                std::println(stderr, "error: {}: {}", in_path,
+                             ac3::io::describe(got ? ac3::io::WavError::kTruncated
+                                                   : got.error()));
+                write_partial_output(out_path, meta.keep_partial, out);
+                return 1;
+            }
+            for (std::size_t ch = 0; ch < count; ++ch) {
+                // The tail frame zero-pads past the file's end, exactly as
+                // the whole-file loop below writes 0.0f there.
+                std::fill(block[ch].begin() + static_cast<std::ptrdiff_t>(valid),
+                          block[ch].end(), 0.0f);
+                views[ch] = block[ch];
+            }
+        } else {
+            for (std::size_t ch = 0; ch < count; ++ch) {
+                for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+                    const std::size_t at = start + static_cast<std::size_t>(i);
+                    block[ch][static_cast<std::size_t>(i)] =
+                        at < total ? wav->channels[ch][at] : 0.0f;
+                }
+                views[ch] = block[ch];
+            }
         }
         // With paths_path, the object placement moves - evaluated at the
         // frame's END time, the same convention run_atmos_path and the GUI's
@@ -2590,7 +2693,7 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
         auto unit = paths ? encoder.encode_frame(
                                 views, ac3::oba::evaluate_placements(
                                            *paths, static_cast<double>(start + ac3::kSamplesPerFrame) /
-                                                       static_cast<double>(wav->sample_rate)))
+                                                       static_cast<double>(src_rate)))
                           : encoder.encode_frame(views, placement);
         if (!unit) {
             std::println(stderr,
@@ -2625,11 +2728,11 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
         return 1;
     }
     std::println(status, "encoded {} E-AC-3 access units ({} kbps, {} Hz) to {}", out.size(),
-                bitrate, wav->sample_rate, out_path);
+                bitrate, src_rate, out_path);
     std::println(status,
                  "  {} objects from {} source channels + the bed's LFE = {} objects, "
                  "JOC over a 5.1 downmix",
-                 count, wav->channels.size(), ac3::oba::object_count(encoder.program()));
+                 count, src_channels, ac3::oba::object_count(encoder.program()));
     print_channel_summary(meter, status);
     return 0;
 }
