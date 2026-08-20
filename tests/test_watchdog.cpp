@@ -2,10 +2,10 @@
 
 #include <chrono>
 
-#include "ac3/capture/watchdog.hpp"
+#include "ac3/audio/watchdog.hpp"
 
 using namespace std::chrono_literals;
-using ac3::capture::SilenceWatchdog;
+using ac3::audio::SilenceWatchdog;
 
 TEST_CASE("a watchdog that keeps seeing data never times out", "[watchdog]") {
     SilenceWatchdog watchdog(3000ms);

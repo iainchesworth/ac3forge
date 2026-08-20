@@ -22,15 +22,15 @@
 #include <vector>
 
 #include "ac3/analysis/levels.hpp"
-#include "ac3/capture/capture.hpp"
-#include "ac3/capture/resampler.hpp"
+#include "ac3/audio/capture.hpp"
+#include "ac3/audio/resampler.hpp"
 #include "ac3/core/tables.hpp"
 #include "ac3/encoder/assignment.hpp"
 #include "ac3/encoder/plan.hpp"
 #include "ac3/oba/motion.hpp"
 #include "ac3/oba/oamd.hpp"
-#include "ac3/sinks/monitor.hpp"
-#include "ac3/sinks/passthrough.hpp"
+#include "ac3/audio/monitor.hpp"
+#include "ac3/audio/passthrough.hpp"
 
 // The QObject facade the QML layer talks to. All codec and capture work
 // happens in ac3::forge; this type owns nothing but the presentation state
@@ -205,7 +205,7 @@ class EncoderController : public QObject {
     // resampled to track the master (see docs/gui/live-session.md). One row
     // per selection - {slotIndex, deviceIndex, name, channels, rateText,
     // isMaster} - deviceIndex is captureDevices()'s own numbering, the same
-    // ac3::capture::enumerate_devices() index startLiveSession/
+    // ac3::audio::enumerate_devices() index startLiveSession/
     // addLiveObject already take. Monitor/Record (the rail's own buttons,
     // outside a real session) only ever use row 0 - see RailBlock's live
     // branch in Main.qml.
@@ -1273,7 +1273,7 @@ private:
     // business in this header), and unique_ptr is the one smart pointer that
     // tolerates an incomplete type at the declaration site.
     [[nodiscard]] std::unique_ptr<LiveOutputWriters> openLiveOutputWriters(
-        const QString& path, bool write_to_disk, const ac3::capture::DeviceInfo& device);
+        const QString& path, bool write_to_disk, const ac3::audio::DeviceInfo& device);
     // The live session worker. One function for both channel and object mode
     // (mirrors ac3cli's own `live` command, which combines them the same way)
     // rather than split like encodeChannels/encodeObjects: almost everything
@@ -1285,8 +1285,8 @@ private:
     // successfully - nullopt for an ordinary single-device session, which
     // then behaves exactly as it always has. See docs/gui/live-session.md
     // for the clock-master model this implements.
-    void runLiveSession(ac3::capture::DeviceInfo device,
-                        std::optional<ac3::capture::DeviceInfo> device2, bool monitor,
+    void runLiveSession(ac3::audio::DeviceInfo device,
+                        std::optional<ac3::audio::DeviceInfo> device2, bool monitor,
                         bool passthrough, bool write_to_disk, QString file_path,
                         std::unique_ptr<LiveOutputWriters> writers);
     // A snapshot of object_configs_ that setObjectPosition/setObjectLfeSend
@@ -1571,8 +1571,8 @@ private:
     bool output_eac3_ = false;
     QStringList capture_devices_;
     QStringList output_devices_;
-    std::vector<ac3::capture::DeviceInfo> devices_;
-    std::vector<ac3::sinks::RenderDeviceInfo> outputs_;
+    std::vector<ac3::audio::DeviceInfo> devices_;
+    std::vector<ac3::audio::RenderDeviceInfo> outputs_;
     // captureDeviceRows' own selection - indices into devices_, size 0..2,
     // row 0 the master. Mutated only by addCaptureDevice/removeCaptureDevice
     // and clamped by refreshCaptureDevices when a device disappears; a
@@ -1653,7 +1653,7 @@ private:
     // subtract this from Assignment::unassigned()'s raw inventory and stop
     // nagging about a channel the user deliberately silenced.
     std::set<std::pair<std::size_t, std::size_t>> touched_channels_;
-    std::unique_ptr<ac3::capture::Capture> capture_;
+    std::unique_ptr<ac3::audio::Capture> capture_;
     std::atomic_bool cancel_requested_{false};
     std::atomic_bool stop_recording_{false};
 
@@ -1723,13 +1723,13 @@ private:
     // Opened and (via the worker's final invokeMethod) closed on the GUI
     // thread, matching capture_'s own convention - only buffer()/submit()/
     // stats() are called from the worker while a session runs.
-    std::unique_ptr<ac3::capture::Capture> live_capture_;
+    std::unique_ptr<ac3::audio::Capture> live_capture_;
     // The slave device, when a two-device session opened one - same
     // GUI-thread-owns-open/close, worker-thread-only-reads convention as
     // live_capture_ itself. Null for an ordinary single-device session.
-    std::unique_ptr<ac3::capture::Capture> live_capture2_;
-    std::unique_ptr<ac3::sinks::MonitorSink> live_monitor_sink_;
-    std::unique_ptr<ac3::sinks::PassthroughSink> live_passthrough_sink_;
+    std::unique_ptr<ac3::audio::Capture> live_capture2_;
+    std::unique_ptr<ac3::audio::MonitorSink> live_monitor_sink_;
+    std::unique_ptr<ac3::audio::PassthroughSink> live_passthrough_sink_;
     // switchLiveReceiver's handoff to the worker thread: the GUI thread
     // writes a request here, the worker thread claims it (and clears it)
     // once per outer-loop iteration and does the actual close-old/open-new
@@ -1741,7 +1741,7 @@ private:
     // the worker never has to touch outputs_ (GUI-thread-owned state) itself.
     struct PendingReceiverSwitch {
         bool want_passthrough = false;
-        ac3::sinks::RenderDeviceInfo receiver;  // valid only if want_passthrough
+        ac3::audio::RenderDeviceInfo receiver;  // valid only if want_passthrough
     };
     std::mutex live_receiver_switch_mutex_;
     std::optional<PendingReceiverSwitch> live_receiver_switch_request_;
@@ -1761,5 +1761,5 @@ private:
     // exclusive (busy_ already guards that), but sharing one member would
     // tie this feature's lifecycle to liveActive's own signals for no
     // reason.
-    std::unique_ptr<ac3::sinks::MonitorSink> motion_preview_monitor_sink_;
+    std::unique_ptr<ac3::audio::MonitorSink> motion_preview_monitor_sink_;
 };

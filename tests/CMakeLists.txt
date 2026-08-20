@@ -126,7 +126,7 @@ endif()
 # ---------------------------------------------------------------------------
 # The audio backend's own tests, on the same axis the library selects it on.
 #
-# src/audio/CMakeLists.txt compiles exactly one src/platform/<backend>/ directory
+# src/audio/CMakeLists.txt compiles exactly one src/backend/<backend>/ directory
 # and publishes which one; a backend with device-free logic worth testing gets
 # a matching tests/platform/<backend>/ directory here, added only in the build
 # that compiled it. So the suite can never test a backend the library does not

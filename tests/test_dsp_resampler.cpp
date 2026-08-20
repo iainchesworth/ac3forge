@@ -19,7 +19,7 @@ namespace {
 // tests/test_resampler.cpp's own generate_sine/generate_sine_mono: these are
 // two independent test binaries' worth of helpers (ac3::dsp::resample is a
 // plain single-channel std::vector<float>, not interleaved multi-channel PCM
-// like ac3::capture::DriftResampler operates on), and the rest of tests/
+// like ac3::audio::DriftResampler operates on), and the rest of tests/
 // already keeps this kind of helper local per file rather than sharing a
 // header for it.
 std::vector<float> generate_sine(std::size_t frames, double freq, double sample_rate,

@@ -4,7 +4,7 @@
 #
 #  1. Pull in the real repo root's CMakeLists.txt via add_subdirectory(), so
 #     ac3::forge and ac3::audio (including this app's own
-#     src/audio/src/platform/android/ backend) are built from the SAME
+#     src/audio/src/backend/android/ backend) are built from the SAME
 #     source-of-truth target definitions the desktop CLI/GUI use - a change
 #     to the core lib is picked up here automatically, nothing to keep in
 #     sync by hand.
@@ -80,7 +80,7 @@ add_library(ac3forge_jni SHARED
 target_compile_features(ac3forge_jni PRIVATE cxx_std_23)
 
 # log: android/log.h, used by jni_entry.cpp and by
-# src/audio/src/platform/android/passthrough.cpp (linked in transitively via
+# src/audio/src/backend/android/passthrough.cpp (linked in transitively via
 # ac3::audio, which already declares its own aaudio/log deps - see
 # src/audio/CMakeLists.txt's ANDROID branch).
 # android: android/asset_manager_jni.h (AAssetManager_fromJava), used by

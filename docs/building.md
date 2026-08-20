@@ -302,12 +302,12 @@ Both dependencies are **optional and detected**. Configure reports which one it 
 ```
 -- PipeWire 1.6.2: live capture and monitor playback enabled; IEC 61937 passthrough negotiates
    for real but needs a compressed codec enabled on the target node by the session manager first
-   - see src/platform/pipewire/passthrough.cpp
+   - see src/audio/src/backend/pipewire/passthrough.cpp
 --   Audio backend  : pipewire
 ```
 
 Without either set of headers, configure succeeds anyway and says so; the build then selects
-`src/audio/src/platform/posix/`, whose entry points all return `kNoBackend`, and `ac3cli` marks
+`src/audio/src/backend/posix/`, whose entry points all return `kNoBackend`, and `ac3cli` marks
 the affected commands `UNAVAILABLE HERE` in its usage rather than pretending they exist. Pass
 `-DAC3FORGE_WITH_ALSA=ON` and/or `-DAC3FORGE_WITH_PIPEWIRE=ON` to turn a missing set of headers
 into a configure error instead, which is what a packaging build wants.
@@ -328,7 +328,7 @@ extra configuration.
 
 PipeWire has its own real, current, native mechanism for the same thing —
 `SPA_MEDIA_SUBTYPE_iec958`, `spa_format_audio_iec958_build()`, `PW_STREAM_FLAG_EXCLUSIVE` — not
-aspirational API surface; `src/platform/pipewire/passthrough.cpp`'s own header comment cites a
+aspirational API surface; `src/audio/src/backend/pipewire/passthrough.cpp`'s own header comment cites a
 real shipped client (Kodi's PipeWire passthrough support) that negotiates exactly this way. What
 it does not have is ALSA's "just works": a PipeWire sink only offers a compressed codec once its
 `iec958Codecs` control has been populated by the session manager (a WirePlumber ALSA-monitor
@@ -566,7 +566,7 @@ control (a `Repeater`'s per-device `Button`, worked around there directly in QML
 the style level). See `src/gui/tests/CMakeLists.txt` and `qml_test_main.cpp` for the full detail
 on both macOS fixes.
 
-`src/audio/CMakeLists.txt` selects a real CoreAudio backend on macOS (`src/audio/src/platform/macos/`,
+`src/audio/CMakeLists.txt` selects a real CoreAudio backend on macOS (`src/audio/src/backend/macos/`,
 built on the Audio HAL — `AudioObjectID`/`AudioDeviceIOProc` — the same layer WASAPI and ALSA
 occupy on their own platforms), not the no-backend stub it fell back to before. `AC3FORGE_BUILD_GUI`
 still defaults off there (`macos-llvm` opts it on in CI the same way the Linux legs do — see

@@ -282,7 +282,7 @@ message(STATUS "  Build GUI      : ${AC3FORGE_BUILD_GUI}")
 message(STATUS "  Build tests    : ${AC3FORGE_BUILD_TESTS}")
 message(STATUS "  Build examples : ${AC3FORGE_BUILD_EXAMPLES}")
 message(STATUS "  Build Python   : ${AC3FORGE_BUILD_PYTHON}")
-# Which src/audio/src/platform/ directory was compiled, and so whether 'record'
+# Which src/audio/src/backend/ directory was compiled, and so whether 'record'
 # and 'play' work in this build at all - see the platform tree in
 # src/audio/CMakeLists.txt. 'posix' is the one that means no.
 message(STATUS "  Audio backend  : ${AC3FORGE_AUDIO_BACKEND}")

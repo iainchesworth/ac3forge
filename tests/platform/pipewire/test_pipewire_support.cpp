@@ -25,7 +25,7 @@ using ac3::pipewire::is_audio_sink;
 using ac3::pipewire::is_audio_source;
 using ac3::pipewire::node_friendly_name;
 using ac3::pipewire::node_id;
-using ac3::sinks::BitstreamFormat;
+using ac3::audio::BitstreamFormat;
 
 namespace {
 
@@ -33,7 +33,7 @@ spa_dict make_dict(const spa_dict_item* items, std::uint32_t n_items) {
     // Plain aggregate init, not the SPA_DICT_INIT macro: it expands to a C99
     // compound literal, which -Werror -Wc99-extensions (Clang) flags outside
     // the system header that otherwise shelters it - see
-    // src/platform/pipewire/capture.cpp's identical note on
+    // src/audio/src/backend/pipewire/capture.cpp's identical note on
     // SPA_POD_BUILDER_INIT.
     return spa_dict{0, n_items, items};
 }
