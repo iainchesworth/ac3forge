@@ -296,6 +296,22 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
         config_.trace->coded_channels = nchans;
     }
 
+    // Per-block scratch, declared once ahead of the block loop rather than
+    // freshly inside it: each is fully re-assigned or overwritten before it
+    // is read within any block (the .assign() calls below keep the exact
+    // clearing semantics the in-loop declarations had), so hoisting changes
+    // nothing observable - it only stops the loop from re-allocating some
+    // twenty buffers per block. `x` additionally carries no zero-init at
+    // all: both imdct512_windowed and imdct256_pair_windowed write every
+    // element of the 512-wide output (mdct.cpp's step 5 covers x[0..511] in
+    // eight strided sequences), so a cleared buffer was never load-bearing.
+    std::vector<double> band_values;
+    std::vector<ExpStrategy> strategy;
+    std::vector<std::uint8_t> groups;
+    std::vector<std::vector<std::uint8_t>> bap(max_streams);
+    std::vector<std::array<double, 256>> coeffs(max_streams);
+    std::array<double, 512> x;
+
     for (int block = 0; block < kBlocksPerFrame; ++block) {
         if (config_.trace != nullptr) {
             auto& trace = config_.trace->blocks[static_cast<std::size_t>(block)];
@@ -391,7 +407,7 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
                 }
                 any_new = true;
                 const int master = static_cast<int>(r.read(2));
-                std::vector<double> band_values(static_cast<std::size_t>(ncplbnd));
+                band_values.assign(static_cast<std::size_t>(ncplbnd), 0.0);
                 for (int bnd = 0; bnd < ncplbnd; ++bnd) {
                     const auto exp = static_cast<std::uint8_t>(r.read(4));
                     const auto mant = static_cast<std::uint8_t>(r.read(4));
@@ -423,7 +439,7 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
         }
 
         // §5.3.3 exponent strategies: coupling channel first, then fbw, then LFE.
-        std::vector<ExpStrategy> strategy(max_streams, ExpStrategy::kReuse);
+        strategy.assign(max_streams, ExpStrategy::kReuse);
         if (cplinu) {
             strategy[static_cast<std::size_t>(cpl_stream)] =
                 static_cast<ExpStrategy>(r.read(2));
@@ -466,7 +482,7 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
             }
             const int ngrps = span / (3 * group_size);
             const auto cplabsexp = static_cast<std::uint8_t>(r.read(4));
-            std::vector<std::uint8_t> groups(static_cast<std::size_t>(ngrps));
+            groups.assign(static_cast<std::size_t>(ngrps), 0);
             for (auto& g : groups) {
                 g = static_cast<std::uint8_t>(r.read(7));
                 // §7.10.2 error condition 17: a grouped value above 124 is
@@ -498,7 +514,7 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
             const int end = endmant[static_cast<std::size_t>(ch)];
             const int ngrps = ch < nfchans ? exponent_group_count(strat, end) : 2;
             const auto absolute = static_cast<std::uint8_t>(r.read(4));
-            std::vector<std::uint8_t> groups(static_cast<std::size_t>(ngrps));
+            groups.assign(static_cast<std::size_t>(ngrps), 0);
             for (auto& g : groups) {
                 g = static_cast<std::uint8_t>(r.read(7));
                 if (g > 124) {  // §7.10.2 error condition 17
@@ -657,7 +673,6 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
         for (int s = 0; s < streams && snr_all_zero; ++s) {
             snr_all_zero = fsnroffst[static_cast<std::size_t>(s)] == 0;
         }
-        std::vector<std::vector<std::uint8_t>> bap(max_streams);
         for (int s = 0; s < streams; ++s) {
             const bool is_cpl = s == cpl_stream;
             const int end = endmant[static_cast<std::size_t>(s)];
@@ -701,7 +716,7 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
         // LFE. Everything is unpacked before any reconstruction, because
         // decoupling and the rematrix undo both need whole channels.
         MantissaBlockReader mantissa_reader;
-        std::vector<std::array<double, 256>> coeffs(max_streams);
+        coeffs.assign(max_streams, {});
         // §7.3.4: dither is substituted at a bap-0 bin only for a stream that
         // has its OWN dithflag - a full-bandwidth channel's own spectrum
         // (s < nfchans). The LFE has no dithflag bit at all (§5.4.3.2's loop
@@ -831,7 +846,6 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
             }
         }
         for (int ch = 0; ch < nchans; ++ch) {
-            std::array<double, 512> x{};
             if (ch < nfchans && blksw[static_cast<std::size_t>(ch)]) {
                 imdct256_pair_windowed(coeffs[static_cast<std::size_t>(ch)], x);
             } else {
