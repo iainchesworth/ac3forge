@@ -913,6 +913,15 @@ jobs:
           AC3CLI: build/config-linux-llvm/bin/ac3cli
         run: python3 tools/ci/fuzz_encoder_space.py --check-envelope
 
+      # Every case seed that ever produced a wrong verdict - from the encoder
+      # or from the harness itself - replayed exactly (REGRESSION_SEEDS in the
+      # script). Deterministic and seconds-cheap, so it gates like the
+      # envelope check does; the unseeded search below stays a search.
+      - name: Encoder input-space regressions (recorded past failures)
+        env:
+          AC3CLI: build/config-linux-llvm/bin/ac3cli
+        run: python3 tools/ci/fuzz_encoder_space.py --regressions
+
       - name: Encoder input-space fuzz (bounded, both decoders)
         env:
           AC3CLI: build/config-linux-llvm/bin/ac3cli

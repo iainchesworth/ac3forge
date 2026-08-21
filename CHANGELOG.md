@@ -12,6 +12,23 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 
 ## [Unreleased]
 
+### Fixed
+
+- **The encoder input-space fuzz no longer reports FFmpeg container-probe misses as encoder
+  failures.** Case seed 1124127684685913171 (stereo at 512 kbit/s, 48 kHz) produced a fully
+  valid stream — every syncframe on its exact 2048-byte boundary, both CRC words of every frame
+  good, a clean strict decode under `-f ac3` — that FFmpeg 8.0's auto-detection nonetheless
+  handed to its MPEG-PS demuxer: with frames that large, ffmpeg's AC-3 prober cannot clear its
+  own accept threshold inside the 8 KiB probe window (it wants seven consecutive syncframes),
+  while three start-code-shaped byte patterns inside ordinary quantized mantissas were enough
+  for the MPEG-PS prober to win that window outright, and no amount of appended audio can win it
+  back. `tools/ci/fuzz_encoder_space.py` now arbitrates any FFmpeg refusal by rerunning with
+  `-f ac3` forced and every error check kept — a clean forced decode classifies the case as
+  "misprobed" (counted and reported, never failing), a refused one still fails with the real
+  decode error. The seed is recorded in the script's new `--regressions` replay list, which CI
+  gates on before each unseeded search, and `fuzz/seeds/` gained a 512 kbit/s stereo stream so
+  decoder-side fuzzing mutates from the big-frame corner too.
+
 ### Changed
 
 - **The CI coverage gate now measures the whole library, per component.** The `coverage` leg
