@@ -890,4 +890,33 @@ std::optional<ac3::plan::Routing> routing_or_error(const ac3::plan::Plan& p, std
     return routing;
 }
 
+std::optional<ac3::signing::VerifySummary> apply_object_verification(
+    std::span<const std::byte> stream, const Options& meta) {
+    if (!meta.verify_objects) {
+        return ac3::signing::VerifySummary{};
+    }
+    const auto key = ac3::signing::load_signing_key(meta.signing_key.value_or(""));
+    if (!key) {
+        if (key.error().kind == ac3::signing::KeyErrorKind::kAbsent) {
+            std::println(stderr,
+                         "error: verify-objects needs a key — pass signing-key=<path>, or set "
+                         "AC3FORGE_SIGNING_KEY_FILE / AC3FORGE_SIGNING_KEY");
+        } else {
+            std::println(stderr, "error: {}", key.error().message);
+        }
+        return std::nullopt;
+    }
+    const auto summary = ac3::signing::verify_atmos_stream(stream, *key);
+    std::println("  object signature: {} valid, {} mismatched, {} unsigned frame(s)",
+                 summary.valid, summary.mismatch, summary.no_container);
+    if (summary.mismatch > 0) {
+        std::println(stderr,
+                     "error: object signature verification failed ({} of {} signed frames did "
+                     "not match the supplied key)",
+                     summary.mismatch, summary.valid + summary.mismatch);
+        return std::nullopt;
+    }
+    return summary;
+}
+
 }  // namespace ac3cli

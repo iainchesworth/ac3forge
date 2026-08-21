@@ -14,6 +14,8 @@
 #include "ac3/encoder/plan.hpp"
 #include "ac3/io/wav.hpp"
 #include "ac3/meta/loudness.hpp"
+#include "ac3/signing/emdf_atmos_signer.hpp"
+#include "ac3/signing/signing_key.hpp"
 #include "matroska/matroska.hpp"
 
 // The CLI-wide support layer: option/metadata parsing, path/stdio conventions, frame and WAV I/O,
@@ -333,5 +335,21 @@ std::optional<ac3::SampleRate> wav_sample_rate(std::uint32_t hz, std::string_vie
 
 // A source's channels routed onto a plan's coded channels, or a diagnosis.
 std::optional<ac3::plan::Routing> routing_or_error(const ac3::plan::Plan& p, std::size_t channels);
+
+// Checks EMDF object signatures on a stream about to be decoded/monitored,
+// when the operator asked for it (verify-objects) and supplied a key. Reads
+// the raw stream bytes the same way sign_atmos_stream does - independent of,
+// and either before or alongside, whatever Eac3Decoder itself does with
+// those same bytes; never routed through it, since that class's own stance
+// is that the protection field is opaque per spec (see decoder.hpp). Returns
+// the summary, or nullopt if verification was requested but the key could
+// not be loaded, or if any signed frame's tag did not match (both cases
+// already print their own message). Not requested -> an all-zero summary,
+// nothing checked, stream untouched either way: this only reads bytes, it
+// never signs. A signed stream is either fully verified or the command
+// refuses - matching this project's own "graceful 5.1 fallback is
+// either/or" stance - never a silent partial pass.
+std::optional<ac3::signing::VerifySummary> apply_object_verification(
+    std::span<const std::byte> stream, const Options& meta);
 
 }  // namespace ac3cli
