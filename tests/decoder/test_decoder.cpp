@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <numbers>
@@ -536,4 +537,56 @@ TEST_CASE("dithflag=1 on a coupled channel dithers independently of its sibling"
     CHECK(ch0_energy > 0.0);
     CHECK(ch1_energy > 0.0);
     CHECK(any_differs);
+}
+
+TEST_CASE("decode_frame_into writes the identical samples the value form allocates",
+          "[decoder]") {
+    // The span form exists to remove the per-call PCM allocation, never to
+    // change a sample: two decoders fed the same frames (each keeps its own
+    // overlap-add state) must agree bit for bit between the value form's
+    // vectors and the caller-owned spans - metadata included. 5.1 with
+    // coupling, real-ish moving content, several frames so the overlap-add
+    // history matters.
+    ac3::FrameEncoder encoder{
+        {.bitrate_kbps = 448, .acmod = ac3::Acmod::k3_2, .lfe = true, .coupling = true}};
+    ac3::FrameDecoder by_value;
+    ac3::FrameDecoder by_span;
+    const auto nchans = static_cast<std::size_t>(encoder.channel_count());
+    std::vector<std::vector<float>> block(nchans, std::vector<float>(ac3::kSamplesPerFrame));
+    std::vector<std::span<const float>> views(nchans);
+    std::vector<std::vector<float>> target(nchans, std::vector<float>(ac3::kSamplesPerFrame));
+    std::vector<std::span<float>> spans(target.begin(), target.end());
+    std::uint64_t n0 = 0;
+    for (int f = 0; f < 4; ++f) {
+        for (std::size_t ch = 0; ch < nchans; ++ch) {
+            for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+                const auto n = static_cast<double>(n0 + static_cast<std::uint64_t>(i));
+                const double freq = 180.0 + 130.0 * static_cast<double>(ch) + (f % 2) * 40.0;
+                block[ch][static_cast<std::size_t>(i)] = static_cast<float>(
+                    0.3 * std::sin(2.0 * std::numbers::pi * freq * n / 48000.0));
+            }
+            views[ch] = block[ch];
+        }
+        n0 += ac3::kSamplesPerFrame;
+        const auto frame = encoder.encode_frame(views);
+        REQUIRE(frame.has_value());
+
+        const auto value_result = by_value.decode_frame(*frame);
+        REQUIRE(value_result.has_value());
+        const auto span_result = by_span.decode_frame_into(*frame, spans);
+        REQUIRE(span_result.has_value());
+
+        CHECK(span_result->channels.empty());  // PCM went to the spans, not the result
+        CHECK(span_result->acmod == value_result->acmod);
+        CHECK(span_result->lfe == value_result->lfe);
+        CHECK(span_result->dialnorm == value_result->dialnorm);
+        CHECK(span_result->blksw == value_result->blksw);
+        REQUIRE(value_result->channels.size() == nchans);
+        for (std::size_t ch = 0; ch < nchans; ++ch) {
+            CAPTURE(f, ch);
+            REQUIRE(std::equal(target[ch].begin(), target[ch].end(),
+                               value_result->channels[ch].begin(),
+                               value_result->channels[ch].end()));
+        }
+    }
 }
