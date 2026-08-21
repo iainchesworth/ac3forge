@@ -183,6 +183,22 @@ if(TARGET ac3cli)
     target_compile_definitions(ac3tests PRIVATE "AC3CLI_EXE=\"$<TARGET_FILE:ac3cli>\"")
 endif()
 
+# RecordingSink (gui/test_recording_sink.cpp) is the GUI's one deliberately
+# Qt-free class - std:: and the container libraries only, exactly so its
+# streamed-equals-one-shot contract can be held here, in the plain Catch2
+# suite, without a QML engine in the room (apps/gui's Qt Quick tests cover
+# the interactive surfaces; this covers the bytes). Its source compiles
+# straight into this target the same way cli/test_cli.cpp's subject rides
+# its own binary: there is no GUI library surface to link against. Gated on
+# the ac3gui target like the CLI block above - the file lives in apps/gui,
+# which has only been add_subdirectory()'d when AC3FORGE_BUILD_GUI is ON.
+if(TARGET ac3gui)
+    target_sources(ac3tests PRIVATE
+        gui/test_recording_sink.cpp
+        "${CMAKE_SOURCE_DIR}/apps/gui/recording_sink.cpp")
+    target_include_directories(ac3tests PRIVATE "${CMAKE_SOURCE_DIR}/apps/gui")
+endif()
+
 # ac3adm::ac3adm is opt-in (AC3FORGE_BUILD_ADM, default OFF - see the root CMakeLists.txt's own
 # option() for why it is not on by default like matroska/mp4/mpegts) - test_adm.cpp is only
 # added, and ac3adm::ac3adm only linked, when that option turned this target on. Unlike cli/test_cli.cpp

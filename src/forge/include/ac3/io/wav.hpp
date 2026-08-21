@@ -141,6 +141,46 @@ class AC3FORGE_EXPORT WavStreamWriter {
     std::unique_ptr<Impl> impl_;
 };
 
+// WavStreamWriter's PCM16-raw sibling: write_wav_pcm16_raw() for a payload
+// whose length is not known up front - a live session's IEC 61937 burst
+// carrier, where the last burst only exists once the last access unit has
+// been captured. The header is written field for field as
+// write_wav_pcm16_raw's (format tag 1, 16-bit), sizes patched by
+// flush_header()/close() exactly as WavStreamWriter patches its own - so
+// after close(), the file is byte-identical to what write_wav_pcm16_raw
+// would have produced for the same payload. Bytes pass through untouched;
+// the caller owns their little-endian PCM16 framing, same as the one-shot.
+class AC3FORGE_EXPORT WavPcm16StreamWriter {
+   public:
+    WavPcm16StreamWriter();
+    ~WavPcm16StreamWriter();  // closes if still open, same as an fstream would
+    WavPcm16StreamWriter(const WavPcm16StreamWriter&) = delete;
+    WavPcm16StreamWriter& operator=(const WavPcm16StreamWriter&) = delete;
+    WavPcm16StreamWriter(WavPcm16StreamWriter&&) noexcept;
+    WavPcm16StreamWriter& operator=(WavPcm16StreamWriter&&) noexcept;
+
+    [[nodiscard]] std::expected<void, WavError> open(const std::string& path,
+                                                       std::uint32_t sample_rate,
+                                                       std::uint16_t channels);
+
+    // Appends raw payload bytes. Returns false (writer open but stalled) if
+    // the underlying write fails - same contract as WavStreamWriter::write.
+    [[nodiscard]] bool write(std::span<const std::byte> bytes);
+
+    // Same periodic-patch rationale as WavStreamWriter::flush_header - see
+    // its comment; a long take should call this every second or so.
+    void flush_header();
+
+    void close();
+
+    [[nodiscard]] bool is_open() const;
+    [[nodiscard]] std::uint64_t bytes_written() const;
+
+   private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
 // Incremental WAV reader, WavStreamWriter's read-side counterpart: for
 // inputs too long to hold in memory. read_wav() above peaks at the whole
 // file PLUS its planar float copy resident at once - fine for a fixture,
