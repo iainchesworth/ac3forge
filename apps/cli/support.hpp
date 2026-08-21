@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <expected>
+#include <fstream>
 #include <optional>
 #include <span>
 #include <string>
@@ -230,6 +231,44 @@ bool write_repeated_frame(std::string_view path, std::span<const std::byte> fram
 // code, since the ORIGINAL error is still the one that matters.
 void write_partial_output(std::string_view out_path, bool keep_partial,
                           std::span<const std::vector<std::byte>> frames);
+
+// Streams encoded frames to their destination as they are produced, so an
+// encode's output no longer accumulates (~3.4 MB per minute at 448 kbps -
+// the last O(duration) term the encode commands carried once their input
+// went streaming). A file destination is written incrementally; abort() -
+// the encoder failed mid-stream - honours keep-partial exactly as
+// write_partial_output does: the bytes already written are renamed to
+// partial_output_path() and reported when asked for, deleted otherwise, so
+// a failed run's observable outcome is unchanged. "-" accumulates and
+// writes stdout once at close(): a pipe cannot take bytes back, and a
+// failed run without keep-partial must leave stdout untouched. Tracks the
+// per-frame size stats the E-AC-3 VBR report used to re-walk its frame
+// list for.
+class EncodedStreamSink {
+   public:
+    [[nodiscard]] bool open(std::string_view path, bool keep_partial);
+    [[nodiscard]] bool push(std::span<const std::byte> frame);
+    // Success path; flushes the "-" buffer. False if the destination failed.
+    [[nodiscard]] bool close();
+    void abort();
+
+    [[nodiscard]] std::size_t frames() const { return frames_; }
+    [[nodiscard]] std::size_t min_bytes() const { return min_bytes_; }
+    [[nodiscard]] std::size_t max_bytes() const { return max_bytes_; }
+    [[nodiscard]] std::uint64_t total_bytes() const { return total_bytes_; }
+
+   private:
+    std::string path_;
+    bool stdio_ = false;
+    bool keep_partial_ = false;
+    bool open_ = false;
+    std::ofstream file_;
+    std::vector<std::byte> buffered_;  // "-" only
+    std::size_t frames_ = 0;
+    std::size_t min_bytes_ = 0;
+    std::size_t max_bytes_ = 0;
+    std::uint64_t total_bytes_ = 0;
+};
 
 // Interleaves `channels` (one vector per decoded channel, AC-3/E-AC-3 coded
 // order) into WAV/Windows speaker order for playback, reading order[i] as

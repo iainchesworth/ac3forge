@@ -568,6 +568,105 @@ std::string partial_output_path(std::string_view path) {
     return std::string(path) + ".partial";
 }
 
+bool EncodedStreamSink::open(std::string_view path, bool keep_partial) {
+    path_ = std::string{path};
+    keep_partial_ = keep_partial;
+    stdio_ = is_stdio_path(path);
+    if (!stdio_) {
+        file_.open(path_, std::ios::binary);
+        if (!file_) {
+            std::println(stderr, "error: cannot open {} for writing", path_);
+            return false;
+        }
+    }
+    open_ = true;
+    return true;
+}
+
+bool EncodedStreamSink::push(std::span<const std::byte> frame) {
+    if (stdio_) {
+        buffered_.insert(buffered_.end(), frame.begin(), frame.end());
+    } else {
+        file_.write(reinterpret_cast<const char*>(frame.data()),
+                    static_cast<std::streamsize>(frame.size()));
+        if (!file_) {
+            std::println(stderr, "error: cannot write to {}", path_);
+            return false;
+        }
+    }
+    min_bytes_ = frames_ == 0 ? frame.size() : std::min(min_bytes_, frame.size());
+    max_bytes_ = std::max(max_bytes_, frame.size());
+    total_bytes_ += frame.size();
+    ++frames_;
+    return true;
+}
+
+bool EncodedStreamSink::close() {
+    open_ = false;
+    if (stdio_) {
+        ac3::cli::platform::set_stdio_binary();
+        std::cout.write(reinterpret_cast<const char*>(buffered_.data()),
+                        static_cast<std::streamsize>(buffered_.size()));
+        std::cout.flush();
+        if (!std::cout) {
+            std::println(stderr, "error: cannot write to stdout");
+            return false;
+        }
+        return true;
+    }
+    file_.close();
+    if (file_.fail()) {
+        std::println(stderr, "error: cannot write to {}", path_);
+        return false;
+    }
+    return true;
+}
+
+void EncodedStreamSink::abort() {
+    if (!open_) {
+        return;
+    }
+    open_ = false;
+    if (stdio_) {
+        // "beside the intended output" has no meaning for a pipe - see
+        // write_partial_output's identical stdout reasoning and wording.
+        if (keep_partial_ && frames_ > 0) {
+            ac3::cli::platform::set_stdio_binary();
+            std::cout.write(reinterpret_cast<const char*>(buffered_.data()),
+                            static_cast<std::streamsize>(buffered_.size()));
+            std::cout.flush();
+            if (std::cout) {
+                std::println(stderr,
+                             "note: the {} frames already encoded were written to stdout",
+                             frames_);
+            }
+        }
+        return;
+    }
+    file_.close();
+    if (keep_partial_ && frames_ > 0) {
+        // The bytes are already on disk at the intended path; keep-partial's
+        // contract is that they live at the .partial name instead, so a
+        // half-finished take can never be mistaken for a finished one.
+        const auto partial = partial_output_path(path_);
+        std::error_code ec;
+        std::filesystem::rename(std::filesystem::path{path_}, std::filesystem::path{partial},
+                                 ec);
+        if (!ec) {
+            std::println(stderr, "note: the {} frames already encoded are kept at {}", frames_,
+                         partial);
+        } else {
+            // Same stance as write_partial_output: report, but the ORIGINAL
+            // error stays the one that matters.
+            std::println(stderr, "note: could not move the partial output to {} ({})", partial,
+                         ec.message());
+        }
+    } else {
+        std::error_code ec;
+        std::filesystem::remove(std::filesystem::path{path_}, ec);
+    }
+}
+
 bool write_repeated_frame(std::string_view path, std::span<const std::byte> frame,
                           std::uint64_t count) {
     const auto emit = [&](std::ostream& out) {
