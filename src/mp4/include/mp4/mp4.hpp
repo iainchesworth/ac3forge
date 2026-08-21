@@ -90,7 +90,12 @@ struct MuxOptions {
 
 // Mux frames into a complete .mp4, returned as bytes. No file I/O here, so
 // this stays testable without touching a disk - matroska::mux()'s own reason
-// applies unchanged.
+// applies unchanged. Frames arrive as views (matroska::mux's own reasoning
+// there too); the vector-list overload below forwards for owned lists.
+[[nodiscard]] MP4_EXPORT std::expected<std::vector<std::byte>, MuxError> mux(
+    const AudioTrack& track, std::span<const std::span<const std::byte>> frames,
+    const MuxOptions& options = {});
+
 [[nodiscard]] MP4_EXPORT std::expected<std::vector<std::byte>, MuxError> mux(
     const AudioTrack& track, std::span<const std::vector<std::byte>> frames,
     const MuxOptions& options = {});
@@ -152,6 +157,10 @@ struct FragmentedOutput {
 // file I/O, same as mux(); the caller decides file names (or byte-range
 // offsets, for a single concatenated CMAF track file) for init_segment and
 // each media_segments[i].
+[[nodiscard]] MP4_EXPORT std::expected<FragmentedOutput, MuxError> fragment(
+    const AudioTrack& track, std::span<const std::span<const std::byte>> frames,
+    const FragmentOptions& options = {});
+
 [[nodiscard]] MP4_EXPORT std::expected<FragmentedOutput, MuxError> fragment(
     const AudioTrack& track, std::span<const std::vector<std::byte>> frames,
     const FragmentOptions& options = {});

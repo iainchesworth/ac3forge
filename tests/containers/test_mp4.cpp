@@ -304,7 +304,9 @@ TEST_CASE("MP4 muxer rejects what it cannot describe", "[mp4]") {
     const std::vector<Bytes> one{frame_of(16, 0)};
     const auto track = sample_track();
 
-    CHECK(mp4::mux(track, {}).error() == mp4::MuxError::kNoFrames);
+    // Explicit empty span: bare {} became ambiguous when the span-of-views
+    // mux overload arrived alongside the owned-list one.
+    CHECK(mp4::mux(track, std::span<const Bytes>{}).error() == mp4::MuxError::kNoFrames);
 
     auto bad_channels = track;
     bad_channels.channels = 0;

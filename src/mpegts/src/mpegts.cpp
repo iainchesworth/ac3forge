@@ -389,9 +389,9 @@ std::string_view describe(MuxError error) {
     return "unknown error";
 }
 
-std::expected<std::vector<std::byte>, MuxError> mux(const AudioTrack& track,
-                                                     std::span<const std::vector<std::byte>> frames,
-                                                     const MuxOptions& options) {
+std::expected<std::vector<std::byte>, MuxError> mux(
+    const AudioTrack& track, std::span<const std::span<const std::byte>> frames,
+    const MuxOptions& options) {
     if (frames.empty()) {
         return std::unexpected(MuxError::kNoFrames);
     }
@@ -441,6 +441,13 @@ std::expected<std::vector<std::byte>, MuxError> mux(const AudioTrack& track,
     }
 
     return out;
+}
+
+std::expected<std::vector<std::byte>, MuxError> mux(
+    const AudioTrack& track, std::span<const std::vector<std::byte>> frames,
+    const MuxOptions& options) {
+    const std::vector<std::span<const std::byte>> views(frames.begin(), frames.end());
+    return mux(track, views, options);
 }
 
 }  // namespace mpegts

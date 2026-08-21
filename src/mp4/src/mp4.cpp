@@ -23,7 +23,7 @@ Bytes build_ftyp() {
 }
 
 Bytes build_moov(const AudioTrack& track, const MuxOptions& options,
-                 std::span<const std::vector<std::byte>> frames,
+                 std::span<const std::span<const std::byte>> frames,
                  std::span<const std::uint32_t> chunk_offsets, std::uint64_t total_samples) {
     Bytes stbl_body;
     put_bytes(stbl_body, detail::build_stsd(track));
@@ -80,9 +80,9 @@ std::string_view describe(MuxError error) {
     return "unknown error";
 }
 
-std::expected<std::vector<std::byte>, MuxError> mux(const AudioTrack& track,
-                                                    std::span<const std::vector<std::byte>> frames,
-                                                    const MuxOptions& options) {
+std::expected<std::vector<std::byte>, MuxError> mux(
+    const AudioTrack& track, std::span<const std::span<const std::byte>> frames,
+    const MuxOptions& options) {
     if (frames.empty()) {
         return std::unexpected(MuxError::kNoFrames);
     }
@@ -148,6 +148,13 @@ std::expected<std::vector<std::byte>, MuxError> mux(const AudioTrack& track,
         put_bytes(file, frame);
     }
     return file;
+}
+
+std::expected<std::vector<std::byte>, MuxError> mux(
+    const AudioTrack& track, std::span<const std::vector<std::byte>> frames,
+    const MuxOptions& options) {
+    const std::vector<std::span<const std::byte>> views(frames.begin(), frames.end());
+    return mux(track, views, options);
 }
 
 }  // namespace mp4
