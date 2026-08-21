@@ -2029,7 +2029,9 @@ int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path
         return 1;
     }
     ac3::Eac3Decoder decoder{
-        {.drc_scale = meta.drc_scale, .heavy_compression = meta.p.heavy.has_value()}};
+        {.drc_scale = meta.drc_scale,
+         .fast_imdct = meta.fast_imdct,
+         .heavy_compression = meta.p.heavy.has_value()}};
     // The decoded programme goes out through the sink as units decode - the
     // sink's per-slot carry absorbs the one place slots advance unevenly
     // (the transient-pre-noise flush below).
@@ -2376,7 +2378,9 @@ int run_decode(std::string_view in_path, std::string_view out_path, const Option
         return 1;
     }
     ac3::FrameDecoder decoder{
-        {.drc_scale = meta.drc_scale, .heavy_compression = meta.p.heavy.has_value()}};
+        {.drc_scale = meta.drc_scale,
+         .fast_imdct = meta.fast_imdct,
+         .heavy_compression = meta.p.heavy.has_value()}};
     PlanarWavSink sink;
     std::optional<ac3::analysis::LevelMeter> meter;
     ac3::DecodedFrame first{};
@@ -3602,7 +3606,7 @@ int run_main(int argc, char** argv) {
                                token == "couple" || token == "heavy" || token == "heavy2" ||
                                token == "mixmeta" || token == "sign-objects" ||
                                token == "verify-objects" || token == "keep-partial" ||
-                               token == "fast-mdct";
+                               token == "fast-mdct" || token == "fast-imdct";
         if (token == "couple") {
             couple_flag = true;
         }

@@ -590,3 +590,68 @@ TEST_CASE("decode_frame_into writes the identical samples the value form allocat
         }
     }
 }
+
+TEST_CASE("fast_imdct reconstructs the same PCM as the direct transform, long and short blocks",
+          "[decoder][fast-imdct]") {
+    // Two decoders over identical frames, one per transform path - the
+    // overlap-add state must see the same history for the comparison to be
+    // per-sample meaningful. A tone stretch covers the long transform;
+    // a sudden onset (the same shape the blksw test above uses) forces
+    // block switching so the short imdct256_pair path is provably covered.
+    const ac3::EncoderConfig config{.bitrate_kbps = 192, .acmod = ac3::Acmod::k2_0};
+    ac3::FrameEncoder encoder{config};
+    ac3::FrameDecoder direct_decoder;
+    ac3::FrameDecoder fast_decoder{{.fast_imdct = true}};
+    const auto nchans = static_cast<std::size_t>(encoder.channel_count());
+
+    std::vector<float> tone(static_cast<std::size_t>(ac3::kSamplesPerFrame));
+    std::vector<float> transient(static_cast<std::size_t>(ac3::kSamplesPerFrame), 0.0f);
+    constexpr int kOnset = 960;
+    for (int n = 0; n < ac3::kSamplesPerFrame; ++n) {
+        tone[static_cast<std::size_t>(n)] = static_cast<float>(
+            0.4 * std::sin(2.0 * std::numbers::pi * 440.0 * static_cast<double>(n) / 48000.0));
+        if (n >= kOnset) {
+            transient[static_cast<std::size_t>(n)] = static_cast<float>(
+                0.9 * std::sin(2.0 * std::numbers::pi * 1000.0 * static_cast<double>(n) /
+                               48000.0));
+        }
+    }
+
+    bool any_switched = false;
+    float max_diff = 0.0f;
+    const auto feed = [&](const std::vector<float>& block) {
+        std::vector<std::span<const float>> views(nchans, block);
+        const auto frame = encoder.encode_frame(views);
+        REQUIRE(frame.has_value());
+        const auto direct = direct_decoder.decode_frame(*frame);
+        REQUIRE(direct.has_value());
+        const auto fast = fast_decoder.decode_frame(*frame);
+        REQUIRE(fast.has_value());
+        for (const auto& channel : direct->blksw) {
+            for (const bool sw : channel) {
+                any_switched = any_switched || sw;
+            }
+        }
+        REQUIRE(fast->channels.size() == direct->channels.size());
+        for (std::size_t ch = 0; ch < direct->channels.size(); ++ch) {
+            for (std::size_t i = 0; i < direct->channels[ch].size(); ++i) {
+                max_diff = std::max(max_diff,
+                                    std::abs(fast->channels[ch][i] - direct->channels[ch][i]));
+            }
+        }
+    };
+    for (int f = 0; f < 3; ++f) {
+        feed(tone);
+    }
+    feed(transient);
+    feed(tone);
+
+    REQUIRE(any_switched);  // the short-transform inverse really ran
+    CAPTURE(max_diff);
+    // Both paths compute in doubles and only differ by the FFT's addition
+    // order (~1e-12 relative); after the float32 conversion the PCM should
+    // agree to well below one LSB of 16-bit audio. The bound is deliberately
+    // far tighter than audibility and far looser than the ~1e-12 expectation,
+    // so it fails on a real defect and never on rounding.
+    CHECK(max_diff < 1e-7f);
+}

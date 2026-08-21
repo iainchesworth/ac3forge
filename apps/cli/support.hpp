@@ -122,6 +122,12 @@ struct Options {
     // (the opt-in spelling from when this defaulted off) stays accepted and
     // now names what already happens.
     bool fast_mdct = true;
+    // The decode-side counterpart: §7.9.4 step 3's complex transform via
+    // the radix-2 FFT instead of the pseudocode's direct sum
+    // (DecoderConfig::fast_imdct - see its own comment for the quality
+    // gate). Opt-in ('fast-imdct') while the evidence is under review,
+    // exactly as fast_mdct itself started; decode/eac3-decode read it.
+    bool fast_imdct = false;
     // 'qc' only: which delivery gate(s) to check the measurement against -
     // one of ac3::meta::kQcPresetNames, or "all" to check every preset.
     // Unset (measure-only, no gate) is the default - a plain

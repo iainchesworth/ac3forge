@@ -375,7 +375,8 @@ void mdct256_forward_second(std::span<const double, 256> windowed, std::span<dou
     mdct_forward_core<256>(windowed, forward_cos_table_second(), coeffs);
 }
 
-void imdct512_windowed(std::span<const double, 256> coeffs, std::span<double, 512> x) {
+void imdct512_windowed(std::span<const double, 256> coeffs, std::span<double, 512> x,
+                       bool fast) {
     const auto& tw = twiddles();
     constexpr int kQuarter = kN / 4;  // 128
     constexpr int kEighth = kN / 8;   // 64
@@ -393,24 +394,45 @@ void imdct512_windowed(std::span<const double, 256> coeffs, std::span<double, 51
         z_im[static_cast<std::size_t>(k)] = b * c + a * s;
     }
 
-    // Step 3: N/4-point complex "IFFT" exactly as the pseudocode sums it:
-    // z[n] = sum_k Z[k] * (cos(8*pi*k*n/N) + j*sin(8*pi*k*n/N)), no scaling.
-    const auto& s3 = inner_sum_table();
+    // Step 3: N/4-point complex "IFFT". The pseudocode's sum
+    // z[n] = sum_k Z[k] * (cos(8*pi*k*n/N) + j*sin(8*pi*k*n/N)), no scaling,
+    // is with its +j*sin convention exactly an unscaled INVERSE DFT of Z -
+    // so the fast path is the identity IDFT(Z) = conj(FFT(conj(Z))) through
+    // the same radix-2 core the forward's fast fold uses (its P = 128
+    // tables are the long fold's own, fast_mdct_tables<512>().fft). The
+    // direct branch keeps the spec's own evaluation - and keeps
+    // inner_sum_table()'s 256 KiB matrix a lazily-built oracle that a
+    // decoder running fast never materializes at all.
     std::array<double, kQuarter> t_re{};
     std::array<double, kQuarter> t_im{};
-    for (int n = 0; n < kQuarter; ++n) {
-        double re = 0.0;
-        double im = 0.0;
-        const auto& row_c = s3.cos[static_cast<std::size_t>(n)];
-        const auto& row_s = s3.sin[static_cast<std::size_t>(n)];
+    if (fast) {
         for (int k = 0; k < kQuarter; ++k) {
-            const double c = row_c[static_cast<std::size_t>(k)];
-            const double s = row_s[static_cast<std::size_t>(k)];
-            re += z_re[static_cast<std::size_t>(k)] * c - z_im[static_cast<std::size_t>(k)] * s;
-            im += z_re[static_cast<std::size_t>(k)] * s + z_im[static_cast<std::size_t>(k)] * c;
+            z_im[static_cast<std::size_t>(k)] = -z_im[static_cast<std::size_t>(k)];
         }
-        t_re[static_cast<std::size_t>(n)] = re;
-        t_im[static_cast<std::size_t>(n)] = im;
+        internal::fft_radix2_forward<static_cast<std::size_t>(kQuarter)>(
+            fast_mdct_tables<512>().fft, z_re, z_im);
+        for (int n = 0; n < kQuarter; ++n) {
+            t_re[static_cast<std::size_t>(n)] = z_re[static_cast<std::size_t>(n)];
+            t_im[static_cast<std::size_t>(n)] = -z_im[static_cast<std::size_t>(n)];
+        }
+    } else {
+        const auto& s3 = inner_sum_table();
+        for (int n = 0; n < kQuarter; ++n) {
+            double re = 0.0;
+            double im = 0.0;
+            const auto& row_c = s3.cos[static_cast<std::size_t>(n)];
+            const auto& row_s = s3.sin[static_cast<std::size_t>(n)];
+            for (int k = 0; k < kQuarter; ++k) {
+                const double c = row_c[static_cast<std::size_t>(k)];
+                const double s = row_s[static_cast<std::size_t>(k)];
+                re += z_re[static_cast<std::size_t>(k)] * c -
+                      z_im[static_cast<std::size_t>(k)] * s;
+                im += z_re[static_cast<std::size_t>(k)] * s +
+                      z_im[static_cast<std::size_t>(k)] * c;
+            }
+            t_re[static_cast<std::size_t>(n)] = re;
+            t_im[static_cast<std::size_t>(n)] = im;
+        }
     }
 
     // Step 4: post-transform complex multiply. y[n] = z[n] * (xcos1[n] + j*xsin1[n])
@@ -448,7 +470,8 @@ void imdct512_windowed(std::span<const double, 256> coeffs, std::span<double, 51
     }
 }
 
-void imdct256_pair_windowed(std::span<const double, 256> coeffs, std::span<double, 512> x) {
+void imdct256_pair_windowed(std::span<const double, 256> coeffs, std::span<double, 512> x,
+                            bool fast) {
     const auto& tw = twiddles2();
     constexpr int kQuarter = kN / 4;  // 128
     constexpr int kEighth = kN / 8;   // 64
@@ -480,31 +503,57 @@ void imdct256_pair_windowed(std::span<const double, 256> coeffs, std::span<doubl
         z2_im[static_cast<std::size_t>(k)] = b2 * c + a2 * s;
     }
 
-    // Step 3: two independent N/8-point complex "IFFT" sums, unscaled.
-    const auto& s3 = inner_sum_pair_table();
+    // Step 3: two independent N/8-point complex "IFFT" sums, unscaled. Same
+    // inverse-DFT identity as the long transform's step 3 (see
+    // imdct512_windowed): the fast path runs conj(FFT(conj(Z))) through the
+    // P = 64 radix-2 tables the short forward folds already own
+    // (fast_mdct_tables<256>().fft), once per half-block set; the direct
+    // branch keeps the spec's own sum and inner_sum_pair_table()'s 64 KiB
+    // matrix stays a lazily-built oracle.
     std::array<double, kEighth> t1_re{};
     std::array<double, kEighth> t1_im{};
     std::array<double, kEighth> t2_re{};
     std::array<double, kEighth> t2_im{};
-    for (int n = 0; n < kEighth; ++n) {
-        double re1 = 0.0;
-        double im1 = 0.0;
-        double re2 = 0.0;
-        double im2 = 0.0;
-        const auto& row_c = s3.cos[static_cast<std::size_t>(n)];
-        const auto& row_s = s3.sin[static_cast<std::size_t>(n)];
+    if (fast) {
+        const auto& fft = fast_mdct_tables<256>().fft;
         for (int k = 0; k < kEighth; ++k) {
-            const double c = row_c[static_cast<std::size_t>(k)];
-            const double s = row_s[static_cast<std::size_t>(k)];
-            re1 += z1_re[static_cast<std::size_t>(k)] * c - z1_im[static_cast<std::size_t>(k)] * s;
-            im1 += z1_re[static_cast<std::size_t>(k)] * s + z1_im[static_cast<std::size_t>(k)] * c;
-            re2 += z2_re[static_cast<std::size_t>(k)] * c - z2_im[static_cast<std::size_t>(k)] * s;
-            im2 += z2_re[static_cast<std::size_t>(k)] * s + z2_im[static_cast<std::size_t>(k)] * c;
+            z1_im[static_cast<std::size_t>(k)] = -z1_im[static_cast<std::size_t>(k)];
+            z2_im[static_cast<std::size_t>(k)] = -z2_im[static_cast<std::size_t>(k)];
         }
-        t1_re[static_cast<std::size_t>(n)] = re1;
-        t1_im[static_cast<std::size_t>(n)] = im1;
-        t2_re[static_cast<std::size_t>(n)] = re2;
-        t2_im[static_cast<std::size_t>(n)] = im2;
+        internal::fft_radix2_forward<static_cast<std::size_t>(kEighth)>(fft, z1_re, z1_im);
+        internal::fft_radix2_forward<static_cast<std::size_t>(kEighth)>(fft, z2_re, z2_im);
+        for (int n = 0; n < kEighth; ++n) {
+            t1_re[static_cast<std::size_t>(n)] = z1_re[static_cast<std::size_t>(n)];
+            t1_im[static_cast<std::size_t>(n)] = -z1_im[static_cast<std::size_t>(n)];
+            t2_re[static_cast<std::size_t>(n)] = z2_re[static_cast<std::size_t>(n)];
+            t2_im[static_cast<std::size_t>(n)] = -z2_im[static_cast<std::size_t>(n)];
+        }
+    } else {
+        const auto& s3 = inner_sum_pair_table();
+        for (int n = 0; n < kEighth; ++n) {
+            double re1 = 0.0;
+            double im1 = 0.0;
+            double re2 = 0.0;
+            double im2 = 0.0;
+            const auto& row_c = s3.cos[static_cast<std::size_t>(n)];
+            const auto& row_s = s3.sin[static_cast<std::size_t>(n)];
+            for (int k = 0; k < kEighth; ++k) {
+                const double c = row_c[static_cast<std::size_t>(k)];
+                const double s = row_s[static_cast<std::size_t>(k)];
+                re1 += z1_re[static_cast<std::size_t>(k)] * c -
+                       z1_im[static_cast<std::size_t>(k)] * s;
+                im1 += z1_re[static_cast<std::size_t>(k)] * s +
+                       z1_im[static_cast<std::size_t>(k)] * c;
+                re2 += z2_re[static_cast<std::size_t>(k)] * c -
+                       z2_im[static_cast<std::size_t>(k)] * s;
+                im2 += z2_re[static_cast<std::size_t>(k)] * s +
+                       z2_im[static_cast<std::size_t>(k)] * c;
+            }
+            t1_re[static_cast<std::size_t>(n)] = re1;
+            t1_im[static_cast<std::size_t>(n)] = im1;
+            t2_re[static_cast<std::size_t>(n)] = re2;
+            t2_im[static_cast<std::size_t>(n)] = im2;
+        }
     }
 
     // Step 4: post-IFFT complex multiply. y1[n] = z1[n] * (xcos2[n] + j*xsin2[n]).
