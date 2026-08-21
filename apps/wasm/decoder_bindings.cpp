@@ -62,6 +62,23 @@ class WasmDecoder {
     // Decodes the whole stream up front. Returns true on success; on failure,
     // error() explains why and every other getter reports an empty result.
     bool decode(const emscripten::val& js_bytes) {
+        try {
+            return decode_impl(js_bytes);
+        } catch (const std::bad_alloc&) {
+            // The module's MAXIMUM_MEMORY ceiling (CMakeLists.txt) turned
+            // heap exhaustion into an exception instead of a dead tab; turn
+            // that into the same readable refusal any decode error gets.
+            // Partial state from the failed decode is discarded wholesale.
+            *this = WasmDecoder();
+            error_ =
+                "out of memory: this file's decoded audio does not fit the "
+                "demo's memory budget - try a shorter clip";
+            return false;
+        }
+    }
+
+   private:
+    bool decode_impl(const emscripten::val& js_bytes) {
         error_.clear();
         channels_.clear();
         labels_.clear();
@@ -123,6 +140,7 @@ class WasmDecoder {
         return true;
     }
 
+   public:
     [[nodiscard]] std::string error() const { return error_; }
     [[nodiscard]] std::string streamKind() const { return stream_kind_; }
     [[nodiscard]] int sampleRate() const { return sample_rate_; }

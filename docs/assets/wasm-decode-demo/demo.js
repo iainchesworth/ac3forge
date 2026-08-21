@@ -505,7 +505,20 @@ async function loadBundledDemo() {
     await handleDecoded(new Uint8Array(buffer), 'the bundled demo stream (assets/demo.ec3)');
 }
 
+// The demo materialises the decoded programme in the WASM heap and again in
+// JS copies, so input size is the honest proxy for peak memory: past this
+// cap the decode would only run into the module's memory ceiling and fail
+// there anyway. 24 MiB of E-AC-3 at 448 kbps is about seven minutes.
+const MAX_UPLOAD_BYTES = 24 * 1024 * 1024;
+
 function loadFile(file) {
+    if (file.size > MAX_UPLOAD_BYTES) {
+        setStatus(
+            `${file.name} is ${(file.size / (1024 * 1024)).toFixed(1)} MiB - this demo accepts ` +
+            'up to 24 MiB (about seven minutes at 448 kbps). Try a shorter clip.',
+            true);
+        return;
+    }
     const reader = new FileReader();
     reader.onload = () => handleDecoded(new Uint8Array(reader.result), file.name);
     reader.readAsArrayBuffer(file);
