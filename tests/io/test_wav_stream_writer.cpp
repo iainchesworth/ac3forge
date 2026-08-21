@@ -132,3 +132,60 @@ TEST_CASE("WavStreamWriter open() refuses zero channels", "[wav]") {
     REQUIRE_FALSE(result.has_value());
     CHECK(result.error() == ac3::io::WavError::kUnsupportedFormat);
 }
+
+namespace {
+
+std::vector<std::byte> read_file_bytes(const fs::path& path) {
+    std::ifstream in{path, std::ios::binary};
+    REQUIRE(in.is_open());
+    in.seekg(0, std::ios::end);
+    std::vector<std::byte> bytes(static_cast<std::size_t>(in.tellg()));
+    in.seekg(0, std::ios::beg);
+    in.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    REQUIRE(in.good());
+    return bytes;
+}
+
+}  // namespace
+
+TEST_CASE("WavPcm16StreamWriter's closed file is byte-identical to write_wav_pcm16_raw",
+          "[wav]") {
+    // Deliberately not a multiple of anything - the payload passes through
+    // untouched, so an odd length must survive too.
+    std::vector<std::byte> payload(1237);
+    for (std::size_t i = 0; i < payload.size(); ++i) {
+        payload[i] = static_cast<std::byte>((i * 37 + 11) & 0xFF);
+    }
+
+    const auto one_shot = scratch_dir() / "pcm16_one_shot.wav";
+    REQUIRE(ac3::io::write_wav_pcm16_raw(one_shot.string(), payload, 192000, 2).has_value());
+
+    const auto streamed = scratch_dir() / "pcm16_streamed.wav";
+    ac3::io::WavPcm16StreamWriter writer;
+    REQUIRE(writer.open(streamed.string(), 192000, 2).has_value());
+    CHECK(writer.is_open());
+    // Several uneven writes, with a mid-stream header patch to prove the
+    // seek-back does not corrupt what follows.
+    REQUIRE(writer.write(std::span{payload}.first(400)));
+    writer.flush_header();
+    REQUIRE(writer.write(std::span{payload}.subspan(400, 700)));
+    REQUIRE(writer.write(std::span{payload}.subspan(1100)));
+    CHECK(writer.bytes_written() == payload.size());
+    writer.close();
+    CHECK_FALSE(writer.is_open());
+
+    CHECK(read_file_bytes(streamed) == read_file_bytes(one_shot));
+}
+
+TEST_CASE("WavPcm16StreamWriter open() refuses zero channels and uncreatable paths", "[wav]") {
+    ac3::io::WavPcm16StreamWriter writer;
+    const auto zero = writer.open((scratch_dir() / "pcm16_zero.wav").string(), 48000, 0);
+    REQUIRE_FALSE(zero.has_value());
+    CHECK(zero.error() == ac3::io::WavError::kUnsupportedFormat);
+
+    const auto bad =
+        writer.open((scratch_dir() / "no" / "such" / "dir" / "pcm16.wav").string(), 48000, 2);
+    REQUIRE_FALSE(bad.has_value());
+    CHECK(bad.error() == ac3::io::WavError::kCannotOpen);
+    CHECK_FALSE(writer.is_open());
+}

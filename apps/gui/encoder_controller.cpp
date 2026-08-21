@@ -45,6 +45,7 @@
 #include "mp4/hls.hpp"
 #include "mp4/mp4.hpp"
 #include "mpegts/mpegts.hpp"
+#include "recording_sink.hpp"
 
 namespace plan = ac3::plan;
 
@@ -168,6 +169,25 @@ constexpr int kContainerSpdif = 2;
 constexpr int kContainerMp4 = 3;
 constexpr int kContainerFmp4 = 4;
 constexpr int kContainerMpegts = 5;
+
+// The streamable subset of that combo, for a recording's frame-at-a-time
+// write path. MP4 and fMP4 map to nothing: their format needs every frame
+// at once (see RecordingSink's own header), so a recording targeting them
+// keeps the accumulate-then-writeOutput shape.
+std::optional<RecordingSink::Container> recording_sink_container(int container_index) {
+    switch (container_index) {
+        case 0:
+            return RecordingSink::Container::kElementary;
+        case kContainerMatroska:
+            return RecordingSink::Container::kMatroska;
+        case kContainerSpdif:
+            return RecordingSink::Container::kSpdif;
+        case kContainerMpegts:
+            return RecordingSink::Container::kMpegts;
+        default:
+            return std::nullopt;
+    }
+}
 
 // The result of scanning a just-written frame buffer for MP4/fMP4 purposes:
 // the AudioTrack (with its dec3/dac3 codec_config already built) plus the
@@ -4852,7 +4872,30 @@ void EncoderController::startRecording(int deviceIndex, const QUrl& url) {
         ac3::analysis::LevelMeter meter{cp.bed_acmod, cp.bed_lfe, sample_rate,
                                         static_cast<int>(coded_count)};
 
+        // The streamable containers write frame by frame through the sink -
+        // which is what bounds a take's memory (an hour at 448 kbps used to
+        // be ~200 MB of frames held until Stop) and puts its bytes on disk
+        // as they happen, so a crash mid-take no longer loses the take.
+        // mp4/fMP4 keep the accumulate shape for writeOutput below - their
+        // format needs every frame at once (see RecordingSink's header).
+        // container_index_/atmos_enabled_/codec_ are read from this worker
+        // exactly the way writeOutput itself always has; taking the
+        // snapshot at start rather than at stop just pins the take's
+        // container to what was selected when it began.
+        const auto sink_container = recording_sink_container(container_index_);
+        const bool container_eac3 = atmos_enabled_ || codec_ == plan::Codec::kEac3;
+        RecordingSink sink;
+        QString problem;
+        if (sink_container) {
+            problem = QString::fromStdString(
+                sink.open(path.toStdString(),
+                          {.container = *sink_container,
+                           .eac3 = container_eac3,
+                           .sample_rate = sample_rate,
+                           .channels = plan::rendered_channel_count(cp)}));
+        }
         std::vector<std::vector<std::byte>> frames;
+        std::size_t encoded = 0;
         std::vector<float> interleaved(static_cast<std::size_t>(ac3::kSamplesPerFrame) *
                                        channels);
         std::vector<std::vector<float>> source(
@@ -4871,7 +4914,7 @@ void EncoderController::startRecording(int deviceIndex, const QUrl& url) {
             views.emplace_back(channel);
         }
 
-        while (!stop_recording_.load(std::memory_order_relaxed)) {
+        while (problem.isEmpty() && !stop_recording_.load(std::memory_order_relaxed)) {
             std::size_t filled = 0;
             while (filled < interleaved.size() &&
                    !stop_recording_.load(std::memory_order_relaxed)) {
@@ -4901,18 +4944,33 @@ void EncoderController::startRecording(int deviceIndex, const QUrl& url) {
                 if (!unit) {
                     break;
                 }
-                frames.push_back(unit->bytes);
+                if (sink_container) {
+                    problem = QString::fromStdString(sink.push(unit->bytes));
+                    if (!problem.isEmpty()) {
+                        break;
+                    }
+                } else {
+                    frames.push_back(unit->bytes);
+                }
             } else {
                 const auto frame = ac3_encoder->encode_frame(views);
                 if (!frame) {
                     break;
                 }
-                frames.push_back(*frame);
+                if (sink_container) {
+                    problem = QString::fromStdString(sink.push(*frame));
+                    if (!problem.isEmpty()) {
+                        break;
+                    }
+                } else {
+                    frames.push_back(*frame);
+                }
             }
+            ++encoded;
 
             // A frame is 32 ms at 48 kHz, so publishing one snapshot per frame
             // already lands close to 30 Hz without any extra throttling.
-            const double seconds = static_cast<double>(frames.size() * ac3::kSamplesPerFrame) /
+            const double seconds = static_cast<double>(encoded * ac3::kSamplesPerFrame) /
                                    static_cast<double>(sample_rate);
             std::vector<ac3::analysis::ChannelLevel> snapshot(meter.levels().begin(),
                                                               meter.levels().end());
@@ -4923,8 +4981,17 @@ void EncoderController::startRecording(int deviceIndex, const QUrl& url) {
             });
         }
 
-        const QString problem =
-            writeOutput(path, frames, sample_rate, plan::rendered_channel_count(cp));
+        if (sink_container) {
+            // close() finalizes whatever made it to disk - a partial take
+            // is a take - so a push failure's problem string wins, but the
+            // bytes are still sealed into a playable file behind it.
+            const auto closed = QString::fromStdString(sink.close());
+            if (problem.isEmpty()) {
+                problem = closed;
+            }
+        } else {
+            problem = writeOutput(path, frames, sample_rate, plan::rendered_channel_count(cp));
+        }
 
         std::vector<ac3::analysis::ChannelLevel> totals(
             static_cast<std::size_t>(meter.channel_count()));
@@ -4936,7 +5003,7 @@ void EncoderController::startRecording(int deviceIndex, const QUrl& url) {
             totals[ch].clipped = stats.clipped_samples > 0;
         }
 
-        const auto count = frames.size();
+        const auto count = encoded;
         QMetaObject::invokeMethod(this, [this, count, problem, totals = std::move(totals)] {
             const auto stats = capture_->stats();
             capture_->stop();
