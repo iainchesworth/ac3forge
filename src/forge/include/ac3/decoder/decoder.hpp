@@ -3,9 +3,8 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <expected>
-#include <map>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string_view>
@@ -374,20 +373,31 @@ class AC3FORGE_EXPORT Eac3Decoder {
 
     DecoderConfig config_{};
 
-    // Keyed by strmtyp and substreamid together: a dependent's id lives in its
-    // own numbering space (§E2.3.1.2), so id alone does not identify a
-    // substream. At most six coded channels each (3/2 plus LFE).
-    std::map<int, std::array<std::array<double, 256>, 6>> delay_;
-    // Keyed the same way, one per substream identity that has ever carried
-    // JOC: joc::reconstruct's own matrix-ramp and per-object/per-channel
+    // Per-substream-identity state, indexed by strmtyp * 8 + substreamid: a
+    // dependent's id lives in its own numbering space (§E2.3.1.2), so id
+    // alone does not identify a substream. strmtyp is a 2-bit field and
+    // substreamid a 3-bit one, so the whole key space is [0, 32) and a flat
+    // 32-slot array replaces the std::map each of these used to be: O(1)
+    // indexing with no tree walk and no node allocation per identity, and -
+    // because slot order IS key order - the same ascending iteration
+    // flush() always had. The two heavy states stay lazily allocated behind
+    // unique_ptr exactly as the map's on-demand nodes were: a 5.1 stream
+    // has one identity, and 32 by-value delay slots would pin 384 KB.
+    static constexpr std::size_t kSubstreamSlots = 32;
+    // At most six coded channels each (3/2 plus LFE); value-initialized
+    // (zeroed) at first use, exactly as the map's operator[] created it.
+    std::array<std::unique_ptr<std::array<std::array<double, 256>, 6>>, kSubstreamSlots>
+        delay_;
+    // One per substream identity that has ever carried JOC:
+    // joc::reconstruct's own matrix-ramp and per-object/per-channel
     // overlap-add state, so a moving object's audio and the frame-to-frame
     // matrix interpolation both have real continuity instead of restarting
     // cold every frame - see joc::ReconstructionState's own doc comment.
-    std::map<int, joc::ReconstructionState> joc_state_;
-    // A substream identity enters this map the first time one of its frames
-    // sets transproce, and stays in it (buffering one frame at a time) for
-    // the rest of the stream - see decode_substream's own doc comment.
-    std::map<int, DecodedSubstream> pending_;
+    std::array<std::unique_ptr<joc::ReconstructionState>, kSubstreamSlots> joc_state_;
+    // A substream identity's slot engages the first time one of its frames
+    // sets transproce, and stays engaged (buffering one frame at a time)
+    // for the rest of the stream - see decode_substream's own doc comment.
+    std::array<std::optional<DecodedSubstream>, kSubstreamSlots> pending_;
     // decode_access_unit's own assembly cache: a substream identity's
     // RELEASED (by decode_substream) results, oldest first, waiting for
     // every other identity the same call's frames named to also have one -
@@ -397,8 +407,11 @@ class AC3FORGE_EXPORT Eac3Decoder {
     // while the independent using it lags by one), and an already-queued,
     // not-yet-assembled result must never be overwritten by a later one for
     // the same identity - that would silently splice two different points
-    // in time into one access unit.
-    std::map<int, std::deque<DecodedSubstream>> pending_au_parts_;
+    // in time into one access unit. A vector consumed from the front rather
+    // than a deque: the queue is at most a frame or two deep, and an empty
+    // vector - unlike some deques - allocates nothing, so 32 idle slots
+    // cost nothing.
+    std::array<std::vector<DecodedSubstream>, kSubstreamSlots> pending_au_parts_;
 
     // decode_substream's own per-block IMDCT/enhanced-coupling scratch
     // (PREfast's C6262, alert #63): reused across every (block, channel)
