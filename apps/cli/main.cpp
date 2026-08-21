@@ -166,8 +166,14 @@ int run_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_t bit
     std::vector<std::vector<float>> samples(nchans,
                                             std::vector<float>(ac3::kSamplesPerFrame));
     std::vector<std::span<const float>> views(nchans);
-    std::vector<std::vector<std::byte>> frames;
-    frames.reserve(static_cast<std::size_t>(count));
+    // Streamed out as encoded, keep_partial hard-off: this command has
+    // never honoured keep-partial - its output is synthetic and
+    // regenerable - so a failure must keep leaving no file behind, which
+    // is what abort() then does.
+    EncodedStreamSink out_sink;
+    if (!out_sink.open(out_path, /*keep_partial=*/false)) {
+        return 1;
+    }
     std::uint64_t n0 = 0;
     for (std::uint64_t f = 0; f < count; ++f) {
         fill_tones(samples, views, tone_hz, amplitude, n0);
@@ -176,11 +182,15 @@ int run_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_t bit
         auto frame = encoder->encode_frame(views);
         if (!frame) {
             std::println(stderr, "error: bitrate must be a legal AC-3 rate");
+            out_sink.abort();
             return 1;
         }
-        frames.push_back(std::move(*frame));
+        if (!out_sink.push(std::move(*frame))) {
+            out_sink.abort();
+            return 1;
+        }
     }
-    if (!write_frames(out_path, frames)) {
+    if (!out_sink.close()) {
         return 1;
     }
     std::println("wrote {} {} frames ({} kbps) to {}", count, label, bitrate, out_path);
@@ -232,8 +242,12 @@ int run_eac3_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_
     std::vector<std::vector<float>> samples(nchans,
                                             std::vector<float>(ac3::kSamplesPerFrame));
     std::vector<std::span<const float>> views(nchans);
-    std::vector<std::vector<std::byte>> frames;
-    frames.reserve(static_cast<std::size_t>(count));
+    // Same output arrangement as 'sine' above, keep_partial hard-off for
+    // the same synthetic-and-regenerable reason.
+    EncodedStreamSink out_sink;
+    if (!out_sink.open(out_path, /*keep_partial=*/false)) {
+        return 1;
+    }
     std::uint64_t n0 = 0;
     for (std::uint64_t f = 0; f < count; ++f) {
         fill_tones(samples, views, tone_hz, amplitude, n0);
@@ -241,11 +255,15 @@ int run_eac3_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_
         auto unit = encoder.encode_access_unit(views);
         if (!unit) {
             std::println(stderr, "error: invalid E-AC-3 configuration");
+            out_sink.abort();
             return 1;
         }
-        frames.push_back(std::move(unit->bytes));
+        if (!out_sink.push(std::move(unit->bytes))) {
+            out_sink.abort();
+            return 1;
+        }
     }
-    if (!write_frames(out_path, frames)) {
+    if (!out_sink.close()) {
         return 1;
     }
     std::println("wrote {} E-AC-3 {} access units ({} coded channels, {} substreams, "
@@ -429,50 +447,52 @@ int run_eac3_encode_multi(std::string_view in_path, std::string_view out_path,
 
     ac3::eac3::AccessUnitEncoder encoder{plan::eac3_config(p)};
     assert(static_cast<int>(nchans) == encoder.channel_count());
-    std::vector<std::vector<std::byte>> frames;
+    // Streamed out as encoded, exactly as run_eac3_encode below - the
+    // multi-source shape only differs on the INPUT side (route_frame over
+    // whole sources), not in what leaves.
+    EncodedStreamSink out_sink;
+    if (!out_sink.open(out_path, meta.keep_partial)) {
+        return 1;
+    }
     for (std::size_t start = 0; start < total; start += ac3::kSamplesPerFrame) {
         route_frame(start);
         auto unit = encoder.encode_access_unit(views);
         if (!unit) {
             std::println(stderr, "error: the encoder cannot express this configuration");
-            write_partial_output(out_path, meta.keep_partial, frames);
+            out_sink.abort();
             return 1;
         }
-        frames.push_back(std::move(unit->bytes));
+        if (!out_sink.push(std::move(unit->bytes))) {
+            out_sink.abort();
+            return 1;
+        }
     }
-    if (!write_frames(out_path, frames)) {
+    if (!out_sink.close()) {
         return 1;
     }
     if (p.vbr) {
         // bitrate_kbps is only the nominal reference vbr's tool heuristics
         // used, not a target - what a VBR run actually spent is the sizes it
         // produced, so that is what gets reported instead of one number.
-        std::size_t min_bytes = frames.empty() ? 0 : frames.front().size();
-        std::size_t max_bytes = 0;
-        std::size_t total_bytes = 0;
-        for (const auto& frame : frames) {
-            min_bytes = std::min(min_bytes, frame.size());
-            max_bytes = std::max(max_bytes, frame.size());
-            total_bytes += frame.size();
-        }
-        const double mean_bytes = frames.empty() ? 0.0
-                                                  : static_cast<double>(total_bytes) /
-                                                        static_cast<double>(frames.size());
+        const double mean_bytes = out_sink.frames() == 0
+                                      ? 0.0
+                                      : static_cast<double>(out_sink.total_bytes()) /
+                                            static_cast<double>(out_sink.frames());
         const double mean_kbps = mean_bytes * 8.0 * static_cast<double>(sources->sample_rate) /
                                  (1000.0 * ac3::kSamplesPerFrame);
         std::println(status,
                      "encoded {} E-AC-3 access units (vbr {}, {} Hz, {}, {} coded channels, "
                      "tools: {}) to {}",
-                     frames.size(), plan::format_vbr(p.vbr), sources->sample_rate, label, nchans,
-                     plan::format_tools(p.tools), out_path);
+                     out_sink.frames(), plan::format_vbr(p.vbr), sources->sample_rate, label,
+                     nchans, plan::format_tools(p.tools), out_path);
         std::println(status,
                      "  access unit size: {}-{} bytes, {:.0f} bytes mean (~{:.0f} kbps mean)",
-                     min_bytes, max_bytes, mean_bytes, mean_kbps);
+                     out_sink.min_bytes(), out_sink.max_bytes(), mean_bytes, mean_kbps);
     } else {
         std::println(status,
                      "encoded {} E-AC-3 access units ({} kbps, {} Hz, {}, {} coded channels, "
                      "tools: {}) to {}",
-                     frames.size(), bitrate, sources->sample_rate, label, nchans,
+                     out_sink.frames(), bitrate, sources->sample_rate, label, nchans,
                      plan::format_tools(p.tools), out_path);
     }
     print_routing(p, *routing, label, status);
@@ -1446,8 +1466,12 @@ int run_orbit(std::string_view out_path, std::uint32_t seconds, std::uint32_t bi
     std::vector<std::vector<float>> bed_block(
         6, std::vector<float>(ac3::spatial::kBlockSamples));
     std::vector<std::span<const float>> views(6);
-    std::vector<std::vector<std::byte>> frames;
-    frames.reserve(static_cast<std::size_t>(count));
+    // Streamed out as encoded, keep_partial hard-off - synthetic and
+    // regenerable, same as 'sine' above.
+    EncodedStreamSink out_sink;
+    if (!out_sink.open(out_path, /*keep_partial=*/false)) {
+        return 1;
+    }
     std::uint64_t n0 = 0;
     for (std::uint64_t f = 0; f < count; ++f) {
         for (auto& channel : frame_channels) {
@@ -1483,11 +1507,15 @@ int run_orbit(std::string_view out_path, std::uint32_t seconds, std::uint32_t bi
         auto frame = encoder->encode_frame(views);
         if (!frame) {
             std::println(stderr, "error: bitrate must be a legal AC-3 rate");
+            out_sink.abort();
             return 1;
         }
-        frames.push_back(std::move(*frame));
+        if (!out_sink.push(std::move(*frame))) {
+            out_sink.abort();
+            return 1;
+        }
     }
-    if (!write_frames(out_path, frames)) {
+    if (!out_sink.close()) {
         return 1;
     }
     std::println("wrote {} 5.1 frames: 440 Hz tone orbiting every {} s -> {}", count,
@@ -1648,7 +1676,12 @@ int run_encode_multi(std::string_view in_path, std::string_view out_path, std::u
     const auto config = plan::ac3_config(p);
     auto encoder = std::make_unique<ac3::FrameEncoder>(config);
     ac3::analysis::LevelMeter meter{config.acmod, config.lfe, sources->sample_rate};
-    std::vector<std::vector<std::byte>> frames;
+    // Streamed out as encoded, exactly as run_encode below - see
+    // run_eac3_encode_multi's identical note.
+    EncodedStreamSink out_sink;
+    if (!out_sink.open(out_path, meta.keep_partial)) {
+        return 1;
+    }
     for (std::size_t start = 0; start < total; start += ac3::kSamplesPerFrame) {
         const auto valid = std::min<std::size_t>(ac3::kSamplesPerFrame, total - start);
         route_frame(start);
@@ -1659,17 +1692,20 @@ int run_encode_multi(std::string_view in_path, std::string_view out_path, std::u
         auto frame = encoder->encode_frame(views);
         if (!frame) {
             std::println(stderr, "error: bitrate must be a legal AC-3 rate");
-            write_partial_output(out_path, meta.keep_partial, frames);
+            out_sink.abort();
             return 1;
         }
-        frames.push_back(std::move(*frame));
+        if (!out_sink.push(std::move(*frame))) {
+            out_sink.abort();
+            return 1;
+        }
     }
-    if (!write_frames(out_path, frames)) {
+    if (!out_sink.close()) {
         return 1;
     }
-    std::println(status, "encoded {} frames ({} kbps, {} Hz, {}) to {}", frames.size(), bitrate,
-                 sources->sample_rate, ac3::analysis::layout_name(config.acmod, config.lfe),
-                 out_path);
+    std::println(status, "encoded {} frames ({} kbps, {} Hz, {}) to {}", out_sink.frames(),
+                 bitrate, sources->sample_rate,
+                 ac3::analysis::layout_name(config.acmod, config.lfe), out_path);
     print_routing(p, *routing, label, status);
     print_channel_summary(meter, status);
     return 0;
