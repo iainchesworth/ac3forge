@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <memory>
 #include <optional>
 #include <span>
 #include <vector>
@@ -303,6 +304,11 @@ struct FrameMetadata {
 class AC3FORGE_EXPORT FrameEncoder {
    public:
     explicit FrameEncoder(const FrameConfig& config);
+    // Out of line because state_ below is an incomplete type here; movable
+    // (AccessUnitEncoder keeps these in a vector), not copyable.
+    ~FrameEncoder();
+    FrameEncoder(FrameEncoder&&) noexcept;
+    FrameEncoder& operator=(FrameEncoder&&) noexcept;
 
     // channels: the full-bandwidth channels in AC-3 order (Table 5.8),
     // followed by LFE last when config.lfe is set. Each span holds exactly
@@ -357,6 +363,15 @@ class AC3FORGE_EXPORT FrameEncoder {
     // (zero-filled, exactly as the fresh vector was) and fully re-derived
     // every frame, so reuse only removes the re-allocation.
     std::vector<std::array<std::int32_t, 256>> fixed_scratch_;
+    // encode_frame's whole per-frame plan (the .cpp's Payload - tool
+    // decisions, per-channel exponent/bap/AHT state, mantissa tokens),
+    // ~150 KB of vectors re-allocated every frame before this. Opaque here
+    // because the plan's types are the .cpp's own; reset by
+    // Payload::reset_for_frame to exactly a fresh Payload's state each
+    // frame, keeping only the vectors' storage - see that function's
+    // comment for the every-field contract that makes reuse safe.
+    struct FrameState;
+    std::unique_ptr<FrameState> state_;
     // The previous frame's converged SNR-offset composite, warm-starting the
     // next frame's search (src/forge/src/encoder/snr_search.hpp). Performance
     // state only: it changes how fast the search converges, never which
@@ -416,6 +431,13 @@ struct AC3FORGE_EXPORT AccessUnit {
 class AC3FORGE_EXPORT AccessUnitEncoder {
    public:
     explicit AccessUnitEncoder(const AccessUnitConfig& config);
+    // Move-only, following FrameEncoder above (substreams_ holds those).
+    // Spelled out because a dllexport class has every implicit member
+    // generated whether or not anything calls it - an implicitly-deleted
+    // copy is fine, an implicitly-generated one over a move-only member is
+    // a compile error in every including translation unit.
+    AccessUnitEncoder(AccessUnitEncoder&&) noexcept = default;
+    AccessUnitEncoder& operator=(AccessUnitEncoder&&) noexcept = default;
 
     // channels: every channel of the access unit grouped by substream in
     // transmission order - the independent's first (AC-3 order, Table 5.8,

@@ -133,6 +133,26 @@ struct ChannelPlan {
     // decoder's reconstruction once they are packed.
     std::vector<std::array<double, kBlocksPerFrameSize>> aht_coeffs;
     std::vector<std::uint8_t> aht_gain;  // per bin: 1, 2 or 4
+
+    // Same contract as CouplingPlan::reset_for_frame - every field, always.
+    // The AHT vectors are the heavyweights (up to ~18 KB per AHT stream);
+    // coded/cpl_coded re-default wholesale, their one small exponent set's
+    // capacity not being worth a per-field reset.
+    void reset_for_frame() {
+        start = 0;
+        endmant = 0;
+        coded = {};
+        cpl_coded = {};
+        decoded.clear();
+        bap.clear();
+        aht = false;
+        gaqmod = 0;
+        aht_fixed.clear();
+        aht_coeffs.clear();
+        aht_gain.clear();
+        blksw = {};
+        delta = {};
+    }
     // §8.2.2/§7.9: per-block block-switch flag. Only meaningful for a
     // full-bandwidth channel's own plan - the coupling and LFE streams never
     // set any of these.
@@ -222,6 +242,34 @@ struct CouplingPlan {
     std::array<bool, kBlocksPerFrame> send{};
     std::vector<int> master;                   // [blk][ch] - standard coupling only
     std::vector<coupling::Coordinate> coords;  // [blk][ch][bnd] - standard coupling only
+
+    // Frame reuse: every field above returns to its constructed default,
+    // keeping only the vectors' storage - so a reused plan is
+    // indistinguishable from a fresh one. A new field MUST be reset here
+    // too; that adjacency is the whole safety argument.
+    void reset_for_frame() {
+        in_use = false;
+        enhanced = false;
+        begf = 0;
+        endf = 0;
+        strtmant = 0;
+        endmant = 0;
+        nsubnd = 0;
+        structure = {};
+        bands = {};
+        ecpl_begin_subbnd = 0;
+        ecpl_end_subbnd = 0;
+        ecpl_structure = {};
+        ecpl_bands = {};
+        ecplamp.clear();
+        ecplangle.clear();
+        ecplchaos.clear();
+        fleak = 0;
+        sleak = 0;
+        send = {};
+        master.clear();
+        coords.clear();
+    }
 };
 
 // Everything the spectral extension tool contributes. There is no shared
@@ -249,6 +297,28 @@ struct SpxPlan {
     bool atten = false;
     std::vector<int> attencod;                 // [ch], -1 when that channel opts out
     std::array<bool, kMaxSubBands> wrapflag{};
+
+    // Same contract as CouplingPlan::reset_for_frame - every field, always.
+    void reset_for_frame() {
+        in_use = false;
+        begf = 0;
+        endf = 0;
+        strtf = 0;
+        begin_subbnd = 0;
+        end_subbnd = 0;
+        startmant = 0;
+        endmant = 0;
+        copystart = 0;
+        structure = {};
+        bands = {};
+        send = {};
+        blend.clear();
+        master.clear();
+        coords.clear();
+        atten = false;
+        attencod.clear();
+        wrapflag = {};
+    }
 };
 
 struct Payload {
@@ -282,7 +352,36 @@ struct Payload {
     // Ch2's own words, present only when acmod is kDualMono.
     std::array<std::uint8_t, kBlocksPerFrame> dynrng2{};
     std::optional<std::uint8_t> compr2 = std::nullopt;
+
+    // Frame reuse, same every-field contract as the plans above: after this,
+    // a reused Payload is indistinguishable from `Payload{}` except that its
+    // vectors kept their storage. That equivalence - not any analysis of
+    // which fields the fill code happens to rewrite - is what makes holding
+    // one Payload per FrameEncoder safe.
+    void reset_for_frame() {
+        csnroffst = 0;
+        fsnroffst = 0;
+        ahte = false;
+        transproce = false;
+        chintransproc.clear();
+        transprocloc.clear();
+        transproclen.clear();
+        cpl.reset_for_frame();
+        spx.reset_for_frame();
+        rematflg = {};
+        for (auto& plan : chans) {
+            plan.reset_for_frame();
+        }
+        for (auto& tokens : mantissas) {
+            tokens.clear();
+        }
+        dynrng = {};
+        compr = std::nullopt;
+        dynrng2 = {};
+        compr2 = std::nullopt;
+    }
 };
+
 
 // §E3.3.2: the rematrixing bands cannot reach above whichever tool takes over
 // the spectrum first, so both their count and where the last one stops depend
@@ -1299,6 +1398,19 @@ std::expected<void, FrameError> validate(const FrameConfig& config) {
 
 }  // namespace
 
+// The per-instance home of encode_frame's Payload (eac3_frame.hpp's opaque
+// FrameState). Defined here - after the anonymous namespace that owns the
+// plan types closes - because class members cannot be defined inside it;
+// an internal-linkage member type is fine for state only this translation
+// unit ever completes.
+struct FrameEncoder::FrameState {
+    Payload payload;
+};
+
+FrameEncoder::~FrameEncoder() = default;
+FrameEncoder::FrameEncoder(FrameEncoder&&) noexcept = default;
+FrameEncoder& FrameEncoder::operator=(FrameEncoder&&) noexcept = default;
+
 std::expected<std::vector<std::byte>, FrameError> build_silent_frame(
     const FrameConfig& config, AuxPayload aux) {
     if (const auto ok = validate(config); !ok) {
@@ -1340,7 +1452,8 @@ std::expected<std::vector<std::byte>, FrameError> build_silent_frame(
                         payload, aux);
 }
 
-FrameEncoder::FrameEncoder(const FrameConfig& config) : config_(config) {
+FrameEncoder::FrameEncoder(const FrameConfig& config)
+    : config_(config), state_(std::make_unique<FrameState>()) {
     if (config_.drc) {
         range_.emplace(*config_.drc, config_.sample_rate);
     }
@@ -1483,7 +1596,11 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     // --- 1. Tool decisions --------------------------------------------------
     // Spectral extension is settled first, because when both tools are in use
     // it fixes where coupling has to stop (§E3.3.1).
-    Payload payload;
+    // The Payload lives on the encoder (state_) and reset_for_frame makes it
+    // exactly a fresh one, minus the re-allocations - ~150 KB of vectors a
+    // frame before this.
+    Payload& payload = state_->payload;
+    payload.reset_for_frame();
     // §7.7 dynamic range, carried in before the side information is sized: a
     // transmitted dynrng costs nine bits and the SNR search spends what is
     // left. §E3.8.5 gives a DEPENDENT substream's compre to the
@@ -2529,8 +2646,14 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     // §E2.2.4 ordering: each fbw channel's mantissas, with the coupling
     // channel's inserted right after the FIRST coupled channel, then the LFE.
     std::size_t token_bits = 0;
+    // One writer for all six blocks, now that payload persists across
+    // frames: take_tokens_into's swap hands the writer each slot's
+    // previous-frame storage, reset() keeps it, and at steady state this
+    // step neither copies tokens nor allocates - the same closed loop the
+    // AC-3 encoder's block_tokens_ runs.
+    MantissaBlockWriter writer;
     for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
-        MantissaBlockWriter writer;
+        writer.reset();
         const auto emit_stream = [&](int s) {
             auto& plan = payload.chans[static_cast<std::size_t>(s)];
             if (plan.aht) {
