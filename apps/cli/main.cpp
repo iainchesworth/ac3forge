@@ -815,8 +815,15 @@ int run_atmos(std::string_view out_path, std::uint32_t seconds, std::uint32_t bi
     std::vector<std::vector<float>> essences(count,
                                              std::vector<float>(ac3::kSamplesPerFrame));
     std::vector<std::span<const float>> views(count);
-    std::vector<std::vector<std::byte>> out;
-    out.reserve(static_cast<std::size_t>(frames));
+    // Streamed out as encoded unless sign-objects defers them (the signing
+    // pass below rewrites every frame after the loop). keep_partial is
+    // hard-off: this command has never honoured keep-partial - its output
+    // is synthetic and regenerable - so a mid-run failure must keep
+    // leaving no file behind, which is exactly what abort() then does.
+    EncodedStreamSink out_sink;
+    if (!out_sink.open(out_path, /*keep_partial=*/false, /*defer=*/meta.sign_objects)) {
+        return 1;
+    }
 
     std::uint64_t n0 = 0;
     for (std::uint64_t f = 0; f < frames; ++f) {
@@ -841,15 +848,21 @@ int run_atmos(std::string_view out_path, std::uint32_t seconds, std::uint32_t bi
                          "error: cannot encode {} objects at {} kbps — the metadata and "
                          "the mantissas share one frame, so try a higher bit rate",
                          objects, bitrate);
+            out_sink.abort();
             return 1;
         }
-        out.push_back(std::move(unit->bytes));
+        if (!out_sink.push(std::move(unit->bytes))) {
+            out_sink.abort();
+            return 1;
+        }
     }
     // Optional object signing: writes the keyed EMDF-protection tag so a
     // decoder that validates it accepts the JOC objects instead of falling
     // back to the 5.1 bed. Off unless the operator passes sign-objects with a
     // key; the algorithm is in-tree (clean-room), only the key is supplied.
-    const auto signed_count = apply_object_signing(out, meta);
+    // A key failure discards everything, as it always has - nothing is on
+    // disk in defer mode, so a plain return leaves exactly no file.
+    const auto signed_count = apply_object_signing(out_sink.deferred(), meta);
     if (!signed_count) {
         return 1;
     }
@@ -857,7 +870,7 @@ int run_atmos(std::string_view out_path, std::uint32_t seconds, std::uint32_t bi
         std::println("  signed {} frames' EMDF object container with the supplied key",
                      *signed_count);
     }
-    if (!write_frames(out_path, out)) {
+    if (!out_sink.close()) {
         return 1;
     }
     std::println("wrote {} E-AC-3 access units to {}", frames, out_path);
@@ -970,8 +983,12 @@ int run_atmos_path(std::string_view out_path, std::string_view paths_path, std::
     std::vector<std::vector<float>> essences(objects,
                                              std::vector<float>(ac3::kSamplesPerFrame));
     std::vector<std::span<const float>> views(objects);
-    std::vector<std::vector<std::byte>> out;
-    out.reserve(static_cast<std::size_t>(frames));
+    // Same output arrangement as 'atmos' above, keep_partial hard-off for
+    // the same synthetic-and-regenerable reason.
+    EncodedStreamSink out_sink;
+    if (!out_sink.open(out_path, /*keep_partial=*/false, /*defer=*/meta.sign_objects)) {
+        return 1;
+    }
 
     std::uint64_t n0 = 0;
     for (std::uint64_t f = 0; f < frames; ++f) {
@@ -993,13 +1010,17 @@ int run_atmos_path(std::string_view out_path, std::string_view paths_path, std::
                          "error: cannot encode {} objects at {} kbps — the metadata and "
                          "the mantissas share one frame, so try a higher bit rate",
                          objects, bitrate);
+            out_sink.abort();
             return 1;
         }
-        out.push_back(std::move(unit->bytes));
+        if (!out_sink.push(std::move(unit->bytes))) {
+            out_sink.abort();
+            return 1;
+        }
     }
-    // Optional object signing, same as 'atmos' - see apply_object_signing's
-    // own comment.
-    const auto signed_count = apply_object_signing(out, meta);
+    // Optional object signing, same as 'atmos' - see the comments at its
+    // call site there, the key-failure plain return included.
+    const auto signed_count = apply_object_signing(out_sink.deferred(), meta);
     if (!signed_count) {
         return 1;
     }
@@ -1007,7 +1028,7 @@ int run_atmos_path(std::string_view out_path, std::string_view paths_path, std::
         std::println("  signed {} frames' EMDF object container with the supplied key",
                      *signed_count);
     }
-    if (!write_frames(out_path, out)) {
+    if (!out_sink.close()) {
         return 1;
     }
     std::println("wrote {} E-AC-3 access units to {} ({} objects from {})", frames, out_path,
@@ -1155,7 +1176,13 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
     std::vector<std::vector<float>> block(count, std::vector<float>(ac3::kSamplesPerFrame));
     std::vector<std::span<const float>> views(count);
     std::vector<std::span<const float>> metered(6);
-    std::vector<std::vector<std::byte>> out;
+    // Streamed out as encoded - except under sign-objects, where the frames
+    // defer inside the sink because the signing pass below rewrites every
+    // one of them after this loop.
+    EncodedStreamSink out_sink;
+    if (!out_sink.open(out_path, meta.keep_partial, /*defer=*/meta.sign_objects)) {
+        return 1;
+    }
     // Streaming reads every file channel (read_planar's contract), but only
     // the first `count` become objects - the extras land in one shared
     // discard buffer whose contents nothing reads.
@@ -1174,7 +1201,7 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
                 std::println(stderr, "error: {}: {}", in_path,
                              ac3::io::describe(got ? ac3::io::WavError::kTruncated
                                                    : got.error()));
-                write_partial_output(out_path, meta.keep_partial, out);
+                out_sink.abort();
                 return 1;
             }
             for (std::size_t ch = 0; ch < count; ++ch) {
@@ -1209,7 +1236,7 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
                          "error: cannot encode {} objects at {} kbps — the metadata and the "
                          "mantissas share one frame, so try a higher bit rate",
                          count, bitrate);
-            write_partial_output(out_path, meta.keep_partial, out);
+            out_sink.abort();
             return 1;
         }
         // The bed exists only once the frame is encoded, so it is metered
@@ -1219,12 +1246,16 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
             metered[ch] = std::span{encoder.bed()[ch]}.first(valid);
         }
         meter.process(metered);
-        out.push_back(std::move(unit->bytes));
+        if (!out_sink.push(std::move(unit->bytes))) {
+            out_sink.abort();
+            return 1;
+        }
     }
-    // Optional object signing, same as 'atmos' - see apply_object_signing's
-    // own comment. Goes through status_stream() like the report below: with
-    // out_path == "-" the E-AC-3 bytes just written own stdout.
-    const auto signed_count = apply_object_signing(out, meta);
+    // Optional object signing, same as 'atmos' - see the comments at its
+    // call site there, the key-failure plain return included. Goes through
+    // status_stream() like the report below: with out_path == "-" the
+    // E-AC-3 bytes about to be written own stdout.
+    const auto signed_count = apply_object_signing(out_sink.deferred(), meta);
     if (!signed_count) {
         return 1;
     }
@@ -1233,11 +1264,11 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
                      "  signed {} frames' EMDF object container with the supplied key",
                      *signed_count);
     }
-    if (!write_frames(out_path, out)) {
+    if (!out_sink.close()) {
         return 1;
     }
-    std::println(status, "encoded {} E-AC-3 access units ({} kbps, {} Hz) to {}", out.size(),
-                bitrate, src_rate, out_path);
+    std::println(status, "encoded {} E-AC-3 access units ({} kbps, {} Hz) to {}",
+                out_sink.frames(), bitrate, src_rate, out_path);
     std::println(status,
                  "  {} objects from {} source channels + the bed's LFE = {} objects, "
                  "JOC over a 5.1 downmix",
@@ -1331,7 +1362,12 @@ int run_atmos_adm(std::string_view in_path, std::string_view out_path, std::uint
     std::vector<std::vector<float>> block(count, std::vector<float>(ac3::kSamplesPerFrame));
     std::vector<std::span<const float>> views(count);
     std::vector<std::span<const float>> metered(6);
-    std::vector<std::vector<std::byte>> out;
+    // Streamed out as encoded - no sign-objects on this command, so no
+    // defer case either.
+    EncodedStreamSink out_sink;
+    if (!out_sink.open(out_path, meta.keep_partial)) {
+        return 1;
+    }
 
     for (std::size_t start = 0; start < total; start += ac3::kSamplesPerFrame) {
         const auto valid = std::min<std::size_t>(ac3::kSamplesPerFrame, total - start);
@@ -1354,7 +1390,7 @@ int run_atmos_adm(std::string_view in_path, std::string_view out_path, std::uint
                          "error: cannot encode {} channels at {} kbps — the metadata and the "
                          "mantissas share one frame, so try a higher bit rate",
                          count, bitrate);
-            write_partial_output(out_path, meta.keep_partial, out);
+            out_sink.abort();
             return 1;
         }
         // The bed exists only once the frame is encoded, so it is metered afterwards - and it is
@@ -1363,9 +1399,12 @@ int run_atmos_adm(std::string_view in_path, std::string_view out_path, std::uint
             metered[ch] = std::span{encoder.bed()[ch]}.first(valid);
         }
         meter.process(metered);
-        out.push_back(std::move(unit->bytes));
+        if (!out_sink.push(std::move(unit->bytes))) {
+            out_sink.abort();
+            return 1;
+        }
     }
-    if (!write_frames(out_path, out)) {
+    if (!out_sink.close()) {
         return 1;
     }
 
@@ -1377,7 +1416,7 @@ int run_atmos_adm(std::string_view in_path, std::string_view out_path, std::uint
     // just written own stdout, so this report goes to stderr instead.
     const auto status = status_stream(out_path);
     std::println(status, "encoded {} E-AC-3 access units ({} kbps, {} Hz) from {} to {}",
-                out.size(), bitrate, source->sample_rate, in_path, out_path);
+                out_sink.frames(), bitrate, source->sample_rate, in_path, out_path);
     std::println(status,
                  "  {} bed speaker feed(s) + {} dynamic object(s) + the bed's LFE = {} objects, "
                  "JOC over a 5.1 downmix",
