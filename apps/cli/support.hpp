@@ -124,10 +124,14 @@ struct Options {
     bool fast_mdct = true;
     // The decode-side counterpart: §7.9.4 step 3's complex transform via
     // the radix-2 FFT instead of the pseudocode's direct sum
-    // (DecoderConfig::fast_imdct - see its own comment for the quality
-    // gate). Opt-in ('fast-imdct') while the evidence is under review,
-    // exactly as fast_mdct itself started; decode/eac3-decode read it.
-    bool fast_imdct = false;
+    // (DecoderConfig::fast_imdct - see its own comment for the accepted
+    // quality evidence). On by default like the library config it feeds;
+    // fast-imdct=off - or mode=reference, which turns this AND fast_mdct
+    // off together - forces the direct evaluation for runs where agreement
+    // with the spec's stated arithmetic matters more than speed. 'decode'
+    // reads it; the QC/levels/playback decoders stay on the library
+    // default, where a ~1e-12 difference cannot move a reported figure.
+    bool fast_imdct = true;
     // 'qc' only: which delivery gate(s) to check the measurement against -
     // one of ac3::meta::kQcPresetNames, or "all" to check every preset.
     // Unset (measure-only, no gate) is the default - a plain

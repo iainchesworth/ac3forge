@@ -2014,3 +2014,59 @@ TEST_CASE(
         CHECK(rms(decoded->channels[ch], tail_from, expected_length - tail_from) < 0.05);
     }
 }
+
+TEST_CASE("mode=reference is exactly the two transform off-switches together", "[cli][mode]") {
+    const auto dir = scratch_dir();
+    const auto log = dir / "mode.log";
+    const auto read_bytes = [](const fs::path& p) {
+        std::ifstream in{p, std::ios::binary};
+        REQUIRE(in.is_open());
+        return std::vector<char>{std::istreambuf_iterator<char>{in},
+                                 std::istreambuf_iterator<char>{}};
+    };
+    const auto sine = [&](const fs::path& out, const std::string& tokens) {
+        REQUIRE(run_cli("sine \"" + out.string() + "\" 2 192 440 70 stereo " + tokens, log) == 0);
+    };
+    const auto decode = [&](const fs::path& in, const fs::path& out,
+                            const std::string& tokens) {
+        REQUIRE(run_cli("decode \"" + in.string() + "\" \"" + out.string() + "\" " + tokens,
+                        log) == 0);
+    };
+
+    // Encode half: mode=reference must be byte-identical to fast-mdct=off,
+    // and the bare default to mode=performance - the mode is an intent-level
+    // alias over the two existing switches, never a third behaviour.
+    const auto enc_ref = dir / "mode_enc_ref.ac3";
+    const auto enc_off = dir / "mode_enc_off.ac3";
+    const auto enc_def = dir / "mode_enc_def.ac3";
+    const auto enc_perf = dir / "mode_enc_perf.ac3";
+    sine(enc_ref, "mode=reference");
+    sine(enc_off, "fast-mdct=off");
+    sine(enc_def, "");
+    sine(enc_perf, "mode=performance");
+    CHECK(read_bytes(enc_ref) == read_bytes(enc_off));
+    CHECK(read_bytes(enc_def) == read_bytes(enc_perf));
+
+    // Decode half: the same aliasing over fast-imdct, on one fixed stream.
+    const auto dec_ref = dir / "mode_dec_ref.wav";
+    const auto dec_off = dir / "mode_dec_off.wav";
+    const auto dec_def = dir / "mode_dec_def.wav";
+    const auto dec_perf = dir / "mode_dec_perf.wav";
+    decode(enc_def, dec_ref, "mode=reference");
+    decode(enc_def, dec_off, "fast-imdct=off");
+    decode(enc_def, dec_def, "");
+    decode(enc_def, dec_perf, "mode=performance");
+    CHECK(read_bytes(dec_ref) == read_bytes(dec_off));
+    CHECK(read_bytes(dec_def) == read_bytes(dec_perf));
+
+    // Order matters and is documented: a later specific switch adjusts one
+    // half of an earlier mode.
+    const auto enc_mixed = dir / "mode_enc_mixed.ac3";
+    sine(enc_mixed, "mode=performance fast-mdct=off");
+    CHECK(read_bytes(enc_mixed) == read_bytes(enc_ref));
+
+    // An unknown mode is refused, not ignored.
+    CHECK(run_cli("sine \"" + (dir / "mode_bad.ac3").string() + "\" 2 192 440 70 stereo "
+                      "mode=fast",
+                  log) != 0);
+}

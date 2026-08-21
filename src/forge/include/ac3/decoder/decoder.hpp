@@ -95,13 +95,16 @@ struct DecoderConfig {
     // decoders; the encoder-internal inverse uses (spx/ecpl copy-source
     // reconstruction) and JOC object reconstruction deliberately stay on
     // the direct form, so nothing about ENCODED output ever depends on this
-    // flag. Default off pending the owner accepting the quality evidence -
-    // the same gate EncoderConfig::fast_mdct passed through before its
-    // default flipped: the FFT reorders additions, so the result is
-    // ~1e-12-relative close to the direct sum rather than bit-identical,
-    // and a decoder here is the project's own reference for what the
-    // encoder wrote.
-    bool fast_imdct = false;
+    // flag. Default ON since the owner accepted the quality evidence (the
+    // same gate EncoderConfig::fast_mdct passed through): worst
+    // transform-level relative error 7.8e-14 against the direct form, 180 s
+    // stream agreement 214.9 dB SNR (AC-3) / 284.7 dB (E-AC-3), decodes
+    // 4.5-4.7x faster. false selects the pseudocode's own direct evaluation
+    // - the REFERENCE form, and the oracle the fast path's tests validate
+    // against; ac3cli exposes the pair as mode=performance|reference for
+    // exactly the runs where bit-for-bit agreement with the spec's stated
+    // arithmetic matters more than speed.
+    bool fast_imdct = true;
     // §7.7.2: prefer compr over dynrng wherever a compr word exists, which is
     // what a set-top box's RF mode does. §7.7.2.1 requires falling back on
     // dynrng for any syncframe that carries no compr, so this composes with
