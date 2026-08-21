@@ -1866,6 +1866,16 @@ std::vector<DecodedSubstream> Eac3Decoder::flush() {
 
 std::expected<std::optional<DecodedAccessUnit>, DecodeError> Eac3Decoder::decode_access_unit(
     std::span<const std::byte> unit) {
+    return decode_access_unit_core(unit, {});
+}
+
+std::expected<std::optional<DecodedAccessUnit>, DecodeError> Eac3Decoder::decode_access_unit_into(
+    std::span<const std::byte> unit, std::span<const std::span<float>> channels) {
+    return decode_access_unit_core(unit, channels);
+}
+
+std::expected<std::optional<DecodedAccessUnit>, DecodeError> Eac3Decoder::decode_access_unit_core(
+    std::span<const std::byte> unit, std::span<const std::span<float>> external) {
     const auto frames = split_frames(unit);
     if (!frames) {
         return std::unexpected(frames.error());
@@ -1948,6 +1958,21 @@ std::expected<std::optional<DecodedAccessUnit>, DecodeError> Eac3Decoder::decode
     out.object_audio = lead.object_audio;
     out.substream_count = static_cast<int>(substreams.size());
 
+    // The PCM target for one program slot: the caller's span when
+    // decode_access_unit_into supplied them (every slot's samples are
+    // copied in full below, so external storage needs no pre-clearing),
+    // otherwise a vector allocated into the result exactly as before -
+    // decode_frame_core's own split, at access-unit granularity.
+    const auto write_slot = [&](std::size_t slot, const std::vector<float>& src) {
+        if (external.empty()) {
+            out.channels[slot] = src;
+            return;
+        }
+        assert(external.size() > slot);
+        assert(external[slot].size() >= src.size());
+        std::copy(src.begin(), src.end(), external[slot].begin());
+    };
+
     // Dual mono has no Table E2.5 location - Ch1 and Ch2 are unrelated
     // programmes, not directions - and it has no bed/dependent split to make:
     // 1+1 is always this one lone independent substream. acmod_map() has a
@@ -1958,7 +1983,12 @@ std::expected<std::optional<DecodedAccessUnit>, DecodeError> Eac3Decoder::decode
     // substream's own two channels straight through in coded order, and leave
     // `layout` empty to say plainly that there is no spatial layout to report.
     if (lead.acmod == Acmod::kDualMono) {
-        out.channels = lead.channels;
+        if (external.empty()) {
+            out.channels.resize(lead.channels.size());
+        }
+        for (std::size_t ch = 0; ch < lead.channels.size(); ++ch) {
+            write_slot(ch, lead.channels[ch]);
+        }
         return std::optional<DecodedAccessUnit>(std::move(out));
     }
 
@@ -1975,11 +2005,16 @@ std::expected<std::optional<DecodedAccessUnit>, DecodeError> Eac3Decoder::decode
         return std::unexpected(DecodeError::kInvalidStream);
     }
     const std::size_t samples = lead.channels.empty() ? 0 : lead.channels.front().size();
-    out.channels.assign(static_cast<std::size_t>(out.layout.count),
-                        std::vector<float>(samples, 0.0f));
+    if (external.empty()) {
+        out.channels.assign(static_cast<std::size_t>(out.layout.count),
+                            std::vector<float>(samples, 0.0f));
+    }
 
     // Transmission order is overwrite order, so a later dependent wins the
-    // locations it shares with an earlier substream.
+    // locations it shares with an earlier substream. Every slot of
+    // out.layout comes from some substream's location_map() (the union
+    // above), so every slot is written in full here - which is what lets
+    // write_slot skip pre-clearing external storage.
     for (const auto& sub : substreams) {
         const auto locations = eac3::chanmap::expand(sub.location_map());
         if (static_cast<std::size_t>(locations.count) != sub.channels.size()) {
@@ -1990,8 +2025,7 @@ std::expected<std::optional<DecodedAccessUnit>, DecodeError> Eac3Decoder::decode
             if (slot < 0) {
                 return std::unexpected(DecodeError::kInvalidStream);
             }
-            out.channels[static_cast<std::size_t>(slot)] =
-                sub.channels[static_cast<std::size_t>(i)];
+            write_slot(static_cast<std::size_t>(slot), sub.channels[static_cast<std::size_t>(i)]);
         }
     }
     return std::optional<DecodedAccessUnit>(std::move(out));
