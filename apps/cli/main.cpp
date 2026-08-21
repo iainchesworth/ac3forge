@@ -612,7 +612,13 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
         out[c] = block[c];
         views[c] = block[c];
     }
-    std::vector<std::vector<std::byte>> frames;
+    // The encoded access units leave as they are produced - see
+    // EncodedStreamSink; its stats also feed the VBR report below, which
+    // used to re-walk the whole frame list for them.
+    EncodedStreamSink out_sink;
+    if (!out_sink.open(out_path, meta.keep_partial)) {
+        return 1;
+    }
     // See run_encode's identical streaming state: the loop consumes the
     // source strictly in order, so a rolling read position and the last
     // real sample per channel are all the streaming path needs.
@@ -645,7 +651,7 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
                     std::println(stderr, "error: {}: {}", in_path,
                                  ac3::io::describe(got ? ac3::io::WavError::kTruncated
                                                        : got.error()));
-                    write_partial_output(out_path, meta.keep_partial, frames);
+                    out_sink.abort();
                     return 1;
                 }
                 consumed += want;
@@ -678,44 +684,41 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
         auto unit = encoder.encode_access_unit(views);
         if (!unit) {
             std::println(stderr, "error: the encoder cannot express this configuration");
-            write_partial_output(out_path, meta.keep_partial, frames);
+            out_sink.abort();
             return 1;
         }
-        frames.push_back(std::move(unit->bytes));
+        if (!out_sink.push(unit->bytes)) {
+            out_sink.abort();
+            return 1;
+        }
     }
-    if (!write_frames(out_path, frames)) {
+    if (!out_sink.close()) {
         return 1;
     }
     if (p.vbr) {
         // bitrate_kbps is only the nominal reference vbr's tool heuristics
         // used, not a target - what a VBR run actually spent is the sizes it
-        // produced, so that is what gets reported instead of one number.
-        std::size_t min_bytes = frames.empty() ? 0 : frames.front().size();
-        std::size_t max_bytes = 0;
-        std::size_t total_bytes = 0;
-        for (const auto& frame : frames) {
-            min_bytes = std::min(min_bytes, frame.size());
-            max_bytes = std::max(max_bytes, frame.size());
-            total_bytes += frame.size();
-        }
-        const double mean_bytes = frames.empty() ? 0.0
-                                                  : static_cast<double>(total_bytes) /
-                                                        static_cast<double>(frames.size());
+        // produced, so that is what gets reported instead of one number:
+        // the sink kept the tally as the units streamed out.
+        const double mean_bytes = out_sink.frames() == 0
+                                      ? 0.0
+                                      : static_cast<double>(out_sink.total_bytes()) /
+                                            static_cast<double>(out_sink.frames());
         const double mean_kbps = mean_bytes * 8.0 * static_cast<double>(src_rate) /
                                  (1000.0 * ac3::kSamplesPerFrame);
         std::println(status,
                      "encoded {} E-AC-3 access units (vbr {}, {} Hz, {}, {} coded channels, "
                      "tools: {}) to {}",
-                     frames.size(), plan::format_vbr(p.vbr), src_rate, label, nchans,
+                     out_sink.frames(), plan::format_vbr(p.vbr), src_rate, label, nchans,
                      plan::format_tools(p.tools), out_path);
         std::println(status,
                      "  access unit size: {}-{} bytes, {:.0f} bytes mean (~{:.0f} kbps mean)",
-                     min_bytes, max_bytes, mean_bytes, mean_kbps);
+                     out_sink.min_bytes(), out_sink.max_bytes(), mean_bytes, mean_kbps);
     } else {
         std::println(status,
                      "encoded {} E-AC-3 access units ({} kbps, {} Hz, {}, {} coded channels, "
                      "tools: {}) to {}",
-                     frames.size(), bitrate, src_rate, label, nchans,
+                     out_sink.frames(), bitrate, src_rate, label, nchans,
                      plan::format_tools(p.tools), out_path);
     }
     print_routing(p, *routing, label, status);
@@ -1829,7 +1832,13 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
         out[c] = block[c];
         views[c] = block[c];
     }
-    std::vector<std::vector<std::byte>> frames;
+    // The encoded frames leave as they are produced - see EncodedStreamSink
+    // for how a failed run still honours keep-partial exactly as the old
+    // accumulate-then-write shape did.
+    EncodedStreamSink out_sink;
+    if (!out_sink.open(out_path, meta.keep_partial)) {
+        return 1;
+    }
     // The streaming path's own state: the frame loop below asks for the
     // source's samples strictly in order (offset= only ever shifts where
     // they land inside a frame, never which come next), so a rolling read
@@ -1868,7 +1877,7 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
                     std::println(stderr, "error: {}: {}", in_path,
                                  ac3::io::describe(got ? ac3::io::WavError::kTruncated
                                                        : got.error()));
-                    write_partial_output(out_path, meta.keep_partial, frames);
+                    out_sink.abort();
                     return 1;
                 }
                 consumed += want;
@@ -1905,16 +1914,20 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
         auto frame = encoder->encode_frame(views);
         if (!frame) {
             std::println(stderr, "error: bitrate must be a legal AC-3 rate");
-            write_partial_output(out_path, meta.keep_partial, frames);
+            out_sink.abort();
             return 1;
         }
-        frames.push_back(std::move(*frame));
+        if (!out_sink.push(*frame)) {
+            out_sink.abort();
+            return 1;
+        }
     }
-    if (!write_frames(out_path, frames)) {
+    if (!out_sink.close()) {
         return 1;
     }
-    std::println(status, "encoded {} frames ({} kbps, {} Hz, {}) to {}", frames.size(), bitrate,
-                src_rate, ac3::analysis::layout_name(config.acmod, config.lfe), out_path);
+    std::println(status, "encoded {} frames ({} kbps, {} Hz, {}) to {}", out_sink.frames(),
+                bitrate, src_rate, ac3::analysis::layout_name(config.acmod, config.lfe),
+                out_path);
     print_routing(p, *routing, label, status);
     print_channel_summary(meter, status);
     return 0;
