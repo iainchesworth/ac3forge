@@ -244,13 +244,29 @@ void write_partial_output(std::string_view out_path, bool keep_partial,
 // failed run without keep-partial must leave stdout untouched. Tracks the
 // per-frame size stats the E-AC-3 VBR report used to re-walk its frame
 // list for.
+//
+// `defer` keeps the frames instead of streaming them - for the Atmos
+// commands' sign-objects path, where apply_object_signing rewrites every
+// frame AFTER the encode loop and the bytes therefore cannot leave until
+// then. Deferred frames are reachable through deferred() for exactly that
+// rewrite; close() then writes them all (write_frames) and abort() hands
+// them to write_partial_output, so the defer path IS the pre-sink code
+// shape, just held behind the same five-call interface the streaming path
+// uses.
 class EncodedStreamSink {
    public:
-    [[nodiscard]] bool open(std::string_view path, bool keep_partial);
+    [[nodiscard]] bool open(std::string_view path, bool keep_partial, bool defer = false);
     [[nodiscard]] bool push(std::span<const std::byte> frame);
-    // Success path; flushes the "-" buffer. False if the destination failed.
+    // Keeps the vector's own allocation when deferring (the callers all
+    // have one to give up); the streaming path just forwards to the span
+    // overload.
+    [[nodiscard]] bool push(std::vector<std::byte>&& frame);
+    // Success path; flushes the "-" buffer / writes the deferred frames.
+    // False if the destination failed.
     [[nodiscard]] bool close();
     void abort();
+
+    [[nodiscard]] std::vector<std::vector<std::byte>>& deferred() { return deferred_; }
 
     [[nodiscard]] std::size_t frames() const { return frames_; }
     [[nodiscard]] std::size_t min_bytes() const { return min_bytes_; }
@@ -261,9 +277,11 @@ class EncodedStreamSink {
     std::string path_;
     bool stdio_ = false;
     bool keep_partial_ = false;
+    bool defer_ = false;
     bool open_ = false;
     std::ofstream file_;
-    std::vector<std::byte> buffered_;  // "-" only
+    std::vector<std::byte> buffered_;                 // "-" only
+    std::vector<std::vector<std::byte>> deferred_;    // defer only
     std::size_t frames_ = 0;
     std::size_t min_bytes_ = 0;
     std::size_t max_bytes_ = 0;

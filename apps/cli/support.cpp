@@ -568,11 +568,15 @@ std::string partial_output_path(std::string_view path) {
     return std::string(path) + ".partial";
 }
 
-bool EncodedStreamSink::open(std::string_view path, bool keep_partial) {
+bool EncodedStreamSink::open(std::string_view path, bool keep_partial, bool defer) {
     path_ = std::string{path};
     keep_partial_ = keep_partial;
+    defer_ = defer;
     stdio_ = is_stdio_path(path);
-    if (!stdio_) {
+    // Deferring means nothing leaves until close() - so nothing to create
+    // yet either. The destination (file or "-", write_frames handles both)
+    // is only touched then, exactly as the pre-sink code shape did.
+    if (!stdio_ && !defer_) {
         file_.open(path_, std::ios::binary);
         if (!file_) {
             std::println(stderr, "error: cannot open {} for writing", path_);
@@ -583,8 +587,22 @@ bool EncodedStreamSink::open(std::string_view path, bool keep_partial) {
     return true;
 }
 
+bool EncodedStreamSink::push(std::vector<std::byte>&& frame) {
+    if (!defer_) {
+        return push(std::span<const std::byte>{frame});
+    }
+    min_bytes_ = frames_ == 0 ? frame.size() : std::min(min_bytes_, frame.size());
+    max_bytes_ = std::max(max_bytes_, frame.size());
+    total_bytes_ += frame.size();
+    ++frames_;
+    deferred_.push_back(std::move(frame));
+    return true;
+}
+
 bool EncodedStreamSink::push(std::span<const std::byte> frame) {
-    if (stdio_) {
+    if (defer_) {
+        deferred_.emplace_back(frame.begin(), frame.end());
+    } else if (stdio_) {
         buffered_.insert(buffered_.end(), frame.begin(), frame.end());
     } else {
         file_.write(reinterpret_cast<const char*>(frame.data()),
@@ -603,6 +621,9 @@ bool EncodedStreamSink::push(std::span<const std::byte> frame) {
 
 bool EncodedStreamSink::close() {
     open_ = false;
+    if (defer_) {
+        return write_frames(path_, deferred_);
+    }
     if (stdio_) {
         ac3::cli::platform::set_stdio_binary();
         std::cout.write(reinterpret_cast<const char*>(buffered_.data()),
@@ -627,6 +648,12 @@ void EncodedStreamSink::abort() {
         return;
     }
     open_ = false;
+    if (defer_) {
+        // Nothing has left this process yet, so the pre-sink helper IS the
+        // right behaviour, note wording and all.
+        write_partial_output(path_, keep_partial_, deferred_);
+        return;
+    }
     if (stdio_) {
         // "beside the intended output" has no meaning for a pipe - see
         // write_partial_output's identical stdout reasoning and wording.
