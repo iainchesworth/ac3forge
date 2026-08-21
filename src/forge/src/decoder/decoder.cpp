@@ -145,6 +145,16 @@ std::expected<std::vector<std::span<const std::byte>>, DecodeError> split_access
 
 std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
     std::span<const std::byte> frame) {
+    return decode_frame_core(frame, {});
+}
+
+std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame_into(
+    std::span<const std::byte> frame, std::span<const std::span<float>> channels) {
+    return decode_frame_core(frame, channels);
+}
+
+std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame_core(
+    std::span<const std::byte> frame, std::span<const std::span<float>> external) {
     // Before the first early return, for the same reason FrameEncoder resets
     // its own: a caller reusing one trace across a file must never read a
     // previous frame's state out of a call that decoded nothing.
@@ -242,8 +252,25 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
     out.compr2 = compr2;
     out.dynrng2.fill(meta::kDynrngUnity);
     out.blksw.assign(static_cast<std::size_t>(nfchans), {});
-    out.channels.assign(static_cast<std::size_t>(nchans),
-                        std::vector<float>(kSamplesPerFrame, 0.0f));
+    // The PCM target: the caller's spans when decode_frame_into supplied
+    // them, otherwise vectors allocated into the result exactly as before.
+    // Every sample of every coded channel is written below (six blocks of
+    // 256 each), so external storage needs no pre-clearing.
+    std::array<std::span<float>, 6> pcm_target{};
+    if (external.empty()) {
+        out.channels.assign(static_cast<std::size_t>(nchans),
+                            std::vector<float>(kSamplesPerFrame, 0.0f));
+        for (int ch = 0; ch < nchans; ++ch) {
+            pcm_target[static_cast<std::size_t>(ch)] = out.channels[static_cast<std::size_t>(ch)];
+        }
+    } else {
+        assert(static_cast<int>(external.size()) >= nchans);
+        for (int ch = 0; ch < nchans; ++ch) {
+            assert(external[static_cast<std::size_t>(ch)].size() >=
+                   static_cast<std::size_t>(kSamplesPerFrame));
+            pcm_target[static_cast<std::size_t>(ch)] = external[static_cast<std::size_t>(ch)];
+        }
+    }
 
     // §7.7.1.2: an absent word inherits from the previous BLOCK, and block 0
     // without one is unity — never the previous frame's value, which is what
@@ -852,7 +879,7 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame(
                 imdct512_windowed(coeffs[static_cast<std::size_t>(ch)], x);
             }
             auto& delay = delay_[static_cast<std::size_t>(ch)];
-            auto& pcm = out.channels[static_cast<std::size_t>(ch)];
+            const auto pcm = pcm_target[static_cast<std::size_t>(ch)];
             for (int n = 0; n < 256; ++n) {
                 pcm[static_cast<std::size_t>(block * 256 + n)] = static_cast<float>(
                     2.0 * (x[static_cast<std::size_t>(n)] + delay[static_cast<std::size_t>(n)]));

@@ -42,6 +42,15 @@ target_link_options(ac3forge_wasm_decode PRIVATE
     "-sMODULARIZE=1"
     "-sEXPORT_NAME=createAc3ForgeModule"
     "-sALLOW_MEMORY_GROWTH=1"
+    # Growth needs a ceiling: without MAXIMUM_MEMORY the heap can climb to
+    # wasm32's ~2 GB limit and the failure mode is the browser killing the
+    # tab. With one, exhaustion is a std::bad_alloc (-fexceptions above)
+    # that decoder_bindings.cpp turns into the demo's normal error path.
+    # 1 GB comfortably holds the largest input demo.js accepts (see its
+    # MAX_UPLOAD_BYTES); 64 MB up front covers the module and small clips
+    # without a resize.
+    "-sINITIAL_MEMORY=67108864"
+    "-sMAXIMUM_MEMORY=1073741824"
     "-sENVIRONMENT=web"
     "-sNO_EXIT_RUNTIME=1")
 
