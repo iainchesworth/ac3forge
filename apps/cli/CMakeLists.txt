@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------------------
 # ac3cli - the command-line front end over ac3::forge.
 # ---------------------------------------------------------------------------
-add_executable(ac3cli main.cpp)
+add_executable(ac3cli main.cpp support.cpp)
 
 # ac3cli's platform-specific code: putting stdin/stdout into binary mode for
 # the "-" stdin/stdout file-argument convention (see platform/stdio_binary.hpp
