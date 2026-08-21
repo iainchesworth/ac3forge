@@ -12,7 +12,7 @@ The project's backend tree (`src/audio/src/backend/{windows,alsa,posix,macos,and
 `src/audio/CMakeLists.txt`, never by `#ifdef` - `tools/checks/check_platform_macros.ps1` enforces this in CI)
 branches on **operating system**, not architecture or device. A Raspberry Pi running Raspberry Pi OS
 hits exactly the same `if(LINUX)` branch, the same ALSA backend, and the same
-[HDMI/S-PDIF passthrough device-naming logic](linux.md#why-alsa-and-not-pipewire) that any x86_64
+[HDMI/S-PDIF passthrough device-naming logic](linux.md#audio-backend-alsa-or-pipewire) that any x86_64
 Debian box does. Enabling this target was almost entirely CMake/vcpkg/CI plumbing - see the two new
 `arm64-linux-{gcc,llvm}` vcpkg overlay triplets (`cmake/vcpkg/triplets/`) and the
 `config-linux-{gcc,llvm}-arm64[-debug]` presets they back, mirroring the existing `arm64-macos-llvm`
@@ -208,6 +208,6 @@ files replayed and locked correctly once watched for their full length. Nothing 
 longer runway than that to lock - once the classifier fix above landed, every stream shape locked
 on the first real attempt.
 
-This closes the [Linux](linux.md#why-alsa-and-not-pipewire) page's still-open gap for HDMI
+This closes the [Linux](linux.md#audio-backend-alsa-or-pipewire) page's still-open gap for HDMI
 passthrough on Raspberry Pi specifically: verified end to end now, from plain AC-3 through
 Atmos/JOC with height rendering, against a real Dolby-licensed decoder.
