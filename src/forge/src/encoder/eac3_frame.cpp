@@ -1405,6 +1405,28 @@ std::expected<void, FrameError> validate(const FrameConfig& config) {
 // unit ever completes.
 struct FrameEncoder::FrameState {
     Payload payload;
+    // encode_frame's frame-lifetime scratch, reused across calls under the
+    // same fully-rewritten-before-read contract as Payload's own vectors:
+    // each is re-assign()ed at its use site to exactly the value a freshly
+    // constructed vector held there, so reuse changes nothing observable -
+    // it only stops encode_frame re-allocating them every 32 ms. coeffs is
+    // the per-(stream, block) MDCT spectrum set (~86 KB at 5.1), the
+    // largest single per-frame allocation this encoder had left.
+    std::vector<std::array<double, 256>> coeffs;
+    std::vector<std::array<bool, kBlocksPerFrame>> blksw;
+    std::vector<bool> channel_switched;
+    std::vector<double> cpl_values;
+    std::vector<double> ecpl_unity_amp;
+    std::vector<double> ecpl_zero_angle;
+    std::vector<double> ecpl_half_angle;
+    std::vector<std::uint8_t> exp_raw;
+    std::vector<std::uint8_t> exp_axis;
+    std::vector<std::int32_t> aht_column;
+    std::vector<double> delta_peak_mag;
+    std::vector<double> spx_recon;
+    std::vector<double> spx_gains;
+    std::vector<double> spx_synth;
+    std::vector<double> spx_band_rms;
 };
 
 FrameEncoder::~FrameEncoder() = default;
@@ -1677,8 +1699,10 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     // coupling (and, below, AHT) off for the WHOLE frame whenever any
     // eligible channel switches, rather than just that one channel.
     AC3_ZONE_BEGIN(zone_transients, "step1_transient_detect");
-    std::vector<std::array<bool, kBlocksPerFrame>> blksw(static_cast<std::size_t>(nfchans));
-    std::vector<bool> channel_switched(static_cast<std::size_t>(nfchans), false);
+    auto& blksw = state_->blksw;
+    blksw.assign(static_cast<std::size_t>(nfchans), {});
+    auto& channel_switched = state_->channel_switched;
+    channel_switched.assign(static_cast<std::size_t>(nfchans), false);
     bool any_switched = false;
     for (int ch = 0; ch < nfchans; ++ch) {
         const auto& pcm = channels[static_cast<std::size_t>(ch)];
@@ -1843,8 +1867,8 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
 
     // --- 2. MDCT ------------------------------------------------------------
     AC3_ZONE_BEGIN(zone_mdct, "step2_mdct");
-    std::vector<std::array<double, 256>> coeffs(
-        static_cast<std::size_t>(streams) * kBlocksPerFrame);
+    auto& coeffs = state_->coeffs;
+    coeffs.assign(static_cast<std::size_t>(streams) * kBlocksPerFrame, {});
     const auto coeffs_at = [&](int s, int blk) -> std::array<double, 256>& {
         return coeffs[static_cast<std::size_t>(s) * kBlocksPerFrame +
                       static_cast<std::size_t>(blk)];
@@ -1905,7 +1929,8 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                               static_cast<std::size_t>(nfchans),
                           0);
         cpl.coords.assign(cpl.master.size() * nbnd, {});
-        std::vector<double> values(nbnd, 0.0);
+        auto& values = state_->cpl_values;
+        values.assign(nbnd, 0.0);
 
         // §7.4.1/§3.5.2: the coupling channel is the AVERAGE of the coupled
         // channels' coefficients, in exactly the same way whether standard or
@@ -2035,9 +2060,12 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
             };
             static constexpr std::array<double, 256> kZero{};
             const int bins = cpl.endmant - cpl.strtmant;
-            std::vector<double> unity_amp(static_cast<std::size_t>(bins), 1.0);
-            std::vector<double> zero_angle(static_cast<std::size_t>(bins), 0.0);
-            std::vector<double> half_angle(static_cast<std::size_t>(bins), 0.5);
+            auto& unity_amp = state_->ecpl_unity_amp;
+            unity_amp.assign(static_cast<std::size_t>(bins), 1.0);
+            auto& zero_angle = state_->ecpl_zero_angle;
+            zero_angle.assign(static_cast<std::size_t>(bins), 0.0);
+            auto& half_angle = state_->ecpl_half_angle;
+            half_angle.assign(static_cast<std::size_t>(bins), 0.5);
             for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
                 const auto& prev = blk > 0 ? coeffs_at(cpl_stream, blk - 1) : kZero;
                 const auto& curr = coeffs_at(cpl_stream, blk);
@@ -2233,14 +2261,17 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         plan.endmant = stream_end(s);
         const bool is_lfe = config_.lfe && s == nfchans;
         const auto span = static_cast<std::size_t>(plan.endmant - plan.start);
-        std::vector<std::uint8_t> raw(span, kMaxExponent);
-        std::vector<std::uint8_t> axis_exps(span, 0);
+        auto& raw = state_->exp_raw;
+        raw.assign(span, kMaxExponent);
+        auto& axis_exps = state_->exp_axis;
+        axis_exps.assign(span, 0);
 
         if (plan.aht) {
             AC3_ZONE_SCOPED_N("step5_aht_transform");
             plan.aht_fixed.assign(static_cast<std::size_t>(plan.endmant), {});
             plan.aht_coeffs.assign(static_cast<std::size_t>(plan.endmant), {});
-            std::vector<std::int32_t> column(span);
+            auto& column = state_->aht_column;
+            column.assign(span, 0);
             for (int bin = plan.start; bin < plan.endmant; ++bin) {
                 std::array<double, kBlocksPerFrameSize> blocks{};
                 for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
@@ -2322,7 +2353,8 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         // coupling-aware version of this heuristic right needs more care
         // than this phase has room for.
         if (!plan.aht && !is_lfe && !cpl.in_use) {
-            std::vector<double> peak_mag(static_cast<std::size_t>(plan.endmant), 0.0);
+            auto& peak_mag = state_->delta_peak_mag;
+            peak_mag.assign(static_cast<std::size_t>(plan.endmant), 0.0);
             for (int blk = 0; blk < kBlocksPerFrame; ++blk) {
                 const auto& c = coeffs_at(s, blk);
                 for (int bin = plan.start; bin < plan.endmant; ++bin) {
@@ -2771,10 +2803,14 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     if (spx.in_use) {
         AC3_ZONE_SCOPED_N("step9_spx_coords");
         const auto spx_nbnd = static_cast<std::size_t>(spx.bands.count);
-        std::vector<double> recon(static_cast<std::size_t>(spx.startmant), 0.0);
-        std::vector<double> gains(spx_nbnd, 0.0);
-        std::vector<double> synth(static_cast<std::size_t>(spx.endmant - spx.startmant), 0.0);
-        std::vector<double> band_rms(spx_nbnd, 0.0);
+        auto& recon = state_->spx_recon;
+        recon.assign(static_cast<std::size_t>(spx.startmant), 0.0);
+        auto& gains = state_->spx_gains;
+        gains.assign(spx_nbnd, 0.0);
+        auto& synth = state_->spx_synth;
+        synth.assign(static_cast<std::size_t>(spx.endmant - spx.startmant), 0.0);
+        auto& band_rms = state_->spx_band_rms;
+        band_rms.assign(spx_nbnd, 0.0);
         // The decoder's own reconstruction: quantize, dequantize, undo the
         // exponent. bap 0 with dither off is exactly zero, which is the case
         // that matters. `dst` is `recon` at every call site but one: enhanced
