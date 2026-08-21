@@ -171,3 +171,74 @@ TEST_CASE("fast mdct256_forward_first/second agree with their direct forms",
         check(tone_block(block));
     }
 }
+
+// --- The inverse transforms' fast paths (phase 6: IMDCT step 3 via the
+// radix-2 FFT instead of the pseudocode's direct O(N^2) sum; see mdct.hpp's
+// inverse doc comment). Same standard as the forward's: the fast path must
+// agree with the direct evaluation - the spec's own statement of the
+// transform - to the same documented bound, on transform-shaped spectra and
+// on arbitrary coefficient sets alike, before anything defaults it on.
+
+TEST_CASE("fast imdct512_windowed agrees with the direct 7.9.4.1 evaluation",
+          "[mdct][fast]") {
+    const auto check = [](const std::array<double, 256>& coeffs) {
+        std::array<double, 512> direct{};
+        std::array<double, 512> fast{};
+        ac3::imdct512_windowed(coeffs, direct, false);
+        ac3::imdct512_windowed(coeffs, fast, true);
+        const double err = max_rel_error(fast, direct);
+        CAPTURE(err);
+        CHECK(err < kFastTolerance);
+    };
+    // Transform-shaped spectra: what a decoder actually feeds this.
+    for (int block = 0; block < 6; ++block) {
+        CAPTURE(block);
+        check(forward512(tone_block(block), false));
+    }
+    // Arbitrary dense spectra: every bin loaded, no structure to hide in.
+    for (std::uint32_t seed = 1; seed <= 5; ++seed) {
+        CAPTURE(seed);
+        std::mt19937 rng(seed);
+        std::uniform_real_distribution<double> dist(-1.0, 1.0);
+        std::array<double, 256> coeffs{};
+        for (auto& c : coeffs) {
+            c = dist(rng);
+        }
+        check(coeffs);
+    }
+}
+
+TEST_CASE("fast imdct256_pair_windowed agrees with the direct 7.9.4.2 evaluation",
+          "[mdct][fast]") {
+    const auto check = [](const std::array<double, 256>& coeffs) {
+        std::array<double, 512> direct{};
+        std::array<double, 512> fast{};
+        ac3::imdct256_pair_windowed(coeffs, direct, false);
+        ac3::imdct256_pair_windowed(coeffs, fast, true);
+        const double err = max_rel_error(fast, direct);
+        CAPTURE(err);
+        CHECK(err < kFastTolerance);
+    };
+    // A block-switched block's coefficient set as the encoder interleaves it
+    // (§7.9.2: X[2k] = first[k], X[2k+1] = second[k]).
+    for (int block = 0; block < 6; ++block) {
+        CAPTURE(block);
+        const auto pair = forward256_pair(tone_block(block), false);
+        std::array<double, 256> coeffs{};
+        for (std::size_t k = 0; k < 128; ++k) {
+            coeffs[2 * k] = pair.first[k];
+            coeffs[2 * k + 1] = pair.second[k];
+        }
+        check(coeffs);
+    }
+    for (std::uint32_t seed = 11; seed <= 15; ++seed) {
+        CAPTURE(seed);
+        std::mt19937 rng(seed);
+        std::uniform_real_distribution<double> dist(-1.0, 1.0);
+        std::array<double, 256> coeffs{};
+        for (auto& c : coeffs) {
+            c = dist(rng);
+        }
+        check(coeffs);
+    }
+}

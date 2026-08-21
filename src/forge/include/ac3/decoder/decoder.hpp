@@ -89,6 +89,20 @@ struct DecoderConfig {
     // because it exists to check what the encoder wrote, and a decoder that
     // silently rescales its output cannot be the reference for that.
     double drc_scale = 0.0;
+    // §7.9.4 step 3's complex transform evaluated via the same radix-2 FFT
+    // core the encoder's fast MDCT fold uses, instead of the pseudocode's
+    // direct O(N^2) sum against a 320 KiB tabulated matrix - see mdct.hpp's
+    // inverse doc comment. Applies to the PCM reconstruction paths of both
+    // decoders; the encoder-internal inverse uses (spx/ecpl copy-source
+    // reconstruction) and JOC object reconstruction deliberately stay on
+    // the direct form, so nothing about ENCODED output ever depends on this
+    // flag. Default off pending the owner accepting the quality evidence -
+    // the same gate EncoderConfig::fast_mdct passed through before its
+    // default flipped: the FFT reorders additions, so the result is
+    // ~1e-12-relative close to the direct sum rather than bit-identical,
+    // and a decoder here is the project's own reference for what the
+    // encoder wrote.
+    bool fast_imdct = false;
     // §7.7.2: prefer compr over dynrng wherever a compr word exists, which is
     // what a set-top box's RF mode does. §7.7.2.1 requires falling back on
     // dynrng for any syncframe that carries no compr, so this composes with

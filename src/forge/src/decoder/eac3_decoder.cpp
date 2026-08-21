@@ -1739,9 +1739,9 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
             const auto index = static_cast<std::size_t>(ch);
             auto& x = imdct_scratch_;
             if (ch < nfchans && tail.blksw[static_cast<std::size_t>(ch)]) {
-                imdct256_pair_windowed(coeffs[index], x);
+                imdct256_pair_windowed(coeffs[index], x, config_.fast_imdct);
             } else {
-                imdct512_windowed(coeffs[index], x);
+                imdct512_windowed(coeffs[index], x, config_.fast_imdct);
             }
             auto& history = delay[index];
             auto& pcm = out.channels[index];
