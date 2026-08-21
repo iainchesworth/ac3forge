@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -373,4 +374,48 @@ TEST_CASE("MPEG-TS mux of real encoded AC-3 round-trips through ac3::io::scan", 
     for (std::size_t i = 0; i < frames.size(); ++i) {
         CHECK(access_units[i] == frames[i]);
     }
+}
+
+TEST_CASE("mpegts::Writer's concatenated pushes are mux()'s bytes exactly", "[mpegts]") {
+    // The Writer's whole contract: the only state mux()'s loop carries
+    // across access units lives on the Writer, so pushing the same frames
+    // one at a time reproduces the batch output byte for byte - PSI repeat
+    // cadence, continuity counters, PTS/PCR clock and all. Frame count
+    // deliberately spans several PSI repeats and varies frame sizes.
+    const mpegts::MuxOptions options{.psi_repeat_every_au = 3};
+    for (const auto codec : {mpegts::AudioCodec::kAc3, mpegts::AudioCodec::kEac3}) {
+        const mpegts::AudioTrack track{
+            .codec = codec, .sample_rate = 48000, .channels = 6, .samples_per_frame = 1536};
+        std::vector<Bytes> frames;
+        for (std::size_t i = 0; i < 11; ++i) {
+            frames.push_back(frame_of(600 + 40 * i, static_cast<std::uint8_t>(0x20 + i)));
+        }
+
+        const auto batch = mpegts::mux(track, frames, options);
+        REQUIRE(batch.has_value());
+
+        auto writer = mpegts::Writer::create(track, options);
+        REQUIRE(writer.has_value());
+        Bytes streamed;
+        for (const auto& frame : frames) {
+            const auto packets = writer->push(frame);
+            REQUIRE(packets.has_value());
+            CHECK_FALSE(packets->empty());
+            streamed.insert(streamed.end(), packets->begin(), packets->end());
+        }
+        const auto tail = writer->finalize();
+        CHECK(tail.empty());
+        streamed.insert(streamed.end(), tail.begin(), tail.end());
+
+        CHECK(writer->frames_written() == frames.size());
+        REQUIRE(streamed.size() == batch->size());
+        CHECK(std::equal(streamed.begin(), streamed.end(), batch->begin(), batch->end()));
+    }
+}
+
+TEST_CASE("mpegts::Writer refuses what mux() refuses", "[mpegts]") {
+    CHECK(mpegts::Writer::create({.channels = 0}).error() == mpegts::MuxError::kInvalidTrack);
+    const mpegts::AudioTrack ok{.sample_rate = 48000, .channels = 2, .samples_per_frame = 1536};
+    CHECK(mpegts::Writer::create(ok, {.pmt_pid = 0x0031, .audio_pid = 0x0031}).error() ==
+          mpegts::MuxError::kInvalidOptions);
 }
