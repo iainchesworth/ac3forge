@@ -694,6 +694,99 @@ void EncodedStreamSink::abort() {
     }
 }
 
+namespace {
+
+void put_u16(std::ostream& out, std::uint16_t value) {
+    out.write(reinterpret_cast<const char*>(&value), 2);
+}
+
+void put_u32(std::ostream& out, std::uint32_t value) {
+    out.write(reinterpret_cast<const char*>(&value), 4);
+}
+
+}  // namespace
+
+bool Pcm16RawWavSink::open(std::string_view path, std::uint32_t sample_rate,
+                           std::uint16_t channels) {
+    path_ = std::string{path};
+    data_bytes_ = 0;
+    // Create/truncate first, then reopen read+write for the close()-time
+    // size patch - the same two-step ac3::io::WavStreamWriter::open uses,
+    // and for the same reason: `in|out|trunc` is not reliably
+    // create-capable for a not-yet-existing file everywhere.
+    {
+        std::ofstream create{path_, std::ios::binary | std::ios::trunc};
+        if (!create) {
+            std::println(stderr, "error: cannot open {} for writing", path_);
+            return false;
+        }
+        // Field for field ac3::io::write_wav_pcm16_raw's header (format tag
+        // 1, 16-bit), sizes zero until close() patches them.
+        const auto block_align = static_cast<std::uint32_t>(channels) * 2;
+        create.write("RIFF", 4);
+        put_u32(create, 36);
+        create.write("WAVE", 4);
+        create.write("fmt ", 4);
+        put_u32(create, 16);
+        put_u16(create, 1);  // PCM
+        put_u16(create, channels);
+        put_u32(create, sample_rate);
+        put_u32(create, sample_rate * block_align);
+        put_u16(create, static_cast<std::uint16_t>(block_align));
+        put_u16(create, 16);
+        create.write("data", 4);
+        put_u32(create, 0);
+        if (!create) {
+            std::println(stderr, "error: cannot write to {}", path_);
+            return false;
+        }
+    }
+    file_.open(path_, std::ios::binary | std::ios::in | std::ios::out);
+    if (!file_) {
+        std::println(stderr, "error: cannot open {} for writing", path_);
+        return false;
+    }
+    file_.seekp(0, std::ios::end);
+    open_ = true;
+    return true;
+}
+
+bool Pcm16RawWavSink::push(std::span<const std::byte> bytes) {
+    file_.write(reinterpret_cast<const char*>(bytes.data()),
+                static_cast<std::streamsize>(bytes.size()));
+    if (!file_) {
+        std::println(stderr, "error: cannot write to {}", path_);
+        return false;
+    }
+    data_bytes_ += bytes.size();
+    return true;
+}
+
+bool Pcm16RawWavSink::close() {
+    open_ = false;
+    const auto data_bytes = static_cast<std::uint32_t>(data_bytes_);
+    file_.seekp(4, std::ios::beg);
+    put_u32(file_, 36 + data_bytes);
+    file_.seekp(40, std::ios::beg);
+    put_u32(file_, data_bytes);
+    file_.close();
+    if (file_.fail()) {
+        std::println(stderr, "error: cannot write to {}", path_);
+        return false;
+    }
+    return true;
+}
+
+void Pcm16RawWavSink::abort() {
+    if (!open_) {
+        return;
+    }
+    open_ = false;
+    file_.close();
+    std::error_code ec;
+    std::filesystem::remove(std::filesystem::path{path_}, ec);
+}
+
 bool write_repeated_frame(std::string_view path, std::span<const std::byte> frame,
                           std::uint64_t count) {
     const auto emit = [&](std::ostream& out) {

@@ -3014,50 +3014,54 @@ int run_loudness(std::string_view in_path) {
 // a receiver locks onto the bursts and lights up "Dolby Digital".
 // AC-3 frames wrap one-to-one; an E-AC-3 access unit may need several
 // consecutive ones to fill a burst (Eac3BurstPacker accumulates internally).
-// Shared by run_spdif and run_play so the two cannot disagree about how a
-// stream becomes bursts.
-std::optional<std::vector<std::byte>> wrap_ac3_stream(std::span<const std::byte> stream,
-                                                       std::uint32_t& rate_out) {
+// Feeds each formed burst to `push` rather than accumulating them: the
+// E-AC-3 carrier runs at 4x the content rate (~0.7 MB per second), which
+// made the whole-payload form the largest O(duration) term the CLI had
+// left. `rate_out` is set before the first push, so a caller may open its
+// destination lazily from inside `push`. False means the stream is not a
+// valid frame sequence - or that `push` itself said stop, which the
+// caller can tell apart because it was its own push that failed.
+template <typename Push>
+bool wrap_ac3_stream(std::span<const std::byte> stream, std::uint32_t& rate_out, Push&& push) {
     const auto frames = ac3::split_frames(stream);
     if (!frames || frames->empty()) {
-        return std::nullopt;
+        return false;
     }
     const auto fscod = std::to_integer<std::uint32_t>((*frames)[0][4]) >> 6;
     rate_out = sample_rate_hz(static_cast<ac3::SampleRate>(fscod));
 
-    std::vector<std::byte> payload;
-    payload.reserve(frames->size() * ac3::iec61937::kBurstBytes);
     for (const auto& frame : *frames) {
         const auto burst = ac3::iec61937::wrap_frame(frame);
         if (!burst) {
-            return std::nullopt;
+            return false;
         }
-        payload.insert(payload.end(), burst->begin(), burst->end());
+        if (!push(std::span<const std::byte>{*burst})) {
+            return false;
+        }
     }
-    return payload;
+    return true;
 }
 
-std::optional<std::vector<std::byte>> wrap_eac3_stream(std::span<const std::byte> stream,
-                                                        std::uint32_t& rate_out) {
+template <typename Push>
+bool wrap_eac3_stream(std::span<const std::byte> stream, std::uint32_t& rate_out, Push&& push) {
     const auto units = ac3::split_access_units(stream);
     if (!units || units->empty()) {
-        return std::nullopt;
+        return false;
     }
     const auto byte4 = std::to_integer<std::uint32_t>((*units)[0][4]);
     rate_out = sample_rate_hz(static_cast<ac3::SampleRate>(byte4 >> 6));
 
-    std::vector<std::byte> payload;
     ac3::iec61937::Eac3BurstPacker packer;
     for (const auto& unit : *units) {
         const auto burst = packer.push(unit);
         if (!burst) {
-            return std::nullopt;
+            return false;
         }
-        if (*burst) {
-            payload.insert(payload.end(), (**burst).begin(), (**burst).end());
+        if (*burst && !push(std::span<const std::byte>{**burst})) {
+            return false;
         }
     }
-    return payload;
+    return true;
 }
 
 int run_spdif(std::string_view in_path, std::string_view out_path) {
@@ -3073,22 +3077,46 @@ int run_spdif(std::string_view in_path, std::string_view out_path) {
     }
     const bool eac3 = *bsid > 8;
 
-    std::uint32_t content_rate = 0;
-    const auto payload = eac3 ? wrap_eac3_stream(stream, content_rate)
-                              : wrap_ac3_stream(stream, content_rate);
-    if (!payload) {
-        std::println(stderr, "error: {} is not a valid {} stream", in_path,
-                     eac3 ? "E-AC-3" : "AC-3");
-        return 1;
-    }
     // The WAV carrier itself runs at 4x the content rate for E-AC-3 (Dolby
     // Digital Plus over IEC 60958/61937 - Microsoft's "Representing Formats
     // for IEC 61937 Transmissions"), matching WASAPI's make_eac3_format.
+    // The sink opens lazily on the first burst - the rate is only known
+    // once the wrapper has parsed the first frame, and a stream the
+    // wrapper rejects must leave no file, exactly as the whole-payload
+    // write it replaces never ran at all on failure.
+    std::uint32_t content_rate = 0;
+    Pcm16RawWavSink sink;
+    bool sink_failed = false;
+    const auto push = [&](std::span<const std::byte> burst) {
+        if (!sink.is_open() &&
+            !sink.open(out_path, eac3 ? content_rate * 4 : content_rate, 2)) {
+            sink_failed = true;
+            return false;
+        }
+        if (!sink.push(burst)) {
+            sink_failed = true;
+            return false;
+        }
+        return true;
+    };
+    const auto ok = eac3 ? wrap_eac3_stream(stream, content_rate, push)
+                         : wrap_ac3_stream(stream, content_rate, push);
+    if (!ok) {
+        sink.abort();
+        if (!sink_failed) {
+            std::println(stderr, "error: {} is not a valid {} stream", in_path,
+                         eac3 ? "E-AC-3" : "AC-3");
+        }
+        return 1;
+    }
     const auto carrier_rate = eac3 ? content_rate * 4 : content_rate;
-    const auto written =
-        ac3::io::write_wav_pcm16_raw(std::string{out_path}, *payload, carrier_rate, 2);
-    if (!written) {
-        std::println(stderr, "error: {}", ac3::io::describe(written.error()));
+    // A valid stream whose units never completed a burst (an E-AC-3 input
+    // shorter than one burst set) still produced a header-only WAV before,
+    // so the never-opened sink opens for exactly that here.
+    if (!sink.is_open() && !sink.open(out_path, carrier_rate, 2)) {
+        return 1;
+    }
+    if (!sink.close()) {
         return 1;
     }
     std::println("wrapped {} into IEC 61937 bursts -> {} ({} Hz carrier)",
