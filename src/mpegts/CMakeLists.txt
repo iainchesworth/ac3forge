@@ -54,6 +54,12 @@ set_target_properties(mpegts_objects PROPERTIES
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON)
 
+# MSVC's C4251 for the PRIVATE STL-typed members of MPEGTS_EXPORT classes
+# (mpegts::Writer's PSI section buffers) - the identical, identically-reasoned
+# suppression src/matroska/CMakeLists.txt applies for matroska::Writer; see
+# its comment for why PUBLIC and why here rather than header pragmas.
+target_compile_options(mpegts_objects PUBLIC "$<$<CXX_COMPILER_ID:MSVC>:/wd4251>")
+
 include(GenerateExportHeader)
 set_target_properties(mpegts_shared PROPERTIES DEFINE_SYMBOL "MPEGTS_BUILDING_SHARED")
 generate_export_header(mpegts_shared
