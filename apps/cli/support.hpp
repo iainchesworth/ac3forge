@@ -349,6 +349,37 @@ class PlanarWavSink {
     std::vector<float> scratch_;
 };
 
+// Streams raw little-endian PCM16 payload bytes into a WAV as they are
+// produced - 'spdif''s IEC 61937 burst carrier, whose payload used to
+// accumulate whole before one write_wav_pcm16_raw() call (~0.7 MB per
+// second at an E-AC-3 4x carrier rate, the largest O(duration) term the
+// CLI had left). The header is byte-identical to write_wav_pcm16_raw's;
+// its two size fields are patched at close(), because an E-AC-3 burst
+// payload's length is only known once the packer has seen the last unit.
+class Pcm16RawWavSink {
+   public:
+    [[nodiscard]] bool open(std::string_view path, std::uint32_t sample_rate,
+                            std::uint16_t channels);
+
+    [[nodiscard]] bool is_open() const { return open_; }
+
+    [[nodiscard]] bool push(std::span<const std::byte> bytes);
+
+    // Finalize: patch the RIFF/data sizes to what was actually written.
+    [[nodiscard]] bool close();
+
+    // The wrap failed part-way: close and remove whatever was written, so a
+    // failed run leaves no output file - exactly like the whole-buffer
+    // write this replaces, which never ran at all on failure.
+    void abort();
+
+   private:
+    std::string path_;
+    bool open_ = false;
+    std::fstream file_;
+    std::uint64_t data_bytes_ = 0;
+};
+
 // ---------------------------------------------------------------------------
 // Level reporting. Every number comes from ac3::analysis, so a level reads
 // the same here as on the GUI's meters; only the drawing is local.
