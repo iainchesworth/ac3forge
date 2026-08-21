@@ -94,10 +94,16 @@ void print_meta_usage() {
                  "command encodes, incl. atmos/record/live/eac3-sine; eac3-encode alone has a "
                  "[tools] positional argument whose bare nofastmdct token reaches the same "
                  "field instead; bare fast-mdct (the old opt-in) is a no-op");
-    std::println("  fast-imdct        decode: §7.9.4 step 3's complex transform via the radix-2 "
-                 "FFT instead of the pseudocode's direct sum - measured 4.5-5.9x faster decodes "
-                 "at 215-285 dB SNR against the direct form, which stays the default (and the "
-                 "validation oracle) while the quality evidence is under review");
+    std::println("  mode=reference    force BOTH transforms onto the spec's own direct "
+                 "evaluations (the forms every fast-path test validates against): the §8.2.3.2 "
+                 "forward MDCT wherever this command encodes, and §7.9.4's step-3 inverse in "
+                 "'decode' - for runs where bit-for-bit agreement with the spec's stated "
+                 "arithmetic matters more than speed. mode=performance (the default) keeps "
+                 "both fast paths: 215-285 dB SNR against reference on 180 s programmes, "
+                 "4.5-4.7x faster decodes. Tokens apply in order, so a later fast-mdct=off / "
+                 "fast-imdct=off still adjusts one half on its own");
+    std::println("  fast-imdct=off    decode: force just the direct §7.9.4 step-3 inverse "
+                 "(mode=reference's decode half); bare fast-imdct names the default");
     std::println("  sign-objects      atmos/atmos-path/atmos-encode: write a keyed EMDF object "
                  "signature (needs signing-key=); see docs/concepts/object-signing.md");
     std::println("  verify-objects    decode/monitor: check each frame's EMDF object signature "
@@ -182,6 +188,44 @@ bool parse_options(std::span<char*> tokens, Options& out) {
             std::println(stderr,
                          "error: the fast MDCT is the default; 'fast-mdct=off' forces the "
                          "direct §8.2.3.2 transform (got '{}')",
+                         token);
+            return false;
+        }
+        if (key == "fast-imdct") {
+            // Same shape as fast-mdct above, decode side: the fast inverse
+            // is the default since its evidence was accepted, so the value
+            // form exists for the direction that still needs saying. The
+            // bare word (handled above) now just names what already happens.
+            if (value == "off") {
+                out.fast_imdct = false;
+                continue;
+            }
+            std::println(stderr,
+                         "error: the fast IMDCT is the default; 'fast-imdct=off' forces the "
+                         "direct §7.9.4 step-3 evaluation (got '{}')",
+                         token);
+            return false;
+        }
+        if (key == "mode") {
+            // The two transform switches as one intent-level toggle:
+            // performance (the default state - both fast paths) for normal
+            // runs, reference (both spec-direct evaluations, the forms
+            // every fast-path test validates against) for runs where
+            // bit-for-bit agreement with the spec's stated arithmetic
+            // matters more than speed. Tokens apply in order, so a later
+            // fast-mdct=off / fast-imdct=off can still adjust one half.
+            if (value == "performance") {
+                out.fast_mdct = true;
+                out.fast_imdct = true;
+                continue;
+            }
+            if (value == "reference") {
+                out.fast_mdct = false;
+                out.fast_imdct = false;
+                continue;
+            }
+            std::println(stderr,
+                         "error: mode is 'performance' (the default) or 'reference' (got '{}')",
                          token);
             return false;
         }

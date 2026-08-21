@@ -600,7 +600,10 @@ TEST_CASE("fast_imdct reconstructs the same PCM as the direct transform, long an
     // block switching so the short imdct256_pair path is provably covered.
     const ac3::EncoderConfig config{.bitrate_kbps = 192, .acmod = ac3::Acmod::k2_0};
     ac3::FrameEncoder encoder{config};
-    ac3::FrameDecoder direct_decoder;
+    // Both sides pinned explicitly - fast_imdct's default has since flipped
+    // to true, and a default-constructed "direct" decoder would silently
+    // compare the fast path against itself.
+    ac3::FrameDecoder direct_decoder{{.fast_imdct = false}};
     ac3::FrameDecoder fast_decoder{{.fast_imdct = true}};
     const auto nchans = static_cast<std::size_t>(encoder.channel_count());
 
