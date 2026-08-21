@@ -94,11 +94,9 @@ int run_mkv(std::string_view in_path, std::string_view out_path) {
     }
     const bool eac3 = scanned->kind == ac3::io::StreamKind::kEac3;
 
-    std::vector<std::vector<std::byte>> units;
-    units.reserve(scanned->access_units.size());
-    for (const auto unit : scanned->access_units) {
-        units.emplace_back(unit.begin(), unit.end());
-    }
+    // scan()'s access units pass to the muxer as the views they already are
+    // - the whole-stream copy that satisfied the old parameter type is gone.
+    const auto& units = scanned->access_units;
 
     const matroska::AudioTrack track{
         .codec_id = std::string{eac3 ? matroska::kCodecEac3 : matroska::kCodecAc3},
@@ -147,11 +145,9 @@ int run_mp4(std::string_view in_path, std::string_view out_path) {
     }
     const bool eac3 = scanned->kind == ac3::io::StreamKind::kEac3;
 
-    std::vector<std::vector<std::byte>> units;
-    units.reserve(scanned->access_units.size());
-    for (const auto unit : scanned->access_units) {
-        units.emplace_back(unit.begin(), unit.end());
-    }
+    // scan()'s access units pass to the muxer as the views they already are
+    // - the whole-stream copy that satisfied the old parameter type is gone.
+    const auto& units = scanned->access_units;
 
     const mp4::AudioTrack track{
         .codec_id = std::string{eac3 ? mp4::kCodecEac3 : mp4::kCodecAc3},
@@ -203,11 +199,9 @@ int run_fmp4(std::string_view in_path, std::string_view out_dir,
     }
     const bool eac3 = scanned->kind == ac3::io::StreamKind::kEac3;
 
-    std::vector<std::vector<std::byte>> units;
-    units.reserve(scanned->access_units.size());
-    for (const auto unit : scanned->access_units) {
-        units.emplace_back(unit.begin(), unit.end());
-    }
+    // scan()'s access units pass to the muxer as the views they already are
+    // - the whole-stream copy that satisfied the old parameter type is gone.
+    const auto& units = scanned->access_units;
 
     const mp4::AudioTrack track{.codec_id = std::string{eac3 ? mp4::kCodecEac3 : mp4::kCodecAc3},
                                 .sample_rate = ac3::sample_rate_hz(scanned->sample_rate),
@@ -294,11 +288,9 @@ int run_ts(std::string_view in_path, std::string_view out_path) {
     }
     const bool eac3 = scanned->kind == ac3::io::StreamKind::kEac3;
 
-    std::vector<std::vector<std::byte>> units;
-    units.reserve(scanned->access_units.size());
-    for (const auto unit : scanned->access_units) {
-        units.emplace_back(unit.begin(), unit.end());
-    }
+    // scan()'s access units pass to the muxer as the views they already are
+    // - the whole-stream copy that satisfied the old parameter type is gone.
+    const auto& units = scanned->access_units;
 
     const mpegts::AudioTrack track{
         .codec = eac3 ? mpegts::AudioCodec::kEac3 : mpegts::AudioCodec::kAc3,

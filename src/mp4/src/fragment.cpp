@@ -166,7 +166,7 @@ Bytes build_tfdt(std::uint64_t base_media_decode_time) {
 // sample's duration and flags come from trex's defaults (build_trex above -
 // true for every access unit alike), but sizes do not (frames vary), so
 // sizes alone are listed explicitly per sample.
-Bytes build_trun(std::span<const std::vector<std::byte>> frames, std::int32_t data_offset) {
+Bytes build_trun(std::span<const std::span<const std::byte>> frames, std::int32_t data_offset) {
     Bytes body;
     put_u32(body, static_cast<std::uint32_t>(frames.size()));
     // data_offset is a SIGNED field (§8.8.8.1); the cast below preserves its
@@ -187,7 +187,7 @@ Bytes build_trun(std::span<const std::vector<std::byte>> frames, std::int32_t da
 // silently truncating a bad value would be worse than refusing.
 std::expected<Bytes, MuxError> build_moof(std::uint32_t sequence_number,
                                           std::uint64_t base_media_decode_time,
-                                          std::span<const std::vector<std::byte>> frames) {
+                                          std::span<const std::span<const std::byte>> frames) {
     Bytes mfhd_body;
     put_u32(mfhd_body, sequence_number);
     Bytes mfhd;
@@ -243,9 +243,9 @@ std::expected<Bytes, MuxError> build_moof(std::uint32_t sequence_number,
 
 }  // namespace
 
-std::expected<FragmentedOutput, MuxError> fragment(const AudioTrack& track,
-                                                   std::span<const std::vector<std::byte>> frames,
-                                                   const FragmentOptions& options) {
+std::expected<FragmentedOutput, MuxError> fragment(
+    const AudioTrack& track, std::span<const std::span<const std::byte>> frames,
+    const FragmentOptions& options) {
     if (frames.empty()) {
         return std::unexpected(MuxError::kNoFrames);
     }
@@ -316,6 +316,13 @@ std::expected<FragmentedOutput, MuxError> fragment(const AudioTrack& track,
     }
 
     return out;
+}
+
+std::expected<FragmentedOutput, MuxError> fragment(
+    const AudioTrack& track, std::span<const std::vector<std::byte>> frames,
+    const FragmentOptions& options) {
+    const std::vector<std::span<const std::byte>> views(frames.begin(), frames.end());
+    return fragment(track, views, options);
 }
 
 }  // namespace mp4

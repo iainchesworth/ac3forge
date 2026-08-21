@@ -403,7 +403,9 @@ TEST_CASE("fragment() rejects what it cannot describe", "[fmp4]") {
     const std::vector<Bytes> one{Bytes(16, std::byte{0})};
     const auto track = sample_track();
 
-    CHECK(mp4::fragment(track, {}).error() == mp4::MuxError::kNoFrames);
+    // Explicit empty span: bare {} became ambiguous when the span-of-views
+    // fragment overload arrived alongside the owned-list one.
+    CHECK(mp4::fragment(track, std::span<const Bytes>{}).error() == mp4::MuxError::kNoFrames);
 
     auto bad_channels = track;
     bad_channels.channels = 0;

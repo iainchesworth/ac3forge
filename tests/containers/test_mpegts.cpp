@@ -304,7 +304,10 @@ TEST_CASE("MPEG-TS continuity counters increment per PID and wrap at 16", "[mpeg
 
 TEST_CASE("MPEG-TS muxer rejects what it cannot describe", "[mpegts]") {
     const std::vector<Bytes> one{frame_of(16, 0)};
-    CHECK(mpegts::mux({.channels = 2}, {}).error() == mpegts::MuxError::kNoFrames);
+    // Explicit empty span: bare {} became ambiguous when the span-of-views
+    // mux overload arrived alongside the owned-list one.
+    CHECK(mpegts::mux({.channels = 2}, std::span<const Bytes>{}).error() ==
+          mpegts::MuxError::kNoFrames);
     CHECK(mpegts::mux({.channels = 0}, one).error() == mpegts::MuxError::kInvalidTrack);
     CHECK(mpegts::mux({.sample_rate = 0, .channels = 2}, one).error() ==
           mpegts::MuxError::kInvalidTrack);

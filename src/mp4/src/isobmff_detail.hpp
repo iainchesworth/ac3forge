@@ -315,7 +315,7 @@ inline Bytes build_stsc(std::uint32_t chunk_count) {
     return out;
 }
 
-inline Bytes build_stsz(std::span<const std::vector<std::byte>> frames) {
+inline Bytes build_stsz(std::span<const std::span<const std::byte>> frames) {
     Bytes body;
     put_u32(body, 0);  // sample_size: 0 means "read each size from the table below"
     put_u32(body, static_cast<std::uint32_t>(frames.size()));

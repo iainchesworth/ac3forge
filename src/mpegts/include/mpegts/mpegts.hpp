@@ -94,7 +94,13 @@ struct MuxOptions {
 };
 
 // Mux access units into a complete .ts, returned as bytes. No file I/O here,
-// so this stays testable without touching a disk.
+// so this stays testable without touching a disk. Access units arrive as
+// views (matroska::mux's own reasoning); the vector-list overload below
+// forwards for owned lists.
+[[nodiscard]] MPEGTS_EXPORT std::expected<std::vector<std::byte>, MuxError> mux(
+    const AudioTrack& track, std::span<const std::span<const std::byte>> frames,
+    const MuxOptions& options = {});
+
 [[nodiscard]] MPEGTS_EXPORT std::expected<std::vector<std::byte>, MuxError> mux(
     const AudioTrack& track, std::span<const std::vector<std::byte>> frames,
     const MuxOptions& options = {});

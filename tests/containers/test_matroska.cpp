@@ -255,7 +255,10 @@ TEST_CASE("Matroska clusters keep block timestamps inside int16", "[matroska]") 
 
 TEST_CASE("Matroska muxer rejects what it cannot describe", "[matroska]") {
     const std::vector<Bytes> one{frame_of(16, 0)};
-    CHECK(matroska::mux({.channels = 2}, {}).error() == matroska::MuxError::kNoFrames);
+    // Explicit empty span: bare {} became ambiguous when the span-of-views
+    // mux overload arrived alongside the owned-list one.
+    CHECK(matroska::mux({.channels = 2}, std::span<const Bytes>{}).error() ==
+          matroska::MuxError::kNoFrames);
     CHECK(matroska::mux({.channels = 0}, one).error() ==
           matroska::MuxError::kInvalidTrack);
     CHECK(matroska::mux({.sample_rate = 0, .channels = 2}, one).error() ==
