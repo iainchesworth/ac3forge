@@ -117,8 +117,14 @@ int run_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_t bit
     std::vector<std::vector<float>> samples(nchans,
                                             std::vector<float>(ac3::kSamplesPerFrame));
     std::vector<std::span<const float>> views(nchans);
-    std::vector<std::vector<std::byte>> frames;
-    frames.reserve(static_cast<std::size_t>(count));
+    // Streamed out as encoded, keep_partial hard-off: this command has
+    // never honoured keep-partial - its output is synthetic and
+    // regenerable - so a failure must keep leaving no file behind, which
+    // is what abort() then does.
+    EncodedStreamSink out_sink;
+    if (!out_sink.open(out_path, /*keep_partial=*/false)) {
+        return 1;
+    }
     std::uint64_t n0 = 0;
     for (std::uint64_t f = 0; f < count; ++f) {
         fill_tones(samples, views, tone_hz, amplitude, n0);
@@ -127,11 +133,15 @@ int run_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_t bit
         auto frame = encoder->encode_frame(views);
         if (!frame) {
             std::println(stderr, "error: bitrate must be a legal AC-3 rate");
+            out_sink.abort();
             return 1;
         }
-        frames.push_back(std::move(*frame));
+        if (!out_sink.push(std::move(*frame))) {
+            out_sink.abort();
+            return 1;
+        }
     }
-    if (!write_frames(out_path, frames)) {
+    if (!out_sink.close()) {
         return 1;
     }
     std::println("wrote {} {} frames ({} kbps) to {}", count, label, bitrate, out_path);
@@ -167,8 +177,12 @@ int run_eac3_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_
     std::vector<std::vector<float>> samples(nchans,
                                             std::vector<float>(ac3::kSamplesPerFrame));
     std::vector<std::span<const float>> views(nchans);
-    std::vector<std::vector<std::byte>> frames;
-    frames.reserve(static_cast<std::size_t>(count));
+    // Same output arrangement as 'sine' above, keep_partial hard-off for
+    // the same synthetic-and-regenerable reason.
+    EncodedStreamSink out_sink;
+    if (!out_sink.open(out_path, /*keep_partial=*/false)) {
+        return 1;
+    }
     std::uint64_t n0 = 0;
     for (std::uint64_t f = 0; f < count; ++f) {
         fill_tones(samples, views, tone_hz, amplitude, n0);
@@ -176,11 +190,15 @@ int run_eac3_sine(std::string_view out_path, std::uint32_t seconds, std::uint32_
         auto unit = encoder.encode_access_unit(views);
         if (!unit) {
             std::println(stderr, "error: invalid E-AC-3 configuration");
+            out_sink.abort();
             return 1;
         }
-        frames.push_back(std::move(unit->bytes));
+        if (!out_sink.push(std::move(unit->bytes))) {
+            out_sink.abort();
+            return 1;
+        }
     }
-    if (!write_frames(out_path, frames)) {
+    if (!out_sink.close()) {
         return 1;
     }
     std::println("wrote {} E-AC-3 {} access units ({} coded channels, {} substreams, "
@@ -210,8 +228,12 @@ int run_orbit(std::string_view out_path, std::uint32_t seconds, std::uint32_t bi
     std::vector<std::vector<float>> bed_block(
         6, std::vector<float>(ac3::spatial::kBlockSamples));
     std::vector<std::span<const float>> views(6);
-    std::vector<std::vector<std::byte>> frames;
-    frames.reserve(static_cast<std::size_t>(count));
+    // Streamed out as encoded, keep_partial hard-off - synthetic and
+    // regenerable, same as 'sine' above.
+    EncodedStreamSink out_sink;
+    if (!out_sink.open(out_path, /*keep_partial=*/false)) {
+        return 1;
+    }
     std::uint64_t n0 = 0;
     for (std::uint64_t f = 0; f < count; ++f) {
         for (auto& channel : frame_channels) {
@@ -247,11 +269,15 @@ int run_orbit(std::string_view out_path, std::uint32_t seconds, std::uint32_t bi
         auto frame = encoder->encode_frame(views);
         if (!frame) {
             std::println(stderr, "error: bitrate must be a legal AC-3 rate");
+            out_sink.abort();
             return 1;
         }
-        frames.push_back(std::move(*frame));
+        if (!out_sink.push(std::move(*frame))) {
+            out_sink.abort();
+            return 1;
+        }
     }
-    if (!write_frames(out_path, frames)) {
+    if (!out_sink.close()) {
         return 1;
     }
     std::println("wrote {} 5.1 frames: 440 Hz tone orbiting every {} s -> {}", count,
