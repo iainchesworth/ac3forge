@@ -315,6 +315,28 @@ class AC3FORGE_EXPORT Eac3Decoder {
     [[nodiscard]] std::expected<std::optional<DecodedAccessUnit>, DecodeError> decode_access_unit(
         std::span<const std::byte> unit);
 
+    // As decode_access_unit, but the rendered program's PCM lands in
+    // caller-owned planar storage - FrameDecoder::decode_frame_into's
+    // E-AC-3 counterpart, same span contract by assert. channels[slot] is
+    // written in the returned layout's slot order (coded order for dual
+    // mono), and the returned DecodedAccessUnit carries everything EXCEPT
+    // that PCM (its `channels` stays empty; object_audio, which only an
+    // Atmos bed carries, stays by value). There must be a span for every
+    // slot the assembled layout renders - 16 covers §E3.8.2's cap - and
+    // each must hold the unit's blocks*256 samples (kSamplesPerFrame covers
+    // every numblkscod). std::nullopt - the §3.7 hold-back - leaves the
+    // spans untouched; on an error return their contents are unspecified.
+    //
+    // What this form removes is the assembly's own allocation (up to 16
+    // channels of 1536 samples, every unit) - the term that dominates a
+    // stream that never uses transient pre-noise processing. A held-back
+    // frame is by definition decoded before the call whose spans would
+    // receive it, so its PCM is buffered internally either way and only
+    // copied out here at release.
+    [[nodiscard]] std::expected<std::optional<DecodedAccessUnit>, DecodeError>
+    decode_access_unit_into(std::span<const std::byte> unit,
+                            std::span<const std::span<float>> channels);
+
     // Releases whichever frames transient pre-noise processing is still
     // holding back, one per substream identity that has one pending - empty
     // if none does, which covers every stream that never used the tool.
@@ -329,6 +351,13 @@ class AC3FORGE_EXPORT Eac3Decoder {
     [[nodiscard]] std::vector<DecodedSubstream> flush();
 
    private:
+    // Both public access-unit forms above: `external` empty means allocate
+    // the program PCM into the returned DecodedAccessUnit, non-empty means
+    // write through the spans - the same split decode_frame_core makes.
+    [[nodiscard]] std::expected<std::optional<DecodedAccessUnit>, DecodeError>
+    decode_access_unit_core(std::span<const std::byte> unit,
+                            std::span<const std::span<float>> external);
+
     DecoderConfig config_{};
 
     // Keyed by strmtyp and substreamid together: a dependent's id lives in its

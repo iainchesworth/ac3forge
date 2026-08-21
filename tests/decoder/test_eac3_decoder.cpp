@@ -1,5 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -1728,4 +1730,192 @@ TEST_CASE("dithflag=1 on a coupled E-AC-3 channel dithers independently of its s
     CHECK(ch0_changed);
     CHECK(ch1_changed);
     CHECK(deltas_differ);
+}
+
+TEST_CASE("decode_access_unit_into writes the identical program into caller spans",
+          "[eac3][decoder]") {
+    // Independent 2/0 plus a height-pair dependent, so the span form is
+    // exercised across the §E3.8.2 layout union, not just a lone substream.
+    const ac3::eac3::AccessUnitConfig cfg{
+        .independent = {.bitrate_kbps = 192, .acmod = ac3::Acmod::k2_0},
+        .dependents = {{.bitrate_kbps = 96,
+                        .acmod = ac3::Acmod::k2_0,
+                        .chanmap = ac3::eac3::chanmap::k512Height}}};
+    ac3::eac3::AccessUnitEncoder encoder{cfg};
+    REQUIRE(encoder.channel_count() == 4);
+
+    // Two decoders over the same bytes: overlap-add state is per decoder,
+    // so the value form and the span form must be fed identically to be
+    // comparable sample for sample.
+    ac3::Eac3Decoder value_decoder;
+    ac3::Eac3Decoder into_decoder;
+
+    std::vector<std::vector<float>> block(4, std::vector<float>(ac3::kSamplesPerFrame));
+    std::vector<std::span<const float>> views(4);
+    std::vector<std::vector<float>> storage(16,
+                                            std::vector<float>(ac3::kSamplesPerFrame));
+    std::vector<std::span<float>> spans(storage.begin(), storage.end());
+
+    constexpr std::array<double, 4> tones = {440.0, 660.0, 880.0, 1320.0};
+    std::uint64_t n0 = 0;
+    for (int f = 0; f < 3; ++f) {
+        for (std::size_t ch = 0; ch < 4; ++ch) {
+            for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+                block[ch][static_cast<std::size_t>(i)] = static_cast<float>(
+                    0.3 * std::sin(2.0 * std::numbers::pi * tones[ch] *
+                                   static_cast<double>(n0 + static_cast<std::uint64_t>(i)) /
+                                   48000.0));
+            }
+            views[ch] = block[ch];
+        }
+        n0 += ac3::kSamplesPerFrame;
+        const auto unit = encoder.encode_access_unit(views);
+        REQUIRE(unit.has_value());
+
+        const auto value = value_decoder.decode_access_unit(unit->bytes);
+        REQUIRE(value.has_value());
+        REQUIRE(value->has_value());
+        const auto into = into_decoder.decode_access_unit_into(unit->bytes, spans);
+        REQUIRE(into.has_value());
+        REQUIRE(into->has_value());
+
+        CHECK((*into)->channels.empty());
+        CHECK((*into)->layout.count == (*value)->layout.count);
+        CHECK((*into)->acmod == (*value)->acmod);
+        CHECK((*into)->substream_count == (*value)->substream_count);
+        CHECK((*into)->dialnorm == (*value)->dialnorm);
+
+        REQUIRE((*value)->channels.size() ==
+                static_cast<std::size_t>((*value)->layout.count));
+        for (std::size_t slot = 0; slot < (*value)->channels.size(); ++slot) {
+            const auto& expect = (*value)->channels[slot];
+            bool equal = true;
+            for (std::size_t i = 0; i < expect.size(); ++i) {
+                equal = equal && storage[slot][i] == expect[i];
+            }
+            CHECK(equal);
+        }
+    }
+}
+
+TEST_CASE("decode_access_unit_into leaves the spans untouched across a hold-back and "
+          "releases identically",
+          "[eac3][decoder][transient_prenoise]") {
+    // The same hold-back choreography as the queueing test above, run
+    // through both forms in lockstep: the held call must not touch the
+    // caller's storage at all, and the release call must hand the span form
+    // exactly the PCM the value form assembles.
+    const ac3::eac3::AccessUnitConfig cfg{
+        .independent = {
+            .bitrate_kbps = 192, .acmod = ac3::Acmod::k2_0, .transient_prenoise = true}};
+    ac3::eac3::AccessUnitEncoder encoder{cfg};
+    ac3::Eac3Decoder value_decoder;
+    ac3::Eac3Decoder into_decoder;
+
+    const std::vector<float> silence(ac3::kSamplesPerFrame, 0.0f);
+    std::vector<std::span<const float>> silent_views(2, silence);
+    std::vector<std::vector<float>> storage(16,
+                                            std::vector<float>(ac3::kSamplesPerFrame));
+    std::vector<std::span<float>> spans(storage.begin(), storage.end());
+
+    for (int f = 0; f < 2; ++f) {
+        const auto unit = encoder.encode_access_unit(silent_views);
+        REQUIRE(unit.has_value());
+        REQUIRE(value_decoder.decode_access_unit(unit->bytes)->has_value());
+        REQUIRE(into_decoder.decode_access_unit_into(unit->bytes, spans)->has_value());
+    }
+
+    constexpr int kOnset = 960;
+    std::vector<float> transient(static_cast<std::size_t>(ac3::kSamplesPerFrame), 0.0f);
+    for (int n = kOnset; n < ac3::kSamplesPerFrame; ++n) {
+        transient[static_cast<std::size_t>(n)] = static_cast<float>(
+            0.9 * std::sin(2.0 * std::numbers::pi * 1000.0 * static_cast<double>(n) / 48000.0));
+    }
+    std::vector<std::span<const float>> transient_views(2, transient);
+    const auto transient_unit = encoder.encode_access_unit(transient_views);
+    REQUIRE(transient_unit.has_value());
+
+    constexpr float kSentinel = 12345.0f;
+    for (auto& channel : storage) {
+        std::fill(channel.begin(), channel.end(), kSentinel);
+    }
+    const auto value_held = value_decoder.decode_access_unit(transient_unit->bytes);
+    REQUIRE(value_held.has_value());
+    CHECK_FALSE(value_held->has_value());
+    const auto into_held = into_decoder.decode_access_unit_into(transient_unit->bytes, spans);
+    REQUIRE(into_held.has_value());
+    CHECK_FALSE(into_held->has_value());
+    bool untouched = true;
+    for (const auto& channel : storage) {
+        for (const float v : channel) {
+            untouched = untouched && v == kSentinel;
+        }
+    }
+    CHECK(untouched);
+
+    const auto after_unit = encoder.encode_access_unit(silent_views);
+    REQUIRE(after_unit.has_value());
+    const auto value_released = value_decoder.decode_access_unit(after_unit->bytes);
+    REQUIRE(value_released.has_value());
+    REQUIRE(value_released->has_value());
+    const auto into_released = into_decoder.decode_access_unit_into(after_unit->bytes, spans);
+    REQUIRE(into_released.has_value());
+    REQUIRE(into_released->has_value());
+
+    REQUIRE((*value_released)->channels.size() == 2);
+    for (std::size_t slot = 0; slot < 2; ++slot) {
+        const auto& expect = (*value_released)->channels[slot];
+        bool equal = true;
+        for (std::size_t i = 0; i < expect.size(); ++i) {
+            equal = equal && storage[slot][i] == expect[i];
+        }
+        CHECK(equal);
+    }
+}
+
+TEST_CASE("decode_access_unit_into passes dual mono through in coded order",
+          "[eac3][decoder][dual-mono]") {
+    // dialnorm2 is Ch2's own word and dual mono requires it - see the
+    // "codes two independent programmes" test's identical config note.
+    ac3::eac3::AccessUnitEncoder encoder{{.independent = {.bitrate_kbps = 192,
+                                                          .acmod = ac3::Acmod::kDualMono,
+                                                          .dialnorm = 27,
+                                                          .dialnorm2 = 18}}};
+    ac3::Eac3Decoder value_decoder;
+    ac3::Eac3Decoder into_decoder;
+
+    std::vector<std::vector<float>> block(2, std::vector<float>(ac3::kSamplesPerFrame));
+    for (int i = 0; i < ac3::kSamplesPerFrame; ++i) {
+        block[0][static_cast<std::size_t>(i)] = static_cast<float>(
+            0.3 * std::sin(2.0 * std::numbers::pi * 440.0 * i / 48000.0));
+        block[1][static_cast<std::size_t>(i)] = static_cast<float>(
+            0.3 * std::sin(2.0 * std::numbers::pi * 1000.0 * i / 48000.0));
+    }
+    std::vector<std::span<const float>> views(block.begin(), block.end());
+    const auto unit = encoder.encode_access_unit(views);
+    REQUIRE(unit.has_value());
+
+    std::vector<std::vector<float>> storage(2, std::vector<float>(ac3::kSamplesPerFrame));
+    std::vector<std::span<float>> spans(storage.begin(), storage.end());
+    const auto value = value_decoder.decode_access_unit(unit->bytes);
+    REQUIRE(value.has_value());
+    REQUIRE(value->has_value());
+    const auto into = into_decoder.decode_access_unit_into(unit->bytes, spans);
+    REQUIRE(into.has_value());
+    REQUIRE(into->has_value());
+
+    // Dual mono renders its two coded channels with layout deliberately
+    // empty (count 0) - the spans are indexed by coded order there, exactly
+    // as the value form's channels are.
+    CHECK((*into)->layout.count == 0);
+    CHECK((*into)->channels.empty());
+    REQUIRE((*value)->channels.size() == 2);
+    for (std::size_t ch = 0; ch < 2; ++ch) {
+        const auto& expect = (*value)->channels[ch];
+        bool equal = true;
+        for (std::size_t i = 0; i < expect.size(); ++i) {
+            equal = equal && storage[ch][i] == expect[i];
+        }
+        CHECK(equal);
+    }
 }
