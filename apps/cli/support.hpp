@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <expected>
+#include <fstream>
 #include <optional>
 #include <span>
 #include <string>
@@ -121,6 +122,12 @@ struct Options {
     // (the opt-in spelling from when this defaulted off) stays accepted and
     // now names what already happens.
     bool fast_mdct = true;
+    // The decode-side counterpart: §7.9.4 step 3's complex transform via
+    // the radix-2 FFT instead of the pseudocode's direct sum
+    // (DecoderConfig::fast_imdct - see its own comment for the quality
+    // gate). Opt-in ('fast-imdct') while the evidence is under review,
+    // exactly as fast_mdct itself started; decode/eac3-decode read it.
+    bool fast_imdct = false;
     // 'qc' only: which delivery gate(s) to check the measurement against -
     // one of ac3::meta::kQcPresetNames, or "all" to check every preset.
     // Unset (measure-only, no gate) is the default - a plain
@@ -231,6 +238,62 @@ bool write_repeated_frame(std::string_view path, std::span<const std::byte> fram
 void write_partial_output(std::string_view out_path, bool keep_partial,
                           std::span<const std::vector<std::byte>> frames);
 
+// Streams encoded frames to their destination as they are produced, so an
+// encode's output no longer accumulates (~3.4 MB per minute at 448 kbps -
+// the last O(duration) term the encode commands carried once their input
+// went streaming). A file destination is written incrementally; abort() -
+// the encoder failed mid-stream - honours keep-partial exactly as
+// write_partial_output does: the bytes already written are renamed to
+// partial_output_path() and reported when asked for, deleted otherwise, so
+// a failed run's observable outcome is unchanged. "-" accumulates and
+// writes stdout once at close(): a pipe cannot take bytes back, and a
+// failed run without keep-partial must leave stdout untouched. Tracks the
+// per-frame size stats the E-AC-3 VBR report used to re-walk its frame
+// list for.
+//
+// `defer` keeps the frames instead of streaming them - for the Atmos
+// commands' sign-objects path, where apply_object_signing rewrites every
+// frame AFTER the encode loop and the bytes therefore cannot leave until
+// then. Deferred frames are reachable through deferred() for exactly that
+// rewrite; close() then writes them all (write_frames) and abort() hands
+// them to write_partial_output, so the defer path IS the pre-sink code
+// shape, just held behind the same five-call interface the streaming path
+// uses.
+class EncodedStreamSink {
+   public:
+    [[nodiscard]] bool open(std::string_view path, bool keep_partial, bool defer = false);
+    [[nodiscard]] bool push(std::span<const std::byte> frame);
+    // Keeps the vector's own allocation when deferring (the callers all
+    // have one to give up); the streaming path just forwards to the span
+    // overload.
+    [[nodiscard]] bool push(std::vector<std::byte>&& frame);
+    // Success path; flushes the "-" buffer / writes the deferred frames.
+    // False if the destination failed.
+    [[nodiscard]] bool close();
+    void abort();
+
+    [[nodiscard]] std::vector<std::vector<std::byte>>& deferred() { return deferred_; }
+
+    [[nodiscard]] std::size_t frames() const { return frames_; }
+    [[nodiscard]] std::size_t min_bytes() const { return min_bytes_; }
+    [[nodiscard]] std::size_t max_bytes() const { return max_bytes_; }
+    [[nodiscard]] std::uint64_t total_bytes() const { return total_bytes_; }
+
+   private:
+    std::string path_;
+    bool stdio_ = false;
+    bool keep_partial_ = false;
+    bool defer_ = false;
+    bool open_ = false;
+    std::ofstream file_;
+    std::vector<std::byte> buffered_;                 // "-" only
+    std::vector<std::vector<std::byte>> deferred_;    // defer only
+    std::size_t frames_ = 0;
+    std::size_t min_bytes_ = 0;
+    std::size_t max_bytes_ = 0;
+    std::uint64_t total_bytes_ = 0;
+};
+
 // Interleaves `channels` (one vector per decoded channel, AC-3/E-AC-3 coded
 // order) into WAV/Windows speaker order for playback, reading order[i] as
 // which channels[] entry belongs at interleaved position i - the same
@@ -290,6 +353,37 @@ class PlanarWavSink {
     std::vector<std::size_t> consumed_;
     std::vector<std::size_t> order_;
     std::vector<float> scratch_;
+};
+
+// Streams raw little-endian PCM16 payload bytes into a WAV as they are
+// produced - 'spdif''s IEC 61937 burst carrier, whose payload used to
+// accumulate whole before one write_wav_pcm16_raw() call (~0.7 MB per
+// second at an E-AC-3 4x carrier rate, the largest O(duration) term the
+// CLI had left). The header is byte-identical to write_wav_pcm16_raw's;
+// its two size fields are patched at close(), because an E-AC-3 burst
+// payload's length is only known once the packer has seen the last unit.
+class Pcm16RawWavSink {
+   public:
+    [[nodiscard]] bool open(std::string_view path, std::uint32_t sample_rate,
+                            std::uint16_t channels);
+
+    [[nodiscard]] bool is_open() const { return open_; }
+
+    [[nodiscard]] bool push(std::span<const std::byte> bytes);
+
+    // Finalize: patch the RIFF/data sizes to what was actually written.
+    [[nodiscard]] bool close();
+
+    // The wrap failed part-way: close and remove whatever was written, so a
+    // failed run leaves no output file - exactly like the whole-buffer
+    // write this replaces, which never ran at all on failure.
+    void abort();
+
+   private:
+    std::string path_;
+    bool open_ = false;
+    std::fstream file_;
+    std::uint64_t data_bytes_ = 0;
 };
 
 // ---------------------------------------------------------------------------

@@ -874,9 +874,10 @@ std::expected<DecodedFrame, DecodeError> FrameDecoder::decode_frame_core(
         }
         for (int ch = 0; ch < nchans; ++ch) {
             if (ch < nfchans && blksw[static_cast<std::size_t>(ch)]) {
-                imdct256_pair_windowed(coeffs[static_cast<std::size_t>(ch)], x);
+                imdct256_pair_windowed(coeffs[static_cast<std::size_t>(ch)], x,
+                                       config_.fast_imdct);
             } else {
-                imdct512_windowed(coeffs[static_cast<std::size_t>(ch)], x);
+                imdct512_windowed(coeffs[static_cast<std::size_t>(ch)], x, config_.fast_imdct);
             }
             auto& delay = delay_[static_cast<std::size_t>(ch)];
             const auto pcm = pcm_target[static_cast<std::size_t>(ch)];

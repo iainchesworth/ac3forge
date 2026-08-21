@@ -94,6 +94,10 @@ void print_meta_usage() {
                  "command encodes, incl. atmos/record/live/eac3-sine; eac3-encode alone has a "
                  "[tools] positional argument whose bare nofastmdct token reaches the same "
                  "field instead; bare fast-mdct (the old opt-in) is a no-op");
+    std::println("  fast-imdct        decode: §7.9.4 step 3's complex transform via the radix-2 "
+                 "FFT instead of the pseudocode's direct sum - measured 4.5-5.9x faster decodes "
+                 "at 215-285 dB SNR against the direct form, which stays the default (and the "
+                 "validation oracle) while the quality evidence is under review");
     std::println("  sign-objects      atmos/atmos-path/atmos-encode: write a keyed EMDF object "
                  "signature (needs signing-key=); see docs/concepts/object-signing.md");
     std::println("  verify-objects    decode/monitor: check each frame's EMDF object signature "
@@ -153,6 +157,10 @@ bool parse_options(std::span<char*> tokens, Options& out) {
             } else if (token == "fast-mdct") {
                 out.fast_mdct = true;
             }
+            continue;
+        }
+        if (token == "fast-imdct") {
+            out.fast_imdct = true;
             continue;
         }
         if (token == "sign-objects") {
@@ -566,6 +574,225 @@ std::string partial_output_path(std::string_view path) {
         return std::string(path.substr(0, dot)) + ".partial" + std::string(path.substr(dot));
     }
     return std::string(path) + ".partial";
+}
+
+bool EncodedStreamSink::open(std::string_view path, bool keep_partial, bool defer) {
+    path_ = std::string{path};
+    keep_partial_ = keep_partial;
+    defer_ = defer;
+    stdio_ = is_stdio_path(path);
+    // Deferring means nothing leaves until close() - so nothing to create
+    // yet either. The destination (file or "-", write_frames handles both)
+    // is only touched then, exactly as the pre-sink code shape did.
+    if (!stdio_ && !defer_) {
+        file_.open(path_, std::ios::binary);
+        if (!file_) {
+            std::println(stderr, "error: cannot open {} for writing", path_);
+            return false;
+        }
+    }
+    open_ = true;
+    return true;
+}
+
+bool EncodedStreamSink::push(std::vector<std::byte>&& frame) {
+    if (!defer_) {
+        return push(std::span<const std::byte>{frame});
+    }
+    min_bytes_ = frames_ == 0 ? frame.size() : std::min(min_bytes_, frame.size());
+    max_bytes_ = std::max(max_bytes_, frame.size());
+    total_bytes_ += frame.size();
+    ++frames_;
+    deferred_.push_back(std::move(frame));
+    return true;
+}
+
+bool EncodedStreamSink::push(std::span<const std::byte> frame) {
+    if (defer_) {
+        deferred_.emplace_back(frame.begin(), frame.end());
+    } else if (stdio_) {
+        buffered_.insert(buffered_.end(), frame.begin(), frame.end());
+    } else {
+        file_.write(reinterpret_cast<const char*>(frame.data()),
+                    static_cast<std::streamsize>(frame.size()));
+        if (!file_) {
+            std::println(stderr, "error: cannot write to {}", path_);
+            return false;
+        }
+    }
+    min_bytes_ = frames_ == 0 ? frame.size() : std::min(min_bytes_, frame.size());
+    max_bytes_ = std::max(max_bytes_, frame.size());
+    total_bytes_ += frame.size();
+    ++frames_;
+    return true;
+}
+
+bool EncodedStreamSink::close() {
+    open_ = false;
+    if (defer_) {
+        return write_frames(path_, deferred_);
+    }
+    if (stdio_) {
+        ac3::cli::platform::set_stdio_binary();
+        std::cout.write(reinterpret_cast<const char*>(buffered_.data()),
+                        static_cast<std::streamsize>(buffered_.size()));
+        std::cout.flush();
+        if (!std::cout) {
+            std::println(stderr, "error: cannot write to stdout");
+            return false;
+        }
+        return true;
+    }
+    file_.close();
+    if (file_.fail()) {
+        std::println(stderr, "error: cannot write to {}", path_);
+        return false;
+    }
+    return true;
+}
+
+void EncodedStreamSink::abort() {
+    if (!open_) {
+        return;
+    }
+    open_ = false;
+    if (defer_) {
+        // Nothing has left this process yet, so the pre-sink helper IS the
+        // right behaviour, note wording and all.
+        write_partial_output(path_, keep_partial_, deferred_);
+        return;
+    }
+    if (stdio_) {
+        // "beside the intended output" has no meaning for a pipe - see
+        // write_partial_output's identical stdout reasoning and wording.
+        if (keep_partial_ && frames_ > 0) {
+            ac3::cli::platform::set_stdio_binary();
+            std::cout.write(reinterpret_cast<const char*>(buffered_.data()),
+                            static_cast<std::streamsize>(buffered_.size()));
+            std::cout.flush();
+            if (std::cout) {
+                std::println(stderr,
+                             "note: the {} frames already encoded were written to stdout",
+                             frames_);
+            }
+        }
+        return;
+    }
+    file_.close();
+    if (keep_partial_ && frames_ > 0) {
+        // The bytes are already on disk at the intended path; keep-partial's
+        // contract is that they live at the .partial name instead, so a
+        // half-finished take can never be mistaken for a finished one.
+        const auto partial = partial_output_path(path_);
+        std::error_code ec;
+        std::filesystem::rename(std::filesystem::path{path_}, std::filesystem::path{partial},
+                                 ec);
+        if (!ec) {
+            std::println(stderr, "note: the {} frames already encoded are kept at {}", frames_,
+                         partial);
+        } else {
+            // Same stance as write_partial_output: report, but the ORIGINAL
+            // error stays the one that matters.
+            std::println(stderr, "note: could not move the partial output to {} ({})", partial,
+                         ec.message());
+        }
+    } else {
+        std::error_code ec;
+        std::filesystem::remove(std::filesystem::path{path_}, ec);
+    }
+}
+
+namespace {
+
+void put_u16(std::ostream& out, std::uint16_t value) {
+    out.write(reinterpret_cast<const char*>(&value), 2);
+}
+
+void put_u32(std::ostream& out, std::uint32_t value) {
+    out.write(reinterpret_cast<const char*>(&value), 4);
+}
+
+}  // namespace
+
+bool Pcm16RawWavSink::open(std::string_view path, std::uint32_t sample_rate,
+                           std::uint16_t channels) {
+    path_ = std::string{path};
+    data_bytes_ = 0;
+    // Create/truncate first, then reopen read+write for the close()-time
+    // size patch - the same two-step ac3::io::WavStreamWriter::open uses,
+    // and for the same reason: `in|out|trunc` is not reliably
+    // create-capable for a not-yet-existing file everywhere.
+    {
+        std::ofstream create{path_, std::ios::binary | std::ios::trunc};
+        if (!create) {
+            std::println(stderr, "error: cannot open {} for writing", path_);
+            return false;
+        }
+        // Field for field ac3::io::write_wav_pcm16_raw's header (format tag
+        // 1, 16-bit), sizes zero until close() patches them.
+        const auto block_align = static_cast<std::uint32_t>(channels) * 2;
+        create.write("RIFF", 4);
+        put_u32(create, 36);
+        create.write("WAVE", 4);
+        create.write("fmt ", 4);
+        put_u32(create, 16);
+        put_u16(create, 1);  // PCM
+        put_u16(create, channels);
+        put_u32(create, sample_rate);
+        put_u32(create, sample_rate * block_align);
+        put_u16(create, static_cast<std::uint16_t>(block_align));
+        put_u16(create, 16);
+        create.write("data", 4);
+        put_u32(create, 0);
+        if (!create) {
+            std::println(stderr, "error: cannot write to {}", path_);
+            return false;
+        }
+    }
+    file_.open(path_, std::ios::binary | std::ios::in | std::ios::out);
+    if (!file_) {
+        std::println(stderr, "error: cannot open {} for writing", path_);
+        return false;
+    }
+    file_.seekp(0, std::ios::end);
+    open_ = true;
+    return true;
+}
+
+bool Pcm16RawWavSink::push(std::span<const std::byte> bytes) {
+    file_.write(reinterpret_cast<const char*>(bytes.data()),
+                static_cast<std::streamsize>(bytes.size()));
+    if (!file_) {
+        std::println(stderr, "error: cannot write to {}", path_);
+        return false;
+    }
+    data_bytes_ += bytes.size();
+    return true;
+}
+
+bool Pcm16RawWavSink::close() {
+    open_ = false;
+    const auto data_bytes = static_cast<std::uint32_t>(data_bytes_);
+    file_.seekp(4, std::ios::beg);
+    put_u32(file_, 36 + data_bytes);
+    file_.seekp(40, std::ios::beg);
+    put_u32(file_, data_bytes);
+    file_.close();
+    if (file_.fail()) {
+        std::println(stderr, "error: cannot write to {}", path_);
+        return false;
+    }
+    return true;
+}
+
+void Pcm16RawWavSink::abort() {
+    if (!open_) {
+        return;
+    }
+    open_ = false;
+    file_.close();
+    std::error_code ec;
+    std::filesystem::remove(std::filesystem::path{path_}, ec);
 }
 
 bool write_repeated_frame(std::string_view path, std::span<const std::byte> frame,

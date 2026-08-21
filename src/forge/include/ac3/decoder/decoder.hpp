@@ -3,9 +3,8 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <expected>
-#include <map>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string_view>
@@ -89,6 +88,20 @@ struct DecoderConfig {
     // because it exists to check what the encoder wrote, and a decoder that
     // silently rescales its output cannot be the reference for that.
     double drc_scale = 0.0;
+    // §7.9.4 step 3's complex transform evaluated via the same radix-2 FFT
+    // core the encoder's fast MDCT fold uses, instead of the pseudocode's
+    // direct O(N^2) sum against a 320 KiB tabulated matrix - see mdct.hpp's
+    // inverse doc comment. Applies to the PCM reconstruction paths of both
+    // decoders; the encoder-internal inverse uses (spx/ecpl copy-source
+    // reconstruction) and JOC object reconstruction deliberately stay on
+    // the direct form, so nothing about ENCODED output ever depends on this
+    // flag. Default off pending the owner accepting the quality evidence -
+    // the same gate EncoderConfig::fast_mdct passed through before its
+    // default flipped: the FFT reorders additions, so the result is
+    // ~1e-12-relative close to the direct sum rather than bit-identical,
+    // and a decoder here is the project's own reference for what the
+    // encoder wrote.
+    bool fast_imdct = false;
     // §7.7.2: prefer compr over dynrng wherever a compr word exists, which is
     // what a set-top box's RF mode does. §7.7.2.1 requires falling back on
     // dynrng for any syncframe that carries no compr, so this composes with
@@ -315,6 +328,28 @@ class AC3FORGE_EXPORT Eac3Decoder {
     [[nodiscard]] std::expected<std::optional<DecodedAccessUnit>, DecodeError> decode_access_unit(
         std::span<const std::byte> unit);
 
+    // As decode_access_unit, but the rendered program's PCM lands in
+    // caller-owned planar storage - FrameDecoder::decode_frame_into's
+    // E-AC-3 counterpart, same span contract by assert. channels[slot] is
+    // written in the returned layout's slot order (coded order for dual
+    // mono), and the returned DecodedAccessUnit carries everything EXCEPT
+    // that PCM (its `channels` stays empty; object_audio, which only an
+    // Atmos bed carries, stays by value). There must be a span for every
+    // slot the assembled layout renders - 16 covers §E3.8.2's cap - and
+    // each must hold the unit's blocks*256 samples (kSamplesPerFrame covers
+    // every numblkscod). std::nullopt - the §3.7 hold-back - leaves the
+    // spans untouched; on an error return their contents are unspecified.
+    //
+    // What this form removes is the assembly's own allocation (up to 16
+    // channels of 1536 samples, every unit) - the term that dominates a
+    // stream that never uses transient pre-noise processing. A held-back
+    // frame is by definition decoded before the call whose spans would
+    // receive it, so its PCM is buffered internally either way and only
+    // copied out here at release.
+    [[nodiscard]] std::expected<std::optional<DecodedAccessUnit>, DecodeError>
+    decode_access_unit_into(std::span<const std::byte> unit,
+                            std::span<const std::span<float>> channels);
+
     // Releases whichever frames transient pre-noise processing is still
     // holding back, one per substream identity that has one pending - empty
     // if none does, which covers every stream that never used the tool.
@@ -329,22 +364,40 @@ class AC3FORGE_EXPORT Eac3Decoder {
     [[nodiscard]] std::vector<DecodedSubstream> flush();
 
    private:
+    // Both public access-unit forms above: `external` empty means allocate
+    // the program PCM into the returned DecodedAccessUnit, non-empty means
+    // write through the spans - the same split decode_frame_core makes.
+    [[nodiscard]] std::expected<std::optional<DecodedAccessUnit>, DecodeError>
+    decode_access_unit_core(std::span<const std::byte> unit,
+                            std::span<const std::span<float>> external);
+
     DecoderConfig config_{};
 
-    // Keyed by strmtyp and substreamid together: a dependent's id lives in its
-    // own numbering space (§E2.3.1.2), so id alone does not identify a
-    // substream. At most six coded channels each (3/2 plus LFE).
-    std::map<int, std::array<std::array<double, 256>, 6>> delay_;
-    // Keyed the same way, one per substream identity that has ever carried
-    // JOC: joc::reconstruct's own matrix-ramp and per-object/per-channel
+    // Per-substream-identity state, indexed by strmtyp * 8 + substreamid: a
+    // dependent's id lives in its own numbering space (§E2.3.1.2), so id
+    // alone does not identify a substream. strmtyp is a 2-bit field and
+    // substreamid a 3-bit one, so the whole key space is [0, 32) and a flat
+    // 32-slot array replaces the std::map each of these used to be: O(1)
+    // indexing with no tree walk and no node allocation per identity, and -
+    // because slot order IS key order - the same ascending iteration
+    // flush() always had. The two heavy states stay lazily allocated behind
+    // unique_ptr exactly as the map's on-demand nodes were: a 5.1 stream
+    // has one identity, and 32 by-value delay slots would pin 384 KB.
+    static constexpr std::size_t kSubstreamSlots = 32;
+    // At most six coded channels each (3/2 plus LFE); value-initialized
+    // (zeroed) at first use, exactly as the map's operator[] created it.
+    std::array<std::unique_ptr<std::array<std::array<double, 256>, 6>>, kSubstreamSlots>
+        delay_;
+    // One per substream identity that has ever carried JOC:
+    // joc::reconstruct's own matrix-ramp and per-object/per-channel
     // overlap-add state, so a moving object's audio and the frame-to-frame
     // matrix interpolation both have real continuity instead of restarting
     // cold every frame - see joc::ReconstructionState's own doc comment.
-    std::map<int, joc::ReconstructionState> joc_state_;
-    // A substream identity enters this map the first time one of its frames
-    // sets transproce, and stays in it (buffering one frame at a time) for
-    // the rest of the stream - see decode_substream's own doc comment.
-    std::map<int, DecodedSubstream> pending_;
+    std::array<std::unique_ptr<joc::ReconstructionState>, kSubstreamSlots> joc_state_;
+    // A substream identity's slot engages the first time one of its frames
+    // sets transproce, and stays engaged (buffering one frame at a time)
+    // for the rest of the stream - see decode_substream's own doc comment.
+    std::array<std::optional<DecodedSubstream>, kSubstreamSlots> pending_;
     // decode_access_unit's own assembly cache: a substream identity's
     // RELEASED (by decode_substream) results, oldest first, waiting for
     // every other identity the same call's frames named to also have one -
@@ -354,8 +407,11 @@ class AC3FORGE_EXPORT Eac3Decoder {
     // while the independent using it lags by one), and an already-queued,
     // not-yet-assembled result must never be overwritten by a later one for
     // the same identity - that would silently splice two different points
-    // in time into one access unit.
-    std::map<int, std::deque<DecodedSubstream>> pending_au_parts_;
+    // in time into one access unit. A vector consumed from the front rather
+    // than a deque: the queue is at most a frame or two deep, and an empty
+    // vector - unlike some deques - allocates nothing, so 32 idle slots
+    // cost nothing.
+    std::array<std::vector<DecodedSubstream>, kSubstreamSlots> pending_au_parts_;
 
     // decode_substream's own per-block IMDCT/enhanced-coupling scratch
     // (PREfast's C6262, alert #63): reused across every (block, channel)

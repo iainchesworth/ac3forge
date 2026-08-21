@@ -28,6 +28,18 @@
 // transform is validated by round-tripping through this normative inverse
 // plus the §7.9.4.1 step-6 overlap-add (pcm = 2 * (x + delay), the factor
 // of 2 undoing encoder headroom scaling).
+//
+// The inverses' `fast` selects a radix-2 FFT for step 3's N/4-point complex
+// sum ONLY - the spec's own pseudocode evaluates that step as a direct
+// O(N^2) sum against a tabulated (k, n) matrix, and with the +j*sin sign
+// convention it is exactly an unscaled inverse DFT, so the fast path is
+// conj(FFT(conj(Z))) through the same radix-2 core the forward's fast fold
+// already uses (fft_radix2.hpp). Steps 2, 4 and 5 - the normative twiddles
+// and the windowing/de-interleave map - are the identical code either way.
+// Direct remains the default at THIS level for the forward's own reason:
+// the direct evaluation is the spec's statement of the transform and the
+// oracle the fast path's tests validate against. DecoderConfig::fast_imdct
+// is what a decoder actually reads to decide.
 
 namespace ac3 {
 
@@ -43,7 +55,7 @@ AC3FORGE_EXPORT void mdct512_forward(std::span<const double, 512> windowed,
 // (§7.9.4.1 steps 1-5; the window application is part of step 5).
 // Reconstruction: pcm[n] = 2 * (x[n] + previous_block_x[256 + n]).
 AC3FORGE_EXPORT void imdct512_windowed(std::span<const double, 256> coeffs,
-                                       std::span<double, 512> x);
+                                       std::span<double, 512> x, bool fast = false);
 
 // The block-switched (short) transform pair (§7.9, blksw = 1): the usual
 // 512-sample windowed block split into two 256-sample halves, each
@@ -73,6 +85,6 @@ AC3FORGE_EXPORT void mdct256_forward_second(std::span<const double, 256> windowe
 // WINDOWED time samples, using the identical overlap-add as
 // imdct512_windowed — callers do not need to know which transform path ran.
 AC3FORGE_EXPORT void imdct256_pair_windowed(std::span<const double, 256> coeffs,
-                                            std::span<double, 512> x);
+                                            std::span<double, 512> x, bool fast = false);
 
 }  // namespace ac3

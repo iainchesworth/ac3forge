@@ -493,8 +493,15 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
 
     // §E2.3.1.2: a dependent's substreamid starts again at 0 in its own space,
     // so identity - and hence which overlap-add history belongs to this frame
-    // - is the pair, never the id alone.
-    auto& delay = delay_[static_cast<int>(bsi->strmtyp) * 8 + bsi->substreamid];
+    // - is the pair, never the id alone. First use of an identity engages
+    // its slot value-initialized (zeroed history), exactly as the map's
+    // operator[] this replaced created it.
+    auto& delay_slot =
+        delay_[static_cast<std::size_t>(static_cast<int>(bsi->strmtyp) * 8 + bsi->substreamid)];
+    if (!delay_slot) {
+        delay_slot = std::make_unique<std::array<std::array<double, 256>, 6>>();
+    }
+    auto& delay = *delay_slot;
 
     std::array<int, kMaxSubstreamStreams> endmant{};
     std::array<std::vector<std::uint8_t>, kMaxSubstreamStreams> exps;
@@ -1739,9 +1746,9 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
             const auto index = static_cast<std::size_t>(ch);
             auto& x = imdct_scratch_;
             if (ch < nfchans && tail.blksw[static_cast<std::size_t>(ch)]) {
-                imdct256_pair_windowed(coeffs[index], x);
+                imdct256_pair_windowed(coeffs[index], x, config_.fast_imdct);
             } else {
-                imdct512_windowed(coeffs[index], x);
+                imdct512_windowed(coeffs[index], x, config_.fast_imdct);
             }
             auto& history = delay[index];
             auto& pcm = out.channels[index];
@@ -1786,12 +1793,16 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
                         kAc3FromJoc[static_cast<std::size_t>(jc)])];
             }
             if (have_bed) {
-                out.object_audio = joc::reconstruct(bed_joc_order, *params, joc_state_[key]);
+                auto& joc_slot = joc_state_[static_cast<std::size_t>(key)];
+                if (!joc_slot) {
+                    joc_slot = std::make_unique<joc::ReconstructionState>();
+                }
+                out.object_audio = joc::reconstruct(bed_joc_order, *params, *joc_slot);
             }
         }
     }
 
-    auto pending_it = pending_.find(key);
+    auto& pending_slot = pending_[static_cast<std::size_t>(key)];
     if (frm->transproce) {
         // One splice buffer for every processed channel, re-cleared per
         // channel rather than re-allocated: the zero fill is load-bearing
@@ -1814,30 +1825,30 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
                 return std::unexpected(DecodeError::kUnsupported);
             }
             combined.assign(static_cast<std::size_t>(kSamplesPerFrame) * 2, 0.0f);
-            if (pending_it != pending_.end()) {
-                std::ranges::copy(pending_it->second.channels[uch], combined.begin());
+            if (pending_slot.has_value()) {
+                std::ranges::copy(pending_slot->channels[uch], combined.begin());
             }
             std::ranges::copy(out.channels[uch], combined.begin() + kSamplesPerFrame);
             apply_transient_prenoise(combined, kSamplesPerFrame + transloc, translen);
-            if (pending_it != pending_.end()) {
+            if (pending_slot.has_value()) {
                 std::ranges::copy(combined.begin(), combined.begin() + kSamplesPerFrame,
-                                  pending_it->second.channels[uch].begin());
+                                  pending_slot->channels[uch].begin());
             }
             std::ranges::copy(combined.begin() + kSamplesPerFrame, combined.end(),
                               out.channels[uch].begin());
         }
     }
 
-    if (pending_it != pending_.end()) {
-        DecodedSubstream ready = std::move(pending_it->second);
-        pending_it->second = std::move(out);
+    if (pending_slot.has_value()) {
+        DecodedSubstream ready = std::move(*pending_slot);
+        *pending_slot = std::move(out);
         return std::optional<DecodedSubstream>(std::move(ready));
     }
     if (frm->transproce) {
         // First frame to use the tool for this substream identity: hold it
         // back, nothing is ready to return yet - see decode_substream's own
         // doc comment.
-        pending_.emplace(key, std::move(out));
+        pending_slot = std::move(out);
         return std::optional<DecodedSubstream>(std::nullopt);
     }
     return std::optional<DecodedSubstream>(std::move(out));
@@ -1845,27 +1856,40 @@ std::expected<std::optional<DecodedSubstream>, DecodeError> Eac3Decoder::decode_
 
 std::vector<DecodedSubstream> Eac3Decoder::flush() {
     std::vector<DecodedSubstream> ready;
-    ready.reserve(pending_.size() + pending_au_parts_.size());
-    for (auto& [key, substream] : pending_) {
-        ready.push_back(std::move(substream));
+    // Slot order is key order, so this drains in the same ascending
+    // identity order the maps this replaced iterated in.
+    for (auto& slot : pending_) {
+        if (slot.has_value()) {
+            ready.push_back(std::move(*slot));
+            slot.reset();
+        }
     }
-    pending_.clear();
     // decode_access_unit's own assembly cache: whatever is left here is one
     // or more substreams whose sibling(s) never caught up before the stream
     // ended, so there is no complete DecodedAccessUnit to hand back for
     // them - the raw substreams, oldest first, are the best this can do (see
     // flush()'s own doc comment).
-    for (auto& [key, queue] : pending_au_parts_) {
+    for (auto& queue : pending_au_parts_) {
         for (auto& substream : queue) {
             ready.push_back(std::move(substream));
         }
+        queue.clear();
     }
-    pending_au_parts_.clear();
     return ready;
 }
 
 std::expected<std::optional<DecodedAccessUnit>, DecodeError> Eac3Decoder::decode_access_unit(
     std::span<const std::byte> unit) {
+    return decode_access_unit_core(unit, {});
+}
+
+std::expected<std::optional<DecodedAccessUnit>, DecodeError> Eac3Decoder::decode_access_unit_into(
+    std::span<const std::byte> unit, std::span<const std::span<float>> channels) {
+    return decode_access_unit_core(unit, channels);
+}
+
+std::expected<std::optional<DecodedAccessUnit>, DecodeError> Eac3Decoder::decode_access_unit_core(
+    std::span<const std::byte> unit, std::span<const std::span<float>> external) {
     const auto frames = split_frames(unit);
     if (!frames) {
         return std::unexpected(frames.error());
@@ -1896,7 +1920,8 @@ std::expected<std::optional<DecodedAccessUnit>, DecodeError> Eac3Decoder::decode
             return std::unexpected(decoded.error());
         }
         if (decoded->has_value()) {
-            pending_au_parts_[keys.back()].push_back(std::move(**decoded));
+            pending_au_parts_[static_cast<std::size_t>(keys.back())].push_back(
+                std::move(**decoded));
         }
         // A held-back frame adds nothing to this identity's queue - whatever
         // it already holds (if anything, from an earlier call) is still
@@ -1909,17 +1934,16 @@ std::expected<std::optional<DecodedAccessUnit>, DecodeError> Eac3Decoder::decode
     // stream that never uses transient pre-noise processing always does:
     // every substream releases every call, so this is never false for it.
     for (const int key : keys) {
-        const auto it = pending_au_parts_.find(key);
-        if (it == pending_au_parts_.end() || it->second.empty()) {
+        if (pending_au_parts_[static_cast<std::size_t>(key)].empty()) {
             return std::optional<DecodedAccessUnit>(std::nullopt);
         }
     }
     std::vector<DecodedSubstream> substreams;
     substreams.reserve(keys.size());
     for (const int key : keys) {
-        auto& queue = pending_au_parts_.at(key);
+        auto& queue = pending_au_parts_[static_cast<std::size_t>(key)];
         substreams.push_back(std::move(queue.front()));
-        queue.pop_front();
+        queue.erase(queue.begin());
     }
     const auto& lead = substreams.front();
     if (lead.strmtyp == StreamType::kDependent) {
@@ -1948,6 +1972,21 @@ std::expected<std::optional<DecodedAccessUnit>, DecodeError> Eac3Decoder::decode
     out.object_audio = lead.object_audio;
     out.substream_count = static_cast<int>(substreams.size());
 
+    // The PCM target for one program slot: the caller's span when
+    // decode_access_unit_into supplied them (every slot's samples are
+    // copied in full below, so external storage needs no pre-clearing),
+    // otherwise a vector allocated into the result exactly as before -
+    // decode_frame_core's own split, at access-unit granularity.
+    const auto write_slot = [&](std::size_t slot, const std::vector<float>& src) {
+        if (external.empty()) {
+            out.channels[slot] = src;
+            return;
+        }
+        assert(external.size() > slot);
+        assert(external[slot].size() >= src.size());
+        std::copy(src.begin(), src.end(), external[slot].begin());
+    };
+
     // Dual mono has no Table E2.5 location - Ch1 and Ch2 are unrelated
     // programmes, not directions - and it has no bed/dependent split to make:
     // 1+1 is always this one lone independent substream. acmod_map() has a
@@ -1958,7 +1997,12 @@ std::expected<std::optional<DecodedAccessUnit>, DecodeError> Eac3Decoder::decode
     // substream's own two channels straight through in coded order, and leave
     // `layout` empty to say plainly that there is no spatial layout to report.
     if (lead.acmod == Acmod::kDualMono) {
-        out.channels = lead.channels;
+        if (external.empty()) {
+            out.channels.resize(lead.channels.size());
+        }
+        for (std::size_t ch = 0; ch < lead.channels.size(); ++ch) {
+            write_slot(ch, lead.channels[ch]);
+        }
         return std::optional<DecodedAccessUnit>(std::move(out));
     }
 
@@ -1975,11 +2019,16 @@ std::expected<std::optional<DecodedAccessUnit>, DecodeError> Eac3Decoder::decode
         return std::unexpected(DecodeError::kInvalidStream);
     }
     const std::size_t samples = lead.channels.empty() ? 0 : lead.channels.front().size();
-    out.channels.assign(static_cast<std::size_t>(out.layout.count),
-                        std::vector<float>(samples, 0.0f));
+    if (external.empty()) {
+        out.channels.assign(static_cast<std::size_t>(out.layout.count),
+                            std::vector<float>(samples, 0.0f));
+    }
 
     // Transmission order is overwrite order, so a later dependent wins the
-    // locations it shares with an earlier substream.
+    // locations it shares with an earlier substream. Every slot of
+    // out.layout comes from some substream's location_map() (the union
+    // above), so every slot is written in full here - which is what lets
+    // write_slot skip pre-clearing external storage.
     for (const auto& sub : substreams) {
         const auto locations = eac3::chanmap::expand(sub.location_map());
         if (static_cast<std::size_t>(locations.count) != sub.channels.size()) {
@@ -1990,8 +2039,7 @@ std::expected<std::optional<DecodedAccessUnit>, DecodeError> Eac3Decoder::decode
             if (slot < 0) {
                 return std::unexpected(DecodeError::kInvalidStream);
             }
-            out.channels[static_cast<std::size_t>(slot)] =
-                sub.channels[static_cast<std::size_t>(i)];
+            write_slot(static_cast<std::size_t>(slot), sub.channels[static_cast<std::size_t>(i)]);
         }
     }
     return std::optional<DecodedAccessUnit>(std::move(out));

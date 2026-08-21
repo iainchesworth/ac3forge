@@ -249,50 +249,52 @@ int run_eac3_encode_multi(std::string_view in_path, std::string_view out_path,
 
     ac3::eac3::AccessUnitEncoder encoder{plan::eac3_config(p)};
     assert(static_cast<int>(nchans) == encoder.channel_count());
-    std::vector<std::vector<std::byte>> frames;
+    // Streamed out as encoded, exactly as run_eac3_encode below - the
+    // multi-source shape only differs on the INPUT side (route_frame over
+    // whole sources), not in what leaves.
+    EncodedStreamSink out_sink;
+    if (!out_sink.open(out_path, meta.keep_partial)) {
+        return 1;
+    }
     for (std::size_t start = 0; start < total; start += ac3::kSamplesPerFrame) {
         route_frame(start);
         auto unit = encoder.encode_access_unit(views);
         if (!unit) {
             std::println(stderr, "error: the encoder cannot express this configuration");
-            write_partial_output(out_path, meta.keep_partial, frames);
+            out_sink.abort();
             return 1;
         }
-        frames.push_back(std::move(unit->bytes));
+        if (!out_sink.push(std::move(unit->bytes))) {
+            out_sink.abort();
+            return 1;
+        }
     }
-    if (!write_frames(out_path, frames)) {
+    if (!out_sink.close()) {
         return 1;
     }
     if (p.vbr) {
         // bitrate_kbps is only the nominal reference vbr's tool heuristics
         // used, not a target - what a VBR run actually spent is the sizes it
         // produced, so that is what gets reported instead of one number.
-        std::size_t min_bytes = frames.empty() ? 0 : frames.front().size();
-        std::size_t max_bytes = 0;
-        std::size_t total_bytes = 0;
-        for (const auto& frame : frames) {
-            min_bytes = std::min(min_bytes, frame.size());
-            max_bytes = std::max(max_bytes, frame.size());
-            total_bytes += frame.size();
-        }
-        const double mean_bytes = frames.empty() ? 0.0
-                                                  : static_cast<double>(total_bytes) /
-                                                        static_cast<double>(frames.size());
+        const double mean_bytes = out_sink.frames() == 0
+                                      ? 0.0
+                                      : static_cast<double>(out_sink.total_bytes()) /
+                                            static_cast<double>(out_sink.frames());
         const double mean_kbps = mean_bytes * 8.0 * static_cast<double>(sources->sample_rate) /
                                  (1000.0 * ac3::kSamplesPerFrame);
         std::println(status,
                      "encoded {} E-AC-3 access units (vbr {}, {} Hz, {}, {} coded channels, "
                      "tools: {}) to {}",
-                     frames.size(), plan::format_vbr(p.vbr), sources->sample_rate, label, nchans,
-                     plan::format_tools(p.tools), out_path);
+                     out_sink.frames(), plan::format_vbr(p.vbr), sources->sample_rate, label,
+                     nchans, plan::format_tools(p.tools), out_path);
         std::println(status,
                      "  access unit size: {}-{} bytes, {:.0f} bytes mean (~{:.0f} kbps mean)",
-                     min_bytes, max_bytes, mean_bytes, mean_kbps);
+                     out_sink.min_bytes(), out_sink.max_bytes(), mean_bytes, mean_kbps);
     } else {
         std::println(status,
                      "encoded {} E-AC-3 access units ({} kbps, {} Hz, {}, {} coded channels, "
                      "tools: {}) to {}",
-                     frames.size(), bitrate, sources->sample_rate, label, nchans,
+                     out_sink.frames(), bitrate, sources->sample_rate, label, nchans,
                      plan::format_tools(p.tools), out_path);
     }
     print_routing(p, *routing, label, status);
@@ -433,7 +435,13 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
         out[c] = block[c];
         views[c] = block[c];
     }
-    std::vector<std::vector<std::byte>> frames;
+    // The encoded access units leave as they are produced - see
+    // EncodedStreamSink; its stats also feed the VBR report below, which
+    // used to re-walk the whole frame list for them.
+    EncodedStreamSink out_sink;
+    if (!out_sink.open(out_path, meta.keep_partial)) {
+        return 1;
+    }
     // See run_encode's identical streaming state: the loop consumes the
     // source strictly in order, so a rolling read position and the last
     // real sample per channel are all the streaming path needs.
@@ -466,7 +474,7 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
                     std::println(stderr, "error: {}: {}", in_path,
                                  ac3::io::describe(got ? ac3::io::WavError::kTruncated
                                                        : got.error()));
-                    write_partial_output(out_path, meta.keep_partial, frames);
+                    out_sink.abort();
                     return 1;
                 }
                 consumed += want;
@@ -499,44 +507,41 @@ int run_eac3_encode(std::string_view in_path, std::string_view out_path,
         auto unit = encoder.encode_access_unit(views);
         if (!unit) {
             std::println(stderr, "error: the encoder cannot express this configuration");
-            write_partial_output(out_path, meta.keep_partial, frames);
+            out_sink.abort();
             return 1;
         }
-        frames.push_back(std::move(unit->bytes));
+        if (!out_sink.push(unit->bytes)) {
+            out_sink.abort();
+            return 1;
+        }
     }
-    if (!write_frames(out_path, frames)) {
+    if (!out_sink.close()) {
         return 1;
     }
     if (p.vbr) {
         // bitrate_kbps is only the nominal reference vbr's tool heuristics
         // used, not a target - what a VBR run actually spent is the sizes it
-        // produced, so that is what gets reported instead of one number.
-        std::size_t min_bytes = frames.empty() ? 0 : frames.front().size();
-        std::size_t max_bytes = 0;
-        std::size_t total_bytes = 0;
-        for (const auto& frame : frames) {
-            min_bytes = std::min(min_bytes, frame.size());
-            max_bytes = std::max(max_bytes, frame.size());
-            total_bytes += frame.size();
-        }
-        const double mean_bytes = frames.empty() ? 0.0
-                                                  : static_cast<double>(total_bytes) /
-                                                        static_cast<double>(frames.size());
+        // produced, so that is what gets reported instead of one number:
+        // the sink kept the tally as the units streamed out.
+        const double mean_bytes = out_sink.frames() == 0
+                                      ? 0.0
+                                      : static_cast<double>(out_sink.total_bytes()) /
+                                            static_cast<double>(out_sink.frames());
         const double mean_kbps = mean_bytes * 8.0 * static_cast<double>(src_rate) /
                                  (1000.0 * ac3::kSamplesPerFrame);
         std::println(status,
                      "encoded {} E-AC-3 access units (vbr {}, {} Hz, {}, {} coded channels, "
                      "tools: {}) to {}",
-                     frames.size(), plan::format_vbr(p.vbr), src_rate, label, nchans,
+                     out_sink.frames(), plan::format_vbr(p.vbr), src_rate, label, nchans,
                      plan::format_tools(p.tools), out_path);
         std::println(status,
                      "  access unit size: {}-{} bytes, {:.0f} bytes mean (~{:.0f} kbps mean)",
-                     min_bytes, max_bytes, mean_bytes, mean_kbps);
+                     out_sink.min_bytes(), out_sink.max_bytes(), mean_bytes, mean_kbps);
     } else {
         std::println(status,
                      "encoded {} E-AC-3 access units ({} kbps, {} Hz, {}, {} coded channels, "
                      "tools: {}) to {}",
-                     frames.size(), bitrate, src_rate, label, nchans,
+                     out_sink.frames(), bitrate, src_rate, label, nchans,
                      plan::format_tools(p.tools), out_path);
     }
     print_routing(p, *routing, label, status);
@@ -632,8 +637,15 @@ int run_atmos(std::string_view out_path, std::uint32_t seconds, std::uint32_t bi
     std::vector<std::vector<float>> essences(count,
                                              std::vector<float>(ac3::kSamplesPerFrame));
     std::vector<std::span<const float>> views(count);
-    std::vector<std::vector<std::byte>> out;
-    out.reserve(static_cast<std::size_t>(frames));
+    // Streamed out as encoded unless sign-objects defers them (the signing
+    // pass below rewrites every frame after the loop). keep_partial is
+    // hard-off: this command has never honoured keep-partial - its output
+    // is synthetic and regenerable - so a mid-run failure must keep
+    // leaving no file behind, which is exactly what abort() then does.
+    EncodedStreamSink out_sink;
+    if (!out_sink.open(out_path, /*keep_partial=*/false, /*defer=*/meta.sign_objects)) {
+        return 1;
+    }
 
     std::uint64_t n0 = 0;
     for (std::uint64_t f = 0; f < frames; ++f) {
@@ -658,15 +670,21 @@ int run_atmos(std::string_view out_path, std::uint32_t seconds, std::uint32_t bi
                          "error: cannot encode {} objects at {} kbps — the metadata and "
                          "the mantissas share one frame, so try a higher bit rate",
                          objects, bitrate);
+            out_sink.abort();
             return 1;
         }
-        out.push_back(std::move(unit->bytes));
+        if (!out_sink.push(std::move(unit->bytes))) {
+            out_sink.abort();
+            return 1;
+        }
     }
     // Optional object signing: writes the keyed EMDF-protection tag so a
     // decoder that validates it accepts the JOC objects instead of falling
     // back to the 5.1 bed. Off unless the operator passes sign-objects with a
     // key; the algorithm is in-tree (clean-room), only the key is supplied.
-    const auto signed_count = apply_object_signing(out, meta);
+    // A key failure discards everything, as it always has - nothing is on
+    // disk in defer mode, so a plain return leaves exactly no file.
+    const auto signed_count = apply_object_signing(out_sink.deferred(), meta);
     if (!signed_count) {
         return 1;
     }
@@ -674,7 +692,7 @@ int run_atmos(std::string_view out_path, std::uint32_t seconds, std::uint32_t bi
         std::println("  signed {} frames' EMDF object container with the supplied key",
                      *signed_count);
     }
-    if (!write_frames(out_path, out)) {
+    if (!out_sink.close()) {
         return 1;
     }
     std::println("wrote {} E-AC-3 access units to {}", frames, out_path);
@@ -787,8 +805,12 @@ int run_atmos_path(std::string_view out_path, std::string_view paths_path, std::
     std::vector<std::vector<float>> essences(objects,
                                              std::vector<float>(ac3::kSamplesPerFrame));
     std::vector<std::span<const float>> views(objects);
-    std::vector<std::vector<std::byte>> out;
-    out.reserve(static_cast<std::size_t>(frames));
+    // Same output arrangement as 'atmos' above, keep_partial hard-off for
+    // the same synthetic-and-regenerable reason.
+    EncodedStreamSink out_sink;
+    if (!out_sink.open(out_path, /*keep_partial=*/false, /*defer=*/meta.sign_objects)) {
+        return 1;
+    }
 
     std::uint64_t n0 = 0;
     for (std::uint64_t f = 0; f < frames; ++f) {
@@ -810,13 +832,17 @@ int run_atmos_path(std::string_view out_path, std::string_view paths_path, std::
                          "error: cannot encode {} objects at {} kbps — the metadata and "
                          "the mantissas share one frame, so try a higher bit rate",
                          objects, bitrate);
+            out_sink.abort();
             return 1;
         }
-        out.push_back(std::move(unit->bytes));
+        if (!out_sink.push(std::move(unit->bytes))) {
+            out_sink.abort();
+            return 1;
+        }
     }
-    // Optional object signing, same as 'atmos' - see apply_object_signing's
-    // own comment.
-    const auto signed_count = apply_object_signing(out, meta);
+    // Optional object signing, same as 'atmos' - see the comments at its
+    // call site there, the key-failure plain return included.
+    const auto signed_count = apply_object_signing(out_sink.deferred(), meta);
     if (!signed_count) {
         return 1;
     }
@@ -824,7 +850,7 @@ int run_atmos_path(std::string_view out_path, std::string_view paths_path, std::
         std::println("  signed {} frames' EMDF object container with the supplied key",
                      *signed_count);
     }
-    if (!write_frames(out_path, out)) {
+    if (!out_sink.close()) {
         return 1;
     }
     std::println("wrote {} E-AC-3 access units to {} ({} objects from {})", frames, out_path,
@@ -972,7 +998,13 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
     std::vector<std::vector<float>> block(count, std::vector<float>(ac3::kSamplesPerFrame));
     std::vector<std::span<const float>> views(count);
     std::vector<std::span<const float>> metered(6);
-    std::vector<std::vector<std::byte>> out;
+    // Streamed out as encoded - except under sign-objects, where the frames
+    // defer inside the sink because the signing pass below rewrites every
+    // one of them after this loop.
+    EncodedStreamSink out_sink;
+    if (!out_sink.open(out_path, meta.keep_partial, /*defer=*/meta.sign_objects)) {
+        return 1;
+    }
     // Streaming reads every file channel (read_planar's contract), but only
     // the first `count` become objects - the extras land in one shared
     // discard buffer whose contents nothing reads.
@@ -991,7 +1023,7 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
                 std::println(stderr, "error: {}: {}", in_path,
                              ac3::io::describe(got ? ac3::io::WavError::kTruncated
                                                    : got.error()));
-                write_partial_output(out_path, meta.keep_partial, out);
+                out_sink.abort();
                 return 1;
             }
             for (std::size_t ch = 0; ch < count; ++ch) {
@@ -1026,7 +1058,7 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
                          "error: cannot encode {} objects at {} kbps — the metadata and the "
                          "mantissas share one frame, so try a higher bit rate",
                          count, bitrate);
-            write_partial_output(out_path, meta.keep_partial, out);
+            out_sink.abort();
             return 1;
         }
         // The bed exists only once the frame is encoded, so it is metered
@@ -1036,12 +1068,16 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
             metered[ch] = std::span{encoder.bed()[ch]}.first(valid);
         }
         meter.process(metered);
-        out.push_back(std::move(unit->bytes));
+        if (!out_sink.push(std::move(unit->bytes))) {
+            out_sink.abort();
+            return 1;
+        }
     }
-    // Optional object signing, same as 'atmos' - see apply_object_signing's
-    // own comment. Goes through status_stream() like the report below: with
-    // out_path == "-" the E-AC-3 bytes just written own stdout.
-    const auto signed_count = apply_object_signing(out, meta);
+    // Optional object signing, same as 'atmos' - see the comments at its
+    // call site there, the key-failure plain return included. Goes through
+    // status_stream() like the report below: with out_path == "-" the
+    // E-AC-3 bytes about to be written own stdout.
+    const auto signed_count = apply_object_signing(out_sink.deferred(), meta);
     if (!signed_count) {
         return 1;
     }
@@ -1050,11 +1086,11 @@ int run_atmos_encode(std::string_view in_path, std::string_view out_path,
                      "  signed {} frames' EMDF object container with the supplied key",
                      *signed_count);
     }
-    if (!write_frames(out_path, out)) {
+    if (!out_sink.close()) {
         return 1;
     }
-    std::println(status, "encoded {} E-AC-3 access units ({} kbps, {} Hz) to {}", out.size(),
-                bitrate, src_rate, out_path);
+    std::println(status, "encoded {} E-AC-3 access units ({} kbps, {} Hz) to {}",
+                out_sink.frames(), bitrate, src_rate, out_path);
     std::println(status,
                  "  {} objects from {} source channels + the bed's LFE = {} objects, "
                  "JOC over a 5.1 downmix",
@@ -1148,7 +1184,12 @@ int run_atmos_adm(std::string_view in_path, std::string_view out_path, std::uint
     std::vector<std::vector<float>> block(count, std::vector<float>(ac3::kSamplesPerFrame));
     std::vector<std::span<const float>> views(count);
     std::vector<std::span<const float>> metered(6);
-    std::vector<std::vector<std::byte>> out;
+    // Streamed out as encoded - no sign-objects on this command, so no
+    // defer case either.
+    EncodedStreamSink out_sink;
+    if (!out_sink.open(out_path, meta.keep_partial)) {
+        return 1;
+    }
 
     for (std::size_t start = 0; start < total; start += ac3::kSamplesPerFrame) {
         const auto valid = std::min<std::size_t>(ac3::kSamplesPerFrame, total - start);
@@ -1171,7 +1212,7 @@ int run_atmos_adm(std::string_view in_path, std::string_view out_path, std::uint
                          "error: cannot encode {} channels at {} kbps — the metadata and the "
                          "mantissas share one frame, so try a higher bit rate",
                          count, bitrate);
-            write_partial_output(out_path, meta.keep_partial, out);
+            out_sink.abort();
             return 1;
         }
         // The bed exists only once the frame is encoded, so it is metered afterwards - and it is
@@ -1180,9 +1221,12 @@ int run_atmos_adm(std::string_view in_path, std::string_view out_path, std::uint
             metered[ch] = std::span{encoder.bed()[ch]}.first(valid);
         }
         meter.process(metered);
-        out.push_back(std::move(unit->bytes));
+        if (!out_sink.push(std::move(unit->bytes))) {
+            out_sink.abort();
+            return 1;
+        }
     }
-    if (!write_frames(out_path, out)) {
+    if (!out_sink.close()) {
         return 1;
     }
 
@@ -1194,7 +1238,7 @@ int run_atmos_adm(std::string_view in_path, std::string_view out_path, std::uint
     // just written own stdout, so this report goes to stderr instead.
     const auto status = status_stream(out_path);
     std::println(status, "encoded {} E-AC-3 access units ({} kbps, {} Hz) from {} to {}",
-                out.size(), bitrate, source->sample_rate, in_path, out_path);
+                out_sink.frames(), bitrate, source->sample_rate, in_path, out_path);
     std::println(status,
                  "  {} bed speaker feed(s) + {} dynamic object(s) + the bed's LFE = {} objects, "
                  "JOC over a 5.1 downmix",
@@ -1353,7 +1397,12 @@ int run_encode_multi(std::string_view in_path, std::string_view out_path, std::u
     const auto config = plan::ac3_config(p);
     auto encoder = std::make_unique<ac3::FrameEncoder>(config);
     ac3::analysis::LevelMeter meter{config.acmod, config.lfe, sources->sample_rate};
-    std::vector<std::vector<std::byte>> frames;
+    // Streamed out as encoded, exactly as run_encode below - see
+    // run_eac3_encode_multi's identical note.
+    EncodedStreamSink out_sink;
+    if (!out_sink.open(out_path, meta.keep_partial)) {
+        return 1;
+    }
     for (std::size_t start = 0; start < total; start += ac3::kSamplesPerFrame) {
         const auto valid = std::min<std::size_t>(ac3::kSamplesPerFrame, total - start);
         route_frame(start);
@@ -1364,17 +1413,20 @@ int run_encode_multi(std::string_view in_path, std::string_view out_path, std::u
         auto frame = encoder->encode_frame(views);
         if (!frame) {
             std::println(stderr, "error: bitrate must be a legal AC-3 rate");
-            write_partial_output(out_path, meta.keep_partial, frames);
+            out_sink.abort();
             return 1;
         }
-        frames.push_back(std::move(*frame));
+        if (!out_sink.push(std::move(*frame))) {
+            out_sink.abort();
+            return 1;
+        }
     }
-    if (!write_frames(out_path, frames)) {
+    if (!out_sink.close()) {
         return 1;
     }
-    std::println(status, "encoded {} frames ({} kbps, {} Hz, {}) to {}", frames.size(), bitrate,
-                 sources->sample_rate, ac3::analysis::layout_name(config.acmod, config.lfe),
-                 out_path);
+    std::println(status, "encoded {} frames ({} kbps, {} Hz, {}) to {}", out_sink.frames(),
+                 bitrate, sources->sample_rate,
+                 ac3::analysis::layout_name(config.acmod, config.lfe), out_path);
     print_routing(p, *routing, label, status);
     print_channel_summary(meter, status);
     return 0;
@@ -1535,7 +1587,13 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
         out[c] = block[c];
         views[c] = block[c];
     }
-    std::vector<std::vector<std::byte>> frames;
+    // The encoded frames leave as they are produced - see EncodedStreamSink
+    // for how a failed run still honours keep-partial exactly as the old
+    // accumulate-then-write shape did.
+    EncodedStreamSink out_sink;
+    if (!out_sink.open(out_path, meta.keep_partial)) {
+        return 1;
+    }
     // The streaming path's own state: the frame loop below asks for the
     // source's samples strictly in order (offset= only ever shifts where
     // they land inside a frame, never which come next), so a rolling read
@@ -1574,7 +1632,7 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
                     std::println(stderr, "error: {}: {}", in_path,
                                  ac3::io::describe(got ? ac3::io::WavError::kTruncated
                                                        : got.error()));
-                    write_partial_output(out_path, meta.keep_partial, frames);
+                    out_sink.abort();
                     return 1;
                 }
                 consumed += want;
@@ -1611,16 +1669,20 @@ int run_encode(std::string_view in_path, std::string_view out_path, std::uint32_
         auto frame = encoder->encode_frame(views);
         if (!frame) {
             std::println(stderr, "error: bitrate must be a legal AC-3 rate");
-            write_partial_output(out_path, meta.keep_partial, frames);
+            out_sink.abort();
             return 1;
         }
-        frames.push_back(std::move(*frame));
+        if (!out_sink.push(*frame)) {
+            out_sink.abort();
+            return 1;
+        }
     }
-    if (!write_frames(out_path, frames)) {
+    if (!out_sink.close()) {
         return 1;
     }
-    std::println(status, "encoded {} frames ({} kbps, {} Hz, {}) to {}", frames.size(), bitrate,
-                src_rate, ac3::analysis::layout_name(config.acmod, config.lfe), out_path);
+    std::println(status, "encoded {} frames ({} kbps, {} Hz, {}) to {}", out_sink.frames(),
+                bitrate, src_rate, ac3::analysis::layout_name(config.acmod, config.lfe),
+                out_path);
     print_routing(p, *routing, label, status);
     print_channel_summary(meter, status);
     return 0;
@@ -1688,7 +1750,9 @@ int run_decode_eac3(std::span<const std::byte> stream, std::string_view out_path
         return 1;
     }
     ac3::Eac3Decoder decoder{
-        {.drc_scale = meta.drc_scale, .heavy_compression = meta.p.heavy.has_value()}};
+        {.drc_scale = meta.drc_scale,
+         .fast_imdct = meta.fast_imdct,
+         .heavy_compression = meta.p.heavy.has_value()}};
     // The decoded programme goes out through the sink as units decode - the
     // sink's per-slot carry absorbs the one place slots advance unevenly
     // (the transient-pre-noise flush below).
@@ -2035,7 +2099,9 @@ int run_decode(std::string_view in_path, std::string_view out_path, const Option
         return 1;
     }
     ac3::FrameDecoder decoder{
-        {.drc_scale = meta.drc_scale, .heavy_compression = meta.p.heavy.has_value()}};
+        {.drc_scale = meta.drc_scale,
+         .fast_imdct = meta.fast_imdct,
+         .heavy_compression = meta.p.heavy.has_value()}};
     PlanarWavSink sink;
     std::optional<ac3::analysis::LevelMeter> meter;
     ac3::DecodedFrame first{};
@@ -2709,50 +2775,54 @@ int run_loudness(std::string_view in_path) {
 // a receiver locks onto the bursts and lights up "Dolby Digital".
 // AC-3 frames wrap one-to-one; an E-AC-3 access unit may need several
 // consecutive ones to fill a burst (Eac3BurstPacker accumulates internally).
-// Shared by run_spdif and run_play so the two cannot disagree about how a
-// stream becomes bursts.
-std::optional<std::vector<std::byte>> wrap_ac3_stream(std::span<const std::byte> stream,
-                                                       std::uint32_t& rate_out) {
+// Feeds each formed burst to `push` rather than accumulating them: the
+// E-AC-3 carrier runs at 4x the content rate (~0.7 MB per second), which
+// made the whole-payload form the largest O(duration) term the CLI had
+// left. `rate_out` is set before the first push, so a caller may open its
+// destination lazily from inside `push`. False means the stream is not a
+// valid frame sequence - or that `push` itself said stop, which the
+// caller can tell apart because it was its own push that failed.
+template <typename Push>
+bool wrap_ac3_stream(std::span<const std::byte> stream, std::uint32_t& rate_out, Push&& push) {
     const auto frames = ac3::split_frames(stream);
     if (!frames || frames->empty()) {
-        return std::nullopt;
+        return false;
     }
     const auto fscod = std::to_integer<std::uint32_t>((*frames)[0][4]) >> 6;
     rate_out = sample_rate_hz(static_cast<ac3::SampleRate>(fscod));
 
-    std::vector<std::byte> payload;
-    payload.reserve(frames->size() * ac3::iec61937::kBurstBytes);
     for (const auto& frame : *frames) {
         const auto burst = ac3::iec61937::wrap_frame(frame);
         if (!burst) {
-            return std::nullopt;
+            return false;
         }
-        payload.insert(payload.end(), burst->begin(), burst->end());
+        if (!push(std::span<const std::byte>{*burst})) {
+            return false;
+        }
     }
-    return payload;
+    return true;
 }
 
-std::optional<std::vector<std::byte>> wrap_eac3_stream(std::span<const std::byte> stream,
-                                                        std::uint32_t& rate_out) {
+template <typename Push>
+bool wrap_eac3_stream(std::span<const std::byte> stream, std::uint32_t& rate_out, Push&& push) {
     const auto units = ac3::split_access_units(stream);
     if (!units || units->empty()) {
-        return std::nullopt;
+        return false;
     }
     const auto byte4 = std::to_integer<std::uint32_t>((*units)[0][4]);
     rate_out = sample_rate_hz(static_cast<ac3::SampleRate>(byte4 >> 6));
 
-    std::vector<std::byte> payload;
     ac3::iec61937::Eac3BurstPacker packer;
     for (const auto& unit : *units) {
         const auto burst = packer.push(unit);
         if (!burst) {
-            return std::nullopt;
+            return false;
         }
-        if (*burst) {
-            payload.insert(payload.end(), (**burst).begin(), (**burst).end());
+        if (*burst && !push(std::span<const std::byte>{**burst})) {
+            return false;
         }
     }
-    return payload;
+    return true;
 }
 
 int run_spdif(std::string_view in_path, std::string_view out_path) {
@@ -2768,22 +2838,46 @@ int run_spdif(std::string_view in_path, std::string_view out_path) {
     }
     const bool eac3 = *bsid > 8;
 
-    std::uint32_t content_rate = 0;
-    const auto payload = eac3 ? wrap_eac3_stream(stream, content_rate)
-                              : wrap_ac3_stream(stream, content_rate);
-    if (!payload) {
-        std::println(stderr, "error: {} is not a valid {} stream", in_path,
-                     eac3 ? "E-AC-3" : "AC-3");
-        return 1;
-    }
     // The WAV carrier itself runs at 4x the content rate for E-AC-3 (Dolby
     // Digital Plus over IEC 60958/61937 - Microsoft's "Representing Formats
     // for IEC 61937 Transmissions"), matching WASAPI's make_eac3_format.
+    // The sink opens lazily on the first burst - the rate is only known
+    // once the wrapper has parsed the first frame, and a stream the
+    // wrapper rejects must leave no file, exactly as the whole-payload
+    // write it replaces never ran at all on failure.
+    std::uint32_t content_rate = 0;
+    Pcm16RawWavSink sink;
+    bool sink_failed = false;
+    const auto push = [&](std::span<const std::byte> burst) {
+        if (!sink.is_open() &&
+            !sink.open(out_path, eac3 ? content_rate * 4 : content_rate, 2)) {
+            sink_failed = true;
+            return false;
+        }
+        if (!sink.push(burst)) {
+            sink_failed = true;
+            return false;
+        }
+        return true;
+    };
+    const auto ok = eac3 ? wrap_eac3_stream(stream, content_rate, push)
+                         : wrap_ac3_stream(stream, content_rate, push);
+    if (!ok) {
+        sink.abort();
+        if (!sink_failed) {
+            std::println(stderr, "error: {} is not a valid {} stream", in_path,
+                         eac3 ? "E-AC-3" : "AC-3");
+        }
+        return 1;
+    }
     const auto carrier_rate = eac3 ? content_rate * 4 : content_rate;
-    const auto written =
-        ac3::io::write_wav_pcm16_raw(std::string{out_path}, *payload, carrier_rate, 2);
-    if (!written) {
-        std::println(stderr, "error: {}", ac3::io::describe(written.error()));
+    // A valid stream whose units never completed a burst (an E-AC-3 input
+    // shorter than one burst set) still produced a header-only WAV before,
+    // so the never-opened sink opens for exactly that here.
+    if (!sink.is_open() && !sink.open(out_path, carrier_rate, 2)) {
+        return 1;
+    }
+    if (!sink.close()) {
         return 1;
     }
     std::println("wrapped {} into IEC 61937 bursts -> {} ({} Hz carrier)",
@@ -3211,7 +3305,7 @@ int run_main(int argc, char** argv) {
                                token == "couple" || token == "heavy" || token == "heavy2" ||
                                token == "mixmeta" || token == "sign-objects" ||
                                token == "verify-objects" || token == "keep-partial" ||
-                               token == "fast-mdct";
+                               token == "fast-mdct" || token == "fast-imdct";
         if (token == "couple") {
             couple_flag = true;
         }
