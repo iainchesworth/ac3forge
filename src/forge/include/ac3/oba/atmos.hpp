@@ -91,6 +91,11 @@ struct ObjectPlacement {
 class AC3FORGE_EXPORT AtmosEncoder {
    public:
     AtmosEncoder(const AtmosConfig& config, int objects);
+    // Move-only: encoder_ below is, since eac3::FrameEncoder went move-only
+    // - see AccessUnitEncoder's own comment for the dllexport reason this
+    // must be spelled out.
+    AtmosEncoder(AtmosEncoder&&) noexcept = default;
+    AtmosEncoder& operator=(AtmosEncoder&&) noexcept = default;
 
     // objects: one kSamplesPerFrame mono span per object, in the order the
     // encoder was constructed with. Returns one E-AC-3 access unit: a single
