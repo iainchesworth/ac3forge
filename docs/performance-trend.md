@@ -467,6 +467,31 @@ flagged row is a real change in allocation behaviour, not runner noise. The
 memory-usage optimization programme's phases land as visible downward steps in
 these series - that is what this table exists to show.
 
+Two landed programmes are the biggest steps in these series. The 2026-08
+memory-usage programme cut steady-state allocator traffic per frame by 85-88%
+on the encode series (on the measured `linux-gcc` runner: AC-3 encode
+225,028 → 26,778 bytes/frame and 286 → 86 allocations; E-AC-3
+214,808 → 28,792 and 157 → 67; Atmos 218,960 → 32,656 and 196 → 106) and
+54-61% on the decode series - and, outside these tables, took every
+output-producing CLI command memory-flat at any programme length (a 3-minute
+5.1 encode peaked at 437.8 MiB before the programme and 9.3 MiB after;
+decode 217 → 28.5 MiB, `spdif` 225.7 → 18.0 MiB).
+
+The fast-IMDCT rollout that followed
+([Validation → Performance and reference modes](verification.md#performance-and-reference-modes))
+lands in the decode series as two distinct marks. The flat-substream-state
+change shows directly: the decode workloads' setup allocations dropped from
+4 allocations / 47,606 bytes to exactly zero. The transform change itself
+mostly does not show in heap columns, and knowing why matters for reading
+the table: the direct evaluation's 320 KiB of step-3 matrices are lazily
+built *static* storage, so switching the default to the FFT path removes
+them from the process (a 3-minute CLI decode's peak working set drops
+~0.2-0.3 MiB) without moving an allocation count. Its real payoff is time,
+which the timing series on this page do not cover (they time encode only):
+measured 180-second decodes went from 3.53 s to 0.79 s (AC-3) and 3.49 s to
+0.75 s (E-AC-3) when the fast path became the default - `mode=reference`
+runs the old numbers on purpose.
+
 <div id="memory-trend-app">
   <p class="performance-trend-status">Loading memory trend data…</p>
 </div>
