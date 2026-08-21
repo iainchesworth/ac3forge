@@ -141,7 +141,25 @@ class AC3FORGE_EXPORT FrameDecoder {
     [[nodiscard]] std::expected<DecodedFrame, DecodeError> decode_frame(
         std::span<const std::byte> frame);
 
+    // As decode_frame, but the PCM lands in caller-owned planar storage
+    // instead of freshly allocated vectors - the per-call cost drops from
+    // one vector per channel (~37 KB a frame at 5.1) to nothing, which is
+    // what a realtime consumer or the WASM demo wants. channels[ch] must
+    // each hold kSamplesPerFrame floats and there must be a span for every
+    // channel the frame codes - six covers every AC-3 layout; the returned
+    // metadata's acmod/lfe say how many were written. The returned
+    // DecodedFrame carries everything EXCEPT the PCM (its `channels` is
+    // left empty). On an error return the spans' contents are unspecified
+    // - exactly as discarded as the value form's partial frame was.
+    [[nodiscard]] std::expected<DecodedFrame, DecodeError> decode_frame_into(
+        std::span<const std::byte> frame, std::span<const std::span<float>> channels);
+
    private:
+    // Both public forms above: `channels` empty means allocate the PCM into
+    // the returned DecodedFrame, non-empty means write through the spans.
+    [[nodiscard]] std::expected<DecodedFrame, DecodeError> decode_frame_core(
+        std::span<const std::byte> frame, std::span<const std::span<float>> channels);
+
     DecoderConfig config_{};
     std::array<std::array<double, 256>, 6> delay_{};  // overlap-add state
     // §7.3.4 dither, persisting across frames like delay_ above so a long
