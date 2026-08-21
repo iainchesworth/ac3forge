@@ -42,6 +42,14 @@ metadata options (any order, after the positional arguments):
                     encodes, incl. atmos/record/live/eac3-sine/eac3-encode; eac3-encode's
                     [tools] positional can also reach this field via a bare nofastmdct token,
                     which wins if both are given; bare fast-mdct (the old opt-in) is a no-op
+  fast-imdct=off    decode: force the direct §7.9.4 step-3 inverse instead of the default
+                    radix-2 FFT evaluation - the decode-side mirror of fast-mdct=off above,
+                    with the same relationship to its oracle (both codecs; bare fast-imdct,
+                    the old opt-in, is a no-op)
+  mode=reference    both switches above in one word: every transform this command runs falls
+                    back to the spec's own direct evaluation. mode=performance (the default
+                    state) names the fast paths. Tokens apply in order, so a later
+                    fast-mdct=off / fast-imdct=off still adjusts one half on its own
 
 qc options (qc; any order, after the positional arguments):
   preset=<name>     gate the measurement against a named delivery spec
@@ -53,8 +61,9 @@ qc options (qc; any order, after the positional arguments):
 For `decode`, `drc=<scale>` instead applies §7.7.1 partial compression (`0` = ignore, `1` = as
 encoded), and bare `heavy` prefers `compr` where the stream carries it — the decode-time meaning
 of these two tokens is deliberately the mirror of their encode-time meaning. That applies to
-AC-3 decode only: the E-AC-3 decode path takes no options, so both tokens are silently inert on
-`.ec3` input.
+AC-3 decode only: those two tokens are silently inert on `.ec3` input. `fast-imdct=off` and
+`mode=` are the exception — they select the inverse transform's evaluation and apply to both
+codecs' decode alike.
 
 See [Metadata](../library/metadata.md) for what each of these fields actually is at the library
 level (`dynrng`, `compr`, `dialnorm`, downmix levels) — the CLI tokens above map directly onto
@@ -389,6 +398,29 @@ Optional positional arguments, when omitted:
   forward transform in the loop to choose a path for. The bare `fast-mdct` word and the
   `fastmdct` tool token — the opt-in spellings from when this defaulted off — still parse and now
   name what already happens.
+- **`fast-imdct=off`**: the decode-side mirror. `decode` runs §7.9.4 step 3 — the inverse
+  transform's one O(N²) part — through a radix-2 FFT by default (the quality evidence that made
+  it the default: 7.8e-14 max peak-normalized relative error against the direct evaluation at the
+  transform level, and over 180-second real-material decodes 214.9 dB SNR agreement for AC-3 /
+  284.7 dB for E-AC-3, with decodes 4.5–4.7× faster). `fast-imdct=off` forces the pseudocode's
+  own direct sum — the reference form, and the oracle the fast path's tests validate against.
+  Applies to both codecs; the `qc`, `levels` and playback decoders stay on the library default,
+  where a ~1e-12 difference cannot move a reported figure. Encoded output never depends on this
+  switch: the encoder's own internal inverse-transform uses are pinned to the direct form
+  regardless. The bare `fast-imdct` word — the opt-in spelling from when this defaulted off —
+  still parses and now names what already happens.
+- **`mode=performance|reference`**: the two switches above as one statement of intent.
+  `mode=reference` turns **both** fast paths off — the forward MDCT wherever the command encodes
+  and the step-3 inverse in `decode` — so the whole run uses the spec's own direct evaluations:
+  the forms the standard states, the forms every fast-path test validates against, and the forms
+  to reach for when two runs must agree bit-for-bit with the spec's stated arithmetic (comparing
+  against an external reference decoder sample-for-sample, regenerating validation fixtures,
+  chasing a suspected transform defect). `mode=performance` — the default state, so passing it
+  changes nothing — names the fast paths: same streams to within ~1e-12, encodes measurably
+  faster and decodes 4.5–4.7× faster. Tokens apply in order, so
+  `mode=reference fast-mdct=off` is redundant but harmless, and `mode=performance fast-imdct=off`
+  runs a fast encode with a reference decode. `eac3-encode`'s `[tools]` positional still wins
+  the forward-MDCT half if both are given, exactly as it does against `fast-mdct=off`.
 - **`keep-partial`**: `encode`, `eac3-encode` and `atmos-encode` refuse a frame that cannot fit the
   configuration mid-run just as they always have, but with `keep-partial` given, whatever frames
   were already encoded before that point are written to `<name>.partial.<ext>` (`out.ec3` →
