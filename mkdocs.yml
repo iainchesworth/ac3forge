@@ -116,11 +116,11 @@ nav:
   - Project:
       - Contributing: contributing.md
       - Releasing: releasing.md
-      - History: project/history.md
+      - History: history.md
       - Roadmap: roadmap.md
       - Live decode demo (WASM): wasm-demo.md
       - Quality trend: quality-trend.md
       - Performance trend: performance-trend.md
-      - Self-hosted CI runners: ci-self-hosted-runners.md
-      - Landscape: landscape.md
       - Tool comparison trend: tool-comparison-trend.md
+      - Landscape: landscape.md
+      - Self-hosted CI runners: ci-self-hosted-runners.md

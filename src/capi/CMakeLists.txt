@@ -58,7 +58,7 @@ target_compile_features(forge_c_objects PUBLIC cxx_std_23)
 # "dev-only, must not enter the export graph" reason src/forge/CMakeLists.txt's
 # identical forge_objects treatment documents - not needed for
 # ac3::forge_static itself, which forge_c_static/forge_c_shared's install(EXPORT)
-# already resolves via ac3forgeTargets.
+# already resolves via forgeTargets.
 target_link_libraries(forge_c_objects
     PRIVATE
         ac3::forge_static

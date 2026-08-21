@@ -181,7 +181,7 @@ generators in `tools/`.
 | [docs/cli/](docs/cli/index.md) | The `ac3cli` reference: every command, the option grammars |
 | [docs/gui/](docs/gui/index.md) | Step-by-step `ac3gui` guide, with screenshots |
 | [docs/verification.md](docs/verification.md) | How output is checked, and where checking runs out |
-| [docs/project/history.md](docs/project/history.md) | How the implementation was built, milestone by milestone |
+| [docs/history.md](docs/history.md) | How the implementation was built, milestone by milestone |
 | [ROADMAP.md](ROADMAP.md) | Candidate ideas, checked off as they land |
 | [docs/quality-trend.md](docs/quality-trend.md) | Gold-reference SNR history by commit — with [performance](docs/performance-trend.md) and [tool-comparison](docs/tool-comparison-trend.md) siblings |
 | [docs/releasing.md](docs/releasing.md) | Cutting a release: versioning, the tag-triggered workflow, GPG signing |

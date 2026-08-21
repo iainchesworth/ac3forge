@@ -9,7 +9,7 @@ rather than half-checked. Sizes are rough guesses: **S** (an afternoon), **M** (
 
 ## A. Delivery
 
-At drafting time Matroska was the only container; `docs/project/history.md` named MP4 and
+At drafting time Matroska was the only container; `docs/history.md` named MP4 and
 MPEG-TS as the step the decoder was meant to lead toward.
 
 - [x] **A1 (L)** — MP4/ISOBMFF muxer with a correct `dec3` box. A standalone module in the
