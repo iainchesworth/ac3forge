@@ -110,24 +110,6 @@ int rematrix_band_count(bool cplinu, int cplbegf) {
     return cplbegf > 0 ? 3 : 2;
 }
 
-struct ExponentRun {
-    int start_block = 0;
-    ExpStrategy strategy = ExpStrategy::kD15;
-    EncodedExponents fbw;                  // fbw and LFE channels
-    EncodedCouplingExponents cpl;          // the coupling channel
-    std::vector<std::uint8_t> decoded;     // the decoder-mirror exponents
-    // §7.2.2.6: computed once per run (like `decoded` above) from the real
-    // coefficients of every block the run spans, rather than per block - a
-    // run already shares one exponent set and one bit allocation across its
-    // blocks, so its delta correction is constant across them too.
-    DeltaSegments delta;
-};
-
-struct StreamPlan {
-    std::array<int, kBlocksPerFrame> run_of_block{};
-    std::vector<ExponentRun> runs;
-};
-
 // Step 9's SNR-offset search result: the composite offset it found, and the
 // mantissa bit cost AT that offset (so a caller never has to re-run
 // compute_bit_allocation over every stream just to learn what its own search
@@ -139,7 +121,52 @@ struct SnrSearchResult {
 
 }  // namespace
 
-FrameEncoder::FrameEncoder(const EncoderConfig& config) : config_(config) {
+// Defined at namespace scope, not inside the anonymous namespace above: a
+// nested member type of an exported class cannot be defined there (the
+// C2911/C2888 lesson eac3_frame.cpp's FrameState already carries), and the
+// defaulted special members below need it complete at their definitions.
+struct FrameEncoder::PlanScratch {
+    struct ExponentRun {
+        int start_block = 0;
+        ExpStrategy strategy = ExpStrategy::kD15;
+        EncodedExponents fbw;                  // fbw and LFE channels
+        EncodedCouplingExponents cpl;          // the coupling channel
+        std::vector<std::uint8_t> decoded;     // the decoder-mirror exponents
+        // §7.2.2.6: computed once per run (like `decoded` above) from the real
+        // coefficients of every block the run spans, rather than per block - a
+        // run already shares one exponent set and one bit allocation across its
+        // blocks, so its delta correction is constant across them too.
+        DeltaSegments delta;
+    };
+
+    struct StreamPlan {
+        std::array<int, kBlocksPerFrame> run_of_block{};
+        std::vector<ExponentRun> runs;
+    };
+
+    // encode_frame's remaining frame-lifetime buffers, reused across calls
+    // under the same fully-rewritten-before-read contract as the members in
+    // encoder.hpp. blksw/cpl_* are re-assign()ed to the value a fresh
+    // zero-initialized vector held; plan's slots are rebuilt in place, every
+    // ExponentRun field explicitly re-set (the branch-not-taken exponent set
+    // and the LFE's absent delta included, since a stream index's role can
+    // change frame to frame with cplinu).
+    std::vector<std::array<bool, kBlocksPerFrame>> blksw;
+    std::vector<int> cpl_master;
+    std::vector<coupling::Coordinate> cpl_coords;
+    std::vector<double> cpl_values;
+    std::vector<StreamPlan> plan;
+    std::vector<int> starts;
+    std::vector<std::uint8_t> raw;
+    std::vector<double> peak_mag;
+};
+
+FrameEncoder::~FrameEncoder() = default;
+FrameEncoder::FrameEncoder(FrameEncoder&&) noexcept = default;
+FrameEncoder& FrameEncoder::operator=(FrameEncoder&&) noexcept = default;
+
+FrameEncoder::FrameEncoder(const EncoderConfig& config)
+    : config_(config), scratch_(std::make_unique<PlanScratch>()) {
     if (config_.drc) {
         range_.emplace(*config_.drc, config_.sample_rate);
     }
@@ -304,7 +331,8 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     // room for is to leave coupling off for the WHOLE frame whenever any
     // eligible channel switches, rather than just that one channel.
     AC3_ZONE_BEGIN(zone_transients, "step0_transient_detect");
-    std::vector<std::array<bool, kBlocksPerFrame>> blksw(static_cast<std::size_t>(nfchans));
+    auto& blksw = scratch_->blksw;
+    blksw.assign(static_cast<std::size_t>(nfchans), {});
     bool any_switched = false;
     for (int ch = 0; ch < nfchans; ++ch) {
         const auto& pcm = channels[static_cast<std::size_t>(ch)];
@@ -499,11 +527,19 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
     // decoder's x8 living entirely in the coordinates. One coordinate per
     // BAND, which is one or more sub-bands joined by cplbndstrc.
     std::array<bool, kBlocksPerFrame> send_coords{};
-    std::vector<int> master(static_cast<std::size_t>(kBlocksPerFrame) *
-                            static_cast<std::size_t>(std::max(nfchans, 1)));
-    std::vector<coupling::Coordinate> coords(
-        static_cast<std::size_t>(kBlocksPerFrame) * static_cast<std::size_t>(std::max(nfchans, 1)) *
-        static_cast<std::size_t>(std::max(cplbands.count, 1)));
+    // assign(), not resize(): a fresh vector here was zero-initialized, and
+    // the coupling loops below rely on writing before reading rather than
+    // on any particular starting value - so the reused storage is put back
+    // to exactly the state the fresh vector had.
+    auto& master = scratch_->cpl_master;
+    master.assign(static_cast<std::size_t>(kBlocksPerFrame) *
+                      static_cast<std::size_t>(std::max(nfchans, 1)),
+                  0);
+    auto& coords = scratch_->cpl_coords;
+    coords.assign(static_cast<std::size_t>(kBlocksPerFrame) *
+                      static_cast<std::size_t>(std::max(nfchans, 1)) *
+                      static_cast<std::size_t>(std::max(cplbands.count, 1)),
+                  {});
     const auto coord_at = [&](int block, int ch, int bnd) -> coupling::Coordinate& {
         return coords[(static_cast<std::size_t>(block) * static_cast<std::size_t>(nfchans) +
                        static_cast<std::size_t>(ch)) *
@@ -517,7 +553,8 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
 
     if (cplinu) {
         AC3_ZONE_SCOPED_N("step2_coupling");
-        std::vector<double> values(static_cast<std::size_t>(cplbands.count));
+        auto& values = scratch_->cpl_values;
+        values.assign(static_cast<std::size_t>(cplbands.count), 0.0);
 
         // The decoder computes
         //     channel = coupling * coordinate * 8,
@@ -705,15 +742,22 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
 
     // --- 5. Exponent strategy plan per stream (§8.2.8) ---------------------
     AC3_ZONE_BEGIN(zone_strategy, "step5_exp_strategy");
-    std::vector<StreamPlan> plan(static_cast<std::size_t>(streams));
+    // The plan's stream slots and each slot's runs are rebuilt in place -
+    // run_of_block is fully overwritten (the runs tile all six blocks), and
+    // every ExponentRun field is explicitly re-set below, so a reused slot
+    // is indistinguishable from a fresh one. resize() may keep slots from a
+    // frame with more streams alive but unread; the loop bounds are what
+    // decide which slots exist this frame.
+    auto& plan = scratch_->plan;
+    plan.resize(static_cast<std::size_t>(streams));
     // Shared across the per-stream iterations below, re-assign()ed at each
     // use: `starts` (run boundaries), `raw` (a run's min-exponent set) and
     // `peak_mag` (§7.2.2.6's per-bin maxima) were each freshly allocated
     // per stream or per run - ~70 small allocations a frame for buffers
     // whose contents never outlive one iteration.
-    std::vector<int> starts;
-    std::vector<std::uint8_t> raw;
-    std::vector<double> peak_mag;
+    auto& starts = scratch_->starts;
+    auto& raw = scratch_->raw;
+    auto& peak_mag = scratch_->peak_mag;
     for (int s = 0; s < streams; ++s) {
         auto& p = plan[static_cast<std::size_t>(s)];
         const bool is_lfe = s < nchans && s >= nfchans;
@@ -769,6 +813,7 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
         }
         starts.push_back(kBlocksPerFrame);
 
+        std::size_t used_runs = 0;
         for (std::size_t run = 0; run + 1 < starts.size(); ++run) {
             const int first = starts[run];
             const int last = starts[run + 1];
@@ -787,18 +832,29 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                 }
             }
 
-            ExponentRun entry;
+            // In place rather than a fresh ExponentRun pushed per run: the
+            // reused slot's every field is re-set on every path through here
+            // - the branch-not-taken exponent set cleared explicitly, since
+            // which stream index is the coupling stream changes with cplinu
+            // - so a reused entry is indistinguishable from a fresh one.
+            if (p.runs.size() == used_runs) {
+                p.runs.emplace_back();
+            }
+            PlanScratch::ExponentRun& entry = p.runs[used_runs];
+            ++used_runs;
             entry.start_block = first;
             entry.strategy = strategy;
             // Exponents are indexed from bin 0 for the allocator's sake, so
             // a coupling run leaves its low bins untouched.
             entry.decoded.assign(static_cast<std::size_t>(end), kMaxExponent);
             if (is_cpl) {
+                entry.fbw = {};
                 entry.cpl = encode_coupling_exponents(raw, strategy);
                 decode_coupling_exponents(
                     entry.cpl.cplabsexp, entry.cpl.groups, strategy,
                     std::span{entry.decoded}.subspan(static_cast<std::size_t>(begin)));
             } else {
+                entry.cpl = {};
                 entry.fbw = encode_exponents(raw, strategy);
                 decode_exponents(entry.fbw.absolute, entry.fbw.groups, strategy, entry.decoded);
             }
@@ -845,12 +901,20 @@ std::expected<std::vector<std::byte>, FrameError> FrameEncoder::encode_frame(
                     }
                 }
                 entry.delta = choose_delta_segments(peak_mag, entry.decoded, begin);
+            } else {
+                // A reused entry's every-field contract: the LFE never
+                // carries a delta, so an entry recycled from a delta-bearing
+                // run must say so explicitly.
+                entry.delta = {};
             }
             for (int block = first; block < last; ++block) {
                 p.run_of_block[static_cast<std::size_t>(block)] = static_cast<int>(run);
             }
-            p.runs.push_back(std::move(entry));
         }
+        // Slots beyond this frame's run count would otherwise survive from a
+        // frame that had more; everything downstream sizes itself on
+        // p.runs.size().
+        p.runs.resize(used_runs);
     }
     AC3_ZONE_END(zone_strategy);
 

@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <memory>
 #include <optional>
 #include <span>
 #include <vector>
@@ -99,6 +100,15 @@ struct EncoderConfig {
 class AC3FORGE_EXPORT FrameEncoder {
    public:
     explicit FrameEncoder(const EncoderConfig& config);
+    // Declared (and defaulted in encoder.cpp, where PlanScratch below is
+    // complete) rather than implicit: a dllexport class generates every
+    // implicit member whether or not called, and the unique_ptr member
+    // makes the implicit copy deleted - which is fine - but the moves must
+    // be spelled out or the declared destructor suppresses them. The same
+    // move-only shape eac3::FrameEncoder took for its FrameState.
+    ~FrameEncoder();
+    FrameEncoder(FrameEncoder&&) noexcept;
+    FrameEncoder& operator=(FrameEncoder&&) noexcept;
 
     // channels: the full-bandwidth channels in AC-3 order (Table 5.8: e.g.
     // 3/2 = L, C, R, SL, SR), followed by the LFE channel last when
@@ -153,6 +163,13 @@ class AC3FORGE_EXPORT FrameEncoder {
     // (including a slot whose run count shrank) changes nothing observable.
     std::vector<std::vector<std::vector<std::uint8_t>>> run_bap_;
     std::vector<std::span<const std::uint8_t>> bap_views_;
+    // The rest of encode_frame's frame-lifetime scratch - the §8.2.8
+    // exponent-strategy plan and the coupling work buffers - whose types are
+    // encoder.cpp's own, held behind a pimpl so they need not move into
+    // this header: the same arrangement eac3_frame.hpp's FrameState uses,
+    // for the same reason. Same reuse contract as every buffer above.
+    struct PlanScratch;
+    std::unique_ptr<PlanScratch> scratch_;
     std::uint64_t rate_accumulator_ = 0;  // ideal-bits Bresenham state
     std::uint64_t words_emitted_ = 0;
     // The previous frame's converged SNR-offset composite, warm-starting the
