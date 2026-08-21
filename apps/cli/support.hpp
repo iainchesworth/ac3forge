@@ -325,4 +325,13 @@ void print_live_meter(const ac3::analysis::LevelMeter& meter, double seconds);
 bool resolve_layout(std::string_view name, ac3::plan::Codec codec, ac3::plan::Plan& plan,
                     std::string& label);
 
+// A WAV's rate as an fscod (or, for E-AC-3, fscod2), or a diagnosis. Shared
+// because every encode path asks the same question. Classic AC-3 has only
+// A/52 Table 5.6's three rates; E-AC-3 additionally accepts the three Annex E
+// fscod2 half rates (24/22.05/16 kHz), which have no AC-3 counterpart at all.
+std::optional<ac3::SampleRate> wav_sample_rate(std::uint32_t hz, std::string_view codec, bool eac3);
+
+// A source's channels routed onto a plan's coded channels, or a diagnosis.
+std::optional<ac3::plan::Routing> routing_or_error(const ac3::plan::Plan& p, std::size_t channels);
+
 }  // namespace ac3cli
