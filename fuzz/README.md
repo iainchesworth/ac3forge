@@ -167,7 +167,13 @@ dialnorm, downmix levels, forward-MDCT path), draws adversarial PCM built per
 256-sample BLOCK so a frame's character can change part-way through it,
 encodes, and then decodes the result with BOTH `ac3cli decode` and FFmpeg's
 strict decode - the same invocation `tools/ci/run_codec_matrix.sh` uses. A
-refusal from either fails the case.
+refusal from either fails the case, with one arbitrated exception: when only
+FFmpeg's default invocation refuses and the same bytes decode cleanly under
+`-f ac3` with every error check kept, libavformat's container *guess* failed
+rather than the stream, and the case counts as "misprobed" instead - measured
+and explained in the script's note above `MIN_STREAM_BYTES` (large syncframes
+can lose FFmpeg's probe-window race to the MPEG-PS prober no matter how long
+the stream is).
 
 Why it exists: PR #186 fixed an encoder defect (`deltbaie == 0` means "retain
 the previous block's delta bit allocation", not "no delta") that produced
@@ -182,6 +188,7 @@ was verified by reverting the fix and running it (see the file's own header).
 AC3CLI=build/config-linux-llvm/bin/ac3cli python3 tools/ci/fuzz_encoder_space.py --seconds 120
 python3 tools/ci/fuzz_encoder_space.py --check-envelope      # re-measure the rate floors it draws from
 python3 tools/ci/fuzz_encoder_space.py --replay <case-seed>  # rerun one exact failing case
+python3 tools/ci/fuzz_encoder_space.py --regressions         # replay every recorded past failure
 ```
 
 Every case is a pure function of one 64-bit case seed, printed beside any

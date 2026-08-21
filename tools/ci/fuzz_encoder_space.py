@@ -39,7 +39,13 @@ What one case does:
      and FFmpeg's strict decode - the same invocation and the same reasoning
      as run_ffmpeg_check() in tools/ci/run_codec_matrix.sh, -xerror included,
      because -err_detect alone leaves ffmpeg's exit code at 0 after a logged
-     error. A refusal from either one fails the case.
+     error. A refusal from either one fails the case, with one arbitrated
+     carve-out: when only FFmpeg's default invocation refuses, and the same
+     bytes then decode cleanly with `-f ac3` forced and every error check
+     kept, the refusal came from libavformat's container GUESS and not from
+     the decoder, and the case counts as "misprobed" rather than failed - see
+     the second paragraph above MIN_STREAM_BYTES for the measured mechanics
+     and for why no encoder-side change can prevent it.
 
 Two independent decoders matter here for the same reason they do in the codec
 matrix: a stream that only round-trips against its own encoder proves much
@@ -62,6 +68,7 @@ Usage (repo root, after building):
   python tools/ci/fuzz_encoder_space.py --seconds 120            # bounded, for CI
   python tools/ci/fuzz_encoder_space.py --check-envelope         # re-measure the table below
   python tools/ci/fuzz_encoder_space.py --replay 12345678901234  # one exact case
+  python tools/ci/fuzz_encoder_space.py --regressions            # every recorded past failure
 """
 
 import argparse
@@ -117,6 +124,36 @@ FRAME = BLOCK * BLOCKS_PER_FRAME
 # thing the codec matrix tests, this harness keeps that script's exact
 # invocation and stays in the size regime where it means what it says. 16 KiB
 # is roughly eight times the size where the effect was last seen.
+#
+# This floor keeps the harness out of the SIZE regime where the probe is
+# unreliable; it cannot keep it out of the regime where the probe is OUTRUN.
+# Case seed 1124127684685913171 (stereo at 512 kbit/s, 48 kHz: 2048-byte
+# frames) produced a stream FFmpeg 8.0 refuses to OPEN ("could not find codec
+# parameters", from the mpeg demuxer of all places) while the same bytes
+# decode cleanly under `-f ac3` with the full -err_detect set, every
+# syncframe sits on an exact 2048-byte boundary, and both CRC words of every
+# frame check out. Mechanics, read out of ffmpeg's own probe sources:
+# auto-detection scores windows of 2048/4096/8192/... bytes and commits to
+# the first format scoring above 25; libavformat/ac3dec.c only goes above 25
+# once SEVEN consecutive syncframes fit inside the window, which at 2048
+# bytes per frame first happens in the 16 KiB window; libavformat/mpeg.c
+# returns 26 for as little as one "00 00 01 bb" plus two "00 00 01 ba"
+# patterns (each ba followed by one plausible header byte) anywhere in a
+# window. That race was decided inside the first 8 KiB - four AC-3 frames,
+# score 25, against an MPEG-PS 26 - so nothing appended later can win it
+# back: the same stream concatenated out to 112 frames still probes as
+# MPEG-PS, and the three matched patterns sit inside ordinary
+# quantized-mantissa bytes the encoder does not get to choose. Any window
+# whose rival patterns accumulate before seven frames do loses the same way,
+# so at 48 kHz every rate from 320 kbit/s up leaves the 8 KiB window
+# undecidable in ac3's favour; higher rates just stay exposed longer.
+#
+# So a default-invocation refusal is not yet a verdict on the bitstream, and
+# run_case() arbitrates: rerun with `-f ac3` forced, every error check kept.
+# Clean forced decode -> "misprobed", counted and printed in the summary but
+# not a failure, because the encoder has no move left to make against it.
+# Refused even when forced -> a real failure, reported with the forced run's
+# stderr, which names the actual decode error instead of the probe's guess.
 MIN_STREAM_BYTES = 16384
 
 # Where each layout's usable rate range starts, measured against this build
@@ -180,6 +217,20 @@ REFUSALS = {
     # silent and mostly-silent material (the `transient` profile, and the
     # silent half of every `cliff`), so it meets that limit honestly.
     "sub-gate loudness": "no audio above the -70 LKFS absolute gate",
+}
+
+# Case seeds that once produced a wrong verdict from this harness or from the
+# encoder, kept replayable so neither failure mode comes back silently.
+# --regressions runs every entry and fails on any case whose status is
+# "fail"; ci.yml runs that before the unseeded search. This is the
+# encoder-space counterpart of fuzz/regressions/ (which holds DECODER inputs)
+# - a case seed regenerates its whole input from one number, so the number is
+# the artifact.
+REGRESSION_SEEDS = {
+    1124127684685913171:
+        "stereo 512 kbit/s: a fully valid big-frame stream FFmpeg 8.0's "
+        "auto-detection hands to the mpeg demuxer (see the misprobe note "
+        "above MIN_STREAM_BYTES); must classify as misprobed, never fail",
 }
 
 
@@ -611,7 +662,7 @@ def case_seed(master, index):
 @dataclass
 class Result:
     case: Case
-    status: str          # "ok" | "refused" | "fail"
+    status: str          # "ok" | "refused" | "misprobed" | "fail"
     detail: str = ""
     stage: str = ""
     reason: str = ""     # which REFUSALS entry matched, when status == "refused"
@@ -621,16 +672,25 @@ def _run(argv, cwd=None):
     return subprocess.run(argv, capture_output=True, text=True, cwd=cwd)
 
 
-def ffmpeg_check(ffmpeg, path):
+def ffmpeg_check(ffmpeg, path, forced=False):
     """FFmpeg's strict decode, byte-for-byte the invocation
     run_ffmpeg_check() in tools/ci/run_codec_matrix.sh uses.
 
     -xerror is not belt-and-braces: -err_detect alone only changes what the
     decoder treats as an error internally, concealing a bad frame and moving
     on with exit code 0. -xerror is what turns a detected error into a failing
-    process."""
-    return _run([ffmpeg, "-v", "error", "-xerror", "-err_detect",
-                 "crccheck+bitstream+buffer+explode", "-i", str(path), "-f", "null", "-"])
+    process.
+
+    forced=True adds `-f ac3`, taking container auto-detection out of the
+    invocation while keeping every error check in it. It is the arbiter run
+    when the default invocation refuses a stream: a stream that then decodes
+    cleanly was turned away by the PROBE, not the decoder - see the misprobe
+    note above MIN_STREAM_BYTES."""
+    argv = [ffmpeg, "-v", "error", "-xerror", "-err_detect",
+            "crccheck+bitstream+buffer+explode"]
+    if forced:
+        argv += ["-f", "ac3"]
+    return _run(argv + ["-i", str(path), "-f", "null", "-"])
 
 
 def classify(case, encode, out_path):
@@ -684,9 +744,18 @@ def run_case(cli, ffmpeg, case, workdir, artifacts):
         if ffmpeg is not None:
             check = ffmpeg_check(ffmpeg, out)
             if check.returncode != 0:
+                # Not a verdict yet: auto-detection can hand a valid stream
+                # to the wrong demuxer (misprobe note above MIN_STREAM_BYTES).
+                # `-f ac3` with the same error checks is what actually asks
+                # the decoder.
+                forced = ffmpeg_check(ffmpeg, out, forced=True)
+                if forced.returncode == 0:
+                    first = check.stderr.strip().splitlines()
+                    return Result(case, "misprobed", first[0] if first else "", "ffmpeg")
                 result = Result(case, "fail",
-                                f"ffmpeg strict decode exited {check.returncode}\n"
-                                f"{check.stderr.strip()}", "ffmpeg")
+                                f"ffmpeg strict decode exited {forced.returncode} "
+                                f"even with -f ac3 forced\n{forced.stderr.strip()}",
+                                "ffmpeg")
                 save_artifacts(artifacts, case, result, tmp)
                 return result
 
@@ -816,6 +885,9 @@ def main():
                         help="where failing cases are written")
     parser.add_argument("--check-envelope", action="store_true",
                         help="re-measure the per-layout minimum bitrates and exit")
+    parser.add_argument("--regressions", action="store_true",
+                        help="replay every REGRESSION_SEEDS case and exit non-zero "
+                             "if any of them fails")
     parser.add_argument("--max-failures", type=int, default=10,
                         help="stop after this many failing cases")
     args = parser.parse_args()
@@ -842,6 +914,19 @@ def main():
     if not artifacts.is_absolute():
         artifacts = REPO / artifacts
 
+    if args.regressions:
+        failed = 0
+        for seed, why in REGRESSION_SEEDS.items():
+            case = draw_case(seed)
+            print(f"regression {seed}: {why}")
+            print(f"  {describe(case)}")
+            with tempfile.TemporaryDirectory(prefix="encspace_") as workdir:
+                result = run_case(cli, ffmpeg, case, workdir, artifacts)
+            print(f"  {result.status}"
+                  + (f" ({result.stage}): {result.detail}" if result.detail else ""))
+            failed += result.status == "fail"
+        sys.exit(1 if failed else 0)
+
     if args.replay is not None:
         case = draw_case(args.replay)
         print(describe(case))
@@ -863,7 +948,7 @@ def main():
     print()
 
     started = time.monotonic()
-    counts = {"ok": 0, "refused": 0, "fail": 0}
+    counts = {"ok": 0, "refused": 0, "misprobed": 0, "fail": 0}
     refusals = {reason: 0 for reason in REFUSALS}
     failures = []
     index = 0
@@ -903,6 +988,8 @@ def main():
     print(f"{total} cases in {elapsed:.1f}s: {counts['ok']} encoded and decoded cleanly, "
           f"{counts['refused']} refused"
           + (f" ({breakdown})" if breakdown else "")
+          + (f", {counts['misprobed']} misprobed (valid stream, ffmpeg auto-detection "
+             "chose another container)" if counts["misprobed"] else "")
           + f", {counts['fail']} failed")
 
     if counts["fail"]:
@@ -913,9 +1000,12 @@ def main():
     # A run where the encoder refused nearly everything is not a pass: it
     # would mean the generator has drifted out of the accepted space, or the
     # encoder has regressed into refusing it, and every case above would have
-    # been "clean" without a single stream being checked.
-    if total >= 20 and counts["ok"] < total * 0.5:
-        print(f"\nonly {counts['ok']} of {total} configurations encoded at all - too few to "
+    # been "clean" without a single stream being checked. Misprobed cases
+    # count as checked: their streams were encoded, decoded by ac3cli, and
+    # decoded by ffmpeg under `-f ac3` with every error check on.
+    checked = counts["ok"] + counts["misprobed"]
+    if total >= 20 and checked < total * 0.5:
+        print(f"\nonly {checked} of {total} configurations encoded at all - too few to "
               "call this a pass. Either the generator is drawing outside the accepted space "
               "(re-run with --check-envelope) or the encoder has regressed into refusing it.")
         sys.exit(1)
