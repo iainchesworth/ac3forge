@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -75,6 +76,12 @@ struct StreamConfig {
     // sets the first pass's measured_peak_data_rate_16ths() here to write
     // the exact whole-stream maximum §4.2.6 defines.
     std::uint32_t peak_data_rate_16ths = 0;
+    // The 16-channel presentation's §4.4 description - Atmos-in-TrueHD's
+    // static half: which channels are loudspeaker feeds, ISF bed channels,
+    // and dynamic objects. When engaged, every major sync carries
+    // 16ch_channel_meaning() and substream_info announces the presentation.
+    // Its channel_count must equal `channels`.
+    std::optional<SixteenChannelMeaning> sixteen_channel{};
 };
 
 // §2.7's delay ceiling, in access units. 12 frames holds the worst case
@@ -99,13 +106,18 @@ class AC3FORGE_EXPORT StreamEncoder {
     // (samples_per_access_unit(rate)) in, one complete byte-aligned access
     // unit out. The first call emits a major sync (a stream must begin with
     // one, §5.1), then every major_sync_interval-th call after that.
+    // `extra_data`, when non-empty, is an opaque payload wrapped in §4.8's
+    // EXTRA_DATA() framing after the substream - the extension point
+    // per-frame Atmos object metadata rides in.
     [[nodiscard]] std::vector<std::byte> encode_access_unit(
-        std::span<const std::span<const std::int32_t>> channels);
+        std::span<const std::span<const std::int32_t>> channels,
+        std::span<const std::byte> extra_data = {});
 
     // The final access unit: same as above plus §4.6's terminator fields.
     // No further access units may be encoded after this.
     [[nodiscard]] std::vector<std::byte> encode_access_unit(
-        std::span<const std::span<const std::int32_t>> channels, EndOfStream end);
+        std::span<const std::span<const std::int32_t>> channels, EndOfStream end,
+        std::span<const std::byte> extra_data = {});
 
     // Single-channel convenience; requires config.channels == 1.
     [[nodiscard]] std::vector<std::byte> encode_access_unit(
@@ -128,7 +140,8 @@ class AC3FORGE_EXPORT StreamEncoder {
 
    private:
     [[nodiscard]] std::vector<std::byte> encode_impl(
-        std::span<const std::span<const std::int32_t>> channels, const EndOfStream* end);
+        std::span<const std::span<const std::int32_t>> channels, const EndOfStream* end,
+        std::span<const std::byte> extra_data);
 
     StreamConfig config_;
     std::uint64_t access_unit_index_ = 0;
@@ -184,6 +197,16 @@ class AC3FORGE_EXPORT StreamDecoder {
     // encoder's delivery schedule.
     [[nodiscard]] int fifo_delay_samples() const { return fifo_delay_; }
 
+    // The most recent access unit's EXTRA_DATA() payload (empty when the
+    // unit carried none, or only padding). Overwritten by each decode.
+    [[nodiscard]] const std::vector<std::byte>& extra_data() const { return extra_data_; }
+
+    // The stream's 16-channel presentation description, once a major sync
+    // carrying one has decoded - Atmos-in-TrueHD's static channel roles.
+    [[nodiscard]] const std::optional<SixteenChannelMeaning>& sixteen_channel() const {
+        return context_.sixteen_channel;
+    }
+
    private:
     int wordlength_;
     bool have_context_ = false;
@@ -191,6 +214,7 @@ class AC3FORGE_EXPORT StreamDecoder {
     bool end_of_stream_ = false;
     int zero_samples_ = 0;
     int fifo_delay_ = 0;
+    std::vector<std::byte> extra_data_{};
     MajorSyncInfo context_{};
 };
 

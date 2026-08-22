@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -11,7 +12,11 @@
 #include "ac3/mlp/mlp_tables.hpp"
 
 // mlp_sync and major_sync_info(), "Dolby TrueHD (MLP) high-level bitstream
-// description" §3.3.1-3.3.3 / §4.1-4.3.
+// description" §3.3.1-3.3.5 / §4.1-4.4 - including the 16-channel
+// presentation's channel_meaning() extension (16ch_channel_meaning(),
+// §3.3.5/§4.4), which is the static/structural half of Atmos-in-TrueHD:
+// it declares which channels are loudspeaker feeds, Intermediate Spatial
+// Format bed channels, and dynamic audio objects.
 //
 // Deliberately NOT covered here: substream_directory, substream_segment(),
 // block(), restart_header(), EXTRA_DATA() (§3.3.6-3.3.9 / §4.5-4.8) - those
@@ -19,13 +24,65 @@
 // neither Dolby document specifies (see docs/concepts/truehd-mlp.md). This
 // file covers exactly what's fully specified and buildable without it: the
 // header that announces a TrueHD access unit and its channel presentations.
-//
-// Also deliberately NOT covered: the 16-channel presentation
-// (16ch_channel_meaning(), §3.3.5/§4.4) and therefore Atmos-in-TrueHD's
-// channel-assignment metadata - v1 scope per the design doc. Every
-// MajorSyncInfo this module builds packs extra_channel_meaning_present as 0.
 
 namespace ac3::mlp {
+
+// §4.4: 16ch_channel_meaning(), the 16-channel presentation's description.
+// Channel order on the wire is loudspeaker feeds, then Intermediate Spatial
+// Format channels, then dynamic objects (§4.4.10's worked example), and the
+// parts must sum to channel_count. Despite the name, §4.4.3 restricts the
+// presentation to 16 channels (the count field's MSB "shall be set to 0").
+struct SixteenChannelMeaning {
+    std::uint8_t dialogue_norm = 31;  // u(5); 0 and 31 both mean -31 LKFS
+    std::uint8_t mix_level = 0;       // u(6); peak mixing level = 70+value dB
+    int channel_count = 1;            // 1..16; stored one less
+
+    // §4.4.4: every full-bandwidth channel is a dynamic object. When set,
+    // the only further question is whether an LFE channel leads (§4.4.5);
+    // the content-description machinery below is skipped entirely.
+    bool dyn_object_only = true;
+    bool lfe_present = false;  // §4.4.5; meaningful only when dyn_object_only
+
+    // §4.4.6, Table 17: bit 0 = loudspeaker feeds, bit 1 = Intermediate
+    // Spatial Format audio, bit 2 = dynamic objects - present in that
+    // order. Meaningful only when !dyn_object_only; 0 is illegal then.
+    std::uint8_t content_description = 0;  // v(4)
+    // §3.3.5 carries chan_distribute in the bit-0 branch but the document
+    // defines no semantics for it (no §4.4.x entry) - packed structurally,
+    // left false, same policy as ChannelMeaning's control-enable flags.
+    bool chan_distribute = false;
+    bool lfe_only = false;                 // §4.4.7: the ONLY feed is an LFE
+    std::uint16_t channel_assignment = 0;  // §4.4.8 v(10), Table 18; when
+                                           // feeds beyond a lone LFE exist
+    std::uint8_t intermediate_spatial_format = 0;  // §4.4.9 v(3), Table 19:
+                                                   // 010b/011b/100b only
+    int dynamic_object_count = 0;  // §4.4.10; 1..16 when bit 2 set, stored
+                                   // one less
+};
+
+// Table 18's per-bit channel counts, for consistency checks: how many
+// loudspeaker-feed channels an assignment mask names.
+[[nodiscard]] constexpr int sixteen_channel_assignment_count(std::uint16_t assignment) {
+    constexpr int kCounts[10] = {2, 1, 1, 2, 2, 2, 2, 2, 2, 1};
+    int total = 0;
+    for (int bit = 0; bit < 10; ++bit) {
+        if ((assignment >> bit) & 1) {
+            total += kCounts[bit];
+        }
+    }
+    return total;
+}
+
+// Table 19: the channel count of each legal Intermediate Spatial Format
+// (0 for reserved codes).
+[[nodiscard]] constexpr int intermediate_spatial_format_channels(std::uint8_t format) {
+    switch (format) {
+        case 0b010: return 10;  // BH7.3.0.0
+        case 0b011: return 14;  // BH9.5.0.0
+        case 0b100: return 15;  // BH7.5.3.0
+        default: return 0;
+    }
+}
 
 // §4.3: channel_meaning(), transcribed field-by-field. *_dialogue_norm and
 // *_mix_level are per Table columns 4.3.1-4.3.8; the two enable flags this
@@ -86,9 +143,18 @@ struct MajorSyncInfo {
     std::uint8_t extended_substream_info = 0;  // u(2), Table 13
     std::uint8_t substream_info = 0;           // v(8), Tables 14-16; bit 7 (the
                                                  // 16ch-presentation flag) is
-                                                 // always packed as 0 - v1 scope
+                                                 // derived: the builder sets it
+                                                 // exactly when sixteen_channel
+                                                 // is engaged
 
     ChannelMeaning meaning{};
+
+    // When engaged, channel_meaning() grows its §4.3.9-4.3.10 extension
+    // (extra_channel_meaning_present, the 4-bit word length, and
+    // extra_channel_meaning_data() carrying 16ch_channel_meaning() plus
+    // reserved fill) and substream_info bit 7 is set - §3.3.4's presence
+    // rule couples the two, so the builder and parser enforce it.
+    std::optional<SixteenChannelMeaning> sixteen_channel{};
 };
 
 // §4.2.2, Table 4: a 2-bit modifier value meaningful as content type - used
@@ -123,9 +189,19 @@ struct MajorSyncInfo {
 // The independent read side, transcribed from §4.2's field list rather than
 // as the inverse of build_major_sync_info() - the two are meant to disagree
 // if either one gets a field wrong, not to validate each other's assumptions.
+// `data` must be exactly the structure (use major_sync_info_size to find its
+// end inside an access unit - the extension makes it variable-length).
 // Returns false (leaving `out` partially written) if format_sync, signature
 // or the CRC don't check out.
 [[nodiscard]] AC3FORGE_EXPORT bool parse_major_sync_info(std::span<const std::byte> data,
                                                           MajorSyncInfo& out);
+
+// The total byte size of the major_sync_info() starting at data[0],
+// discovered from the §4.3.9-4.3.10 extension fields alone (26 fixed bytes,
+// the optional (extra_channel_meaning_length + 1) 16-bit words, the CRC).
+// Returns 0 when `data` is too short to hold the structure it declares.
+// This is how an access-unit parser finds where the substream directory
+// starts; nothing before the CRC states the length explicitly.
+[[nodiscard]] AC3FORGE_EXPORT std::size_t major_sync_info_size(std::span<const std::byte> data);
 
 }  // namespace ac3::mlp

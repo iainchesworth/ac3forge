@@ -60,11 +60,27 @@ this project currently knows versus still has to work out before it can be built
     the shaper state would be identically zero - dead machinery. It becomes relevant only if a
     lossy/rate-capped mode is ever added.
 
+    The Atmos structural layer is in. `major_sync_info()` now carries the full
+    `channel_meaning()` extension - `16ch_channel_meaning()` (§4.4) transcribed field by field
+    (dialogue norm/mix level, `dyn_object_only`, the Table 17 content-description bitmask,
+    Table 18 loudspeaker assignment, Table 19 ISF formats, dynamic-object count, with §4.4.10's
+    channel-sum consistency enforced both ways), gated on `substream_info` bit 7 exactly as
+    §3.3.4 couples them. `EXTRA_DATA()` (§4.8, `extra_data.hpp`) frames opaque per-access-unit
+    payloads with its length-check nibble and 0xA9 parity - and the stream layer carries both:
+    `StreamConfig::sixteen_channel` describes the channel roles in-band, and
+    `encode_access_unit`'s `extra_data` parameter rides an EMDF container (`ac3::emdf`, the
+    same TS 102 366 Annex H code the E-AC-3 Atmos path uses) holding per-frame OAMD object
+    positions (`ac3::oba::build_payload`). Verified end to end: a 12-channel stream - a 5.1
+    bed as loudspeaker feeds plus six dynamic objects as discrete lossless channels, TrueHD's
+    way - round-trips bit-exactly with its channel roles and per-frame object metadata intact.
+
     V1 shape limits, deliberately: one substream, one block per access unit. The block
     header's field order is a documented self-consistent packing of the WO's inventory, NOT the
     shipping layout - interop with real TrueHD decoders still requires the layer-3/4 format
-    sources. See [What's confirmed versus what's still
-    open](#whats-confirmed-versus-whats-still-open).
+    sources. The one remaining Atmos-metadata question is narrower than ever: whether shipping
+    TrueHD wraps its object metadata in EXTRA_DATA() exactly as EMDF, or in a further
+    proprietary wrapper (see [What's confirmed versus what's still
+    open](#whats-confirmed-versus-whats-still-open)).
 
 ## A different lineage: lossless, not perceptual
 

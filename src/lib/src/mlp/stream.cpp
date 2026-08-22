@@ -9,6 +9,7 @@
 #include "ac3/core/bitwriter.hpp"
 #include "ac3/mlp/block.hpp"
 #include "ac3/mlp/crc.hpp"
+#include "ac3/mlp/extra_data.hpp"
 #include "ac3/mlp/restart_header.hpp"
 #include "ac3/mlp/select.hpp"
 
@@ -36,6 +37,12 @@ constexpr std::uint8_t kSingleSubstreamInfo = 0x14;
     info.substreams = 1;
     info.extended_substream_info = 0;
     info.substream_info = kSingleSubstreamInfo;
+    // The 16-channel presentation's static description (§4.4) - the
+    // builder derives substream_info bit 7 from this. V1 keeps the single
+    // substream carrying every channel; the extended_substream_info
+    // substream mapping of Table 13 only becomes meaningful with multiple
+    // substreams.
+    info.sixteen_channel = config.sixteen_channel;
     return info;
 }
 
@@ -90,17 +97,20 @@ StreamEncoder::StreamEncoder(const StreamConfig& config) : config_(config) {
 }
 
 std::vector<std::byte> StreamEncoder::encode_access_unit(
-    std::span<const std::span<const std::int32_t>> channels) {
-    return encode_impl(channels, nullptr);
+    std::span<const std::span<const std::int32_t>> channels,
+    std::span<const std::byte> extra_data) {
+    return encode_impl(channels, nullptr, extra_data);
 }
 
 std::vector<std::byte> StreamEncoder::encode_access_unit(
-    std::span<const std::span<const std::int32_t>> channels, EndOfStream end) {
-    return encode_impl(channels, &end);
+    std::span<const std::span<const std::int32_t>> channels, EndOfStream end,
+    std::span<const std::byte> extra_data) {
+    return encode_impl(channels, &end, extra_data);
 }
 
 std::vector<std::byte> StreamEncoder::encode_impl(
-    std::span<const std::span<const std::int32_t>> channels, const EndOfStream* end) {
+    std::span<const std::span<const std::int32_t>> channels, const EndOfStream* end,
+    std::span<const std::byte> extra_data) {
     const auto frame = static_cast<std::size_t>(samples_per_access_unit(config_.sample_rate));
     assert(!finished_);
     assert(channels.size() == static_cast<std::size_t>(config_.channels));
@@ -189,7 +199,12 @@ std::vector<std::byte> StreamEncoder::encode_impl(
         major_bytes = build_major_sync_info(make_major_sync(config_));
     }
 
-    const std::size_t total = 4 + major_bytes.size() + 2 + segment_bytes.size() + 2;
+    // §3.3.1: EXTRA_DATA() sits between the last substream_end and
+    // unit_end; absent entirely when there's no payload.
+    const std::vector<std::byte> extra_bytes = build_extra_data(extra_data);
+
+    const std::size_t total =
+        4 + major_bytes.size() + 2 + segment_bytes.size() + 2 + extra_bytes.size();
     assert(total % 2 == 0);
     const auto length_words = static_cast<std::uint16_t>(total / 2);
     assert(length_words < 4096);
@@ -217,6 +232,9 @@ std::vector<std::byte> StreamEncoder::encode_impl(
     }
     unit.put(parity, 8);
     unit.put(crc, 8);
+    for (const auto b : extra_bytes) {
+        unit.put(std::to_integer<std::uint32_t>(b), 8);
+    }
 
     previous_size_bits_ = static_cast<std::int64_t>(total) * 8;
     ++access_unit_index_;
@@ -259,12 +277,14 @@ bool StreamDecoder::decode_access_unit(std::span<const std::byte> data,
     std::size_t offset = 4;
     const bool major = r.read(32) == kFormatSync;
     if (major) {
-        // parse_major_sync_info wants the whole 28-byte structure.
-        if (data.size() < offset + 28 + 2) {
+        // parse_major_sync_info wants the exact structure, whose size the
+        // 16ch extension makes variable - discover it first.
+        const auto sync_size = major_sync_info_size(data.subspan(offset));
+        if (sync_size == 0 || data.size() < offset + sync_size + 2) {
             return false;
         }
         MajorSyncInfo info;
-        if (!parse_major_sync_info(data.subspan(offset, 28), info)) {
+        if (!parse_major_sync_info(data.subspan(offset, sync_size), info)) {
             return false;
         }
         if (info.substreams != 1) {
@@ -272,7 +292,7 @@ bool StreamDecoder::decode_access_unit(std::span<const std::byte> data,
         }
         context_ = info;
         have_context_ = true;
-        offset += 28;
+        offset += sync_size;
     }
     if (!have_context_) {
         return false;  // §5.1: decoding starts at a major sync
@@ -293,9 +313,16 @@ bool StreamDecoder::decode_access_unit(std::span<const std::byte> data,
     }
     offset += 2;
 
+    // §4.8: anything between substream_end and unit_end is EXTRA_DATA().
     const std::size_t end_bytes = static_cast<std::size_t>(end_ptr) * 2;
-    if (offset + end_bytes != data.size()) {
+    if (offset + end_bytes > data.size()) {
         return false;
+    }
+    extra_data_.clear();
+    if (const auto extra = data.subspan(offset + end_bytes); !extra.empty()) {
+        if (!parse_extra_data(extra, extra_data_)) {
+            return false;
+        }
     }
     const std::size_t segment_len = crc_present != 0 ? end_bytes - 2 : end_bytes;
     const auto segment = data.subspan(offset, segment_len);

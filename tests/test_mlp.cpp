@@ -9,8 +9,10 @@
 #include <span>
 #include <vector>
 
+#include "ac3/emdf/emdf.hpp"
 #include "ac3/mlp/block.hpp"
 #include "ac3/mlp/crc.hpp"
+#include "ac3/mlp/extra_data.hpp"
 #include "ac3/mlp/huffman.hpp"
 #include "ac3/mlp/matrix.hpp"
 #include "ac3/mlp/mlp_tables.hpp"
@@ -20,11 +22,15 @@
 #include "ac3/mlp/select.hpp"
 #include "ac3/mlp/stream.hpp"
 #include "ac3/mlp/sync.hpp"
+#include "ac3/oba/oamd.hpp"
 
-// Covers only what's fully specified and built so far: mlp_sync's
-// check_nibble, major_sync_crc, and major_sync_info()'s pack/parse round
-// trip. block_data()'s compression algorithm, and therefore any real audio
-// payload, isn't implemented yet - see docs/concepts/truehd-mlp.md.
+// The whole ac3::mlp surface: framing (mlp_sync, major_sync_info() with the
+// 16ch extension, restart headers, the three CRC/parity schemes,
+// terminators, EXTRA_DATA()), the block codec (B1 strip, DC offsets, the
+// WO-Huffman entropy layer, predictors, the PMQ matrix), stream assembly
+// with FIFO timing, automatic encoder selection, and the Atmos structural
+// layer. The block-header field ORDER is this project's provisional
+// packing - see docs/concepts/truehd-mlp.md.
 
 namespace {
 
@@ -1621,4 +1627,196 @@ TEST_CASE("block: a DC pedestal costs nothing - the offset rides the LSB word", 
     std::vector<std::int32_t> decoded;
     REQUIRE(decoder.decode_access_unit(unit_offset, decoded));
     REQUIRE(decoded == offset);
+}
+
+// --- Atmos structural layer: 16ch_channel_meaning + EXTRA_DATA -------------
+
+TEST_CASE("extra_data: framing round trips and rejects tampering", "[mlp]") {
+    // Odd- and even-length payloads exercise both padding cases (§4.8.4
+    // fills to a 16-bit boundary, so 0 or 1 zero bytes follow the payload).
+    for (const std::size_t size : {1u, 2u, 5u, 32u, 33u}) {
+        CAPTURE(size);
+        std::vector<std::byte> payload(size);
+        for (std::size_t i = 0; i < size; ++i) {
+            payload[i] = static_cast<std::byte>(0x30 + i);
+        }
+        const auto framed = ac3::mlp::build_extra_data(payload);
+        REQUIRE(framed.size() % 2 == 0);
+        std::vector<std::byte> back;
+        REQUIRE(ac3::mlp::parse_extra_data(framed, back));
+        REQUIRE(back.size() >= size);
+        REQUIRE(back.size() - size <= 1);
+        CHECK(std::equal(payload.begin(), payload.end(), back.begin()));
+        if (back.size() > size) {
+            CHECK(back.back() == std::byte{0});
+        }
+
+        // §4.8.5's parity must catch a flipped payload byte.
+        auto corrupted = framed;
+        corrupted[2] ^= std::byte{0x01};
+        CHECK_FALSE(ac3::mlp::parse_extra_data(corrupted, back));
+
+        // And §4.8.2's nibble must catch a mangled length word.
+        auto bad_length = framed;
+        bad_length[1] ^= std::byte{0x01};
+        CHECK_FALSE(ac3::mlp::parse_extra_data(bad_length, back));
+    }
+
+    // An empty payload IS no EXTRA_DATA (§4.8 makes the field optional).
+    CHECK(ac3::mlp::build_extra_data({}).empty());
+
+    // §4.8: a first word of zero is all padding - valid, and empty.
+    const std::array<std::byte, 4> padding_only{std::byte{0}, std::byte{0}, std::byte{0},
+                                                std::byte{0}};
+    std::vector<std::byte> out{std::byte{0x55}};
+    REQUIRE(ac3::mlp::parse_extra_data(padding_only, out));
+    CHECK(out.empty());
+}
+
+TEST_CASE("sync: 16ch channel meaning round trips through the major sync", "[mlp]") {
+    ac3::mlp::MajorSyncInfo info;
+    info.sample_rate = ac3::mlp::SampleRate::k48000;
+    info.substreams = 1;
+    info.substream_info = 0x14;
+
+    SECTION("dynamic objects only, LFE leading") {
+        ac3::mlp::SixteenChannelMeaning m;
+        m.dialogue_norm = 27;
+        m.mix_level = 12;
+        m.channel_count = 12;
+        m.dyn_object_only = true;
+        m.lfe_present = true;
+        info.sixteen_channel = m;
+    }
+    SECTION("loudspeaker feeds, ISF bed, and dynamic objects") {
+        // Table 17 code 0111b: feeds, then BH7.3.0.0's 10 ISF channels,
+        // then objects. 2 feeds (L/R) + 10 ISF + 4 objects = 16.
+        ac3::mlp::SixteenChannelMeaning m;
+        m.channel_count = 16;
+        m.dyn_object_only = false;
+        m.content_description = 0b111;
+        m.lfe_only = false;
+        m.channel_assignment = 0x001;  // L/R
+        m.intermediate_spatial_format = 0b010;
+        m.dynamic_object_count = 4;
+        info.sixteen_channel = m;
+    }
+
+    const auto bytes = ac3::mlp::build_major_sync_info(info);
+    // The extension grows the structure past the fixed 28 bytes, and the
+    // size prober must agree with what the builder produced.
+    CHECK(bytes.size() > 28);
+    CHECK(ac3::mlp::major_sync_info_size(bytes) == bytes.size());
+
+    ac3::mlp::MajorSyncInfo parsed;
+    REQUIRE(ac3::mlp::parse_major_sync_info(bytes, parsed));
+    REQUIRE(parsed.sixteen_channel.has_value());
+    CHECK((parsed.substream_info & 0x80) != 0);
+    CHECK(parsed.sixteen_channel->dialogue_norm == info.sixteen_channel->dialogue_norm);
+    CHECK(parsed.sixteen_channel->mix_level == info.sixteen_channel->mix_level);
+    CHECK(parsed.sixteen_channel->channel_count == info.sixteen_channel->channel_count);
+    CHECK(parsed.sixteen_channel->dyn_object_only == info.sixteen_channel->dyn_object_only);
+    CHECK(parsed.sixteen_channel->lfe_present == info.sixteen_channel->lfe_present);
+    CHECK(parsed.sixteen_channel->content_description ==
+          info.sixteen_channel->content_description);
+    CHECK(parsed.sixteen_channel->channel_assignment ==
+          info.sixteen_channel->channel_assignment);
+    CHECK(parsed.sixteen_channel->intermediate_spatial_format ==
+          info.sixteen_channel->intermediate_spatial_format);
+    CHECK(parsed.sixteen_channel->dynamic_object_count ==
+          info.sixteen_channel->dynamic_object_count);
+}
+
+TEST_CASE("sync: a plain major sync still parses and sizes as 28 bytes", "[mlp]") {
+    ac3::mlp::MajorSyncInfo info;
+    info.substreams = 1;
+    const auto bytes = ac3::mlp::build_major_sync_info(info);
+    CHECK(bytes.size() == 28);
+    CHECK(ac3::mlp::major_sync_info_size(bytes) == 28);
+    ac3::mlp::MajorSyncInfo parsed;
+    REQUIRE(ac3::mlp::parse_major_sync_info(bytes, parsed));
+    CHECK_FALSE(parsed.sixteen_channel.has_value());
+}
+
+TEST_CASE("stream: an Atmos-shaped stream carries channel roles and object metadata",
+          "[mlp]") {
+    // The structural whole: a 12-channel presentation - a 5.1 bed as
+    // loudspeaker feeds plus six dynamic objects, each a discrete lossless
+    // channel (TrueHD's way, no JOC) - described by 16ch_channel_meaning()
+    // in every major sync, with per-frame OAMD object positions riding an
+    // EMDF container in EXTRA_DATA().
+    const auto frame = static_cast<std::size_t>(
+        ac3::mlp::samples_per_access_unit(ac3::mlp::SampleRate::k48000));
+
+    ac3::mlp::SixteenChannelMeaning meaning;
+    meaning.channel_count = 12;
+    meaning.dyn_object_only = false;
+    meaning.content_description = 0b101;  // feeds + dynamic objects
+    meaning.lfe_only = false;
+    meaning.channel_assignment = 0x00F;  // L/R, C, LFE, Ls/Rs = 6 feeds
+    meaning.dynamic_object_count = 6;
+
+    ac3::mlp::StreamConfig config;
+    config.channels = 12;
+    config.automatic = true;
+    config.sixteen_channel = meaning;
+    ac3::mlp::StreamEncoder encoder(config);
+    ac3::mlp::StreamDecoder decoder;
+
+    std::mt19937 rng(0xA7305);
+    for (int au = 0; au < 3; ++au) {
+        CAPTURE(au);
+        auto channels = random_channels(rng, 12, frame, 20);
+        std::vector<std::span<const std::int32_t>> spans(channels.begin(), channels.end());
+
+        // Per-frame object metadata: six objects on the move.
+        std::vector<ac3::oba::DynamicObject> objects(6);
+        for (std::size_t i = 0; i < objects.size(); ++i) {
+            objects[i].position = {0.1 * static_cast<double>(i + au), 0.5, 0.25};
+        }
+        const ac3::oba::Program program{
+            .dynamic_only = false, .lfe = false, .bed = ac3::oba::bed::k51,
+            .dynamic_objects = 6};
+        const auto oamd = ac3::oba::build_payload(program, objects);
+        const std::array<ac3::emdf::Payload, 1> payloads{
+            ac3::emdf::Payload{ac3::emdf::kPayloadIdOamd, oamd}};
+        const auto container = ac3::emdf::build_container(payloads);
+
+        const auto unit = encoder.encode_access_unit(
+            std::span<const std::span<const std::int32_t>>{spans}, container);
+
+        std::vector<std::vector<std::int32_t>> decoded;
+        REQUIRE(decoder.decode_access_unit(unit, decoded));
+        REQUIRE(decoded == channels);
+
+        // The metadata came through intact (the framing may append one
+        // zero byte of §4.8.4 padding the payload formats self-delimit
+        // past).
+        const auto& extra = decoder.extra_data();
+        REQUIRE(extra.size() >= container.size());
+        REQUIRE(extra.size() - container.size() <= 1);
+        CHECK(std::equal(container.begin(), container.end(), extra.begin()));
+    }
+
+    // And the stream announced its channel roles in-band.
+    REQUIRE(decoder.sixteen_channel().has_value());
+    CHECK(decoder.sixteen_channel()->channel_count == 12);
+    CHECK(decoder.sixteen_channel()->content_description == 0b101);
+    CHECK(decoder.sixteen_channel()->channel_assignment == 0x00F);
+    CHECK(decoder.sixteen_channel()->dynamic_object_count == 6);
+    CHECK(decoder.channels() == 12);
+}
+
+TEST_CASE("stream: an access unit without extra data reports none", "[mlp]") {
+    const auto frame = static_cast<std::size_t>(
+        ac3::mlp::samples_per_access_unit(ac3::mlp::SampleRate::k48000));
+    std::mt19937 rng(0xE0DA);
+    ac3::mlp::StreamConfig config;
+    ac3::mlp::StreamEncoder encoder(config);
+    ac3::mlp::StreamDecoder decoder;
+    const auto samples = random_samples(rng, frame, 16);
+    const auto unit = encoder.encode_access_unit(std::span<const std::int32_t>{samples});
+    std::vector<std::int32_t> decoded;
+    REQUIRE(decoder.decode_access_unit(unit, decoded));
+    CHECK(decoder.extra_data().empty());
 }
