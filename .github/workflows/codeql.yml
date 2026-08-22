@@ -93,6 +93,17 @@ jobs:
         with:
           languages: cpp
           build-mode: manual
+          # security-and-quality layers CodeQL's maintainability/reliability
+          # queries on top of the default security set - the same
+          # deterministic rule layer GitHub's paid Code Quality product runs,
+          # which doesn't cover C++ (and isn't available on this org's plan)
+          # anyway, so this suite is how this repo gets that analysis. Not
+          # adopted a priori: a measured dispatch run on this codebase first
+          # (2026-08-22, the same discipline as .clang-tidy's curation)
+          # showed 179 rules and ZERO findings against the default suite's
+          # 58 rules / zero - the suite starts from a clean baseline, so any
+          # future finding is new signal, not inherited noise.
+          queries: security-and-quality
 
       - name: Configure
         run: cmake --preset config-linux-gcc
