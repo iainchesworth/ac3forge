@@ -10,9 +10,12 @@
 #include <cstddef>
 #include <span>
 
+#include "ac3/signing/export.hpp"
+
 namespace ac3::signing {
 
-std::array<std::byte, 32> hmac_sha256(std::span<const std::byte> key,
-                                      std::span<const std::byte> message);
+// Exported for the same reason sha256.hpp's own one-shot function is - see its comment.
+AC3SIGNING_EXPORT std::array<std::byte, 32> hmac_sha256(std::span<const std::byte> key,
+                                                         std::span<const std::byte> message);
 
 }  // namespace ac3::signing
