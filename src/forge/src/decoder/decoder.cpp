@@ -3,13 +3,22 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <cstddef>
+#include <cstdint>
+#include <expected>
+#include <optional>
+#include <span>
+#include <string_view>
+#include <vector>
 
 #include "ac3/core/bitalloc.hpp"
 #include "ac3/core/bitreader.hpp"
 #include "ac3/core/crc16.hpp"
+#include "ac3/core/eac3_tables.hpp"
 #include "ac3/core/exponents.hpp"
 #include "ac3/core/mantissas.hpp"
 #include "ac3/core/mdct.hpp"
+#include "ac3/core/tables.hpp"
 #include "ac3/encoder/coupling.hpp"
 #include "ac3/meta/drc.hpp"
 #include "gain.hpp"

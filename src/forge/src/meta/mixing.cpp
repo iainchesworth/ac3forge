@@ -1,8 +1,12 @@
 #include "ac3/meta/mixing.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstddef>
+#include <span>
 
+#include "ac3/core/tables.hpp"
 #include "ac3/meta/drc.hpp"  // to_db
 
 namespace ac3::meta {

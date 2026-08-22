@@ -2,15 +2,22 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <numbers>
 #include <print>
 #include <span>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
+#include "../support.hpp"
 #include "ac3/analysis/levels.hpp"
+#include "ac3/core/tables.hpp"
 #include "ac3/encoder/eac3_frame.hpp"
 #include "ac3/encoder/encoder.hpp"
 #include "ac3/encoder/plan.hpp"

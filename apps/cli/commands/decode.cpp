@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <expected>
 #include <filesystem>
@@ -11,15 +12,19 @@
 #include <print>
 #include <span>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <vector>
 
+#include "../support.hpp"
 #include "ac3/analysis/levels.hpp"
+#include "ac3/core/eac3_tables.hpp"
+#include "ac3/core/tables.hpp"
 #include "ac3/decoder/decoder.hpp"
 #include "ac3/encoder/plan.hpp"
 #include "ac3/io/wav.hpp"
 #include "ac3/meta/drc.hpp"
-#include "ac3/oba/atmos.hpp"
+#include "ac3/oba/oamd.hpp"
 
 namespace ac3cli::commands {
 

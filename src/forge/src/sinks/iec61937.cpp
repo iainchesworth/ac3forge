@@ -1,7 +1,14 @@
 #include "ac3/sinks/iec61937.hpp"
 
+#include <cstddef>
+#include <cstdint>
+#include <expected>
+#include <optional>
+#include <span>
+#include <utility>
+#include <vector>
+
 #include "ac3/core/eac3_tables.hpp"
-#include "ac3/core/tables.hpp"
 
 namespace ac3::iec61937 {
 

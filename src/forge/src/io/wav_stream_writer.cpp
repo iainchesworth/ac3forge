@@ -1,6 +1,14 @@
 #include "ac3/io/wav.hpp"
 
+#include <cstddef>
+#include <cstdint>
+#include <expected>
 #include <fstream>
+#include <ios>
+#include <memory>
+#include <ostream>
+#include <span>
+#include <string>
 
 // Separate translation unit from wav.cpp: the one-shot writers there build
 // the whole file in memory before ever opening a stream, while this one is a

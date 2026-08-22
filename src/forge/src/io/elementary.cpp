@@ -1,9 +1,14 @@
 #include "ac3/io/elementary.hpp"
 
-#include <bit>
+#include <cstddef>
+#include <cstdint>
+#include <expected>
+#include <span>
+#include <string_view>
 
 #include "ac3/core/bitreader.hpp"
-#include "ac3/encoder/eac3_frame.hpp"  // kBsid, StreamType, chanmap
+#include "ac3/core/eac3_tables.hpp"
+#include "ac3/core/tables.hpp"
 
 namespace ac3::io {
 

@@ -3,6 +3,10 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include "ac3/core/tables.hpp"
+#include <cstdint>
+#include <span>
+#include <string_view>
 
 namespace ac3::meta {
 

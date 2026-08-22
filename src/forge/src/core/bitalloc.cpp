@@ -4,12 +4,16 @@
 #include <array>
 #include <cassert>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
+#include <functional>
 #include <optional>
+#include <span>
 #include <vector>
 
 #include "ac3/core/aht_tables.hpp"
 #include "ac3/core/bitalloc_tables.hpp"
+#include "ac3/core/tables.hpp"
 #include "ac3/internal/profiling.hpp"
 
 namespace ac3 {

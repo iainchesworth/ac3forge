@@ -1,9 +1,16 @@
 #include "ac3/analysis/levels.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <numbers>
+#include <optional>
+#include <span>
+#include <string_view>
 
+#include "ac3/core/tables.hpp"
 #include "ac3/spatial/spatial.hpp"
 
 namespace ac3::analysis {

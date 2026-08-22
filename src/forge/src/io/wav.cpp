@@ -1,11 +1,21 @@
 #include "ac3/io/wav.hpp"
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <cstring>
+#include <expected>
 #include <fstream>
+#include <ios>
 #include <istream>
 #include <iterator>
+#include <optional>
 #include <ostream>
+#include "ac3/core/tables.hpp"
+#include <span>
+#include <string>
+#include <string_view>
+#include <vector>
 
 namespace ac3::io {
 

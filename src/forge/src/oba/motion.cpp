@@ -2,7 +2,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <expected>
 #include <numbers>
+#include "ac3/oba/atmos.hpp"
+#include <span>
+#include <utility>
+#include <variant>
+#include <vector>
 
 namespace ac3::oba {
 

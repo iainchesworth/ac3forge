@@ -3,12 +3,17 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <span>
+#include <vector>
 
 #include "ac3/core/bitreader.hpp"
 #include "ac3/core/bitwriter.hpp"
 #include "ac3/core/mdct.hpp"
 #include "ac3/core/tables.hpp"
-#include "ac3/core/window.hpp"
+#include "ac3/oba/joc_tables.hpp"
 
 namespace ac3::joc {
 
