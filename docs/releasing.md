@@ -45,10 +45,26 @@ dispatched build fetches full history (or gets the version stamped directly via
 
 ## Pre-release checklist
 
-1. CI green on `main` for the commit you're about to tag.
-2. Releases must be **cut from main** - `resolve-version` checks this with
+1. **Before opening the `develop` -> `main` promotion PR**: confirm `develop` carries no
+   unexplained open code-scanning alerts.
+
+   ```bash
+   gh api "repos/iainchesworthlabs/ac3forge/code-scanning/alerts?ref=refs/heads/develop&state=open" -q '.[] | [.number, .rule.id, .most_recent_instance.location.path] | @tsv'
+   ```
+
+   Empty output - or every remaining line individually understood and either fixed or
+   dismissed with a justification - is the bar. This step exists because the PR-time gate
+   cannot cover it: alerts are tracked per-ref and the Security tab filters to the default
+   branch (`main`), so anything that accumulates on `develop` between releases (a scheduled
+   run picking up updated query packs, an already-dismissed finding re-minted by a file
+   move - alert identity is rule + line hash + *file path*) stays invisible until the
+   promotion merge lands it all on `main` at once, which is exactly how the v0.9.0-beta.1
+   promotion surfaced alerts #83-94. `release.yml`'s `alert-review` job re-checks this
+   (advisory only, default branch) as a backstop.
+2. CI green on `main` for the commit you're about to tag.
+3. Releases must be **cut from main** - `resolve-version` checks this with
    `git merge-base --is-ancestor` and fails otherwise (dry runs are exempt).
-3. Decide the tag.
+4. Decide the tag.
 
 ## Option A: tag-based release (the normal path)
 
