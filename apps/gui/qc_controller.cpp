@@ -116,16 +116,28 @@ std::optional<RawResult> measure_ac3(std::span<const std::byte> stream, QString&
             meter->push(views);
         }
     }
+    // frames is non-empty (checked above), so the loop above ran at least
+    // once and its first iteration always emplaces meter_ch1/meter_ch2 or
+    // meter, matching dual_mono - both are always engaged by this point.
     if (dual_mono) {
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         result.programmes[0].integrated_lkfs = meter_ch1->integrated_lkfs();
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         result.programmes[0].lra_lu = meter_ch1->loudness_range();
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         result.programmes[0].true_peak_dbtp = meter_ch1->true_peak_dbtp();
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         result.programmes[1].integrated_lkfs = meter_ch2->integrated_lkfs();
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         result.programmes[1].lra_lu = meter_ch2->loudness_range();
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         result.programmes[1].true_peak_dbtp = meter_ch2->true_peak_dbtp();
     } else {
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         result.programmes[0].integrated_lkfs = meter->integrated_lkfs();
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         result.programmes[0].lra_lu = meter->loudness_range();
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         result.programmes[0].true_peak_dbtp = meter->true_peak_dbtp();
     }
     result.seconds = static_cast<double>(result.unit_count) *
@@ -215,16 +227,28 @@ std::optional<RawResult> measure_eac3(std::span<const std::byte> stream, QString
         error = QStringLiteral("Stream carried no independent substream.");
         return std::nullopt;
     }
+    // have_first is checked just above and only ingest() sets it, in the same
+    // branch that emplaces meter_ch1/meter_ch2 or meter (matching dual_mono),
+    // so whichever one dual_mono selects is always engaged by this point.
     if (dual_mono) {
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         result.programmes[0].integrated_lkfs = meter_ch1->integrated_lkfs();
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         result.programmes[0].lra_lu = meter_ch1->loudness_range();
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         result.programmes[0].true_peak_dbtp = meter_ch1->true_peak_dbtp();
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         result.programmes[1].integrated_lkfs = meter_ch2->integrated_lkfs();
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         result.programmes[1].lra_lu = meter_ch2->loudness_range();
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         result.programmes[1].true_peak_dbtp = meter_ch2->true_peak_dbtp();
     } else {
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         result.programmes[0].integrated_lkfs = meter->integrated_lkfs();
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         result.programmes[0].lra_lu = meter->loudness_range();
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         result.programmes[0].true_peak_dbtp = meter->true_peak_dbtp();
     }
     result.seconds = static_cast<double>(result.unit_count) *
