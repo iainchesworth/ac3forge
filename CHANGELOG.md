@@ -12,6 +12,44 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 
 ## [Unreleased]
 
+### Added
+
+- **Performance and reference transform modes.** The decoder's inverse transform joins the
+  forward MDCT in having a fast path: §7.9.4 step 3 — the one O(N²) part of the normative
+  inverse — now runs through the same radix-2 FFT core the fast forward fold uses, and after
+  its evidence was reviewed (worst transform-level relative error 7.8e-14 against the direct
+  form; 214.9 dB SNR agreement for AC-3 and 284.7 dB for E-AC-3 over 180 seconds of real 5.1
+  material) it became the default: **decodes run 4.5–4.7× faster** (a 180-second decode drops
+  from ~3.5 s to ~0.8 s), and the direct form's 320 KiB of tabulated matrices are no longer
+  built at all on the default path. The pair is exposed as one intent-level switch:
+  `mode=reference` runs every transform in a command on the spec's own direct evaluations —
+  the forms the fast paths are validated against, for fixture regeneration or sample-for-sample
+  comparison against an external decoder — and `mode=performance` (the default state) names the
+  fast paths; `fast-mdct=off` / `fast-imdct=off` still adjust one half at a time. Encoded
+  output never depends on the decode-side switch. See
+  [Validation → Performance and reference modes](docs/verification.md#performance-and-reference-modes).
+- **Span-output decode forms.** `FrameDecoder::decode_frame_into` and
+  `Eac3Decoder::decode_access_unit_into` decode into caller-owned planar storage instead of
+  freshly allocated vectors — what a realtime consumer or the WASM demo wants — with the same
+  results as the value forms, pinned by lockstep equivalence tests. The E-AC-3 form keeps
+  §3.7's transient-pre-noise hold-back semantics exactly: a held-back frame leaves the caller's
+  spans untouched and is copied out at release.
+- **Streaming I/O for unbounded sessions.** `ac3::io::WavStreamReader` (block-at-a-time WAV
+  reading with the same parsing and sample conversion as the whole-file reader),
+  `ac3::io::WavPcm16StreamWriter` (the incremental sibling of the one-shot PCM16 writer, for
+  IEC 61937 carriers whose length isn't known up front), and `mpegts::Writer` (incremental
+  transport-stream muxing whose output is byte-identical to `mpegts::mux()` — that equality is
+  its contract and its test). Matroska already had its incremental `Writer`; MP4 deliberately
+  does not get one — `moov`/`stco` need every frame's final offset, and `fragment()` (fMP4) is
+  that format's streaming shape.
+- **A memory trend beside the timing trends.** `ac3membench` counts heap allocations and
+  allocator traffic per frame, live-byte drift and peak RSS across the encoder configurations
+  *and* the decode paths the timing benches never covered; every `develop`/`main` push appends
+  to the same `quality-history` series the CPU numbers use, rendered on
+  [docs/performance-trend.md](docs/performance-trend.md) with the same trailing-baseline gates
+  (either churn metric regressing flags the row) plus an absolute leak check — a leak is a leak
+  regardless of what last week's runs did.
+
 ### Fixed
 
 - **The encoder input-space fuzz no longer reports FFmpeg container-probe misses as encoder
@@ -48,6 +86,27 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   defaults across the whole opaque-handle surface — all on real multi-frame audio. `src/capi`'s
   measurement moved from 48.4%/27.1% line/branch to 87.8%/79.2%, and its floor in
   `scripts/coverage-report.sh` from 42/22 to 82/72 per the table's own calibration rule.
+- **Memory use is flat at any programme length, everywhere.** The memory-usage optimization
+  programme rebuilt how every front end moves audio: the CLI's encode commands stream their
+  input and their output (a 3-minute 5.1 encode peaked at 437.8 MiB before the programme and
+  9.3 MiB after; decode 217 → 28.5 MiB; `spdif` — whose IEC 61937 payload runs at the 4×
+  carrier rate — 225.7 → 18.0 MiB; an hour of `eac3-silence` 205 → 8.7 MiB), and every
+  output-producing command holds keep-partial and error semantics exactly as before, verified
+  byte-for-byte against pre-change binaries in every case. GUI recordings now stream to disk as
+  they encode for the containers whose format permits it (elementary, Matroska, MPEG-TS, the
+  IEC 61937 carrier) — which also makes a take **crash-safe**: its bytes are on disk
+  continuously, so a crash an hour in no longer loses the hour. The WASM demo gained real
+  memory ceilings and a graceful out-of-memory error in place of a killed tab.
+- **The codec's own per-frame allocation churn is down 85–88 % on encode and 54–61 % on
+  decode.** Working buffers that were freshly allocated every 32 ms frame — the exponent
+  strategy plan, the coupling work set, the E-AC-3 encoder's whole per-(stream, block) MDCT
+  spectrum set, the decoder's AHT and enhanced-coupling stores among them — are now owned,
+  reused storage with an every-field reset discipline, bit-exact by construction and verified
+  bit-exact in practice (AC-3 encode: 225,028 → 26,778 bytes and 286 → 86 allocations per
+  frame on the measured runner). The E-AC-3 decoder's per-substream state moved from
+  `std::map`s onto flat 32-slot arrays — the identity key space is exactly [0, 32) — for O(1)
+  lookup and zero setup allocations. Every step is recorded on the new memory trend, which now
+  gates regressions the same way the timing series always has.
 
 ## [0.8.0-beta.2] - 2026-08-19
 
