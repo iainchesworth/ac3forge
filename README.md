@@ -45,18 +45,12 @@ what each CI leg covers.
 
 ## What it does
 
-Encodes AC-3 (bsid 8) across every coding mode the standard defines, and E-AC-3 (bsid 16) across
-those plus 7.1, 5.1.2, 5.1.4 and 7.1.4 through dependent substreams, spectral extension,
-enhanced coupling, the adaptive hybrid transform, transient pre-noise processing, and Dolby
-Atmos objects via JOC. The in-repo decoder shares the encoder's core and reads both formats
-back, including every Annex E coding tool at every layout. Also included: standalone MKV, MP4
-and MPEG-TS muxers (MP4 with a spec-correct `dec3`/`dac3` box, Dolby Atmos signalling included),
-fragmented MP4/CMAF segmenting with HLS/DASH signaling helpers, a BW64/RF64 + Audio Definition
-Model reader, S/PDIF (IEC 61937) burst packing, WASAPI/ALSA/CoreAudio live capture and playback,
-peak/RMS/loudness metering, bitstream loudness QC against named delivery specs (`ac3cli qc`),
-EMDF object signing with an operator-supplied key, and **Shield Atmos Demo** — a small
-Android TV app (`apps/android/`) that streams live, controller-driven Atmos object motion
-out an NVIDIA Shield's HDMI passthrough to a real AV receiver, sideload-only. See
+Encodes and decodes AC-3 and E-AC-3 — every coding mode and layout the standards define, every
+Annex E coding tool, and Dolby Atmos objects via JOC — plus standalone MKV/MP4/MPEG-TS muxing, a
+BW64/RF64 + ADM reader, live capture/playback and S/PDIF passthrough, loudness metering and QC,
+and EMDF object signing. Also included: **Shield Atmos Demo**, a small Android TV app
+(`apps/android/`) streaming live, controller-driven Atmos object motion out an NVIDIA Shield's
+HDMI passthrough to a real AV receiver, sideload-only — see
 [docs/platforms/android.md](docs/platforms/android.md).
 
 Full capability tables — coding modes, sample rates, bit rates, metadata fields, spec section
