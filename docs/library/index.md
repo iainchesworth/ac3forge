@@ -1,11 +1,12 @@
 # Using ac3::forge
 
 The public API is the headers under `src/forge/include/ac3/`. Link `ac3::forge`; link
-`matroska::matroska` and/or `mp4::mp4` as well if you want a container writer, or `ac3adm::ac3adm`
-if you want to read a professional ADM BWF master — the one module in this list that is a reader
-rather than a writer, and so does not need `ac3::forge` linked alongside it at all. Unlike every
-other module here, `ac3adm::ac3adm` is opt-in: it is only built with `-DAC3FORGE_BUILD_ADM=ON`
-(default off), and needs several Boost header libraries pulled in via
+`matroska::matroska` and/or `mp4::mp4` as well if you want a container writer, `ac3::signing` if
+you want to apply the EMDF object-signing tag (see [Object signing](signing.md)), or
+`ac3adm::ac3adm` if you want to read a professional ADM BWF master — the one module in this list
+that is a reader rather than a writer, and so does not need `ac3::forge` linked alongside it at
+all. Unlike every other module here, `ac3adm::ac3adm` is opt-in: it is only built with
+`-DAC3FORGE_BUILD_ADM=ON` (default off), and needs several Boost header libraries pulled in via
 `-DVCPKG_MANIFEST_FEATURES=adm` — see [ADM / BW64 reading](adm.md) for why.
 
 **In-tree** (this repo `add_subdirectory`'d into a larger build, or as a git submodule):
@@ -31,6 +32,11 @@ Neither the package nor the codec itself has any dependency of its own to find: 
 `find_dependency()` calls, no system or third-party library, static or shared. (`ac3adm::ac3adm`
 is the sole exception project-wide — see the note above — and for that reason is not part of the
 installed `find_package(ac3forge)` package at all; consume it via `add_subdirectory` in-tree.)
+
+`ac3::signing` follows this exact same shape — mandatory, not gated by an
+`AC3FORGE_BUILD_<NAME>` switch, same as `ac3::forge` itself — so it resolves the identical way in
+both cases: the bare `ac3::signing` alias in-tree, and explicit `ac3::signing_static`/
+`ac3::signing_shared` from an installed package.
 
 **vcpkg.** A port lives in this repo at
 [`packaging/vcpkg-port/ac3forge/`](https://github.com/iainchesworthlabs/ac3forge/tree/main/packaging/vcpkg-port/ac3forge) and is pending

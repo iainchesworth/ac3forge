@@ -60,6 +60,7 @@ option(AC3FORGE_INSTALL_BOTH_LINKAGES "Install/export both static and shared lib
 
 if(AC3FORGE_INSTALL_BOTH_LINKAGES)
     set(_ac3forge_forge_install_targets forge_objects forge_static forge_shared)
+    set(_ac3forge_signing_install_targets signing_objects signing_static signing_shared)
     set(_ac3forge_matroska_install_targets matroska_objects matroska_static matroska_shared)
     set(_ac3forge_mp4_install_targets mp4_objects mp4_static mp4_shared)
     set(_ac3forge_mpegts_install_targets mpegts_objects mpegts_static mpegts_shared)
@@ -79,12 +80,14 @@ elseif(BUILD_SHARED_LIBS)
     else()
         set(_ac3forge_forge_install_targets forge_objects forge_shared)
     endif()
+    set(_ac3forge_signing_install_targets signing_objects signing_shared)
     set(_ac3forge_matroska_install_targets matroska_objects matroska_shared)
     set(_ac3forge_mp4_install_targets mp4_objects mp4_shared)
     set(_ac3forge_mpegts_install_targets mpegts_objects mpegts_shared)
     set(_ac3forge_capi_install_targets forge_c_objects forge_c_shared)
 else()
     set(_ac3forge_forge_install_targets forge_objects forge_static)
+    set(_ac3forge_signing_install_targets signing_objects signing_static)
     set(_ac3forge_matroska_install_targets matroska_objects matroska_static)
     set(_ac3forge_mp4_install_targets mp4_objects mp4_static)
     set(_ac3forge_mpegts_install_targets mpegts_objects mpegts_static)
@@ -133,6 +136,24 @@ install(FILES
         "${CMAKE_BINARY_DIR}/src/forge/generated/ac3/version.hpp"
         "${CMAKE_BINARY_DIR}/src/forge/generated/ac3/export.hpp"
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/ac3"
+    COMPONENT library)
+
+# ac3::signing is mandatory, not an AC3FORGE_BUILD_<NAME>-gated optional component (same as
+# ac3::forge itself, unconditionally add_subdirectory()'d in the root CMakeLists.txt) - so unlike
+# matroska::matroska/mp4::mp4/mpegts::mpegts/ac3::forge_c below, its install/export block carries
+# no if(AC3FORGE_BUILD_...) guard.
+install(TARGETS ${_ac3forge_signing_install_targets}
+    EXPORT signingTargets
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT library
+    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT libruntime NAMELINK_COMPONENT library
+    ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT library)
+
+install(DIRECTORY "${PROJECT_SOURCE_DIR}/src/signing/include/"
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+    COMPONENT library)
+
+install(FILES "${CMAKE_BINARY_DIR}/src/signing/generated/ac3/signing/export.hpp"
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/ac3/signing"
     COMPONENT library)
 
 # matroska::matroska is an optional component (AC3FORGE_BUILD_MATROSKA, see the root
@@ -249,6 +270,12 @@ install(FILES
 
 install(EXPORT forgeTargets
     FILE forgeTargets.cmake
+    NAMESPACE ac3::
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/ac3forge"
+    COMPONENT library)
+
+install(EXPORT signingTargets
+    FILE signingTargets.cmake
     NAMESPACE ac3::
     DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/ac3forge"
     COMPONENT library)
