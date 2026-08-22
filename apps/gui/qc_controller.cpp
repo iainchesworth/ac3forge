@@ -9,6 +9,7 @@
 #include <fstream>
 #include <ios>
 #include <iterator>
+#include <memory>
 #include <span>
 #include <utility>
 #include <vector>
@@ -156,7 +157,10 @@ std::optional<RawResult> measure_eac3(std::span<const std::byte> stream, QString
         error = QStringLiteral("Not a valid E-AC-3 stream.");
         return std::nullopt;
     }
-    ac3::Eac3Decoder decoder;
+    // Heap-allocated (PREfast's C6262, alert #91): Eac3Decoder's per-block
+    // scratch members pushed this stack declaration over the threshold -
+    // same pattern as examples/atmos_objects.cpp (PR #295).
+    auto decoder = std::make_unique<ac3::Eac3Decoder>();
     RawResult result;
     result.codec_label = QStringLiteral("E-AC-3");
     result.unit_label = QStringLiteral("access unit(s)");
@@ -209,7 +213,7 @@ std::optional<RawResult> measure_eac3(std::span<const std::byte> stream, QString
     };
 
     for (const auto& frame : *frames) {
-        const auto decoded = decoder.decode_substream(frame);
+        const auto decoded = decoder->decode_substream(frame);
         if (!decoded) {
             error = QStringLiteral("Decode failed (code %1).")
                         .arg(static_cast<int>(decoded.error()));
@@ -219,7 +223,7 @@ std::optional<RawResult> measure_eac3(std::span<const std::byte> stream, QString
             ingest(**decoded);
         }
     }
-    for (const auto& sub : decoder.flush()) {
+    for (const auto& sub : decoder->flush()) {
         ingest(sub);
     }
 
