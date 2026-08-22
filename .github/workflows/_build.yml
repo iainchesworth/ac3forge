@@ -1,10 +1,9 @@
 # Reusable configure/build/test workflow — the single definition of how ac3forge
 # is built and tested on each platform. Called by ci.yml (do_package defaults
 # false: only windows-msvc packages, continuously, as a packaging smoke test)
-# and by release.yml (do_package: true: every packageable leg attempts to
-# package, best-effort — the experimental legs still run continue-on-error, so
-# a release ships whichever packages actually built). Modelled on
-# aqualink-automate's .github/workflows/_build.yml.
+# and by release.yml (do_package: true: the release_package legs — one
+# canonical leg per OS/arch — package, and a packaging failure there blocks
+# the release). Modelled on an earlier project's _build.yml.
 #
 # ---------------------------------------------------------------------------
 # On `experimental: true`
@@ -17,7 +16,7 @@
 # issue (Homebrew's unpinned LLVM formula flagging Catch2's __COUNTER__ usage
 # under -Wc2y-extensions - see cmake/CompilerWarnings.cmake), fixed in one
 # commit, followed by two consecutive clean runs including the gold-reference
-# gate (scripts/verify-gold-reference.sh) at real SNR numbers (60-80s dB) -
+# gate (tools/checks/verify_gold_reference.sh) at real SNR numbers (60-80s dB) -
 # not just "it compiled." See the table in ci.yml.
 #
 # Experimental legs run with continue-on-error, which reports their real
@@ -29,10 +28,6 @@ name: Reusable Build
 on:
   workflow_call:
     inputs:
-      vcpkg-commit:
-        description: "microsoft/vcpkg commit to pin (see .github/actions/setup-vcpkg)."
-        type: string
-        default: "eaca4a577b6b678c6e10252754b6988a61746c19"
       do_package:
         description: "Package every packageable matrix leg (best-effort), not just windows-msvc. Set by release.yml."
         type: boolean
@@ -61,14 +56,150 @@ on:
         description: "github.ref_name at the call site, for the same reason as persist_quality_trend above. Empty when persist_quality_trend is false."
         type: string
         default: ""
+    secrets:
+      ATMOS_SIGNING_KEY:
+        description: "EMDF object-signing key, base64-encoded. When set (passed by BOTH ci.yml and release.yml), build-android decodes it into the app's bundled signing.key asset so the Shield app signs Atmos objects at runtime - on any build, debug or release. Unset -> no asset is written and the app streams the safe unsigned bed51. A signed APK contains this key and must never be distributed."
+        required: false
+      ANDROID_KEYSTORE_BASE64:
+        description: "Release keystore, base64-encoded. Passed by release.yml only; unset on ci.yml's call, which never sets do_package for a release APK anyway. See build-android's own comment for why the app still builds fine without it."
+        required: false
+      ANDROID_KEYSTORE_PASSWORD:
+        required: false
+      ANDROID_KEY_ALIAS:
+        required: false
+      ANDROID_KEY_PASSWORD:
+        required: false
+      ORG_RUNNERS_TOKEN:
+        description: >-
+          Optional org-scoped PAT/App token with "Self-hosted runners: read" on
+          iainchesworthlabs, letting check-runners see runners registered at the org level
+          (see iainchesworthlabs/ci-runners) rather than just this repo's own runner list.
+          Unset -> that half of the live check is skipped, not an error; the repo-level
+          check alone still works once a runner is registered directly against this repo.
+        required: false
 
 permissions:
   contents: read
 
 jobs:
+  # Decides, per OS, whether the Windows/Linux legs below should build on a
+  # self-hosted runner or fall back to GitHub-hosted - "available" meaning a
+  # matching self-hosted runner is actually online and idle right now, not
+  # just "one exists somewhere". See docs/ci-self-hosted-runners.md for the
+  # full design; the short version:
+  #   - a fork PR never gets a self-hosted label, full stop - untrusted code
+  #     must never land on a persistent runner, no live check needed.
+  #   - vars.RUNNER_LINUX_MODE / RUNNER_WINDOWS_MODE (`auto` default,
+  #     `self-hosted`, or `github-hosted`) let a forced mode skip the live
+  #     check entirely - an explicit override is trusted outright.
+  #   - `auto` checks this repo's own registered runners (works today, empty
+  #     until a runner is actually registered against ac3forge) and, if the
+  #     optional ORG_RUNNERS_TOKEN secret is set, the iainchesworthlabs org's
+  #     runners too (what actually matters once the org migration in
+  #     iainchesworthlabs/ci-runners lands - see that repo for the fleet
+  #     itself, which this workflow only consumes, never provisions).
+  # Any API failure degrades to GitHub-hosted rather than failing the job -
+  # this check being unavailable is never a reason to block CI.
+  check-runners:
+    name: Check self-hosted runner availability
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      linux_runner: ${{ steps.decide.outputs.linux_runner }}
+      windows_runner: ${{ steps.decide.outputs.windows_runner }}
+    steps:
+      - name: Decide runner labels per OS
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORG_TOKEN: ${{ secrets.ORG_RUNNERS_TOKEN }}
+          REPO: ${{ github.repository }}
+          ORG: iainchesworthlabs
+          IS_FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+          LINUX_MODE: ${{ vars.RUNNER_LINUX_MODE || 'auto' }}
+          WINDOWS_MODE: ${{ vars.RUNNER_WINDOWS_MODE || 'auto' }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          HOSTED_LINUX='["ubuntu-latest"]'
+          HOSTED_WINDOWS='["windows-latest"]'
+          SELF_LINUX='["self-hosted","Linux","X64"]'
+          SELF_WINDOWS='["self-hosted","Windows","X64"]'
+
+          # Untrusted fork-PR code never touches self-hosted infra - decided
+          # here, before either mode override or the live check even run.
+          if [ "$IS_FORK_PR" = "true" ]; then
+            echo "linux_runner=$HOSTED_LINUX" >> "$GITHUB_OUTPUT"
+            echo "windows_runner=$HOSTED_WINDOWS" >> "$GITHUB_OUTPUT"
+            echo "Fork PR - both legs stay on GitHub-hosted runners."
+            exit 0
+          fi
+
+          # At least one online, idle runner carrying both "self-hosted" and
+          # $2 (the OS label) in $1's runner list. Never fails the job: a
+          # missing/errored API response (e.g. no runner registered against
+          # this repo yet, or ORG_TOKEN unset) just means "not found".
+          runner_available() {
+            local scope="$1" os_label="$2" json count
+            json="$(gh api "$scope/actions/runners" --jq '.runners' 2>/dev/null)" || return 1
+            count="$(printf '%s' "$json" | jq "[.[] | select(.status==\"online\" and .busy==false and any(.labels[]; .name==\"self-hosted\") and any(.labels[]; .name==\"$os_label\"))] | length" 2>/dev/null)" || return 1
+            [ "${count:-0}" -gt 0 ]
+          }
+
+          decide_for_os() {
+            local mode="$1" os_label="$2" hosted="$3" self_hosted="$4"
+            case "$mode" in
+              self-hosted)   printf '%s' "$self_hosted"; return ;;
+              github-hosted) printf '%s' "$hosted"; return ;;
+            esac
+            # auto: repo-level first (works today with zero extra setup),
+            # then org-level if a token for it was provisioned.
+            if runner_available "repos/$REPO" "$os_label"; then
+              printf '%s' "$self_hosted"; return
+            fi
+            if [ -n "${ORG_TOKEN:-}" ] && GH_TOKEN="$ORG_TOKEN" runner_available "orgs/$ORG" "$os_label"; then
+              printf '%s' "$self_hosted"; return
+            fi
+            printf '%s' "$hosted"
+          }
+
+          linux_runner="$(decide_for_os "$LINUX_MODE" "Linux" "$HOSTED_LINUX" "$SELF_LINUX")"
+          windows_runner="$(decide_for_os "$WINDOWS_MODE" "Windows" "$HOSTED_WINDOWS" "$SELF_WINDOWS")"
+          echo "linux_runner=$linux_runner" >> "$GITHUB_OUTPUT"
+          echo "windows_runner=$windows_runner" >> "$GITHUB_OUTPUT"
+          echo "Linux: mode=$LINUX_MODE -> $linux_runner"
+          echo "Windows: mode=$WINDOWS_MODE -> $windows_runner"
+
+  # Single source of truth for the tool-version pins the "Report and assert
+  # toolchain versions" step below (and the setup-vcpkg/install-qt-action
+  # steps) check the runner against - see docs/ci-self-hosted-runners.md and
+  # _toolchain-versions.yml's own header.
+  toolchain-versions:
+    uses: ./.github/workflows/_toolchain-versions.yml
+    permissions:
+      contents: read
+
   build:
     name: ${{ matrix.name }}
-    runs-on: ${{ matrix.runner }}
+    needs: [check-runners, toolchain-versions]
+    # Fork PRs never reach self-hosted (check-runners' own fork-PR branch
+    # already forces hosted labels for them) - this is belt-and-braces so a
+    # gap in that logic can't silently hand a fork PR a self-hosted runner.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ${{ fromJSON(matrix.runner) }}
+    # A backstop against GitHub's own 360-minute default: the macos-llvm
+    # leg's first-ever GUI run hung in the Test step and silently consumed
+    # the full 6 hours before being force-cancelled (see
+    # apps/gui/tests/CMakeLists.txt's QSG_RENDER_LOOP comment for the
+    # hypothesis and the per-test TIMEOUT that now also bounds that specific
+    # case). This is deliberately generous - the slowest leg observed so far
+    # (windows-llvm, packaging included on windows-msvc) is ~22 minutes - so
+    # it should never fire for a legitimately slow-but-working run, only for
+    # a genuine hang anywhere in the job, known or not-yet-known.
+    timeout-minutes: 90
+
     # Ubuntu 26.04 for the Linux legs, where the distro archive carries gcc-15
     # and LLVM 21 outright. This is a pin, not a convenience: on ubuntu-latest
     # (24.04 at the time of writing) the LLVM script has to fall back to
@@ -85,7 +216,7 @@ jobs:
       matrix:
         include:
           - name: "Windows MSVC"
-            runner: windows-latest
+            runner: ${{ needs.check-runners.outputs.windows_runner }}
             preset: windows-msvc
             # VS 2026 Build Tools / MSVC 14.5x, from the aka.ms/vs/18/stable
             # channel. Pinned by channel, not exact version: the runner image
@@ -97,7 +228,7 @@ jobs:
             gold_reference: true
 
           - name: "Windows LLVM (clang-cl)"
-            runner: windows-latest
+            runner: ${{ needs.check-runners.outputs.windows_runner }}
             preset: windows-llvm
             msvc: true          # clang-cl targets the MSVC ABI: same headers, same libs
             llvm: true
@@ -113,7 +244,7 @@ jobs:
           # neither switch (Qt present/absent, ALSA present/absent) differs
           # between compilers, so paying for either twice would buy nothing.
           - name: "Linux GCC"
-            runner: ubuntu-latest
+            runner: ${{ needs.check-runners.outputs.linux_runner }}
             container: ubuntu:26.04
             preset: linux-gcc
             gcc: true
@@ -124,9 +255,37 @@ jobs:
             gold_reference: true
 
           - name: "Linux LLVM (clang)"
-            runner: ubuntu-latest
+            runner: ${{ needs.check-runners.outputs.linux_runner }}
             container: ubuntu:26.04
             preset: linux-llvm
+            llvm: true
+            gui: true
+            packageable: true
+            gold_reference: true
+
+          # arm64 - Raspberry Pi 4/5 and any other aarch64 Debian/Ubuntu
+          # target (see docs/platforms/raspberry-pi.md). Real ARM hardware via
+          # GitHub's hosted ubuntu-24.04-arm runner label, not QEMU emulation -
+          # the same ubuntu:26.04 container image as the x64 legs, which pulls
+          # its arm64 variant automatically on an arm64 runner. Otherwise the
+          # same shape as linux-gcc/linux-llvm above, including which leg
+          # carries alsa_fallback (compiler and architecture both don't affect
+          # that switch - see linux-gcc's own comment).
+          - name: "Linux GCC (arm64)"
+            runner: '["ubuntu-24.04-arm"]'
+            container: ubuntu:26.04
+            preset: linux-gcc-arm64
+            gcc: true
+            gui: true
+            packageable: true
+            release_package: true
+            alsa_fallback: true
+            gold_reference: true
+
+          - name: "Linux LLVM (arm64)"
+            runner: '["ubuntu-24.04-arm"]'
+            container: ubuntu:26.04
+            preset: linux-llvm-arm64
             llvm: true
             gui: true
             packageable: true
@@ -143,7 +302,7 @@ jobs:
           # and there should not be one - a sanitizer-instrumented debug build
           # is a diagnostic tool, not something to ship.
           - name: "Linux LLVM ASan+UBSan"
-            runner: ubuntu-latest
+            runner: '["ubuntu-latest"]'
             container: ubuntu:26.04
             preset: linux-llvm-asan-ubsan
             llvm: true
@@ -160,10 +319,26 @@ jobs:
           # runner would not fail to configure - it would silently build with
           # whatever AppleClang Xcode ships instead of the Homebrew LLVM
           # every other leg's pinned equivalent aims for.
+          #
+          # gui: true builds ac3gui here too, same meaning as the Linux gui:
+          # true legs above: CMakePresets.json's macos-llvm preset defaults
+          # AC3FORGE_BUILD_GUI off for the same "Qt kit not assumed present"
+          # reason as Linux, not because ac3gui cannot be built on macOS -
+          # cmake/FindQt6.cmake already carries Homebrew's Qt6 prefixes
+          # (/opt/homebrew/opt/qt, /opt/homebrew/opt/qt6) and
+          # apps/gui/CMakeLists.txt's APPLE branch (MACOSX_BUNDLE,
+          # qt_generate_deploy_qml_app_script under `if(WIN32 OR APPLE)`) was
+          # already written for this, just never exercised. "Install Qt6
+          # (macOS GUI)" below installs Homebrew's "qt" formula, which bundles
+          # qtdeclarative (and so qmlcachegen) the same way the Linux apt
+          # packages do. cmake/Packaging.cmake's DragNDrop generator needs no
+          # change either - it already packages whatever install() rules ran,
+          # ac3gui's included, once AC3FORGE_BUILD_GUI is ON.
           - name: "macOS LLVM (Homebrew)"
-            runner: macos-latest
+            runner: '["macos-latest"]'
             preset: macos-llvm
             llvm: true
+            gui: true
             packageable: true
             release_package: true
             gold_reference: true
@@ -176,9 +351,9 @@ jobs:
       #
       # libasound2-dev is the ALSA backend's only dependency, and the reason it
       # is here rather than left out is that its ABSENCE is not a build
-      # failure: src/audio/CMakeLists.txt would fall back to the no-backend
-      # platform directory and CI would go green having compiled none of
-      # src/audio/src/platform/alsa/. The alsa_fallback step at the end covers
+      # failure: src/audio/CMakeLists.txt would fall back to the no-op
+      # posix/ directory and CI would go green having compiled none of
+      # src/audio/src/backend/alsa/. The alsa_fallback step at the end covers
       # the other half of that switch on purpose.
       - name: Bootstrap container
         if: matrix.container
@@ -196,12 +371,25 @@ jobs:
       # qt_add_qml_module needs; without them the GUI configure step fails
       # rather than quietly building without AOT-compiled QML.
       - name: Install Qt6 (Linux GUI)
-        if: matrix.gui
+        if: matrix.gui && runner.os == 'Linux'
         run: |
           set -eu
           export DEBIAN_FRONTEND=noninteractive
           apt-get install -y -qq --no-install-recommends \
             qt6-base-dev qt6-base-dev-tools qt6-declarative-dev qt6-declarative-dev-tools
+
+      # Homebrew's "qt" formula is the umbrella Qt6 package (unlike apt's
+      # split qt6-base-dev/qt6-declarative-dev): one install pulls in
+      # QtDeclarative/QtQuick and their build-time tooling (qmlcachegen)
+      # alongside QtCore/QtGui, so there is no second "-dev-tools" formula to
+      # add the way there is on Linux. cmake/FindQt6.cmake already searches
+      # /opt/homebrew/opt/qt and /opt/homebrew/opt/qt6 (Apple Silicon's
+      # Homebrew prefix, which is what macos-latest runners are), so no
+      # -DAC3FORGE_QT_ROOT/CMAKE_PREFIX_PATH override is needed here the way
+      # Windows' prebuilt-kit install does.
+      - name: Install Qt6 (macOS GUI)
+        if: matrix.gui && runner.os == 'macOS'
+        run: brew install qt
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -238,7 +426,12 @@ jobs:
       # whatever is newest and would drift off the pin.
       - name: Install LLVM 21 (Windows)
         if: matrix.llvm && runner.os == 'Windows'
-        shell: pwsh
+        # Windows PowerShell (always present on self-hosted + GitHub-hosted), NOT
+        # pwsh/PowerShell 7 which the self-hosted runner image does not ship -
+        # same reasoning as ./.github/actions/setup-msvc-env. GitHub-hosted
+        # windows-latest ships pwsh too, which is why this only surfaced once a
+        # job actually landed on a self-hosted Windows runner.
+        shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           $version = '21.1.8'
@@ -268,11 +461,11 @@ jobs:
           echo "${llvm_prefix}/bin" >> "$GITHUB_PATH"
 
       # ffmpeg is the gold-reference gate's decode oracle (see
-      # scripts/verify-gold-reference.sh). Proven first on macOS alone (the
+      # tools/checks/verify_gold_reference.sh). Proven first on macOS alone (the
       # newest, least-trusted leg); gold_reference now covers every packaged
       # leg except linux-llvm-asan-ubsan, which stays a diagnostic-only build
       # (see that matrix entry's own comment) but still needs it: the codec
-      # matrix step below (matrix.sanitizer) runs scripts/run-codec-matrix.sh,
+      # matrix step below (matrix.sanitizer) runs tools/ci/run_codec_matrix.sh,
       # which also uses ffmpeg as its independent oracle regardless of the
       # gold-reference gate being skipped on this leg.
       - name: Install ffmpeg (Linux)
@@ -312,7 +505,7 @@ jobs:
       # without this. clang-cl (windows-llvm) targets the MSVC ABI, so it
       # shares this same msvc2022_64 kit with windows-msvc rather than
       # needing its own. Version pinned to the exact kit already verified
-      # locally (see docs/BUILDING.md's Verified configuration table); the
+      # locally (see docs/building.md's Verified configuration table); the
       # pinned action itself is CountdownSolver's own precedent
       # (R:\CountdownSolver\.github\workflows\release.yml), the other
       # project sharing this same "prebuilt Qt, never vcpkg" convention.
@@ -320,37 +513,47 @@ jobs:
         if: runner.os == 'Windows'
         uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
         with:
-          version: "6.8.3"
+          version: ${{ needs.toolchain-versions.outputs.qt_version }}
           cache: true
 
-      # CMakePresets.json is version 6 and the project needs >= 3.28. Every
-      # current runner image is well past that; assert rather than discover it
-      # through a confusing "unknown preset field" error.
+      # CMakePresets.json declares the project's real minimum (cmakeMinimumRequired);
+      # this asserts the RUNNER actually meets it rather than letting a stale image
+      # fail later with a confusing "unknown preset field" error. gcc/llvm/msvc are
+      # asserted the same way, all against the pins toolchain-versions resolved
+      # above - see docs/ci-self-hosted-runners.md.
       - name: Report and assert toolchain versions
         shell: bash
+        env:
+          GCC_VERSION: ${{ needs.toolchain-versions.outputs.gcc_version }}
+          LLVM_VERSION: ${{ needs.toolchain-versions.outputs.llvm_version }}
+          MSVC_TOOLSET: ${{ needs.toolchain-versions.outputs.msvc_toolset }}
+          CMAKE_MIN: ${{ needs.toolchain-versions.outputs.cmake_min }}
         run: |
           set -euo pipefail
           cmake --version
           ninja --version
           # Let CMake do its own version comparison rather than parsing it in sh.
-          cat > "${RUNNER_TEMP}/assert-cmake-version.cmake" <<'EOF'
-          if(CMAKE_VERSION VERSION_LESS 3.28)
-            message(FATAL_ERROR "CMake ${CMAKE_VERSION} is too old; ac3forge needs >= 3.28")
+          # Unquoted heredoc so $CMAKE_MIN expands - \$CMAKE_VERSION stays escaped
+          # so it's still CMake's own variable, not a (unset) shell one.
+          cat > "${RUNNER_TEMP}/assert-cmake-version.cmake" <<EOF
+          if(CMAKE_VERSION VERSION_LESS ${CMAKE_MIN})
+            message(FATAL_ERROR "CMake \${CMAKE_VERSION} is too old; ac3forge needs >= ${CMAKE_MIN}")
           endif()
           EOF
           cmake -P "${RUNNER_TEMP}/assert-cmake-version.cmake"
           case "${{ matrix.preset }}" in
-            linux-gcc)    g++ --version | head -1
-                          g++ --version | head -1 | grep -q ' 15\.' || { echo "::error::expected g++ 15"; exit 1; } ;;
-            linux-llvm|linux-llvm-asan-ubsan)
+            linux-gcc|linux-gcc-arm64)
+                          g++ --version | head -1
+                          g++ --version | head -1 | grep -q " ${GCC_VERSION}\." || { echo "::error::expected g++ ${GCC_VERSION}"; exit 1; } ;;
+            linux-llvm|linux-llvm-arm64|linux-llvm-asan-ubsan)
                           clang++ --version | head -1
-                          clang++ --version | head -1 | grep -qE 'version 21\.' || { echo "::error::expected clang 21"; exit 1; } ;;
+                          clang++ --version | head -1 | grep -qE "version ${LLVM_VERSION}\." || { echo "::error::expected clang ${LLVM_VERSION}"; exit 1; } ;;
             windows-llvm) clang-cl --version | head -1
-                          clang-cl --version | head -1 | grep -qE 'version 21\.' || { echo "::error::expected clang-cl 21"; exit 1; } ;;
+                          clang-cl --version | head -1 | grep -qE "version ${LLVM_VERSION}\." || { echo "::error::expected clang-cl ${LLVM_VERSION}"; exit 1; } ;;
             windows-msvc) echo "MSVC toolset: ${VCToolsVersion:-unknown}"
                           case "${VCToolsVersion:-}" in
-                            14.5*) ;;
-                            *) echo "::error::expected an MSVC 14.5x toolset, got '${VCToolsVersion:-unset}'"; exit 1 ;;
+                            ${MSVC_TOOLSET}*) ;;
+                            *) echo "::error::expected an MSVC ${MSVC_TOOLSET}x toolset, got '${VCToolsVersion:-unset}'"; exit 1 ;;
                           esac ;;
             # No hard version assert here unlike the other LLVM legs: Homebrew's
             # llvm formula has no versioned pin to check against (see the
@@ -361,7 +564,7 @@ jobs:
 
       - uses: ./.github/actions/setup-vcpkg
         with:
-          vcpkg-commit: ${{ inputs.vcpkg-commit }}
+          vcpkg-commit: ${{ needs.toolchain-versions.outputs.vcpkg_commit }}
 
       # ---------------------------------------------------------------------
       # Configure / build / test
@@ -377,9 +580,9 @@ jobs:
       #     local search roots do not cover, so it has to be passed in
       #     explicitly rather than relying on auto-detection the way a local
       #     build does.
-      #   - -DAC3FORGE_BUILD_GUI=ON on the `gui: true` Linux legs, which
-      #     default the GUI off (see CMakePresets.json) so a machine that
-      #     hasn't installed Qt still builds everything else.
+      #   - -DAC3FORGE_BUILD_GUI=ON on the `gui: true` Linux and macOS legs,
+      #     which default the GUI off (see CMakePresets.json) so a machine
+      #     that hasn't installed Qt still builds everything else.
       - name: Configure
         shell: bash
         # VERSION_TAG_INPUT goes through env:, not straight into the script
@@ -427,9 +630,11 @@ jobs:
         shell: bash
         run: ctest --preset test-${{ matrix.preset }}
 
-      # The gold-reference correctness gate (docs/RESEARCH.md's L3 FFmpeg-
-      # oracle + a lightweight L4 SNR check, wired into CI for the first time
-      # here - see scripts/verify-gold-reference.sh's own header). Proven on
+      # The gold-reference correctness gate (the L3 FFmpeg-oracle + a
+      # lightweight L4 SNR check from the project's original validation-
+      # pyramid design, now docs/verification.md - wired into CI for the
+      # first time here; see tools/checks/verify_gold_reference.sh's own header).
+      # Proven on
       # macOS alone first; now every leg has it except linux-llvm-asan-ubsan,
       # which stays diagnostic-only (same reasoning as its `packageable`
       # exclusion below - a sanitizer build's job is catching memory/UB
@@ -438,7 +643,7 @@ jobs:
         if: matrix.gold_reference
         shell: bash
         env:
-          # See scripts/verify-gold-reference.sh's own comment: set, this asks
+          # See tools/checks/verify_gold_reference.sh's own comment: set, this asks
           # compare_wav.py to also write a structured per-codec result here,
           # which the "Upload gold-reference results" step below picks up.
           # Unset (persist_quality_trend false, e.g. every PR run) the gate
@@ -451,7 +656,7 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then
             bin="${bin}.exe"
           fi
-          bash scripts/verify-gold-reference.sh "$bin"
+          bash tools/checks/verify_gold_reference.sh "$bin"
 
       # Handed off to the quality-trend job below, which runs once (not once
       # per leg) after every gold_reference leg has passed - see that job's
@@ -469,7 +674,7 @@ jobs:
       # can't - that ac3gui actually starts, loads its QML, and drives a real
       # encode through the Qt event loop. offscreen needs no display, so it
       # runs the same in this container as it does on a workstation. See
-      # docs/BUILDING.md's Linux section for why the qmlshapesplugin /
+      # docs/building.md's Linux section for why the qmlshapesplugin /
       # labsmodelsplugin / qmlfolderlistmodelplugin CMake warnings during
       # Configure, above, don't affect this.
       - name: Smoke test ac3gui (headless)
@@ -477,11 +682,39 @@ jobs:
         shell: bash
         env:
           QT_QPA_PLATFORM: offscreen
-        run: >
-          build/config-${{ matrix.preset }}/bin/ac3gui --smoke
-          fuzz/seeds/fuzz_wav_read/roundtrip-stereo.wav
-          "${RUNNER_TEMP}/ac3gui-smoke.ac3"
-          "${RUNNER_TEMP}/ac3gui-smoke.png"
+        # apps/gui/CMakeLists.txt sets MACOSX_BUNDLE ON unconditionally, but it
+        # is a no-op everywhere except APPLE, where it moves the built
+        # executable to bin/ac3gui.app/Contents/MacOS/ac3gui instead of plain
+        # bin/ac3gui - the property Linux never sets and Windows doesn't need
+        # (WIN32_EXECUTABLE controls the console-vs-GUI subsystem there, not
+        # where the .exe lands).
+        #
+        # QSG_RENDER_LOOP=basic and the perl-alarm wrapper are both macOS-only
+        # and both about the same hang the "Test" step hit on this leg's
+        # first-ever GUI run (see apps/gui/tests/CMakeLists.txt's identical
+        # QSG_RENDER_LOOP comment for the render-loop-deadlock hypothesis).
+        # ac3gui --smoke drives the same QQmlApplicationEngine/QQuickWindow
+        # path ac3gui_qmltests does, so it is at equal risk and had no bound
+        # of its own - a hang here would silently eat the rest of this leg's
+        # 6-hour job ceiling exactly like the Test step did. `perl` (not
+        # `timeout`, which macOS's BSD userland doesn't ship) is on every
+        # macOS runner image by default.
+        run: |
+          set -euo pipefail
+          bin="build/config-${{ matrix.preset }}/bin/ac3gui"
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            bin="build/config-${{ matrix.preset }}/bin/ac3gui.app/Contents/MacOS/ac3gui"
+            export QSG_RENDER_LOOP=basic
+          fi
+          smoke_args=(--smoke
+            fuzz/seeds/fuzz_wav_read/roundtrip-stereo.wav
+            "${RUNNER_TEMP}/ac3gui-smoke.ac3"
+            "${RUNNER_TEMP}/ac3gui-smoke.png")
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            perl -e 'alarm shift; exec @ARGV' 120 "$bin" "${smoke_args[@]}"
+          else
+            "$bin" "${smoke_args[@]}"
+          fi
 
       # Sanitizers only catch what actually executes. ctest's cases exercise
       # encoder/decoder logic in isolation; this drives the real CLI across
@@ -495,11 +728,11 @@ jobs:
         env:
           ASAN_OPTIONS: detect_leaks=1
           UBSAN_OPTIONS: print_stacktrace=1
-        run: bash scripts/run-codec-matrix.sh "build/config-${{ matrix.preset }}/bin/ac3cli"
+        run: bash tools/ci/run_codec_matrix.sh "build/config-${{ matrix.preset }}/bin/ac3cli"
 
       # The other side of the ALSA switch: a Linux machine without libasound's
       # development headers must still configure, build and pass everything,
-      # falling back to src/audio/src/platform/posix/ - that is the whole point
+      # falling back to src/audio/src/backend/posix/ - that is the whole point
       # of the dependency being optional, and it is a claim that rots silently
       # unless something checks it.
       #
@@ -527,7 +760,7 @@ jobs:
       # release: ac3::forge_shared/matroska::matroska_shared existing and
       # configuring cleanly (already exercised by every leg's normal
       # config-<preset> build, since both variants are always built
-      # regardless of BUILD_SHARED_LIBS - see src/lib/CMakeLists.txt) is not
+      # regardless of BUILD_SHARED_LIBS - see src/forge/CMakeLists.txt) is not
       # the same claim as every in-tree consumer actually linking and
       # running against the real .so - ac3cli/ac3tests/every example,
       # including mux_mkv, the one that needs libmatroska.so alongside
@@ -538,6 +771,19 @@ jobs:
       # .so files resolved via the build tree's own automatic RPATH, with
       # nothing here needing to place them next to the executable the way
       # examples/CMakeLists.txt's Windows-only DLL-copy step does.
+      #
+      # -LE Performance: this pass's own job is "does it link and run
+      # correctly as a shared library", not "is it still real-time under
+      # PIC/indirect-symbol codegen" - a materially different, never-promised
+      # performance bar the plain linux-llvm pass (same leg, run just before
+      # this one, static by default - the configuration every real consumer
+      # actually ships) already enforces. Confirmed for real on a shared
+      # GitHub Actions runner: the Atmos/JOC encoder measured a consistent
+      # ~79ms/frame here (encode_frame under PIC + hidden-visibility indirect
+      # calls) against the plain pass's real-time budget, comfortably inside
+      # the WSL2 measurement above's own margin - a genuine, repeatable
+      # characteristic of this configuration, not runner noise, and not a
+      # regression in the codec itself.
       - name: Configure, build and test with BUILD_SHARED_LIBS=ON
         if: matrix.preset == 'linux-llvm'
         shell: bash
@@ -545,14 +791,15 @@ jobs:
           set -euo pipefail
           cmake --preset config-linux-llvm-shared
           cmake --build build/config-linux-llvm-shared -- -k 0
-          ctest --preset test-linux-llvm-shared
+          ctest --preset test-linux-llvm-shared -LE Performance
 
       # Packaging. windows-msvc always packages, on every push, as a
-      # continuous smoke test of the packaging path itself - it is the only
-      # leg that has ever actually been packaged and inspected end to end.
-      # For a real release (do_package set, from release.yml), only one leg
-      # per OS actually packages - `release_package: true` on windows-msvc,
-      # linux-gcc and macos-llvm - rather than every packageable leg. A
+      # continuous smoke test of the packaging path itself - the only leg
+      # packaged continuously rather than only at releases. For a real
+      # release (do_package set, from release.yml), only one leg per
+      # OS/arch actually packages - `release_package: true` on windows-msvc,
+      # linux-gcc, linux-gcc-arm64 and macos-llvm - rather than every
+      # packageable leg. A
       # release ships one canonical build per platform for people to
       # download, not a build per compiler-toolchain leg: windows-llvm and
       # linux-llvm exist to catch compiler-specific bugs in CI, which they
@@ -608,6 +855,228 @@ jobs:
             packages/*.dmg.sha512
           if-no-files-found: error
 
+  # The Shield app (apps/android): a Gradle/NDK build, not a CMake preset
+  # leg, so it is its own job rather than a `build` matrix entry - there is
+  # no config-android/build-android/pack-android preset to reuse, and trying
+  # to force this into the same matrix shape as the CMake legs above would
+  # buy nothing. debug builds every push (this job's own continuous
+  # smoke test, same role windows-msvc's always-on Package step plays for
+  # the desktop legs - proves the Gradle/CMake/NDK toolchain and every
+  # native source file still build); release only builds - and is uploaded -
+  # for an actual release (do_package), matching release_package's "only the
+  # canonical shipped build" reasoning on the desktop legs.
+  #
+  # Object signing (the JOC objects a licensed decoder unlocks) is driven solely
+  # by whether the ATMOS_SIGNING_KEY secret is set - NOT by do_package, so it
+  # applies to every build this job produces, debug or release. When the secret
+  # is present (both ci.yml and release.yml forward it), "Materialize Android
+  # object-signing key" below decodes it into the app's bundled signing.key
+  # asset and the app signs at runtime; when it is absent the step is skipped
+  # and every build is the safe, bed51-equivalent unsigned-object app
+  # (shield_signing_hook.hpp's signing_available() returns false with no key
+  # asset). A signed APK CONTAINS that key and must never be distributed - see
+  # docs/concepts/object-signing.md. This is separate from APK signing below.
+  #
+  # APK signing is separate from the above and optional: the release build
+  # is debug-keystore signed unless ANDROID_KEYSTORE_BASE64 and its three
+  # companion secrets are provisioned (release.yml's call only - ci.yml's
+  # never sets do_package for a release APK, so it never needs them), in
+  # which case "Decode release keystore" below makes them available and
+  # build.gradle.kts's releaseSigningAvailable picks up the real key
+  # instead. See the commands in docs/releasing.md for provisioning one.
+  #
+  # Promoted (no continue-on-error) the same way macos-llvm was: three
+  # consecutive real, hosted-runner runs went green
+  # (feature/shield-atmos-platform's own PR #61 and the two Android-focused
+  # pushes after it) before this line came off - see this file's header.
+  build-android:
+    name: Android (Shield)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      # A step's `if:` cannot read `secrets` directly, only `env` - so the
+      # presence check happens once here and the materialize step reads this
+      # (the same pattern release.yml's github-release job uses for
+      # HAVE_GPG_KEY). Drives whether object signing happens at all: set on any
+      # build with the key provisioned, empty otherwise.
+      HAVE_ATMOS_KEY: ${{ secrets.ATMOS_SIGNING_KEY != '' && 'true' || 'false' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: ${{ inputs.fetch_depth }}
+
+      # apps/android/gradle/wrapper/gradle-wrapper.jar is a committed
+      # binary (OpenSSF Scorecard's Binary-Artifacts check, alert #65) - it
+      # can't be dropped since gradlew needs it, so this verifies its
+      # checksum against Gradle's own known-good release hashes instead.
+      - uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+
+      # ubuntu-latest ships several Temurin JDKs preinstalled, each with its
+      # own JAVA_HOME_<version>_X64 env var (see actions/runner-images) -
+      # selecting one this way needs no extra pinned action for a JDK AGP
+      # already requires (compileOptions targets 17 - see build.gradle.kts).
+      - name: Select JDK 17
+        shell: bash
+        run: echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+
+      # The Android SDK cmdline-tools ship preinstalled on this image
+      # (ANDROID_HOME already set), but not necessarily the exact NDK version
+      # build.gradle.kts pins (26.1.10909125, see docs/platforms/android.md) -
+      # install it explicitly rather than trust whatever the image happens to
+      # have cached, the same reasoning every other toolchain step in this
+      # workflow already follows. `yes | sdkmanager --licenses` can exit
+      # non-zero even after accepting everything (the piped `yes` closes
+      # before sdkmanager reads EOF) - a known quirk, not a real failure - so
+      # only the actual NDK install below is allowed to fail the job.
+      - name: Install pinned Android NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;26.1.10909125"
+
+      # The Shield app signs Atmos objects on-device, so the key has to be in
+      # the APK as an asset (src/main/assets/signing.key, gitignored). Runs
+      # whenever the ATMOS_SIGNING_KEY secret is set - on ANY build, debug or
+      # release, not gated on do_package - so a debug APK signs too when the key
+      # is provisioned. Ordinary runs with no secret skip this entirely and the
+      # app streams unsigned bed51. The secret is base64 and is written verbatim;
+      # shield_signing_hook.cpp's decode_signing_key() base64-decodes it at
+      # startup (the same decode the desktop CLI applies), so no `base64 -d` is
+      # needed here. The asset lives only on this runner and is gone when it is
+      # torn down; $RUNNER_TEMP is not used because the app's build has to find
+      # it under src/main/assets to package it. Never uploaded on its own.
+      - name: Materialize Android object-signing key
+        if: env.HAVE_ATMOS_KEY == 'true'
+        env:
+          ATMOS_SIGNING_KEY: ${{ secrets.ATMOS_SIGNING_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset_dir="apps/android/app/src/main/assets"
+          mkdir -p "$asset_dir"
+          printf '%s' "$ATMOS_SIGNING_KEY" > "$asset_dir/signing.key"
+          echo "Wrote $asset_dir/signing.key ($(wc -c < "$asset_dir/signing.key") base64 chars) - object signing enabled."
+
+      - name: Build debug APK
+        working-directory: apps/android
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew :app:assembleDebug --console=plain
+
+      # Only meaningful for a release build with a keystore actually
+      # provisioned - release.yml's call passes these four secrets, ci.yml's
+      # never does, so this no-ops there the same way GPG signing is off by
+      # default in release.yml's own github-release job. Secrets flow in via
+      # `env:`, never interpolated straight into the script body, the same
+      # pattern release.yml's "Import GPG signing key" step already uses.
+      # $RUNNER_TEMP, not the repo workspace: never at risk of an
+      # artifact-upload glob picking it up, and gone the moment this runner
+      # is torn down regardless.
+      - name: Decode release keystore
+        if: inputs.do_package
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "No ANDROID_KEYSTORE_BASE64 secret provisioned - assembleRelease will fall back to the debug keystore."
+            exit 0
+          fi
+          keystore_path="$RUNNER_TEMP/ac3forge-shield-release.keystore"
+          base64 -d <<<"$ANDROID_KEYSTORE_BASE64" > "$keystore_path"
+          {
+            echo "ANDROID_KEYSTORE_PATH=$keystore_path"
+            echo "ANDROID_KEYSTORE_PASSWORD=$ANDROID_KEYSTORE_PASSWORD"
+            echo "ANDROID_KEY_ALIAS=$ANDROID_KEY_ALIAS"
+            echo "ANDROID_KEY_PASSWORD=$ANDROID_KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
+
+      - name: Build release APK
+        if: inputs.do_package
+        working-directory: apps/android
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :app:assembleRelease --console=plain
+
+      # Named/versioned and checksummed the same way cpack's own output is
+      # (see the desktop legs' Package step above), so this artifact fits the
+      # same release-artifacts/*.apk glob release.yml's jobs already use for
+      # every other platform's package.
+      - name: Stage release APK
+        if: inputs.do_package
+        shell: bash
+        env:
+          VERSION_TAG_INPUT: ${{ inputs.version_tag }}
+        run: |
+          set -euo pipefail
+          version="${VERSION_TAG_INPUT:-0.0.0-dev}"
+          mkdir -p packages
+          cp apps/android/app/build/outputs/apk/release/app-release.apk \
+             "packages/ac3forge-shield-${version}.apk"
+          ( cd packages && sha512sum "ac3forge-shield-${version}.apk" > "ac3forge-shield-${version}.apk.sha512" )
+
+      - name: Upload package artifacts
+        if: inputs.do_package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: packages-android
+          path: |
+            packages/*.apk
+            packages/*.apk.sha512
+          if-no-files-found: error
+
+  # The WASM browser decode demo (apps/wasm, roadmap F3): a real CMake
+  # preset (config-wasm-emscripten) unlike build-android above, but still its
+  # own job rather than a `build` matrix entry, for the same reason
+  # build-android's own header gives - this leg has none of the shape that
+  # matrix's steps assume (no ctest suite to run, no cpack package to stage,
+  # no gold-reference gate), so folding it in would mean threading new `if:`
+  # exclusions through most of that job's steps for no benefit. Runs on
+  # every push - a continuous smoke test that the Emscripten toolchain and
+  # every file it touches still build - the same role build-android's
+  # always-on debug APK plays; this job never produces a release artifact of
+  # its own the way build-android's release APK does, since the actual
+  # published copy is rebuilt fresh by docs.yml's deploy job rather than
+  # shipped from here (see that workflow and docs/platforms/wasm.md).
+  build-wasm:
+    name: WASM (browser decode demo)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: ${{ inputs.fetch_depth }}
+
+      - uses: ./.github/actions/setup-emscripten
+
+      - name: Configure
+        run: cmake --preset config-wasm-emscripten
+
+      - name: Build
+        run: cmake --build build/config-wasm-emscripten
+
+      # Not consumed by docs.yml (see this job's own header) - uploaded
+      # purely so a failed/successful build's actual output is inspectable
+      # from the Actions run, the same convenience packages-android gets.
+      - name: Upload demo artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wasm-decode-demo
+          path: build/config-wasm-emscripten/bin/wasm_decode_demo
+          if-no-files-found: error
+
   # Persists this run's gold-reference SNR numbers (docs/quality-trend.md) so
   # they outlive the CI run that produced them, instead of only ever living in
   # a log that ages out. One job, not one push per leg: `needs: build` waits
@@ -639,7 +1108,7 @@ jobs:
       contents: write
     steps:
       # persist-credentials: false - this checkout is only ever read from
-      # (scripts/append-quality-history.py, `git show` on this commit); the
+      # (tools/ci/append_quality_history.py, `git show` on this commit); the
       # "Prepare quality-history checkout" step below pushes through its own
       # explicitly-scoped remote instead, so leaving actions/checkout's token
       # persisted in this working tree's git config would just be an unused,
@@ -696,10 +1165,10 @@ jobs:
         run: |
           set -euo pipefail
           # The commit's own recorded date, not date -u/Date.now() - see
-          # append-quality-history.py's own header on why this is passed in
+          # append_quality_history.py's own header on why this is passed in
           # rather than read from the clock.
           commit_date="$(git show -s --format=%cI "$COMMIT_SHA")"
-          python3 scripts/append-quality-history.py \
+          python3 tools/ci/append_quality_history.py \
             --results-dir results \
             --history-dir history \
             --branch "$BRANCH" \
@@ -726,7 +1195,7 @@ jobs:
       # failing outright: a hard regression's numbers still need to land in
       # quality-history (docs/quality-trend.md's table/chart is how anyone
       # finds out what happened) even though this run must also end up red.
-      # See scripts/append-quality-history.py's HARD_REGRESSION_DROP_DB.
+      # See tools/ci/append_quality_history.py's HARD_REGRESSION_DROP_DB.
       - name: Fail on hard quality regression
         if: steps.append.outputs.hard_regression == 'true'
         shell: bash

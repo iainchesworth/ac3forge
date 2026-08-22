@@ -1,0 +1,95 @@
+{
+  "baseline_version": 1,
+  "generated_date": "2026-08-12",
+  "tools": {
+    "ffmpeg": {
+      "version": "ffmpeg version 8.0.1-full_build-www.gyan.dev Copyright (c) 2000-2025 the FFmpeg developers"
+    },
+    "dee": {
+      "version": "This tool belongs to the Dolby Encoding Engine version 6.5.4-dme+b56bc97e"
+    }
+  },
+  "legs": {
+    "ac3-51-448": {
+      "codec": "ac3",
+      "layout": "5.1",
+      "bitrate_kbps": 448,
+      "source_wav": "tests/golden/audio/reference_51.wav",
+      "scores": {
+        "ffmpeg": {
+          "snr_db": 39.00494384765625,
+          "lsd_db": null,
+          "hf_db": null,
+          "decoded_with": "ffmpeg",
+          "measured_kbps": 453.01759999999996
+        },
+        "dee": {
+          "status": "unverified",
+          "reason": "DEE build v6.5.4-dme+b56bc97e drops the Ls channel for discrete 6-channel 5.1 input (confirmed via tone probe, channel-index-locked) - see tools/generators/gen_external_baseline.py's module docstring."
+        },
+        "ours_at_baseline_time": {
+          "snr_db": 36.02410888671875,
+          "lsd_db": null,
+          "hf_db": null,
+          "decoded_with": "ours",
+          "measured_kbps": 453.01759999999996
+        }
+      }
+    },
+    "eac3-stereo-192": {
+      "codec": "eac3",
+      "layout": "stereo",
+      "bitrate_kbps": 192,
+      "source_wav": "tests/golden/audio/reference_stereo.wav",
+      "scores": {
+        "ffmpeg": {
+          "snr_db": 32.810523986816406,
+          "lsd_db": 0.828455735075527,
+          "hf_db": -0.9107148233870128,
+          "decoded_with": "ffmpeg",
+          "measured_kbps": 192.512
+        },
+        "dee": {
+          "snr_db": 33.31864929199219,
+          "lsd_db": 1.899412041800419,
+          "hf_db": -0.8104806035555444,
+          "decoded_with": "ffmpeg",
+          "measured_kbps": 192.512
+        },
+        "ours_at_baseline_time": {
+          "snr_db": 21.655664443969727,
+          "lsd_db": 0.9800096601329651,
+          "hf_db": -0.614782040356936,
+          "decoded_with": "ours",
+          "measured_kbps": 192.512
+        }
+      }
+    },
+    "eac3-51-256": {
+      "codec": "eac3",
+      "layout": "5.1",
+      "bitrate_kbps": 256,
+      "source_wav": "tests/golden/audio/reference_51.wav",
+      "scores": {
+        "ffmpeg": {
+          "snr_db": 31.14073944091797,
+          "lsd_db": 5.741009176481866,
+          "hf_db": -6.154981450302442,
+          "decoded_with": "ffmpeg",
+          "measured_kbps": 258.8672
+        },
+        "dee": {
+          "status": "unverified",
+          "reason": "DEE build v6.5.4-dme+b56bc97e drops the Ls channel for discrete 6-channel 5.1 input (confirmed via tone probe, channel-index-locked) - see tools/generators/gen_external_baseline.py's module docstring."
+        },
+        "ours_at_baseline_time": {
+          "snr_db": 31.629106521606445,
+          "lsd_db": 4.783468887121625,
+          "hf_db": 0.13309915936214464,
+          "decoded_with": "ours",
+          "measured_kbps": 258.8672
+        }
+      }
+    }
+  }
+}

@@ -8,10 +8,12 @@ alternation disappears), and exponent strategies for all six blocks hoisted into
 `audfrm`.
 
 ```cpp
-ac3::eac3::FrameEncoder encoder{{
+// Heap-allocated: FrameEncoder carries several KB of MDCT scratch/history
+// state (PREfast's C6262).
+auto encoder = std::make_unique<ac3::eac3::FrameEncoder>(ac3::eac3::FrameConfig{
     .bitrate_kbps = 192,
     .acmod = ac3::Acmod::k2_0,
-}};
+});
 
 std::vector<std::vector<float>> pcm(2, std::vector<float>(ac3::kSamplesPerFrame));
 const auto views = views_of(pcm);
@@ -19,7 +21,7 @@ const auto views = views_of(pcm);
 std::vector<std::byte> stream;
 for (int frame = 0; frame < 31; ++frame) {
     fill_tones(pcm, tones, frame, 48000.0);
-    const auto encoded = encoder.encode_frame(views);
+    const auto encoded = encoder->encode_frame(views);
     if (!encoded) {
         return 1;
     }
@@ -27,7 +29,17 @@ for (int frame = 0; frame < 31; ++frame) {
 }
 ```
 
-`FrameConfig` carries everything `EncoderConfig` does, plus the Annex E tools:
+`FrameConfig` carries nearly everything `EncoderConfig` does, plus the Annex E tools. Two AC-3
+fields do not carry over as-is: there is no `cplendf` — the coupling end frequency is derived
+(the top of the coded spectrum, or from `spxbegf` when spectral extension is on, §E3.3.1) —
+and `chbwcod` defaults to a fixed 60 rather than AC-3's auto-from-bitrate −1.
+
+One field widens instead: `FrameConfig::sample_rate` also accepts the three Annex E half rates —
+`k24000`, `k22050`, `k16000` (24/22.05/16 kHz). For those the encoder writes `fscod2` in place
+of `numblkscod` (§E2.3.1.3, the block count is then implicitly six), and the reduced rate reuses
+its double-rate parent's bit-allocation tables (§E2.3.1.4). The CLI maps the plain rate numbers
+onto them. Classic AC-3 has no `frmsizecod` row for a reduced rate, so `ac3::FrameEncoder`
+rejects them outright.
 
 | Field | Default | Notes |
 |---|---|---|
@@ -35,21 +47,31 @@ for (int frame = 0; frame < 31; ++frame) {
 | `spx_atten`, `spxattencod` | `true`, -1 | The §E3.6.4.2.3 notch across the seam. Six bits per channel per frame. |
 | `aht`, `gaqmod` | `false`, -1 | Adaptive hybrid transform (§E3.4): a second 6-point DCT down each bin across the frame's six blocks. Decided per channel per frame — setting the flag permits it, not forces it. |
 | `coupling`, `cplbegf` | `false`, -1 | §E3.3. With `spx` also on, §E3.3.1 derives the coupling end frequency from `spxbegf`. |
+| `enhanced` | `false` | §E3.5: enhanced coupling instead of standard — 22 sub-bands, amplitude/angle/chaos-quantized coordinates and a phase-restoring reconstruction built on a full DFT, rather than a single per-band scale factor. Only meaningful with `coupling` also set (`cpl+ecpl`); combines with `spx` the same way standard coupling does. This encoder fits real amplitude/angle coordinates per band (an exact 2-variable linear least squares, since §3.5.5.4's reconstruction is linear in the complex gain the pair expresses) and chooses chaos by searching its 8 legal codes against the decoder's own deterministic de-correlation sequence. Two genuinely different channels forced into one narrow coupling band still cost quality — a single coordinate per band has a real, structural limit on what it can separate — but it is no longer the amplitude-only fit's all-or-nothing loss. |
+| `transient_prenoise` | `false` | §3.7 (`tpn`): a post-IMDCT correction that overwrites the pre-echo ahead of a detected transient with a synthesized copy of the clean audio just before it. Reuses the same transient detector block switching relies on, so it only has an effect on channels/frames that also block-switch. See [Decoding](decoding.md) for the one-frame decoder-side latency this introduces and the `flush()` call it requires. |
+| `fast_mdct` | `true` | The §7.9.4 fast N/4-FFT forward MDCT instead of the direct §8.2.3.2 evaluation — a performance choice, not a coding tool: nothing in the bitstream's syntax changes, only how the coefficients were computed (verified ~3e-12 max relative error against the direct form; 0.000 dB SNR delta against an independent oracle at 192–448 kbps). `false` forces the direct reference form, which stays maintained as the oracle the fast path is validated against — the CLI spells that `tools=nofastmdct`. Only the long transform accelerates today; a block-switched channel's short transforms always run direct. |
 | `mixing` | none | The `mixmdate` group (Table E1.2). E-AC-3 dropped `cmixlev`/`surmixlev` from `bsi` entirely, so without this the stream carries no downmix levels at all. |
 | `strmtyp`, `substreamid`, `chanmap`, `last_dependent` | independent, 0, none, false | Substream identity. Set by `AccessUnitEncoder`; you rarely touch these directly. |
 | `oba_complexity_index` | none | TS 103 420 §8.3 object count in `addbsi`. This is the marker FFmpeg keys its "Dolby Digital Plus + Dolby Atmos" report off. |
 
-> The in-repo decoder reads `spx`, `aht` and Annex E coupling too, individually or stacked
-> together, at every layout including 7.1.4 — cross-checked against FFmpeg wherever FFmpeg
-> itself can decode them. See the verification-gap table in
-> [Validation](../verification.md#where-the-oracles-dont-reach) for where FFmpeg's coverage
-> stops (a second dependent substream) and only the in-repo decoder is left.
+> The in-repo decoder reads every one of these tools, individually or stacked together, at every
+> layout including 7.1.4 — see [Decoding](decoding.md) for the decode-side picture, and the
+> verification-gap table in [Validation](../verification.md#where-the-oracles-dont-reach) for
+> which tools have an external oracle.
 
 Block switching (§8.2.2/§7.9) is automatic here too — no config field. A channel that switches
 anywhere in the frame is excluded from both coupling (same reasoning as AC-3's) and, for this
 generation only, from AHT for that frame: AHT's own "stationary" premise (§E3.4, the opposite of
 what triggered the switch) already selects against a switching channel most of the time, but the
 exclusion is explicit rather than relying on that correlation.
+
+Rematrixing (§7.5.3) is automatic too, `acmod` 2/0 only, no config field — the same minimum-power
+decision AC-3's own encoder makes (see [Encoding AC-3](encoding-ac3.md#rematrixing)), over the same Table 7.25
+bands. Annex E §3.3's "Modifications to Previously Defined Parameters" only changes how many of
+those bands are active (`nrematbd`, accounting for coupling, enhanced coupling and spectral
+extension all separately taking over the top of the spectrum) — the boundaries and the decision
+rule are untouched, so nothing here needed reinventing beyond that band count and clamping the
+last active band to wherever this channel's own coding actually stops.
 
 `FrameConfig::dialnorm2` (see "Dual mono" in [Encoding AC-3](encoding-ac3.md)) works exactly
 the same way here: set it alongside `dialnorm` when `acmod` is `kDualMono`. Dual mono is always a
@@ -68,7 +90,7 @@ chosen quality):
 
 ```cpp
 ac3::eac3::FrameEncoder encoder{{
-    .bitrate_kbps = 192,  // still used: see nominal_kbps below
+    .bitrate_kbps = 192,  // not read once vbr is set — see below
     .acmod = ac3::Acmod::k2_0,
     .vbr = ac3::eac3::VbrConfig{
         .quality = 0.4,
@@ -79,12 +101,13 @@ ac3::eac3::FrameEncoder encoder{{
 
 | `VbrConfig` field | Default | Notes |
 |---|---|---|
-| `quality` | `0.5` | `[0, 1]`, linearly maps onto the encoder's own SNR-offset search space. Encoder-relative, not a perceptual scale — and **not linear in bit cost**: cost rises steeply in roughly the top half of the range, so a high quality with no `max_kbps` bound will often refuse ordinary multi-channel material outright (`FrameError::kInvalidBitrate`) rather than produce an oversized frame. |
+| `quality` | `0.5` | `[0, 1]`, linearly maps onto the encoder's own SNR-offset search space. Encoder-relative, not a perceptual scale — and **not linear in bit cost**: cost rises steeply in roughly the top third of the range, so a high quality with no `max_kbps` bound will often refuse ordinary multi-channel material outright (`FrameError::kInvalidBitrate`) rather than produce an oversized frame. |
 | `min_kbps`, `max_kbps` | none, none | Optional hard bounds, same unit as `bitrate_kbps`. When the quality target would need more words than `max_kbps` allows, the encoder falls back to the same search CBR uses, budgeted against the ceiling — so a bounded VBR frame is never worse than the best CBR could do at that rate. `min_kbps` is a pure floor: `finish_frame`'s own padding covers the gap. |
 | `nominal_kbps` | none | Drives the `cplbegf`/`spxbegf` frequency defaults in place of a fixed target rate. Defaults to `max_kbps` if set, else 192. A caller who wants today's CBR tool behaviour at some quality supplies the same number they would have passed as `bitrate_kbps`. |
 
-`bitrate_kbps` itself is not used for sizing once `vbr` is set, but it is still read — it is
-`nominal_kbps`'s own fallback when neither `nominal_kbps` nor `max_kbps` is given.
+`bitrate_kbps` itself is not read on the encode path at all once `vbr` is set: when neither
+`nominal_kbps` nor `max_kbps` is given, the frequency defaults fall back to the fixed
+`kVbrDefaultNominalKbps` (192), not to `bitrate_kbps`.
 
 `AccessUnitConfig` needs no separate VBR field: each substream's own `FrameConfig::vbr` carries
 what it needs, and `plan::eac3_config()` shares one `VbrConfig` across every substream of a
@@ -139,7 +162,7 @@ const auto unit = encoder.encode_access_unit(views);
 stream.insert(stream.end(), unit->bytes.begin(), unit->bytes.end());
 ```
 
-Full program: [`examples/encode_eac3.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/encode_eac3.cpp).
+Full program: [`examples/encode_eac3.cpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/encode_eac3.cpp).
 
 Constraints: at most 8 dependents; a dependent may not disagree with its parent on sample
 rate; and the locations a `chanmap` names must add up to the channels its `acmod` and `lfeon`

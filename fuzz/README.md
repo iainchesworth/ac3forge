@@ -42,7 +42,7 @@ other legs had gone green in the meantime and taken the debt with them. The
 exemption was removed rather than re-justified, so `ac3forge` now compiles
 under one warning set in every configuration, this one included.
 
-The four harness executables link `ac3::warnings` too, and had no warnings of
+All harness executables link `ac3::warnings` too, and had no warnings of
 their own either. They need to name it explicitly: `ac3forge` links it
 `PRIVATE`, so the flags govern the library's own sources and do not propagate
 to anything downstream of it.
@@ -95,16 +95,125 @@ there. `ac3::io::read_wav` takes a path rather than a byte span, so
 beyond calling the real function directly, since there is no in-memory
 overload to call instead.
 
+## Differential mode (roadmap G3)
+
+`fuzz_differential_ac3_decode` and `fuzz_differential_eac3_decode` drive the
+exact same decode paths as `fuzz_ac3_decode`/`fuzz_eac3_decode` above, but
+instead of (in addition to - a crash is still a crash) only checking for a
+crash or sanitizer trip, they decode the SAME mutated bytes a second time
+with FFmpeg and diff the resulting PCM against this project's own decode.
+`fuzz/differential_oracle.hpp` has the full mechanism and reasoning; the
+short version:
+
+- Both decoders have to accept the ENTIRE input - every frame/access unit,
+  one unchanging acmod/sample rate throughout - before FFmpeg is even
+  invoked. The overwhelming majority of mutations get rejected immediately
+  by this project's own decoder (bad sync word, bad CRC, a reserved field),
+  and none of those are worth a real FFmpeg process.
+- A **PCM mismatch is only reported as a divergence when both decoders
+  accepted the input and produced comparably-shaped audio.** FFmpeg's own
+  error-concealment on a mutated (i.e. potentially malformed) frame can
+  legitimately differ from this project's spec-strict decode - that proves
+  nothing about which one is right, so it is treated as "no oracle for this
+  one," the same stance `tools/ci/run_codec_matrix.sh` already takes for the
+  Annex E tool combinations FFmpeg has no reading of at all (enhanced
+  coupling, transient pre-noise processing, a second dependent substream/
+  7.1.4 - see `docs/verification.md`'s "Where the oracles don't reach").
+- Where a comparison IS eligible, the floor - `kMinAgreementDb = 6.0` in
+  `fuzz/differential_oracle.hpp` - is deliberately loose relative to what a
+  clean, non-fuzzed stream actually measures at (`docs/verification.md`:
+  float32-precision parity for the plain path, 98+ dB for coupling/spectral
+  extension, 62-89 dB for AHT). It started from
+  `tools/checks/verify_gold_reference.sh`'s own `CPLBNDSTRCE0_MIN_SNR_DB=15`
+  precedent - this project's one existing floor for "two decodes of a
+  bitstream neither side controls" - and was then calibrated down to 6 dB
+  after `fuzz/measure-agreement.sh` found committed seeds that legitimately
+  measure below 15 dB (real, unmutated content whose bap-0 reconstruction
+  FFmpeg dithers and this decoder zeros).
+- `fuzz/measure-agreement.sh` is the calibration method behind that floor:
+  it runs every committed seed through the differential harnesses in
+  measure-only mode and reports the worst-channel SNR each one lands on.
+  Re-run it after adding seed content, and after any change to
+  `compare_pcm`'s own alignment/silence-skip logic - a new corner of
+  legitimate decoder disagreement needs the floor reconsidered, not
+  assumed.
+
+Because every comparable input spawns a real FFmpeg process, these two
+harnesses are much slower per-exec than every other harness here and are
+NOT in `fuzz/run.sh`'s default target list or in the `fuzz-regress`/
+`fuzz-short`/`fuzz-nightly` CI jobs - they get their own job,
+`fuzz-differential` (see the CI section below), and need `ffmpeg` on PATH to
+compare anything at all (silently a no-op otherwise, same as running without
+`ffmpeg` installed locally). They share their crash-only siblings' seed
+corpora rather than duplicating those files (`fuzz/run.sh`'s
+`seed_source_for`) - same bytes, same decode path, just with an extra
+comparison bolted on.
+
+## The other direction: the encoder's input space
+
+Everything above mutates an already-encoded bitstream. That answers "does the
+DECODER survive corrupt input", and it is the whole of what this directory
+covered for a long time. The mirror-image question - "does the ENCODER, driven
+across its own legal configuration space by adversarial but perfectly valid
+audio, ever emit a stream a decoder refuses" - is
+**`tools/ci/fuzz_encoder_space.py`**, and nothing here asks it.
+
+It is not a libFuzzer target and not part of `fuzz/run.sh`: it drives the real
+`ac3cli`, so it needs the ordinary CLI build rather than this directory's
+sanitizer/libFuzzer toolchain, and its failure signal is a decoder refusing a
+stream rather than a sanitizer report. Per case it draws a random legal
+encoder configuration (layout, bitrate, coupling, DRC, heavy compression,
+dialnorm, downmix levels, forward-MDCT path), draws adversarial PCM built per
+256-sample BLOCK so a frame's character can change part-way through it,
+encodes, and then decodes the result with BOTH `ac3cli decode` and FFmpeg's
+strict decode - the same invocation `tools/ci/run_codec_matrix.sh` uses. A
+refusal from either fails the case, with one arbitrated exception: when only
+FFmpeg's default invocation refuses and the same bytes decode cleanly under
+`-f ac3` with every error check kept, libavformat's container *guess* failed
+rather than the stream, and the case counts as "misprobed" instead - measured
+and explained in the script's note above `MIN_STREAM_BYTES` (large syncframes
+can lose FFmpeg's probe-window race to the MPEG-PS prober no matter how long
+the stream is).
+
+Why it exists: PR #186 fixed an encoder defect (`deltbaie == 0` means "retain
+the previous block's delta bit allocation", not "no delta") that produced
+streams both decoders reject, and it escaped ctest, the codec matrix, the
+gold-reference gate and every job in this file. Reaching it needs dense
+harmonic content followed by digital silence inside one frame - an input
+SHAPE, not an option combination, which is why enumerating options more
+thoroughly would never have found it. The harness finds it in seconds; that
+was verified by reverting the fix and running it (see the file's own header).
+
+```bash
+AC3CLI=build/config-linux-llvm/bin/ac3cli python3 tools/ci/fuzz_encoder_space.py --seconds 120
+python3 tools/ci/fuzz_encoder_space.py --check-envelope      # re-measure the rate floors it draws from
+python3 tools/ci/fuzz_encoder_space.py --replay <case-seed>  # rerun one exact failing case
+python3 tools/ci/fuzz_encoder_space.py --regressions         # replay every recorded past failure
+```
+
+Every case is a pure function of one 64-bit case seed, printed beside any
+failure, so a random run stays fully reproducible after the fact. Failing
+inputs are kept under `fuzz-encoder-artifacts/` (gitignored, and regenerable
+from the seed).
+
+Scope: AC-3 `encode` only. E-AC-3's own configuration space - the Annex E tool
+tokens, VBR, the wider layouts - is a real remaining gap, deliberately left
+open rather than half-covered.
+
 ## Running locally
 
 ```bash
 # One-time: any Clang 18+ with libFuzzer works; CI pins LLVM 21 the same way
 # ci.yml's linux-llvm leg does (.github/toolchain/03-llvm-toolchain.sh).
-fuzz/run.sh                    # build, then run every harness for 60s each
+fuzz/run.sh                    # build, then run every default-list harness for 60s each
 fuzz/run.sh fuzz_scan          # just one harness
 AC3FORGE_FUZZ_SECONDS=600 fuzz/run.sh   # a deeper local run
 fuzz/run.sh regress            # replay seeds + regressions, no mutation (fast)
 fuzz/run.sh minimize fuzz_scan fuzz/artifacts/fuzz_scan-crash-<hash>
+
+# Differential harnesses need `ffmpeg` on PATH and are named explicitly -
+# see "Differential mode" above for why they're not in the default list.
+fuzz/run.sh run fuzz_differential_ac3_decode fuzz_differential_eac3_decode
 ```
 
 On Windows, run this from WSL or inside a Linux container - there is no
@@ -164,19 +273,38 @@ gitignored; `fuzz/run.sh` creates it on demand.
   mutation, on every push/PR to `main`/`develop`. Seconds, not minutes, and
   not marked experimental: a failure here means a previously-fixed bug came
   back, which should always be loud.
-- `fuzz-short` - a 60-second-per-harness mutation budget, push only (not
-  pull_request, to keep PR turnaround unaffected).
+- `fuzz-short` - a 60-second-per-harness mutation budget over the crash-only
+  harnesses, push only (not pull_request, to keep PR turnaround unaffected).
+- `fuzz-differential` - the same 60-second-per-harness mutation budget, push
+  only, but over ONLY the two differential harnesses (see "Differential
+  mode" above) - a separate job rather than folded into `fuzz-short` because
+  it needs `ffmpeg` installed and is much slower per-exec (a real FFmpeg
+  process per comparable input), so sharing a budget with the crash-only
+  harnesses would have starved them of iterations. Also replays
+  `fuzz/regressions/fuzz_differential_*` first, same shape as `fuzz-regress`.
 - `fuzz-nightly` - a 10-minute-per-harness mutation budget on a daily
   schedule, plus `workflow_dispatch` with a configurable budget for an
-  on-demand deeper run.
+  on-demand deeper run. Crash-only harnesses only - see `fuzz-differential`.
+- `encoder-space-nightly` - the encoder input-space search above, on the same
+  daily schedule and `workflow_dispatch`, with a 15-minute default budget.
+  Shares none of the machinery of the other four (no libFuzzer, no sanitizer
+  runtime, not in `fuzz/run.sh`): it builds the plain `linux-llvm` CLI with
+  vcpkg and a pinned `ffmpeg`, the way `ci.yml`'s `ffmpeg-validate` job does.
 
-`fuzz-short` and `fuzz-nightly` run with `continue-on-error: true`, the same
-convention `ci.yml` uses for its other unproven legs: neither has multiple
-clean fuzzing runs behind it yet. That is a question of track record, and it
-is not settled by the build being warnings-clean - a bounded mutation run can
-still surface something on any given night. `fuzz-regress` is cheap enough to
-make a required branch-protection check once it has proven itself - that is a
-repository setting this file cannot declare on its own.
+The bounded per-PR counterpart to `encoder-space-nightly` is a step in
+`ci.yml`'s `ffmpeg-validate` job (~2 minutes, plus the envelope check), not a
+job in this file - everything it needs is already built and pinned there, and
+unlike `fuzz-short` it runs on pull requests rather than push only, because it
+is cheap enough relative to the job it rides on.
+
+`fuzz-short`, `fuzz-differential` and `fuzz-nightly` run with
+`continue-on-error: true`, the same convention `ci.yml` uses for its other
+unproven legs: none has multiple clean fuzzing runs behind it yet. That is a
+question of track record, and it is not settled by the build being
+warnings-clean - a bounded mutation run can still surface something on any
+given night. `fuzz-regress` is cheap enough to make a required
+branch-protection check once it has proven itself - that is a repository
+setting this file cannot declare on its own.
 
 This is a bounded, time-boxed run, not continuous (OSS-Fuzz-style) fuzzing
 infrastructure. That is a deliberate scope decision, not a limitation

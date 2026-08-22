@@ -9,6 +9,7 @@
 # fully; without a token it degrades gracefully rather than failing. To get
 # the fuller score, add a fine-grained PAT (read-only, "Administration: read")
 # as a repo secret named SCORECARD_READ_TOKEN and uncomment repo_token below.
+name: Scorecard
 
 on:
   push:
@@ -45,7 +46,7 @@ jobs:
       # commit... does not belong to ossf/scorecard-action" on every run -
       # nothing to do with this repo's Scorecard registration.
       - name: Run Scorecard analysis
-        uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a # v2.4.3
+        uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
         with:
           results_file: results.sarif
           results_format: sarif
@@ -58,7 +59,7 @@ jobs:
           repo_token: ${{ secrets.SCORECARD_READ_TOKEN || github.token }}
 
       - name: Upload SARIF
-        uses: github/codeql-action/upload-sarif@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4.37.0
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
         with:
           sarif_file: results.sarif
           category: scorecard

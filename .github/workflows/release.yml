@@ -171,9 +171,12 @@ jobs:
     # so that job never actually runs for a release, but GitHub validates a
     # reusable workflow's job permissions statically regardless of a job's own
     # `if:`, so the ceiling still has to be raised or this call is rejected
-    # outright before any job starts.
+    # outright before any job starts. actions: read is the same story for
+    # check-runners - see ci.yml's identical override and
+    # docs/ci-self-hosted-runners.md.
     permissions:
       contents: write
+      actions: read
     with:
       do_package: true
       # Full history + tags: GitVersionDerivation.cmake's `git describe` needs
@@ -183,6 +186,22 @@ jobs:
       # so `git describe` alone would find nothing (or the previous release).
       fetch_depth: 0
       version_tag: ${{ needs.resolve-version.outputs.version_tag }}
+    # ci.yml's call to _build.yml passes none of these - it never sets
+    # do_package for a release APK, so build-android's signing step has
+    # nothing to decode there regardless. Threaded through even on a dry
+    # run: assembleRelease itself still runs then (do_package is
+    # unconditionally true above), so a dry run genuinely exercises the
+    # signing path too, not just the unsigned/debug one - it just never
+    # reaches the github-release job below to get uploaded anywhere.
+    secrets:
+      ATMOS_SIGNING_KEY: ${{ secrets.ATMOS_SIGNING_KEY }}
+      # Optional; see _build.yml's own description. Absent today, same as
+      # ci.yml's identical forward.
+      ORG_RUNNERS_TOKEN: ${{ secrets.ORG_RUNNERS_TOKEN }}
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
 
   # Downloads whatever packages actually got built, signs and attests them,
   # generates an SBOM, and publishes the GitHub Release. Skipped entirely on
@@ -225,7 +244,8 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           artifacts=(release-artifacts/*.deb release-artifacts/*.rpm release-artifacts/*.tar.gz
-                     release-artifacts/*.zip release-artifacts/*.exe release-artifacts/*.dmg)
+                     release-artifacts/*.zip release-artifacts/*.exe release-artifacts/*.dmg
+                     release-artifacts/*.apk)
           if [ ${#artifacts[@]} -eq 0 ]; then
             echo "::error::no package artifacts were downloaded - every platform failed to build"
             exit 1
@@ -279,7 +299,8 @@ jobs:
 
           shopt -s nullglob
           artifacts=(release-artifacts/*.deb release-artifacts/*.rpm release-artifacts/*.tar.gz
-                     release-artifacts/*.zip release-artifacts/*.exe release-artifacts/*.dmg)
+                     release-artifacts/*.zip release-artifacts/*.exe release-artifacts/*.dmg
+                     release-artifacts/*.apk)
 
           sign() {
             gpg --batch --yes --pinentry-mode loopback --passphrase-fd 3 --armor \
@@ -307,9 +328,9 @@ jobs:
       # attests WHICH repo/workflow/commit built these bytes; the GPG
       # signature above attests WHO (a human maintainer) vouches for them -
       # complementary, not redundant. Verify with:
-      #   gh attestation verify <file> --repo iainchesworth/ac3forge
+      #   gh attestation verify <file> --repo iainchesworthlabs/ac3forge
       - name: Attest package build provenance
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
             release-artifacts/*.deb
@@ -318,6 +339,7 @@ jobs:
             release-artifacts/*.zip
             release-artifacts/*.exe
             release-artifacts/*.dmg
+            release-artifacts/*.apk
 
       # The attestation above is real and independently verifiable
       # (gh attestation verify), but it lives in GitHub's Attestations API,
@@ -337,7 +359,8 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           artifacts=(release-artifacts/*.deb release-artifacts/*.rpm release-artifacts/*.tar.gz
-                     release-artifacts/*.zip release-artifacts/*.exe release-artifacts/*.dmg)
+                     release-artifacts/*.zip release-artifacts/*.exe release-artifacts/*.dmg
+                     release-artifacts/*.apk)
           for f in "${artifacts[@]}"; do
             name="$(basename "$f")"
             workdir="$(mktemp -d)"
@@ -362,6 +385,7 @@ jobs:
             release-artifacts/*.zip
             release-artifacts/*.exe
             release-artifacts/*.dmg
+            release-artifacts/*.apk
           sbom-path: release-artifacts/ac3forge-${{ needs.resolve-version.outputs.version }}.spdx.json
 
       # Only for workflow_dispatch: a tag-push run already has its tag (that

@@ -14,8 +14,24 @@ name: CodeQL (C++)
 on:
   push:
     branches: [ main, develop ]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - "LICENSE"
+      - "mkdocs.yml"
+      - "requirements/requirements-docs.in"
+      - "requirements/requirements-docs.txt"
+      - ".github/workflows/docs.yml"
   pull_request:
     branches: [ main, develop ]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - "LICENSE"
+      - "mkdocs.yml"
+      - "requirements/requirements-docs.in"
+      - "requirements/requirements-docs.txt"
+      - ".github/workflows/docs.yml"
   schedule:
     # Weekly scan catches new CodeQL query packs even without code changes.
     - cron: "17 3 * * 1"
@@ -29,8 +45,16 @@ permissions:
   contents: read
 
 jobs:
+  # Single source of truth for the vcpkg pin below - see
+  # docs/ci-self-hosted-runners.md and _toolchain-versions.yml's own header.
+  toolchain-versions:
+    uses: ./.github/workflows/_toolchain-versions.yml
+    permissions:
+      contents: read
+
   analyze:
     name: Analyze (C++)
+    needs: toolchain-versions
     runs-on: ubuntu-latest
     container: ubuntu:26.04
     permissions:
@@ -62,10 +86,10 @@ jobs:
 
       - uses: ./.github/actions/setup-vcpkg
         with:
-          vcpkg-commit: "eaca4a577b6b678c6e10252754b6988a61746c19"
+          vcpkg-commit: ${{ needs.toolchain-versions.outputs.vcpkg_commit }}
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4.37.0
+        uses: github/codeql-action/init@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
         with:
           languages: cpp
           build-mode: manual
@@ -77,6 +101,6 @@ jobs:
         run: cmake --build --preset build-linux-gcc -- -k 0
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4.37.0
+        uses: github/codeql-action/analyze@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
         with:
           category: "/language:cpp"

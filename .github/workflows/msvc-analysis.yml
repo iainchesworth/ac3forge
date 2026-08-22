@@ -11,8 +11,24 @@ name: MSVC Code Analysis
 on:
   push:
     branches: [ main, develop ]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - "LICENSE"
+      - "mkdocs.yml"
+      - "requirements/requirements-docs.in"
+      - "requirements/requirements-docs.txt"
+      - ".github/workflows/docs.yml"
   pull_request:
     branches: [ main, develop ]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - "LICENSE"
+      - "mkdocs.yml"
+      - "requirements/requirements-docs.in"
+      - "requirements/requirements-docs.txt"
+      - ".github/workflows/docs.yml"
   schedule:
     # Weekly, offset from the CodeQL cron (Mon 03:17) to avoid runner
     # contention at the same minute.
@@ -27,8 +43,16 @@ permissions:
   contents: read
 
 jobs:
+  # Single source of truth for the Qt/vcpkg pins below - see
+  # docs/ci-self-hosted-runners.md and _toolchain-versions.yml's own header.
+  toolchain-versions:
+    uses: ./.github/workflows/_toolchain-versions.yml
+    permissions:
+      contents: read
+
   analyze:
     name: MSVC Code Analysis
+    needs: toolchain-versions
     runs-on: windows-latest
     permissions:
       actions: read
@@ -51,12 +75,12 @@ jobs:
       - name: Install Qt (prebuilt)
         uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
         with:
-          version: "6.8.3"
+          version: ${{ needs.toolchain-versions.outputs.qt_version }}
           cache: true
 
       - uses: ./.github/actions/setup-vcpkg
         with:
-          vcpkg-commit: "eaca4a577b6b678c6e10252754b6988a61746c19"
+          vcpkg-commit: ${{ needs.toolchain-versions.outputs.vcpkg_commit }}
 
       # QT_ROOT_DIR (set by install-qt-action) is a runner-specific path
       # cmake/FindQt6.cmake's local search roots do not cover - same override
@@ -79,6 +103,6 @@ jobs:
           ignoredPaths: ${{ github.workspace }}/tests
 
       - name: Upload SARIF to GitHub
-        uses: github/codeql-action/upload-sarif@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4.37.0
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
         with:
           sarif_file: ${{ steps.run-analysis.outputs.sarif }}

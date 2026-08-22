@@ -49,7 +49,7 @@ for (const auto unit : scanned->access_units) {
 }
 ```
 
-Full program: [`examples/decode_stream.cpp`](https://github.com/iainchesworth/ac3forge/blob/main/examples/decode_stream.cpp).
+Full program: [`examples/decode_stream.cpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/decode_stream.cpp).
 
 Both decoders keep overlap-add state, so feed frames in order. `Eac3Decoder` keys its state on
 `strmtyp` and `substreamid` together, because a dependent's id lives in its own numbering
@@ -65,11 +65,33 @@ decoder as a check on the encoder: a test can assert on the `dynrng` words the e
 | `drc_scale` | 0.0 | §7.7.1 partial compression. 0 ignores `dynrng`; 1 applies it as encoded. A/52 says a consumer decoder should default to applying it — this one defaults to 0 because a reference that silently rescales its output is not a reference. |
 | `heavy_compression` | `false` | §7.7.2: prefer `compr` where it exists, falling back on `dynrng` for syncframes that carry none. |
 
-The E-AC-3 decoder reads all three Annex E coding tools — coupling (§E3.3), spectral extension
-(§E3.6), and the adaptive hybrid transform with GAQ (§E3.4) — individually or all stacked
-together, at every channel layout including 7.1.4. What both decoders refuse, cleanly, rather
-than mis-decoding: enhanced coupling and transient pre-noise processing, neither of which this
-project implements at all.
+The E-AC-3 decoder reads every Annex E coding tool — standard coupling (§E3.3), enhanced coupling
+(§E3.5), spectral extension (§E3.6), the adaptive hybrid transform with GAQ (§E3.4), and transient
+pre-noise processing (§3.7) — individually or stacked together, at every channel layout including
+7.1.4. That includes Annex E's default coupling band structures: a block that transmits no band
+structure of its own falls back to Table E2.12 (standard coupling) or Table E2.13 (enhanced
+coupling) and decodes normally. Two syntax corners are still recognised and refused rather than
+mis-decoded — enhanced coupling's `ecplangleintrp` (angle interpolation), and a transient
+pre-noise correction reaching further back or forward than the one frame of history/lookahead
+this decoder buffers — because no stream this project's own encoder produces exercises either.
+
+Transient pre-noise processing has one API consequence worth knowing: once a stream turns it on,
+`Eac3Decoder::decode_substream` holds one frame back at a time (a correction can reach into the
+previous frame's already-decoded audio), returning `std::nullopt` until the next frame confirms
+it. Call `Eac3Decoder::flush()` once at end-of-stream to collect whichever frame is still held
+back — a stream that never uses the tool is completely unaffected, every call returns immediately
+as before.
+
+`Eac3Decoder::decode_access_unit` builds on the same convention rather than refusing it: an
+access unit needs every one of its substreams ready in the same call, and the tool is a
+per-substream flag, so one substream turning it on does not have to stall the others. Whichever
+substreams already released this call are queued (per substream identity, oldest first) until the
+lagging one catches up, so nothing already-decoded is discarded or, worse, silently paired with
+the wrong instant in time — a dependent that never uses the tool can keep releasing every call
+while an independent that does falls one frame behind, and each call still assembles the correct
+pairing once every identity has something waiting. `flush()` drains both caches: whichever frame
+`decode_substream` itself is still holding, and whichever substream results are still queued
+waiting for a sibling.
 
 Block switching (§8.2.2/§7.9) decodes on both, and is reported back: `DecodedFrame::blksw` /
 `DecodedSubstream::blksw` gives, per full-bandwidth channel per block, whether that block used the
@@ -86,12 +108,61 @@ two channels come back in coded order (Ch1, Ch2) instead.
 
 Delta bit allocation (§7.2.2.6) is decoded like any other transmitted parameter: both decoders
 carry per-channel state across a syncframe's blocks and apply it to the masking curve before
-computing `bap`. Neither encoder emits it on the coupling channel yet (see the library's
-[encoding](encoding-ac3.md) pages), but both decoders accept it there from any stream that does.
+computing `bap`, on the coupling channel as well as the full-bandwidth ones. The encode side
+differs by generation: the AC-3 encoder does emit coupling-channel delta (`cpldeltbae`, whenever
+the coupling channel has segments to send), while the E-AC-3 encoder skips delta entirely for
+any frame where coupling is active. How corrections are chosen, and when they are dropped, is
+covered in [Encoding AC-3](encoding-ac3.md#delta-bit-allocation).
+
+Dither substitution (§7.3.4) decodes on both as well: a bin allocated zero bits (`bap` 0)
+reconstructs as a true zero when its channel's `dithflag` is clear, and as a dither sample when
+it is set. A coupled channel's shared bap-0 bins are dithered independently per *receiving*
+channel, after decoupling — §7.3.4's own uncorrelated-noise requirement — never by dithering the
+shared coupling-channel coefficient itself. The generator's state persists across frames, like
+the overlap-add state, so a long stream's substituted noise does not repeat every syncframe.
 
 `fscod2` (the Annex E half sample rates — 24, 22.05, 16 kHz) is decoded like any other rate: the
 reduced rate reuses the same bit-allocation tables as its double-rate parent (§E2.3.1.4), so
 nothing else about decoding changes.
+
+## Recovering from a damaged frame
+
+`ac3::split_frames` delimits syncframes by sync word and declared size alone — it does not
+validate a frame's CRC, so it still finds every boundary correctly even when one frame's payload
+is corrupt. That means a caller can decode frame by frame, catch the one bad `decode_frame`
+call, and keep going rather than losing the rest of the stream over a single damaged frame — the
+shape real capture/transport corruption takes, since a torn or bit-flipped frame does not
+usually take its neighbours down with it.
+
+```cpp
+const auto frames = ac3::split_frames(stream);
+
+ac3::FrameDecoder decoder;
+int recovered = 0;
+int failed = 0;
+for (std::size_t i = 0; i < frames->size(); ++i) {
+    const auto decoded = decoder.decode_frame((*frames)[i]);
+    if (!decoded) {
+        const auto message = ac3::describe(decoded.error());
+        std::printf("frame %zu: decode failed (%.*s) - skipping\n", i,
+                    static_cast<int>(message.size()), message.data());
+        ++failed;
+        continue;
+    }
+    ++recovered;
+}
+```
+
+Full program: [`examples/decode_robustness.cpp`](https://github.com/iainchesworthlabs/ac3forge/blob/main/examples/decode_robustness.cpp)
+— corrupts one frame in the middle of an otherwise-good eight-frame stream and confirms the
+other seven still decode.
+
+`split_access_units` is the E-AC-3 sibling for `Eac3Decoder::decode_access_unit`, delimiting by
+independent-substream boundaries the same way. Losing an entire access unit (rather than one
+frame within it) is not recoverable the same way — `decode_access_unit` needs every substream
+of a unit in the one call — so a transport that can drop whole units needs its own
+redundancy/retransmission above this layer; this API only guarantees that *finding* the next
+good boundary never depends on the previous one having decoded cleanly.
 
 ---
 

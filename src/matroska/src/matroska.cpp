@@ -140,6 +140,35 @@ Bytes build_info(const MuxOptions& options, std::uint64_t duration_ms) {
     return info;
 }
 
+// EBML's reserved "unknown size": a size vint whose value bits are ALL set,
+// at the widest width (8 bytes) this file ever writes a vint at - the
+// standard way a streamed element declares a length it cannot know yet (used
+// by Writer's Segment below). Reserving this exact pattern is what stops
+// put_vint's own automatic width-stepping from ever emitting it by accident
+// for a real size: the loop in put_vint steps to a wider width the moment a
+// real value would collide with it.
+constexpr std::uint64_t kUnknownSize = (std::uint64_t{1} << 56) - 1;
+
+void put_master_unknown_size(Bytes& out, std::uint32_t id) {
+    put_id(out, id);
+    put_vint(out, kUnknownSize, 8);
+}
+
+// Same as build_info, minus Duration: a caller writing incrementally (see
+// matroska::Writer) does not know the session's length until it decides to
+// stop, so there is nothing honest to put there yet. Kept as its own
+// function rather than a bool on build_info - every existing caller of that
+// one DOES know its duration, and a parameter only one of two callers would
+// ever pass true is worse than two small functions that each say what they
+// write.
+Bytes build_info_streaming(const MuxOptions& options) {
+    Bytes info;
+    put_uint_element(info, kTimestampScale, kTimestampScaleNs);
+    put_string_element(info, kMuxingApp, options.writing_app);
+    put_string_element(info, kWritingApp, options.writing_app);
+    return info;
+}
+
 Bytes build_tracks(const AudioTrack& track) {
     Bytes audio;
     put_float_element(audio, kSamplingFrequency, static_cast<double>(track.sample_rate));
@@ -176,7 +205,7 @@ std::string_view describe(MuxError error) {
 }
 
 std::expected<std::vector<std::byte>, MuxError> mux(
-    const AudioTrack& track, std::span<const std::vector<std::byte>> frames,
+    const AudioTrack& track, std::span<const std::span<const std::byte>> frames,
     const MuxOptions& options) {
     if (frames.empty()) {
         return std::unexpected(MuxError::kNoFrames);
@@ -244,6 +273,104 @@ std::expected<std::vector<std::byte>, MuxError> mux(
     put_master(file, kEbmlHeader, build_ebml_header());
     put_master(file, kSegment, segment);
     return file;
+}
+
+Writer::Writer(AudioTrack track, MuxOptions options, std::vector<std::byte> header)
+    : track_(std::move(track)), options_(std::move(options)), header_(std::move(header)) {}
+
+std::expected<Writer, MuxError> Writer::create(const AudioTrack& track,
+                                               const MuxOptions& options) {
+    if (track.channels <= 0 || track.sample_rate == 0 || track.codec_id.empty() ||
+        track.samples_per_frame == 0) {
+        return std::unexpected(MuxError::kInvalidTrack);
+    }
+    Bytes header;
+    put_master(header, kEbmlHeader, build_ebml_header());
+    // Segment is the one element in this whole file with an unknown size -
+    // see the class comment for why. Its children (Info, Tracks, every
+    // Cluster pushed below) all keep normal, known sizes; only this outer
+    // wrapper is open-ended, exactly like a live WebM/Matroska recording.
+    put_master_unknown_size(header, kSegment);
+    put_master(header, kInfo, build_info_streaming(options));
+    put_master(header, kTracks, build_tracks(track));
+    return Writer{track, options, std::move(header)};
+}
+
+std::uint64_t Writer::stamp_ms(std::size_t index) const {
+    // Identical to mux()'s own stamp_ms lambda, and for the same reason: the
+    // cumulative sample count is what keeps a frame duration that is not a
+    // whole number of milliseconds from ever accumulating rounding error.
+    return static_cast<std::uint64_t>(index) * track_.samples_per_frame * 1000 /
+          track_.sample_rate;
+}
+
+std::vector<std::byte> Writer::close_cluster() {
+    Bytes cluster;
+    put_uint_element(cluster, kClusterTimestamp, cluster_base_ms_);
+    cluster.insert(cluster.end(), cluster_body_.begin(), cluster_body_.end());
+    Bytes out;
+    put_master(out, kCluster, cluster);
+    cluster_body_.clear();
+    cluster_open_ = false;
+    return out;
+}
+
+std::expected<std::vector<std::byte>, MuxError> Writer::push(std::span<const std::byte> frame) {
+    if (frame.size() > (1ULL << 40)) {
+        return std::unexpected(MuxError::kFrameTooLarge);
+    }
+    const auto abs_ms = stamp_ms(index_);
+    std::vector<std::byte> closed;
+    if (!cluster_open_) {
+        // The very first frame of a cluster always starts one, the same
+        // "first" exemption mux()'s own loop gives - there is nowhere else
+        // for it to go even if its own duration already exceeds the budget.
+        cluster_base_ms_ = abs_ms;
+        cluster_open_ = true;
+    } else {
+        const std::uint64_t delta = abs_ms - cluster_base_ms_;
+        // Close on the time budget, but never let a block's relative
+        // timestamp leave int16 range whatever options_.cluster_ms asks for
+        // - identical rule to mux()'s own loop, see there for why.
+        if (delta >= options_.cluster_ms ||
+            delta > static_cast<std::uint64_t>(std::numeric_limits<std::int16_t>::max())) {
+            closed = close_cluster();
+            cluster_base_ms_ = abs_ms;
+            cluster_open_ = true;
+        }
+    }
+
+    // SimpleBlock: track number as a vint, a signed 16-bit timestamp
+    // relative to the cluster, one flags byte, then the frame - identical
+    // construction to mux()'s own loop.
+    const std::uint64_t delta = abs_ms - cluster_base_ms_;
+    Bytes block;
+    put_vint(block, 1);
+    const auto relative = static_cast<std::int16_t>(delta);
+    put_byte(block, static_cast<std::uint8_t>(relative >> 8));
+    put_byte(block, static_cast<std::uint8_t>(relative & 0xFF));
+    put_byte(block, 0x80);
+    block.insert(block.end(), frame.begin(), frame.end());
+
+    put_id(cluster_body_, kSimpleBlock);
+    put_vint(cluster_body_, block.size());
+    cluster_body_.insert(cluster_body_.end(), block.begin(), block.end());
+    ++index_;
+    return closed;
+}
+
+std::vector<std::byte> Writer::finalize() {
+    if (!cluster_open_) {
+        return {};
+    }
+    return close_cluster();
+}
+
+std::expected<std::vector<std::byte>, MuxError> mux(
+    const AudioTrack& track, std::span<const std::vector<std::byte>> frames,
+    const MuxOptions& options) {
+    const std::vector<std::span<const std::byte>> views(frames.begin(), frames.end());
+    return mux(track, views, options);
 }
 
 }  // namespace matroska

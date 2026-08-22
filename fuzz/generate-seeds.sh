@@ -67,6 +67,17 @@ f="$WORK/ac3-encode-51.ac3"
 run encode "$WORK/roundtrip-51.wav" "$f" 448 51
 add_seed "fuzz_scan,fuzz_ac3_decode" "$f"
 
+# 512 kbit/s stereo: 2048-byte syncframes, the top of AC-3's per-frame size
+# range for 48 kHz, with most of each frame spent on §5.3.3 skip-field
+# padding and 16-bit (bap 15) mantissas - a size-and-layout corner none of
+# the 192/448 kbit/s seeds above reach. This shape surfaced the FFmpeg
+# probe-window misdetection recorded in tools/ci/fuzz_encoder_space.py (the
+# note above MIN_STREAM_BYTES, case seed 1124127684685913171): the stream is
+# fully valid, so the decoder-side fuzzers should mutate from it too.
+f="$WORK/ac3-encode-stereo-512.ac3"
+run encode "$WORK/roundtrip-stereo.wav" "$f" 512 stereo
+add_seed "fuzz_scan,fuzz_ac3_decode" "$f"
+
 echo "==> E-AC-3: silence and sine across every layout"
 for layout in mono stereo 51 71 512 514 714; do
     f="$WORK/eac3-sine-$layout.ec3"

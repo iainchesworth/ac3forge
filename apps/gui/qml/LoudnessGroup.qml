@@ -1,0 +1,138 @@
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
+
+import Ac3Forge
+
+// DRC profile, dialnorm and the measure checkbox - "Loudness" in the
+// handoff's own naming, and the one group of metadata controls that
+// appears in Basic as well as Advanced (both have sane defaults, but
+// dialogue level is a real creative choice). Basic hosts it on Format;
+// Advanced moves it onto Metadata alongside Downmix - never both at once,
+// so it is never shown twice.
+ColumnLayout {
+    Layout.fillWidth: true
+    spacing: Theme.gap
+
+    GridLayout {
+        Layout.fillWidth: true
+        columns: 2
+        columnSpacing: Theme.gap
+        rowSpacing: Theme.gap
+
+        Text {
+            text: qsTr("DRC profile")
+            color: Theme.text
+            font.pixelSize: Theme.fontNormal
+        }
+        ComboBox {
+            Layout.fillWidth: true
+            enabled: !EncoderController.busy
+            model: EncoderController.drcNames
+            currentIndex: EncoderController.drcIndex
+            onActivated: {
+                EncoderController.drcIndex = currentIndex;
+                EncoderController.loudnessTouched = true;
+            }
+        }
+
+        Text {
+            text: qsTr("dialnorm")
+            color: Theme.text
+            font.pixelSize: Theme.fontNormal
+        }
+        SpinBox {
+            from: 1
+            to: 31
+            enabled: !EncoderController.busy && !EncoderController.measureDialnorm
+            value: EncoderController.dialnorm
+            onValueModified: {
+                EncoderController.dialnorm = value;
+                EncoderController.loudnessTouched = true;
+            }
+        }
+
+        // Spans both columns rather than sharing the spinbox's own cell:
+        // the label is wider than that cell's share of the card, and a
+        // GridLayout column never shrinks below its widest cell to fit -
+        // it just overflows the card instead (§dialnorm overflow fix).
+        CheckBox {
+            Layout.columnSpan: 2
+            Layout.fillWidth: true
+            text: qsTr("Measure it from the programme")
+            // Dual mono measures this on Ch1's own coded channel alone (see
+            // the Programme 2 block below for Ch2) - encodeChannels no
+            // longer needs both given by hand.
+            enabled: !EncoderController.busy
+            checked: EncoderController.measureDialnorm
+            onToggled: {
+                EncoderController.measureDialnorm = checked;
+                EncoderController.loudnessTouched = true;
+            }
+        }
+    }
+
+    Text {
+        Layout.fillWidth: true
+        text: qsTr("dialnorm says where dialogue sits below full scale (§5.4.2.8). Measuring derives it from BS.1770-4 gated loudness over the whole programme; getting it wrong is not cosmetic, since a levelled system plays the difference.")
+        color: Theme.textMuted
+        font.pixelSize: Theme.fontSmall
+        wrapMode: Text.WordWrap
+    }
+
+    // Programme 2's own dialnorm (§5.4.2.16) - dual mono only. Ch1 and Ch2
+    // never share a downmix to average across (§E1.3), so each programme
+    // states its own dialogue level rather than reusing the one above.
+    GridLayout {
+        Layout.fillWidth: true
+        Layout.topMargin: Theme.gap
+        columns: 2
+        columnSpacing: Theme.gap
+        rowSpacing: Theme.gap
+        visible: EncoderController.dualMono
+
+        Text {
+            text: qsTr("DRC profile — programme 2")
+            color: Theme.text
+            font.pixelSize: Theme.fontNormal
+        }
+        ComboBox {
+            Layout.fillWidth: true
+            enabled: !EncoderController.busy
+            model: EncoderController.drcNames
+            currentIndex: EncoderController.drc2Index
+            onActivated: {
+                EncoderController.drc2Index = currentIndex;
+                EncoderController.loudnessTouched = true;
+            }
+        }
+
+        Text {
+            text: qsTr("dialnorm — programme 2")
+            color: Theme.text
+            font.pixelSize: Theme.fontNormal
+        }
+        SpinBox {
+            from: 1
+            to: 31
+            enabled: !EncoderController.busy && !EncoderController.measureDialnorm2
+            value: EncoderController.dialnorm2
+            onValueModified: {
+                EncoderController.dialnorm2 = value;
+                EncoderController.loudnessTouched = true;
+            }
+        }
+
+        CheckBox {
+            Layout.columnSpan: 2
+            Layout.fillWidth: true
+            text: qsTr("Measure it from the programme")
+            enabled: !EncoderController.busy
+            checked: EncoderController.measureDialnorm2
+            onToggled: {
+                EncoderController.measureDialnorm2 = checked;
+                EncoderController.loudnessTouched = true;
+            }
+        }
+    }
+}

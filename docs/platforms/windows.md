@@ -21,10 +21,10 @@ for the mechanics.
 
 On Windows, the three features that touch sound hardware are all implemented over **WASAPI**:
 
-- **`ac3::capture`** — live input/loopback capture through a lock-free SPSC ring.
-- **`ac3::sinks::PassthroughSink`** — exclusive-mode/direct bitstream output, for both AC-3 and
+- **`ac3::audio`** — live input/loopback capture through a lock-free SPSC ring.
+- **`ac3::audio::PassthroughSink`** — exclusive-mode/direct bitstream output, for both AC-3 and
   E-AC-3 burst framing (IEC 61937).
-- **`ac3::sinks::MonitorSink`** — shared-mode PCM playback: a non-bitstreamed preview/monitor
+- **`ac3::audio::MonitorSink`** — shared-mode PCM playback: a non-bitstreamed preview/monitor
   path that decodes what is being encoded and plays it back on an ordinary output.
 
 These three are not equally verified against real hardware, and the project's own documentation
@@ -39,7 +39,7 @@ is deliberately explicit about the difference.
     let the ring buffer silently perform a partial write while reporting failure, and the live
     pipeline's Atmos metering step writing past the end of a buffer sized for the object count
     rather than the bed's fixed six channels. Both are fixed; see
-    `src/audio/src/platform/windows/monitor.cpp` and `run_live` in `src/cli/main.cpp`.
+    `src/audio/src/backend/windows/monitor.cpp` and `run_live` in `apps/cli/main.cpp`.
 
 !!! warning "Exclusive-mode passthrough bitstreaming has never been confirmed against a real receiver"
     No S/PDIF or HDMI endpoint behind an actual AV receiver has been available during
@@ -50,8 +50,8 @@ is deliberately explicit about the difference.
     byte-exact against FFmpeg's `spdif` muxer, and the E-AC-3 burst framing (data type 0x15, the
     24576-byte/4x-carrier-rate burst, multi-syncframe accumulation, `Pd` in bytes not bits) is
     independently verified against both FFmpeg's `spdif_header_eac3` and Microsoft's own
-    "Representing Formats for IEC 61937 Transmissions" documentation — fetched live and
-    cross-checked against each other, not recalled — plus round-trip and real-audio unit tests.
+    "Representing Formats for IEC 61937 Transmissions" documentation, plus round-trip and
+    real-audio unit tests.
     A receiver has been confirmed to lock onto AC-3, but only via a different code path (playing
     the bursts as a PCM16 WAV through a passthrough output, not through `PassthroughSink`
     itself); the same trick now exists for E-AC-3 (`ac3cli spdif`/`monitor`/`live`, branching on
@@ -87,7 +87,8 @@ cmake --build --preset build-windows-llvm-debug
 ctest --preset test-windows-llvm-debug
 ```
 
-`VCPKG_ROOT` must point at a vcpkg checkout (it supplies Catch2 and nothing else). See
+`VCPKG_ROOT` must point at a vcpkg checkout (it supplies Catch2 — plus Boost and Tracy only if
+you opt into the `adm`/`profiling` features; see [building.md](../building.md)). See
 [Presets](../building.md#presets) for the full preset table and the `ci-windows-msvc` /
 `ci-windows-llvm` workflow presets that chain all three steps.
 
@@ -98,14 +99,14 @@ cpack --preset pack-windows-msvc
 ```
 
 Produces a ZIP, plus an NSIS installer on top if `makensis` is on `PATH`. `pack-windows-llvm` is
-the clang-cl equivalent. Windows is the only leg in the packaging matrix that has actually been
-run — CI packages the `windows-msvc` leg on every push and uploads the result as a workflow
-artifact. See [Packaging](../building.md#packaging).
+the clang-cl equivalent. `windows-msvc` is the only leg packaged continuously — CI packages it on
+every push and uploads the result as a workflow artifact, a standing smoke test of the packaging
+path; tagged releases package all four `release_package` legs (Windows, Linux x64/arm64, macOS).
+See [Packaging](../building.md#packaging).
 
 ## CI
 
 Both Windows legs — `windows-msvc` and `windows-llvm` — run on every push and are **required**,
-alongside `linux-gcc`, `linux-llvm`, `linux-llvm-asan-ubsan` and static analysis (clang-tidy).
-CI runs the CLI and GUI on both Windows legs. See [Verified
-configuration](../building.md#verified-configuration) for the full CI matrix, including the two
-Linux legs, macOS and the coverage/FFmpeg-validation legs.
+alongside every other required leg — see the full matrix in [Verified
+configuration](../building.md#verified-configuration), including the Linux and macOS legs and
+the coverage/FFmpeg-validation legs. CI runs the CLI and GUI on both Windows legs.

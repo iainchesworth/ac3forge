@@ -10,7 +10,7 @@ to backport to yet.
 
 Please report security vulnerabilities privately, not through a public GitHub issue.
 
-Use [GitHub Security Advisories](https://github.com/iainchesworth/ac3forge/security/advisories/new)
+Use [GitHub Security Advisories](https://github.com/iainchesworthlabs/ac3forge/security/advisories/new)
 to open a private report. This reaches the maintainer directly and lets us coordinate a
 fix before any details are made public.
 

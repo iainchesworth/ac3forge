@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Android TV, not a phone/tablet fallback: a touchscreen is optional,
+         leanback (the D-pad-navigable TV UI model) is required. Play would
+         use this to keep the app off phones; irrelevant for a personal
+         sideload (see docs/platforms/android.md) but correct either way. -->
+    <uses-feature
+        android:name="android.software.leanback"
+        android:required="true" />
+    <uses-feature
+        android:name="android.hardware.touchscreen"
+        android:required="false" />
+
+    <application
+        android:allowBackup="false"
+        android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:banner="@drawable/banner"
+        android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:screenOrientation="landscape"
+            android:configChanges="orientation|screenSize|keyboardHidden">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <!-- LEANBACK_LAUNCHER, not just LAUNCHER: this is what puts
+                     the app on the Android TV home screen row. Omitting it
+                     leaves the app installed but nowhere a remote-only user
+                     could ever find it. android:banner above is what actually
+                     shows in that row - without one, Android falls back to a
+                     poorly-scaled android:icon instead. -->
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Reached only from MainActivity's KEYCODE_INFO handler - not
+             exported, no launcher intent-filter of its own. -->
+        <activity
+            android:name=".AboutActivity"
+            android:exported="false"
+            android:label="About"
+            android:screenOrientation="landscape" />
+
+    </application>
+
+</manifest>

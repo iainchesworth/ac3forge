@@ -1,9 +1,9 @@
 # Releasing ac3forge
 
 How to cut a release: what triggers `.github/workflows/release.yml`, what it produces, and how
-to set up the optional GPG signing key. Modelled on `R:\aqualink-automate`'s
-`docs/releasing.md`, with the parts that don't apply to ac3forge (APT/DNF repository
-publishing, a Docker image, a Home Assistant add-on) removed.
+to set up the optional GPG signing key. Modelled on an earlier project's release process, with
+the parts that don't apply to ac3forge (APT/DNF repository publishing, a Docker image, a Home
+Assistant add-on) removed.
 
 ## Versioning
 
@@ -11,14 +11,22 @@ ac3forge derives its version from git tags, the same way aqualink-automate does.
 `cmake/GitVersionDerivation.cmake` runs `git describe --tags --match "v*"` **before**
 `project()` in the top-level `CMakeLists.txt` and feeds the result straight into
 `project(ac3forge VERSION ...)` - the tag is the single source of truth. Nothing in the tree
-hardcodes a version to bump by hand: not `CMakeLists.txt`, and not `vcpkg.json`'s `"version"`
-field, which is a fixed placeholder never read for anything but satisfying vcpkg's manifest
-schema (see the comment beside it).
+hardcodes a version to bump by hand: not `CMakeLists.txt`, and not the root `vcpkg.json`, which
+carries no `"version"` field at all - per vcpkg's own schema that field is only required for a
+manifest describing a *library* (a port), and this one just declares this project's own
+build-time dependencies (Catch2, optionally Boost/Tracy). The staged port's `version-semver` is
+what actually tracks releases - see [vcpkg port](#vcpkg-port) below.
 
 So the order is just:
 
 1. Merge to `main`.
 2. Tag.
+3. Sync `main` back into `develop`: `gh pr create --base develop --head main`, then merge it the
+   same way as any other PR. This isn't optional cleanup - `git describe --tags` walks ancestry
+   from HEAD, so a tag that exists only on `main`'s side of history is invisible to a `develop`
+   build. Skipping this step after the v0.6.0-beta.1 promotion (#180) left `develop` builds
+   reporting a stale `v0.5.0-beta.1-...` version - visible in `ac3gui`'s About dialog - until the
+   gap was closed with #192.
 
 No version-bump commit, no file to keep in sync - tagging *is* the release decision.
 
@@ -67,18 +75,17 @@ explicitly declared is a bigger surprise than a maintainer cleaning it up by han
 
 ## Dry run
 
-Builds and packages every platform (best-effort - see `_build.yml`'s `experimental` legs)
-without tagging, signing, or publishing anything. Exempt from the cut-from-main guard, so it can
+Builds and packages every platform without tagging, signing, or publishing anything. Exempt
+from the cut-from-main guard, so it can
 run from any branch - use it to validate a packaging change before merging.
 
 ## Post-release
 
 `gh release create --generate-notes` drafts release notes from merged PRs/commits since the
-previous tag - a first draft only. Modelled on aqualink-automate's own process
-(`R:\aqualink-automate\docs\releasing.md`), curating it to the established pattern is a
-required step, not optional polish:
+previous tag - a first draft only. Curating it to the established pattern is a required step,
+not optional polish:
 
-1. Update [CHANGELOG.md](https://github.com/iainchesworth/ac3forge/blob/main/CHANGELOG.md) first, if it isn't already current - a `## [x.y.z] -
+1. Update [CHANGELOG.md](https://github.com/iainchesworthlabs/ac3forge/blob/main/CHANGELOG.md) first, if it isn't already current - a `## [x.y.z] -
    YYYY-MM-DD` section (moved down from `## [Unreleased]` if the changes were already logged
    there), [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. This is the
    authoritative, human-curated record; the GitHub Release body mirrors it, not the other way
@@ -95,7 +102,7 @@ required step, not optional polish:
    5. `**Full Changelog**: …/compare/v<prev>...v<this>` (keep the one `--generate-notes`
       produced; omit for the first release - there is no previous tag).
    6. For a prerelease, a trailing `> **Pre-release.**` caveat blockquote noting the biggest
-      open gap (see [Known gaps](https://github.com/iainchesworth/ac3forge/blob/main/CHANGELOG.md#known-gaps) in the matching CHANGELOG.md
+      open gap (see [Known gaps](https://github.com/iainchesworthlabs/ac3forge/blob/main/CHANGELOG.md#known-gaps) in the matching CHANGELOG.md
       section).
 3. Apply it:
 
@@ -105,35 +112,333 @@ required step, not optional polish:
 
 4. Verify the release page has all expected artifacts, and that the curated notes render and
    read well.
+5. Bump the four packaging manifests - each has its own **Every release tag** steps below, and
+   none of them happen automatically:
+   [vcpkg port](#vcpkg-port), [Homebrew formula and cask](#homebrew-formula-and-cask),
+   [winget manifest](#winget-manifest), [Conan recipe](#conan-recipe). Nothing in CI checks these
+   against the latest tag, so a release is not actually done until all four point at it - three
+   were caught stale for a full release cycle before this line existed.
+
+## vcpkg port
+
+A vcpkg port for `ac3forge` is staged in-tree at
+[`packaging/vcpkg-port/ac3forge/`](https://github.com/iainchesworthlabs/ac3forge/tree/main/packaging/vcpkg-port/ac3forge)
+(`vcpkg.json`,
+`portfile.cmake`, `usage`) and is pending submission to the curated `microsoft/vcpkg` registry -
+see [docs/library/index.md](library/index.md) for how a consumer uses it either
+way. It installs the library only (`ac3::forge`, plus `matroska::matroska`/`mp4::mp4`/
+`mpegts::mpegts` behind their own `matroska`/`mp4`/`mpegts` features - see
+`cmake/InstallLibrary.cmake`'s `AC3FORGE_BUILD_MATROSKA`/`AC3FORGE_BUILD_MP4`/
+`AC3FORGE_BUILD_MPEGTS`/`AC3FORGE_INSTALL_BOTH_LINKAGES` options), never the
+CLI/GUI/tests/examples/fuzzers, and never `ac3::forge_c` (`AC3FORGE_BUILD_CAPI` - see the note
+below). `ac3adm::ac3adm` (the ADM/BW64 reader) has no vcpkg feature and never will while it
+stays outside `find_package(ac3forge)` entirely - see [docs/library/index.md](library/index.md).
+
+None of the three container-writer features are on by default: a curated-registry port's
+`default-features` may only cover behaviors, not additional public APIs/targets/binaries (see
+[vcpkg's maintainer guide](https://learn.microsoft.com/vcpkg/contributing/maintainer-guide#default-features-should-enable-behaviors-not-apis))
+, and each of `matroska`/`mp4`/`mpegts` is exactly that. A plain `vcpkg install ac3forge`
+installs the codec only; opt in explicitly with `vcpkg install ac3forge[matroska,mp4,mpegts]` or
+any subset. The port also pins several build options a curated-registry review otherwise flags
+as uncontrolled: `AC3FORGE_BUILD_ADM`/`AC3FORGE_ENABLE_TRACY` explicitly OFF (already the
+project's own default, pinned so a future default change can't silently pull an undeclared
+dependency into this port), and `AC3FORGE_WITH_ALSA`/`AC3FORGE_WITH_PIPEWIRE` explicitly OFF -
+without that, this library-only build still probes the build machine's ambient ALSA/PipeWire
+installs (`src/audio/` is `add_subdirectory()`'d unconditionally outside Emscripten, not gated
+on `AC3FORGE_BUILD_CLI`/`AC3FORGE_BUILD_GUI`) even though `ac3::audio` is never installed or
+exported. `vcpkg.json` also declares `"supports": "!(android & !arm64)"` - only `arm64-v8a`
+Android is a real target (see [docs/platforms/android.md](platforms/android.md)); other Android
+architectures fail to build (`matroska`'s size comparisons assume a 64-bit `size_t`).
+
+`ac3::forge_c` (roadmap F1) is deliberately excluded via `-DAC3FORGE_BUILD_CAPI=OFF` rather than
+exposed as a feature: its `capiTargets` export currently requires `forge_static` even when
+`AC3FORGE_INSTALL_BOTH_LINKAGES=OFF` leaves that target unexported - a real bug independent of
+vcpkg, not something to route around by exporting it here too. Revisit adding a `capi` feature
+once that's fixed upstream.
+
+Any future optional library component follows the same three-step recipe this repo's own
+`AC3FORGE_BUILD_<NAME>` options already establish: add the CMake option and its
+`cmake/InstallLibrary.cmake` guard first (that part isn't vcpkg-specific), then add a same-named
+feature to `packaging/vcpkg-port/ac3forge/vcpkg.json` and one line to `portfile.cmake`'s
+`vcpkg_check_features()` call.
+
+**Every release tag, once the port has been merged upstream**, needs a follow-up PR to
+`microsoft/vcpkg` - the curated registry has no mechanism to track a moving `main`, so a new
+`ac3forge` release is invisible to `vcpkg install` until this happens:
+
+1. Bump `packaging/vcpkg-port/ac3forge/vcpkg.json`'s `version-semver` to the new tag, and
+   `portfile.cmake`'s `vcpkg_from_github()` `REF`/`SHA512` to match (`sha512sum` the tag's
+   release tarball, or let a first `vcpkg install` attempt report the correct hash).
+2. Validate locally first (see below) before touching the upstream fork - a portfile change
+   that fails vcpkg's own CI is slower to iterate on there than here.
+3. Copy the updated port files into the `microsoft/vcpkg` fork's `ports/ac3forge/`, run
+   `vcpkg format-manifest ports/ac3forge/vcpkg.json` (its formatting is stricter than this
+   repo's own JSON style - `vcpkg x-add-version` refuses to run against an unformatted
+   manifest) followed by `vcpkg x-add-version ac3forge` to regenerate
+   `versions/baseline.json`/`versions/a-/ac3forge.json` (don't hand-edit these), and open the
+   version-bump PR.
+
+**Validating the port locally**, any time `packaging/vcpkg-port/ac3forge/` or the CMake options
+it drives change (whether or not a release is involved):
+
+```bash
+vcpkg install ac3forge --classic --overlay-ports=packaging/vcpkg-port --triplet x64-windows
+vcpkg install ac3forge --classic --overlay-ports=packaging/vcpkg-port --triplet x64-windows-static
+vcpkg install ac3forge[matroska,mp4,mpegts] --classic --overlay-ports=packaging/vcpkg-port --triplet x64-windows
+```
+
+`--classic` is required from inside this repo - the root `vcpkg.json` (manifest mode, for this
+project's *own* build-time dependencies) would otherwise shadow the package-name argument.
+Check for a clean post-build lint (no "not used"/"missing usage" warnings) and that the bare
+`ac3forge` install genuinely excludes `matroska::matroska`/`mp4::mp4`/`mpegts::mpegts` - not
+just unlinked, no matching files anywhere in the install tree - while
+`ac3forge[matroska,mp4,mpegts]` installs all three.
+
+Fetching a real tag only exercises whatever `AC3FORGE_BUILD_*` options actually existed in that
+tagged source - `vcpkg_from_github()`'s `REF` always points at an already-released tag, so a
+CMake option added since the last tag (as happened here: `AC3FORGE_BUILD_MP4`/
+`AC3FORGE_BUILD_MPEGTS` landed in `develop` after `v0.5.0-beta.1`) can't be exercised through a
+real fetch until the *next* tag contains it. To validate a port change against unreleased CMake
+options, temporarily swap the `vcpkg_from_github()` block in a scratch copy of `portfile.cmake`
+for `set(SOURCE_PATH "<absolute path to this checkout>")`, run the same three commands against
+that scratch copy, and discard it once validated - never commit that substitution.
+
+## Publishing to PyPI
+
+Roadmap **F2**: Python bindings (`python/`, see
+[docs/library/python-api.md](library/python-api.md)) as the `ac3forge` PyPI package, with wheels
+for Windows, macOS and Linux built by `.github/workflows/wheels.yml` via `cibuildwheel`. That
+workflow's `build` job runs continuously (every push/PR touching `python/**`, same "buildable is
+checked continuously" reasoning as `windows-msvc`'s packaging smoke test above) and always
+uploads the wheels it builds as a workflow artifact — that part needs no provisioning and already
+works today.
+
+**Publishing them to PyPI is off until a maintainer provisions it**, the same shape as GPG signing
+and the Android release keystore below: `wheels.yml`'s `publish` job is gated on both a `v*` tag
+push and the `pypi` GitHub environment existing, and uses
+[PyPI trusted publishing](https://docs.pypi.org/trusted-publishers/) (OIDC) rather than a stored
+API token — there is no `PYPI_API_TOKEN` secret to leak in the first place. **Nobody should ever
+generate a long-lived PyPI API token and paste it into a chat with an agent or into a GitHub
+secret** — trusted publishing exists specifically so that never has to happen.
+
+One-time setup, done by a maintainer directly on pypi.org and on GitHub:
+
+1. On PyPI, either publish the very first `ac3forge` release by hand (`python -m build python/`
+   then `twine upload`, using a temporary scoped token deleted immediately after) to create the
+   project, or use PyPI's **pending publisher** mechanism (Your projects → Publishing →
+   "Add a pending publisher") to pre-register the trusted publisher for a project name that does
+   not exist yet — the second path needs no manual upload at all and is the one to prefer.
+2. Either way, register the trusted publisher against this repository: owner
+   `iainchesworthlabs`, repository `ac3forge`, workflow `wheels.yml`, environment `pypi`.
+3. In the GitHub repo, create an environment named `pypi` (Settings → Environments) — no secrets
+   need adding to it; its existence and name are what PyPI's trusted-publisher registration keys
+   against, and `wheels.yml`'s `publish` job declares `environment: pypi` so the job has somewhere
+   to request the OIDC token from. Optionally add required reviewers on the environment for a
+   manual approval gate before a publish actually runs.
+
+Once both sides are set up, pushing a `v*` tag (the same tag that triggers `release.yml`, see
+[Option A](#option-a-tag-based-release-the-normal-path) above) also triggers `wheels.yml`'s
+`publish` job for that tag. Until then, the job's `environment: pypi` reference simply has
+nowhere to authorize against and the workflow run for that job fails cleanly at the permission
+check — the `build` job (and its artifact) is unaffected either way.
+
+## Homebrew formula and cask
+
+A Homebrew formula for `ac3cli` is staged in-tree at
+[`packaging/homebrew/Formula/ac3forge.rb`](https://github.com/iainchesworthlabs/ac3forge/blob/main/packaging/homebrew/Formula/ac3forge.rb)
+and is pending publication to a personal tap (`homebrew-ac3forge`) - see
+[`packaging/homebrew/README.md`](https://github.com/iainchesworthlabs/ac3forge/blob/main/packaging/homebrew/README.md)
+for why a personal tap rather than a `homebrew-core` submission. Unlike the vcpkg port, this
+packages the CLI (`ac3cli`), not the library: `AC3FORGE_BUILD_CLI=ON` with GUI/tests/examples/
+fuzzers off, built from the release source tarball.
+
+The GUI (`ac3gui`) is a separate Homebrew Cask,
+[`packaging/homebrew/Casks/ac3gui.rb`](https://github.com/iainchesworthlabs/ac3forge/blob/main/packaging/homebrew/Casks/ac3gui.rb)
+- a Cask, not a Formula, is the right shape for a bundled, prebuilt `.app` the way `ac3gui.app`
+already ships in every platform's release archive (`cmake/Packaging.cmake`'s DragNDrop `.dmg` on
+macOS). It's staged the same way the formula is. `v0.8.0-beta.2` is the first tagged release
+whose macOS build actually contains `ac3gui` - `macos-llvm` only started building the GUI at all
+once [GUI on macOS](platforms/macos.md#gui-on-macos) landed - so the cask's `version`/`sha256`
+are now pinned from a real release rather than placeholders; see the cask file's own header
+comment.
+
+**Every release tag** needs a follow-up update to the formula, same shape as the vcpkg port's:
+
+1. Bump `packaging/homebrew/Formula/ac3forge.rb`'s `url` to the new tag and `sha256` to match
+   (`sha256sum` the tag's release tarball - the same tarball the vcpkg port's `SHA512` already
+   points at, just a different digest algorithm).
+2. Validate locally first (see below) before touching a tap - a formula change that fails
+   `brew audit` is slower to iterate on there than here.
+3. Copy the updated formula into the `homebrew-ac3forge` tap's `Formula/ac3forge.rb` and push.
+
+The same three steps apply to the cask now that it tracks a real release too: bump `version` to
+the new tag and `sha256` to the release's `ac3forge-*-Darwin.dmg` (`sha256sum` it, or trust
+CPack's own published `.dmg.sha512` after converting digest algorithms), validate locally, then
+copy `packaging/homebrew/Casks/ac3gui.rb` into the tap's `Casks/ac3gui.rb` and push - both files
+ship from the same tap.
+
+**Validating the formula locally**, from a macOS machine with Homebrew installed:
+
+```bash
+brew install --build-from-source ./packaging/homebrew/Formula/ac3forge.rb
+brew test ac3forge
+brew audit --formula ./packaging/homebrew/Formula/ac3forge.rb
+brew uninstall ac3forge
+```
+
+**Validating the cask locally**, the same way, once you have a macOS machine with Homebrew
+installed - not yet run for real, same caveat as the formula above:
+
+```bash
+brew audit --cask ./packaging/homebrew/Casks/ac3gui.rb
+brew install --cask ./packaging/homebrew/Casks/ac3gui.rb
+brew uninstall --cask ac3gui
+```
+
+There is no Homebrew on any of this project's CI runners or on Windows/Linux dev machines, so
+this validation is manual and macOS-only - there is nothing here to automate against, unlike
+the vcpkg `--overlay-ports` flow above.
+
+## winget manifest
+
+A winget manifest for `ac3forge` (`ac3cli` and `ac3gui` together, from the existing release
+`.zip`) is staged in-tree at
+[`packaging/winget/manifests/`](https://github.com/iainchesworthlabs/ac3forge/tree/main/packaging/winget/manifests),
+at the exact `manifests/<first-letter>/<publisher>/<package>/<version>/` path a
+`microsoft/winget-pkgs` submission uses, so the version directory can be copied straight into a
+fork of that repo. It uses `InstallerType: zip` with `NestedInstallerType: portable` against the
+release's `ac3forge-X.Y.Z-win64.zip` rather than a dedicated installer - that archive already
+contains both `bin/ac3cli.exe` and `bin/ac3gui.exe` (CPack's `runtime` component - see [What
+gets published](#what-gets-published) below), and this release doesn't produce an NSIS `.exe`
+(`makensis` wasn't on the runner - see `cmake/Packaging.cmake`). If a future release does
+produce one, switch `InstallerType` to `nullsoft` and drop `NestedInstallerType`/
+`NestedInstallerFiles` at that point rather than keeping both paths maintained.
+
+**Every release tag** needs a new version directory, since winget-pkgs versions each release
+independently rather than tracking a moving tag the way vcpkg's `version-semver` does:
+
+1. Copy `packaging/winget/manifests/i/iainchesworthlabs/ac3forge/<prev-version>/` to a new
+   `<new-version>/` directory, updating `PackageVersion` in all three files to match.
+2. Update the installer manifest's `InstallerUrl` to the new release's `win64.zip` and
+   `InstallerSha256` to match (`sha256sum` the zip - winget wants SHA256, unlike the
+   `SHA512SUMS` `release.yml` publishes for every artifact, see [What gets
+   published](#what-gets-published) below).
+3. Validate locally first (see below) before touching a fork.
+4. Copy the new version directory into the `microsoft/winget-pkgs` fork at the matching
+   `manifests/i/iainchesworthlabs/ac3forge/<new-version>/` path and open the submission PR.
+
+**Validating the manifest locally**, with the `winget` CLI (ships with Windows 10/11):
+
+```bash
+winget validate --manifest packaging/winget/manifests/i/iainchesworthlabs/ac3forge/<version>
+```
+
+## Conan recipe
+
+A Conan (2.x) recipe for `ac3forge` is staged in-tree at
+[`packaging/conan/`](https://github.com/iainchesworthlabs/ac3forge/tree/main/packaging/conan)
+(`conanfile.py`, `conandata.yml`, `test_package/`) and is pending submission to ConanCenter
+(`conan-center-index`). Scoped the same as the vcpkg port - the library only (`ac3::forge`,
+plus `matroska::matroska`/`mp4::mp4`/`mpegts::mpegts` behind their own default-on `matroska`/
+`mp4`/`mpegts` options), never the CLI/GUI/tests/examples/fuzzers - with one Conan option per
+`AC3FORGE_BUILD_<NAME>` CMake option, the same pattern the vcpkg port's `vcpkg_check_features()`
+call already establishes. Rather than asking Conan's `CMakeDeps` generator to synthesise a
+second CMake package config, the recipe sets `cmake_find_mode` to `"none"` and points consumers
+at the config `cmake/InstallLibrary.cmake` already installs - see `conanfile.py`'s
+`package_info()` comment. A consumer's `find_package(ac3forge CONFIG REQUIRED)` and
+`target_link_libraries(main PRIVATE ac3::forge)` calls are identical to the vcpkg or plain
+`cmake --install` case (see [docs/library/index.md](library/index.md)), Conan or not.
+
+**Every release tag**, once the recipe has been merged upstream, needs a follow-up PR to
+`conan-center-index` - ConanCenter has no mechanism to track a moving `main` either, same as
+vcpkg's curated registry:
+
+1. Add a new entry to `packaging/conan/conandata.yml`'s `sources` map, keyed by the new
+   version, with the tag's release tarball `url` and `sha256` (same tarball the vcpkg port's
+   `SHA512` and the Homebrew formula's `sha256` already point at, just fetched fresh).
+2. Validate locally first (see below) before touching the upstream fork.
+3. Copy the updated recipe into the `conan-center-index` fork's `recipes/ac3forge/`, add the
+   new version to that recipe's own `config.yml`, and open the version-bump PR.
+
+**Validating the recipe locally**, any time `packaging/conan/` or the CMake options it drives
+change (whether or not a release is involved):
+
+```bash
+conan create packaging/conan --version <version> -s compiler.cppstd=23
+conan create packaging/conan --version <version> -s compiler.cppstd=23 -o "&:shared=True"
+conan create packaging/conan --version <version> -s compiler.cppstd=23 -o "&:matroska=False" -o "&:mp4=False" -o "&:mpegts=False"
+```
+
+`-s compiler.cppstd=23` is required - a bare default profile's `compiler.cppstd` predates
+C++23 on most Conan installs, and `check_min_cppstd(self, 23)` in `conanfile.py` fails fast
+rather than configuring a build that would fail deep inside compilation instead. Each command
+above builds `test_package/`, which links `ac3::forge` and runs it, exercising the exact
+`find_package(ac3forge)` path a real consumer uses - a passing `conan create` is a stronger
+signal than a configure-only check for that reason. Fetching a real tag only exercises whatever
+`AC3FORGE_BUILD_*` options actually existed in that tagged source, same caveat as the vcpkg
+port's local-source-override technique above - `packaging/conan/conandata.yml` would need the
+same scratch-entry treatment (a local `url` pointing at this checkout instead of a GitHub
+tarball) to validate a CMake option added since the last tag.
 
 ## What gets published
 
-One package per OS, not one per compiler-toolchain leg: `_build.yml`'s matrix builds and tests
-both Windows toolchains (MSVC, clang-cl) and both Linux toolchains (GCC, Clang) on every push,
-but only the leg marked `release_package: true` per OS actually packages for a release -
-windows-msvc, linux-gcc and macos-llvm. windows-llvm and linux-llvm still catch
-compiler-specific bugs in full, every push; they just don't produce a second, redundantly
-canonical zip that a downloader would have no way to choose between.
+One package per OS **and architecture**, not one per compiler-toolchain leg: `_build.yml`'s matrix
+builds and tests both Windows toolchains (MSVC, clang-cl) and both Linux toolchains (GCC, Clang) - on
+both x64 and arm64 for Linux - on every push, but only the leg marked `release_package: true` per
+OS/arch actually packages for a release - windows-msvc, linux-gcc, linux-gcc-arm64 and macos-llvm.
+windows-llvm, linux-llvm and linux-llvm-arm64 still catch compiler-specific bugs in full, every push;
+they just don't produce a second, redundantly canonical archive that a downloader would have no way
+to choose between. `cmake/Packaging.cmake` arch-qualifies the Linux archive filename
+(`ac3forge-X.Y.Z-Linux-x86_64.tar.gz` vs. `...-Linux-aarch64.tar.gz`) specifically so the two Linux
+architectures' TGZ/ZIP downloads never collide; DEB/RPM already carry their arch in their own
+filenames.
 
-| Platform | Leg | End-user packages | Library (`ac3forge-dev-*`) |
-|---|---|---|---|
-| Windows | windows-msvc | `.zip`, `.exe` (NSIS, if `makensis` is on the runner) | `.zip` |
-| Linux | linux-gcc | `.tar.gz`, `.deb`, `.rpm` | `.tar.gz` |
-| macOS | macos-llvm | `.tar.gz`, `.dmg` | `.tar.gz` |
+| Platform | Arch | Leg | End-user packages | Library (`ac3forge-dev-*`) |
+|---|---|---|---|---|
+| Windows | x64 | windows-msvc | `.zip`, `.exe` (NSIS, if `makensis` is on the runner) | `.zip` |
+| Linux | x86_64 | linux-gcc | `.tar.gz`, `.deb`, `.rpm` | `.tar.gz`, plus real system packages: `libac3forge0`/`ac3forge-devel` (RPM) and `libac3forge0`/`libac3forge-dev` (DEB) |
+| Linux | aarch64 (Raspberry Pi 4/5 and other arm64 targets) | linux-gcc-arm64 | `.tar.gz`, `.deb`, `.rpm` | same split as x86_64, above |
+| macOS | arm64 (Apple Silicon) | macos-llvm | `.tar.gz`, `.dmg` | `.tar.gz` |
+| Android (Shield) | arm64 (NDK) | build-android | `.apk` | none - Shield links `ac3::forge`/`ac3::audio` in-tree, it isn't a `find_package(ac3forge)` consumer |
 
-The end-user packages are `ac3cli`/`ac3gui` (CPack's `runtime` component). The library packages
-are a second, independent download for a third party consuming `ac3::forge`/
-`matroska::matroska` via `find_package(ac3forge)` (see
+The end-user packages are `ac3cli`/`ac3gui` (CPack's `runtime` component) on desktop, or the
+Shield app's `.apk` on Android. The library packages are a second, independent download for a
+third party consuming `ac3::forge`/`matroska::matroska` via `find_package(ac3forge)` (see
 [docs/library/index.md](library/index.md)) - headers, static and shared libraries, and the
 CMake package config, but neither `ac3cli`/`ac3gui` nor `ac3::audio` (live capture/monitor/
-passthrough stays a CLI/GUI-internal detail, not part of what's installed here). Archive-only
-(ZIP/TGZ) for now, one per platform regardless of compiler leg, same reasoning as the end-user
-package above - not NSIS (a component installer can't also produce a second standalone
-download), not DEB/RPM (a correct runtime/`-dev` split needs per-component `Depends` metadata,
-a separate initiative if ever wanted), not DragNDrop (no macOS host to build or verify it
-against at all).
+passthrough stays a CLI/GUI-internal detail, not part of what's installed here).
 
-No leg is `experimental: true` any more (see `ci.yml`'s status table), so all three package
+Archive downloads (ZIP/TGZ) bundle everything above into one `ac3forge-dev-*` file, one per
+platform regardless of compiler leg, same reasoning as the end-user package above - not NSIS (a
+component installer can't also produce a second standalone download), not DragNDrop (no macOS
+host to build or verify it against at all).
+
+Linux additionally gets a **real runtime/`-dev` split** as proper system packages, not just an
+archive: `cmake/InstallLibrary.cmake` files the shared libraries' versioned `.so` under its own
+CPack component (`libruntime`, split out via `NAMELINK_COMPONENT` - see that file's comment),
+separate from headers/static-archives/CMake-config/namelink-symlink (`library`). DEB/RPM's own
+component-install switches turn that into three independent packages - `ac3forge` (the CLI/GUI),
+`libac3forge0` (just the `.so` a linked binary loads), and `libac3forge-dev`/`ac3forge-devel`
+(everything a builder needs, version-pinned to depend on the exact matching `libac3forge0`) -
+the same `libFOO`/`libFOO-dev` shape as any other Linux C library, installable with a plain
+`apt install`/`dnf install` rather than a manual archive download. ZIP/TGZ still produce one
+merged `ac3forge-dev-*` archive as before (`cmake/Packaging.cmake` groups `library`+`libruntime`
+together for the archive generators; `cmake/CPackProjectConfig.cmake` overrides that back apart
+for DEB/RPM specifically). Confirmed against real `dpkg-deb -c`/`-I` and `rpm -qlp`/`-qRp` output
+in a Linux build, not just a CMake reading - the pre-split `.deb` was, on inspection, a single
+package silently bundling `ac3cli` together with the *entire* SDK (headers, static archives, and
+the CMake package config all thrown in beside the binary), which this split also fixes as a
+side effect.
+
+The Shield `.apk` is signed with a real release keystore when one is provisioned (see
+"Provisioning the Android release keystore" below), and falls back to AGP's default debug
+keystore cleanly if it isn't - either way it's fine for sideloading onto a Shield in developer
+mode. A release keystore is a prerequisite before this could ever go through the Play Store,
+which sideloading itself doesn't require. (Not to be confused with **object signing** - the EMDF
+Atmos authenticity tag, provisioned separately via the `ATMOS_SIGNING_KEY` secret and
+unrelated to APK code-signing; see "Provisioning the Android object-signing key" below.)
+
+No leg is `experimental: true` any more (see `ci.yml`'s status table), so all five package
 for real rather than best-effort - a packaging failure on any of them blocks the release the
 same as a build or test failure would. Every package - end-user or library - gets a `.sha512`
 (`CPACK_PACKAGE_CHECKSUM` in `cmake/Packaging.cmake`), an aggregate `SHA512SUMS` manifest,
@@ -168,11 +473,86 @@ secret store is ever compromised - decide deliberately rather than defaulting to
 key-rotation procedure documented here; if you want one, design it before you need it, not
 during an incident.
 
+## Provisioning the Android release keystore (optional, one-time)
+
+Off by default the same way GPG signing is - `_build.yml`'s `build-android` job checks whether
+`ANDROID_KEYSTORE_BASE64` and its three companion secrets are set, and falls back to the debug
+keystore cleanly if they aren't (see `build.gradle.kts`'s `releaseSigningAvailable`). **Nobody
+should ever paste a private key into chat with an agent, or ask one to generate/handle key
+material** - do this yourself, locally:
+
+```bash
+# 1. Generate a release keystore. Requires a JDK (keytool ships with any
+#    JDK - `java -version` to check; CI uses Temurin 17, matching that isn't
+#    required but keeps things consistent). Leave -storepass/-keypass off so
+#    it prompts interactively - keeps the passwords out of shell history and
+#    the process list. The -dname prompts (name/org/etc) only populate the
+#    certificate's subject line, not security-relevant - answer them however
+#    you like. PKCS12 (the modern default) uses one password for both the
+#    keystore and the key - there is no separate key password to set.
+keytool -genkeypair -v \
+  -keystore ac3forge-shield-release.keystore \
+  -storetype PKCS12 \
+  -alias ac3forge-shield \
+  -keyalg RSA -keysize 4096 \
+  -validity 10000
+
+# 2. Back up the keystore file itself right now, before doing anything else -
+#    e.g. into a password manager's secure file storage, or an encrypted
+#    offline drive. Unlike a GPG key, there is no separate keyring backing
+#    this file up - it IS the private key, with no other copy anywhere.
+#    Losing it means never being able to sign an update to this app under
+#    the same identity again.
+
+# 3. Base64-encode it into one line, ready to paste into a GitHub secret
+#    (GitHub Actions secrets are text; this is the standard way to carry a
+#    binary keystore through one).
+base64 -w0 ac3forge-shield-release.keystore > ac3forge-shield-release.keystore.b64
+```
+
+4. In the GitHub repo, go to Settings > Secrets and variables > Actions, and add:
+   - `ANDROID_KEYSTORE_BASE64` - the full contents of `ac3forge-shield-release.keystore.b64`.
+   - `ANDROID_KEYSTORE_PASSWORD` - the password from step 1.
+   - `ANDROID_KEY_ALIAS` - `ac3forge-shield` (or whatever `-alias` you used).
+   - `ANDROID_KEY_PASSWORD` - the same password as `ANDROID_KEYSTORE_PASSWORD` (PKCS12 doesn't
+     support a different one - see step 1).
+5. Delete the local `ac3forge-shield-release.keystore.b64` file. **Keep the `.keystore` file
+   itself** - see step 2.
+
+No key-rotation procedure is documented here for the same reason as the GPG key above - design
+one before an incident forces the question, not during it.
+
+## Provisioning the Android object-signing key (optional, one-time)
+
+Separate from the APK keystore above: this is the EMDF Atmos authenticity key that lets a
+validating decoder reconstruct the objects (see [Object signing](concepts/object-signing.md)). Off
+by default - `build-android` checks whether `ATMOS_SIGNING_KEY` is set and, if not, writes
+no key asset, so the app ships the safe unsigned bed51 stream. **The key is yours to provision; do
+not paste key material into a chat with an agent - do this yourself, locally.**
+
+```bash
+# Base64-encode your 32-byte key file into one line, ready to paste into a
+# GitHub secret. CI writes this base64 verbatim into the app's bundled
+# signing.key asset; the app base64-decodes it at startup (the same
+# decode_signing_key() the desktop CLI uses, which also accepts a raw key).
+base64 -w0 atmos.key > atmos.key.b64
+```
+
+Then, in the GitHub repo, go to Settings > Secrets and variables > Actions and add
+`ATMOS_SIGNING_KEY` - the full contents of `atmos.key.b64` - and delete the local
+`atmos.key.b64` afterward.
+
+!!! danger "A signed APK carries the key"
+    Because the app signs on-device, **any** Shield build with this secret set — the debug APK CI
+    produces on every push included, not just releases — bundles the key as an asset. Treat every
+    such APK as key material: it must never be distributed. A build without the secret is the safe
+    unsigned app.
+
 ## Verifying a download
 
 ```bash
 # Provenance (keyless, ties the bytes to this exact repo/workflow/commit)
-gh attestation verify ac3forge-0.2.0-win64.zip --repo iainchesworth/ac3forge
+gh attestation verify ac3forge-0.2.0-win64.zip --repo iainchesworthlabs/ac3forge
 
 # GPG (ties the bytes to the maintainer's key, once one is provisioned)
 gpg --import ac3forge-signing-key.asc
@@ -189,13 +569,14 @@ you dispatched from) hasn't been merged to `main` yet.
 or delete the existing tag first if it was created in error:
 `git push origin :refs/tags/vX.Y.Z && git tag -d vX.Y.Z`.
 
-**No package for a platform in the release** - that leg's `experimental: true` build failed
-(check the run's `build-packages` job); expected until that leg is promoted out of experimental
-in `_build.yml` - see the table in `ci.yml`.
+**No package for a platform in the release** - that leg's `build-packages` job failed for real.
+No leg is `experimental: true` any more (see [What gets published](#what-gets-published) above),
+so a missing package is a genuine failure to investigate, not an expected gap for a
+not-yet-promoted leg - check the run's `build-packages` job.
 
 ## What's deliberately not here
 
 A tag-triggered release publishes signed, attested, SBOM'd packages and a GitHub Release. It does
 **not** publish an APT/DNF package repository, a Docker image, or anything Home Assistant-shaped -
-`R:\aqualink-automate`'s `.github/workflows/release.yml` / `publish-repos.yml` and
-`docs/releasing.md` are the precedent to copy from if any of those are ever wanted here.
+the earlier project this process was modelled on has release and repository-publishing workflows
+to copy from if any of those are ever wanted here.

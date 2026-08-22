@@ -5,8 +5,9 @@
 #
 # Visible-only (continue-on-error on the scan step): findings land in the
 # Security > Code scanning tab but don't block merges. dependency-review.yml
-# is this repo's one blocking check - see docs/branch-protection.md.
+# is this repo's one blocking check - see .github/branch-protection.md.
 # Modelled on CountdownSolver's .github/workflows/zizmor.yml.
+name: Zizmor
 
 on:
   push:
@@ -49,7 +50,7 @@ jobs:
         run: uvx "zizmor@${ZIZMOR_VERSION}" --format=sarif . > results.sarif
 
       - name: Upload SARIF
-        uses: github/codeql-action/upload-sarif@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4.37.0
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
         with:
           sarif_file: results.sarif
           category: zizmor

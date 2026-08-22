@@ -179,6 +179,10 @@ E-AC-3 keeps everything AC-3 can do and adds more on top:
       from scratch.
     - **Adaptive hybrid transform** swaps in a sharper transform for parts of the signal that
       need the extra precision, rather than using one fixed transform for everything.
+- **Reduced sample rates.** Alongside the usual 48/44.1/32 kHz, E-AC-3 can code at half those
+  rates — 24, 22.05 and 16 kHz — through a second sample-rate field (`fscod2`) that Annex E adds.
+  Useful for low-bandwidth material that does not need the full audio band; classic AC-3 has no
+  way to express these rates at all.
 
 Together, these are why E-AC-3 fits more channels and better quality into a given bitrate than
 plain AC-3 can.

@@ -1,0 +1,206 @@
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+#include <map>
+#include <optional>
+#include <span>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+#include "ac3/core/eac3_tables.hpp"
+#include "ac3/encoder/plan.hpp"
+#include "ac3/export.hpp"
+
+// Multi-source input: an explicit alternative to route()'s automatic,
+// direction-based panning. route() places ONE source onto a target by where
+// its channels sit in the room; a caller with several sources - several
+// files, several capture devices, or dual mono's two independent programmes
+// - instead says exactly where each of THEIR channels goes, channel by
+// channel. Assignment is that statement, and the route() overload below
+// turns it into the same Routing render() already knows how to apply.
+//
+// This lives beside plan.hpp rather than in it because it is a distinct
+// concern - plan.hpp says what to encode, this says how a source's channels
+// reach it - and because most callers (a single WAV onto a named layout)
+// never need it: they stay on the automatic route().
+
+namespace ac3::plan {
+
+// Where one source channel goes. A closed set: every assigned channel is
+// exactly one of these, and an unassigned channel is worth naming rather
+// than defaulting silently, since "goes nowhere" is a real answer a caller
+// (a GUI's warning banner) needs to show.
+enum class DestinationKind : std::uint8_t {
+    kUnassigned,
+    kLocation,
+    kObject,
+    // A contiguous range of channels within ONE source that fold to a
+    // SINGLE mono dynamic object, rather than each channel becoming its own
+    // object the way a plain kObject range does - the mockup's "objm", the
+    // stereo-source affordance ("One object, folded to mono"). Still one
+    // Destination per channel (set() is called once per channel in the
+    // range, same as kObject), so which channels belong to the same objm
+    // group is exactly "the maximal contiguous run of kObjectMono rows for
+    // one source" - a caller groups them by adjacency, not by any group id
+    // stored here.
+    kObjectMono,
+    kProgramme1,
+    kProgramme2,
+};
+
+struct Destination {
+    DestinationKind kind = DestinationKind::kUnassigned;
+    // Meaningful only when kind == kLocation.
+    eac3::chanmap::Location location{};
+    // A linear-gain trim applied to this channel wherever its content
+    // reaches the stream - a routing matrix's gain entry (route()/
+    // dual_mono_routing(), covering kLocation and dual-mono's programme
+    // rows for free) or an object's plane at assembly (kObject/
+    // kObjectMono, applied by the caller that builds object planes - see
+    // encoder_controller.cpp's encodeObjects). Decibels, clamped to
+    // [-24, +24] and snapped to a tenth-of-a-dB grid by set()/
+    // parse_destination() - see assignment.cpp's snap_trim() for why a
+    // fixed grid rather than an arbitrary double: it is what lets
+    // format_destination/parse_destination round-trip a trim exactly.
+    // Meaningless (and always 0) on a kUnassigned row, since Assignment::
+    // set() erases those outright rather than storing them.
+    double trim_db = 0.0;
+
+    [[nodiscard]] bool operator==(const Destination&) const = default;
+};
+
+// A loaded source's shape, independent of where its samples come from - a
+// WAV file and a capture device both reduce to this. Deliberately not
+// ac3::io::WavData: assignment has no file-I/O dependency.
+struct SourceShape {
+    std::size_t channels = 0;
+    std::string label;  // "orbit51.wav" / "Scarlett 18i20" - error text only
+};
+
+// One row per (source, channel) a caller has actually set; everything else
+// reads as kUnassigned. Rows are addressed by position rather than carried
+// inline with SourceShape, so a caller can grow or shrink its source list
+// without renumbering assignments it already made for channels that did not
+// move.
+class AC3FORGE_EXPORT Assignment {
+   public:
+    void set(std::size_t source, std::size_t channel, Destination dest);
+    void clear(std::size_t source, std::size_t channel) { set(source, channel, Destination{}); }
+    [[nodiscard]] Destination at(std::size_t source, std::size_t channel) const;
+
+    // Every (source, channel) that is kUnassigned AND within `sources`'
+    // declared channel counts - the "goes nowhere" inventory a GUI's warning
+    // banner reads from. A row set on a channel a source no longer has
+    // (after the caller removed a source) does not appear: it is not there
+    // to be unassigned.
+    [[nodiscard]] std::vector<std::pair<std::size_t, std::size_t>> unassigned(
+        std::span<const SourceShape> sources) const;
+
+    // Rows of one kind, in (source, then channel) order - what an
+    // object-mode or dual-mono caller iterates.
+    [[nodiscard]] std::vector<std::pair<std::size_t, std::size_t>> rows_of(
+        DestinationKind kind) const;
+
+   private:
+    std::map<std::pair<std::size_t, std::size_t>, Destination> rows_;
+};
+
+// Builds a Routing over the CONCATENATION of every source's channels (source
+// 0's channels first, then source 1's, and so on) from an explicit
+// Assignment rather than route()'s automatic panning: every kLocation row
+// becomes a gain entry - unity unless the row carries a trim_db, in which
+// case that row's linear-equivalent gain, per Destination::trim_db's own
+// comment - into EVERY coded channel carrying that location - a bed channel
+// and any dependent that shares it alike, since an explicit assignment
+// states raw content for a location rather than a direction to render, and
+// both the bed's legacy fallback and a full decoder's discrete channel
+// should hear the same (trimmed) thing. kObject/kObjectMono/kProgramme*/
+// kUnassigned rows contribute nothing to this Routing (all-zero) - object
+// audio reaches the stream through the Atmos path, not Routing (their own
+// trim is applied where their planes are assembled instead - see
+// encoder_controller.cpp's encodeObjects), and programme rows are
+// dual_mono_routing()'s concern.
+//
+// Returns nullopt if `sources` is empty, if two rows target the same
+// location, or if `target` cannot express a targeted location at all. Does
+// NOT enforce dual mono's "exactly one channel per programme" - a general
+// assignment is free to leave both programme slots unset, or even (for a
+// target that is not dual mono) unused entirely; dual_mono_routing() is
+// where that shape is required.
+[[nodiscard]] AC3FORGE_EXPORT std::optional<Routing> route(const ChannelPlan& target,
+                                                           std::span<const SourceShape> sources,
+                                                           const Assignment& assignment);
+
+// Dual mono's routing, expressed as one particular assignment: exactly one
+// channel on kProgramme1 and one on kProgramme2, nothing else required of
+// the rest. Returns the same identity Routing plan::route(LayoutId::
+// kDualMono, 2, ...) already returns when the two programme channels are
+// the whole of a single two-channel source; with several sources loaded it
+// generalises to whichever two (source, channel) pairs are marked p1/p2,
+// leaving every other loaded channel unrouted rather than an error - dual
+// mono only cares about the two channels it was given. Returns nullopt if
+// either programme has zero or more than one channel assigned to it - dual
+// mono's two programmes are each a single channel, never a mix (§E1.3, no
+// downmix between them).
+[[nodiscard]] AC3FORGE_EXPORT std::optional<Routing> dual_mono_routing(
+    std::span<const SourceShape> sources, const Assignment& assignment);
+
+// Every E-AC-3-forcing choice in one place, generalising plan::carries():
+// an immersive target (any dependent substream), VBR, any Annex E tool
+// ticked, mixing metadata, or a reduced sample rate. A caller building a
+// Plan whose codec is meant to be DERIVED rather than picked calls this
+// instead of hand-testing each condition, so a new promotion trigger is
+// added here once rather than at every call site that would otherwise
+// duplicate plan::carries()'s logic.
+[[nodiscard]] AC3FORGE_EXPORT Codec derive_codec(const ChannelPlan& target, const Tools& tools,
+                                                 const Metadata& meta,
+                                                 const std::optional<eac3::VbrConfig>& vbr,
+                                                 SampleRate sample_rate);
+
+// The `map=` token grammar's destination spelling: a Table E2.5 location
+// name (as eac3::chanmap::name() prints it, e.g. "Ls", "LFE2"), "obj",
+// "objm", "p1", "p2", or "none" for an explicit, silence-the-warning
+// unassigned - optionally followed by "@<trim>", a signed decibel trim
+// (e.g. "L@-3.5"), present in the returned/accepted text only when
+// dest.trim_db is non-zero. "@" cannot collide with any existing token: no
+// location name, and none of obj/objm/p1/p2/none, contains it. The inverse
+// of parse_destination - round-trips the way format_channels already
+// round-trips through parse_channels.
+[[nodiscard]] AC3FORGE_EXPORT std::string format_destination(Destination dest);
+[[nodiscard]] AC3FORGE_EXPORT std::optional<Destination> parse_destination(std::string_view token);
+
+inline constexpr std::string_view kAssignmentSyntax =
+    "<source>.<channel>[-<channel2>]:<dest>[@<trim>][,...] - dest is a channel name, obj, objm, "
+    "p1, p2 or none; a channel range is only legal with obj, objm or none, and folds to one mono "
+    "object with objm; trim is an optional signed dB gain in [-24,24] on <dest>, e.g. L@-3.5, "
+    "applied wherever that channel's content reaches the stream";
+
+// The `map=` option's whole spec: comma-separated `<source>.<channel>:<dest>`
+// entries (`<channel>` may be a `first-last` range, legal only when `<dest>`
+// is "obj", "objm" or "none" - a location or a programme names exactly one
+// channel, so a range there would be ambiguous about which one it means; an
+// objm range further requires every channel in it to come from the SAME
+// source, which a range already guarantees since `<source>` is shared by
+// the whole entry). `<source>` indexes `sources` in load order.
+//
+// Unlike parse_channels/parse_tools/parse_vbr, this ALSO requires every
+// channel `sources` declares to appear in some entry, `none` included -
+// map=, once given, is the sole source of truth for where every loaded
+// channel goes, so a channel it says nothing about is a mistake to report
+// rather than a gap to default silently. Returns false on any of that,
+// leaving `out` partially written, the same reject-rather-than-continue rule
+// the other parse_* functions already follow.
+[[nodiscard]] AC3FORGE_EXPORT bool parse_assignment(std::string_view text,
+                                                    std::span<const SourceShape> sources,
+                                                    Assignment& out);
+
+// The inverse, in (source, then channel) order - one entry per declared
+// channel, so it always satisfies parse_assignment's completeness
+// requirement. Round-trips through parse_assignment.
+[[nodiscard]] AC3FORGE_EXPORT std::string format_assignment(std::span<const SourceShape> sources,
+                                                             const Assignment& assignment);
+
+}  // namespace ac3::plan

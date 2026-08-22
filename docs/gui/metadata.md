@@ -1,8 +1,11 @@
 # Metadata
 
-Advanced mode only — Basic mode folds the Loudness half of this onto the
-[Format tab](format-and-channels.md#codec-presets-bit-rate-container) instead and leaves the rest
-at their defaults.
+Expert tier only — Advanced folds the Loudness half of this onto the
+[Format tab](format-and-channels.md#presets-codec-bit-rate-container) instead and leaves the rest
+at their defaults. Guided has no separate Loudness step of its own; instead it applies its own
+[loudness contract](index.md#the-loudness-contract) automatically, unless the fields here have
+already been edited by hand. Downmix, Heavy compression and Mixing metadata are Expert-only in
+every tier.
 
 ![Metadata tab: Loudness, Downmix, Heavy compression, Mixing metadata](screenshots/metadata-tab.png)
 
@@ -13,6 +16,11 @@ at their defaults.
 - **dialnorm** — a 1–31 spin box, disabled by a **measure** checkbox that derives it instead from
   BS.1770-4 gated loudness over the whole programme (§5.4.2.8). Getting it wrong isn't cosmetic —
   a levelled playback system plays the difference.
+- **DRC profile / dialnorm — programme 2** — appear only with a
+  [`1+1` dual-mono bed](format-and-channels.md#dual-mono) selected. Each programme states its own
+  DRC curve and dialogue level, and each **measure** checkbox measures its own programme's coded
+  channel — nothing is inherited or averaged between the two; the dual-mono section linked above
+  explains why.
 
 ## Downmix
 
@@ -23,7 +31,9 @@ wide source folds down to a narrower speaker layout.
 
 A checkbox that reveals a **ceiling** spin box (in tenths of a dB, so the −0.5 dBFS default
 survives) and a **dialogue** spin box — §7.7.2's peak-limited mono downmix, at syncframe
-resolution.
+resolution. A second, identically-shaped **Heavy compression — programme 2** card appears beside
+it under a `1+1` dual-mono bed, for the same reason DRC gets its own programme-2 copy above: Ch2's
+own compr2 bounds Ch2's own signal, never Ch1's.
 
 ## Mixing metadata
 

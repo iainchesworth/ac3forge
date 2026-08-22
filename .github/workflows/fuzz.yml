@@ -1,28 +1,70 @@
-# ac3forge fuzzing. Three jobs over the same libFuzzer harnesses in fuzz/:
+# ac3forge fuzzing. Five jobs. Four of them share the libFuzzer harnesses in
+# fuzz/ and all mutate an ALREADY-ENCODED bitstream - they ask whether the
+# DECODER survives corrupt input. The fifth (encoder-space-nightly) asks the
+# opposite question, about the ENCODER, and shares none of that machinery; see
+# its own comment below.
 #
-#   fuzz-regress   Replays fuzz/seeds/ and fuzz/regressions/ with -runs=0 (no
-#                  mutation) - a correctness gate: every regression corpus
-#                  entry must still not crash. Seconds, not minutes; runs on
-#                  every push/PR to main/develop and is NOT experimental - a
-#                  regression here means a fixed bug came back.
-#   fuzz-short     A bounded mutation budget (60s/target, ~4 minutes total),
-#                  push only, so pull requests are not slowed by it.
-#   fuzz-nightly   A longer bounded mutation budget (10 min/target by default)
-#                  on a daily schedule, plus workflow_dispatch for an
-#                  on-demand deeper run with a custom budget.
+#   fuzz-regress       Replays fuzz/seeds/ and fuzz/regressions/ with -runs=0
+#                      (no mutation) - a correctness gate: every regression
+#                      corpus entry must still not crash. Seconds, not
+#                      minutes; runs on every push/PR to main/develop and is
+#                      NOT experimental - a regression here means a fixed bug
+#                      came back.
+#   fuzz-short         A bounded mutation budget (60s/target, ~4 minutes
+#                      total), push only, so pull requests are not slowed by
+#                      it.
+#   fuzz-differential  Same mutation approach, over the two differential
+#                      harnesses only (fuzz_differential_ac3_decode,
+#                      fuzz_differential_eac3_decode - roadmap G3): decodes
+#                      each mutated frame with BOTH ac3forge's own decoder
+#                      and FFmpeg, and diffs the PCM, instead of only
+#                      checking for a crash. Push only, its own 60s/target
+#                      budget - see fuzz/differential_oracle.hpp for what
+#                      counts as a reportable divergence versus expected
+#                      disagreement on a malformed frame, and why this job is
+#                      separate rather than folded into fuzz-short (it needs
+#                      ffmpeg on PATH and is much slower per-exec, a real
+#                      FFmpeg process per comparable input).
+#   fuzz-nightly       A longer bounded mutation budget (10 min/target by
+#                      default) on a daily schedule, plus workflow_dispatch
+#                      for an on-demand deeper run with a custom budget. Does
+#                      NOT include the differential harnesses - see
+#                      fuzz-differential above.
+#   encoder-space-     The ENCODER's input space rather than the decoder's:
+#   nightly            random legal encoder configurations crossed with
+#                      adversarial PCM, every resulting stream held against
+#                      both this project's decoder and FFmpeg's strict decode.
+#                      Not a libFuzzer target and not part of fuzz/run.sh - it
+#                      drives the real ac3cli, so it builds the CLI the way
+#                      ci.yml's ffmpeg-validate job does rather than the
+#                      sanitizer/libFuzzer toolchain the other four need. The
+#                      short per-PR counterpart is a step in that same
+#                      ffmpeg-validate job, not a job here, because everything
+#                      it needs is already built and pinned there.
+#                      See tools/ci/fuzz_encoder_space.py for why this exists:
+#                      an encoder defect (PR #186) that produced streams BOTH
+#                      decoders reject, and that every other gate in this repo
+#                      missed because reaching it needs a specific input SHAPE
+#                      no hand-written matrix would enumerate.
 #
 # This is a bounded, time-boxed run, not continuous (OSS-Fuzz-style) fuzzing
 # infrastructure - see fuzz/README.md.
 #
-# All three run in the same ubuntu:26.04 + LLVM 21 container ci.yml's
+# All four run in the same ubuntu:26.04 + LLVM 21 container ci.yml's
 # linux-llvm leg uses. The harnesses build under the same strict `ac3::warnings`
 # set (-Werror included) as every other target - the fuzz build used to be the
 # one exception, on the assumption it carried a sign-conversion/double-promotion
 # debt, but a recount found zero such sites and the exemption was removed.
-# fuzz-short and fuzz-nightly stay marked experimental on their own merits:
-# neither has multiple clean fuzzing runs behind it yet, which is a question of
-# track record rather than of anything the compiler can check. Promote one by
-# deleting its `continue-on-error: true` line.
+# fuzz-short, fuzz-differential and fuzz-nightly stay marked experimental on
+# their own merits: none has multiple clean fuzzing runs behind it yet, which
+# is a question of track record rather than of anything the compiler can
+# check. Promote one by deleting its `continue-on-error: true` line.
+#
+# fuzz-differential additionally installs `ffmpeg` - the same package the
+# gold_reference/sanitizer legs of .github/workflows/_build.yml already
+# install on Linux, and for the same reason (an independent decode oracle).
+# The other three jobs have no such dependency: their harnesses only ever
+# call into ac3::forge itself.
 #
 # Deliberately its own workflow rather than folded into ci.yml's build-and-test
 # matrix or its ci-status gate: fuzz-regress is cheap enough to make required
@@ -45,6 +87,10 @@ on:
         description: "Mutation budget per harness, in seconds"
         type: number
         default: 600
+      encoder_space_seconds:
+        description: "Encoder input-space budget, in seconds"
+        type: number
+        default: 900
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
@@ -54,6 +100,13 @@ permissions:
   contents: read
 
 jobs:
+  # Single source of truth for encoder-space-nightly's vcpkg pin below - see
+  # docs/ci-self-hosted-runners.md and _toolchain-versions.yml's own header.
+  toolchain-versions:
+    uses: ./.github/workflows/_toolchain-versions.yml
+    permissions:
+      contents: read
+
   fuzz-regress:
     name: Fuzz Regress (seeds + regression corpus, no mutation)
     runs-on: ubuntu-latest
@@ -127,6 +180,62 @@ jobs:
           path: fuzz/artifacts/
           if-no-files-found: ignore
 
+  fuzz-differential:
+    name: Fuzz Differential (ac3forge vs FFmpeg PCM diff, bounded mutation, push only)
+    if: github.event_name == 'push'
+    needs: fuzz-regress
+    runs-on: ubuntu-latest
+    container: ubuntu:26.04
+    continue-on-error: true  # experimental - see the header comment
+    env:
+      AC3FORGE_FUZZ_SECONDS: 60
+    steps:
+      - name: Bootstrap container
+        run: |
+          set -eu
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends \
+            build-essential ca-certificates cmake curl git gnupg lsb-release \
+            ninja-build pkg-config software-properties-common tar unzip wget zip
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install LLVM 21
+        run: bash .github/toolchain/03-llvm-toolchain.sh
+
+      # 03-llvm-toolchain.sh installs the compiler only - none of ci.yml's
+      # other Clang legs link a sanitizer or libFuzzer, so none of them have
+      # ever needed the runtime archives. This is fuzzing's own dependency.
+      - name: Install sanitizer + libFuzzer runtime archives
+        run: apt-get install -y -qq --no-install-recommends libclang-rt-21-dev
+
+      # The differential harnesses' own oracle (fuzz/differential_oracle.hpp
+      # shells out to it at run time) - the same package
+      # .github/workflows/_build.yml's gold_reference/sanitizer legs already
+      # install on Linux, for the same reason.
+      - name: Install ffmpeg
+        run: apt-get install -y -qq --no-install-recommends ffmpeg
+
+      # Cheap correctness gate first, same shape as fuzz-regress above: any
+      # divergence a past run minimized into fuzz/regressions/ must still
+      # not reproduce before spending the mutation budget below.
+      - name: Replay differential regression corpus (no mutation)
+        run: bash fuzz/run.sh regress fuzz_differential_ac3_decode fuzz_differential_eac3_decode
+
+      - name: Fuzz differential (bounded mutation budget)
+        run: bash fuzz/run.sh run fuzz_differential_ac3_decode fuzz_differential_eac3_decode
+
+      - name: Upload divergent/crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-differential-artifacts
+          path: fuzz/artifacts/
+          if-no-files-found: ignore
+
   fuzz-nightly:
     name: Fuzz Nightly (deeper bounded mutation)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -167,4 +276,74 @@ jobs:
         with:
           name: fuzz-nightly-artifacts
           path: fuzz/artifacts/
+          if-no-files-found: ignore
+
+  # The deeper half of the encoder input-space search - see this file's header
+  # for what it is and why it shares nothing with the four jobs above. Its
+  # bounded per-PR counterpart is a step in ci.yml's ffmpeg-validate job.
+  #
+  # Toolchain-wise this is ffmpeg-validate, not a fuzzing job: LLVM plus vcpkg
+  # plus a pinned ffmpeg, building the plain linux-llvm preset. No sanitizer
+  # runtime archives, no libFuzzer, no fuzz/run.sh - the search happens in
+  # Python, against the real CLI, and the failure signal is a decoder refusing
+  # a stream rather than a sanitizer report.
+  #
+  # ffmpeg is pinned to the same exact ubuntu:26.04 archive build ffmpeg-
+  # validate pins, and for the same reason: an oracle whose behaviour drifts
+  # under the gate it backs is not an oracle.
+  encoder-space-nightly:
+    name: Encoder Space Nightly (random legal configs x adversarial audio)
+    needs: toolchain-versions
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    container: ubuntu:26.04
+    env:
+      AC3CLI: build/config-linux-llvm/bin/ac3cli
+      ENCODER_SPACE_SECONDS: ${{ github.event.inputs.encoder_space_seconds || 900 }}
+    steps:
+      - name: Bootstrap container
+        run: |
+          set -eu
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends \
+            build-essential ca-certificates cmake curl git gnupg lsb-release \
+            ninja-build pkg-config python3 software-properties-common \
+            tar unzip wget zip \
+            ffmpeg=7:8.0.1-3ubuntu2
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install LLVM 21
+        run: bash .github/toolchain/03-llvm-toolchain.sh
+
+      - uses: ./.github/actions/setup-vcpkg
+        with:
+          vcpkg-commit: ${{ needs.toolchain-versions.outputs.vcpkg_commit }}
+
+      - name: Report ffmpeg version
+        run: ffmpeg -version | head -1
+
+      - name: Configure
+        run: cmake --preset config-linux-llvm
+
+      - name: Build ac3cli
+        run: cmake --build --preset build-linux-llvm --target ac3cli -- -k 0
+
+      # First, because a run that draws configurations the encoder was never
+      # going to accept would come back green having encoded almost nothing.
+      - name: Acceptance envelope (the rate floors the generator draws from)
+        run: python3 tools/ci/fuzz_encoder_space.py --check-envelope
+
+      - name: Encoder input-space fuzz (deeper budget, both decoders)
+        run: python3 tools/ci/fuzz_encoder_space.py --seconds "$ENCODER_SPACE_SECONDS"
+
+      - name: Upload failing inputs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: encoder-space-nightly-artifacts
+          path: fuzz-encoder-artifacts/
           if-no-files-found: ignore

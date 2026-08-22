@@ -1,0 +1,244 @@
+#pragma once
+
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <optional>
+
+// Base constants of the AC-3 syntax, transcribed from ATSC A/52:2018.
+// Every entry cites the section or table it comes from; nothing here is
+// derived from any third-party implementation.
+
+namespace ac3 {
+
+// A/52 §5.4.1.1: every syncframe begins with this 16-bit sync word.
+inline constexpr std::uint16_t kSyncWord = 0x0B77;
+
+// A/52 §4.1: a syncframe carries 6 audio blocks of 256 samples per channel.
+inline constexpr int kBlocksPerFrame = 6;
+// §7.3.1: the LFE channel always codes exactly 7 mantissas.
+inline constexpr int kLfeEndmant = 7;
+inline constexpr int kSamplesPerBlock = 256;
+inline constexpr int kSamplesPerFrame = kBlocksPerFrame * kSamplesPerBlock;  // 1536
+
+// A/52 §5.4.1.3, Table 5.6: fscod — the 2-bit sample-rate code. '11' is
+// reserved in classic AC-3, but Annex E §E2.3.1.3 repurposes it as fscod2, a
+// second 2-bit field selecting one of three E-AC-3-only half sample rates.
+// Those three are appended here rather than inserted, so the original three
+// enumerators keep the ordinals (0/1/2) every fscod-indexed table already
+// relies on.
+enum class SampleRate : std::uint8_t {
+    k48000 = 0,
+    k44100 = 1,
+    k32000 = 2,
+    k24000 = 3,  // fscod2 0b00 (E-AC-3 only)
+    k22050 = 4,  // fscod2 0b01
+    k16000 = 5,  // fscod2 0b10
+};
+
+[[nodiscard]] constexpr std::uint32_t sample_rate_hz(SampleRate sr) {
+    switch (sr) {
+        case SampleRate::k48000: return 48000;
+        case SampleRate::k44100: return 44100;
+        case SampleRate::k32000: return 32000;
+        case SampleRate::k24000: return 24000;
+        case SampleRate::k22050: return 22050;
+        case SampleRate::k16000: return 16000;
+    }
+    return 0;
+}
+
+// True for the three Annex E fscod2 rates. Classic AC-3 (bsid <= 8) never
+// carries one of these; only E-AC-3's bsi() has the fscod2 field.
+[[nodiscard]] constexpr bool is_reduced_rate(SampleRate sr) {
+    return sr == SampleRate::k24000 || sr == SampleRate::k22050 || sr == SampleRate::k16000;
+}
+
+// §E2.3.1.4: the bit-allocation parameters for a reduced rate are identical to
+// those of its double-rate parent (24<-48, 22.05<-44.1, 16<-32), so every
+// fscod-indexed table stays three columns wide - this maps either fscod or
+// fscod2's value onto that shared column index (0/1/2).
+[[nodiscard]] constexpr int fscod_family(SampleRate sr) {
+    switch (sr) {
+        case SampleRate::k48000:
+        case SampleRate::k24000: return 0;
+        case SampleRate::k44100:
+        case SampleRate::k22050: return 1;
+        case SampleRate::k32000:
+        case SampleRate::k16000: return 2;
+    }
+    return 0;
+}
+
+// The inverse of fscod_family() for the fscod2 path: the raw 2-bit fscod2
+// field value -> the corresponding reduced-rate enumerator, or nullopt for
+// the reserved value 0b11 (§E2.3.1.3).
+[[nodiscard]] constexpr std::optional<SampleRate> sample_rate_from_fscod2(std::uint32_t fscod2) {
+    constexpr std::array<SampleRate, 3> rates = {SampleRate::k24000, SampleRate::k22050,
+                                                  SampleRate::k16000};
+    if (fscod2 >= rates.size()) {
+        return std::nullopt;
+    }
+    return rates[fscod2];
+}
+
+// A/52 §5.4.2.3, Table 5.8: acmod — the 3-bit audio coding mode. Enumerator
+// values are the field values; names follow the spec's front/rear notation.
+enum class Acmod : std::uint8_t {
+    kDualMono = 0,  // 1+1: two independent programs (Ch1, Ch2)
+    k1_0 = 1,       // C
+    k2_0 = 2,       // L, R
+    k3_0 = 3,       // L, C, R
+    k2_1 = 4,       // L, R, S
+    k3_1 = 5,       // L, C, R, S
+    k2_2 = 6,       // L, R, SL, SR
+    k3_2 = 7,       // L, C, R, SL, SR
+};
+
+// Full-bandwidth channel count (nfchans) per Table 5.8. LFE is additional.
+[[nodiscard]] constexpr int fullbw_channel_count(Acmod acmod) {
+    constexpr std::array<int, 8> counts = {2, 1, 2, 3, 3, 4, 4, 5};
+    return counts[static_cast<std::uint8_t>(acmod)];
+}
+
+// A/52 §7.1.3, Table 7.4: exponent strategy codes for chexpstr/cplexpstr.
+// Block 0 shall not use kReuse (§5.4.3.22).
+enum class ExpStrategy : std::uint8_t {
+    kReuse = 0,
+    kD15 = 1,
+    kD25 = 2,
+    kD45 = 3,
+};
+
+// §7.5, Table 7.25 "Rematrix Banding Table A": [low, high] inclusive bin
+// bounds of the (at most) four 2/0 rematrixing bands, coupling not in use.
+// Coupling active shortens the table from the end (Tables 7.26-7.28 are the
+// same four ranges with the last one or two dropped and the new last one's
+// high bound clamped to where coupling begins) rather than moving any
+// boundary, so this one table plus a band COUNT is everything either format
+// needs - E-AC-3 reuses it unchanged: Annex E §3.3's "Modifications to
+// Previously Defined Parameters" touches nrematbd (how many of these bands
+// are active, given coupling/enhanced-coupling/spectral extension) but never
+// the ranges themselves.
+inline constexpr std::array<std::array<int, 2>, 4> kRematrixBands = {{
+    {13, 24}, {25, 36}, {37, 60}, {61, 252},
+}};
+
+// A/52 Table 5.18: the 19 nominal bit rates. frmsizecod / 2 indexes this list.
+inline constexpr std::array<std::uint16_t, 19> kBitratesKbps = {
+    32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 448, 512, 576, 640,
+};
+
+[[nodiscard]] constexpr std::optional<int> bitrate_index(std::uint32_t kbps) {
+    for (std::size_t i = 0; i < kBitratesKbps.size(); ++i) {
+        if (kBitratesKbps[i] == kbps) {
+            return static_cast<int>(i);
+        }
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] constexpr bool is_valid_bitrate(std::uint32_t kbps) {
+    return bitrate_index(kbps).has_value();
+}
+
+// The largest Table 5.18 rung at or below `requested_kbps`, capped at 640 -
+// what a caller wanting "as close to this rate as AC-3 can legally carry"
+// needs (kBitratesKbps is sorted ascending, so the first entry is always a
+// safe floor). Used where a plan's own bitrate - possibly an E-AC-3-only
+// rung like 768, or simply not on the table at all - has to be reduced to
+// something plain AC-3 can carry, such as the live session's parallel 5.1
+// downmix receiver leg (see docs/gui/live-session.md).
+[[nodiscard]] constexpr std::uint32_t clamp_to_legal_ac3_bitrate(std::uint32_t requested_kbps) {
+    const std::uint32_t capped = std::min<std::uint32_t>(requested_kbps, kBitratesKbps.back());
+    std::uint32_t best = kBitratesKbps.front();
+    for (const auto kbps : kBitratesKbps) {
+        if (kbps <= capped) {
+            best = kbps;
+        }
+    }
+    return best;
+}
+
+// A/52 Table 5.18 "Frame Size Code Table (1 word = 16 bits)", transcribed
+// verbatim. Row = bit-rate index; column = fscod (48 / 44.1 / 32 kHz). The
+// table lists two frmsizecod values per bit rate: at 44.1 kHz the odd code is
+// one word longer (the padding word CBR streams alternate to hit the exact
+// rate); at 32 and 48 kHz both codes give the identical size shown here.
+inline constexpr std::array<std::array<std::uint16_t, 3>, 19> kFrameSizeWords = {{
+    // 48 kHz  44.1 kHz  32 kHz
+    {64, 69, 96},          // 32 kbps
+    {80, 87, 120},         // 40 kbps
+    {96, 104, 144},        // 48 kbps
+    {112, 121, 168},       // 56 kbps
+    {128, 139, 192},       // 64 kbps
+    {160, 174, 240},       // 80 kbps
+    {192, 208, 288},       // 96 kbps
+    {224, 243, 336},       // 112 kbps
+    {256, 278, 384},       // 128 kbps
+    {320, 348, 480},       // 160 kbps
+    {384, 417, 576},       // 192 kbps
+    {448, 487, 672},       // 224 kbps
+    {512, 557, 768},       // 256 kbps
+    {640, 696, 960},       // 320 kbps
+    {768, 835, 1152},      // 384 kbps
+    {896, 975, 1344},      // 448 kbps
+    {1024, 1114, 1536},    // 512 kbps
+    {1152, 1253, 1728},    // 576 kbps
+    {1280, 1393, 1920},    // 640 kbps
+}};
+
+namespace detail {
+// A 1536-sample frame spans exactly 32 ms at 48 kHz and 48 ms at 32 kHz, so
+// those Table 5.18 columns must equal the closed-form kbps*2 / kbps*3 words.
+consteval bool frame_table_matches_closed_form() {
+    for (std::size_t i = 0; i < kBitratesKbps.size(); ++i) {
+        if (kFrameSizeWords[i][0] != kBitratesKbps[i] * 2) return false;
+        if (kFrameSizeWords[i][2] != kBitratesKbps[i] * 3) return false;
+    }
+    return true;
+}
+static_assert(frame_table_matches_closed_form());
+}  // namespace detail
+
+// Words per syncframe (A/52 Table 5.18). pad441 selects the odd frmsizecod,
+// which adds one word at 44.1 kHz only. fscod2 is an Annex E (E-AC-3) concept
+// with no frmsizecod table at all - classic AC-3 has no way to express one of
+// its rates - so a reduced rate is refused here rather than indexed with a
+// raw enum ordinal that would run past kFrameSizeWords' three columns.
+[[nodiscard]] constexpr std::optional<std::uint32_t> frame_size_words(SampleRate sr,
+                                                                      std::uint32_t bitrate_kbps,
+                                                                      bool pad441 = false) {
+    if (is_reduced_rate(sr)) {
+        return std::nullopt;
+    }
+    const auto idx = bitrate_index(bitrate_kbps);
+    if (!idx) {
+        return std::nullopt;
+    }
+    std::uint32_t words = kFrameSizeWords[static_cast<std::size_t>(*idx)]
+                                         [static_cast<std::uint8_t>(sr)];
+    if (sr == SampleRate::k44100 && pad441) {
+        words += 1;
+    }
+    return words;
+}
+
+[[nodiscard]] constexpr std::optional<std::uint32_t> frame_size_bytes(SampleRate sr,
+                                                                      std::uint32_t bitrate_kbps,
+                                                                      bool pad441 = false) {
+    const auto words = frame_size_words(sr, bitrate_kbps, pad441);
+    if (!words) {
+        return std::nullopt;
+    }
+    return *words * 2;
+}
+
+// A/52 §7.10.1: the number of words in the first 5/8 of the syncframe —
+// the region protected by crc1 (sync word included in the count but excluded
+// from the CRC itself).
+[[nodiscard]] constexpr std::uint32_t frame_size_58_words(std::uint32_t frame_words) {
+    return (frame_words >> 1) + (frame_words >> 3);
+}
+
+}  // namespace ac3

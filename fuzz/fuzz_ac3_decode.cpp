@@ -4,7 +4,7 @@
 
 #include "ac3/decoder/decoder.hpp"
 
-// Mirrors ac3cli's own 'decode' path (src/cli/main.cpp: run_decode): split the
+// Mirrors ac3cli's own 'decode' path (apps/cli/main.cpp: run_decode): split the
 // raw stream into syncframes, then decode each one with a single FrameDecoder
 // so overlap-add state carries across frames exactly as it does for a real
 // caller. A malformed differential exponent chain walking the reconstruction
