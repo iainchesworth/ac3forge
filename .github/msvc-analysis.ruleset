@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ac3forge's /analyze rule set: NativeRecommendedRules minus the two rules
+  whose entire history in this repository is dismissed false positives.
+
+  Alert identity in GitHub Code Scanning is ruleId + a line-content hash +
+  the FILE PATH, so a false positive is not dismissed once: every file
+  move re-mints the alert with a fresh ID and the dismissal (a manual API
+  call, 280-character comment limit) has to be repeated - exactly what
+  happened when PR #291 extracted apps/cli/commands/analysis.cpp out of
+  apps/cli/main.cpp and alerts #83-94 resurrected findings already
+  documented and dismissed under #70/#71/#8/#11/#22. Neither rule has a
+  portable in-source suppression (#pragma warning(suppress:) breaks
+  -Werror on GCC/clang, and [[gsl::suppress]] only covers C26xxx and
+  trips GCC's -Wattributes), so rules that only ever produce dismissals
+  are turned off at the source instead:
+
+    C26829 (unwrapped possibly-empty optional) - 7 alerts, all dismissed
+      as false positives at sites where a have_first/non-empty-stream
+      guard proves the optional engaged (see the comments at each site).
+      The same defect class stays covered portably by clang-tidy's
+      bugprone-unchecked-optional-access on ci.yml's static-analysis leg,
+      which CAN be suppressed in-source with a NOLINT where the analysis
+      is proven wrong - those NOLINTs and their justifications already
+      exist at every affected site.
+
+    C28020 (expression not satisfied in this call) - 2 alerts, both false
+      positives on index arithmetic the surrounding code bounds (see
+      src/forge/src/oba/atmos.cpp's own comment). Bounds errors stay
+      covered by the linux-llvm-asan-ubsan leg (precise, at runtime) and
+      CodeQL's dataflow queries.
+
+  C6262 (excessive stack usage) stays ON: it is this workflow's workhorse,
+  with 25+ real heap-allocation fixes behind it and no clang-tidy
+  equivalent - a genuine finding there gets FIXED, not dismissed, so the
+  path-move problem never applies to it.
+
+  Consumed by .github/workflows/msvc-analysis.yml. The Include below
+  resolves because the msvc-code-analysis-action passes
+  /analyze:rulesetdirectory for Visual Studio's own rule-set directory
+  precisely so a repository rule set can layer on an official one.
+-->
+<RuleSet Name="ac3forge" Description="NativeRecommendedRules minus rules with a false-positive-only history in this repository" ToolsVersion="17.0">
+  <Include Path="NativeRecommendedRules.ruleset" Action="Default" />
+  <Rules AnalyzerId="Microsoft.Analyzers.NativeCodeAnalysis" RuleNamespace="Microsoft.Rules.Native">
+    <Rule Id="C26829" Action="None" />
+    <Rule Id="C28020" Action="None" />
+  </Rules>
+</RuleSet>
