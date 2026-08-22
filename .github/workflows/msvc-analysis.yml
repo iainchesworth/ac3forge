@@ -93,13 +93,17 @@ jobs:
         shell: bash
         run: cmake --build --preset build-windows-msvc -- -k 0
 
+      # The repo-local rule set is NativeRecommendedRules minus the rules
+      # whose entire alert history here is dismissed false positives - see
+      # .github/msvc-analysis.ruleset's own header for the per-rule
+      # reasoning and where each displaced defect class is still covered.
       - name: Run MSVC Code Analysis
         uses: microsoft/msvc-code-analysis-action@24c285ab36952c9e9182f4b78dfafbac38a7e5ee # v0.1.1
         id: run-analysis
         with:
           cmakeBuildDirectory: ${{ github.workspace }}/build/config-windows-msvc
           buildConfiguration: Release
-          ruleset: NativeRecommendedRules.ruleset
+          ruleset: .github/msvc-analysis.ruleset
           ignoredPaths: ${{ github.workspace }}/tests
 
       - name: Upload SARIF to GitHub
