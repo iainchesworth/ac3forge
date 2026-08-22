@@ -3,15 +3,21 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <cstddef>
+#include <cstdint>
 #include <expected>
 #include <memory>
 #include <optional>
 #include <print>
 #include <span>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
+#include "/mnt/c/aa-wt/dolbydigitalconverter/header-inclusion-ci-check-453fde/apps/cli/support.hpp"
 #include "ac3/analysis/levels.hpp"
+#include "ac3/core/tables.hpp"
 #include "ac3/encoder/eac3_frame.hpp"
 #include "ac3/encoder/encoder.hpp"
 #include "ac3/encoder/plan.hpp"

@@ -1,8 +1,12 @@
 #include "ac3/encoder/coupling.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <span>
 
 namespace ac3::coupling {
 

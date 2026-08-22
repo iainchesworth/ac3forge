@@ -166,6 +166,17 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   directory pattern. The docs site's nav also got a pass: the four data-trend pages now sit
   contiguously, `docs/project/history.md` moved to `docs/history.md` alongside its own nav
   siblings, and `apps/gui/icons/` gained a README marking it as generated output.
+- **`static-analysis` now enforces correct header inclusion.** clang-tidy's
+  `misc-include-cleaner` check joins the curated set the `static-analysis` CI leg gates: every
+  symbol used in `src/forge`, `src/matroska`, and `apps/cli` must have its owning header
+  `#include`d directly, not merely reachable through another header's transitive includes —
+  closing the gap where a file built only because of what a sibling header happened to pull in,
+  and would break the moment that sibling's own includes changed. The first run found 548
+  pre-existing findings (538 missing includes, almost all standard-library facades — `<span>`,
+  `<vector>`, `<expected>`, `<cstdint>`, and similar — plus a couple of `ac3::` types; 10 unused
+  includes); all were fixed mechanically with `clang-tidy -fix` as part of this change and
+  verified against a full rebuild plus a clean `ctest` run (615/615) before the check joined the
+  enforced baseline. See `.clang-tidy`'s own header comment for the full rationale.
 
 ## [0.8.0-beta.2] - 2026-08-19
 

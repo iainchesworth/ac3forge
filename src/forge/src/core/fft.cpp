@@ -1,6 +1,8 @@
 #include "ac3/core/fft.hpp"
 
 #include <algorithm>
+#include <cstddef>
+#include <span>
 
 #include "fft_radix2.hpp"
 

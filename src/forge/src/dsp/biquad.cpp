@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <numbers>
+#include <span>
 
 namespace ac3::dsp {
 

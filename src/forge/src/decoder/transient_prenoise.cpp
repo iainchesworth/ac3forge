@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <numbers>
+#include <span>
 #include <vector>
 
 #include "ac3/core/tables.hpp"

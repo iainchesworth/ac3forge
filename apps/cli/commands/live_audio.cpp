@@ -4,28 +4,31 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <numbers>
 #include <optional>
 #include <print>
 #include <span>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
+#include "/mnt/c/aa-wt/dolbydigitalconverter/header-inclusion-ci-check-453fde/apps/cli/support.hpp"
 #include "ac3/analysis/levels.hpp"
-#include "ac3/audio/audio_backend.hpp"
 #include "ac3/audio/capture.hpp"
 #include "ac3/audio/monitor.hpp"
 #include "ac3/audio/passthrough.hpp"
 #include "ac3/audio/resampler.hpp"
+#include "ac3/core/tables.hpp"
 #include "ac3/decoder/decoder.hpp"
 #include "ac3/encoder/encoder.hpp"
 #include "ac3/encoder/plan.hpp"
-#include "ac3/io/dec3.hpp"
-#include "ac3/io/elementary.hpp"
 #include "ac3/io/wav.hpp"
 #include "ac3/oba/atmos.hpp"
+#include "ac3/oba/oamd.hpp"
 #include "ac3/sinks/iec61937.hpp"
 #include "matroska/matroska.hpp"
 

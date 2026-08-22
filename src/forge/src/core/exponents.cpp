@@ -4,8 +4,12 @@
 #include <bit>
 #include <cassert>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
+#include <span>
+#include <vector>
 
+#include "ac3/core/tables.hpp"
 #include "ac3/internal/profiling.hpp"
 
 namespace ac3 {

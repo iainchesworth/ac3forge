@@ -3,7 +3,12 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <span>
 #include <utility>
+#include <vector>
 
 #include "ac3/core/bitreader.hpp"
 #include "ac3/core/bitwriter.hpp"

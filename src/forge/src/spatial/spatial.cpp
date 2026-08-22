@@ -1,9 +1,13 @@
 #include "ac3/spatial/spatial.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cmath>
+#include <cstddef>
 #include <numbers>
+#include <span>
+#include <vector>
 
 namespace ac3::spatial {
 

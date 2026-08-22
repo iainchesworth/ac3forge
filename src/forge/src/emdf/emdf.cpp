@@ -1,8 +1,16 @@
 #include "ac3/emdf/emdf.hpp"
 
 #include <cassert>
+#include <cstddef>
+#include <cstdint>
+#include <expected>
+#include <optional>
+#include <span>
+#include <utility>
+#include <vector>
 
 #include "ac3/core/bitreader.hpp"
+#include "ac3/core/bitwriter.hpp"
 
 namespace ac3::emdf {
 

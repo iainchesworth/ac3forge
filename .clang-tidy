@@ -41,6 +41,19 @@
 #   checks (see cmake/Sanitizers.cmake) already cover the case where a value
 #   escapes its assumed range, which is the more precise tool for exactly
 #   this class of bug - see the coupling-exponent precedent in 8386c8f.
+#
+# A fifth addition, layered on later: misc-include-cleaner (the single
+# check, not the whole misc-* group - the rest of misc-* is the same kind of
+# stylistic noise the NOT-enabled groups above are excluded for). It flags a
+# symbol used without its owning header #included directly (only reachable
+# via some other header's transitive includes - the actual "headers not
+# included" bug class this was added for) and, less commonly, a #include
+# nothing in the TU uses. First run against the scope below found 548
+# findings (538 missing, 10 unused), entirely relying on transitive includes
+# for std-library facades (<span>, <vector>, <expected>, <cstdint>, ...) and
+# a couple of ac3:: types - none were suppressed; all were fixed mechanically
+# with `clang-tidy -fix` in one PR and verified against a full rebuild plus a
+# clean ctest run (615/615) before this became part of the enforced baseline.
 Checks: >
   -*,
   bugprone-*,
@@ -49,6 +62,7 @@ Checks: >
   -bugprone-implicit-widening-of-multiplication-result,
   clang-analyzer-*,
   performance-*,
+  misc-include-cleaner,
   cert-dcl21-cpp,
   cert-dcl50-cpp,
   cert-dcl58-cpp,

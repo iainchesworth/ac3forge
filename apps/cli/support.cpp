@@ -1,19 +1,41 @@
 #include "support.hpp"
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <expected>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <iostream>
 #include <iterator>
 #include <limits>
+#include <optional>
 #include <print>
+#include <span>
+#include <string>
+#include <string_view>
+#include <system_error>
+#include <utility>
+#include <vector>
 
+#include "ac3/analysis/levels.hpp"
+#include "ac3/core/eac3_tables.hpp"
+#include "ac3/core/tables.hpp"
 #include "ac3/encoder/assignment.hpp"
+#include "ac3/encoder/plan.hpp"
+#include "ac3/io/wav.hpp"
 #include "ac3/meta/drc.hpp"
+#include "ac3/meta/loudness.hpp"
 #include "ac3/meta/mixing.hpp"
 #include "ac3/meta/qc.hpp"
+#include "ac3/signing/emdf_atmos_signer.hpp"
+#include "ac3/signing/signing_key.hpp"
+#include "matroska/matroska.hpp"
 #include "platform/stdio_binary.hpp"
 
 namespace ac3cli {

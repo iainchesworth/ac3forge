@@ -2,19 +2,27 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <expected>
 #include <fstream>
 #include <numbers>
 #include <optional>
 #include <print>
+#include <span>
 #include <sstream>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
+#include "/mnt/c/aa-wt/dolbydigitalconverter/header-inclusion-ci-check-453fde/apps/cli/support.hpp"
 #include "ac3/analysis/levels.hpp"
+#include "ac3/core/tables.hpp"
 #include "ac3/io/wav.hpp"
 #include "ac3/oba/atmos.hpp"
 #include "ac3/oba/motion.hpp"
+#include "ac3/oba/oamd.hpp"
 #include "ac3/signing/emdf_atmos_signer.hpp"
 #include "ac3/signing/signing_key.hpp"
 #include "../adm/atmos_adm.hpp"

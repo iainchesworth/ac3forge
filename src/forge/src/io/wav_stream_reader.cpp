@@ -1,8 +1,14 @@
 #include "ac3/io/wav.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
+#include <expected>
 #include <fstream>
+#include <ios>
+#include <memory>
+#include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 

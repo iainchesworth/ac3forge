@@ -1,6 +1,8 @@
 #include "ac3/meta/qc.hpp"
 
 #include <cmath>
+#include <optional>
+#include <string_view>
 
 namespace ac3::meta {
 

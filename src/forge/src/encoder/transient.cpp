@@ -3,7 +3,10 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <numbers>
+#include "ac3/core/tables.hpp"
+#include <span>
 
 namespace ac3 {
 
