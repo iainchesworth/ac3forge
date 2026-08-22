@@ -15,7 +15,7 @@
 #include <utility>
 #include <vector>
 
-#include "/mnt/c/aa-wt/dolbydigitalconverter/header-inclusion-ci-check-453fde/apps/cli/support.hpp"
+#include "../support.hpp"
 #include "ac3/analysis/levels.hpp"
 #include "ac3/core/tables.hpp"
 #include "ac3/encoder/eac3_frame.hpp"
