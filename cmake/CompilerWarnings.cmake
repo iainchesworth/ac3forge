@@ -138,6 +138,29 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_L
     target_compile_options(ac3_warnings INTERFACE -Wno-null-dereference)
 endif()
 
+# -Warray-bounds false positive under GCC 16 at -O2/-O3 (Release), the same
+# family as the -Wnull-dereference case just above - not seen at Debug's
+# lower optimization level, and not seen under GCC 15. Repro: both
+# decoder.cpp and eac3_decoder.cpp's mantissa-reading `read_stream` lambda
+# compute `s < nfchans && dithflag[s]`, where `dithflag` is a
+# std::array<bool, 5> and `s` is sometimes called with the coupling stream's
+# sentinel index (eac3_decoder.cpp's kCplStream, decoder.cpp's cpl_stream,
+# both == kMaxSubstreamFullbw + 1 == 6) or the LFE's index (== nfchans) -
+# values that are always >= nfchans, so `&&`'s short circuit means
+# dithflag[s] is never actually evaluated for them. GCC 16 constant-folds
+# the sentinel through the inlined call chain and flags the subscript
+# expression itself ("array subscript 6 is above array bounds ... bool
+# [5]") without accounting for the guard that prevents it ever executing -
+# GCC's own documented false-positive category for this class of check (see
+# the -Wnull-dereference case above for the general shape: post-inlining
+# analysis misattributes an optimizer-introduced "impossible" path as a
+# real out-of-bounds access in the original source). Scoped to GCC >= 16
+# specifically, mirroring the < 15 scoping above, so this stays a no-op on
+# any compiler that does not exhibit it.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 16)
+    target_compile_options(ac3_warnings INTERFACE -Wno-array-bounds)
+endif()
+
 # ---------------------------------------------------------------------------
 # AC3_WARNINGS_OFF_FLAG - switches every warning off for one source file.
 #

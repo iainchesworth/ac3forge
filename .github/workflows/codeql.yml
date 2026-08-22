@@ -81,7 +81,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install GCC 15
+      - name: Install GCC 16
         run: bash .github/toolchain/02-gcc-toolchain.sh
 
       - uses: ./.github/actions/setup-vcpkg

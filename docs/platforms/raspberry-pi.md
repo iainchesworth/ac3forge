@@ -32,9 +32,9 @@ and none is planned.
 ## Requirements
 
 Same as [Linux](linux.md#toolchains) generally, but Raspberry Pi OS's own package archive (Debian
-13 "Trixie" as of this writing) doesn't necessarily carry the exact GCC 15 / Clang 21 versions CI
+13 "Trixie" as of this writing) doesn't necessarily carry the exact GCC 16 / Clang 21 versions CI
 pins. `cmake/toolchains/linux.{gcc,llvm}.toolchain.cmake` already `find_program` a fallback list
-(`gcc-15, gcc, gcc-14, gcc-13` / `clang-21, clang, clang-20, clang-19`), so an older distro compiler
+(`gcc-16, gcc, gcc-15, gcc-14, gcc-13` / `clang-21, clang, clang-20, clang-19`), so an older distro compiler
 is picked up automatically - the version pin is a CI reproducibility choice, not a hard requirement
 of the code. See [Verified configuration](#verified-configuration) for what was actually resolved on
 real hardware.
@@ -111,7 +111,7 @@ Run for real, over SSH, on:
 |---|---|
 | Board | Raspberry Pi 4 Model B rev 1.1 (2GB) |
 | OS | Raspberry Pi OS 13 "Trixie" (Debian 13.6 base), kernel 6.18.34+rpt-rpi-v8 |
-| Compilers | GCC 14.2.0 and Clang 19.1.7 (Trixie's apt archive; Trixie has no `gcc-15`/`clang-21` yet - the toolchain files' fallback `find_program` list picked these up automatically, no configuration needed) |
+| Compilers | GCC 14.2.0 and Clang 19.1.7 (Trixie's apt archive; Trixie has no `gcc-16`/`clang-21` yet - the toolchain files' fallback `find_program` list picked these up automatically, no configuration needed) |
 | CMake | 3.31.6, Ninja 1.12.1 |
 | Qt | 6.8.2, apt-packaged (`qt6-base-dev`, `qt6-declarative-dev`) |
 | ALSA | `libasound2-dev` 1.2.14 |
@@ -139,9 +139,12 @@ hypothetical:**
 
 1. GCC 14.2.0 at `-O2`/`-O3` (Release only - not seen at Debug) emits a false-positive
    `-Wnull-dereference` inside libstdc++'s own `<streambuf>`/`<bits/stl_construct.h>` internals,
-   promoted to a hard error by this project's `-Werror` policy. Not seen on CI's pinned GCC 15.
-   Fixed in `cmake/CompilerWarnings.cmake`, scoped to `GCC < 15` only, so the CI-pinned toolchain
-   (both x64 and arm64) is unaffected.
+   promoted to a hard error by this project's `-Werror` policy. Not seen on GCC 15, and CI has
+   since moved on to GCC 16 (see [Linux](linux.md#toolchains)), where a *different* false
+   positive - a `-Warray-bounds` misfire on a short-circuited array access, also inside
+   libstdc++, also `-O2`/`-O3`-only - shows up instead. Both are fixed in
+   `cmake/CompilerWarnings.cmake`, scoped to `GCC < 15` and `GCC >= 16` respectively, so the
+   CI-pinned toolchain (both x64 and arm64) only carries the suppression it actually needs.
 2. CMake's Ninja generator shells out to `clang-scan-deps` for every C++20/23 translation unit's
    module-dependency scan (not just files using `import`/`export`) - without it, every
    `find_package`-driven `try_compile` (Qt6, Threads, ALSA) fails the same way, which reads as
