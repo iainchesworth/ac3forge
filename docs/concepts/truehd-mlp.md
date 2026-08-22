@@ -79,7 +79,11 @@ this project currently knows versus still has to work out before it can be built
     positions, and it manages the presentation description, the OAMD/EMDF wrapping, and the
     metadata cadence (`metadata_interval`, default one emission per major sync). The CLI's
     `truehd-atmos <in.wav> <out.mlp> [objects] [paths.txt]` drives it end to end, with motion
-    from the same keyframe-file format atmos-path/atmos-encode use.
+    from the same keyframe-file format atmos-path/atmos-encode use. The GUI has it too: the
+    header's "TrueHD…" dialog (`TruehdDialog.qml` / `TruehdController`, a parallel sibling to
+    EncoderController rather than a third codecIndex - TrueHD has no bitrate to choose and runs
+    integer-exact where that pipeline is float) encodes a PCM16/24 WAV in either mode and
+    reports only after decoding the written stream back and verifying it bit-exact.
 
     V1 shape limits, deliberately: one substream, one block per access unit. The block
     header's field order is a documented self-consistent packing of the WO's inventory, NOT the

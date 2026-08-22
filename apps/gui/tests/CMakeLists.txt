@@ -31,7 +31,9 @@ qt_add_executable(ac3gui_qmltests
     recording_sink.cpp
     recording_sink.hpp
     system_theme.cpp
-    system_theme.hpp)
+    system_theme.hpp
+    truehd_controller.cpp
+    truehd_controller.hpp)
 
 qt_add_qml_module(ac3gui_qmltests
     URI Ac3Forge

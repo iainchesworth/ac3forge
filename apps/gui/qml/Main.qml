@@ -1046,6 +1046,13 @@ ApplicationWindow {
         id: objectInspectorDialog
     }
 
+    // The TrueHD (MLP) lossless lab - the second codec family as its own
+    // standalone dialog; see TruehdDialog.qml's and truehd_controller.hpp's
+    // header comments for why it is not a third codecIndex.
+    TruehdDialog {
+        id: truehdDialog
+    }
+
     AboutDialog {
         id: aboutDialog
     }
@@ -1348,6 +1355,16 @@ ApplicationWindow {
                 objectName: "objectInspectorOpenButton"
                 text: qsTr("Inspect objects…")
                 onClicked: objectInspectorDialog.open()
+            }
+            Button {
+                objectName: "truehdOpenButton"
+                // Deliberately terse: the header row has to fit the window's
+                // 1280px minimum with every control at its implicit width. A
+                // longer label ("TrueHD lossless…") overflowed it and - via
+                // the layout shift - moved the guided wizard's quality cards
+                // out from under tst_guided_wizard's synthesized clicks.
+                text: qsTr("TrueHD…")
+                onClicked: truehdDialog.open()
             }
             Button {
                 text: qsTr("Preferences")

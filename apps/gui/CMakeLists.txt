@@ -22,7 +22,9 @@ qt_add_executable(ac3gui
     recording_sink.cpp
     recording_sink.hpp
     system_theme.cpp
-    system_theme.hpp)
+    system_theme.hpp
+    truehd_controller.cpp
+    truehd_controller.hpp)
 
 # The QML lives in qml/ on disk but belongs at the root of the QML module, so
 # every file is aliased to its bare name. Left alone, Qt lays the module out as
@@ -53,7 +55,8 @@ set(AC3_QML_FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/qml/AboutDialog.qml"
     "${CMAKE_CURRENT_SOURCE_DIR}/qml/QcGateMeter.qml"
     "${CMAKE_CURRENT_SOURCE_DIR}/qml/QcDialog.qml"
-    "${CMAKE_CURRENT_SOURCE_DIR}/qml/ObjectInspectorDialog.qml")
+    "${CMAKE_CURRENT_SOURCE_DIR}/qml/ObjectInspectorDialog.qml"
+    "${CMAKE_CURRENT_SOURCE_DIR}/qml/TruehdDialog.qml")
 
 foreach(qml_file IN LISTS AC3_QML_FILES)
     get_filename_component(qml_name "${qml_file}" NAME)
