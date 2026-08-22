@@ -130,6 +130,7 @@ target_sources(forge_objects
         src/encoder/transient.cpp
         src/io/dec3.cpp
         src/io/elementary.cpp
+        src/mlp/atmos.cpp
         src/mlp/block.cpp
         src/mlp/extra_data.cpp
         src/mlp/huffman.cpp

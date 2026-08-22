@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "ac3/emdf/emdf.hpp"
+#include "ac3/mlp/atmos.hpp"
 #include "ac3/mlp/block.hpp"
 #include "ac3/mlp/crc.hpp"
 #include "ac3/mlp/extra_data.hpp"
@@ -1819,4 +1820,113 @@ TEST_CASE("stream: an access unit without extra data reports none", "[mlp]") {
     std::vector<std::int32_t> decoded;
     REQUIRE(decoder.decode_access_unit(unit, decoded));
     CHECK(decoder.extra_data().empty());
+}
+
+// --- the TrueHD-Atmos encoder wrapper --------------------------------------
+
+TEST_CASE("atmos: bed + objects round trip with roles and metadata cadence", "[mlp]") {
+    // A 5.1 bed as loudspeaker feeds plus two dynamic objects - eight
+    // discrete lossless channels, roles announced by 16ch_channel_meaning(),
+    // OAMD riding EMDF in EXTRA_DATA() on the metadata_interval cadence.
+    const auto frame = static_cast<std::size_t>(
+        ac3::mlp::samples_per_access_unit(ac3::mlp::SampleRate::k48000));
+
+    ac3::mlp::AtmosConfig config;
+    config.bed = ac3::mlp::bed16::k51;
+    config.dynamic_objects = 2;
+    ac3::mlp::AtmosEncoder encoder(config);
+    REQUIRE(encoder.channel_count() == 8);
+
+    ac3::mlp::StreamDecoder decoder;
+    std::mt19937 rng(0xA7B1);
+    for (int au = 0; au < 10; ++au) {
+        CAPTURE(au);
+        auto channels = random_channels(rng, 8, frame, 20);
+        std::vector<std::span<const std::int32_t>> spans(channels.begin(), channels.end());
+        std::vector<ac3::oba::DynamicObject> objects(2);
+        objects[0].position = {0.25, 0.5, 0.5};
+        objects[1].position = {0.75, 0.1 * au, 0.0};
+
+        const auto unit = encoder.encode_access_unit(
+            std::span<const std::span<const std::int32_t>>{spans}, objects);
+        std::vector<std::vector<std::int32_t>> decoded;
+        REQUIRE(decoder.decode_access_unit(unit, decoded));
+        REQUIRE(decoded == channels);
+
+        // Default metadata_interval is 8: the container rides units 0 and 8.
+        const bool expect_metadata = au % 8 == 0;
+        CHECK(decoder.extra_data().empty() != expect_metadata);
+    }
+
+    REQUIRE(decoder.sixteen_channel().has_value());
+    CHECK(decoder.sixteen_channel()->channel_count == 8);
+    CHECK_FALSE(decoder.sixteen_channel()->dyn_object_only);
+    CHECK(decoder.sixteen_channel()->content_description == 0b101);
+    CHECK(decoder.sixteen_channel()->channel_assignment == ac3::mlp::bed16::k51);
+    CHECK(decoder.sixteen_channel()->dynamic_object_count == 2);
+}
+
+TEST_CASE("atmos: an object-only programme takes the dyn_object_only form", "[mlp]") {
+    const auto frame = static_cast<std::size_t>(
+        ac3::mlp::samples_per_access_unit(ac3::mlp::SampleRate::k48000));
+
+    ac3::mlp::AtmosConfig config;
+    config.bed = 0;
+    config.dynamic_objects = 3;
+    config.metadata_interval = 1;  // positions with every frame
+    ac3::mlp::AtmosEncoder encoder(config);
+    REQUIRE(encoder.channel_count() == 3);
+
+    ac3::mlp::StreamDecoder decoder;
+    std::mt19937 rng(0xA7B2);
+    const std::vector<ac3::oba::DynamicObject> objects(3);
+    for (int au = 0; au < 3; ++au) {
+        CAPTURE(au);
+        auto channels = random_channels(rng, 3, frame, 16);
+        std::vector<std::span<const std::int32_t>> spans(channels.begin(), channels.end());
+        const bool last = au == 2;
+        const auto unit =
+            last ? encoder.encode_access_unit(
+                       std::span<const std::span<const std::int32_t>>{spans}, objects,
+                       ac3::mlp::EndOfStream{0})
+                 : encoder.encode_access_unit(
+                       std::span<const std::span<const std::int32_t>>{spans}, objects);
+        std::vector<std::vector<std::int32_t>> decoded;
+        REQUIRE(decoder.decode_access_unit(unit, decoded));
+        REQUIRE(decoded == channels);
+        CHECK_FALSE(decoder.extra_data().empty());
+    }
+    CHECK(decoder.end_of_stream());
+    REQUIRE(decoder.sixteen_channel().has_value());
+    CHECK(decoder.sixteen_channel()->dyn_object_only);
+    CHECK_FALSE(decoder.sixteen_channel()->lfe_present);
+    CHECK(decoder.sixteen_channel()->channel_count == 3);
+}
+
+TEST_CASE("atmos: an LFE-led object programme uses the efficient wire form", "[mlp]") {
+    // §4.4.4/§4.4.5: a bed of exactly one LFE plus dynamic objects is the
+    // dyn_object_only + lfe_present shape, not the spelled-out bitmask.
+    const auto frame = static_cast<std::size_t>(
+        ac3::mlp::samples_per_access_unit(ac3::mlp::SampleRate::k48000));
+
+    ac3::mlp::AtmosConfig config;
+    config.bed = ac3::mlp::bed16::kLfe;
+    config.dynamic_objects = 2;
+    ac3::mlp::AtmosEncoder encoder(config);
+    REQUIRE(encoder.channel_count() == 3);
+
+    ac3::mlp::StreamDecoder decoder;
+    std::mt19937 rng(0xA7B3);
+    auto channels = random_channels(rng, 3, frame, 16);
+    std::vector<std::span<const std::int32_t>> spans(channels.begin(), channels.end());
+    const std::vector<ac3::oba::DynamicObject> objects(2);
+    const auto unit = encoder.encode_access_unit(
+        std::span<const std::span<const std::int32_t>>{spans}, objects);
+    std::vector<std::vector<std::int32_t>> decoded;
+    REQUIRE(decoder.decode_access_unit(unit, decoded));
+    REQUIRE(decoded == channels);
+    REQUIRE(decoder.sixteen_channel().has_value());
+    CHECK(decoder.sixteen_channel()->dyn_object_only);
+    CHECK(decoder.sixteen_channel()->lfe_present);
+    CHECK(decoder.sixteen_channel()->channel_count == 3);
 }

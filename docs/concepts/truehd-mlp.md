@@ -7,7 +7,7 @@ different, how Atmos rides inside it (which is *not* how Atmos rides inside E-AC
 this project currently knows versus still has to work out before it can be built.
 
 !!! note "Status: a complete internal lossless codec (v1 single-channel shape) is landed"
-    `ac3::mlp` (`src/lib/include/ac3/mlp/`, `src/lib/src/mlp/`) now runs end to end:
+    `ac3::mlp` (`src/forge/include/ac3/mlp/`, `src/forge/src/mlp/`) now runs end to end:
     `StreamEncoder`/`StreamDecoder` (`stream.hpp`) assemble spec-exact access units - `mlp_sync`
     with `check_nibble`, periodic `major_sync_info()` with restart headers on exactly the
     major-sync units, the substream directory, `substream_segment()` with §4.6.6/§4.6.7
@@ -73,6 +73,13 @@ this project currently knows versus still has to work out before it can be built
     positions (`ac3::oba::build_payload`). Verified end to end: a 12-channel stream - a 5.1
     bed as loudspeaker feeds plus six dynamic objects as discrete lossless channels, TrueHD's
     way - round-trips bit-exactly with its channel roles and per-frame object metadata intact.
+    `ac3::mlp::AtmosEncoder` (`atmos.hpp`) is the assembled convenience: state the bed once as
+    a Table 18 mask (the OAMD bed mask is derived - the two tables name identical channel sets
+    with reversed bit order), hand it bed+object channels and per-frame `oba::DynamicObject`
+    positions, and it manages the presentation description, the OAMD/EMDF wrapping, and the
+    metadata cadence (`metadata_interval`, default one emission per major sync). The CLI's
+    `truehd-atmos <in.wav> <out.mlp> [objects] [paths.txt]` drives it end to end, with motion
+    from the same keyframe-file format atmos-path/atmos-encode use.
 
     V1 shape limits, deliberately: one substream, one block per access unit. The block
     header's field order is a documented self-consistent packing of the WO's inventory, NOT the

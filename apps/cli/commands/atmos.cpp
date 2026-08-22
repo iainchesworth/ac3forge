@@ -53,10 +53,14 @@ std::optional<int> apply_object_signing(std::vector<std::vector<std::byte>>& uni
     return signed_count;
 }
 
+}  // namespace
+
 // Parses a hand-authored keyframe file: whitespace-separated columns
 // "object_index time_s x y z gain lfe_send" per line, blank lines and '#'
 // comments (to end of line) skipped. Returns each object's keyframes, indexed
 // by object_index - an object index with no lines simply gets an empty entry.
+// At namespace scope (declared in atmos.hpp) rather than file-local: the
+// truehd-atmos command reuses the exact same keyframe format and addressing.
 std::optional<std::vector<std::vector<ac3::oba::Keyframe>>> parse_path_file(
     std::string_view path) {
     std::ifstream in{std::string{path}};
@@ -89,8 +93,6 @@ std::optional<std::vector<std::vector<ac3::oba::Keyframe>>> parse_path_file(
     }
     return by_object;
 }
-
-}  // namespace
 
 int run_atmos(std::string_view out_path, std::uint32_t seconds, std::uint32_t bitrate,
               std::uint32_t objects, std::uint32_t orbit_seconds, std::string_view mode,

@@ -1,15 +1,25 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string_view>
+#include <vector>
 
 #include "../support.hpp"
+#include "ac3/oba/motion.hpp"
 
 // The Atmos/object-layer commands: two synthetic generators (a built-in orbit, and one driven by
 // a hand-authored keyframe file), one real-material encoder (every source channel becomes an
 // object), and one ADM BWF reader (roadmap B1 phase 3, the ac3adm/admbridge integration). Split
 // out of main.cpp as part of the repo-structure review's H4 monolith split.
 namespace ac3cli::commands {
+
+// The keyframe-file parser atmos-path/atmos-encode take their motion from
+// ("object_index time_s x y z gain lfe_send" per line, '#' comments) - shared
+// here because truehd-atmos drives per-frame OAMD positions from the exact
+// same format. Prints its own error and returns nullopt on a bad file.
+std::optional<std::vector<std::vector<ac3::oba::Keyframe>>> parse_path_file(
+    std::string_view path);
 
 // Objects moving in three dimensions, out as one 5.1 E-AC-3 stream carrying
 // JOC and OAMD. Each object orbits at its own rate and sits at its own height,

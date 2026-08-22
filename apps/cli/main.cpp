@@ -874,13 +874,13 @@ struct Command {
     int (*run)(const Args&);
 };
 
-// 28 commands, always - including atmos-adm, whether or not AC3FORGE_BUILD_ADM linked
+// 29 commands, always - including atmos-adm, whether or not AC3FORGE_BUILD_ADM linked
 // ac3adm::ac3adm/ac3::admbridge into this particular build (see Needs::kAdm/unmet() above and
 // run_atmos_adm's own comment): a command this build cannot run is listed with Needs gating it,
 // never sized out of the table entirely - the identical "listed, not hidden" treatment
 // kCapture/kPassthrough/kMonitor commands already get (see print_usage()'s own comment below on
 // why hiding would be a lie about a command that exists and would work elsewhere).
-constexpr std::array<Command, 28> kCommands{{
+constexpr std::array<Command, 29> kCommands{{
     {"silence", 2, "<out.ac3> [seconds] [bitrate_kbps]", "", Needs::kNothing,
      [](const Args& x) { return run_silence(x.str(1), x.u32(2, 5), x.u32(3, 192)); }},
     {"sine", 2, "<out.ac3> [seconds] [bitrate_kbps] [freq_hz] [amp_pct] [layout]", "",
@@ -972,6 +972,11 @@ constexpr std::array<Command, 28> kCommands{{
      Needs::kNothing, [](const Args& x) { return run_truehd_encode(x.str(1), x.str(2)); }},
     {"truehd-decode", 3, "<in.mlp> <out.wav>", "bit-exact PCM out", Needs::kNothing,
      [](const Args& x) { return run_truehd_decode(x.str(1), x.str(2)); }},
+    {"truehd-atmos", 3, "<in.wav> <out.mlp> [objects] [paths.txt]",
+     "every source channel a dynamic object as its own lossless channel; optional keyframe "
+     "motion (same file format as atmos-path)",
+     Needs::kNothing,
+     [](const Args& x) { return run_truehd_atmos(x.str(1), x.str(2), x.u32(3, 0), x.str(4)); }},
     {"levels", 2, "<in.wav|in.ac3|in.ec3>", "per-channel peak/RMS report", Needs::kNothing,
      [](const Args& x) { return run_levels(x.str(1)); }},
     {"loudness", 2, "<in.wav>", "BS.1770-4 loudness -> dialnorm", Needs::kNothing,
