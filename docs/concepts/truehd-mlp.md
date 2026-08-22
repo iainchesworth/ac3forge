@@ -36,8 +36,31 @@ this project currently knows versus still has to work out before it can be built
     length field to read it back, and learning sample rate, channel count, *and* wordlength
     in-band on decode.
 
-    V1 shape limits, deliberately: one substream, one block per access unit; no noise shaping,
-    FIFO rate control, DC offsets, or end-of-stream terminators. The block
+    The encoder's spec obligations beyond framing are met too. **FIFO timing** (§2.6-2.7): the
+    encoder schedules each access unit's `input_timing` so the effective delivery rate
+    `size[n] / (input_timing[n+1] − input_timing[n])` never exceeds the 18 Mbit/s FBA ceiling,
+    with the FIFO delay capped at 12 frames - which provably bounds decoder-buffer occupancy at
+    106,470 bytes, inside §2.7's 120,000-byte minimum - and glides back to a constant delay on
+    compressible audio; audio that genuinely exceeds the channel is counted
+    (`rate_violations()`), not silently mistimed. **`peak_data_rate`** (§4.2.6, 1/16 bit per
+    sample period over the whole stream) is measured by the encoder and written exactly via the
+    CLI's two-pass encode (the field is fixed-width, so pass two's access units are
+    byte-identical apart from it). **End-of-stream terminators** (§4.6.2-4.6.5, `0x348D3` +
+    `zero_samples`/`0x1234`) mark the final access unit; the `zero_samples` count carries how
+    much silence the encoder appended to fill it, so decode returns the source's *exact* sample
+    count - round trips are now length-exact, not just content-exact. **DC offsets** (WO: the
+    LSB word's leading bits) are exploited: each channel's significant words are centred on
+    their midrange before prediction, for free (the slot is always present), which keeps a DC
+    pedestal - or a predictor's warm-up view of one - from widening the whole block's entropy
+    table.
+
+    **Noise shaping is deliberately absent, not missing**: in WO 96/37048 the noise shaper acts
+    on the quantizer inside the prediction loop, and that quantizer only quantizes in the lossy
+    operating mode. This encoder is lossless-only, the in-loop quantizer is the identity, and
+    the shaper state would be identically zero - dead machinery. It becomes relevant only if a
+    lossy/rate-capped mode is ever added.
+
+    V1 shape limits, deliberately: one substream, one block per access unit. The block
     header's field order is a documented self-consistent packing of the WO's inventory, NOT the
     shipping layout - interop with real TrueHD decoders still requires the layer-3/4 format
     sources. See [What's confirmed versus what's still

@@ -170,9 +170,13 @@ MultichannelBlockConfig choose_block_config(std::span<const std::span<const std:
     const auto channel_count = channels.size();
     assert(channel_count >= 1 && channel_count <= static_cast<std::size_t>(kMaxBlockChannels));
 
-    // Reproduce the block codec's strip so selection sees the same
-    // significant-word domain it will encode.
+    // Reproduce the block codec's strip AND its midrange DC centring, so
+    // selection sees the same significant-word domain it will encode. The
+    // formulas must match encode_block_channels exactly - a mismatch is
+    // never wrong output (the codec re-derives its own), just choices
+    // priced against the wrong signal.
     std::vector<std::vector<std::int32_t>> significant(channel_count);
+    std::vector<std::int32_t> chosen_dc(channel_count);
     for (std::size_t c = 0; c < channel_count; ++c) {
         const auto b1 = detect_constant_lsbs(channels[c], wordlength);
         const auto lsb = static_cast<std::uint32_t>(channels[c][0]) & ((1u << b1) - 1);
@@ -180,9 +184,51 @@ MultichannelBlockConfig choose_block_config(std::span<const std::span<const std:
         for (std::size_t i = 0; i < channels[c].size(); ++i) {
             significant[c][i] = (channels[c][i] - static_cast<std::int32_t>(lsb)) >> b1;
         }
+        // The same two DC candidates the block codec prices (first sample,
+        // midrange), under the same fit rule (the first-sample candidate is
+        // illegal when it would push the span outside the signed
+        // significant domain). Each candidate is scored JOINTLY with the
+        // best predictor the palette offers for it - pricing dc against a
+        // fixed predictor family gets it exactly backwards: a midrange
+        // offset is what makes a differencing predictor's warm-up residual
+        // huge, so a passthrough-priced dc would veto the very predictors
+        // that beat it.
+        const auto [lo_it, hi_it] =
+            std::minmax_element(significant[c].begin(), significant[c].end());
+        const auto midrange = *lo_it + (*hi_it - *lo_it) / 2;
+        const int width = wordlength - b1;
+        const auto first_fits =
+            static_cast<std::int64_t>(*lo_it) - significant[c][0] >=
+                -(std::int64_t{1} << (width - 1)) &&
+            static_cast<std::int64_t>(*hi_it) - significant[c][0] <
+                (std::int64_t{1} << (width - 1));
+        std::int32_t dc = midrange;
+        if (midrange != significant[c][0] && first_fits) {
+            std::vector<std::int32_t> shifted(significant[c].size());
+            long long best_bits = -1;
+            for (const auto candidate : {significant[c][0], midrange}) {
+                for (std::size_t i = 0; i < significant[c].size(); ++i) {
+                    shifted[i] = significant[c][i] - candidate;
+                }
+                long long channel_best = std::numeric_limits<long long>::max();
+                for (const auto& coefficients : palette()) {
+                    channel_best =
+                        std::min(channel_best, candidate_cost(shifted, coefficients));
+                }
+                if (best_bits < 0 || channel_best < best_bits) {
+                    best_bits = channel_best;
+                    dc = candidate;
+                }
+            }
+        }
+        for (auto& value : significant[c]) {
+            value -= dc;
+        }
+        chosen_dc[c] = dc;
     }
 
     MultichannelBlockConfig config;
+    config.dc = std::move(chosen_dc);
     {
         std::vector<std::span<const std::int32_t>> spans;
         spans.reserve(channel_count);

@@ -2784,8 +2784,9 @@ int run_truehd_encode(std::string_view in_path, std::string_view out_path) {
         return 1;
     }
     // An access unit is a fixed number of samples (40 at 48 kHz), so the tail
-    // is filled with silence rather than dropped - the decode gains up to one
-    // access unit of trailing zero samples, never loses audio.
+    // is filled with silence rather than dropped. The fill count rides in the
+    // final access unit's zero_samples terminator field (§4.6.4), so a decoder
+    // trims it back off and returns the source's exact length.
     const std::size_t padded = (source_frames + frame - 1) / frame * frame;
     std::vector<std::vector<std::int32_t>> channels = wav->channels;
     for (auto& channel : channels) {
@@ -2797,26 +2798,46 @@ int run_truehd_encode(std::string_view in_path, std::string_view out_path) {
     config.wordlength = wav->bits;
     config.channels = static_cast<int>(channel_count);
     config.automatic = true;
-    ac3::mlp::StreamEncoder encoder(config);
+
+    // Two passes: §4.2.6 defines peak_data_rate as the maximum effective rate
+    // over the WHOLE stream, which a single pass can't know when it writes the
+    // first major sync. The field is fixed-width, so a second pass with the
+    // measured value produces identical access units apart from the field
+    // (and the CRC covering it).
+    const auto encode_all = [&](ac3::mlp::StreamEncoder& encoder, std::ofstream* out) {
+        std::size_t written = 0;
+        for (std::size_t at = 0; at < padded; at += frame) {
+            std::vector<std::span<const std::int32_t>> spans;
+            spans.reserve(channel_count);
+            for (const auto& channel : channels) {
+                spans.emplace_back(std::span<const std::int32_t>{channel}.subspan(at, frame));
+            }
+            const std::span<const std::span<const std::int32_t>> view{spans};
+            const bool last = at + frame >= padded;
+            const auto unit =
+                last ? encoder.encode_access_unit(
+                           view, ac3::mlp::EndOfStream{static_cast<int>(padded - source_frames)})
+                     : encoder.encode_access_unit(view);
+            if (out != nullptr) {
+                out->write(reinterpret_cast<const char*>(unit.data()),
+                           static_cast<std::streamsize>(unit.size()));
+            }
+            written += unit.size();
+        }
+        return written;
+    };
+
+    ac3::mlp::StreamEncoder measuring(config);
+    (void)encode_all(measuring, nullptr);
+    config.peak_data_rate_16ths = measuring.measured_peak_data_rate_16ths();
 
     std::ofstream out{std::string{out_path}, std::ios::binary};
     if (!out) {
         std::println(stderr, "error: cannot open {}", out_path);
         return 1;
     }
-    std::size_t written = 0;
-    for (std::size_t at = 0; at < padded; at += frame) {
-        std::vector<std::span<const std::int32_t>> spans;
-        spans.reserve(channel_count);
-        for (const auto& channel : channels) {
-            spans.emplace_back(std::span<const std::int32_t>{channel}.subspan(at, frame));
-        }
-        const auto unit =
-            encoder.encode_access_unit(std::span<const std::span<const std::int32_t>>{spans});
-        out.write(reinterpret_cast<const char*>(unit.data()),
-                  static_cast<std::streamsize>(unit.size()));
-        written += unit.size();
-    }
+    ac3::mlp::StreamEncoder encoder(config);
+    const std::size_t written = encode_all(encoder, &out);
     if (!out) {
         std::println(stderr, "error: writing {} failed", out_path);
         return 1;
@@ -2827,9 +2848,20 @@ int run_truehd_encode(std::string_view in_path, std::string_view out_path) {
     std::println("{} PCM bytes -> {} MLP bytes ({:.1f}% of source, {}-bit, {} ch, {} Hz)",
                  pcm_bytes, written, 100.0 * static_cast<double>(written) / pcm_bytes, wav->bits,
                  channel_count, wav->sample_rate);
+    // peak_data_rate is 1/16 bit per sample period; x rate / 16 is bit/s.
+    std::println("peak data rate {:.1f} kbit/s (measured; FBA channel ceiling {} kbit/s)",
+                 static_cast<double>(config.peak_data_rate_16ths) * wav->sample_rate / 16000.0,
+                 ac3::mlp::kPeakDataRateBitsPerSecond / 1000);
     if (padded != source_frames) {
-        std::println("note: last access unit padded with {} silent samples",
+        std::println("note: final access unit filled with {} silent samples "
+                     "(recorded in-stream; decode trims them)",
                      padded - source_frames);
+    }
+    if (encoder.rate_violations() != 0) {
+        std::println(stderr,
+                     "warning: {} access units exceed the 18 Mbit/s FBA channel - a "
+                     "spec-minimum decoder FIFO could underrun",
+                     encoder.rate_violations());
     }
     return 0;
 }
@@ -2900,6 +2932,17 @@ int run_truehd_decode(std::string_view in_path, std::string_view out_path) {
         return 1;
     }
 
+    // §4.6.4: the final access unit's zero_samples field records how much
+    // silence the encoder appended to fill it - trim it back off so the
+    // output is length-exact against the source, not just content-exact.
+    const auto trim = static_cast<std::size_t>(
+        decoder.end_of_stream() ? decoder.zero_samples_appended() : 0);
+    if (trim > 0 && trim <= channels.front().size()) {
+        for (auto& channel : channels) {
+            channel.resize(channel.size() - trim);
+        }
+    }
+
     const auto rate_hz = ac3::mlp::sample_rate_hz(decoder.sample_rate());
     const int bits = decoder.wordlength() <= 16 ? 16 : 24;
     if (const auto result = ac3::io::write_wav_pcm(std::string{out_path}, channels, rate_hz, bits);
@@ -2910,6 +2953,12 @@ int run_truehd_decode(std::string_view in_path, std::string_view out_path) {
     std::println("decoded {} access units: {} samples, {}-bit, {} ch, {} Hz -> {}", units,
                  channels.front().size(), decoder.wordlength(), channels.size(), rate_hz,
                  out_path);
+    if (trim > 0) {
+        std::println("trimmed {} encoder-fill samples recorded by the stream's terminator", trim);
+    }
+    if (!decoder.end_of_stream()) {
+        std::println("note: stream carries no end-of-stream terminator (truncated capture?)");
+    }
     return 0;
 }
 

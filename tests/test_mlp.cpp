@@ -915,11 +915,9 @@ TEST_CASE("block: nonzero constant LSB pattern round trips", "[mlp]") {
 TEST_CASE("block: a smooth signal compresses well below PCM", "[mlp]") {
     // A gently-rising ramp from zero is highly predictable; with a
     // first-order difference the residual is a small constant, so the coded
-    // size should land far under wordlength bits/sample. (A ramp with a
-    // large starting offset would not do as well yet: the first residual
-    // becomes an outlier that widens the whole block's table - the case the
-    // WO's optional residual DC offset exists for, which this encoder does
-    // not implement yet.)
+    // size should land far under wordlength bits/sample. (A large starting
+    // offset no longer spoils this: the LSB word's DC slot absorbs it - see
+    // "block: a DC pedestal costs nothing" below.)
     std::vector<std::int32_t> samples(576);
     for (std::size_t i = 0; i < samples.size(); ++i) {
         samples[i] = static_cast<std::int32_t>(i) * 3;
@@ -1014,10 +1012,16 @@ TEST_CASE("stream: multi-AU round trip with periodic major sync", "[mlp]") {
         }
         CHECK(nibbles == 0xF);
 
-        // input_timing advances by one frame per AU, mod 65536 (§4.1.3).
+        // input_timing advances by one frame per AU, mod 65536 (§4.1.3),
+        // riding kFifoDelayFrames ahead of presentation time: these small
+        // access units never disturb the constant wound-up FIFO delay, so
+        // delivery stays exactly one full delay early (§2.7).
         const auto timing = (std::to_integer<std::uint32_t>(bytes[2]) << 8) |
                             std::to_integer<std::uint32_t>(bytes[3]);
-        CHECK(timing == ((static_cast<std::uint32_t>(au) * frame) & 0xFFFF));
+        const auto delay =
+            static_cast<std::uint32_t>(ac3::mlp::kFifoDelayFrames) * frame;
+        CHECK(timing ==
+              ((static_cast<std::uint32_t>(au) * frame + 65536 - delay) & 0xFFFF));
 
         // §3.1/§2.5: format_sync at bit offset 32 on major-sync AUs only -
         // the first AU and every eighth after it.
@@ -1417,4 +1421,204 @@ TEST_CASE("stream: automatic mode round trips and beats the naive config", "[mlp
     std::vector<std::vector<std::int32_t>> decoded;
     REQUIRE(decoder.decode_access_unit(auto_bytes, decoded));
     REQUIRE(decoded == channels);
+}
+
+// --- end-of-stream terminators, FIFO timing, DC offset ----------------------
+
+TEST_CASE("stream: terminators mark the final access unit and carry the pad count", "[mlp]") {
+    const auto frame = static_cast<std::size_t>(
+        ac3::mlp::samples_per_access_unit(ac3::mlp::SampleRate::k48000));
+    std::mt19937 rng(0xE05);
+    ac3::mlp::StreamConfig config;
+    ac3::mlp::StreamEncoder encoder(config);
+    ac3::mlp::StreamDecoder decoder(24);
+
+    std::vector<std::int32_t> decoded;
+    for (int i = 0; i < 2; ++i) {
+        const auto samples = random_samples(rng, frame, 16);
+        const auto unit = encoder.encode_access_unit(std::span<const std::int32_t>{samples});
+        REQUIRE(decoder.decode_access_unit(unit, decoded));
+        CHECK_FALSE(decoder.end_of_stream());
+    }
+
+    // The last unit: 7 of its samples are padding the caller appended.
+    auto samples = random_samples(rng, frame, 16);
+    std::fill(samples.end() - 7, samples.end(), 0);
+    const std::array<std::span<const std::int32_t>, 1> channels{samples};
+    const auto unit = encoder.encode_access_unit(
+        std::span<const std::span<const std::int32_t>>{channels}, ac3::mlp::EndOfStream{7});
+    REQUIRE(decoder.decode_access_unit(unit, decoded));
+    CHECK(decoder.end_of_stream());
+    CHECK(decoder.zero_samples_appended() == 7);
+
+    // §4.6: nothing may follow the terminated stream.
+    const auto after = random_samples(rng, frame, 16);
+    ac3::mlp::StreamConfig again;
+    ac3::mlp::StreamEncoder second_encoder(again);
+    const auto extra = second_encoder.encode_access_unit(std::span<const std::int32_t>{after});
+    CHECK_FALSE(decoder.decode_access_unit(extra, decoded));
+}
+
+TEST_CASE("stream: a zero-pad final unit writes terminatorB and reads back", "[mlp]") {
+    const auto frame = static_cast<std::size_t>(
+        ac3::mlp::samples_per_access_unit(ac3::mlp::SampleRate::k48000));
+    std::mt19937 rng(0xE06);
+    ac3::mlp::StreamConfig config;
+    ac3::mlp::StreamEncoder encoder(config);
+    ac3::mlp::StreamDecoder decoder(24);
+
+    const auto samples = random_samples(rng, frame, 16);
+    const std::array<std::span<const std::int32_t>, 1> channels{samples};
+    const auto unit = encoder.encode_access_unit(
+        std::span<const std::span<const std::int32_t>>{channels}, ac3::mlp::EndOfStream{0});
+    std::vector<std::int32_t> decoded;
+    REQUIRE(decoder.decode_access_unit(unit, decoded));
+    CHECK(decoder.end_of_stream());
+    CHECK(decoder.zero_samples_appended() == 0);
+    CHECK(decoded == samples);
+}
+
+TEST_CASE("stream: FIFO timing honours the FBA peak rate and recovers its delay", "[mlp]") {
+    // Sixteen channels of incompressible full-scale noise make access units
+    // (~16,000 payload bits against a 15,000-bit-per-frame channel) whose
+    // §2.7 delivery spacing exceeds one frame - the schedule must stretch
+    // the input-timing gaps to keep size/spacing under 18 Mbit/s, then
+    // glide back to the constant kFifoDelayFrames delay once silence
+    // follows.
+    const auto frame = static_cast<std::size_t>(
+        ac3::mlp::samples_per_access_unit(ac3::mlp::SampleRate::k48000));
+    std::mt19937 rng(0xF1F0);
+    ac3::mlp::StreamConfig config;
+    config.channels = 16;
+    config.wordlength = 24;
+    ac3::mlp::StreamEncoder encoder(config);
+
+    std::vector<std::vector<std::byte>> units;
+    const std::vector<std::vector<std::int32_t>> quiet(
+        16, std::vector<std::int32_t>(frame, 0));
+    for (int i = 0; i < 40; ++i) {
+        auto loud = random_channels(rng, 16, frame, 24);
+        const auto& source = i < 20 ? loud : quiet;
+        std::vector<std::span<const std::int32_t>> spans(source.begin(), source.end());
+        units.push_back(encoder.encode_access_unit(
+            std::span<const std::span<const std::int32_t>>{spans}));
+    }
+    CHECK(encoder.rate_violations() == 0);
+    // The point of the fixture: at least one access unit genuinely needed
+    // more than a frame of delivery time.
+    CHECK(std::any_of(units.begin(), units.end(), [](const auto& u) {
+        return u.size() * 8 > 15'000;  // 40 samples x 375 bits/sample
+    }));
+
+    // Unwrap each unit's input_timing (bits 4..15 are the length, 16..31
+    // the timing) and check §2.7 directly.
+    std::vector<std::int64_t> input(units.size());
+    std::int64_t previous_wrapped = -1;
+    std::int64_t base = 0;
+    for (std::size_t n = 0; n < units.size(); ++n) {
+        const auto wrapped =
+            (std::to_integer<std::int64_t>(units[n][2]) << 8) |
+            std::to_integer<std::int64_t>(units[n][3]);
+        if (previous_wrapped >= 0 && wrapped < previous_wrapped) {
+            base += 65536;
+        }
+        input[n] = base + wrapped;
+        previous_wrapped = wrapped;
+    }
+    const auto start = input[0];  // = 65536 - the initial delay, unwrapped from 0
+    for (std::size_t n = 0; n + 1 < units.size(); ++n) {
+        const auto spacing = input[n + 1] - input[n];
+        REQUIRE(spacing >= 1);
+        const auto size_bits = static_cast<std::int64_t>(units[n].size()) * 8;
+        // §2.7: size / spacing <= 18e6 / 48000 bits per sample.
+        CHECK(size_bits * 48000 <= spacing * 18'000'000);
+        // The delay never leaves [0, kFifoDelayFrames] frames. input[0]
+        // sits exactly one full delay before sample 0.
+        const auto output_time =
+            static_cast<std::int64_t>(n) * static_cast<std::int64_t>(frame) +
+            (start + static_cast<std::int64_t>(ac3::mlp::kFifoDelayFrames) *
+                         static_cast<std::int64_t>(frame));
+        const auto delay = output_time - input[n];
+        CHECK(delay >= 0);
+        CHECK(delay <= static_cast<std::int64_t>(ac3::mlp::kFifoDelayFrames) *
+                           static_cast<std::int64_t>(frame));
+    }
+    // The quiet tail is fully recovered: constant maximum delay again.
+    const auto last = units.size() - 1;
+    const auto output_last =
+        static_cast<std::int64_t>(last) * static_cast<std::int64_t>(frame) +
+        (start + static_cast<std::int64_t>(ac3::mlp::kFifoDelayFrames) *
+                     static_cast<std::int64_t>(frame));
+    CHECK(output_last - input[last] ==
+          static_cast<std::int64_t>(ac3::mlp::kFifoDelayFrames) *
+              static_cast<std::int64_t>(frame));
+
+    // And the measured peak respects the ceiling it was scheduled against.
+    CHECK(encoder.measured_peak_data_rate_16ths() <=
+          ac3::mlp::peak_data_rate_ceiling_16ths(ac3::mlp::SampleRate::k48000));
+    CHECK(encoder.measured_peak_data_rate_16ths() > 0);
+}
+
+TEST_CASE("stream: a configured peak_data_rate leaves access-unit sizes untouched", "[mlp]") {
+    // The two-pass contract: re-encoding with the measured peak written into
+    // the major sync changes only that field (and its CRC), never a size.
+    const auto frame = static_cast<std::size_t>(
+        ac3::mlp::samples_per_access_unit(ac3::mlp::SampleRate::k48000));
+    std::mt19937 rng(0x2FA5);
+    std::vector<std::vector<std::int32_t>> audio;
+    for (int i = 0; i < 10; ++i) {
+        audio.push_back(random_samples(rng, frame, 20));
+    }
+
+    ac3::mlp::StreamConfig config;
+    ac3::mlp::StreamEncoder first(config);
+    std::vector<std::size_t> sizes;
+    for (const auto& samples : audio) {
+        sizes.push_back(first.encode_access_unit(std::span<const std::int32_t>{samples}).size());
+    }
+
+    config.peak_data_rate_16ths = first.measured_peak_data_rate_16ths();
+    ac3::mlp::StreamEncoder second(config);
+    ac3::mlp::StreamDecoder decoder(24);
+    for (std::size_t i = 0; i < audio.size(); ++i) {
+        const auto unit =
+            second.encode_access_unit(std::span<const std::int32_t>{audio[i]});
+        CHECK(unit.size() == sizes[i]);
+        std::vector<std::int32_t> decoded;
+        REQUIRE(decoder.decode_access_unit(unit, decoded));
+        REQUIRE(decoded == audio[i]);
+    }
+}
+
+TEST_CASE("block: a DC pedestal costs nothing - the offset rides the LSB word", "[mlp]") {
+    // The same varying signal with and without a +2000 pedestal must code to
+    // the SAME size: midrange centring folds the pedestal into the LSB
+    // word's free DC slot, so the entropy layer sees identical residuals.
+    // (This is the exact shape that once forced the whole block onto a wider
+    // entropy table via the predictor's warm-up outlier.)
+    const auto frame = static_cast<std::size_t>(
+        ac3::mlp::samples_per_access_unit(ac3::mlp::SampleRate::k48000));
+    std::vector<std::int32_t> centred(frame);
+    for (std::size_t i = 0; i < frame; ++i) {
+        centred[i] = static_cast<std::int32_t>(i) - static_cast<std::int32_t>(frame / 2);
+    }
+    auto offset = centred;
+    for (auto& v : offset) {
+        v += 2000;
+    }
+
+    ac3::mlp::StreamConfig config;
+    config.automatic = true;
+    ac3::mlp::StreamEncoder encode_centred(config);
+    ac3::mlp::StreamEncoder encode_offset(config);
+    const auto unit_centred =
+        encode_centred.encode_access_unit(std::span<const std::int32_t>{centred});
+    const auto unit_offset =
+        encode_offset.encode_access_unit(std::span<const std::int32_t>{offset});
+    CHECK(unit_centred.size() == unit_offset.size());
+
+    ac3::mlp::StreamDecoder decoder(24);
+    std::vector<std::int32_t> decoded;
+    REQUIRE(decoder.decode_access_unit(unit_offset, decoded));
+    REQUIRE(decoded == offset);
 }

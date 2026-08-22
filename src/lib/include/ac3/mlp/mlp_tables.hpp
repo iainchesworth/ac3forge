@@ -31,6 +31,15 @@ inline constexpr std::uint16_t kSignature = 0xB752;
 inline constexpr std::uint32_t kTerminatorA = 0x348D3;  // v(18)
 inline constexpr std::uint16_t kTerminatorB = 0x1234;   // v(13)
 
+// §2.7: "It is the encoder's responsibility to ensure ... rate does not
+// exceed peakDataRate where peakDataRate = 18 Mbit/s for FBA streams", with
+// the effective rate defined per access unit as size / (input_timing[n+1] -
+// input_timing[n]). The minimum decoder FIFO the same section requires
+// bounds how far ahead of its presentation time an access unit may be
+// delivered.
+inline constexpr std::uint32_t kPeakDataRateBitsPerSecond = 18'000'000;
+inline constexpr std::uint32_t kMinFifoBufferBytes = 120'000;
+
 // §4.7.2, Table 20: restart_sync_word identifies which substream (0-3) a
 // restart header belongs to. Substream 1 may use either value.
 inline constexpr std::uint16_t kRestartSyncWordSubstream0 = 0x31EA;
@@ -96,6 +105,15 @@ enum class SampleRate : std::uint8_t {
         case SampleRate::k176400: return 160;
     }
     return 0;
+}
+
+// §4.2.6: the FBA channel ceiling in peak_data_rate's own units (1/16 bit
+// per sample period), rounded up - what a single-pass encoder writes when
+// the stream's true measured peak isn't known yet. Fits u(15) at every
+// rate (6531 at 44.1 kHz is the largest).
+[[nodiscard]] constexpr std::uint32_t peak_data_rate_ceiling_16ths(SampleRate sr) {
+    const auto hz = sample_rate_hz(sr);
+    return static_cast<std::uint32_t>((kPeakDataRateBitsPerSecond * 16ull + hz - 1) / hz);
 }
 
 // §4.2.2, Table 4 (2-channel) and the "exactly two channels" cases of Tables

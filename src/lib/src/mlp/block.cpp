@@ -1,6 +1,7 @@
 #include "ac3/mlp/block.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 
 #include "ac3/mlp/huffman.hpp"
@@ -66,6 +67,52 @@ void put_signed(BitWriter& w, std::int32_t value, int bits) {
         ++b1;
     }
     return b1;
+}
+
+// The DC offset carried in the LSB word's leading bits (WO: the N-bit LSB
+// word's leading N-B1 bits). Two candidates, priced by the exact payload
+// the entropy stage would emit, because neither dominates: the MIDRANGE
+// centres the peak level that entropy-table selection keys on (best when
+// the residual IS the signal - passthrough noise on a pedestal), while the
+// FIRST SAMPLE zeroes the predictor's warm-up view (best when prediction
+// removes the DC anyway and the only DC-sensitive residual is the first
+// one). A constant block scores zero under both and codes as empty.
+//
+// A candidate is only legal if the shifted words still fit the signed
+// (wordlength - B1)-bit significant domain (`width`) - midrange always
+// does, but centring on the first sample can double the span, and the
+// single-channel init field packs at exactly that width.
+[[nodiscard]] std::int32_t choose_dc(std::span<const std::int32_t> significant,
+                                     const PredictorCoefficients& coefficients, int width) {
+    const auto [lo_it, hi_it] = std::minmax_element(significant.begin(), significant.end());
+    const auto lo = *lo_it;
+    const auto hi = *hi_it;
+    const auto midrange = lo + (hi - lo) / 2;
+    const auto fits = [&](std::int32_t dc) {
+        return static_cast<std::int64_t>(lo) - dc >= -(std::int64_t{1} << (width - 1)) &&
+               static_cast<std::int64_t>(hi) - dc < (std::int64_t{1} << (width - 1));
+    };
+    const std::array<std::int32_t, 2> candidates{significant[0], midrange};
+    if (candidates[0] == candidates[1] || !fits(candidates[0])) {
+        return midrange;
+    }
+    std::int32_t best = midrange;
+    long long best_bits = -1;
+    std::vector<std::int32_t> shifted(significant.size());
+    std::vector<std::int32_t> residual(significant.size());
+    for (const auto dc : candidates) {
+        for (std::size_t i = 0; i < significant.size(); ++i) {
+            shifted[i] = significant[i] - dc;
+        }
+        PredictorState state{};
+        predict_encode(coefficients, shifted, residual, state);
+        const auto bits = choose_coding_cost(residual).payload_bits;
+        if (best_bits < 0 || bits < best_bits) {
+            best_bits = bits;
+            best = dc;
+        }
+    }
+    return best;
 }
 
 }  // namespace
@@ -176,15 +223,24 @@ void encode_block(BitWriter& w, std::span<const std::int32_t> samples, int wordl
         return;
     }
 
-    // Strip the constant LSBs into the LSB word (DC-offset slot left zero -
-    // implemented on the decode side, not yet exploited by this encoder).
+    // Strip the constant LSBs, then centre what's left: the LSB word packs
+    // [DC offset | constant LSB pattern], and removing the midrange DC
+    // before prediction keeps a pedestal (or a predictor's warm-up view of
+    // one) from widening the whole block's entropy table.
     header.b1 = detect_b1(samples, wordlength);
-    header.lsb_word = static_cast<std::uint32_t>(samples[0]) & ((1u << header.b1) - 1);
+    const auto lsb_pattern = static_cast<std::uint32_t>(samples[0]) & ((1u << header.b1) - 1);
 
     std::vector<std::int32_t> significant(samples.size());
     for (std::size_t i = 0; i < samples.size(); ++i) {
-        significant[i] = (samples[i] - static_cast<std::int32_t>(header.lsb_word)) >> header.b1;
+        significant[i] = (samples[i] - static_cast<std::int32_t>(lsb_pattern)) >> header.b1;
     }
+    const auto dc = choose_dc(significant, coefficients, wordlength - header.b1);
+    for (auto& value : significant) {
+        value -= dc;
+    }
+    const int dc_bits = wordlength - header.b1;
+    header.lsb_word =
+        ((static_cast<std::uint32_t>(dc) & ((1u << dc_bits) - 1)) << header.b1) | lsb_pattern;
 
     // Decorrelate. The first `order` significant words double as the
     // header's initialisation data (the WO's state-swap rule).
@@ -409,18 +465,37 @@ void encode_block_channels(BitWriter& w, std::span<const std::span<const std::in
         }
     }
 
-    // Per-channel strip, BEFORE the matrix (WO Fig. 3's stage order).
+    // Per-channel strip, BEFORE the matrix (WO Fig. 3's stage order), then
+    // per-channel DC centring - the LSB word packs [DC | pattern], and the
+    // matrix gets to work on centred channels (the decoder inverts in the
+    // opposite order: predict, un-matrix, add DC, unstrip). A constant
+    // channel centres to all-zero and rides the free kEmpty path.
     std::vector<int> b1(channel_count);
-    std::vector<std::uint32_t> lsb(channel_count);
+    std::vector<std::uint32_t> lsb_word(channel_count);
     std::vector<std::vector<std::int32_t>> significant(channel_count);
     for (std::size_t c = 0; c < channel_count; ++c) {
         b1[c] = detect_b1(channels[c], wordlength);
-        lsb[c] = static_cast<std::uint32_t>(channels[c][0]) & ((1u << b1[c]) - 1);
+        const auto pattern =
+            static_cast<std::uint32_t>(channels[c][0]) & ((1u << b1[c]) - 1);
         significant[c].resize(length);
         for (std::size_t i = 0; i < length; ++i) {
             significant[c][i] =
-                (channels[c][i] - static_cast<std::int32_t>(lsb[c])) >> b1[c];
+                (channels[c][i] - static_cast<std::int32_t>(pattern)) >> b1[c];
         }
+        // The caller's offset when given (see MultichannelBlockConfig::dc -
+        // mandatory for consistency when it also chose the matrix);
+        // otherwise priced here against this channel's configured
+        // predictor.
+        const auto dc =
+            c < config.dc.size()
+                ? config.dc[c]
+                : choose_dc(significant[c], config.coefficients[c], wordlength - b1[c]);
+        for (auto& value : significant[c]) {
+            value -= dc;
+        }
+        const int dc_bits = wordlength - b1[c];
+        lsb_word[c] =
+            ((static_cast<std::uint32_t>(dc) & ((1u << dc_bits) - 1)) << b1[c]) | pattern;
     }
 
     // The lossless matrix, per sample instant across channels.
@@ -468,7 +543,7 @@ void encode_block_channels(BitWriter& w, std::span<const std::span<const std::in
     }
     for (std::size_t c = 0; c < channel_count; ++c) {
         w.put(static_cast<std::uint32_t>(b1[c]), kB1Bits);
-        w.put(lsb[c] & ((1u << wordlength) - 1), wordlength);
+        w.put(lsb_word[c] & ((1u << wordlength) - 1), wordlength);
     }
     for (std::size_t c = 0; c < channel_count; ++c) {
         w.put(static_cast<std::uint32_t>(plans[c].coding), kCodingBits);

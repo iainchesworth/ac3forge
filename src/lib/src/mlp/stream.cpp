@@ -1,5 +1,6 @@
 #include "ac3/mlp/stream.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <numeric>
@@ -25,10 +26,13 @@ constexpr std::uint8_t kSingleSubstreamInfo = 0x14;
     MajorSyncInfo info;
     info.sample_rate = config.sample_rate;
     info.variable_rate = true;
-    // §4.2.6 defines peak_data_rate over the whole stream, which a
-    // streaming encoder cannot know up front - left zero as a documented
-    // placeholder until rate control exists.
-    info.peak_data_rate = 0;
+    // §4.2.6: the whole-stream maximum effective rate. A streaming encoder
+    // can't know it up front, so a zero config writes the enforced channel
+    // ceiling (a truthful upper bound); a two-pass caller supplies the
+    // exact measured value instead.
+    info.peak_data_rate = config.peak_data_rate_16ths != 0
+                              ? config.peak_data_rate_16ths
+                              : peak_data_rate_ceiling_16ths(config.sample_rate);
     info.substreams = 1;
     info.extended_substream_info = 0;
     info.substream_info = kSingleSubstreamInfo;
@@ -58,39 +62,99 @@ constexpr std::uint8_t kSingleSubstreamInfo = 0x14;
     return header;
 }
 
+// §2.7's spacing requirement after an access unit of `size_bits`: the next
+// input_timing must be at least ceil(size / peak rate) sample periods
+// later, so size / spacing never exceeds 18 Mbit/s.
+[[nodiscard]] std::int64_t peak_rate_spacing(std::int64_t size_bits, std::uint32_t rate_hz) {
+    return (size_bits * rate_hz + kPeakDataRateBitsPerSecond - 1) / kPeakDataRateBitsPerSecond;
+}
+
 }  // namespace
 
 StreamEncoder::StreamEncoder(const StreamConfig& config) : config_(config) {
     assert(config.major_sync_interval >= 8 && config.major_sync_interval <= 128);
     assert(config.wordlength >= 2 && config.wordlength <= 24);
     assert(config.channels >= 1 && config.channels <= kMaxBlockChannels);
+    assert(config.peak_data_rate_16ths < (1u << 15));
     if (config_.coefficients.empty()) {
         // Passthrough predictors everywhere by default.
         config_.coefficients.resize(static_cast<std::size_t>(config_.channels));
     }
     assert(config_.coefficients.size() == static_cast<std::size_t>(config_.channels));
+    // The stream opens with the FIFO delay fully wound up: the first access
+    // unit is delivered kFifoDelayFrames frames before its own presentation
+    // time (sample zero), so the wrapped input_timing field starts at
+    // 65536 - delay.
+    input_timing_ = -static_cast<std::int64_t>(kFifoDelayFrames) *
+                    samples_per_access_unit(config_.sample_rate);
 }
 
 std::vector<std::byte> StreamEncoder::encode_access_unit(
     std::span<const std::span<const std::int32_t>> channels) {
+    return encode_impl(channels, nullptr);
+}
+
+std::vector<std::byte> StreamEncoder::encode_access_unit(
+    std::span<const std::span<const std::int32_t>> channels, EndOfStream end) {
+    return encode_impl(channels, &end);
+}
+
+std::vector<std::byte> StreamEncoder::encode_impl(
+    std::span<const std::span<const std::int32_t>> channels, const EndOfStream* end) {
     const auto frame = static_cast<std::size_t>(samples_per_access_unit(config_.sample_rate));
+    assert(!finished_);
     assert(channels.size() == static_cast<std::size_t>(config_.channels));
     for ([[maybe_unused]] const auto& channel : channels) {
         assert(channel.size() == frame);
     }
+    const bool last = end != nullptr;
+    assert(end == nullptr || (end->zero_samples >= 0 && end->zero_samples < (1 << 13)));
 
     const bool major =
         access_unit_index_ % static_cast<std::uint64_t>(config_.major_sync_interval) == 0;
-    const auto timing = static_cast<std::uint16_t>(sample_count_ & 0xFFFF);
+
+    // §2.7's causal delivery schedule. The previous unit's size sets the
+    // earliest legal input time; the frame's own presentation time minus
+    // the full delay sets the steady-state floor the schedule returns to.
+    // If even delay zero can't satisfy the spacing, the audio exceeds the
+    // channel: deliver at presentation time anyway and count the violation
+    // rather than corrupting the stream.
+    const auto output_time = static_cast<std::int64_t>(sample_count_);
+    if (access_unit_index_ > 0) {
+        const auto earliest =
+            input_timing_ +
+            peak_rate_spacing(previous_size_bits_, sample_rate_hz(config_.sample_rate));
+        const auto floor_time =
+            output_time -
+            static_cast<std::int64_t>(kFifoDelayFrames) * static_cast<std::int64_t>(frame);
+        auto next = std::max(earliest, floor_time);
+        if (next > output_time) {
+            ++rate_violations_;
+            next = output_time;
+        }
+        // §4.2.6's measurement, over the spacing actually written.
+        const auto spacing = std::max<std::int64_t>(next - input_timing_, 1);
+        const auto rate_16ths =
+            static_cast<std::uint32_t>((previous_size_bits_ * 16 + spacing - 1) / spacing);
+        measured_peak_16ths_ = std::max(measured_peak_16ths_, rate_16ths);
+        input_timing_ = next;
+    }
+    const auto timing =
+        static_cast<std::uint16_t>(static_cast<std::uint64_t>(input_timing_) & 0xFFFF);
 
     // substream_segment(): block() wrapper flags, restart header on major
-    // sync only (§2.5), the block itself, the last-block flag, then §2.5's
-    // "padding to a 16-bit boundary".
+    // sync only (§2.5), the block itself, the last-block flag, §2.5's
+    // "padding to a 16-bit boundary", then - on the stream's final access
+    // unit only - §4.6.2-4.6.5's terminators (32 bits, so the alignment
+    // the padding just established survives them).
     BitWriter segment;
     segment.put(1, 1);                // block_header_exists
     segment.put(major ? 1u : 0u, 1);  // restart_header_exists
     if (major) {
-        (void)build_restart_header(segment, make_restart_header(config_, timing));
+        (void)build_restart_header(
+            segment,
+            make_restart_header(config_, static_cast<std::uint16_t>(
+                                             static_cast<std::uint64_t>(output_time) & 0xFFFF)));
     }
     if (config_.automatic) {
         encode_block_channels(segment, channels, config_.wordlength,
@@ -104,6 +168,17 @@ std::vector<std::byte> StreamEncoder::encode_access_unit(
     const auto pad = (16 - segment_bits % 16) % 16;
     if (pad != 0) {
         segment.put(0, static_cast<int>(pad));
+    }
+    if (last) {
+        segment.put(kTerminatorA, 18);
+        if (end->zero_samples > 0) {
+            segment.put(1, 1);  // zero_samples_indicated
+            segment.put(static_cast<std::uint32_t>(end->zero_samples), 13);
+        } else {
+            segment.put(0, 1);
+            segment.put(kTerminatorB, 13);
+        }
+        finished_ = true;
     }
     const std::vector<std::byte> segment_bytes = segment.take();
     const auto parity = substream_parity(segment_bytes);
@@ -143,6 +218,7 @@ std::vector<std::byte> StreamEncoder::encode_access_unit(
     unit.put(parity, 8);
     unit.put(crc, 8);
 
+    previous_size_bits_ = static_cast<std::int64_t>(total) * 8;
     ++access_unit_index_;
     sample_count_ += frame;
     return unit.take();
@@ -162,6 +238,9 @@ bool StreamDecoder::decode_access_unit(std::span<const std::byte> data,
                                        std::vector<std::vector<std::int32_t>>& channels) {
     if (data.size() < 8 || data.size() % 2 != 0) {
         return false;
+    }
+    if (end_of_stream_) {
+        return false;  // §4.6: the terminators marked the final access unit
     }
 
     BitReader r(data);
@@ -255,6 +334,10 @@ bool StreamDecoder::decode_access_unit(std::span<const std::byte> data,
         if (header.max_bits_a >= 2 && header.max_bits_a <= 24) {
             wordlength_ = header.max_bits_a;
         }
+        // §2.7 diagnostics: how far ahead of its presentation time this
+        // access unit was delivered.
+        fifo_delay_ = static_cast<int>(
+            (static_cast<unsigned>(header.output_timing) - timing) & 0xFFFFu);
     }
     if (channels_ == 0) {
         return false;
@@ -278,6 +361,27 @@ bool StreamDecoder::decode_access_unit(std::span<const std::byte> data,
         if (sr.read_bit() != 0) {
             return false;  // padding must be zeros
         }
+    }
+    // §4.6.2-4.6.5: exactly 32 bits after the padding means this is the
+    // stream's final access unit; any other trailing length is a framing
+    // error.
+    const auto remaining = segment_len * 8 - sr.bit_position();
+    if (remaining == 32) {
+        if (sr.read(18) != kTerminatorA) {
+            return false;
+        }
+        if (sr.read(1) != 0) {
+            const auto zero_samples = sr.read(13);
+            if (zero_samples > frame) {
+                return false;  // §4.6.4: padding completed ONE access unit
+            }
+            zero_samples_ = static_cast<int>(zero_samples);
+        } else if (sr.read(13) != kTerminatorB) {
+            return false;
+        }
+        end_of_stream_ = true;
+    } else if (remaining != 0) {
+        return false;
     }
     return !sr.overflowed() && sr.bit_position() == segment_len * 8;
 }

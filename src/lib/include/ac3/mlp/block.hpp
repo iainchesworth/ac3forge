@@ -95,6 +95,15 @@ AC3FORGE_EXPORT void encode_block(BitWriter& w, std::span<const std::int32_t> sa
 struct MultichannelBlockConfig {
     std::vector<matrix::Step> steps;  // PMQ cascade; may be empty
     std::vector<PredictorCoefficients> coefficients;  // exactly one per channel
+    // Per-channel DC offsets carried in each LSB word's leading bits,
+    // applied to the significant words BEFORE the matrix (the decoder adds
+    // them back after inverting it). Empty = let the codec pick per channel
+    // against `coefficients` - fine standalone, but a caller that also
+    // chose `steps` against specific offsets (select::choose_block_config
+    // does) must pass those exact offsets: a matrix fitted on one DC
+    // domain and applied to another leaves constant pedestals on its
+    // target channels that nothing downstream can remove.
+    std::vector<std::int32_t> dc;
 };
 
 inline constexpr int kMaxBlockChannels = 16;
